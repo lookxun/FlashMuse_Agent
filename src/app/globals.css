@@ -1,0 +1,155 @@
+@import "tailwindcss";
+
+:root {
+  --background: #f5f7fb;
+  --foreground: #0f172a;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+}
+
+textarea,
+select,
+button {
+  font: inherit;
+}
+
+button,
+select {
+  cursor: pointer;
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-thumb {
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.35);
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.35) transparent;
+}
+
+.yinzao-chat-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, 0.35) transparent;
+}
+
+.yinzao-chat-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+
+.yinzao-chat-scroll::-webkit-scrollbar-thumb {
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.35);
+  background-clip: padding-box;
+}
+
+.yinzao-chat-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(100, 116, 139, 0.5);
+  background-clip: padding-box;
+}
+@keyframes yinzaoVideoWaiting {
+  0%, 100% {
+    filter: hue-rotate(0deg) saturate(1);
+    transform: scale(1) translate3d(0, 0, 0);
+  }
+
+  50% {
+    filter: hue-rotate(12deg) saturate(1.15);
+    transform: scale(1.05) translate3d(-10px, 8px, 0);
+  }
+}
+
+@keyframes yinzaoVideoShimmer {
+  0% {
+    opacity: 0.35;
+    transform: translate3d(-18px, -10px, 0) scale(1);
+  }
+
+  50% {
+    opacity: 0.65;
+    transform: translate3d(24px, 18px, 0) scale(1.08);
+  }
+
+  100% {
+    opacity: 0.35;
+    transform: translate3d(-18px, -10px, 0) scale(1);
+  }
+}
+
+@keyframes yinzaoBlobOne {
+  0%, 100% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+
+  35% {
+    transform: translate3d(90px, 74px, 0) scale(1.2);
+  }
+
+  68% {
+    transform: translate3d(38px, 188px, 0) scale(0.92);
+  }
+}
+
+@keyframes yinzaoBlobTwo {
+  0%, 100% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+
+  42% {
+    transform: translate3d(-118px, -112px, 0) scale(1.18);
+  }
+
+  76% {
+    transform: translate3d(-46px, -210px, 0) scale(0.96);
+  }
+}
+
+@keyframes yinzaoBlobThree {
+  0%, 100% {
+    transform: translate3d(0, 0, 0) scale(1);
+  }
+
+  30% {
+    transform: translate3d(145px, -86px, 0) scale(0.9);
+  }
+
+  72% {
+    transform: translate3d(-54px, -132px, 0) scale(1.22);
+  }
+}
