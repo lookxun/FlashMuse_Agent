@@ -50,7 +50,15 @@
 - 曾误用 `seed/seed-2.0-lite`，OpenRouter 会报 invalid model ID，正确模型 ID 是 `bytedance-seed/seed-2.0-lite`
 - `/api/intent` 已做轻量 JSON 结构化输出解析，失败时回退到 `agent`
 - AI 回复当前使用轻量标记做排版：`#` / `##` / `###` 标题、`**加粗**`、`[red]...[/red]`、`[blue]...[/blue]`、`---` 分隔线
-- Agent 回复会自行判断是否输出 `### 下一步调整方向`，可给 2-5 个选项，也可以没有；前端不再解析成按钮
+- Agent 回复已改为结构化 JSON：`content` 为正文，`suggestions` 为独立引导系统按钮；正文不要再输出 `### 下一步调整方向`
+- `suggestions` 已升级为对象数组，格式为 `{ label, action, assetTargetType }`；生成角色图用 `character_image`，生成场景图用 `scene_image`，生成图片分镜用 `shot_image`，生成分镜视频 / 做成视频用 `shot_video`
+- 引导系统用于影片 / 短剧创作导航：问答阶段延展问题 + 转创作，创作阶段修改当前内容 + 推进下一步
+- 当前资产库为本地 `localStorage`：`yinzao-assets-v1`；正式登录系统上线后应迁移到服务端用户资产库
+- `@` 引用资产会把对应资产 URL 作为参考图传给图片 / 视频生成链路；当前 `@` 弹窗只允许选择角色图片、场景图片、分镜图片
+- 上传图片会保存到 `public/generated/upload_image`，通过 `/api/upload-image` 写入本地文件；本地开发阶段传给 OpenRouter 前会转为 base64，公网部署后应改成传 HTTPS 图片 URL
+- 参考图生成链路按用户文本中的 `@` 顺序传图；明确 `@` 时只传被 `@` 的图，没有 `@` 时才传输入框上方图片或最近图片；发送前按 URL 去重
+- 提示词优化阶段会带低清预览图理解参考图，最终图片生成默认传原图；只有 OpenRouter 返回 413 时才自动用压缩副本重试
+- 生成完成后资产入库优先使用前端任务携带的 `assetTargetType`，再用提示词文本规则兜底；命名逻辑在 `src/components/chat-workbench.tsx`
 
 ## OpenRouter 视频生成
 
@@ -121,17 +129,28 @@
 
 当前默认视频模型：
 
-1. `google/veo-3.1-lite`
+1. `bytedance/seedance-2.0-fast`
 
 说明：
 
-1. 图片模式会先通过对话模型优化提示词
-2. 然后调用 `/api/image` 生成图片
+1. `图片生成` 专业模式不再通过对话模型优化提示词，用户输入会原样作为提示词传给 `/api/image`
+2. `视频生成` 专业模式不再通过对话模型优化提示词，用户输入会原样作为提示词传给 `/api/video`
 3. 生成结果会保存到 `public/generated/images`
 4. 图片生成实际请求只传 `modalities: ["image"]`；不要传 `modalities: ["image", "text"]`，否则 `bytedance-seed/seedream-4.5` 会报没有支持端点
-5. 视频生成当前在 `src/lib/openrouter-video.ts` 使用集中常量 `DEFAULT_VIDEO_MODEL`，实际强制 4 秒、720p
-6. 图片 / 视频模式里的“普通图片模型 / 普通视频模型”当前只是前端占位，还未接真实可选模型列表
+5. 图片可选模型在 `src/lib/models.ts` 的 `imageGenerationModels`：`bytedance-seed/seedream-4.5`、`google/gemini-3.1-flash-image-preview`、`google/gemini-3-pro-image-preview`、`openai/gpt-5-image`、`openai/gpt-5.4-image-2`
+6. 视频可选模型在 `src/lib/models.ts` 的 `videoGenerationModels`：`bytedance/seedance-2.0-fast`、`bytedance/seedance-2.0`、`kwaivgi/kling-v3.0-std`、`kwaivgi/kling-v3.0-pro`、`kwaivgi/kling-video-o1`、`google/veo-3.1`、`openai/sora-2-pro`
 7. 聚合接口文档位置：`E:\project\【1】Api\SeeDance接入说明`
+8. OpenRouter 对 base64 图片请求体有限制，遇到 `413 Request Entity Too Large` 时，Agent 生成链路仍会压缩参考图副本重试；专业图片 / 视频模式按用户要求尽量原样传图
+9. 当前多参考图一致性仍取决于 `bytedance-seed/seedream-4.5` 的图像编辑能力；如继续跑偏，可考虑切换支持多参考图更稳定的图片编辑模型
+10. 本机实测：图片只有 `bytedance-seed/seedream-4.5` 可用，Google / GPT 图片模型返回 `403 This model is not available in your region`
+11. 本机实测：7 个视频模型均可创建并完成任务；`Veo 3.1` 支持 `4/6/8秒`，`Sora 2 Pro` 支持 `4/8/12/16/20秒`，其它 Seedance / Kling 当前按 `5/10/15秒` 展示
+12. 视频请求不再默认首尾帧，不传 `frame_images`；参考图只传 `input_references`
+13. 视频默认尝试有声音，非 Sora 模型先传 `generate_audio: true`，若音频参数失败自动重试无声音；`Sora 2 Pro` 不传 `generate_audio`
+14. 图片生成遇到过 Node `fetch` 调 OpenRouter `chat/completions` 偶发假 `500 Internal Server Error`，同请求用 `curl` 成功；当前 `src/lib/openrouter.ts` 已增加 `curlPostJson` 兜底，不要轻易删除
+15. 图片返回格式可能是 `choices[0].message.images[].image_url.url` 或 `data:image/jpeg;base64,...`；当前已兼容多种结构并通过 `saveGeneratedAsset` 保存到 `public/generated/images`
+16. `src/lib/local-assets.ts` 已补充 `data:` URL 的 MIME 扩展名识别，保存 base64 图片时可生成 `.jpg/.png/.webp` 等正确后缀
+17. 图片生成明确比例时不再同时传固定正方形 `size`，避免 `image_config.aspect_ratio` 与 `image_config.size` 冲突；5xx 或参数问题重试会去掉 `image_config`
+18. `Sora 2 Pro` 长时长任务排队较久，前端轮询次数已按 `12/16/20秒` 放宽；超出等待上限时显示“已停止自动等待”，不要误判为平台失败
 
 ## 敏感信息说明
 

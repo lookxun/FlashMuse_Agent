@@ -14,6 +14,7 @@ export async function POST(request: Request) {
         style?: string;
         duration?: string;
       };
+      originalPrompt?: string;
     };
 
     const model = body.model || DEFAULT_CHAT_MODEL;
@@ -31,6 +32,7 @@ export async function POST(request: Request) {
       mode: body.mode,
       messages: body.messages,
       settings: body.settings,
+      originalPrompt: body.originalPrompt,
     });
 
     return NextResponse.json(result);

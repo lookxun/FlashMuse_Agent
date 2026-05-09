@@ -26,6 +26,10 @@ export type OpenRouterVideoTask = {
   error?: { message?: string } | string;
 };
 
+type CreateVideoOptions = {
+  generateAudio?: boolean;
+};
+
 const OPENROUTER_VIDEOS_URL = "https://openrouter.ai/api/v1/videos";
 const execFileAsync = promisify(execFile);
 
@@ -92,27 +96,30 @@ function toDataUrlIfLocalPublicAsset(url: string) {
   return `data:${getMimeType(filePath)};base64,${data.toString("base64")}`;
 }
 
-function getDuration() {
-  return 4;
+function getClosestDuration(seconds: number, supported: number[]) {
+  return supported.reduce((best, item) => (Math.abs(item - seconds) < Math.abs(best - seconds) ? item : best), supported[0]);
 }
 
-function getResolution() {
-  return "720p";
+function getDuration(model: string, value?: string) {
+  const seconds = Number(value?.match(/\d+/)?.[0]);
+  const safeSeconds = Number.isFinite(seconds) && seconds > 0 ? seconds : 5;
+
+  if (model === "google/veo-3.1") return getClosestDuration(safeSeconds, [4, 6, 8]);
+  if (model === "openai/sora-2-pro") return getClosestDuration(safeSeconds, [4, 8, 12, 16, 20]);
+
+  return safeSeconds;
 }
 
-function getAspectRatio(value?: string) {
-  return value || "16:9";
+function getResolution(value?: string) {
+  return value === "1080p" ? "1080p" : "720p";
 }
 
-function isShortVideoPrompt(prompt: string) {
-  const normalized = prompt.replace(/[\s，。,.!?！？、；;：:「」“”"'（）()【】\[\]]/g, "");
-  return normalized.length < 28;
-}
+function getAspectRatio(model: string, value?: string) {
+  if (model === "openai/sora-2-pro") {
+    return value === "9:16" ? "9:16" : "16:9";
+  }
 
-function getSafeVideoPrompt(prompt: string) {
-  if (!isShortVideoPrompt(prompt)) return prompt;
-
-  return `以“${prompt}”为核心生成一段 4 秒写实电影感视频：主体清晰出现在画面中央，场景干净有层次，主体做一个自然的小动作并看向镜头，镜头缓慢推进，柔和自然光，浅景深，画面稳定流畅，高级质感。`;
+  return value && value !== "智能比例" ? value : undefined;
 }
 
 function toOpenRouterImage(url: string): OpenRouterVideoImage {
@@ -134,26 +141,22 @@ async function getOpenRouterError(response: Response, fallback: string) {
   }
 }
 
-export async function createOpenRouterVideoTask(prompt: string, referenceImages: string[] = [], settings?: VideoSettings) {
+async function postOpenRouterVideoTask(prompt: string, referenceImages: string[] = [], settings?: VideoSettings, model = DEFAULT_VIDEO_MODEL, options: CreateVideoOptions = {}) {
   const apiKey = getRequiredOpenRouterApiKey();
 
   const images = referenceImages.filter(Boolean).map(toOpenRouterImage);
-  const frameImages = images.slice(0, 2).map((image, index) => ({
-    ...image,
-    frame_type: index === 0 ? "first_frame" : "last_frame",
-  }));
-
+  const shouldSendAudioFlag = model !== "openai/sora-2-pro";
   const response = await fetch(OPENROUTER_VIDEOS_URL, {
     method: "POST",
     headers: getOpenRouterHeaders(apiKey),
     body: JSON.stringify({
-      model: DEFAULT_VIDEO_MODEL,
-      prompt: getSafeVideoPrompt(prompt),
-      duration: getDuration(),
-      resolution: getResolution(),
-      aspect_ratio: getAspectRatio(settings?.ratio),
-      generate_audio: false,
-      ...(frameImages.length > 0 ? { frame_images: frameImages } : {}),
+      model,
+      prompt,
+      duration: getDuration(model, settings?.duration),
+      resolution: getResolution(settings?.resolution),
+      ...(getAspectRatio(model, settings?.ratio) ? { aspect_ratio: getAspectRatio(model, settings?.ratio) } : {}),
+      ...(shouldSendAudioFlag ? { generate_audio: options.generateAudio ?? true } : {}),
+      ...(images.length > 0 ? { input_references: images } : {}),
     }),
   });
 
@@ -162,6 +165,19 @@ export async function createOpenRouterVideoTask(prompt: string, referenceImages:
   }
 
   return (await response.json()) as OpenRouterVideoTask;
+}
+
+export async function createOpenRouterVideoTask(prompt: string, referenceImages: string[] = [], settings?: VideoSettings, model = DEFAULT_VIDEO_MODEL) {
+  try {
+    return await postOpenRouterVideoTask(prompt, referenceImages, settings, model, { generateAudio: true });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "";
+    if (/audio|generate_audio|sound|voice/i.test(message)) {
+      return postOpenRouterVideoTask(prompt, referenceImages, settings, model, { generateAudio: false });
+    }
+
+    throw error;
+  }
 }
 
 export async function getOpenRouterVideoTask(taskId: string) {

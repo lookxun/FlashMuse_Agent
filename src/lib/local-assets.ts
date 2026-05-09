@@ -1,5 +1,7 @@
+import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { extname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
@@ -29,6 +31,11 @@ function getExtensionFromMime(mimeType?: string | null) {
 }
 
 function getExtensionFromUrl(url: string) {
+  if (url.startsWith("data:")) {
+    const match = url.match(/^data:([^;]+);/i);
+    return getExtensionFromMime(match?.[1]);
+  }
+
   try {
     const pathname = new URL(url).pathname;
     const extension = extname(pathname).replace(/^\./, "").toLowerCase();
@@ -80,6 +87,28 @@ export async function saveDataUrlAsset(dataUrl: string, type: AssetType) {
   return asset.publicUrl;
 }
 
+export async function saveUploadedImageAsset(dataUrl: string) {
+  const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+
+  if (!match) {
+    throw new Error("图片数据格式不正确，无法保存到本地。请稍后再试。");
+  }
+
+  const buffer = Buffer.from(match[2], "base64");
+  const extension = getExtensionFromMime(match[1]) ?? "png";
+  const hash = createHash("sha256").update(buffer).digest("hex").slice(0, 24);
+  const directory = join(GENERATED_ROOT, "upload_image");
+  const filePath = join(directory, `${hash}.${extension}`);
+
+  await mkdir(directory, { recursive: true });
+
+  if (!existsSync(filePath)) {
+    await writeFile(filePath, buffer);
+  }
+
+  return `/generated/upload_image/${hash}.${extension}`;
+}
+
 export async function saveRemoteAsset(url: string, type: AssetType, init?: RequestInit) {
   const response = await fetch(url, { ...init, cache: "no-store" });
 
@@ -113,4 +142,17 @@ export async function saveGeneratedAsset(source: string, type: AssetType, init?:
   if (source.startsWith("/generated/")) return source;
   if (source.startsWith("data:")) return saveDataUrlAsset(source, type);
   return saveRemoteAsset(source, type, init);
+}
+
+export async function deleteLocalGeneratedAsset(publicUrl: string) {
+  if (!publicUrl.startsWith("/generated/")) return false;
+
+  const normalized = publicUrl.replace(/^\/generated\//, "").replace(/\//g, "\\");
+  const filePath = join(GENERATED_ROOT, normalized);
+
+  if (!existsSync(filePath)) return false;
+
+  const { unlink } = await import("node:fs/promises");
+  await unlink(filePath);
+  return true;
 }

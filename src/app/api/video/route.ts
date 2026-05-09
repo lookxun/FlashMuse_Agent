@@ -122,6 +122,7 @@ export async function POST(request: Request) {
   try {
     const body = (await request.json()) as {
       prompt?: string;
+      model?: string;
       taskId?: string;
       referenceImages?: string[];
       settings?: { ratio?: string; resolution?: string; duration?: string };
@@ -169,7 +170,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "缺少提示词" }, { status: 400 });
     }
 
-    const task = await createOpenRouterVideoTask(prompt, Array.isArray(body.referenceImages) ? body.referenceImages : [], body.settings);
+    const task = await createOpenRouterVideoTask(prompt, Array.isArray(body.referenceImages) ? body.referenceImages : [], body.settings, body.model);
     const videoError = getVideoErrorMessage(task);
 
     if (videoError) {
