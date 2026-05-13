@@ -136,21 +136,24 @@
 1. `图片生成` 专业模式不再通过对话模型优化提示词，用户输入会原样作为提示词传给 `/api/image`
 2. `视频生成` 专业模式不再通过对话模型优化提示词，用户输入会原样作为提示词传给 `/api/video`
 3. 生成结果会保存到 `public/generated/images`
-4. 图片生成实际请求只传 `modalities: ["image"]`；不要传 `modalities: ["image", "text"]`，否则 `bytedance-seed/seedream-4.5` 会报没有支持端点
-5. 图片可选模型在 `src/lib/models.ts` 的 `imageGenerationModels`：`bytedance-seed/seedream-4.5`、`google/gemini-3.1-flash-image-preview`、`google/gemini-3-pro-image-preview`、`openai/gpt-5-image`、`openai/gpt-5.4-image-2`
-6. 视频可选模型在 `src/lib/models.ts` 的 `videoGenerationModels`：`bytedance/seedance-2.0-fast`、`bytedance/seedance-2.0`、`kwaivgi/kling-v3.0-std`、`kwaivgi/kling-v3.0-pro`、`kwaivgi/kling-video-o1`、`google/veo-3.1`、`openai/sora-2-pro`
+4. 图片生成请求参数当前按 2026-05-12 最新修正规则执行：传 `image_config.aspect_ratio` + `image_config.image_size`，不要再用旧字段 `size`。`bytedance-seed/seedream-4.5` 使用 `modalities: ["image"]`，Gemini / GPT 图片模型使用 `modalities: ["image", "text"]`。后续改这些接口参数仍必须先问用户。
+5. 图片可选模型在 `src/lib/models.ts` 的 `imageGenerationModels`：`bytedance-seed/seedream-4.5`、`google/gemini-3.1-flash-image-preview`、`google/gemini-3-pro-image-preview`、`openai/gpt-5.4-image-2`；`openai/gpt-5-image` 因比例不生效已移除。模型尺寸规则在同文件 `imageModelRules`，项目已取消本地超分增强。
+6. 视频可选模型在 `src/lib/models.ts` 的 `videoGenerationModels`：`bytedance/seedance-2.0-fast`、`bytedance/seedance-2.0`、`kwaivgi/kling-v3.0-std`、`kwaivgi/kling-v3.0-pro`、`kwaivgi/kling-video-o1`、`google/veo-3.1`；`openai/sora-2-pro` 已移除
 7. 聚合接口文档位置：`E:\project\【1】Api\SeeDance接入说明`
 8. OpenRouter 对 base64 图片请求体有限制，遇到 `413 Request Entity Too Large` 时，Agent 生成链路仍会压缩参考图副本重试；专业图片 / 视频模式按用户要求尽量原样传图
 9. 当前多参考图一致性仍取决于 `bytedance-seed/seedream-4.5` 的图像编辑能力；如继续跑偏，可考虑切换支持多参考图更稳定的图片编辑模型
-10. 本机实测：图片只有 `bytedance-seed/seedream-4.5` 可用，Google / GPT 图片模型返回 `403 This model is not available in your region`
-11. 本机实测：7 个视频模型均可创建并完成任务；`Veo 3.1` 支持 `4/6/8秒`，`Sora 2 Pro` 支持 `4/8/12/16/20秒`，其它 Seedance / Kling 当前按 `5/10/15秒` 展示
+10. 本机最新尺寸矩阵实测见根目录 `image-size-test-results.md`，但 2026-05-12 又补测了“只传比例”的原生尺寸，当前以只传比例结果为产品基准：Seedream 4.5 原生为 `2048x2048 / 2560x1440 / 1440x2560 / 3024x1296 / 2304x1728`；Gemini 3.1 Flash 和 Gemini 3 Pro 原生为 `1024x1024 / 1376x768 / 768x1376 / 1584x672 / 1200x896`；GPT-5.4 Image 2 原生为 `1024x1024 / 1280x720 / 720x1280 / 1568x672 / 1152x864`
+11. 本机最新实测和 OpenRouter `/api/v1/videos/models` 能力表需要区分“官方支持项”和“实际输出”。当前保留 6 个视频模型。Seedance 2.0 Fast UI 支持 `480p / 720p`；Seedance 2.0 支持 `480p / 720p / 1080p`；Kling Standard / Pro 支持 `720p`；Kling Video O1 虽官方标 `720p`，但实测输出为 1080p 尺寸，UI 显示 `1080p`；Veo 3.1 支持 `720p / 1080p / 4K`。Veo 3.1 支持 `4/6/8秒`，Kling Video O1 支持 `5/10秒`，其它 Seedance / Kling 当前按 `5/10/15秒` 展示。
 12. 视频请求不再默认首尾帧，不传 `frame_images`；参考图只传 `input_references`
-13. 视频默认尝试有声音，非 Sora 模型先传 `generate_audio: true`，若音频参数失败自动重试无声音；`Sora 2 Pro` 不传 `generate_audio`
+13. 视频默认尝试有声音，当前保留模型先传 `generate_audio: true`，若音频参数失败自动重试无声音。
 14. 图片生成遇到过 Node `fetch` 调 OpenRouter `chat/completions` 偶发假 `500 Internal Server Error`，同请求用 `curl` 成功；当前 `src/lib/openrouter.ts` 已增加 `curlPostJson` 兜底，不要轻易删除
 15. 图片返回格式可能是 `choices[0].message.images[].image_url.url` 或 `data:image/jpeg;base64,...`；当前已兼容多种结构并通过 `saveGeneratedAsset` 保存到 `public/generated/images`
 16. `src/lib/local-assets.ts` 已补充 `data:` URL 的 MIME 扩展名识别，保存 base64 图片时可生成 `.jpg/.png/.webp` 等正确后缀
-17. 图片生成明确比例时不再同时传固定正方形 `size`，避免 `image_config.aspect_ratio` 与 `image_config.size` 冲突；5xx 或参数问题重试会去掉 `image_config`
-18. `Sora 2 Pro` 长时长任务排队较久，前端轮询次数已按 `12/16/20秒` 放宽；超出等待上限时显示“已停止自动等待”，不要误判为平台失败
+17. 图片生成服务端会打印 `[image-generation] OpenRouter request params`，用于确认实际发出的模型、比例、分辨率、`modalities`、`image_config` 和期望尺寸；图片 5xx 会保留同一请求体重试，不应因为重试偷偷去掉用户选择的参数
+18. `sharp` 相关本地超分增强已取消。当前项目不再依赖 `sharp`，不再做本地 2 倍放大；前端收到和展示的是模型返回后保存的原图 URL。
+19. 视频请求最终已改为不传 `size`，只传 `resolution + aspect_ratio`。原因是实测输出尺寸中有 `992x432 / 960x960` 等非标尺寸，作为 `size` 请求会报 `Unsupported size`；而不传 `size` 时全量复测输出尺寸与此前一致，成功率更稳。
+20. 视频能力表写在 `src/lib/models.ts` 的 `videoModelRules`。其中 `sizes` 是 UI/兜底显示用的实测输出尺寸，不是请求尺寸；`nonStandardSizes` 用于显示 `（非标）`。前端比例和分辨率按钮只显示当前模型支持项；视频智能比例固定显示为 `16:9 / 1280x720`，请求传 `resolution: "720p" + aspect_ratio: "16:9"`。
+21. OpenRouter / Gemini 3 Pro 可能一次响应返回多张候选图。项目会保存响应里的所有图片并返回给前端，前端按尺寸组和分页进行展示。
 
 ## 敏感信息说明
 

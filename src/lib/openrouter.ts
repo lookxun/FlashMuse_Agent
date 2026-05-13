@@ -5,8 +5,8 @@ import { tmpdir } from "node:os";
 import { extname, join } from "node:path";
 import { promisify } from "node:util";
 import type { ConversationModel, ModelName } from "@/lib/models";
-import { DEFAULT_IMAGE_MODEL, models } from "@/lib/models";
-import { saveGeneratedAsset } from "@/lib/local-assets";
+import { DEFAULT_IMAGE_MODEL, getExpectedImageDimensions, getImageModelRule, models, resolveImageSettingsForModel } from "@/lib/models";
+import { getLocalImageDimensions, saveGeneratedAsset, type ImageDimensions } from "@/lib/local-assets";
 
 export type ChatRequest = {
   model: ModelName;
@@ -298,37 +298,45 @@ export async function sendToOpenRouter(request: ChatRequest): Promise<ChatRespon
         ? `当前模式：视频${settingsText ? `。生成参数：${settingsText}` : ""}。用户当前是手动选择视频生成模式，这个模式优先级最高，不能改成图片模式。即使用户原话更像海报、封面、一张图、图片，也要把需求改写成视频提示词。请基于上下文，只输出最终可直接用于视频生成的完整提示词。必须包含：主体外貌/身份、场景、动作变化、镜头运动、光线氛围、画面风格；若用户原话偏静态，要补出合理的动作与镜头变化。控制在 80-160 个中文字符。不要解释，不能说自己无法生成，不能让用户复制到其它工具，不能输出标题或“视频提示词：”前缀。`
         : `当前模式：图片${settingsText ? `。生成参数：${settingsText}` : ""}。用户当前是手动选择图片生成模式，这个模式优先级最高，不能改成视频模式。即使用户原话里出现“视频”“一段”“镜头”“运镜”“动起来”“动画”等词，也必须把需求改写成适合单帧图片生成的提示词：保留主体、动作瞬间、场景、构图、氛围、风格，把时序和镜头语言改成定格画面表达。请基于上下文，只输出最终可直接用于图片生成的提示词，不要解释，不能说自己无法生成，不能让用户复制到其它工具，不能输出“通用生图提示词”之类的说明。`;
 
+  const headers = getOpenRouterHeaders(apiKey);
+  const body = {
+    model: request.model,
+    messages: [
+      {
+        role: "system",
+        content: systemPrompt,
+      },
+      ...request.messages.map((message) => ({
+        role: message.role,
+        content: toOpenRouterContent(message.content, message.images),
+      })),
+      {
+        role: "user",
+        content: finalInstruction,
+      },
+    ],
+    temperature: 0.7,
+  };
   const response = await fetch(OPENROUTER_URL, {
     method: "POST",
-    headers: getOpenRouterHeaders(apiKey),
-    body: JSON.stringify({
-      model: request.model,
-      messages: [
-        {
-          role: "system",
-          content: systemPrompt,
-        },
-        ...request.messages.map((message) => ({
-          role: message.role,
-          content: toOpenRouterContent(message.content, message.images),
-        })),
-        {
-          role: "user",
-          content: finalInstruction,
-        },
-      ],
-      temperature: 0.7,
-    }),
+    headers,
+    body: JSON.stringify(body),
   });
 
-  if (!response.ok) {
-    throw new Error(await getOpenRouterError(response, "OpenRouter 请求失败"));
-  }
-
-  const data = (await response.json()) as {
+  let data: {
     model?: string;
     choices?: Array<{ message?: { content?: string } }>;
   };
+
+  if (!response.ok) {
+    try {
+      data = await curlPostJson<typeof data>(OPENROUTER_URL, headers, body, "OpenRouter 请求失败");
+    } catch {
+      throw new Error(await getOpenRouterError(response, "OpenRouter 请求失败"));
+    }
+  } else {
+    data = (await response.json()) as typeof data;
+  }
 
   const rawContent = data.choices?.[0]?.message?.content ?? "";
 
@@ -371,34 +379,42 @@ export async function classifyOpenRouterIntent(request: Pick<ChatRequest, "model
     throw new Error("缺少 OpenRouter API Key");
   }
 
+  const headers = getOpenRouterHeaders(apiKey);
+  const body = {
+    model: request.model,
+    messages: [
+      {
+        role: "system",
+        content:
+          "你是映造的意图分类器，只返回 JSON，不要输出其它文字。根据用户最新一句和上下文判断下一步应该做什么。intent 只能是 agent、image、video、prompt、clarify。image 表示用户要生成图片；video 表示用户明确要生成视频、镜头、动画、让图中人物动起来、图生视频；prompt 表示用户只要提示词优化；agent 表示普通创作讨论、改文案、想方案、泛泛地说来一段；clarify 表示图片和视频都可能，需要追问。注意：单独的“来一段”“写一段”“搞一段”不是视频意图，除非同时明确说视频、镜头、动画、动起来。返回格式：{\"intent\":\"video\",\"confidence\":0.92,\"reason\":\"原因\"}。",
+      },
+      ...request.messages.slice(-8).map((message) => ({ role: message.role, content: message.content })),
+      {
+        role: "user",
+        content: "请分类最新用户意图，只返回 JSON。",
+      },
+    ],
+    temperature: 0,
+  };
   const response = await fetch(OPENROUTER_URL, {
     method: "POST",
-    headers: getOpenRouterHeaders(apiKey),
-    body: JSON.stringify({
-      model: request.model,
-      messages: [
-        {
-          role: "system",
-          content:
-            "你是映造的意图分类器，只返回 JSON，不要输出其它文字。根据用户最新一句和上下文判断下一步应该做什么。intent 只能是 agent、image、video、prompt、clarify。image 表示用户要生成图片；video 表示用户明确要生成视频、镜头、动画、让图中人物动起来、图生视频；prompt 表示用户只要提示词优化；agent 表示普通创作讨论、改文案、想方案、泛泛地说来一段；clarify 表示图片和视频都可能，需要追问。注意：单独的“来一段”“写一段”“搞一段”不是视频意图，除非同时明确说视频、镜头、动画、动起来。返回格式：{\"intent\":\"video\",\"confidence\":0.92,\"reason\":\"原因\"}。",
-        },
-        ...request.messages.slice(-8).map((message) => ({ role: message.role, content: message.content })),
-        {
-          role: "user",
-          content: "请分类最新用户意图，只返回 JSON。",
-        },
-      ],
-      temperature: 0,
-    }),
+    headers,
+    body: JSON.stringify(body),
   });
 
-  if (!response.ok) {
-    throw new Error(await getOpenRouterError(response, "OpenRouter 意图分类失败"));
-  }
-
-  const data = (await response.json()) as {
+  let data: {
     choices?: Array<{ message?: { content?: string } }>;
   };
+
+  if (!response.ok) {
+    try {
+      data = await curlPostJson<typeof data>(OPENROUTER_URL, headers, body, "OpenRouter 意图分类失败");
+    } catch {
+      throw new Error(await getOpenRouterError(response, "OpenRouter 意图分类失败"));
+    }
+  } else {
+    data = (await response.json()) as typeof data;
+  }
 
   return parseIntentClassification(data.choices?.[0]?.message?.content ?? "");
 }
@@ -443,18 +459,19 @@ type ImageGenerationOptions = {
   count?: number;
 };
 
-function getImageAspectRatio(value?: string) {
-  return value && value !== "智能比例" ? value : undefined;
-}
+function getImageRequestConfig(model: string, settings?: ImageGenerationOptions["settings"]) {
+  const rule = getImageModelRule(model);
+  const { resolution, ratio: aspectRatio } = resolveImageSettingsForModel(model, settings);
+  const dimensions = getExpectedImageDimensions(model, resolution, aspectRatio);
 
-function getImageSize(value?: string, aspectRatio?: string) {
-  if (!aspectRatio) {
-    if (value === "2K") return "2048x2048";
-    if (value === "4K") return "4096x4096";
-    return "1024x1024";
-  }
-
-  return undefined;
+  return {
+    modalities: rule.modalities,
+    targetDimensions: dimensions,
+    imageConfig: {
+      aspect_ratio: aspectRatio,
+      image_size: resolution,
+    },
+  };
 }
 
 function isTransientImageError(message: string) {
@@ -489,12 +506,16 @@ export async function generateOpenRouterImage(prompt: string, referenceImages: s
   const safeReferenceImages = referenceImages.filter(Boolean).slice(0, 3);
   const count = Math.min(4, Math.max(1, Math.floor(options.count ?? 1)));
   const model = options.model || process.env.OPENROUTER_IMAGE_MODEL || DEFAULT_IMAGE_MODEL;
-  const aspectRatio = getImageAspectRatio(options.settings?.ratio);
-  const size = getImageSize(options.settings?.resolution, aspectRatio);
-  const imageConfig = {
-    ...(aspectRatio ? { aspect_ratio: aspectRatio } : {}),
-    ...(size ? { size } : {}),
-  };
+  const { modalities, imageConfig, targetDimensions } = getImageRequestConfig(model, options.settings);
+
+  console.log("[image-generation] OpenRouter request params", {
+    model,
+    selectedRatio: options.settings?.ratio,
+    selectedResolution: options.settings?.resolution,
+    modalities,
+    image_config: imageConfig,
+    expected_dimensions: targetDimensions,
+  });
 
   const createOne = async (useImageConfig = true) => {
     const body = {
@@ -505,7 +526,7 @@ export async function generateOpenRouterImage(prompt: string, referenceImages: s
           content: toOpenRouterContent(prompt, safeReferenceImages),
         },
       ],
-      modalities: ["image"],
+      modalities,
       ...(useImageConfig ? { image_config: imageConfig } : {}),
     };
     const headers = getOpenRouterHeaders(apiKey);
@@ -536,7 +557,9 @@ export async function generateOpenRouterImage(prompt: string, referenceImages: s
     let localImages: string[] = [];
 
     try {
-      localImages = await Promise.all(images.map((image) => saveGeneratedAsset(image, "image")));
+      localImages = await Promise.all(images.map(async (image) => {
+        return saveGeneratedAsset(image, "image");
+      }));
     } catch (saveError) {
       const saveMessage = saveError instanceof Error ? saveError.message : "";
       throw new Error(saveMessage || "图片已返回，但保存到本地失败");
@@ -546,40 +569,44 @@ export async function generateOpenRouterImage(prompt: string, referenceImages: s
       throw new Error("图片平台没有返回图片");
     }
 
+    const imageDimensions = Object.fromEntries(
+      localImages
+        .map((image) => [image, getLocalImageDimensions(image)] as const)
+        .filter((item): item is readonly [string, ImageDimensions] => Boolean(item[1])),
+    );
+
     return {
       content: data.choices?.[0]?.message?.content ?? "",
       images: localImages,
+      imageDimensions,
     };
   };
-
-  const results = [];
 
   const createOneWithRetry = async () => {
     try {
       return await createOne(true);
     } catch (error) {
       const message = error instanceof Error ? error.message : "";
-      if (!isTransientImageError(message) && !isImageConfigError(message)) throw error;
+      if (!isTransientImageError(message) || isImageConfigError(message)) throw error;
 
       await wait(1200);
       try {
-        return await createOne(false);
+        return await createOne(true);
       } catch (retryError) {
         const retryMessage = retryError instanceof Error ? retryError.message : "";
-        if (!isTransientImageError(retryMessage) && !isImageConfigError(retryMessage)) throw retryError;
+        if (!isTransientImageError(retryMessage) || isImageConfigError(retryMessage)) throw retryError;
 
         await wait(1600);
-        return await createOne(false);
+        return await createOne(true);
       }
     }
   };
 
-  for (let index = 0; index < count; index += 1) {
-    results.push(await createOneWithRetry());
-  }
+  const results = await Promise.all(Array.from({ length: count }).map(() => createOneWithRetry()));
 
   return {
     content: results.map((item) => item.content).filter(Boolean).join("\n\n"),
     images: results.flatMap((item) => item.images),
+    imageDimensions: Object.assign({}, ...results.map((item) => item.imageDimensions)),
   };
 }

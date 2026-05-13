@@ -1,5 +1,5 @@
-import { existsSync } from "node:fs";
-import { mkdir, writeFile } from "node:fs/promises";
+import { existsSync, readFileSync } from "node:fs";
+import { mkdir, unlink, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { extname, join } from "node:path";
@@ -10,6 +10,11 @@ type AssetType = "image" | "video";
 
 const GENERATED_ROOT = join(process.cwd(), "public", "generated");
 const execFileAsync = promisify(execFile);
+
+export type ImageDimensions = {
+  width: number;
+  height: number;
+};
 
 const mimeExtensions: Record<string, string> = {
   "image/jpeg": "jpg",
@@ -144,6 +149,76 @@ export async function saveGeneratedAsset(source: string, type: AssetType, init?:
   return saveRemoteAsset(source, type, init);
 }
 
+function getPngDimensions(buffer: Buffer): ImageDimensions | undefined {
+  if (buffer.length < 24 || buffer.toString("ascii", 1, 4) !== "PNG") return undefined;
+  return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20) };
+}
+
+function getJpegDimensions(buffer: Buffer): ImageDimensions | undefined {
+  if (buffer.length < 4 || buffer[0] !== 0xff || buffer[1] !== 0xd8) return undefined;
+
+  let offset = 2;
+  while (offset < buffer.length) {
+    if (buffer[offset] !== 0xff) {
+      offset += 1;
+      continue;
+    }
+
+    const marker = buffer[offset + 1];
+    const length = buffer.readUInt16BE(offset + 2);
+
+    if (marker >= 0xc0 && marker <= 0xc3 && offset + 8 < buffer.length) {
+      return { width: buffer.readUInt16BE(offset + 7), height: buffer.readUInt16BE(offset + 5) };
+    }
+
+    offset += 2 + length;
+  }
+
+  return undefined;
+}
+
+function getWebpDimensions(buffer: Buffer): ImageDimensions | undefined {
+  if (buffer.length < 30 || buffer.toString("ascii", 0, 4) !== "RIFF" || buffer.toString("ascii", 8, 12) !== "WEBP") return undefined;
+
+  const format = buffer.toString("ascii", 12, 16);
+  if (format === "VP8X" && buffer.length >= 30) {
+    return {
+      width: 1 + buffer.readUIntLE(24, 3),
+      height: 1 + buffer.readUIntLE(27, 3),
+    };
+  }
+
+  if (format === "VP8 " && buffer.length >= 30) {
+    return {
+      width: buffer.readUInt16LE(26) & 0x3fff,
+      height: buffer.readUInt16LE(28) & 0x3fff,
+    };
+  }
+
+  if (format === "VP8L" && buffer.length >= 25) {
+    const bits = buffer.readUInt32LE(21);
+    return {
+      width: (bits & 0x3fff) + 1,
+      height: ((bits >> 14) & 0x3fff) + 1,
+    };
+  }
+
+  return undefined;
+}
+
+export function getImageDimensionsFromBuffer(buffer: Buffer): ImageDimensions | undefined {
+  return getPngDimensions(buffer) ?? getJpegDimensions(buffer) ?? getWebpDimensions(buffer);
+}
+
+export function getLocalImageDimensions(publicUrl: string): ImageDimensions | undefined {
+  if (!publicUrl.startsWith("/generated/")) return undefined;
+
+  const filePath = join(process.cwd(), "public", publicUrl.replace(/^\//, ""));
+  if (!existsSync(filePath)) return undefined;
+
+  return getImageDimensionsFromBuffer(readFileSync(filePath));
+}
+
 export async function deleteLocalGeneratedAsset(publicUrl: string) {
   if (!publicUrl.startsWith("/generated/")) return false;
 
@@ -152,7 +227,6 @@ export async function deleteLocalGeneratedAsset(publicUrl: string) {
 
   if (!existsSync(filePath)) return false;
 
-  const { unlink } = await import("node:fs/promises");
   await unlink(filePath);
   return true;
 }

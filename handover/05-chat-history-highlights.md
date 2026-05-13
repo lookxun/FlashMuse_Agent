@@ -525,3 +525,155 @@
 - 让下一个 AI 能接住上下文继续做
 
 所以当前 `handover` 文件夹就是按这个要求建立的。
+
+## 关于后续 AI 协作方式的新规则
+
+用户最新明确要求：后续所有 AI 在动手改代码前必须先问用户确认。
+
+具体规则：
+
+1. 功能逻辑、接口参数、模型参数、UI 显示、错误提示、交互规则都不能自行先改
+2. 即使只是小文案、小提示、参数显示、`modalities` / `size` 这类接口参数，也必须先说明准备怎么改，再等用户确认
+3. 排查问题可以先读文件、看日志、说明原因；但进入代码修改前必须问
+4. 用户特别指出：之前改 UI 显示、改 OpenRouter `modalities` 都应该先问，不要再自行改
+5. 后续 AI 接手时要默认遵守“先确认、再修改”的协作方式
+
+## 关于 2026-05-11 本轮关键交接
+
+本轮用户围绕公用 key、图片并发、尺寸、`@资产` 重新生成、模式切换提示、规则文档、图片模型尺寸实测和后续协作规则做了多次确认。
+
+必须记住的结论：
+
+1. OpenRouter 已改用公用 key：用户在 `E:\project\【1】Api\api key.txt` 中新增 OpenRouter 公用 key，本地 `.env.local` 已切到该 key；原个人 OpenRouter key 不应再接回项目
+2. 后续协作规则最重要：任何功能逻辑、接口参数、模型参数、UI 显示、错误提示、交互规则的修改，都必须先告诉用户准备怎么改，并等用户确认；不能先自行改。排查可以读文件、看日志、说明原因，但动代码前必须问
+3. 用户明确指出：之前擅自改 UI 尺寸显示、擅自改 OpenRouter `modalities` 都不符合预期；后续 AI 不能重复这个问题
+4. 图片 / 视频任务并发规则已改：多批任务并发；单批多图也并发；同一会话最多 `10` 批任务；图片哪张先完成就先显示，失败只影响单张
+5. 图片专业模式仍是用户输入即最终提示词，不走 Agent 优化，不显示右侧用户气泡；手动选择 `图片生成` 优先级最高，即使提示词写视频词也必须按图片执行
+6. 生成图片加载慢时当前有“正在加载中”加三个跳动点作为保底提示；真正优化方向是生成 250px 缩略图缓存，但必须先问用户再做
+7. 图片结果参数显示已改成真实媒体参数优先：图片生成后读取真实像素，旧图加载后也会补尺寸；视频加载 metadata 后补真实宽高。对话流和预览页的比例、尺寸、分辨率图标都应跟随真实生成文件，而不是只显示按钮选择值
+8. OpenRouter 图片 `modalities` 参数已在用户确认后按模型拆开：Seedream 继续 `['image']`；Gemini / GPT 系列使用 `['image','text']`。后续再改接口参数仍必须先问用户
+9. `@资产` 重新生成失效已修：专业模式媒体 assistant 消息会保存 `imageReferences`；重新生成优先用当前结果自己的 `imageReferences`，旧消息没有时从提示词中的 `@名称` 反查资产库和对话引用
+10. 所有相关位置的有效 `@资产名` 显示规则统一为“小缩略图 + @名称”；用户消息、图片 / 视频专业模式提示词、旧结果可匹配引用时都应这样显示
+11. 模式切换系统消息规则已修：当前模式再次点击只关闭菜单，不再插入重复系统提示；只有真正切到其它模式才插入“当前已切换到...”系统消息
+12. 最新代码涉及 `src/components/chat-workbench.tsx`、`src/lib/openrouter.ts`、`src/lib/models.ts`、`src/lib/local-assets.ts`、`scripts/test-image-size-matrix.mjs`；本轮多次 `npm run lint` 和 `npm run build` 通过
+
+当前图片生成模式规则摘要：
+
+1. 模式优先级：手动选择 `图片生成` 后必须出图片，不能被提示词内容反向切到视频或 Agent
+2. 提示词：用户输入就是最终提示词；不优化、不追问、不打字机、不右侧用户气泡
+3. 参考图：明确 `@资产名` 时，只传被 `@` 的图，按文本顺序；无 `@` 时才传上传图或最近图；传图前按 URL 去重
+4. 数量：`1-4张`，同批并发生成，逐张显示
+5. 失败：单张失败显示单张失败卡；部分失败不影响其它成功图
+6. 参数：按钮选择仍用于决定最终生成结果，但不同图片模型使用不同能力规则。旧规则曾是 Seedream `2K / 4K`、GPT-5.4 `1K / 2K`、Gemini / GPT-5 `1K / 2K / 4K`；2026-05-12 已改成以“原生尺寸 + 本地增强”规则为准
+7. 显示：结果参数行和预览页显示真实生成文件参数。真实比例、真实尺寸、真实 `1K / 2K / 4K` 图标必须跟媒体文件绑定；视频也按 metadata 显示真实比例、尺寸和 `HD / FHD`
+
+最新图片尺寸测试结论：
+
+1. 已新增 `scripts/test-image-size-matrix.mjs`，生成一张测试图并把申请参数和真实尺寸写入根目录 `image-size-test-results.md`
+2. Seedream 4.5 的 `2K` 五个比例全部一致：`16:9 2560x1440`、`4:3 2304x1728`、`1:1 2048x2048`、`3:4 1728x2304`、`9:16 1440x2560`
+3. Seedream 4.5 的 `4K` 五个比例全部退回对应 `2K` 尺寸，当前 OpenRouter 链路下不能承诺 4K
+4. Gemini 3.1 Flash 和 Gemini 3 Pro 的比例基本生效，但不按 `1K / 2K / 4K` 档位变化，实测固定为：`16:9 1376x768`、`4:3 1200x896`、`1:1 1024x1024`、`3:4 896x1200`、`9:16 768x1376`
+5. GPT-5 Image 基本固定输出 `1024x1024`，比例参数基本未生效
+6. GPT-5.4 Image 2 比例生效，但 `1K / 2K` 都输出同一组约 1K 尺寸：`16:9 1280x720`、`4:3 1152x864`、`1:1 1024x1024`、`3:4 864x1152`、`9:16 720x1280`
+7. 首次矩阵测试直接 Node `fetch` 大量假 500，脚本加 `curl` 兜底后完成测试；后续排查尺寸问题时必须看请求日志和测试表，不要再只凭页面显示判断
+
+## 关于 2026-05-12 图片原生尺寸、21:9 和本地增强超分
+
+本轮用户要求重新测试图片模型：只传比例，不传尺寸、不传几 K。测试完后，用户确认这一组结果作为“原生尺寸”基准，后续所有增强尺寸都基于这组数据 2 倍放大。
+
+必须记住的结论：
+
+1. 原生尺寸表：Seedream 4.5 为 `1:1 2048x2048`、`16:9 2560x1440`、`9:16 1440x2560`、`21:9 3024x1296`、`4:3 2304x1728`
+2. 原生尺寸表：Gemini 3.1 Flash 为 `1:1 1024x1024`、`16:9 1376x768`、`9:16 768x1376`、`21:9 1584x672`、`4:3 1200x896`
+3. 原生尺寸表：Gemini 3 Pro 与 Gemini 3.1 Flash 相同，为 `1024x1024`、`1376x768`、`768x1376`、`1584x672`、`1200x896`
+4. 原生尺寸表：GPT-5.4 Image 2 为 `1:1 1024x1024`、`16:9 1280x720`、`9:16 720x1280`、`21:9 1568x672`、`4:3 1152x864`
+5. GPT-5 Image 测得所有比例都输出 `1024x1024`，比例基本不生效，因此已从图片模型列表移除
+6. 图片比例新增 `21:9`，并放在 `智能比例` 后面；`21:9` 不做超分，只显示一个原生按钮。Seedream 4.5 显示 `高清2K`，其它图片模型显示 `高清1K`
+7. 分辨率按钮规则：Seedream 4.5 显示 `高清2K / 增强4K`；Gemini 3.1 Flash、Gemini 3 Pro、GPT-5.4 Image 2 显示 `高清1K / 增强2K`
+8. 增强档位含义：不是 OpenRouter 原生输出，而是先按原生尺寸生成，再用本地 `sharp` 做 2 倍放大。增强后只保留增强图，原生临时图删除
+9. UI 显示规则：原生尺寸无需打增强标签；增强按钮上的 `增强2K / 增强4K` 要金色。对话流和预览页参数行中，普通分辨率图标后面再显示金色 `增强2K / 增强4K`
+10. 后台请求规则：`/api/image` 通过 `generateOpenRouterImage` 只向 OpenRouter 传 `image_config.aspect_ratio`，不再传 `size / 1K / 2K / 4K`；服务端日志会打印 `upscale` 目标尺寸用于排查
+11. 这套原生尺寸和增强超分规则只适用于 `图片生成`，不要同步到 `视频生成`
+12. 主要代码涉及 `src/lib/models.ts`、`src/lib/openrouter.ts`、`src/lib/local-assets.ts`、`src/components/chat-workbench.tsx`、`package.json`、`package-lock.json`
+13. 本轮验证：`npm run lint` 和 `npm run build` 通过；后续又按用户要求微调 `21:9` 顺序、单按钮占满、增强后删除原生临时图，微调后 `npm run lint` 通过
+
+## 关于 2026-05-12 图片尺寸参数纠正、去超分和多返回图显示
+
+本轮用户拿同事测试结果指出：Gemini / GPT 部分模型可以原生出 2K，项目此前判断“只能 1K”有误。重新测试后确认问题出在字段名。
+
+必须记住的结论：
+
+1. OpenRouter 当前对这些图片模型生效的尺寸字段是 `image_config.image_size`，不是旧的 `size`。
+2. 图片请求现在应传 `image_config: { aspect_ratio: "16:9", image_size: "2K" }` 这类结构。
+3. 本地 `sharp` 超分增强已全部移除，项目不再进行本地超分 / resize 放大。
+4. `Seedream 4.5` 开放 `2K / 4K`。
+5. `Gemini 3.1 Flash Image Preview` 开放 `1K / 2K / 4K`。
+6. `Gemini 3 Pro Image Preview` 按用户要求开放 `1K / 2K / 4K`，虽然它同参数返回尺寸可能不稳定。
+7. `GPT-5.4 Image 2` 只开放 `1K / 2K`，`4K` 会报 `image_size: Invalid option: expected one of "1K"|"2K"`。
+8. `4K` 按钮和菜单显示为金色 `超清4K`；对话流和预览页参数行中，只有当前结果为 4K 时在普通 `4K` 图标后显示金色 `超清4K`。
+9. OpenRouter / Gemini 3 Pro 可能一次返回多张候选图，同一响应里可同时返回 1K 和 2K。项目端不是超分，不能误判。
+10. 如果一次响应返回多张候选图，项目要全部保存、全部入库、全部显示。
+11. 同一批结果中如果有不同尺寸，参数行右侧显示 `< 1/2 >` 切换尺寸组，切换时比例、尺寸、分辨率图标跟随当前尺寸组变化。
+12. 尺寸组默认第一页必须是最接近目标尺寸的一组，例如目标 `2K / 16:9` 时优先显示 `2752×1536`。
+13. 同一尺寸组内最多显示四张图片，超过四张用图片区域右下角 `< 1/2 >` 分页，不出现横向滚动条。
+14. 长提示词完整浮层的触发区域已限制在提示词正文，不要覆盖参数行，否则会挡住尺寸组切换按钮。
+15. 用户要求把实测尺寸表做成文档，已在桌面生成 `图片模型尺寸测试表.docx`，并在规划文件夹保存 `图片模型尺寸测试表.md`。
+
+## 关于 2026-05-12 启动脚本修复和本地启动慢说明
+
+本轮用户反馈双击 `start-project.bat` 后两分钟没有打开网页，排查发现端口已启动但脚本 worker 和旧进程混乱，同时 `.next/dev` 缓存曾出现 `build-manifest.json` 缺失。
+
+必须记住的结论：
+
+1. `scripts/start-project.ps1` 已增加 mutex，避免重复双击产生多个 worker。
+2. 健康检查地址改为 `http://127.0.0.1:3000`。
+3. 打开网页改为 `explorer.exe http://localhost:3000`。
+4. 等待时间增加到 5 分钟。
+5. 如果再次出现启动异常，优先检查是否有旧的 `node / powershell / cmd` 项目进程，再清理 `.next` 缓存后重启。
+6. 本地首次启动慢主要是 `npm run dev` 开发模式冷启动、即时编译、Windows 文件扫描和 `chat-workbench.tsx` 体积大导致，不代表服务器正式部署后也会这么慢。
+
+## 关于 2026-05-12 视频模型官方参数、尺寸测试和 UI 做实
+
+本轮用户要求系统测试视频模型质量、尺寸比例是否正确，并强调不要重蹈图片模型字段传错的坑。
+
+必须记住的结论：
+
+1. 已新增视频测试脚本 `scripts/test-video-models.mjs`，测试输出目录为 `AI-Video-Assistant_Project Planning\test`。
+2. 测试视频命名规则为 `模型名_比例_720p/1080p.mp4`，结果表为 `video-model-test-results.md`。
+3. 首轮测试用统一提示词测 7 个模型的 `16:9 / 720p`，后续又测 `9:16 / 1:1 / 21:9 / 3:4 / 4:3`，并按用户要求让每个比例使用不同提示词。
+4. 用户后来要求移除 `Sora 2 Pro`，当前视频模型列表已不包含 Sora。
+5. 查 OpenRouter 官方 `openapi.json` 后确认视频请求字段里有 `size`，定义为精确像素尺寸 `WIDTHxHEIGHT`，并说明可与 `resolution + aspect_ratio` 互换。
+6. 查 OpenRouter `/api/v1/videos/models` 后确认官方能力表：Seedance Fast 支持 `480p / 720p`；Seedance 2.0 支持 `480p / 720p / 1080p`；Kling 三个模型只支持 `720p` 和 `16:9 / 9:16 / 1:1`；Veo 3.1 支持 `720p / 1080p / 4K` 和 `16:9 / 9:16`。
+7. 当时判断：之前很多失败不是字段名完全错误，而是模型官方不支持对应比例或分辨率；当时曾改为传 `size`。注意：此结论已在 2026-05-13 被修正，当前最终规则是不传 `size`，只传 `resolution + aspect_ratio`。
+8. `src/lib/models.ts` 新增 `VideoResolution`、`VideoRatio`、`VideoModelRule`、`videoModelRules`、`resolveVideoSettingsForModel` 等配置和方法。
+9. 当时 `src/lib/openrouter-video.ts` 曾改为传 `size: "1280x720"` 这类精确尺寸。注意：此做法已在 2026-05-13 撤回，当前不传 `size`。
+10. 视频智能比例保留，规则固定为 `16:9 / 1280x720`，所有当前保留模型都支持；选中智能比例时分辨率区域淡化且不可点。
+11. 视频画面设置弹窗里，比例和分辨率按钮都要一行展示。比例区域已改为 `grid-flow-col + auto-cols-fr`，即使 7 / 8 / 9 个比例也不换行。
+12. 当时视频比例顺序包含 `9:21`。注意：2026-05-13 实测 Seedance 系列 `9:21` 创建失败，当前项目已移除所有视频 `9:21`，顺序为 `智能比例 -> 21:9 -> 16:9 -> 4:3 -> 1:1 -> 3:4 -> 9:16`。
+13. 视频分辨率按钮文案为 `标清480p / 高清720p / 全高清1080p / 4K`；前置图标统一为黑底白字 `SD / HD / FHD / 4K`，不要再用灰底或不同规格图标。
+14. 对话流和预览页视频参数行必须“生成什么显示什么”：如果已读取视频 metadata，则显示真实比例、真实尺寸、真实 `SD / HD / FHD / 4K`；如果还未读取，则先显示本次实际发送给 OpenRouter 的官方 `size` 对应参数。
+15. 本轮代码改动主要涉及 `src/lib/models.ts`、`src/lib/openrouter-video.ts`、`src/components/chat-workbench.tsx` 和 `scripts/test-video-models.mjs`。
+16. 本轮验证：`npm run lint` 通过，但仍有旧 warning：`scripts/create-image-size-docx.mjs` 里 `existsSync` 未使用；`npm run build` 通过。
+
+## 关于 2026-05-13 视频不传 size、非标尺寸和文档生成
+
+本轮是在上面 2026-05-12 视频规则基础上的修正，必须以后者为准。
+
+必须记住的结论：
+
+1. 用户要求重新按当前 UI 接入模型全量测试视频，不算智能比例，不按时长分类，全部用最低时长。`scripts/test-video-models.mjs` 运行了 `49` 组。
+2. 全量测试结果：成功 `45/49`，失败的 4 组全部是 Seedance 系列 `9:21`，上游返回 `the parameter ratio specified in the request is not valid`。因此项目已移除所有视频 `9:21`。
+3. 测试发现很多输出尺寸不是 OpenRouter 官方 `supported_sizes` 里的标准尺寸，但这是模型实际返回结果，不是前端展示错误。
+4. 用户追问是否又像图片那样字段错了。查 OpenRouter `/api/v1/videos/models` 后确认视频字段不是 `video_size`，报错 `Unsupported size` 说明 OpenRouter 确实识别 `size` 字段，只是不接受非标尺寸值。
+5. 用户要求减少出错率。后续测试证明所有当前保留视频模型只传 `resolution + aspect_ratio`、不传 `size` 时，输出尺寸与传标准 `size` 时一致。
+6. 新增 `scripts/test-video-models-no-size.mjs`，除 Seedance 2.0 Fast 外其它 5 个模型全组合共 `33/33` 成功，全部与上一轮实测尺寸一致。结果在 `AI-Video-Assistant_Project Planning\test\video-model-no-size-test-results.md`。
+7. 最终项目代码已改为不传视频 `size`。当前 `src/lib/openrouter-video.ts` 的请求体只包含 `model`、`prompt`、`duration`、`resolution`、`aspect_ratio`、`generate_audio`，有参考图时加 `input_references`。
+8. `src/lib/models.ts` 中 `videoModelRules.sizes` 现在是 UI 显示和兜底显示用的“实测输出尺寸”，不是请求尺寸。不要再新增 `requestSizes`，也不要把非标尺寸传给 OpenRouter。
+9. 非标尺寸统一用 `nonStandardSizes` 标记。设置弹窗标题显示 `尺寸（非标）`；对话流和预览页参数行在尺寸后显示 `（非标）`。
+10. `Kling Video O1` 特殊：OpenRouter 官方元数据写的是 `720p`，但本轮不传 `size` 实测用 `resolution: "1080p"` 创建成功，输出为 `1920x1080 / 1440x1440 / 1080x1920`。因此当前模型规则里 UI 分辨率显示 `1080p`，请求也随 `resolveVideoSettingsForModel` 传 `resolution: "1080p"`。后续如遇创建失败，优先重新实测该模型是否仍接受 `1080p`。
+11. 当前 UI 支持项：Seedance 2.0 Fast 为 `480p / 720p` + `21:9 / 16:9 / 4:3 / 1:1 / 3:4 / 9:16`；Seedance 2.0 额外支持 `1080p`；Kling Standard / Pro 为 `720p` + `16:9 / 1:1 / 9:16`；Kling Video O1 为 `1080p` + `16:9 / 1:1 / 9:16`；Veo 3.1 为 `720p / 1080p / 4K` + `16:9 / 9:16`。
+12. 图片和视频参数弹窗宽度统一为 `420px`。视频比例/分辨率按钮一行显示。
+13. 图片模型菜单 `GPT-5.4 Image 2`、视频模型菜单 `Seedance 2.0` 的文字是金色，选中后工具栏按钮上也显示金色。
+14. 提示词区 `使用提示词` 按钮修复：如果按钮已经在正文后可见，不再显示 hover 展开；只有按钮也被截掉时才显示完整浮层。
+15. 文档生成：`scripts/create-video-test-docx.mjs`、`scripts/create-image-size-docx.mjs`、`scripts/create-openrouter-video-support-docx.mjs` 已生成/更新规划文件夹中的 `视频模型测试结果表.docx`、`图片模型尺寸测试表.docx`、`openrouter 视频模型支持比例和分辨率.docx`。三个 Word 表格都改成只有横线分隔，青绿色强调参数文字；视频测试结果表保留红字错误和不一致。
+16. 本轮验证：`npm run lint` 无 warning，`npm run build` 通过。

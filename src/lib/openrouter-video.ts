@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { extname, join } from "node:path";
 import { promisify } from "node:util";
-import { DEFAULT_VIDEO_MODEL } from "@/lib/models";
+import { DEFAULT_VIDEO_MODEL, resolveVideoSettingsForModel } from "@/lib/models";
 
 type VideoSettings = {
   ratio?: string;
@@ -105,21 +105,9 @@ function getDuration(model: string, value?: string) {
   const safeSeconds = Number.isFinite(seconds) && seconds > 0 ? seconds : 5;
 
   if (model === "google/veo-3.1") return getClosestDuration(safeSeconds, [4, 6, 8]);
-  if (model === "openai/sora-2-pro") return getClosestDuration(safeSeconds, [4, 8, 12, 16, 20]);
+  if (model === "kwaivgi/kling-video-o1") return getClosestDuration(safeSeconds, [5, 10]);
 
   return safeSeconds;
-}
-
-function getResolution(value?: string) {
-  return value === "1080p" ? "1080p" : "720p";
-}
-
-function getAspectRatio(model: string, value?: string) {
-  if (model === "openai/sora-2-pro") {
-    return value === "9:16" ? "9:16" : "16:9";
-  }
-
-  return value && value !== "智能比例" ? value : undefined;
 }
 
 function toOpenRouterImage(url: string): OpenRouterVideoImage {
@@ -145,7 +133,7 @@ async function postOpenRouterVideoTask(prompt: string, referenceImages: string[]
   const apiKey = getRequiredOpenRouterApiKey();
 
   const images = referenceImages.filter(Boolean).map(toOpenRouterImage);
-  const shouldSendAudioFlag = model !== "openai/sora-2-pro";
+  const videoSettings = resolveVideoSettingsForModel(model, settings);
   const response = await fetch(OPENROUTER_VIDEOS_URL, {
     method: "POST",
     headers: getOpenRouterHeaders(apiKey),
@@ -153,9 +141,9 @@ async function postOpenRouterVideoTask(prompt: string, referenceImages: string[]
       model,
       prompt,
       duration: getDuration(model, settings?.duration),
-      resolution: getResolution(settings?.resolution),
-      ...(getAspectRatio(model, settings?.ratio) ? { aspect_ratio: getAspectRatio(model, settings?.ratio) } : {}),
-      ...(shouldSendAudioFlag ? { generate_audio: options.generateAudio ?? true } : {}),
+      resolution: videoSettings.resolution,
+      aspect_ratio: videoSettings.ratio,
+      generate_audio: options.generateAudio ?? true,
       ...(images.length > 0 ? { input_references: images } : {}),
     }),
   });

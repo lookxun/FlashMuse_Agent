@@ -4,6 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type
 import Image from "next/image";
 import {
   RiAddLine,
+  RiArrowLeftSLine,
+  RiArrowRightSLine,
   RiArrowDownSLine,
   RiArrowUpSLine,
   RiArrowDownWideLine,
@@ -19,6 +21,7 @@ import {
   RiEmotionUnhappyLine,
   RiEmotionUnhappyFill,
   RiEmotionSadLine,
+  RiErrorWarningLine,
   RiFolderLine,
   RiFolderOpenLine,
   RiLandscapeLine,
@@ -43,7 +46,6 @@ import {
   RiAccountBoxLine,
   RiFilmLine,
   Ri4kLine,
-  RiHdFill,
   RiInformationLine,
   RiGitMergeLine,
   RiGitPullRequestLine,
@@ -56,7 +58,7 @@ import {
   RiTBoxLine,
   RiTiktokFill,
 } from "react-icons/ri";
-import { DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, imageGenerationModels, videoGenerationModels, type GenerationModel, type ModelName } from "@/lib/models";
+import { ADVANCED_CHAT_MODEL, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, getExpectedImageDimensions, getExpectedVideoDimensions, getImageQualityBadgeLabel, getImageResolutionLabel, getSupportedImageResolutions, getSupportedVideoRatios, getSupportedVideoResolutions, imageGenerationModels, isNonStandardVideoSize, normalizeImageResolutionForModel, normalizeVideoRatioForModel, normalizeVideoResolutionForModel, videoGenerationModels, type GenerationModel, type ModelName } from "@/lib/models";
 
 type Message = {
   id: string;
@@ -66,10 +68,13 @@ type Message = {
   createdAt?: number;
   requestId?: string;
   images?: string[];
+  imageDimensions?: Record<string, ImageDimensions>;
   imageReferences?: ImageReference[];
+  videoDimensions?: ImageDimensions;
   videoUrl?: string;
   statusText?: string;
   pendingImageCount?: number;
+  failedImageCount?: number;
   error?: string;
   mode?: WorkMode;
   generationMeta?: MessageGenerationMeta;
@@ -78,6 +83,11 @@ type Message = {
 type ImageReference = {
   name: string;
   url: string;
+};
+
+type ImageDimensions = {
+  width: number;
+  height: number;
 };
 
 type AssetType = "character_image" | "scene_image" | "shot_image" | "shot_video" | "other" | "trash";
@@ -127,6 +137,7 @@ type PendingGeneration = {
   originalPrompt?: string;
   taskId?: string;
   referenceImages?: string[];
+  imageReferences?: ImageReference[];
   referenceHint?: string;
   preserveOriginalInput?: boolean;
   assetTargetType?: AssetTargetType;
@@ -225,16 +236,20 @@ type PreviewMediaMeta = {
   sizeText: string;
   resolution: string;
   mode: "image" | "video";
+  qualityBadgeLabel?: string;
   duration?: string;
+  nonStandardSize?: boolean;
 };
 type StoredInputSettings = {
   mode?: WorkMode;
+  agentModelTier?: AgentModelTier;
   selectedRatios?: Partial<Record<WorkMode, string>>;
   selectedResolutions?: Partial<Record<WorkMode, string>>;
   selectedDurations?: Partial<Record<WorkMode, string>>;
   selectedImageCounts?: Partial<Record<WorkMode, string>>;
   selectedGenerationModels?: Partial<Record<"image" | "video", string>>;
 };
+type AgentModelTier = "normal" | "advanced";
 
 const STORAGE_KEY = "yinzao-sessions-v2";
 const ASSETS_STORAGE_KEY = "yinzao-assets-v1";
@@ -339,9 +354,9 @@ const imageStatusLabels = {
   failed: "图片生成失败",
 };
 
-const ratioOptions = ["智能比例", "16:9", "4:3", "1:1", "3:4", "9:16"];
+const ratioOptions = ["智能比例", "21:9", "16:9", "4:3", "1:1", "3:4", "9:16"];
 const imageResolutionOptions = ["1K", "2K", "4K"];
-const videoResolutionOptions = ["720p", "1080p"];
+const videoResolutionOptions = ["480p", "720p", "1080p", "4K"];
 const imageCountOptions = ["1张", "2张", "3张", "4张"];
 const styleOptions = ["写实风格", "2D风格", "3D风格"];
 const durationOptions = ["5秒", "10秒", "15秒"];
@@ -410,28 +425,23 @@ function getGenerationModelIcon(modelId: string) {
   return null;
 }
 
+function isGoldGenerationModel(modelId: string) {
+  return modelId === "openai/gpt-5.4-image-2" || modelId === "bytedance/seedance-2.0";
+}
+
 const ratioCardMeta: Record<string, { icon: string; width: string; height: string }> = {
   智能比例: { icon: "spark", width: "16", height: "16" },
   "16:9": { icon: "rect", width: "18", height: "10" },
+  "21:9": { icon: "rect", width: "18", height: "8" },
   "9:16": { icon: "rect", width: "10", height: "18" },
   "1:1": { icon: "rect", width: "14", height: "14" },
   "3:4": { icon: "rect", width: "12", height: "16" },
   "4:3": { icon: "rect", width: "16", height: "12" },
 };
 
-const imageResolutionDimensions: Record<string, { label: string; longSide: number }> = {
-  "1K": { label: "高清 1K", longSide: 1344 },
-  "2K": { label: "高清 2K", longSide: 2496 },
-  "4K": { label: "超清 4K", longSide: 4096 },
-};
-
-const videoResolutionDimensions: Record<string, { label: string; longSide: number }> = {
-  "720p": { label: "高清 720p", longSide: 1280 },
-  "1080p": { label: "超清 1080p", longSide: 1920 },
-};
-
 const ratioDimensionMap: Record<string, [number, number]> = {
   "16:9": [16, 9],
+  "21:9": [21, 9],
   "4:3": [4, 3],
   "1:1": [1, 1],
   "3:4": [3, 4],
@@ -466,28 +476,27 @@ function RatioOptionIcon({ option }: { option: string }) {
   );
 }
 
-function ResolutionOptionIcon({ option }: { option: string }) {
-  if (option === "720p") {
-    return <RiHdFill className="h-[24px] w-[24px] shrink-0 text-[#111111]" aria-hidden="true" />;
-  }
+function ResolutionOptionIcon({ option, highlighted = false }: { option: string; highlighted?: boolean }) {
+  const colorClassName = highlighted ? "text-[#b8860b]" : "text-[#222222]";
 
-  if (option === "1080p") {
+  if (option === "480p" || option === "720p" || option === "1080p" || option === "4K") {
+    const label = option === "480p" ? "SD" : option === "720p" ? "HD" : option === "1080p" ? "FHD" : "4K";
     return (
       <svg width="22" height="22" viewBox="0 0 22 22" fill="none" aria-hidden="true" className="shrink-0">
         <rect x="1" y="2" width="20" height="18" rx="1" fill="#111111" />
         <text x="11" y="14.45" textAnchor="middle" fontSize="8" fontWeight="700" fill="#ffffff">
-          FHD
+          {label}
         </text>
       </svg>
     );
   }
 
   if (option === "4K") {
-    return <Ri4kLine className="h-[22px] w-[22px] shrink-0 text-[#222222]" aria-hidden="true" />;
+    return <Ri4kLine className={`h-[22px] w-[22px] shrink-0 ${colorClassName}`} aria-hidden="true" />;
   }
 
   return (
-    <svg width="22" height="22" viewBox="0 0 22 22" fill="none" aria-hidden="true" className="shrink-0 text-[#222222]">
+    <svg width="22" height="22" viewBox="0 0 22 22" fill="none" aria-hidden="true" className={`shrink-0 ${colorClassName}`}>
       <rect x="2.25" y="3.75" width="17.5" height="14.5" rx="1" stroke="currentColor" strokeWidth="1.7" />
       <text x="11" y="14.2" textAnchor="middle" fontSize="8.9" fontWeight="700" fill="currentColor">
         {option.replace(/[^0-9A-Za-z]/g, "")}
@@ -496,35 +505,167 @@ function ResolutionOptionIcon({ option }: { option: string }) {
   );
 }
 
-function CompactResolutionIcon({ option, mode }: { option?: string; mode: "image" | "video" }) {
+function getVideoResolutionLabel(option: string) {
+  if (option === "480p") return "标清480p";
+  if (option === "720p") return "高清720p";
+  if (option === "1080p") return "全高清1080p";
+  return option;
+}
+
+function CompactResolutionIcon({ option, mode, qualityBadgeLabel }: { option?: string; mode: "image" | "video"; qualityBadgeLabel?: string }) {
   if (mode === "video") {
     return (
-      <span className="inline-flex h-4 min-w-6 items-center justify-center rounded-[3px] border border-[#d8d8d8] bg-[#f3f3f3] px-1 text-[9px] font-bold leading-none text-[#9a9a9a]">
-        {option === "1080p" ? "FHD" : "HD"}
+      <span className="inline-flex h-4 min-w-6 items-center justify-center rounded-[3px] bg-[#111111] px-1 text-[9px] font-bold leading-none text-white">
+        {option === "480p" ? "SD" : option === "1080p" ? "FHD" : option === "4K" ? "4K" : "HD"}
       </span>
     );
   }
 
-  return <span className="inline-flex h-4 min-w-5 items-center justify-center rounded-[3px] border border-[#d5d5d5] px-1 text-[9px] font-bold leading-none text-[#777777]">{option ?? "1K"}</span>;
+  return (
+    <span className="inline-flex items-center gap-1">
+      <span className="inline-flex h-4 min-w-5 items-center justify-center rounded-[3px] border border-[#d5d5d5] px-1 text-[9px] font-bold leading-none text-[#777777]">{option ?? "1K"}</span>
+      {qualityBadgeLabel ? <span className="text-[12px] font-semibold leading-none text-[#b8860b]">{qualityBadgeLabel}</span> : null}
+    </span>
+  );
 }
 
-function getPreviewMediaMeta(message: Message): PreviewMediaMeta {
+function getImageSizeText(message: Message, imageUrl?: string) {
+  if (message.mode !== "image") return undefined;
+  const imageDimensions = message.imageDimensions ?? {};
+
+  if (imageUrl && imageDimensions[imageUrl]) {
+    const dimensions = imageDimensions[imageUrl];
+    return `${dimensions.width} × ${dimensions.height}`;
+  }
+
+  const sizeTexts = (message.images ?? [])
+    .map((url) => imageDimensions[url])
+    .filter((dimensions): dimensions is ImageDimensions => Boolean(dimensions))
+    .map((dimensions) => `${dimensions.width} × ${dimensions.height}`);
+
+  return Array.from(new Set(sizeTexts)).join(" / ") || undefined;
+}
+
+function getCommonRatioLabel(width: number, height: number) {
+  const commonRatios: Array<[string, number]> = [
+    ["16:9", 16 / 9],
+    ["21:9", 21 / 9],
+    ["9:16", 9 / 16],
+    ["4:3", 4 / 3],
+    ["3:4", 3 / 4],
+    ["1:1", 1],
+  ];
+  const ratio = width / height;
+  const match = commonRatios.find(([, value]) => Math.abs(ratio - value) / value < 0.025);
+  if (match) return match[0];
+
+  const gcd = (a: number, b: number): number => (b === 0 ? a : gcd(b, a % b));
+  const divisor = gcd(width, height);
+  return `${Math.round(width / divisor)}:${Math.round(height / divisor)}`;
+}
+
+function getImageResolutionFromDimensions(dimensions?: ImageDimensions) {
+  if (!dimensions) return undefined;
+  const maxSide = Math.max(dimensions.width, dimensions.height);
+  if (maxSide >= 3500) return "4K";
+  if (maxSide >= 1900) return "2K";
+  return "1K";
+}
+
+function getVideoResolutionFromDimensions(dimensions?: ImageDimensions) {
+  if (!dimensions) return undefined;
+  const maxSide = Math.max(dimensions.width, dimensions.height);
+  const minSide = Math.min(dimensions.width, dimensions.height);
+  if (maxSide >= 3500 || minSide >= 2000) return "4K";
+  if (minSide >= 1000 || maxSide >= 1900) return "1080p";
+  if (minSide <= 500 || maxSide <= 800) return "480p";
+  return "720p";
+}
+
+function getMessageMediaDimensions(message: Message, imageUrl?: string) {
+  if (message.mode === "image") {
+    if (imageUrl) return message.imageDimensions?.[imageUrl];
+    return (message.images ?? []).map((url) => message.imageDimensions?.[url]).find(Boolean);
+  }
+
+  if (message.mode === "video") return message.videoDimensions;
+  return undefined;
+}
+
+function formatMediaSizeText(sizeText: string, nonStandardSize = false) {
+  return nonStandardSize ? `${sizeText}（非标）` : sizeText;
+}
+
+type ImageVariantGroup = {
+  key: string;
+  images: string[];
+  dimensions?: ImageDimensions;
+};
+
+function getImageVariantGroups(message: Message): ImageVariantGroup[] {
+  const images = message.images ?? [];
+  const imageDimensions = message.imageDimensions ?? {};
+  const groups = new Map<string, ImageVariantGroup>();
+
+  images.forEach((url) => {
+    const dimensions = imageDimensions[url];
+    const key = dimensions ? `${dimensions.width}x${dimensions.height}` : `unknown:${url}`;
+    const group = groups.get(key);
+
+    if (group) {
+      group.images.push(url);
+    } else {
+      groups.set(key, { key, images: [url], dimensions });
+    }
+  });
+
+  const meta = message.generationMeta;
+  const expected = meta?.mode === "image" ? getExpectedImageDimensions(meta.model, meta.settings?.resolution, meta.settings?.ratio) : undefined;
+  const score = (group: ImageVariantGroup) => {
+    if (!expected || !group.dimensions) return Number.MAX_SAFE_INTEGER;
+    return Math.abs(group.dimensions.width - expected.width) + Math.abs(group.dimensions.height - expected.height);
+  };
+
+  return Array.from(groups.values()).sort((a, b) => score(a) - score(b));
+}
+
+function getPreviewMetaWithDimensions(meta: PreviewMediaMeta | undefined, dimensions: ImageDimensions, mode: "image" | "video") {
+  if (!meta) return meta;
+  const resolution = mode === "image" ? getImageResolutionFromDimensions(dimensions) ?? meta.resolution : getVideoResolutionFromDimensions(dimensions) ?? meta.resolution;
+  const sizeText = formatMediaSizeText(`${dimensions.width} × ${dimensions.height}`, mode === "video" && meta.nonStandardSize);
+
+  return {
+    ...meta,
+    ratio: getCommonRatioLabel(dimensions.width, dimensions.height),
+    sizeText,
+    resolution,
+    qualityBadgeLabel: mode === "image" ? getImageQualityBadgeLabel(resolution) : "",
+  };
+}
+
+function getPreviewMediaMeta(message: Message, imageUrl?: string): PreviewMediaMeta {
   const meta = message.generationMeta;
   const mode = meta?.mode ?? (message.mode === "video" ? "video" : "image");
   const settings = meta?.settings;
   const ratio = settings?.ratio ?? "智能比例";
   const resolution = settings?.resolution ?? (mode === "video" ? "720p" : "1K");
   const duration = mode === "video" ? settings?.duration?.trim() : "";
-  const dimensions = getDisplayDimensions(ratio, resolution, mode);
+  const actualDimensions = getMessageMediaDimensions(message, imageUrl);
+  const dimensions = getDisplayDimensions(ratio, resolution, mode, meta?.model);
+  const nonStandardSize = mode === "video" && ratio !== "智能比例" && isNonStandardVideoSize(meta?.model, resolution, ratio);
   const modelLabel = meta?.model ? getGenerationModelLabel(mode, meta.model) : mode === "video" ? getGenerationModelLabel("video", DEFAULT_VIDEO_MODEL) : getGenerationModelLabel("image", DEFAULT_IMAGE_MODEL);
-  const sizeText = dimensions.width && dimensions.height ? `${dimensions.width} × ${dimensions.height}` : "智能尺寸";
+  const rawSizeText = actualDimensions ? `${actualDimensions.width} × ${actualDimensions.height}` : getImageSizeText(message, imageUrl) ?? (dimensions.width && dimensions.height ? `${dimensions.width} × ${dimensions.height}` : "智能尺寸");
+  const sizeText = formatMediaSizeText(rawSizeText, nonStandardSize);
+  const actualRatio = actualDimensions ? getCommonRatioLabel(actualDimensions.width, actualDimensions.height) : mode === "video" && dimensions.width && dimensions.height ? getCommonRatioLabel(dimensions.width, dimensions.height) : ratio;
+  const actualResolution = mode === "image" ? (getImageResolutionFromDimensions(actualDimensions) ?? resolution) : (getVideoResolutionFromDimensions(actualDimensions ?? dimensions) ?? resolution);
+  const qualityBadgeLabel = mode === "image" ? getImageQualityBadgeLabel(actualResolution) : "";
 
-  return { modelLabel, ratio, sizeText, resolution, mode, duration };
+  return { modelLabel, ratio: actualRatio, sizeText, resolution: actualResolution, mode, duration, qualityBadgeLabel, nonStandardSize };
 }
 
-function MediaPromptBlock({ message, onUsePrompt, copyState }: { message: Message; onUsePrompt: (message: Message) => void; copyState?: "success" | "error" }) {
+function MediaPromptBlock({ message, references, onUsePrompt, copyState, displayImageUrl, variantIndex = 0, variantCount = 1, onPreviousVariant, onNextVariant }: { message: Message; references?: ImageReference[]; onUsePrompt: (message: Message) => void; copyState?: "success" | "error"; displayImageUrl?: string; variantIndex?: number; variantCount?: number; onPreviousVariant?: () => void; onNextVariant?: () => void }) {
   const promptRef = useRef<HTMLDivElement | null>(null);
-  const [isPromptClamped, setIsPromptClamped] = useState(false);
+  const [shouldShowPromptOverlay, setShouldShowPromptOverlay] = useState(false);
 
   const meta = message.generationMeta;
   const mode = meta?.mode ?? (message.mode === "video" ? "video" : "image");
@@ -532,9 +673,16 @@ function MediaPromptBlock({ message, onUsePrompt, copyState }: { message: Messag
   const ratio = settings?.ratio ?? "智能比例";
   const resolution = settings?.resolution ?? (mode === "video" ? "720p" : "1K");
   const duration = mode === "video" ? settings?.duration?.trim() : "";
-  const dimensions = getDisplayDimensions(ratio, resolution, mode);
+  const actualDimensions = getMessageMediaDimensions(message, displayImageUrl);
+  const dimensions = getDisplayDimensions(ratio, resolution, mode, meta?.model);
+  const nonStandardSize = mode === "video" && ratio !== "智能比例" && isNonStandardVideoSize(meta?.model, resolution, ratio);
   const modelLabel = meta?.model ? getGenerationModelLabel(mode, meta.model) : mode === "video" ? getGenerationModelLabel("video", DEFAULT_VIDEO_MODEL) : getGenerationModelLabel("image", DEFAULT_IMAGE_MODEL);
-  const sizeText = dimensions.width && dimensions.height ? `${dimensions.width} × ${dimensions.height}` : "智能尺寸";
+  const rawSizeText = actualDimensions ? `${actualDimensions.width} × ${actualDimensions.height}` : getImageSizeText(message) ?? (dimensions.width && dimensions.height ? `${dimensions.width} × ${dimensions.height}` : "智能尺寸");
+  const sizeText = formatMediaSizeText(rawSizeText, nonStandardSize);
+  const displayRatio = actualDimensions ? getCommonRatioLabel(actualDimensions.width, actualDimensions.height) : mode === "video" && dimensions.width && dimensions.height ? getCommonRatioLabel(dimensions.width, dimensions.height) : ratio;
+  const displayResolution = mode === "image" ? (getImageResolutionFromDimensions(actualDimensions) ?? resolution) : (getVideoResolutionFromDimensions(actualDimensions ?? dimensions) ?? resolution);
+  const qualityBadgeLabel = mode === "image" ? getImageQualityBadgeLabel(displayResolution) : "";
+  const promptReferences = references ?? message.imageReferences;
   const renderCopyButton = (variant: "inline" | "overlay") => (
     <button
       type="button"
@@ -550,7 +698,7 @@ function MediaPromptBlock({ message, onUsePrompt, copyState }: { message: Messag
     </button>
   );
   const inlineCopyButton = (
-    <span className="inline-flex items-center align-middle whitespace-nowrap">{renderCopyButton("inline")}</span>
+    <span data-prompt-action="true" className="inline-flex items-center align-middle whitespace-nowrap">{renderCopyButton("inline")}</span>
   );
   const blockCopyButton = (
     <div className="mb-2 flex items-center justify-between gap-3 bg-white/88 pb-2">
@@ -567,7 +715,10 @@ function MediaPromptBlock({ message, onUsePrompt, copyState }: { message: Messag
     if (!element) return;
 
     const measure = () => {
-      setIsPromptClamped(element.scrollHeight > element.clientHeight + 1);
+      const clamped = element.scrollHeight > element.clientHeight + 1;
+      const action = element.querySelector<HTMLElement>('[data-prompt-action="true"]');
+      const actionVisible = action ? action.offsetTop + action.offsetHeight <= element.clientHeight + 1 : false;
+      setShouldShowPromptOverlay(clamped && !actionVisible);
     };
 
     measure();
@@ -585,27 +736,36 @@ function MediaPromptBlock({ message, onUsePrompt, copyState }: { message: Messag
   if (!message.content.trim()) return null;
 
   return (
-    <div className="group/prompt relative mb-0 max-w-[1006px]">
-      <div ref={promptRef} className="relative max-h-[56px] overflow-hidden text-[14px] leading-7 text-[#111111]">
-        <span className="whitespace-pre-wrap">{message.content}</span>
-        {inlineCopyButton}
-        {isPromptClamped ? <div className="pointer-events-none absolute bottom-0 right-0 h-7 w-16 bg-gradient-to-r from-white/0 via-white/90 to-white" /> : null}
-      </div>
-      {isPromptClamped ? (
-        <div className="pointer-events-none absolute -inset-x-4 -top-3 z-30 max-h-[250px] rounded-[12px] bg-white/88 px-4 pb-3 pt-3 text-[14px] leading-7 text-[#111111] opacity-0 shadow-[0_18px_36px_rgba(0,0,0,0.08)] backdrop-blur-[10px] transition-opacity delay-500 duration-200 group-hover/prompt:pointer-events-auto group-hover/prompt:opacity-100 group-hover/prompt:delay-0">
-          {blockCopyButton}
-          <div className="max-h-[198px] overflow-y-auto whitespace-pre-wrap pr-2">{message.content}</div>
+    <div className="relative mb-0 max-w-[1006px]">
+      <div className="group/prompt relative">
+        <div ref={promptRef} className="relative max-h-[56px] overflow-hidden text-[14px] leading-7 text-[#111111]">
+          <ReferencedTextContent content={message.content} references={promptReferences} />
+          {inlineCopyButton}
+          {shouldShowPromptOverlay ? <div className="pointer-events-none absolute bottom-0 right-0 h-7 w-16 bg-gradient-to-r from-white/0 via-white/90 to-white" /> : null}
         </div>
-      ) : null}
+        {shouldShowPromptOverlay ? (
+          <div className="pointer-events-none absolute -inset-x-4 -top-3 z-30 max-h-[250px] rounded-[12px] bg-white/88 px-4 pb-3 pt-3 text-[14px] leading-7 text-[#111111] opacity-0 shadow-[0_18px_36px_rgba(0,0,0,0.08)] backdrop-blur-[10px] transition-opacity delay-500 duration-200 group-hover/prompt:pointer-events-auto group-hover/prompt:opacity-100 group-hover/prompt:delay-0">
+            {blockCopyButton}
+            <div className="max-h-[198px] overflow-y-auto pr-2"><ReferencedTextContent content={message.content} references={promptReferences} /></div>
+          </div>
+        ) : null}
+      </div>
       <div className="mt-0 flex flex-wrap items-center gap-2 text-[12px] leading-5 text-[#9a9a9a]">
         <span className="truncate">{modelLabel}</span>
         <span className="text-[#d0d0d0]">|</span>
-        <span>{ratio}</span>
+        <span>{displayRatio}</span>
         <span className="text-[#d0d0d0]">|</span>
         <span className="inline-flex items-center gap-1.5">
           <span>{sizeText}</span>
-          <CompactResolutionIcon option={resolution} mode={mode} />
+          <CompactResolutionIcon option={displayResolution} mode={mode} qualityBadgeLabel={qualityBadgeLabel} />
         </span>
+        {mode === "image" && variantCount > 1 ? (
+          <span className="inline-flex items-center gap-0.5 px-0.5 py-0.5 text-[12px] font-medium leading-none text-[#777777]">
+            <button type="button" onClick={onPreviousVariant} className="flex h-4 w-4 items-center justify-center rounded-[3px] text-[#777777] transition hover:bg-white hover:text-[#111111]" aria-label="上一组尺寸"><RiArrowLeftSLine className="h-4 w-4" aria-hidden="true" /></button>
+            <span className="min-w-7 text-center">{variantIndex + 1}/{variantCount}</span>
+            <button type="button" onClick={onNextVariant} className="flex h-4 w-4 items-center justify-center rounded-[3px] text-[#777777] transition hover:bg-white hover:text-[#111111]" aria-label="下一组尺寸"><RiArrowRightSLine className="h-4 w-4" aria-hidden="true" /></button>
+          </span>
+        ) : null}
         {mode === "video" && duration ? (
           <>
             <span className="text-[#d0d0d0]">|</span>
@@ -625,21 +785,24 @@ function AiGenerate3dIcon() {
   );
 }
 
-function getDisplayDimensions(ratio: string, resolution: string, mode: WorkMode) {
-  const resolutionMeta = mode === "video" ? videoResolutionDimensions[resolution] : imageResolutionDimensions[resolution];
+function getDisplayDimensions(ratio: string, resolution: string, mode: WorkMode, modelId?: string) {
   const ratioMeta = ratioDimensionMap[ratio] ?? [1, 1];
 
-  if (!resolutionMeta) {
-    return { width: 0, height: 0 };
+  if (mode === "image") {
+    return getExpectedImageDimensions(modelId, resolution, ratio);
   }
 
-  const [ratioW, ratioH] = ratioMeta;
+  if (mode === "video") {
+    return getExpectedVideoDimensions(modelId, resolution, ratio);
+  }
+
+  const [ratioW, ratioH] = ratio === "智能比例" ? [16, 9] : ratioMeta;
   const isLandscape = ratioW >= ratioH;
-  const longSide = resolutionMeta.longSide;
+  const longSide = 1280;
   const shortSide = Math.round((longSide * Math.min(ratioW, ratioH)) / Math.max(ratioW, ratioH));
 
   if (ratio === "智能比例") {
-    return mode === "video" ? { width: longSide, height: Math.round((longSide * 9) / 16) } : { width: longSide, height: Math.round((longSide * 2) / 3) };
+    return { width: longSide, height: Math.round((longSide * 9) / 16) };
   }
 
   return isLandscape ? { width: longSide, height: shortSide } : { width: shortSide, height: longSide };
@@ -650,7 +813,7 @@ function ThinkingIndicator() {
     <div className="flex min-h-[300px] items-start justify-start">
       <div className="flex items-center gap-2 px-0 py-1 text-sm text-[#6f6f6f]">
         <HaloPulseIndicator />
-        <span>映造正在思考</span>
+        <span>正在认真思考</span>
         <span className="flex items-center gap-1">
           <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-[#8a8a8a] [animation-delay:-0.2s]" />
           <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-[#8a8a8a] [animation-delay:-0.1s]" />
@@ -806,6 +969,10 @@ function createSession(): WorkSession {
   };
 }
 
+function nowTimestamp() {
+  return Date.now();
+}
+
 function getNextWorkflowTitle(items: WorkflowItem[]) {
   let nextIndex = 1;
 
@@ -845,6 +1012,7 @@ function getPersistablePendingRequest(request: PendingGeneration) {
   return {
     ...request,
     referenceImages: request.referenceImages?.filter((url) => !url.startsWith("data:")),
+    imageReferences: request.imageReferences?.filter((reference) => !reference.url.startsWith("data:")),
     messages: request.messages.map((message) => ({
       ...message,
       images: message.images?.filter((url) => !url.startsWith("data:")),
@@ -1797,27 +1965,31 @@ function PlainMentionEditor({
   );
 }
 
-function UserMessageContent({ content, references }: { content: string; references?: ImageReference[] }) {
+function ReferencedTextContent({ content, references }: { content: string; references?: ImageReference[] }) {
   const safeReferences = references ?? [];
   const parts = content.split(/(@[^@\s，。！？；;、]+)/g);
 
   return (
-    <span className="inline-flex flex-wrap items-center gap-x-1 align-middle">
+    <span className="align-middle">
       {parts.map((part, index) => {
         const reference = part.startsWith("@") ? safeReferences.find((item) => item.name === part.slice(1)) : undefined;
 
         if (!reference) return <span key={`${part}-${index}`}>{part}</span>;
 
         return (
-          <span key={`${part}-${index}`} className="inline-flex items-center gap-1 align-middle text-[#4f7cff]">
-            <span>{part}</span>
+          <span key={`${part}-${index}`} className="mx-0.5 inline-flex items-center gap-1 align-middle text-[#4f7cff]">
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src={reference.url} alt={reference.name} className="inline-block h-[18px] w-[18px] rounded object-cover align-middle" />
+            <span>{part}</span>
           </span>
         );
       })}
     </span>
   );
+}
+
+function UserMessageContent({ content, references }: { content: string; references?: ImageReference[] }) {
+  return <ReferencedTextContent content={content} references={references} />;
 }
 
 function ReferenceThumbnailStrip({ references, onUseReference }: { references?: ImageReference[]; onUseReference: (reference: ImageReference) => void }) {
@@ -2026,6 +2198,13 @@ async function readJson<T>(response: Response): Promise<T & { error?: ApiError }
   return data;
 }
 
+function resultErrorMessage(results: PromiseSettledResult<unknown>[]) {
+  const rejected = results.find((result) => result.status === "rejected");
+  if (!rejected) return undefined;
+
+  return rejected.reason instanceof Error ? rejected.reason.message : "请求失败，请稍后再试。";
+}
+
 async function persistUploadedImagesForSend(images: UploadedImage[]) {
   return Promise.all(
     images.map(async (image) => {
@@ -2049,7 +2228,7 @@ function getMessageType(message: Message): "text" | "image" | "video" {
   return "text";
 }
 
-function InlineVideoResult({ url, onPreview }: { url: string; onPreview: () => void }) {
+function InlineVideoResult({ url, onPreview, onLoadedDimensions }: { url: string; onPreview: () => void; onLoadedDimensions?: (dimensions: ImageDimensions) => void }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
   const playVideo = () => {
@@ -2075,24 +2254,94 @@ function InlineVideoResult({ url, onPreview }: { url: string; onPreview: () => v
         onMouseLeave={pauseVideo}
         onFocus={playVideo}
         onBlur={pauseVideo}
+        onLoadedMetadata={(event) => {
+          const video = event.currentTarget;
+          if (video.videoWidth && video.videoHeight) onLoadedDimensions?.({ width: video.videoWidth, height: video.videoHeight });
+        }}
       />
     </button>
   );
 }
 
-function GeneratedImageStrip({ images, onPreview }: { images: string[]; onPreview: (url: string, index: number) => void }) {
+function ImageResultThumb({ url, imageIndex, onPreview, onLoadedDimensions }: { url: string; imageIndex: number; onPreview: (url: string, index: number) => void; onLoadedDimensions?: (url: string, dimensions: ImageDimensions) => void }) {
+  const [isLoaded, setIsLoaded] = useState(false);
+
   return (
-    <div className="flex max-w-full flex-nowrap gap-0.5 overflow-x-auto pb-1">
-      {images.map((url, imageIndex) => (
-        <button
-          key={`${url}-${imageIndex}`}
-          type="button"
-          onClick={() => onPreview(url, imageIndex)}
-          className="group flex h-[250px] w-[250px] shrink-0 items-center justify-center overflow-hidden bg-[#f4f4f4] transition"
-        >
-          <Image src={url} alt="生成图片" width={250} height={250} unoptimized className="max-h-full max-w-full object-contain transition group-hover:scale-[1.02]" />
-        </button>
-      ))}
+    <button
+      type="button"
+      onClick={() => onPreview(url, imageIndex)}
+      className="group relative flex h-[250px] w-[250px] shrink-0 items-center justify-center overflow-hidden bg-[#f4f4f4] transition"
+    >
+      {!isLoaded ? (
+        <div className="absolute left-4 top-4 z-10 inline-flex items-center text-[13px] font-medium leading-none text-[#777777]">
+          <span>正在加载中</span>
+          <InlineLoadingDots />
+        </div>
+      ) : null}
+      <Image
+        src={url}
+        alt="生成图片"
+        width={250}
+        height={250}
+        unoptimized
+        loading="eager"
+        fetchPriority="high"
+        sizes="250px"
+        className="max-h-full max-w-full object-contain transition group-hover:scale-[1.02]"
+        style={{ width: "auto", height: "auto" }}
+        onLoad={(event) => {
+          setIsLoaded(true);
+          const image = event.currentTarget;
+          if (image.naturalWidth && image.naturalHeight) onLoadedDimensions?.(url, { width: image.naturalWidth, height: image.naturalHeight });
+        }}
+      />
+    </button>
+  );
+}
+
+function ImageResultStrip({ images, pendingCount, failedCount, createdAt, now, pageIndex = 0, onPageChange, onPreview, onLoadedDimensions }: { images: string[]; pendingCount: number; failedCount: number; createdAt?: number; now: number; pageIndex?: number; onPageChange?: (index: number) => void; onPreview: (url: string, index: number) => void; onLoadedDimensions?: (url: string, dimensions: ImageDimensions) => void }) {
+  if (images.length + pendingCount + failedCount === 0) return null;
+  const items = [
+    ...images.map((url, imageIndex) => ({ type: "image" as const, url, imageIndex })),
+    ...Array.from({ length: pendingCount }).map((_, pendingIndex) => ({ type: "pending" as const, pendingIndex })),
+    ...Array.from({ length: failedCount }).map((_, failedIndex) => ({ type: "failed" as const, failedIndex })),
+  ];
+  const pageCount = Math.max(1, Math.ceil(items.length / 4));
+  const safePageIndex = Math.min(Math.max(0, pageIndex), pageCount - 1);
+  const visibleItems = items.slice(safePageIndex * 4, safePageIndex * 4 + 4);
+  const switchPage = (nextIndex: number) => onPageChange?.((nextIndex + pageCount) % pageCount);
+
+  return (
+    <div className="relative max-w-full pb-1">
+      <div className="grid grid-cols-4 gap-0.5">
+        {visibleItems.map((item) => {
+          if (item.type === "image") {
+            return <ImageResultThumb key={`${item.url}-${item.imageIndex}`} url={item.url} imageIndex={item.imageIndex} onPreview={onPreview} onLoadedDimensions={onLoadedDimensions} />;
+          }
+
+          if (item.type === "pending") {
+            return <MediaWaitingCard key={`pending-${item.pendingIndex}`} createdAt={createdAt} now={now} isImage index={images.length + item.pendingIndex + 1} />;
+          }
+
+          return (
+            <div key={`failed-${item.failedIndex}`} className="relative h-[250px] w-[250px] shrink-0 overflow-hidden bg-[#f3f3f3] text-[#777777]">
+              <div className="absolute left-4 top-4 inline-flex items-center gap-2 text-[13px] font-medium leading-none text-[#777777]">
+                <RiEmotionSadLine className="h-5 w-5 shrink-0" aria-hidden="true" />
+                <span>图片生成失败</span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      {pageCount > 1 ? (
+        <div className="mt-2 flex justify-end">
+          <span className="inline-flex items-center gap-0.5 px-0.5 py-0.5 text-[12px] font-medium leading-none text-[#777777]">
+            <button type="button" onClick={() => switchPage(safePageIndex - 1)} className="flex h-4 w-4 items-center justify-center rounded-[3px] text-[#777777] transition hover:bg-white hover:text-[#111111]" aria-label="上一页图片"><RiArrowLeftSLine className="h-4 w-4" aria-hidden="true" /></button>
+            <span className="min-w-7 text-center">{safePageIndex + 1}/{pageCount}</span>
+            <button type="button" onClick={() => switchPage(safePageIndex + 1)} className="flex h-4 w-4 items-center justify-center rounded-[3px] text-[#777777] transition hover:bg-white hover:text-[#111111]" aria-label="下一页图片"><RiArrowRightSLine className="h-4 w-4" aria-hidden="true" /></button>
+          </span>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -2210,9 +2459,18 @@ async function copyImageToClipboard(url: string) {
   ]);
 }
 
+function getDownloadName(asset: AssetItem) {
+  if (/\.[a-z0-9]{2,5}$/i.test(asset.name)) return asset.name;
+
+  const extension = asset.url.split("?")[0].split("#")[0].split(".").pop();
+  const safeExtension = extension && /^[a-z0-9]{2,5}$/i.test(extension) ? extension : isVideoAsset(asset) ? "mp4" : "png";
+  return `${asset.name}.${safeExtension}`;
+}
+
 export function ChatWorkbench() {
-  const selectedModel: ModelName = DEFAULT_CHAT_MODEL;
   const [mode, setMode] = useState<WorkMode>("agent");
+  const [agentModelTier, setAgentModelTier] = useState<AgentModelTier>("normal");
+  const selectedModel: ModelName = agentModelTier === "advanced" ? ADVANCED_CHAT_MODEL : DEFAULT_CHAT_MODEL;
   const [activePanel, setActivePanel] = useState<ActivePanel>("chat");
   const [assetFilter, setAssetFilter] = useState<AssetFilter>("all");
   const [selectedRatios, setSelectedRatios] = useState<Record<WorkMode, string>>({
@@ -2280,6 +2538,8 @@ export function ChatWorkbench() {
   const [sendingSessionIds, setSendingSessionIds] = useState<Set<string>>(() => new Set());
   const [resolvingSessionIds, setResolvingSessionIds] = useState<Set<string>>(() => new Set());
   const [timerNow, setTimerNow] = useState(() => Date.now());
+  const [imageVariantIndexes, setImageVariantIndexes] = useState<Record<string, number>>({});
+  const [imageResultPageIndexes, setImageResultPageIndexes] = useState<Record<string, number>>({});
   const messageEndRef = useRef<HTMLDivElement | null>(null);
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
   const editorRef = useRef<HTMLDivElement | null>(null);
@@ -2294,8 +2554,8 @@ export function ChatWorkbench() {
   const copyFeedbackTimerRef = useRef<number | null>(null);
   const inputTipTimerRef = useRef<number | null>(null);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
-  const selectedRatio = selectedRatios[mode];
-  const selectedResolution = selectedResolutions[mode];
+  const selectedRatio = mode === "video" ? (selectedRatios.video === "智能比例" ? "智能比例" : normalizeVideoRatioForModel(selectedGenerationModels.video, selectedRatios.video, selectedResolutions.video)) : selectedRatios[mode];
+  const selectedResolution = mode === "image" ? normalizeImageResolutionForModel(selectedGenerationModels.image, selectedRatios.image === "智能比例" ? "智能比例" : selectedResolutions.image) : mode === "video" ? (selectedRatios.video === "智能比例" ? "720p" : normalizeVideoResolutionForModel(selectedGenerationModels.video, selectedResolutions.video)) : selectedResolutions[mode];
   const selectedImageCount = selectedImageCounts[mode];
   const selectedGenerationModel = mode === "agent" ? selectedModel : selectedGenerationModels[mode];
   const selectedGenerationModelLabel = mode === "agent" ? "" : getGenerationModelLabel(mode, selectedGenerationModel);
@@ -2310,7 +2570,8 @@ export function ChatWorkbench() {
   const inputShellWidth = Math.max(toolbarRequiredWidth, 800 + Math.min(206, Math.max(0, activeInputLength - 650) * 0.42));
   const activeUploadedFiles = activeSession?.uploadedFiles ?? [];
   const activeUploadedImages = activeSession?.uploadedImages ?? [];
-  const activeConversationImageReferences = getConversationImageReferences(messages);
+  const activeSessionIdValue = activeSession?.id ?? "";
+  const activeConversationImageReferences = useMemo(() => getConversationImageReferences(messages), [messages]);
   const previewImageOptions = useMemo(() => {
     return messages.flatMap((message) => {
       if (message.role !== "assistant") return [];
@@ -2321,10 +2582,10 @@ export function ChatWorkbench() {
         name: `生成图片${imageIndex + 1}`,
         url,
         sourcePrompt: message.content,
-        previewMeta: getPreviewMediaMeta(message),
-        sessionId: activeSession?.id ?? "",
+        previewMeta: getPreviewMediaMeta(message, url),
+        sessionId: activeSessionIdValue,
         messageId: message.id,
-        createdAt: message.createdAt ?? Date.now(),
+        createdAt: message.createdAt ?? 0,
       }));
 
       const videoItem = message.videoUrl ? [{
@@ -2334,14 +2595,15 @@ export function ChatWorkbench() {
         url: message.videoUrl,
         sourcePrompt: message.content,
         previewMeta: getPreviewMediaMeta(message),
-        sessionId: activeSession?.id ?? "",
+        sessionId: activeSessionIdValue,
         messageId: message.id,
-        createdAt: message.createdAt ?? Date.now(),
+        createdAt: message.createdAt ?? 0,
       }] : [];
 
       return [...imageItems, ...videoItem];
     });
-  }, [activeSession?.id, messages]);
+  }, [activeSessionIdValue, messages]);
+  const previewAssetId = previewAsset?.id;
   const validReferenceNames = getValidReferenceNames(assets, activeUploadedImages, activeConversationImageReferences);
   const hasConversation = messages.length > 0;
   const activeIsResolving = activeSession ? resolvingSessionIds.has(activeSession.id) : false;
@@ -2358,6 +2620,21 @@ export function ChatWorkbench() {
   const visiblePreviewScale = previewFitMode === "fit" ? previewFitScale : previewScale;
   const previewScalePercent = `${Math.round(visiblePreviewScale * 100)}%`;
 
+  const updatePreviewFitScale = useCallback((dimensions = previewNaturalSize) => {
+    if (!previewAsset || isVideoAsset(previewAsset) || !dimensions.width || !dimensions.height) return;
+
+    const viewport = previewViewportRef.current;
+    if (!viewport) return;
+
+    const rect = viewport.getBoundingClientRect();
+    const styles = window.getComputedStyle(viewport);
+    const availableWidth = rect.width - Number.parseFloat(styles.paddingLeft) - Number.parseFloat(styles.paddingRight);
+    const availableHeight = rect.height - Number.parseFloat(styles.paddingTop) - Number.parseFloat(styles.paddingBottom);
+    if (availableWidth <= 0 || availableHeight <= 0) return;
+
+    setPreviewFitScale(clampPreviewScale(Math.min(availableWidth / dimensions.width, availableHeight / dimensions.height)));
+  }, [clampPreviewScale, previewAsset, previewNaturalSize]);
+
   useEffect(() => {
     const editor = editorRef.current;
     if (!editor) return;
@@ -2366,15 +2643,19 @@ export function ChatWorkbench() {
   }, [activeInput]);
 
   useEffect(() => {
-    if (!previewAsset) return;
-    setPreviewFitMode("fit");
-    setPreviewScale(1);
-    setPreviewPan({ x: 0, y: 0 });
-    setPreviewNaturalSize({ width: 0, height: 0 });
-    setPreviewFitScale(1);
-    setPreviewThumbsNeedScroll(false);
-    setIsPreviewDragging(false);
-  }, [previewAsset]);
+    if (!previewAssetId) return;
+    const frame = window.requestAnimationFrame(() => {
+      setPreviewFitMode("fit");
+      setPreviewScale(1);
+      setPreviewPan({ x: 0, y: 0 });
+      setPreviewNaturalSize({ width: 0, height: 0 });
+      setPreviewFitScale(1);
+      setPreviewThumbsNeedScroll(false);
+      setIsPreviewDragging(false);
+    });
+
+    return () => window.cancelAnimationFrame(frame);
+  }, [previewAssetId]);
 
   useEffect(() => {
     if (!previewAsset || previewImageOptions.length <= 2) return;
@@ -2412,22 +2693,18 @@ export function ChatWorkbench() {
   useEffect(() => {
     if (!previewAsset || isVideoAsset(previewAsset)) return;
 
-    const updateFitScale = () => {
-      const image = previewImageRef.current;
-      if (!image || !image.naturalWidth) return;
-      setPreviewFitScale(clampPreviewScale(image.clientWidth / image.naturalWidth));
-    };
+    const handleResize = () => updatePreviewFitScale();
 
-    updateFitScale();
-    const resizeObserver = new ResizeObserver(updateFitScale);
-    if (previewImageRef.current) resizeObserver.observe(previewImageRef.current);
-    window.addEventListener("resize", updateFitScale);
+    updatePreviewFitScale();
+    const resizeObserver = new ResizeObserver(handleResize);
+    if (previewViewportRef.current) resizeObserver.observe(previewViewportRef.current);
+    window.addEventListener("resize", handleResize);
 
     return () => {
       resizeObserver.disconnect();
-      window.removeEventListener("resize", updateFitScale);
+      window.removeEventListener("resize", handleResize);
     };
-  }, [clampPreviewScale, previewAsset, previewFitMode, previewNaturalSize]);
+  }, [previewAsset, updatePreviewFitScale]);
 
   const setSessionSending = useCallback((sessionId: string, isSending: boolean) => {
     if (isSending) {
@@ -2554,16 +2831,25 @@ export function ChatWorkbench() {
         const storedInputSettings = window.localStorage.getItem(INPUT_SETTINGS_STORAGE_KEY);
         const parsedInputSettings = storedInputSettings ? (JSON.parse(storedInputSettings) as StoredInputSettings) : null;
         if (parsedInputSettings) {
-          if (isWorkMode(parsedInputSettings.mode)) setMode(parsedInputSettings.mode);
-          setSelectedRatios((current) => mergeValidModeSettings(current, parsedInputSettings.selectedRatios, { agent: ratioOptions, image: ratioOptions, video: ratioOptions }));
-          setSelectedResolutions((current) => mergeValidModeSettings(current, parsedInputSettings.selectedResolutions, { agent: imageResolutionOptions, image: imageResolutionOptions, video: videoResolutionOptions }));
-          setSelectedDurations((current) => mergeValidModeSettings(current, parsedInputSettings.selectedDurations, { agent: durationOptions, image: durationOptions, video: getVideoDurationOptions(parsedInputSettings.selectedGenerationModels?.video ?? DEFAULT_VIDEO_MODEL) }));
-          setSelectedImageCounts((current) => mergeValidModeSettings(current, parsedInputSettings.selectedImageCounts, { agent: imageCountOptions, image: imageCountOptions, video: imageCountOptions }));
           const storedImageModel = parsedInputSettings.selectedGenerationModels?.image;
           const storedVideoModel = parsedInputSettings.selectedGenerationModels?.video;
+          const nextVideoModel = storedVideoModel && videoGenerationModels.some((model) => model.id === storedVideoModel) ? storedVideoModel : DEFAULT_VIDEO_MODEL;
+          const nextVideoResolution = normalizeVideoResolutionForModel(nextVideoModel, parsedInputSettings.selectedResolutions?.video);
+          if (isWorkMode(parsedInputSettings.mode)) setMode(parsedInputSettings.mode);
+          if (parsedInputSettings.agentModelTier === "normal" || parsedInputSettings.agentModelTier === "advanced") setAgentModelTier(parsedInputSettings.agentModelTier);
+          setSelectedRatios((current) => ({
+            ...mergeValidModeSettings(current, parsedInputSettings.selectedRatios, { agent: ratioOptions, image: ratioOptions, video: ["智能比例", ...getSupportedVideoRatios(nextVideoModel)] }),
+            video: parsedInputSettings.selectedRatios?.video === "智能比例" ? "智能比例" : normalizeVideoRatioForModel(nextVideoModel, parsedInputSettings.selectedRatios?.video, nextVideoResolution),
+          }));
+          setSelectedResolutions((current) => ({
+            ...mergeValidModeSettings(current, parsedInputSettings.selectedResolutions, { agent: imageResolutionOptions, image: imageResolutionOptions, video: getSupportedVideoResolutions(nextVideoModel) }),
+            video: nextVideoResolution,
+          }));
+          setSelectedDurations((current) => mergeValidModeSettings(current, parsedInputSettings.selectedDurations, { agent: durationOptions, image: durationOptions, video: getVideoDurationOptions(parsedInputSettings.selectedGenerationModels?.video ?? DEFAULT_VIDEO_MODEL) }));
+          setSelectedImageCounts((current) => mergeValidModeSettings(current, parsedInputSettings.selectedImageCounts, { agent: imageCountOptions, image: imageCountOptions, video: imageCountOptions }));
           setSelectedGenerationModels((current) => ({
             image: storedImageModel && imageGenerationModels.some((model) => model.id === storedImageModel) ? storedImageModel : current.image,
-            video: storedVideoModel && videoGenerationModels.some((model) => model.id === storedVideoModel) ? storedVideoModel : current.video,
+            video: nextVideoModel,
           }));
         }
         setSessions(nextSessions);
@@ -2608,6 +2894,7 @@ export function ChatWorkbench() {
     try {
       const payload: StoredInputSettings = {
         mode,
+        agentModelTier,
         selectedRatios,
         selectedResolutions,
         selectedDurations,
@@ -2618,7 +2905,7 @@ export function ChatWorkbench() {
     } catch {
       window.localStorage.removeItem(INPUT_SETTINGS_STORAGE_KEY);
     }
-  }, [isLoaded, mode, selectedDurations, selectedGenerationModels, selectedImageCounts, selectedRatios, selectedResolutions]);
+  }, [agentModelTier, isLoaded, mode, selectedDurations, selectedGenerationModels, selectedImageCounts, selectedRatios, selectedResolutions]);
 
   useEffect(() => {
     if (!isLoaded) return;
@@ -2827,6 +3114,17 @@ export function ChatWorkbench() {
     return () => window.clearTimeout(timer);
   }, [selectedDurations.video, selectedGenerationModels.video]);
 
+  useEffect(() => {
+    const safeResolution = normalizeImageResolutionForModel(selectedGenerationModels.image, selectedResolutions.image);
+    if (safeResolution === selectedResolutions.image) return;
+
+    const timer = window.setTimeout(() => {
+      setSelectedResolutions((current) => ({ ...current, image: safeResolution }));
+    }, 0);
+
+    return () => window.clearTimeout(timer);
+  }, [selectedGenerationModels.image, selectedRatios.image, selectedResolutions.image]);
+
   const renderControlMenu = (name: ControlMenuName, label: string, title: string, options: string[], value: string, onChange: (value: string) => void, icon?: typeof RiImageLine) => (
     <div className="relative" onClick={(event) => event.stopPropagation()}>
       <button
@@ -2888,7 +3186,7 @@ export function ChatWorkbench() {
         >
           <span className="flex min-w-0 flex-nowrap items-center gap-2">
             {SelectedModelIcon ? <SelectedModelIcon className="h-[18px] w-[18px] shrink-0 text-[#777777]" aria-hidden="true" /> : <AiGenerate3dIcon />}
-            <span className="whitespace-nowrap font-medium text-[#777777] max-[820px]:hidden">{selectedGenerationModelLabel}</span>
+            <span className={`whitespace-nowrap font-medium max-[820px]:hidden ${isGoldGenerationModel(selectedGenerationModel) ? "text-[#b8860b]" : "text-[#777777]"}`}>{selectedGenerationModelLabel}</span>
             <RiArrowDownSLine className="h-3.5 w-3.5 shrink-0 text-[#8a8a8a] max-[820px]:hidden" aria-hidden="true" />
           </span>
         </button>
@@ -2898,6 +3196,7 @@ export function ChatWorkbench() {
             <div className="px-2 pb-2 text-[12px] font-medium text-[#a0a0a0]">选择模型</div>
             {options.map((option) => {
               const ModelIcon = getGenerationModelIcon(option.id);
+              const isGoldModel = isGoldGenerationModel(option.id);
 
               return (
                 <button
@@ -2905,6 +3204,16 @@ export function ChatWorkbench() {
                   type="button"
                   onClick={() => {
                     setSelectedGenerationModels((current) => ({ ...current, [mode]: option.id }));
+                    if (mode === "image") {
+                      setSelectedResolutions((current) => ({ ...current, image: normalizeImageResolutionForModel(option.id, current.image) }));
+                    } else if (mode === "video") {
+                      setSelectedRatios((current) => ({ ...current, video: current.video === "智能比例" ? "智能比例" : normalizeVideoRatioForModel(option.id, current.video, normalizeVideoResolutionForModel(option.id, selectedResolutions.video)) }));
+                      setSelectedResolutions((current) => ({ ...current, video: normalizeVideoResolutionForModel(option.id, current.video) }));
+                      setSelectedDurations((current) => {
+                        const options = getVideoDurationOptions(option.id);
+                        return { ...current, video: options.includes(current.video) ? current.video : options[0] };
+                      });
+                    }
                     setOpenControlMenu("");
                   }}
                   className={
@@ -2915,7 +3224,7 @@ export function ChatWorkbench() {
                 >
                   <span className="flex min-w-0 items-center gap-2">
                     {ModelIcon ? <ModelIcon className="h-4.5 w-4.5 shrink-0 text-[#555555]" aria-hidden="true" /> : <AiGenerate3dIcon />}
-                    <span className="min-w-0 truncate">{option.label}</span>
+                    <span className={`min-w-0 truncate ${isGoldModel ? "text-[#b8860b]" : ""}`}>{option.label}</span>
                   </span>
                   {option.id === selectedGenerationModel ? <RiCheckLine className="ml-2 h-[18px] w-[18px] shrink-0 text-[#111111]" aria-hidden="true" /> : null}
                 </button>
@@ -2928,9 +3237,20 @@ export function ChatWorkbench() {
   };
 
   const renderImageSettingsMenu = () => {
-    const currentResolutionOptions = mode === "video" ? videoResolutionOptions : imageResolutionOptions;
-    const resolutionMeta = mode === "video" ? videoResolutionDimensions : imageResolutionDimensions;
-    const displayDimensions = getDisplayDimensions(selectedRatio, selectedResolution, mode);
+    const currentResolutionOptions = mode === "video" ? getSupportedVideoResolutions(selectedGenerationModels.video) : getSupportedImageResolutions(selectedGenerationModels.image);
+    const isSmartImageRatio = mode === "image" && selectedRatio === "智能比例";
+    const isSmartSettings = isSmartImageRatio || (mode === "video" && selectedRatio === "智能比例");
+    const displayResolution = isSmartImageRatio ? normalizeImageResolutionForModel(selectedGenerationModels.image, "智能比例") : selectedResolution;
+    const currentRatioOptions = mode === "video" ? ["智能比例", ...getSupportedVideoRatios(selectedGenerationModels.video, displayResolution)] : ratioOptions;
+    const displayRatio = mode === "video" ? (selectedRatio === "智能比例" ? "智能比例" : normalizeVideoRatioForModel(selectedGenerationModels.video, selectedRatio, displayResolution)) : selectedRatio;
+    const displayDimensions = getDisplayDimensions(displayRatio, displayResolution, mode, mode === "image" ? selectedGenerationModels.image : mode === "video" ? selectedGenerationModels.video : undefined);
+    const isNonStandardVideoDimensions = mode === "video" && displayRatio !== "智能比例" && isNonStandardVideoSize(selectedGenerationModels.video, displayResolution, displayRatio);
+    const imageResolutionLabel = mode === "image" ? getImageResolutionLabel(displayResolution) : getVideoResolutionLabel(displayResolution);
+    const imageQualityBadgeLabel = mode === "image" ? getImageQualityBadgeLabel(displayResolution) : "";
+    const settingsMenuWidthClassName = "w-[min(420px,calc(100vw-40px))]";
+    const resolutionGridClassName = mode === "video" ? "gap-1.5 px-1.5" : "gap-2 px-2";
+    const resolutionButtonPaddingClassName = mode === "video" ? "px-2" : "px-4";
+    const resolutionLabelGapClassName = mode === "video" ? "gap-1.5" : "gap-2";
 
     return (
       <div className="relative" onClick={(event) => event.stopPropagation()}>
@@ -2942,20 +3262,29 @@ export function ChatWorkbench() {
           }}
           className={`relative ${toolButtonClassName} pl-10 ${openControlMenu === "imageSettings" ? toolButtonActiveClassName : ""}`}
         >
-          <ToolButtonLabel icon={undefined} label={`${selectedRatio} / ${selectedResolution}`} showChevron />
-          <span className="absolute left-3.5 top-1/2 -translate-y-1/2"><RatioOptionIcon option={selectedRatio} /></span>
+          <span className="flex min-w-0 flex-nowrap items-center gap-2">
+            <span className="font-medium text-[#777777] max-[820px]:hidden">{displayRatio} /</span>
+            <span className={`font-medium max-[820px]:hidden ${imageQualityBadgeLabel ? "text-[#b8860b]" : "text-[#777777]"}`}>{imageResolutionLabel}</span>
+            <RiArrowDownSLine className="h-3.5 w-3.5 shrink-0 text-[#8a8a8a] max-[820px]:hidden" aria-hidden="true" />
+          </span>
+          <span className="absolute left-3.5 top-1/2 -translate-y-1/2"><RatioOptionIcon option={displayRatio} /></span>
         </button>
 
         {openControlMenu === "imageSettings" ? (
-          <div className="absolute bottom-full left-0 z-40 mb-2 w-[460px] rounded-[12px] bg-white p-5 shadow-[0_18px_40px_rgba(0,0,0,0.12)]">
+          <div className={`absolute bottom-full left-0 z-40 mb-2 ${settingsMenuWidthClassName} rounded-[12px] bg-white p-5 shadow-[0_18px_40px_rgba(0,0,0,0.12)]`}>
             <div className="pb-2 text-[13px] font-medium text-[#a0a0a0]">选择比例</div>
-            <div className="mt-2 grid grid-cols-6 gap-2 rounded-[12px] bg-[#f6f6f6] px-2 py-1">
-              {ratioOptions.map((option) => (
+            <div className="mt-2 grid auto-cols-fr grid-flow-col gap-1 rounded-[12px] bg-[#f6f6f6] px-1.5 py-1">
+              {currentRatioOptions.map((option) => (
                 <button
                   key={option}
                   type="button"
-                  onClick={() => setSelectedRatios((current) => ({ ...current, [mode]: option }))}
-                  className={option === selectedRatio ? "flex h-[58px] flex-col items-center justify-center gap-1 rounded-[10px] bg-white px-2 text-[#111111] shadow-[0_2px_10px_rgba(0,0,0,0.06)]" : "flex h-[58px] flex-col items-center justify-center gap-1 rounded-[10px] px-2 text-[#555555] transition hover:bg-white/80"}
+                  onClick={() => {
+                    setSelectedRatios((current) => ({ ...current, [mode]: option }));
+                    if (mode === "image") {
+                      setSelectedResolutions((current) => ({ ...current, image: normalizeImageResolutionForModel(selectedGenerationModels.image, current.image) }));
+                    }
+                  }}
+                  className={option === displayRatio ? "flex h-[58px] min-w-0 flex-col items-center justify-center gap-1 rounded-[10px] bg-white px-1 text-[#111111] shadow-[0_2px_10px_rgba(0,0,0,0.06)]" : "flex h-[58px] min-w-0 flex-col items-center justify-center gap-1 rounded-[10px] px-1 text-[#555555] transition hover:bg-white/80"}
                 >
                   <RatioOptionIcon option={option} />
                   <span className="text-[13px] font-medium leading-none">{option === "智能比例" ? "智能" : option}</span>
@@ -2963,23 +3292,29 @@ export function ChatWorkbench() {
               ))}
             </div>
             <div className="mt-4 text-[13px] font-medium text-[#a0a0a0]">选择分辨率</div>
-            <div className={`mt-2 grid gap-2 rounded-[12px] bg-[#f6f6f6] px-2 py-1 ${currentResolutionOptions.length === 2 ? "grid-cols-2" : "grid-cols-3"}`}>
+            <div className={`mt-2 grid ${resolutionGridClassName} rounded-[12px] bg-[#f6f6f6] py-1 ${currentResolutionOptions.length === 1 ? "grid-cols-1" : currentResolutionOptions.length === 2 ? "grid-cols-2" : currentResolutionOptions.length === 3 ? "grid-cols-3" : "grid-cols-4"} ${isSmartSettings ? "opacity-45" : ""}`}>
               {currentResolutionOptions.map((option) => (
                 <button
                   key={option}
                   type="button"
-                  onClick={() => setSelectedResolutions((current) => ({ ...current, [mode]: option }))}
-                  className={option === selectedResolution ? "flex h-[56px] items-center justify-center rounded-[10px] bg-white px-4 text-[#111111] shadow-[0_2px_10px_rgba(0,0,0,0.06)]" : "flex h-[56px] items-center justify-center rounded-[10px] px-4 text-[#666666] transition hover:bg-white/80"}
+                  disabled={isSmartSettings}
+                  onClick={() => {
+                    setSelectedResolutions((current) => ({ ...current, [mode]: option }));
+                    if (mode === "video") {
+                      setSelectedRatios((current) => ({ ...current, video: current.video === "智能比例" ? "智能比例" : normalizeVideoRatioForModel(selectedGenerationModels.video, current.video, option) }));
+                    }
+                  }}
+                  className={option === displayResolution ? `flex h-[56px] items-center justify-center rounded-[10px] bg-white ${resolutionButtonPaddingClassName} text-[#111111] shadow-[0_2px_10px_rgba(0,0,0,0.06)] disabled:cursor-not-allowed` : `flex h-[56px] items-center justify-center rounded-[10px] ${resolutionButtonPaddingClassName} text-[#666666] transition hover:bg-white/80 disabled:cursor-not-allowed disabled:hover:bg-transparent`}
                 >
-                  <span className="flex items-center gap-2 text-[13px] font-medium leading-none">
-                    <ResolutionOptionIcon option={option} />
-                    <span>{resolutionMeta[option]?.label ?? option}</span>
+                  <span className={`flex items-center ${resolutionLabelGapClassName} whitespace-nowrap text-[13px] font-medium leading-none ${mode === "image" && getImageQualityBadgeLabel(option) ? "text-[#b8860b]" : ""}`}>
+                    <ResolutionOptionIcon option={option} highlighted={mode === "image" && Boolean(getImageQualityBadgeLabel(option))} />
+                    <span>{mode === "video" ? getVideoResolutionLabel(option) : getImageResolutionLabel(option)}</span>
                   </span>
                 </button>
               ))}
             </div>
-            <div className="mt-4 text-[13px] font-medium text-[#a0a0a0]">尺寸</div>
-            <div className="mt-2 grid grid-cols-[1fr_auto_1fr_auto] items-center gap-3">
+            <div className="mt-4 text-[13px] font-medium text-[#a0a0a0]">尺寸{isNonStandardVideoDimensions ? "（非标）" : ""}</div>
+            <div className={`mt-2 grid grid-cols-[1fr_auto_1fr_auto] items-center gap-3 ${isSmartSettings ? "opacity-45" : ""}`}>
               <div className="flex h-[48px] items-center justify-between rounded-[12px] bg-[#f6f6f6] px-4">
                 <span className="text-[13px] font-medium text-[#9a9a9a]">W</span>
                 <span className="text-[13px] font-medium text-[#111111]">{displayDimensions.width}</span>
@@ -3156,15 +3491,43 @@ export function ChatWorkbench() {
                     createdAt: Date.now(),
                     requestId: payload.requestId,
                     images: payload.images,
+                    imageDimensions: payload.imageDimensions,
+                    imageReferences: payload.imageReferences,
+                    videoDimensions: payload.videoDimensions,
                     videoUrl: payload.videoUrl,
                     statusText: payload.statusText,
                     pendingImageCount: payload.pendingImageCount,
+                    failedImageCount: payload.failedImageCount,
                     error: payload.error,
                     mode: payload.mode,
                     generationMeta: payload.generationMeta,
                   },
                 ],
               }
+          : session,
+      ),
+    );
+  }, []);
+
+  const appendSystemMessage = useCallback((sessionId: string, payload: Pick<Message, "content"> & Partial<Pick<Message, "mode" | "error">>) => {
+    setSessions((current) =>
+      current.map((session) =>
+        session.id === sessionId
+          ? {
+              ...session,
+              updatedAt: Date.now(),
+              messages: [
+                ...session.messages,
+                {
+                  id: crypto.randomUUID(),
+                  role: "system",
+                  content: payload.content,
+                  mode: payload.mode,
+                  error: payload.error,
+                  createdAt: Date.now(),
+                },
+              ],
+            }
           : session,
       ),
     );
@@ -3185,6 +3548,86 @@ export function ChatWorkbench() {
                     }
                   : message,
               ),
+            }
+          : session,
+      ),
+    );
+  }, []);
+
+  const appendImagesToAssistantMessage = useCallback((sessionId: string, requestId: string, imageUrls: string[], imageDimensions: Record<string, ImageDimensions> = {}, pendingCompleteCount = 1) => {
+    setSessions((current) =>
+      current.map((session) =>
+        session.id === sessionId
+          ? {
+              ...session,
+              updatedAt: Date.now(),
+              messages: session.messages.map((message) =>
+                message.role === "assistant" && message.requestId === requestId
+                  ? {
+                      ...message,
+                      images: [...(message.images ?? []), ...imageUrls],
+                      imageDimensions: { ...(message.imageDimensions ?? {}), ...imageDimensions },
+                      pendingImageCount: Math.max(0, (message.pendingImageCount ?? 1) - pendingCompleteCount),
+                      mode: "image",
+                    }
+                  : message,
+              ),
+            }
+          : session,
+      ),
+    );
+  }, []);
+
+  const markAssistantImageFailure = useCallback((sessionId: string, requestId: string) => {
+    setSessions((current) =>
+      current.map((session) =>
+        session.id === sessionId
+          ? {
+              ...session,
+              updatedAt: Date.now(),
+              messages: session.messages.map((message) =>
+                message.role === "assistant" && message.requestId === requestId
+                  ? {
+                      ...message,
+                      failedImageCount: (message.failedImageCount ?? 0) + 1,
+                      pendingImageCount: Math.max(0, (message.pendingImageCount ?? 1) - 1),
+                      mode: "image",
+                    }
+                  : message,
+              ),
+            }
+          : session,
+      ),
+    );
+  }, []);
+
+  const updateMessageImageDimensions = useCallback((sessionId: string, messageId: string, imageUrl: string, dimensions: ImageDimensions) => {
+    setSessions((current) =>
+      current.map((session) =>
+        session.id === sessionId
+          ? {
+              ...session,
+              messages: session.messages.map((message) =>
+                message.id === messageId
+                  ? {
+                      ...message,
+                      imageDimensions: { ...(message.imageDimensions ?? {}), [imageUrl]: dimensions },
+                    }
+                  : message,
+              ),
+            }
+          : session,
+      ),
+    );
+  }, []);
+
+  const updateMessageVideoDimensions = useCallback((sessionId: string, messageId: string, dimensions: ImageDimensions) => {
+    setSessions((current) =>
+      current.map((session) =>
+        session.id === sessionId
+          ? {
+              ...session,
+              messages: session.messages.map((message) => (message.id === messageId ? { ...message, videoDimensions: dimensions } : message)),
             }
           : session,
       ),
@@ -3343,46 +3786,66 @@ export function ChatWorkbench() {
               model: pendingRequest.model,
               referenceImages,
               settings: pendingRequest.settings,
-              count: getImageCountValue(pendingRequest.settings?.imageCount),
+              count: 1,
             }),
           });
 
-          return readJson<{ images?: string[] }>(imageResponse);
+          return readJson<{ images?: string[]; imageDimensions?: Record<string, ImageDimensions> }>(imageResponse);
         };
-        let imageData: { images?: string[] };
 
-        try {
-          imageData = await createImage(pendingRequest.referenceImages);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : "";
-          if (pendingRequest.preserveOriginalInput || !isRequestTooLargeError(message) || !pendingRequest.referenceImages?.length) throw error;
-
-          updateAssistantMessageByRequestId(sessionId, pendingRequest.id, { statusText: "参考图过大，正在压缩副本后重试" });
+        const createImageWithRetry = async () => {
+          let imageData: { images?: string[]; imageDimensions?: Record<string, ImageDimensions> };
 
           try {
-            const retryImages = await compressReferenceImagesForRetry(pendingRequest.referenceImages, RETRY_IMAGE_SIDE, RETRY_IMAGE_QUALITY);
-            imageData = await createImage(retryImages);
-          } catch (retryError) {
-            const retryMessage = retryError instanceof Error ? retryError.message : "";
-            if (!isRequestTooLargeError(retryMessage)) throw retryError;
+            imageData = await createImage(pendingRequest.referenceImages);
+          } catch (error) {
+            const message = error instanceof Error ? error.message : "";
+            if (pendingRequest.preserveOriginalInput || !isRequestTooLargeError(message) || !pendingRequest.referenceImages?.length) throw error;
 
-            const finalRetryImages = await compressReferenceImagesForRetry(pendingRequest.referenceImages, FINAL_RETRY_IMAGE_SIDE, FINAL_RETRY_IMAGE_QUALITY);
-            imageData = await createImage(finalRetryImages);
+            updateAssistantMessageByRequestId(sessionId, pendingRequest.id, { statusText: "参考图过大，正在压缩副本后重试" });
+
+            try {
+              const retryImages = await compressReferenceImagesForRetry(pendingRequest.referenceImages, RETRY_IMAGE_SIDE, RETRY_IMAGE_QUALITY);
+              imageData = await createImage(retryImages);
+            } catch (retryError) {
+              const retryMessage = retryError instanceof Error ? retryError.message : "";
+              if (!isRequestTooLargeError(retryMessage)) throw retryError;
+
+              const finalRetryImages = await compressReferenceImagesForRetry(pendingRequest.referenceImages, FINAL_RETRY_IMAGE_SIDE, FINAL_RETRY_IMAGE_QUALITY);
+              imageData = await createImage(finalRetryImages);
+            }
           }
-        }
-        const nextImages = imageData.images ?? [];
 
-        if (nextImages.length === 0) {
-          throw new Error("图片平台没有返回图片，请稍后再试。");
-        }
+          const nextImages = imageData.images ?? [];
+          if (nextImages.length === 0) throw new Error("图片平台没有返回图片，请稍后再试。");
+          return { images: nextImages, imageDimensions: imageData.imageDimensions ?? {} };
+        };
 
-        addGeneratedAssets(sessionId, pendingRequest.mode, prompt, nextImages, undefined, pendingRequest.assetTargetType, pendingRequest.messages.map((message) => message.content).join("\n"));
+        const imageCount = getImageCountValue(pendingRequest.settings?.imageCount);
+        const contextText = pendingRequest.messages.map((message) => message.content).join("\n");
+
+        const results = await Promise.allSettled(
+          Array.from({ length: imageCount }).map(async () => {
+            try {
+              const imageResult = await createImageWithRetry();
+              appendImagesToAssistantMessage(sessionId, pendingRequest.id, imageResult.images, imageResult.imageDimensions, 1);
+              addGeneratedAssets(sessionId, pendingRequest.mode, prompt, imageResult.images, undefined, pendingRequest.assetTargetType, contextText);
+              return imageResult.images;
+            } catch (error) {
+              markAssistantImageFailure(sessionId, pendingRequest.id);
+              throw error;
+            }
+          }),
+        );
+
+        const successCount = results.filter((result) => result.status === "fulfilled").length;
+        const failureCount = results.length - successCount;
 
         updateAssistantMessageByRequestId(sessionId, pendingRequest.id, {
           content: prompt,
-          images: nextImages,
           statusText: undefined,
-          pendingImageCount: undefined,
+          pendingImageCount: 0,
+          error: failureCount > 0 ? (successCount > 0 ? `有 ${failureCount} 张图片生成失败，其它图片已完成。` : resultErrorMessage(results) ?? "图片生成失败，请稍后再试。") : undefined,
           mode: pendingRequest.mode,
         });
       }
@@ -3508,13 +3971,13 @@ export function ChatWorkbench() {
           mode: pendingRequest.mode,
         });
       } else {
-        appendAssistantMessage(sessionId, { content: message, error: message, mode: pendingRequest.mode, requestId: pendingRequest.id });
+        appendSystemMessage(sessionId, { content: message, error: message, mode: pendingRequest.mode });
       }
     } finally {
       clearPendingRequest(sessionId, pendingRequest.id);
       runningRequestIdsRef.current.delete(pendingRequest.id);
     }
-  }, [addGeneratedAssets, appendAssistantMessage, clearPendingRequest, updateAssistantMessageByRequestId, updatePendingRequest]);
+  }, [addGeneratedAssets, appendAssistantMessage, appendImagesToAssistantMessage, appendSystemMessage, clearPendingRequest, markAssistantImageFailure, updateAssistantMessageByRequestId, updatePendingRequest]);
 
   const resolveGenerationMode = useCallback(async (text: string, optimisticMessages: Message[], hasReferenceImages = false): Promise<WorkMode> => {
     const correctionMode = getCorrectionMode(text);
@@ -3592,7 +4055,7 @@ export function ChatWorkbench() {
     const referencedAssets = getReferencedAssets(rawText, assets);
     const displayImageReferences = (namedImageReferences.length > 0 ? namedImageReferences : referenceImages.map((url, index) => ({ name: `图片${index + 1}`, url }))).slice(0, MAX_UPLOADED_IMAGES);
     const text = rawText || getImageOnlyPrompt(submitMode);
-    const userMessage: Message = { id: crypto.randomUUID(), role: "user", content: text, createdAt: Date.now(), images: referenceImages.length > 0 ? referenceImages : undefined, imageReferences: displayImageReferences.length > 0 ? displayImageReferences : undefined };
+    const userMessage: Message = { id: crypto.randomUUID(), role: "user", content: text, createdAt: nowTimestamp(), images: referenceImages.length > 0 ? referenceImages : undefined, imageReferences: displayImageReferences.length > 0 ? displayImageReferences : undefined };
     const optimisticMessages = [...activeSession.messages, userMessage];
     const isDirectGenerationMode = submitMode !== "agent";
     const visibleMessages = isDirectGenerationMode ? activeSession.messages : optimisticMessages;
@@ -3615,7 +4078,7 @@ export function ChatWorkbench() {
     );
 
     if (isModelInfoQuestion(text)) {
-      const selectedModelLabel = "Seed 2.0 Lite";
+      const selectedModelLabel = agentModelTier === "advanced" ? "GPT-5.4" : "Seed 2.0 Lite";
       setSessions((current) =>
         current.map((session) =>
           session.id === sessionId
@@ -3651,7 +4114,7 @@ export function ChatWorkbench() {
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : "模型信息查询失败。";
-        appendAssistantMessage(sessionId, { content: message, suggestions: DEFAULT_AGENT_SUGGESTIONS, error: message, mode: "agent" });
+        appendSystemMessage(sessionId, { content: message, error: message, mode: "agent" });
       } finally {
         setModelInfoSessionId((current) => (current === sessionId ? "" : current));
         setSessionSending(sessionId, false);
@@ -3716,22 +4179,26 @@ export function ChatWorkbench() {
     }
 
     const assetTargetType = normalizedSuggestion?.assetTargetType ?? getAssetTypeFromText(text, generationMode);
+    const generationModel = generationMode === "image" ? selectedGenerationModels.image : generationMode === "video" ? selectedGenerationModels.video : selectedModel;
+    const generationResolution = generationMode === "image" ? normalizeImageResolutionForModel(generationModel, selectedResolutions[modeForSettings]) : generationMode === "video" ? (selectedRatios.video === "智能比例" ? "720p" : normalizeVideoResolutionForModel(generationModel, selectedResolutions.video)) : selectedResolutions[modeForSettings];
+    const generationRatio = generationMode === "video" ? (selectedRatios.video === "智能比例" ? "智能比例" : normalizeVideoRatioForModel(generationModel, selectedRatios.video, generationResolution)) : selectedRatios[modeForSettings];
     const pendingRequest: PendingGeneration = {
       id: crypto.randomUUID(),
-      model: generationMode === "image" ? selectedGenerationModels.image : generationMode === "video" ? selectedGenerationModels.video : selectedModel,
+      model: generationModel,
       mode: generationMode,
       prompt: submitMode !== "agent" && (generationMode === "image" || generationMode === "video") ? text : undefined,
       originalPrompt: submitMode !== "agent" && (generationMode === "image" || generationMode === "video") ? text : undefined,
       preserveOriginalInput: false,
       assetTargetType: assetTargetType === "other" ? undefined : assetTargetType,
       referenceImages: referenceImages.length > 0 ? referenceImages : undefined,
+      imageReferences: displayImageReferences.length > 0 ? displayImageReferences : undefined,
       referenceHint: getReferenceHint(namedImageReferences),
       settings:
         generationMode === "agent"
           ? undefined
           : {
-              ratio: selectedRatios[modeForSettings],
-              resolution: selectedResolutions[modeForSettings],
+              ratio: generationRatio,
+              resolution: generationResolution,
               style: selectedStyle,
               duration: generationMode === "video" ? (modeForSettings === "video" ? selectedVideoDuration : selectedDurations.video) : undefined,
               imageCount: generationMode === "image" ? selectedImageCounts[modeForSettings] : undefined,
@@ -3764,6 +4231,7 @@ export function ChatWorkbench() {
         pendingImageCount: getImageCountValue(selectedImageCounts[modeForSettings]),
         mode: generationMode,
         requestId: pendingRequest.id,
+        imageReferences: pendingRequest.imageReferences,
         generationMeta: { mode: "image", model: pendingRequest.model, settings: pendingRequest.settings, preserveOriginalInput: pendingRequest.preserveOriginalInput, assetTargetType: pendingRequest.assetTargetType, originalPrompt: pendingRequest.originalPrompt },
       });
     }
@@ -3774,6 +4242,7 @@ export function ChatWorkbench() {
         statusText: videoStatusLabels.creating,
         mode: generationMode,
         requestId: pendingRequest.id,
+        imageReferences: pendingRequest.imageReferences,
         generationMeta: { mode: "video", model: pendingRequest.model, settings: pendingRequest.settings, preserveOriginalInput: pendingRequest.preserveOriginalInput, assetTargetType: pendingRequest.assetTargetType, originalPrompt: pendingRequest.originalPrompt },
       });
     }
@@ -3867,7 +4336,7 @@ export function ChatWorkbench() {
     }, 1000);
   }, [setActiveDraftInput]);
 
-  const regenerateMessage = useCallback((message: Message) => {
+  const regenerateMessage = (message: Message) => {
     if (!activeSession || activeHasMaxPendingRequests) return;
     if (message.role !== "assistant") return;
 
@@ -3888,24 +4357,34 @@ export function ChatWorkbench() {
       .slice(0, messageIndex)
       .filter((item) => item.id !== "seed-1" && item.role !== "system")
       .map((item) => ({ role: item.role === "assistant" ? "assistant" : "user", content: item.content, images: item.images }));
-    const referenceImages = previousUserMessage?.images?.filter(Boolean);
+    const replayImageReferences = message.imageReferences?.length
+      ? message.imageReferences
+      : generationMode === "image" || generationMode === "video"
+        ? getOrderedExplicitImageReferences(replayPrompt, assets, [], getConversationImageReferences(activeSession.messages.slice(0, messageIndex)))
+        : previousUserMessage?.imageReferences;
+    const referenceImages = replayImageReferences?.map((reference) => reference.url).filter(Boolean) ?? previousUserMessage?.images?.filter(Boolean);
+    const replayModel = generationMode === "image" || generationMode === "video"
+      ? (replayMeta?.model ?? (generationMode === "image" ? selectedGenerationModels.image : selectedGenerationModels.video))
+      : agentModelTier === "advanced" ? ADVANCED_CHAT_MODEL : DEFAULT_CHAT_MODEL;
+    const replayResolution = generationMode === "image" ? normalizeImageResolutionForModel(replayModel, replaySettings?.resolution ?? selectedResolutions[generationMode]) : generationMode === "video" ? ((replaySettings?.ratio ?? selectedRatios.video) === "智能比例" ? "720p" : normalizeVideoResolutionForModel(replayModel, replaySettings?.resolution ?? selectedResolutions.video)) : replaySettings?.resolution ?? selectedResolutions[generationMode];
+    const replayRatio = generationMode === "video" ? ((replaySettings?.ratio ?? selectedRatios.video) === "智能比例" ? "智能比例" : normalizeVideoRatioForModel(replayModel, replaySettings?.ratio ?? selectedRatios.video, replayResolution)) : replaySettings?.ratio ?? selectedRatios[generationMode];
     const pendingRequest: PendingGeneration = {
       id: crypto.randomUUID(),
-      model: generationMode === "image" || generationMode === "video"
-        ? (replayMeta?.model ?? (generationMode === "image" ? selectedGenerationModels.image : selectedGenerationModels.video))
-        : selectedModel,
+      model: replayModel,
       mode: generationMode,
       prompt: generationMode === "image" || generationMode === "video" ? replayPrompt : undefined,
       originalPrompt: generationMode === "image" || generationMode === "video" ? replayPrompt : undefined,
       preserveOriginalInput: false,
       referenceImages: referenceImages && referenceImages.length > 0 ? referenceImages : undefined,
+      imageReferences: replayImageReferences && replayImageReferences.length > 0 ? replayImageReferences : undefined,
+      referenceHint: replayImageReferences && replayImageReferences.length > 0 ? getReferenceHint(replayImageReferences) : undefined,
       assetTargetType: replayMeta?.assetTargetType,
       settings:
         generationMode === "agent"
           ? undefined
           : {
-              ratio: replaySettings?.ratio ?? selectedRatios[generationMode],
-              resolution: replaySettings?.resolution ?? selectedResolutions[generationMode],
+              ratio: replayRatio,
+              resolution: replayResolution,
               style: selectedStyle,
               duration: generationMode === "video" ? (replaySettings?.duration ?? selectedVideoDuration) : undefined,
               imageCount: generationMode === "image" ? (replaySettings?.imageCount ?? selectedImageCounts[generationMode]) : undefined,
@@ -3932,11 +4411,12 @@ export function ChatWorkbench() {
         pendingImageCount: generationMode === "image" ? getImageCountValue(replaySettings?.imageCount ?? selectedImageCounts[generationMode]) : undefined,
         mode: generationMode,
         requestId: pendingRequest.id,
+        imageReferences: pendingRequest.imageReferences,
         generationMeta: generationMode === "image" || generationMode === "video" ? { mode: generationMode, model: pendingRequest.model, settings: pendingRequest.settings, preserveOriginalInput: pendingRequest.preserveOriginalInput, assetTargetType: pendingRequest.assetTargetType, originalPrompt: pendingRequest.originalPrompt } : undefined,
       });
     }
     void runGeneration(sessionId, pendingRequest);
-  }, [activeHasMaxPendingRequests, activeSession, addFeedbackLog, appendAssistantMessage, mode, runGeneration, selectedGenerationModels.image, selectedGenerationModels.video, selectedImageCounts, selectedModel, selectedRatios, selectedResolutions, selectedStyle, selectedVideoDuration]);
+  };
 
   const submitFeedback = useCallback((kind: FeedbackKind, message: Message) => {
     addFeedbackLog(kind, message);
@@ -4075,6 +4555,30 @@ export function ChatWorkbench() {
     addActiveUploadedImages([toUploadedAssetReference(asset)], { draftBase: insertBase, draftSuffix: insertSuffix, insertReferenceText: true });
     setIsAtAssetMenuOpen(false);
     focusEditorAt(Math.min(MAX_DRAFT_INPUT_LENGTH, insertBase.length + referenceText.length));
+  };
+  const switchAgentModelTier = (tier: AgentModelTier) => {
+    if (agentModelTier === tier) return;
+
+    setAgentModelTier(tier);
+    setSessions((current) =>
+      current.map((session) =>
+        session.id === activeSessionId
+          ? {
+              ...session,
+              updatedAt: Date.now(),
+              messages: [
+                ...session.messages,
+                {
+                  id: crypto.randomUUID(),
+                  role: "system",
+                  content: `当前已切换至${tier === "advanced" ? "高级" : "普通"}模式`,
+                  createdAt: Date.now(),
+                },
+              ],
+            }
+          : session,
+      ),
+    );
   };
 
   return (
@@ -4335,7 +4839,7 @@ export function ChatWorkbench() {
                 <RiStarSmileLine className="h-3.5 w-3.5" aria-hidden="true" />
                 AI 创作工作台
               </div>
-              <div className="mb-3 text-[32px] font-semibold tracking-[-0.03em] text-[#111111] sm:text-[38px]">今天想让映造帮你做什么？</div>
+              <div className="mb-3 text-[32px] font-semibold tracking-[-0.03em] text-[#111111] sm:text-[38px]">今天你有什么想做的？</div>
               <div className="max-w-2xl text-sm leading-7 text-[#6f6f6f]">
                 你可以像聊天一样直接输入需求。图片、视频和生成结果都会在对话里连续显示，不再单独分栏。
               </div>
@@ -4360,17 +4864,30 @@ export function ChatWorkbench() {
           ) : (
             <div className="mx-auto max-w-[1006px] space-y-12">
               {messages.map((message) => {
-                if (message.role === "system") {
+                const isLegacyAgentErrorNotice = message.role === "assistant" && message.mode === "agent" && Boolean(message.error) && message.content === message.error;
+
+                if (message.role === "system" || isLegacyAgentErrorNotice) {
                   const noticeMode = message.mode ?? "agent";
-                  const ModeIcon = modeOptions.find((option) => option.value === noticeMode)?.icon ?? RiRobot2Line;
+                  const modeNoticeContent = `${modeNoticeText[noticeMode].title}，${modeNoticeText[noticeMode].description}`;
+                  const isErrorNotice = Boolean(message.error);
+                  const isModeNotice = message.content === modeNoticeContent;
+                  const ModeIcon = isErrorNotice || !isModeNotice ? RiErrorWarningLine : modeOptions.find((option) => option.value === noticeMode)?.icon ?? RiRobot2Line;
 
                   return (
                     <div key={message.id} className="flex justify-start">
-                      <div className="inline-flex max-w-full items-center gap-2 text-[#9a9a9a]">
+                      <div className={isErrorNotice ? "inline-flex max-w-full items-center gap-2 text-rose-500" : "inline-flex max-w-full items-center gap-2 text-[#9a9a9a]"}>
                         <ModeIcon className="h-5 w-5 shrink-0" aria-hidden="true" />
                         <div className="text-[13px] leading-6">
-                          <span className="font-semibold text-[#777777]">{modeNoticeText[noticeMode].title}</span>
-                          <span>，{modeNoticeText[noticeMode].description}</span>
+                          {isErrorNotice ? (
+                            <span>{message.error ?? message.content}</span>
+                          ) : !isModeNotice ? (
+                            <span>{message.content}</span>
+                          ) : (
+                            <>
+                              <span className="font-semibold text-[#777777]">{modeNoticeText[noticeMode].title}</span>
+                              <span>，{modeNoticeText[noticeMode].description}</span>
+                            </>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -4384,9 +4901,29 @@ export function ChatWorkbench() {
                 const issueFeedback = messageIssueFeedback[message.id];
                 const activeMessagePendingRequest = activePendingRequests.find((request) => request.id === message.requestId);
                 const isActiveVideoPending = activeMessagePendingRequest?.mode === "video" && !message.videoUrl && !message.error;
-                const isActiveImagePending = activeMessagePendingRequest?.mode === "image" && !message.images?.length && !message.error;
+                const imagePendingCount = message.mode === "image" ? Math.max(0, message.pendingImageCount ?? 0) : 0;
+                const imageFailedCount = message.mode === "image" ? Math.max(0, message.failedImageCount ?? 0) : 0;
+                const isActiveImagePending = activeMessagePendingRequest?.mode === "image" && imagePendingCount > 0;
                 const isActiveMediaPending = isActiveVideoPending || isActiveImagePending;
                 const userImageReferences = message.role === "user" ? getDisplayImageReferences(message) : undefined;
+                const mediaPromptReferences = message.role === "assistant" && (message.mode === "image" || message.mode === "video") ? (message.imageReferences?.length ? message.imageReferences : getOrderedExplicitImageReferences(message.content, assets, [], activeConversationImageReferences)) : undefined;
+                const imageVariantGroups = message.role === "assistant" && message.mode === "image" ? getImageVariantGroups(message) : [];
+                const imageVariantCount = imageVariantGroups.length;
+                const selectedImageVariantIndex = imageVariantCount > 0 ? Math.min(imageVariantIndexes[message.id] ?? 0, imageVariantCount - 1) : 0;
+                const selectedImageVariant = imageVariantGroups[selectedImageVariantIndex];
+                const displayedMessageImages = selectedImageVariant?.images ?? message.images ?? [];
+                const imageResultPageKey = `${message.id}:${selectedImageVariantIndex}`;
+                const imageResultPageIndex = imageResultPageIndexes[imageResultPageKey] ?? 0;
+                const setImageVariantIndex = (nextIndex: number) => {
+                  if (imageVariantCount <= 1) return;
+                  setImageVariantIndexes((current) => ({
+                    ...current,
+                    [message.id]: (nextIndex + imageVariantCount) % imageVariantCount,
+                  }));
+                };
+                const setImageResultPageIndex = (nextIndex: number) => {
+                  setImageResultPageIndexes((current) => ({ ...current, [imageResultPageKey]: nextIndex }));
+                };
 
                 return (
                 <div key={message.id} className={message.role === "user" ? "flex justify-end" : "flex justify-start"}>
@@ -4407,7 +4944,7 @@ export function ChatWorkbench() {
                       }
                     >
                       {message.role === "assistant" ? (
-                        message.mode === "image" || message.mode === "video" ? <MediaPromptBlock message={message} onUsePrompt={(item) => void copyPrompt(item)} copyState={copyFeedback?.messageId === message.id ? copyFeedback.state : undefined} /> : <TypewriterFormattedMessage messageId={message.id} content={message.content} isComplete={isAssistantMessageComplete} onComplete={markTypingComplete} onTick={keepTypingAtBottom} />
+                        message.mode === "image" || message.mode === "video" ? <MediaPromptBlock message={message} references={mediaPromptReferences} onUsePrompt={(item) => void copyPrompt(item)} copyState={copyFeedback?.messageId === message.id ? copyFeedback.state : undefined} displayImageUrl={displayedMessageImages[0]} variantIndex={selectedImageVariantIndex} variantCount={imageVariantCount} onPreviousVariant={() => setImageVariantIndex(selectedImageVariantIndex - 1)} onNextVariant={() => setImageVariantIndex(selectedImageVariantIndex + 1)} /> : <TypewriterFormattedMessage messageId={message.id} content={message.content} isComplete={isAssistantMessageComplete} onComplete={markTypingComplete} onTick={keepTypingAtBottom} />
                       ) : (
                         <UserMessageContent content={message.content} references={userImageReferences} />
                       )}
@@ -4426,23 +4963,23 @@ export function ChatWorkbench() {
                       }} />
                     ) : null}
 
-                     {message.role === "assistant" && message.images?.length && isAssistantMessageComplete ? (
-                       <div className="mt-2">
-                           <GeneratedImageStrip images={message.images} onPreview={(url, imageIndex) => setPreviewAsset({ id: `${message.id}-${imageIndex}`, type: "other", name: `生成图片${imageIndex + 1}`, url, sourcePrompt: message.content, previewMeta: getPreviewMediaMeta(message), sessionId: activeSession?.id ?? "", messageId: message.id, createdAt: message.createdAt ?? Date.now() })} />
-                        </div>
-                      ) : null}
+                     {message.role === "assistant" && message.mode === "image" && isAssistantMessageComplete && ((message.images?.length ?? 0) > 0 || imagePendingCount > 0 || imageFailedCount > 0) ? (
+                        <div className="mt-2">
+                            <ImageResultStrip images={displayedMessageImages} pendingCount={imagePendingCount} failedCount={imageFailedCount} createdAt={message.createdAt} now={timerNow} pageIndex={imageResultPageIndex} onPageChange={setImageResultPageIndex} onLoadedDimensions={(url, dimensions) => updateMessageImageDimensions(activeSession?.id ?? "", message.id, url, dimensions)} onPreview={(url, imageIndex) => setPreviewAsset({ id: `${message.id}-${selectedImageVariantIndex}-${imageIndex}`, type: "other", name: `生成图片${imageIndex + 1}`, url, sourcePrompt: message.content, previewMeta: getPreviewMediaMeta(message, url), sessionId: activeSession?.id ?? "", messageId: message.id, createdAt: message.createdAt ?? Date.now() })} />
+                         </div>
+                       ) : null}
 
                      {message.videoUrl && isAssistantMessageComplete ? (
                        <div className="mt-2">
-                           <InlineVideoResult url={message.videoUrl} onPreview={() => setPreviewAsset({ id: `${message.id}-video`, type: "shot_video", name: "生成视频", url: message.videoUrl ?? "", sourcePrompt: message.content, previewMeta: getPreviewMediaMeta(message), sessionId: activeSession?.id ?? "", messageId: message.id, createdAt: message.createdAt ?? Date.now() })} />
+                           <InlineVideoResult url={message.videoUrl} onLoadedDimensions={(dimensions) => updateMessageVideoDimensions(activeSession?.id ?? "", message.id, dimensions)} onPreview={() => setPreviewAsset({ id: `${message.id}-video`, type: "shot_video", name: "生成视频", url: message.videoUrl ?? "", sourcePrompt: message.content, previewMeta: getPreviewMediaMeta(message), sessionId: activeSession?.id ?? "", messageId: message.id, createdAt: message.createdAt ?? Date.now() })} />
                         </div>
                       ) : null}
 
-                    {message.error && (message.mode === "image" || message.mode === "video") && isAssistantMessageComplete ? (
-                      <FailedMediaStrip count={message.mode === "image" ? getImageCountValue(String(message.pendingImageCount ?? message.generationMeta?.settings?.imageCount ?? 1)) : 1} mode={message.mode} />
+                    {message.error && message.mode === "video" && isAssistantMessageComplete ? (
+                      <FailedMediaStrip count={1} mode="video" />
                     ) : null}
 
-                    {message.statusText && !message.videoUrl && !((message.mode === "image" || message.mode === "video") && message.error) && isAssistantMessageComplete ? (
+                    {message.statusText && !message.videoUrl && !(message.mode === "video" && message.error) && message.mode !== "image" && isAssistantMessageComplete ? (
                       isActiveMediaPending ? (
                         <div className="mt-3 flex max-w-full flex-nowrap gap-0.5 overflow-x-auto pb-1">
                           {Array.from({ length: isActiveImagePending ? getImageCountValue(String(message.pendingImageCount ?? 1)) : 1 }).map((_, pendingIndex) => (
@@ -4526,7 +5063,7 @@ export function ChatWorkbench() {
                               </div>
                             ) : null}
                           </div>
-                          <span className="ml-[10px] text-[12px] leading-8 text-[#b0b0b0]">映造感谢反馈 {formatMessageTime(message.createdAt)}</span>
+                          <span className="ml-[10px] text-[12px] leading-8 text-[#b0b0b0]">感谢反馈 {formatMessageTime(message.createdAt)}</span>
                         </div>
                         {message.id === activeSuggestionMessageId ? <SuggestionButtons suggestions={message.suggestions} onSelect={(suggestion) => void sendMessage(suggestion, "agent")} /> : null}
                       </>
@@ -4707,6 +5244,11 @@ export function ChatWorkbench() {
                           key={option.value}
                           type="button"
                           onClick={() => {
+                            if (option.value === mode) {
+                              setOpenControlMenu("");
+                              return;
+                            }
+
                             setMode(option.value);
                             setSessions((current) =>
                               current.map((session) =>
@@ -4760,6 +5302,25 @@ export function ChatWorkbench() {
                 >
                   <RiAtLine className="h-4.5 w-4.5 text-[#777777]" aria-hidden="true" />
                 </button>
+
+                {mode === "agent" ? (
+                  <div className="yinzao-tool-button inline-flex h-9 shrink-0 items-center gap-0.5 rounded-[8px] p-0.5 text-[12px] text-[#777777]">
+                    <button
+                      type="button"
+                      onClick={() => switchAgentModelTier("normal")}
+                      className={agentModelTier === "normal" ? "h-8 rounded-[7px] bg-white px-3 text-[12px] font-medium text-[#111111] shadow-sm" : "h-8 rounded-[7px] px-3 text-[12px] font-medium text-[#777777] transition hover:text-[#333333]"}
+                    >
+                      普通
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => switchAgentModelTier("advanced")}
+                      className={agentModelTier === "advanced" ? "h-8 rounded-[7px] bg-white px-3 text-[12px] font-medium text-[#111111] shadow-sm" : "h-8 rounded-[7px] px-3 text-[12px] font-medium text-[#777777] transition hover:text-[#333333]"}
+                    >
+                      高级
+                    </button>
+                  </div>
+                ) : null}
 
                 {mode !== "agent" ? (
                   <>
@@ -4871,7 +5432,7 @@ export function ChatWorkbench() {
                         </button>
                         <button type="button" onClick={() => {
                           setPreviewFitMode("fit");
-                          setPreviewScale(1);
+                          updatePreviewFitScale();
                           setPreviewPan({ x: 0, y: 0 });
                           const viewport = previewViewportRef.current;
                           if (viewport) {
@@ -4900,12 +5461,10 @@ export function ChatWorkbench() {
                     )}
                   </div>
                   <div className="flex items-center gap-3">
-                    {!isVideoAsset(previewAsset) ? (
-                      <a href={previewAsset.url} download={previewAsset.name} className="inline-flex h-9 min-w-[112px] items-center justify-center gap-2 rounded-[8px] bg-[#111111] px-6 text-[13px] font-medium text-white transition hover:bg-[#252525]" aria-label="下载图片">
-                        <RiDownloadLine className="h-4 w-4" aria-hidden="true" />
-                        <span>下载</span>
-                      </a>
-                    ) : null}
+                    <a href={previewAsset.url} download={getDownloadName(previewAsset)} className="inline-flex h-9 min-w-[112px] items-center justify-center gap-2 rounded-[8px] bg-[#111111] px-6 text-[13px] font-medium text-white transition hover:bg-[#252525]" aria-label={isVideoAsset(previewAsset) ? "下载视频" : "下载图片"}>
+                      <RiDownloadLine className="h-4 w-4" aria-hidden="true" />
+                      <span>下载</span>
+                    </a>
                     <button type="button" onClick={() => setPreviewAsset(null)} className="yinzao-tool-button flex h-9 w-9 translate-x-2 items-center justify-center text-[#777777] transition" aria-label="关闭预览">
                       <RiCloseLine className="h-5 w-5" aria-hidden="true" />
                     </button>
@@ -4923,7 +5482,7 @@ export function ChatWorkbench() {
                     ) : null}
                     <div className="relative h-[calc(100vh-320px)] min-h-[166px] overflow-hidden">
                       <div ref={previewThumbListRef} className="yinzao-hidden-scrollbar flex h-full flex-col gap-2 overflow-y-auto" onWheel={(event) => event.stopPropagation()}>
-                        {previewImageOptions.map((image, imageIndex) => {
+                        {previewImageOptions.map((image) => {
                           const isSelected = previewAsset.id === image.id || previewAsset.url === image.url;
                           const isVideoThumb = isVideoAsset(image);
 
@@ -4972,13 +5531,25 @@ export function ChatWorkbench() {
                 }} onMouseUp={() => setIsPreviewDragging(false)} onMouseLeave={() => setIsPreviewDragging(false)}>
                   <div className="flex h-full w-full items-center justify-center bg-transparent">
                     {isVideoAsset(previewAsset) ? (
-                      <video src={previewAsset.url} className="max-h-full max-w-full object-contain shadow-[0_8px_30px_rgba(0,0,0,0.08)]" controls playsInline />
+                      <video src={previewAsset.url} className="max-h-full max-w-full object-contain shadow-[0_8px_30px_rgba(0,0,0,0.08)]" controls playsInline onLoadedMetadata={(event) => {
+                        const video = event.currentTarget;
+                        if (!video.videoWidth || !video.videoHeight) return;
+                        const dimensions = { width: video.videoWidth, height: video.videoHeight };
+                        setPreviewAsset((current) => current && current.id === previewAsset.id ? { ...current, previewMeta: getPreviewMetaWithDimensions(current.previewMeta, dimensions, "video") } : current);
+                        if (previewAsset.sessionId && previewAsset.messageId) updateMessageVideoDimensions(previewAsset.sessionId, previewAsset.messageId, dimensions);
+                      }} />
                     ) : (
-                      <Image ref={previewImageRef} src={previewAsset.url} alt={previewAsset.name} width={2000} height={1400} unoptimized draggable={false} onLoad={(event) => {
+                      <>
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img ref={previewImageRef} src={previewAsset.url} alt={previewAsset.name} draggable={false} onLoad={(event) => {
                         const image = event.currentTarget;
-                        setPreviewNaturalSize({ width: image.naturalWidth, height: image.naturalHeight });
-                        setPreviewFitScale(clampPreviewScale(image.clientWidth / image.naturalWidth));
-                      }} className={`select-none object-contain shadow-[0_8px_30px_rgba(0,0,0,0.08)] ${previewFitMode === "fit" ? "max-h-full w-auto max-w-full" : "max-w-none shrink-0"}`} style={previewFitMode === "actual" ? { width: `${(previewNaturalSize.width || 2000) * previewScale}px`, height: "auto", transform: `translate3d(${previewPan.x}px, ${previewPan.y}px, 0)`, transition: isPreviewDragging ? "none" : "transform 120ms ease-out" } : undefined} />
+                        const dimensions = { width: image.naturalWidth, height: image.naturalHeight };
+                        setPreviewNaturalSize(dimensions);
+                        requestAnimationFrame(() => updatePreviewFitScale(dimensions));
+                        setPreviewAsset((current) => current && current.id === previewAsset.id ? { ...current, previewMeta: getPreviewMetaWithDimensions(current.previewMeta, dimensions, "image") } : current);
+                        if (previewAsset.sessionId && previewAsset.messageId) updateMessageImageDimensions(previewAsset.sessionId, previewAsset.messageId, previewAsset.url, dimensions);
+                      }} className="max-w-none shrink-0 select-none object-contain shadow-[0_8px_30px_rgba(0,0,0,0.08)]" style={{ width: `${(previewNaturalSize.width || 2000) * visiblePreviewScale}px`, height: "auto", transform: `translate3d(${previewPan.x}px, ${previewPan.y}px, 0)`, transition: isPreviewDragging ? "none" : "transform 120ms ease-out" }} />
+                      </>
                     )}
                   </div>
                 </div>
@@ -4995,7 +5566,7 @@ export function ChatWorkbench() {
                         <span className="text-[#d0d0d0]">|</span>
                         <span className="inline-flex items-center gap-1.5">
                           <span>{previewAsset.previewMeta.sizeText}</span>
-                          <CompactResolutionIcon option={previewAsset.previewMeta.resolution} mode={previewAsset.previewMeta.mode} />
+                          <CompactResolutionIcon option={previewAsset.previewMeta.resolution} mode={previewAsset.previewMeta.mode} qualityBadgeLabel={previewAsset.previewMeta.qualityBadgeLabel} />
                         </span>
                         {previewAsset.previewMeta.duration ? (
                           <>
