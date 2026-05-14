@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Yinzao",
+  title: "NovaStar",
   description: "简单版即梦，聊天式生图生视频工作台",
 };
 

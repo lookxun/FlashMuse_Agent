@@ -46,7 +46,9 @@
 - `/api/chat` 会把 OpenRouter 返回的实际 `model` 字段带回前端
 - `/api/models` 仍保留，但前端标题栏右侧模型下拉已移除
 - `/api/intent` 会调用 OpenRouter，按最近上下文分类为 `agent` / `image` / `video` / `prompt` / `clarify`，用于 Agent 模式自动路由
+- 2026-05-14 新增 `/api/agent-plan`，用于 Agent 模式的结构化任务规划。它比 `/api/intent` 更重要，会返回 `intent / needsClarification / count / subject / quality / ratio / resolution / duration / prompt / constraints / suggestions`，前端执行器再决定追问、对话、生图或生视频
 - 当前对话模型固定为 `bytedance-seed/seed-2.0-lite`
+- 当前品牌名已改为中文 `启星`、英文 `NovaStar`；OpenRouter 请求头 `X-Title` 使用 `NovaStar`，Agent 自称和意图分类器提示词使用 `启星`
 - 曾误用 `seed/seed-2.0-lite`，OpenRouter 会报 invalid model ID，正确模型 ID 是 `bytedance-seed/seed-2.0-lite`
 - `/api/intent` 已做轻量 JSON 结构化输出解析，失败时回退到 `agent`
 - AI 回复当前使用轻量标记做排版：`#` / `##` / `###` 标题、`**加粗**`、`[red]...[/red]`、`[blue]...[/blue]`、`---` 分隔线
@@ -59,6 +61,10 @@
 - 参考图生成链路按用户文本中的 `@` 顺序传图；明确 `@` 时只传被 `@` 的图，没有 `@` 时才传输入框上方图片或最近图片；发送前按 URL 去重
 - 提示词优化阶段会带低清预览图理解参考图，最终图片生成默认传原图；只有 OpenRouter 返回 413 时才自动用压缩副本重试
 - 生成完成后资产入库优先使用前端任务携带的 `assetTargetType`，再用提示词文本规则兜底；命名逻辑在 `src/components/chat-workbench.tsx`
+- 当前右上角用量统计会累计当前会话里 `/api/chat`、`/api/intent`、`/api/image`、`/api/video` 返回的 `usage/cost`。文本接口可用 token 估算费用；图片实测会返回 token 和费用；视频实测通常只返回 `usage.cost`，所以只加金额不加 Token
+- Agent Planner 阶段不携带 base64 参考图，只传文字和“本轮带了几张参考图”的提示，避免规划阶段请求体过大；真正生成阶段仍会按参考图链路传图
+- 所有前端红字错误和主要 API 错误都应通过 `src/lib/error-message.ts` 的 `toUserErrorMessage` 清洗，避免 HTML、堆栈、代码直接展示给用户
+- 公网部署前必须改造参考图传参链路：本地开发阶段 `/generated/...` 图片会转 base64 传给 OpenRouter，正式部署后应先把上传图、资产图、历史参考图保存到可公网访问的 HTTPS 地址，再把 HTTPS URL 传给 OpenRouter。不要继续用 base64 传公网参考图，否则容易触发 `413 Request Entity Too Large`，也会损失原图质量和稳定性。
 
 ## OpenRouter 视频生成
 
@@ -141,19 +147,22 @@
 6. 视频可选模型在 `src/lib/models.ts` 的 `videoGenerationModels`：`bytedance/seedance-2.0-fast`、`bytedance/seedance-2.0`、`kwaivgi/kling-v3.0-std`、`kwaivgi/kling-v3.0-pro`、`kwaivgi/kling-video-o1`、`google/veo-3.1`；`openai/sora-2-pro` 已移除
 7. 聚合接口文档位置：`E:\project\【1】Api\SeeDance接入说明`
 8. OpenRouter 对 base64 图片请求体有限制，遇到 `413 Request Entity Too Large` 时，Agent 生成链路仍会压缩参考图副本重试；专业图片 / 视频模式按用户要求尽量原样传图
-9. 当前多参考图一致性仍取决于 `bytedance-seed/seedream-4.5` 的图像编辑能力；如继续跑偏，可考虑切换支持多参考图更稳定的图片编辑模型
-10. 本机最新尺寸矩阵实测见根目录 `image-size-test-results.md`，但 2026-05-12 又补测了“只传比例”的原生尺寸，当前以只传比例结果为产品基准：Seedream 4.5 原生为 `2048x2048 / 2560x1440 / 1440x2560 / 3024x1296 / 2304x1728`；Gemini 3.1 Flash 和 Gemini 3 Pro 原生为 `1024x1024 / 1376x768 / 768x1376 / 1584x672 / 1200x896`；GPT-5.4 Image 2 原生为 `1024x1024 / 1280x720 / 720x1280 / 1568x672 / 1152x864`
-11. 本机最新实测和 OpenRouter `/api/v1/videos/models` 能力表需要区分“官方支持项”和“实际输出”。当前保留 6 个视频模型。Seedance 2.0 Fast UI 支持 `480p / 720p`；Seedance 2.0 支持 `480p / 720p / 1080p`；Kling Standard / Pro 支持 `720p`；Kling Video O1 虽官方标 `720p`，但实测输出为 1080p 尺寸，UI 显示 `1080p`；Veo 3.1 支持 `720p / 1080p / 4K`。Veo 3.1 支持 `4/6/8秒`，Kling Video O1 支持 `5/10秒`，其它 Seedance / Kling 当前按 `5/10/15秒` 展示。
-12. 视频请求不再默认首尾帧，不传 `frame_images`；参考图只传 `input_references`
-13. 视频默认尝试有声音，当前保留模型先传 `generate_audio: true`，若音频参数失败自动重试无声音。
-14. 图片生成遇到过 Node `fetch` 调 OpenRouter `chat/completions` 偶发假 `500 Internal Server Error`，同请求用 `curl` 成功；当前 `src/lib/openrouter.ts` 已增加 `curlPostJson` 兜底，不要轻易删除
-15. 图片返回格式可能是 `choices[0].message.images[].image_url.url` 或 `data:image/jpeg;base64,...`；当前已兼容多种结构并通过 `saveGeneratedAsset` 保存到 `public/generated/images`
-16. `src/lib/local-assets.ts` 已补充 `data:` URL 的 MIME 扩展名识别，保存 base64 图片时可生成 `.jpg/.png/.webp` 等正确后缀
-17. 图片生成服务端会打印 `[image-generation] OpenRouter request params`，用于确认实际发出的模型、比例、分辨率、`modalities`、`image_config` 和期望尺寸；图片 5xx 会保留同一请求体重试，不应因为重试偷偷去掉用户选择的参数
-18. `sharp` 相关本地超分增强已取消。当前项目不再依赖 `sharp`，不再做本地 2 倍放大；前端收到和展示的是模型返回后保存的原图 URL。
-19. 视频请求最终已改为不传 `size`，只传 `resolution + aspect_ratio`。原因是实测输出尺寸中有 `992x432 / 960x960` 等非标尺寸，作为 `size` 请求会报 `Unsupported size`；而不传 `size` 时全量复测输出尺寸与此前一致，成功率更稳。
-20. 视频能力表写在 `src/lib/models.ts` 的 `videoModelRules`。其中 `sizes` 是 UI/兜底显示用的实测输出尺寸，不是请求尺寸；`nonStandardSizes` 用于显示 `（非标）`。前端比例和分辨率按钮只显示当前模型支持项；视频智能比例固定显示为 `16:9 / 1280x720`，请求传 `resolution: "720p" + aspect_ratio: "16:9"`。
-21. OpenRouter / Gemini 3 Pro 可能一次响应返回多张候选图。项目会保存响应里的所有图片并返回给前端，前端按尺寸组和分页进行展示。
+9. 公网部署时必须把参考图改为 HTTPS URL 传给 OpenRouter，不再传 base64。需要提前规划对象存储 / CDN / 静态资源服务、URL 持久化、历史本地路径兼容和生成接口传参改造。
+10. 当前多参考图一致性仍取决于 `bytedance-seed/seedream-4.5` 的图像编辑能力；如继续跑偏，可考虑切换支持多参考图更稳定的图片编辑模型
+11. 本机最新尺寸矩阵实测见根目录 `image-size-test-results.md`，但 2026-05-12 又补测了“只传比例”的原生尺寸，当前以只传比例结果为产品基准：Seedream 4.5 原生为 `2048x2048 / 2560x1440 / 1440x2560 / 3024x1296 / 2304x1728`；Gemini 3.1 Flash 和 Gemini 3 Pro 原生为 `1024x1024 / 1376x768 / 768x1376 / 1584x672 / 1200x896`；GPT-5.4 Image 2 原生为 `1024x1024 / 1280x720 / 720x1280 / 1568x672 / 1152x864`
+12. 本机最新实测和 OpenRouter `/api/v1/videos/models` 能力表需要区分“官方支持项”和“实际输出”。当前保留 6 个视频模型。Seedance 2.0 Fast UI 支持 `480p / 720p`；Seedance 2.0 支持 `480p / 720p / 1080p`；Kling Standard / Pro 支持 `720p`；Kling Video O1 虽官方标 `720p`，但实测输出为 1080p 尺寸，UI 显示 `1080p`；Veo 3.1 支持 `720p / 1080p / 4K`。Veo 3.1 支持 `4/6/8秒`，Kling Video O1 支持 `5/10秒`，其它 Seedance / Kling 当前按 `5/10/15秒` 展示。
+13. 视频请求不再默认首尾帧，不传 `frame_images`；参考图只传 `input_references`
+14. 视频默认尝试有声音，当前保留模型先传 `generate_audio: true`，若音频参数失败自动重试无声音。
+15. 图片生成遇到过 Node `fetch` 调 OpenRouter `chat/completions` 偶发假 `500 Internal Server Error`，同请求用 `curl` 成功；当前 `src/lib/openrouter.ts` 已增加 `curlPostJson` 兜底，不要轻易删除
+16. 图片返回格式可能是 `choices[0].message.images[].image_url.url` 或 `data:image/jpeg;base64,...`；当前已兼容多种结构并通过 `saveGeneratedAsset` 保存到 `public/generated/images`
+17. `src/lib/local-assets.ts` 已补充 `data:` URL 的 MIME 扩展名识别，保存 base64 图片时可生成 `.jpg/.png/.webp` 等正确后缀
+18. 图片生成服务端会打印 `[image-generation] OpenRouter request params`，用于确认实际发出的模型、比例、分辨率、`modalities`、`image_config` 和期望尺寸；图片 5xx 会保留同一请求体重试，不应因为重试偷偷去掉用户选择的参数
+19. `sharp` 相关本地超分增强已取消。当前项目不再依赖 `sharp`，不再做本地 2 倍放大；前端收到和展示的是模型返回后保存的原图 URL。
+20. 视频请求最终已改为不传 `size`，只传 `resolution + aspect_ratio`。原因是实测输出尺寸中有 `992x432 / 960x960` 等非标尺寸，作为 `size` 请求会报 `Unsupported size`；而不传 `size` 时全量复测输出尺寸与此前一致，成功率更稳。
+21. 视频能力表写在 `src/lib/models.ts` 的 `videoModelRules`。其中 `sizes` 是 UI/兜底显示用的实测输出尺寸，不是请求尺寸；`nonStandardSizes` 用于显示 `（非标）`。前端比例和分辨率按钮只显示当前模型支持项；视频智能比例固定显示为 `16:9 / 1280x720`，请求传 `resolution: "720p" + aspect_ratio: "16:9"`。
+22. OpenRouter / Gemini 3 Pro 可能一次响应返回多张候选图。项目会保存响应里的所有图片并返回给前端，前端按尺寸组和分页进行展示。
+23. 图片生成 `/api/image` 当前会把 OpenRouter 响应里的 `usage` 透传给前端。实测 `Seedream 4.5 / 1:1 / 2K / 1张` 返回 `promptTokens: 4`、`completionTokens: 16384`、`totalTokens: 16388`、`usd: 0.04`。
+24. 视频生成 `/api/video` 当前会从创建任务和查询任务响应中提取 `usage.cost`。实测已有视频任务 `P14NkUI1MIBIgF3op7KG` 返回 `usd: 0.84`，Token 为 0；前端只累计一次，避免轮询重复计费。
 
 ## 敏感信息说明
 

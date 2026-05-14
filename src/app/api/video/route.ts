@@ -1,6 +1,40 @@
 import { NextResponse } from "next/server";
 import { createOpenRouterVideoTask, getOpenRouterHeaders, getOpenRouterVideoTask, getRequiredOpenRouterApiKey } from "@/lib/openrouter-video";
 import { saveGeneratedAsset } from "@/lib/local-assets";
+import { toUserErrorMessage } from "@/lib/error-message";
+import { upsertVideoManifestEntry } from "@/lib/video-manifest";
+
+type UsageMeta = {
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
+  usd?: number;
+};
+
+function getFiniteNumber(value: unknown) {
+  const numberValue = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
+  return Number.isFinite(numberValue) ? numberValue : undefined;
+}
+
+function getUsageMeta(value: unknown): UsageMeta | undefined {
+  if (!value || typeof value !== "object") return undefined;
+
+  const record = value as Record<string, unknown>;
+  const usage = record.usage && typeof record.usage === "object" ? record.usage as Record<string, unknown> : record;
+  const promptTokens = Math.max(0, Math.floor(getFiniteNumber(usage.promptTokens ?? usage.prompt_tokens) ?? 0));
+  const completionTokens = Math.max(0, Math.floor(getFiniteNumber(usage.completionTokens ?? usage.completion_tokens) ?? 0));
+  const totalTokens = Math.max(0, Math.floor(getFiniteNumber(usage.totalTokens ?? usage.total_tokens) ?? promptTokens + completionTokens));
+  const usd = getFiniteNumber(usage.usd ?? usage.cost ?? usage.totalCost ?? usage.total_cost ?? usage.amount);
+
+  if (totalTokens > 0 || usd !== undefined) return { promptTokens, completionTokens, totalTokens, usd };
+
+  for (const key of ["data", "result", "task", "content", "payload"]) {
+    const nestedUsage = getUsageMeta(record[key]);
+    if (nestedUsage) return nestedUsage;
+  }
+
+  return undefined;
+}
 
 function getCreateTaskId(value: unknown): string | undefined {
   if (typeof value === "string" && value.trim()) return value.trim();
@@ -152,9 +186,12 @@ export async function POST(request: Request) {
           localVideoUrl = videoUrl;
         }
 
+        await upsertVideoManifestEntry({ taskId, prompt: "", localVideoUrl, remoteVideoUrl: videoUrl });
+
         return NextResponse.json({
           ...task,
           status: "succeeded",
+          usage: getUsageMeta(task),
           content: {
             ...task.content,
             video_url: localVideoUrl,
@@ -163,7 +200,7 @@ export async function POST(request: Request) {
         });
       }
 
-      return NextResponse.json({ ...task, status, content: { ...task.content, video_url: videoUrl } });
+      return NextResponse.json({ ...task, status, usage: getUsageMeta(task), content: { ...task.content, video_url: videoUrl } });
     }
 
     if (!prompt) {
@@ -174,7 +211,7 @@ export async function POST(request: Request) {
     const videoError = getVideoErrorMessage(task);
 
     if (videoError) {
-      return NextResponse.json({ error: `OpenRouter 视频任务创建失败：${videoError}`, raw: task }, { status: 502 });
+      return NextResponse.json({ error: `视频任务创建失败：${videoError}`, raw: task }, { status: 502 });
     }
 
     const id = task.polling_url ?? task.pollingUrl ?? getCreateTaskId(task);
@@ -183,9 +220,11 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "视频接口已调用，但返回里没有找到任务编号。", raw: task }, { status: 502 });
     }
 
-    return NextResponse.json({ ...task, id, job_id: getCreateTaskId(task) });
+    await upsertVideoManifestEntry({ taskId: id, prompt, model: body.model, settings: body.settings });
+
+    return NextResponse.json({ ...task, id, job_id: getCreateTaskId(task), usage: getUsageMeta(task) });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "未知错误";
+    const message = toUserErrorMessage(error, "视频请求失败，请稍后再试。");
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }

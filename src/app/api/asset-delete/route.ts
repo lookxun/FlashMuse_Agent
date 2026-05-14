@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { deleteLocalGeneratedAsset } from "@/lib/local-assets";
+import { toUserErrorMessage } from "@/lib/error-message";
 
 export async function POST(request: Request) {
   try {
@@ -13,7 +14,7 @@ export async function POST(request: Request) {
     await deleteLocalGeneratedAsset(url);
     return NextResponse.json({ success: true });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "删除失败";
+    const message = toUserErrorMessage(error, "删除失败。");
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }

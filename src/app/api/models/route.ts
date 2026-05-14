@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getOpenRouterConversationModels } from "@/lib/openrouter";
+import { toUserErrorMessage } from "@/lib/error-message";
 
 export async function GET() {
   try {
@@ -7,7 +8,7 @@ export async function GET() {
 
     return NextResponse.json({ models });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "模型列表获取失败";
+    const message = toUserErrorMessage(error, "模型列表获取失败。");
 
     return NextResponse.json({ error: message }, { status: 500 });
   }

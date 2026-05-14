@@ -67,13 +67,13 @@ export function getOpenRouterHeaders(apiKey: string) {
     Authorization: `Bearer ${apiKey}`,
     "Content-Type": "application/json",
     "HTTP-Referer": "http://localhost:3000",
-    "X-Title": "Yinzao",
+    "X-Title": "NovaStar",
   };
 }
 
 export function getRequiredOpenRouterApiKey() {
   const apiKey = getOpenRouterApiKey();
-  if (!apiKey) throw new Error("缺少 OpenRouter API Key");
+  if (!apiKey) throw new Error("缺少 API Key");
   return apiKey;
 }
 
@@ -149,7 +149,7 @@ async function postOpenRouterVideoTask(prompt: string, referenceImages: string[]
   });
 
   if (!response.ok) {
-    throw new Error(await getOpenRouterError(response, "OpenRouter 视频任务创建失败"));
+    throw new Error(await getOpenRouterError(response, "视频任务创建失败"));
   }
 
   return (await response.json()) as OpenRouterVideoTask;
@@ -198,7 +198,7 @@ export async function getOpenRouterVideoTask(taskId: string) {
   }
 
   if (!response.ok) {
-    throw new Error(`${await getOpenRouterError(response, "OpenRouter 视频任务查询失败")}，查询地址：${url}`);
+    throw new Error(await getOpenRouterError(response, "视频任务查询失败"));
   }
 
   return (await response.json()) as OpenRouterVideoTask;

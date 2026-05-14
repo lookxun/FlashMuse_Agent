@@ -326,6 +326,74 @@
 
 ## 当前待完成内容
 
+公网部署重点待办：上传图、资产图、历史参考图当前在本地开发阶段会转 base64 传给 OpenRouter，容易触发 `413 Request Entity Too Large`。正式部署前必须改成先保存到可公网访问的 HTTPS 地址（对象存储 / CDN / 静态资源服务），再把 HTTPS URL 传给 OpenRouter，不再传 base64；同时要处理 URL 持久化、旧本地路径兼容和生成接口传参。
+
+## 2026-05-14 本轮对话补充：Agent Planner、模型调用规则、错误中文化
+
+本轮完成：
+
+1. 用户确认 `AI-Video-Assistant_Project Planning\对话流三种模式基础规则.md` 是后续优先规则文档。以后用户要求先看文档时，AI 必须先读该文件，对照当前实现列出更新点，再等用户决定是否修改。
+2. 新增 Agent Planner：`src/app/api/agent-plan/route.ts` 调用 `src/lib/openrouter.ts` 的 `planAgentTask`。Planner 返回结构化执行计划，而不是靠硬规则直接执行。
+3. Planner 字段包括：`intent`、`needsClarification`、`clarifyQuestion`、`displayText`、`count`、`subject`、`quality`、`ratio`、`resolution`、`duration`、`prompt`、`constraints`、`items`、`suggestions`。
+4. Planner 原则：能从上下文和默认规则推断就不追问；只有目标不清、图片/视频都可能、缺失信息会明显导致错、用户要求冲突或成本规格明显过高时才追问。
+5. Agent 不再使用本地问候直回。所有 Agent 输入都会进入 pending 队列并显示 `正在认真思考`，最少显示 `2000ms`。
+6. `正在认真思考` 文案和后面三个点已加明显走光/跳动动画；该思考状态写入 `pendingRequests`，刷新浏览器后会恢复并继续执行。
+7. Agent 自动生图/生视频显示规则已改：左侧只显示 Planner 的简短执行说明 + 媒体结果，不重复用户原话，不显示专业模式的模型/比例/尺寸参数行。
+8. Agent 生图一行 4 个，超过 4 个换行显示，不分页；Agent 媒体等待卡、失败卡和结果底框使用 `10px` 圆角。
+9. Agent 媒体失败卡内新增“重新生成”按钮，点击后用同一段提示词重新申请该失败项。
+10. Agent 图片数量识别支持中文数字，如 `一张 / 七张 / 十张`。Planner 会把“生成数量”和“单张图片内容”分开，避免“七张美女图”被模型理解成一张合集图。
+11. Agent 模型调用规则已调整：普通 Agent 固定图片 `Seedream 4.5`、视频 `Seedance 2.0 Fast`；高级 Agent 默认优先当前专业模式选中模型，不因用户说“高品质/高清/精细”立即切贵模型。
+12. 高级 Agent 只有用户多次不满意才升质量，用户多次抱怨慢才换快稳；总体优先便宜。`Veo 3.1` 只在用户明确要求 4K 视频输出规格时调用。
+13. 规则文档中已加入模型排序表，并按用户要求改成定宽 Markdown 表格，避免在编辑器中列不对齐。
+14. Agent Planner 阶段不再携带 base64 参考图，只传文字和“本轮带了几张参考图”的提示，避免请求体过大导致 413；真正生成阶段仍使用参考图。
+15. 新增统一错误清洗 `src/lib/error-message.ts`。前端红字错误和主要 API catch 都使用 `toUserErrorMessage`，避免 HTML、代码、堆栈直接展示。
+16. 常见错误中文化：请求体太大、API Key 无效、地区不可用、频率/额度限制、平台 500、敏感/真人隐私图、参数不支持、无 endpoint 等。
+17. 系统提示和错误系统提示图标已改为与第一行文字顶部对齐。
+18. 本轮继续更新：Agent 多图生成已支持 `items[]`。每张图片用自己的独立 prompt 请求，真实 prompt 按 URL 保存到 `message.imagePrompts`，预览页和 Agent 媒体提示词条都优先显示单图真实 prompt。
+19. 本轮继续更新：Agent 自动媒体结果新增淡灰色提示词折叠条，放在 Agent 文案下方、图片/视频上方。点击展开后同一灰色面板内显示完整提示词，最高约 `180px`，超出滚动；多图不同 prompt 时显示 `<1/5>` 分页和“使用提示词”。
+20. 本轮继续更新：Agent 展示文案自然化，默认不再说“单张独立、不做拼图或合集”；这些只作为内部执行约束。只有用户明确提到不要拼图/合集或纠错时才显示相关说明。
+21. 本轮继续更新：Agent 已增加“只要场景不要人物”硬规则。Planner 和执行层都会清理人物词并追加无人物约束，避免用户明确要场景时仍生成带人物的画面。
+22. 本轮继续更新：Agent 文本回复上下文已瘦身，历史图片不再默认带入 `/api/chat`；只在本轮明确参考图时保留最新用户图片。若仍触发 413，会自动纯文本重试。
+23. 本轮继续更新：用户可见错误提示去掉 `OpenRouter` 字样，统一为平台/请求/图片生成/视频任务等通用表述。
+24. 本轮涉及文件主要为：`src/components/chat-workbench.tsx`、`src/lib/openrouter.ts`、`src/lib/openrouter-video.ts`、`src/lib/error-message.ts`、`src/app/api/video/route.ts`、多个 `handover/*.md`、`AI-Video-Assistant_Project Planning\对话流三种模式基础规则.md`。
+25. 本轮验证：`npm run lint` 通过，`npm run build` 通过。
+
+## 2026-05-13 本轮对话补充：品牌更名、用量统计扩展和浮窗微调
+
+本轮完成：
+
+1. 用户确定项目中文名先用 `启星`，英文名用 `NovaStar`。
+2. 页面左侧品牌名已从 `映造` 改为 `启星`。
+3. 浏览器标题已从 `Yinzao` 改为 `NovaStar`。
+4. OpenRouter 请求头 `X-Title` 已从 `Yinzao` 改为 `NovaStar`，涉及文本/图片和视频接口。
+5. Agent 系统提示和意图分类器提示词里的自称已从 `映造` 改为 `启星`。
+6. 为避免本地数据丢失，`localStorage` key 里的 `yinzao-*` 暂不改；CSS class/keyframes 里的 `yinzao-*` 也暂不改。
+7. 右上角用量浮窗已压缩底框、内边距和行距；顶部新增灰色小标题 `使用量`，标题字号为 `11px`。
+8. 人民币显示从 `约 ¥0.00` 改为 `¥0.00 约`，计算逻辑不变，汇率仍固定 `7.2`。
+9. 当前会话用量统计已扩展到图片和视频。`/api/image` 会透传并累加 OpenRouter 图片响应中的 `usage`；`/api/video` 会提取视频任务创建/查询响应中的 `usage.cost`。
+10. 图片实测确认会返回 Token 和费用：本轮测试 `Seedream 4.5 / 1:1 / 2K / 1张` 返回 `promptTokens: 4`、`completionTokens: 16384`、`totalTokens: 16388`、`usd: 0.04`。
+11. 视频实测确认通常只返回费用不返回 Token：查询已有任务 `P14NkUI1MIBIgF3op7KG` 返回 `usd: 0.84`，Token 均为 `0`。
+12. 代码涉及：`src/lib/openrouter.ts`、`src/app/api/video/route.ts`、`src/components/chat-workbench.tsx`、`src/lib/openrouter-video.ts`、`src/app/layout.tsx`、`handover/00-README.md`、`handover/CHANGELOG.md`、`handover/03-progress-and-status.md`。
+13. 本轮验证：`npm run lint` 通过，`npm run build` 通过。
+
+## 2026-05-13 Agent、预览页、费用统计和输入禁用更新
+
+本轮完成：
+
+1. Agent `/api/chat` 和 `/api/intent` 增加 OpenRouter `curl` 兜底。`fetch` 非 2xx 时会用同请求体通过 `curl.exe` 重试，解决本机实测的偶发 `Internal Server Error`。
+2. Agent 请求失败不再渲染成带反馈按钮的 assistant 消息，而是作为系统消息显示。错误系统消息用红字和 `RiErrorWarningLine` 图标，只展示错误文本。
+3. Agent 工具栏新增 `普通 / 高级` 滑块。普通模型为 `bytedance-seed/seed-2.0-lite`，高级模型为 `openai/gpt-5.4`。该设置保存到本地输入设置，Agent 对话、意图识别和 Agent 重新生成都会使用当前档位。
+4. 切换普通/高级会在对话流插入灰色系统消息：`当前已切换至普通模式` 或 `当前已切换至高级模式`。
+5. 文案更新：思考提示改为 `正在认真思考`；反馈区末尾改为 `感谢反馈`；空会话标题改为 `今天你有什么想做的？`。
+6. 正在认真思考期间，当前输入框禁用：不能输入、粘贴、上传、点 `@`、切模式、切普通/高级或发送，输入弹窗会自动关闭。
+7. 顶部标题栏右侧新增当前会话用量统计图标。hover 黑底白字显示 Token、美元、人民币估算，人民币固定按 `7.2` 汇率。后续本轮对话已扩展到图片/视频 usage，详见上方“本轮对话补充”。
+8. 预览页视频下载按钮恢复。图片和视频预览右上角都有下载按钮，文件名会自动补后缀。
+9. 图片预览缩放逻辑改为用原生 `<img>` 和真实像素计算，避免 `next/image` 的 `width=2000` 影响实际尺寸。实际尺寸目标为真实像素 100%，适合尺寸目标为随预览容器变化实时适配。用户最后仍反馈适合尺寸视觉未达预期，后续需继续修。
+10. 预览页右侧缩略图自动定位修复：打开预览时先按 `id` 找当前缩略图，找不到则按 URL 找。
+11. 用户反馈输入框内中文正在输入时突然变英文。代码未发现自动翻译逻辑，判断更可能是浏览器翻译、翻译插件或输入法 AI 对 `contenteditable` 做了替换。建议后续给输入框加禁翻译/禁拼写改写属性。
+12. 本轮中途已推送 GitHub 提交 `5855bc4 Update media workspace interactions`。该提交之后又继续做了缩略图定位、费用统计、思考中禁用和文档更新，后续如需同步需再提交。
+13. 本轮验证：`npm run lint` 和 `npm run build` 通过。
+
 ## 2026-05-13 视频生成请求最终规则和实测尺寸显示规则
 
 本轮完成：

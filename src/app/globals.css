@@ -197,6 +197,90 @@ select {
   animation-delay: -1.26s;
 }
 
+.yinzao-thinking-shimmer {
+  background: linear-gradient(100deg, #5f5f5f 0%, #5f5f5f 28%, #ffffff 42%, #367cee 50%, #b8dcff 58%, #5f5f5f 72%, #5f5f5f 100%);
+  background-size: 300% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  filter: drop-shadow(0 0 4px rgba(54, 124, 238, 0.16));
+  animation: yinzaoThinkingShimmer 1.65s linear infinite;
+}
+
+.yinzao-thinking-dot {
+  background: #8a8a8a;
+  animation: yinzaoThinkingDotSweep 0.95s ease-in-out infinite;
+}
+
+.yinzao-thinking-dot:nth-child(2) {
+  animation-delay: 0.12s;
+}
+
+.yinzao-thinking-dot:nth-child(3) {
+  animation-delay: 0.24s;
+}
+
+.yinzao-stop-shimmer {
+  position: relative;
+  overflow: hidden;
+}
+
+.yinzao-stop-shimmer::after {
+  content: "";
+  position: absolute;
+  inset: -40% auto -40% -70%;
+  width: 58%;
+  transform: rotate(18deg);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.65), transparent);
+  animation: yinzaoStopButtonShimmer 1.25s ease-in-out infinite;
+  pointer-events: none;
+}
+
+.yinzao-stop-shimmer > svg {
+  position: relative;
+  z-index: 1;
+}
+
+@keyframes yinzaoThinkingShimmer {
+  0% {
+    background-position: 120% 0;
+  }
+
+  100% {
+    background-position: -120% 0;
+  }
+}
+
+@keyframes yinzaoStopButtonShimmer {
+  0% {
+    left: -70%;
+  }
+
+  100% {
+    left: 120%;
+  }
+}
+
+@keyframes yinzaoThinkingDotSweep {
+  0%, 80%, 100% {
+    background: #8a8a8a;
+    box-shadow: none;
+    transform: translateY(0) scale(1);
+  }
+
+  35% {
+    background: #367cee;
+    box-shadow: 0 0 10px rgba(54, 124, 238, 0.75);
+    transform: translateY(-4px) scale(1.22);
+  }
+
+  55% {
+    background: #9fd1ff;
+    box-shadow: 0 0 8px rgba(159, 209, 255, 0.6);
+    transform: translateY(-1px) scale(1.08);
+  }
+}
+
 @keyframes yinzaoDotGridPulse {
   0%, 18%, 100% {
     opacity: 0;

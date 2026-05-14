@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import type { ConversationModel, ModelName } from "@/lib/models";
 import { DEFAULT_IMAGE_MODEL, getExpectedImageDimensions, getImageModelRule, models, resolveImageSettingsForModel } from "@/lib/models";
 import { getLocalImageDimensions, saveGeneratedAsset, type ImageDimensions } from "@/lib/local-assets";
+import { toUserErrorMessage } from "@/lib/error-message";
 
 export type ChatRequest = {
   model: ModelName;
@@ -25,6 +26,14 @@ export type IntentClassification = {
   intent: "agent" | "image" | "video" | "prompt" | "clarify";
   confidence: number;
   reason: string;
+  usage?: UsageMeta;
+};
+
+export type UsageMeta = {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  usd?: number;
 };
 
 export type AgentReplyIntent = "chat" | "film_knowledge" | "creative_consult" | "creative_structure" | "off_topic";
@@ -41,6 +50,25 @@ export type ChatResponse = {
   model?: string;
   intent?: AgentReplyIntent;
   suggestions?: SuggestionItem[];
+  usage?: UsageMeta;
+};
+
+export type AgentPlan = {
+  intent: "chat" | "image" | "video" | "clarify";
+  needsClarification: boolean;
+  clarifyQuestion?: string;
+  displayText?: string;
+  count?: number;
+  subject?: string;
+  quality?: "low" | "standard" | "high";
+  ratio?: string;
+  resolution?: string;
+  duration?: string;
+  prompt?: string;
+  constraints?: string[];
+  items?: Array<{ index?: number; prompt?: string; constraints?: string[]; duration?: string }>;
+  suggestions?: SuggestionItem[];
+  usage?: UsageMeta;
 };
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
@@ -63,12 +91,20 @@ type OpenRouterImage = {
 };
 
 type OpenRouterChatCompletionResponse = {
+  id?: string;
+  model?: string;
   choices?: Array<{
     message?: {
       content?: string;
       images?: OpenRouterImage[];
     };
   }>;
+  usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+    cost?: number;
+  };
   images?: Array<{ image_url?: { url?: string }; url?: string }>;
   data?: Array<{ url?: string; b64_json?: string }>;
 };
@@ -86,6 +122,10 @@ type OpenRouterModelResponse = {
   data?: Array<{
     id?: string;
     name?: string;
+    pricing?: {
+      prompt?: string;
+      completion?: string;
+    };
     architecture?: {
       modality?: string;
     };
@@ -102,13 +142,14 @@ const agentReplyIntents: AgentReplyIntent[] = ["chat", "film_knowledge", "creati
 
 const assetTargetTypes: AssetTargetType[] = ["character_image", "scene_image", "shot_image", "shot_video", "other"];
 const fallbackAgentSuggestions: SuggestionInput[] = ["让我写一个短剧故事", "讲讲电影是怎么做出来的", { label: "帮我拆一版分镜", assetTargetType: "shot_image" }];
+let modelPricingCache: { expiresAt: number; prices: Record<string, { prompt: number; completion: number }> } | null = null;
 
 function getOpenRouterHeaders(apiKey: string) {
   return {
     Authorization: `Bearer ${apiKey}`,
     "Content-Type": "application/json",
     "HTTP-Referer": "http://localhost:3000",
-    "X-Title": "Yinzao",
+    "X-Title": "NovaStar",
   };
 }
 
@@ -138,11 +179,11 @@ async function curlPostJson<T>(url: string, headers: Record<string, string>, bod
     if (status < 200 || status >= 300) {
       try {
         const data = JSON.parse(text) as OpenRouterErrorResponse;
-        throw new Error(`${fallback}：${data.error?.message ?? text}`);
-      } catch (error) {
-        if (error instanceof Error && error.message.startsWith(fallback)) throw error;
-        throw new Error(`${fallback}：${text}`);
-      }
+          throw new Error(`${fallback}：${toUserErrorMessage(data.error?.message ?? text)}`);
+        } catch (error) {
+          if (error instanceof Error && error.message.startsWith(fallback)) throw error;
+          throw new Error(`${fallback}：${toUserErrorMessage(text)}`);
+        }
     }
 
     return JSON.parse(text) as T;
@@ -245,8 +286,68 @@ function parseStructuredAgentReply(text: string): Required<Pick<ChatResponse, "c
   }
 }
 
+async function getModelPrices() {
+  const now = Date.now();
+  if (modelPricingCache && modelPricingCache.expiresAt > now) return modelPricingCache.prices;
+
+  try {
+    const response = await fetch(OPENROUTER_MODELS_URL, { cache: "no-store" });
+    if (!response.ok) return {};
+
+    const data = (await response.json()) as OpenRouterModelResponse;
+    const prices = Object.fromEntries(
+      (data.data ?? [])
+        .map((model) => {
+          const prompt = Number(model.pricing?.prompt);
+          const completion = Number(model.pricing?.completion);
+          if (!model.id || !Number.isFinite(prompt) || !Number.isFinite(completion)) return null;
+          return [model.id, { prompt, completion }] as const;
+        })
+        .filter((item): item is readonly [string, { prompt: number; completion: number }] => Boolean(item)),
+    );
+
+    modelPricingCache = { expiresAt: now + 10 * 60 * 1000, prices };
+    return prices;
+  } catch {
+    return {};
+  }
+}
+
+async function getUsageMeta(data: Pick<OpenRouterChatCompletionResponse, "model" | "usage">, fallbackModel: string): Promise<UsageMeta | undefined> {
+  const usage = data.usage;
+  if (!usage) return undefined;
+
+  const promptTokens = Math.max(0, Math.floor(usage.prompt_tokens ?? 0));
+  const completionTokens = Math.max(0, Math.floor(usage.completion_tokens ?? 0));
+  const totalTokens = Math.max(0, Math.floor(usage.total_tokens ?? promptTokens + completionTokens));
+  const cost = typeof usage.cost === "number" && Number.isFinite(usage.cost) ? usage.cost : undefined;
+  if (totalTokens === 0 && cost === undefined) return undefined;
+  if (cost !== undefined) return { promptTokens, completionTokens, totalTokens, usd: cost };
+
+  const prices = await getModelPrices();
+  const price = prices[data.model ?? fallbackModel] ?? prices[fallbackModel];
+  const usd = price ? promptTokens * price.prompt + completionTokens * price.completion : undefined;
+
+  return { promptTokens, completionTokens, totalTokens, usd };
+}
+
+function addUsageMeta(current: UsageMeta | undefined, next: UsageMeta | undefined): UsageMeta | undefined {
+  if (!next) return current;
+
+  return {
+    promptTokens: (current?.promptTokens ?? 0) + (next.promptTokens ?? 0),
+    completionTokens: (current?.completionTokens ?? 0) + (next.completionTokens ?? 0),
+    totalTokens: (current?.totalTokens ?? 0) + (next.totalTokens ?? 0),
+    usd: (current?.usd ?? 0) + (next.usd ?? 0),
+  };
+}
+
 async function getOpenRouterError(response: Response, fallback: string) {
   const text = await response.text();
+
+  if (response.status === 413 || /Request Entity Too Large/i.test(text)) {
+    return `${fallback}：${toUserErrorMessage(text)}`;
+  }
 
   try {
     const data = JSON.parse(text) as OpenRouterErrorResponse;
@@ -254,23 +355,23 @@ async function getOpenRouterError(response: Response, fallback: string) {
     const code = data.error?.code ?? response.status;
 
     if (response.status === 401 || code === 401 || message.toLowerCase().includes("user not found")) {
-      return "OpenRouter API Key 无效或已过期。请更新 .env.local 里的 OPENROUTER_API_KEY，然后重新启动项目。";
+      return "API Key 无效或已过期。请更新 .env.local 里的密钥，然后重新启动项目。";
     }
 
     if (response.status === 403 || code === 403 || message.toLowerCase().includes("not available in your region")) {
-      return "当前模型在你的地区不可用。我已把默认模型改成自动选择，请重新启动项目后再试。";
+      return "当前模型在你的地区不可用，请切换普通/高级模式或更换模型后重试。";
     }
 
-    return `${fallback}：${message}`;
+    return `${fallback}：${toUserErrorMessage(message)}`;
   } catch {
-    return `${fallback}：${text}`;
+    return `${fallback}：${toUserErrorMessage(text)}`;
   }
 }
 
 export async function sendToOpenRouter(request: ChatRequest): Promise<ChatResponse> {
   const apiKey = getOpenRouterApiKey();
   if (!apiKey) {
-    throw new Error("缺少 OpenRouter API Key");
+    throw new Error("缺少 API Key");
   }
 
   const settingsText = request.settings
@@ -285,9 +386,9 @@ export async function sendToOpenRouter(request: ChatRequest): Promise<ChatRespon
     : "";
   const systemPrompt =
     request.mode === "agent"
-      ? "你是映造，一个影片/短剧创作 Agent。你的专业方向是电影知识、影片制作、短剧创作、剧本、人物、分镜、镜头、摄影、剪辑、提示词、生图和生视频。你要先满足用户当前问题，再通过建议按钮把用户自然引导到影片/短剧创作。请判断回复类型：chat=普通聊天；film_knowledge=电影史、电影理论、影片制作知识、导演摄影剪辑等知识问答；creative_consult=创作咨询和方案建议；creative_structure=故事梗概、剧本、人物小传、分镜、镜头表、提示词整理；off_topic=明显偏离影片创作的问题。创作流程是：故事概念 -> 扩展故事 -> 改成文字分镜 -> 生成主角图片 -> 生成场景图片 -> 做成图片分镜 -> 做成视频。用户问知识时，suggestions 用 2-3 个当前问题延展 + 1-2 个转创作按钮。用户进入创作后，suggestions 用 2-3 个修改当前内容按钮 + 1-2 个下一步创作按钮。suggestions 必须是对象数组，每项包含 label，并在生成类按钮上加 assetTargetType：生成角色图=character_image，生成场景图=scene_image，生成分镜图片=shot_image，生成分镜视频/做成视频=shot_video，其它不确定=other。故事阶段按钮要能改冲突、人物出场、反转，并推进到文字分镜。文字分镜阶段必须按镜头编号写清画面、人物、动作、景别、镜头、氛围、时长；引导到生成角色、场景、第一镜图片。图片分镜必须一镜一张图，几个镜头就是几张图，建议逐镜生成：先第一镜，再下一镜。角色图生成后要引导生成三视图；场景图生成后要引导生成多角度参考。若上下文里有多版角色/场景，提醒用户用 @ 指定版本，例如 @男主第2版。普通聊天和偏离主题问题正文要短；film_knowledge、creative_consult、creative_structure 必须详细且结构化。结构化正文使用 Markdown 风格：大标题用 ##，小标题用 ###，重点用 **加粗**，列表用 -，必要分隔用单独一行 ---，重要风险用 [red]...[/red]，可执行建议用 [blue]...[/blue]。不要在正文里输出“下一步调整方向”。每次都必须给 3-5 个 suggestions，按钮文字 6-18 个中文左右，不要编号，尽量用动词开头。只返回 JSON，不要输出 JSON 之外的文字。"
+      ? "你是启星，一个影片/短剧创作 Agent。你的专业方向是电影知识、影片制作、短剧创作、剧本、人物、分镜、镜头、摄影、剪辑、提示词、生图和生视频。你要先满足用户当前问题，再通过建议按钮把用户自然引导到影片/短剧创作。请判断回复类型：chat=普通聊天；film_knowledge=电影史、电影理论、影片制作知识、导演摄影剪辑等知识问答；creative_consult=创作咨询和方案建议；creative_structure=故事梗概、剧本、人物小传、分镜、镜头表、提示词整理；off_topic=明显偏离影片创作的问题。创作流程是：故事概念 -> 扩展故事 -> 改成文字分镜 -> 生成主角图片 -> 生成场景图片 -> 做成图片分镜 -> 做成视频。用户问知识时，suggestions 用 2-3 个当前问题延展 + 1-2 个转创作按钮。用户进入创作后，suggestions 用 2-3 个修改当前内容按钮 + 1-2 个下一步创作按钮。suggestions 必须是对象数组，每项包含 label，并在生成类按钮上加 assetTargetType：生成角色图=character_image，生成场景图=scene_image，生成分镜图片=shot_image，生成分镜视频/做成视频=shot_video，其它不确定=other。故事阶段按钮要能改冲突、人物出场、反转，并推进到文字分镜。文字分镜阶段必须按镜头编号写清画面、人物、动作、景别、镜头、氛围、时长；引导到生成角色、场景、第一镜图片。图片分镜必须一镜一张图，几个镜头就是几张图，建议逐镜生成：先第一镜，再下一镜。角色图生成后要引导生成三视图；场景图生成后要引导生成多角度参考。若上下文里有多版角色/场景，提醒用户用 @ 指定版本，例如 @男主第2版。普通聊天和偏离主题问题正文要短；film_knowledge、creative_consult、creative_structure 必须详细且结构化。结构化正文使用 Markdown 风格：大标题用 ##，小标题用 ###，重点用 **加粗**，列表用 -，必要分隔用单独一行 ---，重要风险用 [red]...[/red]，可执行建议用 [blue]...[/blue]。不要在正文里输出“下一步调整方向”。每次都必须给 3-5 个 suggestions，按钮文字 6-18 个中文左右，不要编号，尽量用动词开头。只返回 JSON，不要输出 JSON 之外的文字。"
       : request.mode === "chat"
-        ? "你是映造，一个中文 AI 创作助手。请像豆包一样自然对话，结合上下文回答用户问题。没有明确要求生成图片或视频时，不要输出生图或生视频提示词。输出要排版清楚：超过 3 段的回答必须使用标题；大标题用 ## 标题；小标题用 ### 标题；明显分成几个部分时，用单独一行 --- 分隔；用空行分段；重点用 **加粗**；列表用 - 开头；重要风险或必须注意的内容用 [red]注意内容[/red]；可执行建议、下一步、推荐方案用 [blue]建议内容[/blue]；颜色标记要少用，不要整段染色。"
+        ? "你是启星，一个中文 AI 创作助手。请像豆包一样自然对话，结合上下文回答用户问题。没有明确要求生成图片或视频时，不要输出生图或生视频提示词。输出要排版清楚：超过 3 段的回答必须使用标题；大标题用 ## 标题；小标题用 ### 标题；明显分成几个部分时，用单独一行 --- 分隔；用空行分段；重点用 **加粗**；列表用 - 开头；重要风险或必须注意的内容用 [red]注意内容[/red]；可执行建议、下一步、推荐方案用 [blue]建议内容[/blue]；颜色标记要少用，不要整段染色。"
         : "你是一个中文创作助手。你要根据上下文和用户上传的图片，把口语需求整理成适合生图或生视频的提示词。图片模式下，把上传图片当作参考图，保留用户强调的主体、人物、构图或风格，并把带有视频、镜头、动画、运镜、时序等表达改写成适合单帧画面的描述，最终仍然只能输出图片提示词；视频模式下，把上传图片当作首帧或视觉参考，描述主体动作、镜头运动和画面变化，并把偏静态海报或单张图片需求改写成可执行的视频提示词。除 Agent 模式外，用户当前选择的模式优先级最高，不能因为原始文字里写了视频或图片就切换模式。请直接输出简短、清晰、可执行的中文结果，不要输出标题、说明、建议按钮或额外解释。";
   const finalInstruction =
     request.mode === "agent"
@@ -323,22 +424,20 @@ export async function sendToOpenRouter(request: ChatRequest): Promise<ChatRespon
     body: JSON.stringify(body),
   });
 
-  let data: {
-    model?: string;
-    choices?: Array<{ message?: { content?: string } }>;
-  };
+  let data: OpenRouterChatCompletionResponse;
 
   if (!response.ok) {
     try {
-      data = await curlPostJson<typeof data>(OPENROUTER_URL, headers, body, "OpenRouter 请求失败");
+      data = await curlPostJson<OpenRouterChatCompletionResponse>(OPENROUTER_URL, headers, body, "请求失败");
     } catch {
-      throw new Error(await getOpenRouterError(response, "OpenRouter 请求失败"));
+      throw new Error(await getOpenRouterError(response, "请求失败"));
     }
   } else {
-    data = (await response.json()) as typeof data;
+    data = (await response.json()) as OpenRouterChatCompletionResponse;
   }
 
   const rawContent = data.choices?.[0]?.message?.content ?? "";
+  const usage = await getUsageMeta(data, request.model);
 
   if (request.mode === "agent") {
     const parsed = parseStructuredAgentReply(rawContent);
@@ -346,12 +445,14 @@ export async function sendToOpenRouter(request: ChatRequest): Promise<ChatRespon
     return {
       ...parsed,
       model: data.model,
+      usage,
     };
   }
 
   return {
     content: rawContent,
     model: data.model,
+    usage,
   };
 }
 
@@ -373,10 +474,62 @@ function parseIntentClassification(text: string): IntentClassification {
   }
 }
 
-export async function classifyOpenRouterIntent(request: Pick<ChatRequest, "model" | "messages">): Promise<IntentClassification> {
+function parseAgentPlan(text: string): Omit<AgentPlan, "usage"> {
+  const jsonText = text.match(/\{[\s\S]*\}/)?.[0] ?? text;
+
+  try {
+    const data = JSON.parse(jsonText) as Partial<AgentPlan>;
+    const intent = data.intent === "image" || data.intent === "video" || data.intent === "clarify" || data.intent === "chat" ? data.intent : "chat";
+    const count = typeof data.count === "number" && Number.isFinite(data.count) ? Math.max(1, Math.floor(data.count)) : undefined;
+    const constraints = Array.isArray(data.constraints) ? data.constraints.filter((item): item is string => typeof item === "string" && Boolean(item.trim())).slice(0, 12) : undefined;
+    const items = Array.isArray(data.items)
+      ? data.items
+        .map((item) => {
+          if (!item || typeof item !== "object") return null;
+          const value = item as { index?: unknown; prompt?: unknown; constraints?: unknown; duration?: unknown };
+          const prompt = typeof value.prompt === "string" ? value.prompt.trim() : "";
+          if (!prompt) return null;
+          return {
+            index: typeof value.index === "number" && Number.isFinite(value.index) ? Math.max(1, Math.floor(value.index)) : undefined,
+            prompt,
+            duration: typeof value.duration === "string" ? value.duration.trim() : undefined,
+            constraints: Array.isArray(value.constraints) ? value.constraints.filter((entry): entry is string => typeof entry === "string" && Boolean(entry.trim())).slice(0, 8) : undefined,
+          };
+        })
+        .filter((item): item is { index: number | undefined; prompt: string; duration: string | undefined; constraints: string[] | undefined } => Boolean(item))
+        .slice(0, 20)
+      : undefined;
+
+    return {
+      intent,
+      needsClarification: Boolean(data.needsClarification) || intent === "clarify",
+      clarifyQuestion: typeof data.clarifyQuestion === "string" ? data.clarifyQuestion.trim() : undefined,
+      displayText: typeof data.displayText === "string" ? data.displayText.trim() : undefined,
+      count,
+      subject: typeof data.subject === "string" ? data.subject.trim() : undefined,
+      quality: data.quality === "low" || data.quality === "standard" || data.quality === "high" ? data.quality : undefined,
+      ratio: typeof data.ratio === "string" ? data.ratio.trim() : undefined,
+      resolution: typeof data.resolution === "string" ? data.resolution.trim() : undefined,
+      duration: typeof data.duration === "string" ? data.duration.trim() : undefined,
+      prompt: typeof data.prompt === "string" ? data.prompt.trim() : undefined,
+      constraints,
+      items,
+      suggestions: normalizeSuggestions(data.suggestions),
+    };
+  } catch {
+    return {
+      intent: "chat",
+      needsClarification: false,
+      displayText: "我先理解你的需求，再帮你继续推进。",
+      suggestions: normalizeSuggestions(),
+    };
+  }
+}
+
+export async function planAgentTask(request: Pick<ChatRequest, "model" | "messages">): Promise<AgentPlan> {
   const apiKey = getOpenRouterApiKey();
   if (!apiKey) {
-    throw new Error("缺少 OpenRouter API Key");
+    throw new Error("缺少 API Key");
   }
 
   const headers = getOpenRouterHeaders(apiKey);
@@ -386,7 +539,54 @@ export async function classifyOpenRouterIntent(request: Pick<ChatRequest, "model
       {
         role: "system",
         content:
-          "你是映造的意图分类器，只返回 JSON，不要输出其它文字。根据用户最新一句和上下文判断下一步应该做什么。intent 只能是 agent、image、video、prompt、clarify。image 表示用户要生成图片；video 表示用户明确要生成视频、镜头、动画、让图中人物动起来、图生视频；prompt 表示用户只要提示词优化；agent 表示普通创作讨论、改文案、想方案、泛泛地说来一段；clarify 表示图片和视频都可能，需要追问。注意：单独的“来一段”“写一段”“搞一段”不是视频意图，除非同时明确说视频、镜头、动画、动起来。返回格式：{\"intent\":\"video\",\"confidence\":0.92,\"reason\":\"原因\"}。",
+          "你是启星的任务规划器，只返回 JSON，不要输出 JSON 之外的文字。你的任务是理解用户最新一句和上下文，决定是继续对话、追问、生成图片还是生成视频。原则：能从上下文和默认规则推断就不要追问；只有目标不清、图片/视频都可能、缺失信息会明显导致错误、用户要求互相冲突、或成本规格明显过高时才追问。用户最新一句是纠错或限制时必须覆盖旧上下文，例如“只要场景、不要人物、没有人物、纯场景、空镜”表示最终图片必须是无人物场景，prompt 和 items 里都不能出现 person、portrait、character、human、figure、silhouette、man、woman、人物、角色、行人、剪影等人物主体。若用户明确要生成图片/视频，直接给出可执行计划。必须把数量、单张/单段内容和画面约束分开，不要把“7张/十张/多张”写进单张图片画面里。多图需求的 prompt 只能描述每一次请求要生成的一张独立图片，不能出现一组、系列、合集、组图、拼图、九宫格、多宫格、分屏、多张照片排版等词。用户说每张只要一个人/一个主体时，prompt 必须加入单主体约束，并禁止拼图、合集、多宫格、多人同框。若 count>1，必须返回 items 数组；items 里每一项都是单张图片或单段视频的干净执行 prompt，不要写用户原话、不要写“每张都要/10张图片/彼此不同”等跨图规则。用户要求每张不同人物/国家/性别/时代时，把差异拆到 items 的每条 prompt 中，例如第1张只写一个具体国家+一个性别+一个时代，第2张再换另一组；不要把“不同国家、不同性别、不同时代”作为一句话放进单张 prompt。用户要求把文字分镜/图片分镜/多个镜头做成视频时，count 必须等于镜头数，items 必须一镜一段视频；每个 item.duration 要按该镜头分镜内容、动作复杂度和剧本中写的时长判断，不能默认都用最低秒数。只有用户随便要求生成一个普通视频、没有分镜/镜头时，才用最低时长。普通缺省：图片数量 1，人物图比例 3:4，场景图比例 16:9，使用最低可用分辨率；用户说高品质/高清/质量好时 quality=high，可提升一档或保留高质量描述。视频普通单段缺省最低时长。返回格式：{\"intent\":\"chat|image|video|clarify\",\"needsClarification\":false,\"clarifyQuestion\":\"需要追问时的问题\",\"displayText\":\"给用户看的简短执行说明，图片多图任务要说独立图片/每张单独画面，不要说一组/系列/合集，不要照抄用户原话\",\"count\":1,\"subject\":\"主体\",\"quality\":\"low|standard|high\",\"ratio\":\"智能比例|3:4|9:16|16:9|1:1|4:3|21:9\",\"resolution\":\"1K|2K|4K|480p|720p|1080p\",\"duration\":\"5秒\",\"prompt\":\"最终给生成模型的单张图片或单段视频提示词，不包含生成数量，不重复用户原话\",\"constraints\":[\"只保留给执行器参考的约束，不要把跨图规则当 prompt\"],\"items\":[{\"index\":1,\"prompt\":\"一条干净的单段视频提示词，只描述当前这一镜\",\"duration\":\"5秒\",\"constraints\":[\"只描述当前镜头\"]}],\"suggestions\":[{\"label\":\"按钮文字\",\"assetTargetType\":\"character_image|scene_image|shot_image|shot_video|other\"}]}。如果 intent=chat，displayText 可为空，suggestions 仍给 3-5 个，引导到故事、剧本、分镜、角色图、场景图、视频。",
+      },
+      ...request.messages.slice(-10).map((message) => ({
+        role: message.role,
+        content: message.images?.length ? `${message.content}\n\n用户本轮带了 ${message.images.length} 张参考图，规划时只理解文字需求，生成阶段再使用参考图。` : message.content,
+      })),
+      {
+        role: "user",
+        content: "请为最新用户消息生成结构化执行计划，只返回 JSON。",
+      },
+    ],
+    temperature: 0.2,
+  };
+  const response = await fetch(OPENROUTER_URL, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+  });
+
+  let data: OpenRouterChatCompletionResponse;
+
+  if (!response.ok) {
+    try {
+      data = await curlPostJson<OpenRouterChatCompletionResponse>(OPENROUTER_URL, headers, body, "Agent 规划失败");
+    } catch {
+      throw new Error(await getOpenRouterError(response, "Agent 规划失败"));
+    }
+  } else {
+    data = (await response.json()) as OpenRouterChatCompletionResponse;
+  }
+
+  return { ...parseAgentPlan(data.choices?.[0]?.message?.content ?? ""), usage: await getUsageMeta(data, request.model) };
+}
+
+export async function classifyOpenRouterIntent(request: Pick<ChatRequest, "model" | "messages">): Promise<IntentClassification> {
+  const apiKey = getOpenRouterApiKey();
+  if (!apiKey) {
+    throw new Error("缺少 API Key");
+  }
+
+  const headers = getOpenRouterHeaders(apiKey);
+  const body = {
+    model: request.model,
+    messages: [
+      {
+        role: "system",
+        content:
+          "你是启星的意图分类器，只返回 JSON，不要输出其它文字。根据用户最新一句和上下文判断下一步应该做什么。intent 只能是 agent、image、video、prompt、clarify。image 表示用户要生成图片；video 表示用户明确要生成视频、镜头、动画、让图中人物动起来、图生视频；prompt 表示用户只要提示词优化；agent 表示普通创作讨论、改文案、想方案、泛泛地说来一段；clarify 表示图片和视频都可能，需要追问。注意：单独的“来一段”“写一段”“搞一段”不是视频意图，除非同时明确说视频、镜头、动画、动起来。返回格式：{\"intent\":\"video\",\"confidence\":0.92,\"reason\":\"原因\"}。",
       },
       ...request.messages.slice(-8).map((message) => ({ role: message.role, content: message.content })),
       {
@@ -402,21 +602,19 @@ export async function classifyOpenRouterIntent(request: Pick<ChatRequest, "model
     body: JSON.stringify(body),
   });
 
-  let data: {
-    choices?: Array<{ message?: { content?: string } }>;
-  };
+  let data: OpenRouterChatCompletionResponse;
 
   if (!response.ok) {
     try {
-      data = await curlPostJson<typeof data>(OPENROUTER_URL, headers, body, "OpenRouter 意图分类失败");
+      data = await curlPostJson<OpenRouterChatCompletionResponse>(OPENROUTER_URL, headers, body, "意图分类失败");
     } catch {
-      throw new Error(await getOpenRouterError(response, "OpenRouter 意图分类失败"));
+      throw new Error(await getOpenRouterError(response, "意图分类失败"));
     }
   } else {
-    data = (await response.json()) as typeof data;
+    data = (await response.json()) as OpenRouterChatCompletionResponse;
   }
 
-  return parseIntentClassification(data.choices?.[0]?.message?.content ?? "");
+  return { ...parseIntentClassification(data.choices?.[0]?.message?.content ?? ""), usage: await getUsageMeta(data, request.model) };
 }
 
 export async function getOpenRouterConversationModels(): Promise<ConversationModel[]> {
@@ -425,7 +623,7 @@ export async function getOpenRouterConversationModels(): Promise<ConversationMod
   });
 
   if (!response.ok) {
-    throw new Error(await getOpenRouterError(response, "OpenRouter 模型列表获取失败"));
+    throw new Error(await getOpenRouterError(response, "模型列表获取失败"));
   }
 
   const data = (await response.json()) as OpenRouterModelResponse;
@@ -500,7 +698,7 @@ function getOpenRouterImageUrls(data: OpenRouterChatCompletionResponse) {
 export async function generateOpenRouterImage(prompt: string, referenceImages: string[] = [], options: ImageGenerationOptions = {}) {
   const apiKey = getOpenRouterApiKey();
   if (!apiKey) {
-    throw new Error("缺少 OpenRouter API Key");
+    throw new Error("缺少 API Key");
   }
 
   const safeReferenceImages = referenceImages.filter(Boolean).slice(0, 3);
@@ -540,9 +738,9 @@ export async function generateOpenRouterImage(prompt: string, referenceImages: s
 
     if (!response.ok) {
       try {
-        data = await curlPostJson<OpenRouterChatCompletionResponse>(OPENROUTER_URL, headers, body, "OpenRouter 图片生成失败");
+        data = await curlPostJson<OpenRouterChatCompletionResponse>(OPENROUTER_URL, headers, body, "图片生成失败");
       } catch {
-        throw new Error(await getOpenRouterError(response, "OpenRouter 图片生成失败"));
+        throw new Error(await getOpenRouterError(response, "图片生成失败"));
       }
     } else {
       try {
@@ -579,6 +777,7 @@ export async function generateOpenRouterImage(prompt: string, referenceImages: s
       content: data.choices?.[0]?.message?.content ?? "",
       images: localImages,
       imageDimensions,
+      usage: await getUsageMeta(data, model),
     };
   };
 
@@ -603,10 +802,12 @@ export async function generateOpenRouterImage(prompt: string, referenceImages: s
   };
 
   const results = await Promise.all(Array.from({ length: count }).map(() => createOneWithRetry()));
+  const usage = results.reduce<UsageMeta | undefined>((current, item) => addUsageMeta(current, item.usage), undefined);
 
   return {
     content: results.map((item) => item.content).filter(Boolean).join("\n\n"),
     images: results.flatMap((item) => item.images),
     imageDimensions: Object.assign({}, ...results.map((item) => item.imageDimensions)),
+    usage,
   };
 }

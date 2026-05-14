@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { saveUploadedImageAsset } from "@/lib/local-assets";
+import { toUserErrorMessage } from "@/lib/error-message";
 
 export async function POST(request: Request) {
   try {
@@ -13,7 +14,7 @@ export async function POST(request: Request) {
     const url = await saveUploadedImageAsset(image);
     return NextResponse.json({ url });
   } catch (error) {
-    const message = error instanceof Error ? error.message : "未知错误";
+    const message = toUserErrorMessage(error, "图片上传失败，请稍后再试。");
     return NextResponse.json({ error: message }, { status: 500 });
   }
 }

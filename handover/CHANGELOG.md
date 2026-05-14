@@ -2,6 +2,76 @@
 
 ## Current Snapshot
 
+### 2026-05-14 Agent 意图理解、逐图提示词、上下文瘦身和提示词 UI 更新
+
+- 本轮重点围绕 Agent 模式的真实意图理解和最终行为修正。用户明确要求：后续所有 Agent 对话逻辑都必须优先保证“像人一样自然对话”，这条规则高于其它执行细节；内部执行约束不能机械复读给用户。
+- Agent 多图生成已进一步拆分。Planner 支持可选 `items[]`，每个 item 是单张图片/单段视频自己的干净执行 prompt。多图任务优先按 `items[index].prompt` 请求，不再把用户原话、Agent 理解说明、跨图规则和真实提示词混在一起发给图片模型。
+- 多图提示词规则更新：用户说“生成 N 张图片”只代表生成数量；用户说“每张不同人物/国家/性别/时代”时，差异必须拆到每个 item 的独立 prompt 中。跨图规则如“每张都要不同”“10张图片必须彼此不同”不能进入单张图片 prompt。
+- Agent 图片结果现在按图片 URL 保存真实发送提示词：`message.imagePrompts[url] = itemPrompt`。预览页优先展示当前图片自己的真实 prompt；旧图没有 `imagePrompts` 时才显示清洗后的 fallback，避免继续把中文理解说明当作提示词展示。
+- Agent 自动生成图片/视频结果下方新增可点击提示词折叠条，位置在 Agent 文案下面、媒体结果上面。折叠态为淡灰底、灰字、右侧下三角；展开后上下连成一个淡灰面板，顶部显示“图片提示词/视频提示词”、分页 `<1/5>`、`使用提示词` 和上三角，正文区域最高约 `180px`，超出滚动。
+- Agent 多张图片若每张提示词不同，展开面板显示分页；分页按钮无底色，并与 `使用提示词` 保持较大间距。点击 `使用提示词` 会把当前页提示词填入输入框。专业图片/视频模式原有提示词展示不受影响。
+- Agent 展示文案已改自然化。默认只说类似“我会生成 6 张美女图 / 我会生成 10 张不同设定的人物图 / 我会生成 6 张场景图”，不再默认暴露“单张独立、不做拼图或合集”等内部约束。只有用户明确要求不要拼图/合集或反馈上次生成错了，才自然补充相关说明。
+- Agent “只要场景，不要人物”场景已做成硬规则。Planner 被要求以最新用户纠错覆盖旧上下文；执行层会清理 `person / portrait / character / human / figure / silhouette / 人物 / 角色 / 行人 / 剪影` 等人物词，并追加无人物场景约束，包括英文 `no people, no person, no human, no character, no figure, no silhouette`。
+- Agent 文本回复阶段已修复 413 根因：以前 `toChatPayloadMessages` 会把历史 assistant 消息中的图片带进 `/api/chat`，本地图再转 base64，历史图多时触发 `Request Entity Too Large`。现在 Agent 使用 `toAgentPayloadMessages`，默认移除历史图片载荷，只在本轮明确上传图或引用资产时保留最新用户消息里的参考图。
+- Agent `/api/chat` 已增加 413 纯文本重试：如果文本回复或提示词整理阶段仍因请求体过大失败，会自动改用纯文本上下文重试。真正生图/生视频阶段的参考图链路不受影响。
+- 用户要求所有用户可见提示里去掉 `OpenRouter` 字样。当前已把前端/接口返回给用户的错误文案改为“请求失败 / 图片生成失败 / 视频任务创建失败 / 平台服务临时异常”等通用表述，`toUserErrorMessage` 也会把底层错误里的 `OpenRouter` 替换为“平台”。内部函数名、日志和技术文档不改。
+- 公网部署提醒已写入交接文档：上传图、资产图、历史参考图正式部署前必须改为 HTTPS URL 传给 OpenRouter，不再传 base64，以减少 413 并保留原图质量。
+- 本轮主要涉及文件：`src/components/chat-workbench.tsx`、`src/lib/openrouter.ts`、`src/lib/openrouter-video.ts`、`src/lib/error-message.ts`、`src/app/api/video/route.ts`、`handover/00-README.md`、`handover/02-product-decisions.md`、`handover/03-progress-and-status.md`、`handover/05-chat-history-highlights.md`、`handover/CHANGELOG.md`。
+- 本轮验证：多次运行 `npm run lint` 和 `npm run build`，最终均通过。
+
+### 2026-05-14 Agent Planner、Agent 生成规则、错误中文化和规则文档更新
+
+- 本轮用户要求后续先看 `AI-Video-Assistant_Project Planning\对话流三种模式基础规则.md`。该文件会持续更新；接手 AI 应先读该文档，对照当前实现列出变化项，再让用户决定是否改。
+- Agent 模式已从硬规则/简单意图分类升级为结构化 Planner。新增 `/api/agent-plan`，服务端入口为 `src/app/api/agent-plan/route.ts`，核心逻辑在 `src/lib/openrouter.ts` 的 `planAgentTask`。Planner 返回 `intent / needsClarification / clarifyQuestion / displayText / count / subject / quality / ratio / resolution / duration / prompt / constraints / suggestions`。
+- Agent Planner 的目标不是每次追问所有参数，而是“能判断就直接干，不确定才问”。如果目标不清、图片/视频都可能、缺失信息会明显导致错、用户要求冲突或规格成本过高，才用 `needsClarification` 追问。
+- Agent 自动生图/生视频现在把“数量”和“单张/单段 prompt”拆开。比如“七张，每张只要一个美女，高品质”应拆成 `count=7`、每张单人、禁止拼图/合集/多人同框，不再把“七张”塞进单张图片 prompt。
+- Agent 不再本地问候直回；所有 Agent 输入都进入思考流程。`正在认真思考` 最少显示 `2000ms`，文字和后面三个点已有走光/跳动动画。Agent 意图/规划阶段写入 `pendingRequests`，刷新浏览器后会恢复并继续执行。
+- Agent 自动生成媒体结果显示规则已按用户文档调整：不显示专业模式提示词参数行，只显示简短执行说明 + 图片/视频结果，不重复用户原话。图片一行 4 个，超过换行不分页；Agent 媒体等待卡、失败卡和显示底框使用 `10px` 圆角；失败卡内有“重新生成”。
+- Agent 生成模型调用规则已重定：普通 Agent 固定图片 `Seedream 4.5`、视频 `Seedance 2.0 Fast`。高级 Agent 默认优先当前专业模式选择模型，不因“高品质/高清/精细/质量好一点”直接换贵模型；用户多次不满意才升质量，多次抱怨慢才切快稳；整体优先便宜。
+- `Veo 3.1` 的调用规则很严格：只在用户明确要求“4K 视频 / 视频要 4K / 输出 4K 分辨率视频”等视频输出规格时调用。`4K画质 / 4K质感 / 高清 / 高品质 / 电影感` 不算明确 4K 视频要求，不触发 Veo。
+- 用户确认模型排序表：价格/质量按用户指定顺序，不按 OpenRouter 官方价格自动推断。`对话流三种模式基础规则.md` 中已放入定宽 Markdown 表格，避免编辑器列不对齐。
+- Agent Planner 阶段不再携带 base64 图片，只传文字和“本轮带了几张参考图”的提示，避免 `/api/agent-plan` 请求体过大导致 `413 Request Entity Too Large`。真正图片/视频生成阶段仍按原参考图链路处理。
+- 红字错误显示已统一中文化。新增 `src/lib/error-message.ts`，前端 `readJson` 和主要 API catch 都使用 `toUserErrorMessage` 清洗错误，避免 HTML、代码、堆栈直接显示给用户。常见 413、401、403、429、500、敏感图、参数不支持等都会转成中文可读提示。
+- 系统提示 UI 已修正：普通系统提示和错误系统提示的图标都与第一行文字顶部对齐，不再多行文本中垂直居中。
+- 本轮涉及文件主要包括：`src/components/chat-workbench.tsx`、`src/lib/openrouter.ts`、`src/lib/error-message.ts`、`src/app/api/agent-plan/route.ts`、多个 `src/app/api/*/route.ts`、`AI-Video-Assistant_Project Planning\对话流三种模式基础规则.md`。
+- 本轮验证：相关改动后多次运行 `npm run lint` 和 `npm run build`，最终均通过。
+
+### 2026-05-13 本轮对话补充：用量统计扩展到图片/视频、浮窗微调、品牌更名
+
+- 用户要求右上角当前会话用量必须累计当前对话流里的所有 Token 和费用，包括对话、意图识别、图片和视频。当前已把 `/api/image` 返回的 `usage` 透传到前端，并在多图并发时按每张图返回的 usage 累加；`/api/video` 会从视频创建/查询响应里提取 `usage.cost` 并返回给前端。
+- 前端 `src/components/chat-workbench.tsx` 已在图片生成成功后调用 `addSessionUsage(sessionId, imageResult.usage)`，视频任务创建返回 usage 时立即累计；如果创建时没有 usage，则在最终成功或失败查询返回 usage 时累计一次，避免轮询重复加钱。
+- `src/lib/openrouter.ts` 的 `getUsageMeta` 已允许只有 `usage.cost`、没有 token 的响应进入统计；图片生成 `createOne` 会返回 `usage`，最终 `generateOpenRouterImage` 会把多次结果的 usage 汇总后返回。
+- `src/app/api/video/route.ts` 新增 `getUsageMeta`，兼容 `usage.cost / cost / usd / totalCost / total_cost / amount` 等字段；本轮确认 OpenRouter 视频任务返回结构为 `usage: { cost, is_byok }`，视频通常不返回 `prompt_tokens / completion_tokens / total_tokens`。
+- 本轮实测 `/api/image` 生成 1 张 `Seedream 4.5 / 1:1 / 2K` 图片，返回 `usage: { promptTokens: 4, completionTokens: 16384, totalTokens: 16388, usd: 0.04 }`。说明图片返回 Token 和费用，右上角应同时加 Token 和金额。
+- 本轮用已有视频任务 `https://openrouter.ai/api/v1/videos/P14NkUI1MIBIgF3op7KG` 查询 `/api/video`，返回 `usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0, usd: 0.84 }`。说明视频只加费用，不加 Token。
+- 右上角用量浮窗 UI 已继续微调：黑色底框缩小，三行数字行距压紧，顶部新增灰色小标题 `使用量`，标题字号缩小到 `11px`；人民币文案从 `约 ¥0.00` 改为 `¥0.00 约`。
+- 用户最终确认新品牌名先用中文 `启星`、英文 `NovaStar`。已替换页面左侧品牌名、浏览器标题、OpenRouter `X-Title`、Agent 系统提示自称和意图分类器提示词；`localStorage` key 里的 `yinzao-*` 和 CSS class/keyframes 里的 `yinzao-*` 暂不改，避免旧历史、资产、输入设置和样式失效。
+- 本轮验证：`npm run lint` 通过，`npm run build` 通过。
+
+### 2026-05-13 品牌名更新为启星 / NovaStar
+
+- 用户确认新中文名先用 `启星`，英文名用 `NovaStar`。当前已把页面左侧品牌名、OpenRouter Agent 自称、意图分类器提示词、浏览器标题和 OpenRouter `X-Title` 更新到新品牌名。
+- 为避免本地历史对话、资产库、输入设置和反馈日志丢失，`localStorage` key 里的 `yinzao-*` 暂不更名；CSS class / animation 内部技术命名也暂不更名。
+
+### 2026-05-13 Agent 高级/普通、错误系统消息、预览页、费用统计和输入禁用
+
+- 本轮围绕 Agent 可用性、输入框、预览页和会话费用统计继续调整。用户反馈 Agent 模式连续出现 `OpenRouter 请求失败：Internal Server Error`。排查确认不是前端断连，而是 OpenRouter `chat/completions` 偶发 500；此前图片和视频查询已实测过 Node `fetch` 偶发假 500/404，而同请求 `curl.exe` 可成功。
+- `src/lib/openrouter.ts` 已给 `/api/chat` 对话请求和 `/api/intent` 意图识别请求加 `curlPostJson` 兜底：先用 `fetch`，非 2xx 时用相同 URL、headers 和 body 调 `curl.exe` 重试；两边都失败才返回错误。用户确认后实测 Agent 又能正常连上。
+- Agent 请求失败展示规则已改：失败不再生成 `assistant` 回复，不再显示反馈按钮、重新生成、喜欢/不喜欢等，而是追加/兼容渲染为 `system` 消息。错误系统消息继续用红字，只显示原始错误，如 `OpenRouter 请求失败：Internal Server Error`。
+- 错误系统消息图标改为 `RiErrorWarningLine`。普通系统消息如果没有指定模式切换文案，也会按系统消息文字直接显示，不再误套“当前已切换到 Agent 模式”说明。
+- Agent 工具栏在 `@` 按钮后新增 `普通 / 高级` 滑块按钮：`普通` 使用 `bytedance-seed/seed-2.0-lite`，`高级` 使用 `openai/gpt-5.4`。该选择保存到 `yinzao-input-settings-v1`，刷新后保留；Agent 对话、意图识别、Agent 重新生成都会跟随该选择。
+- 切换 `普通 / 高级` 时会插入灰色系统消息：`当前已切换至普通模式` 或 `当前已切换至高级模式`。重复点击当前档位不重复插入消息。
+- 文案微调：`映造正在思考` 改为 `正在认真思考`；`映造感谢反馈` 改为 `感谢反馈`；空会话标题 `今天想让映造帮你做什么？` 改为 `今天你有什么想做的？`。注意：本条记录当时左侧栏品牌名和 OpenRouter 系统提示词尚未改，后续已在本轮补充中统一改为 `启星 / NovaStar`。
+- 用户反馈正在输入中文时突然变成英文。排查代码后确认项目没有边输入边翻译逻辑，最可能是浏览器网页翻译、翻译插件、输入法/AI 写作助手对 `contenteditable` 输入框做了 DOM 文本替换。建议后续给输入框增加 `translate="no"`、`spellCheck={false}`、`autoCorrect="off"`、`autoCapitalize="off"`、Grammarly 相关禁用属性。
+- 预览页视频右上角下载按钮已加回：图片和视频预览都显示黑色 `下载` 按钮，视频会使用当前本地视频 URL 下载，文件名会自动补 `.mp4`，图片自动补图片后缀。
+- 图片预览页缩放逻辑多轮修正：改用原生 `<img>` 获取真实 `naturalWidth / naturalHeight`，避免 `next/image width={2000}` 参与预览尺寸；`实际尺寸` 应按图片真实像素 `100%` 显示，浏览器拉大缩小不改变实际尺寸显示；`适合尺寸` 按左侧预览容器实时计算比例，窗口变化时重新计算；滚轮和 `+ / -` 范围仍为 `10% - 250%`。注意：用户最后仍反馈适合尺寸看起来没有撑满期望区域，下一任 AI 需继续按用户视觉要求核对 contain/cover 预期。
+- 预览页右侧缩略图列表自动定位修复：打开预览时先按 `id` 定位当前缩略图，找不到再按图片 URL 定位；缩略图按钮新增 `data-preview-thumb-url`。
+- 顶部标题栏右侧新增会话级用量图标，鼠标悬停显示黑底白字浮层。当前显示灰色小标题 `使用量`，下方三行：`Token x,xxx`、`$0.0000`、`¥0.00 约`，人民币固定按 `1 USD = 7.2 CNY`。没有用量时显示 `暂无用量`。
+- 费用统计当前已接入文本、图片和视频：`/api/chat`、`/api/intent`、`/api/image` 和 `/api/video` 会把 OpenRouter 返回的 `usage/cost` 带回前端，累加到当前 `WorkSession.usageSummary` 并保存进本地历史。文本和图片可能返回 Token + 费用；视频通常只返回 `cost`，所以只累计金额不累计 Token。
+- 正在认真思考期间，当前会话输入框整体进入禁用状态：`contenteditable=false`、不可输入/粘贴/Enter 发送，发送按钮禁用，上传、`@`、模式切换、普通/高级按钮禁用，已打开的输入相关弹窗会关闭。思考结束后恢复。
+- 本轮中途已按用户要求把当时最新代码推送到 GitHub：提交 `5855bc4 Update media workspace interactions` 到 `origin/main`。注意：后续本轮继续做的预览缩略图定位、会话费用统计、思考中输入禁用、文档更新等改动尚未在该提交中，下一次推送需重新提交。
+- 本轮多次验证：相关改动后的 `npm run lint` 和 `npm run build` 通过。
+
 ### 2026-05-13 视频生成最终改为不传 size、实测尺寸 UI 做实、文档更新
 
 - 本轮继续围绕视频模型尺寸和参数排查。用户先要求按当前 UI 中接入的 6 个视频模型、所有支持分辨率和比例、最低时长并发测试，不包含智能比例。`scripts/test-video-models.mjs` 已调整为按当前模型支持项测试，共 `49` 次，测试结果输出到 `AI-Video-Assistant_Project Planning\test\video-model-test-results.md` 和 `video-model-test-raw.json`。

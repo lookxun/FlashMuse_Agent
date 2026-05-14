@@ -13,9 +13,9 @@
 
 当前项目目录：`E:\project\AI-Video-Assistant`
 
-当前项目暂定英文名：`Yinzao`
+当前项目暂定英文名：`NovaStar`
 
-网页侧当前展示名：`Yinzao`
+网页侧当前展示名：`启星`
 
 定位：
 
@@ -139,3 +139,32 @@
 - 2026-05-13 最新接手重点：图片和视频参数弹窗宽度已统一为 `420px`。图片模型菜单 `GPT-5.4 Image 2`、视频模型菜单 `Seedance 2.0` 为金色文字，选中后工具栏按钮模型名也同步金色。
 - 2026-05-13 最新接手重点：提示词区域 `使用提示词` 按钮逻辑已修复：按钮如果已经跟在正文后可见，就不再触发 hover 完整浮层；只有正文和按钮确实超过两行且按钮被截掉时才显示完整浮层。
 - 2026-05-13 最新接手重点：规划文件夹内已生成/更新三个 Word 文档：`视频模型测试结果表.docx`、`图片模型尺寸测试表.docx`、`openrouter 视频模型支持比例和分辨率.docx`。表格统一为只有横线分隔，参数文字用青绿色；视频测试结果表中失败/不一致项为红字。
+- 2026-05-13 最新接手重点：Agent `/api/chat` 和 `/api/intent` 已加 `curl` 兜底。OpenRouter `fetch` 偶发 `500 Internal Server Error` 时，会用同请求体调用 `curl.exe` 重试；这不是绕过地区限制，只是减少 Node `fetch` 偶发失败。
+- 2026-05-13 最新接手重点：Agent 请求失败现在显示为红色系统消息，不再作为 assistant 回复，不显示反馈按钮。错误图标使用 `error-warning-line`。
+- 2026-05-13 最新接手重点：Agent 模式 `@` 按钮后有 `普通 / 高级` 滑块。普通走 `bytedance-seed/seed-2.0-lite`，高级走 `openai/gpt-5.4`；切换时插入灰色系统消息 `当前已切换至普通/高级模式`，选择保存到 `yinzao-input-settings-v1`。
+- 2026-05-13 最新接手重点：`正在认真思考` 期间，当前输入框整体禁用，不能输入、粘贴、上传、切模式、切普通/高级或发送；思考结束后恢复。
+- 2026-05-13 最新接手重点：标题栏右侧新增当前会话用量图标，hover 显示黑底白字：Token、美元和人民币估算。汇率固定 `7.2`。当前会累计当前对话流里 `/api/chat`、`/api/intent`、`/api/image` 和 `/api/video` 返回的 `usage/cost`；视频通常只返回费用不返回 Token。
+- 2026-05-13 最新接手重点：预览页视频下载按钮已恢复；图片/视频都可下载，文件名会自动补后缀。预览页右侧缩略图定位已改成按 `id` 失败后按 URL 定位。
+- 2026-05-13 最新接手重点：图片预览缩放已改用原生 `<img>` 和真实 `naturalWidth / naturalHeight` 计算。目标规则是实际尺寸显示真实像素且固定 100%，适合尺寸随浏览器窗口重新适配；用户最后仍反馈“适合尺寸未按期望撑满”，后续需继续核对视觉预期。
+- 2026-05-13 最新接手重点：用户反馈输入框中正在打的中文突然变成英文。代码里没有自动翻译逻辑，最可能是浏览器翻译/翻译插件/输入法 AI 改写对 `contenteditable` 做了 DOM 替换。建议下一步给输入框加 `translate="no"`、`spellCheck={false}`、`autoCorrect="off"`、`autoCapitalize="off"` 和 Grammarly 禁用属性。
+- 2026-05-13 GitHub 状态：本轮中途已推送提交 `5855bc4 Update media workspace interactions`。该提交不包含之后继续做的预览缩略图定位、会话费用统计、思考中输入禁用和本文档更新；下一次同步 GitHub 需重新提交这些后续改动。
+- 2026-05-13 最新接手重点：品牌名已从 `映造 / Yinzao` 改为 `启星 / NovaStar`。页面左侧品牌名、浏览器标题、OpenRouter `X-Title`、Agent 自称和意图分类器提示词已更新；`localStorage` key 和 CSS class/keyframes 仍保留 `yinzao-*`，避免本地历史、资产、设置和样式受影响。
+- 2026-05-13 最新接手重点：右上角用量浮窗已压缩黑色底框和行距，顶部新增灰色小标题 `使用量`，标题字号 `11px`；人民币显示改为 `¥0.00 约`，即“约”放在数字后。
+- 2026-05-13 最新接手重点：图片生成已确认返回 `usage`。本轮用 `/api/image` 实测 `Seedream 4.5 / 1:1 / 2K / 1张` 返回 `promptTokens: 4`、`completionTokens: 16384`、`totalTokens: 16388`、`usd: 0.04`，并保存测试图到 `public/generated/images/...jpg`。
+- 2026-05-13 最新接手重点：视频查询已确认返回费用。用已有 OpenRouter 视频任务 `P14NkUI1MIBIgF3op7KG` 查询返回 `usage.cost: 0.84`，无 Token；当前代码会把视频费用累计到右上角，但 Token 保持 `0`。
+- 2026-05-13 最新接手重点：`src/lib/openrouter.ts` 的图片生成结果现在会把每次 OpenRouter 响应里的 `usage` 透传并按多图结果累加；`src/app/api/video/route.ts` 会从视频创建/查询响应里提取 `usage.cost`；`src/components/chat-workbench.tsx` 会把图片和视频 usage 加到当前会话 `usageSummary`。
+- 2026-05-13 最新验证：本轮品牌更名、计费扩展和用量浮窗调整后，`npm run lint` 与 `npm run build` 均通过。
+- 2026-05-14 最新接手重点：用户新增长期规则文档 `AI-Video-Assistant_Project Planning\对话流三种模式基础规则.md`，以后用户让“先看规则文档”时，必须先读该文件并对照当前实现，列出新增/变化项让用户决定是否改。
+- 2026-05-14 最新接手重点：Agent 已新增结构化 Planner 接口 `/api/agent-plan`。Agent 模式发送后先进入 pending 队列并显示 `正在认真思考`，刷新后可恢复；Planner 输出 `intent / needsClarification / displayText / count / subject / quality / ratio / resolution / duration / prompt / constraints / suggestions`，执行器再决定对话、追问、生图或生视频。
+- 2026-05-14 最新接手重点：Agent 不再本地问候直回；所有 Agent 输入都先显示 `正在认真思考`，最少显示 `2000ms`。文字和三个点已有走光/跳动效果。思考状态写入 `pendingRequests`，刷新浏览器后不会丢。
+- 2026-05-14 最新接手重点：Agent 自动生图/生视频结果不显示专业模式参数行，只显示 Planner 给出的简短执行说明 + 媒体结果；不重复用户原话。图片一行 4 个，超过换行不分页；Agent 媒体等待卡/失败卡/结果底框为 `10px` 圆角，失败卡内有“重新生成”按钮。
+- 2026-05-14 最新接手重点：Agent 模型调用规则已改。普通 Agent 固定图片 `Seedream 4.5`、视频 `Seedance 2.0 Fast`。高级 Agent 默认先用当前专业模式选择的模型，不因用户说“高品质/高清/精细”立即换贵模型；多次不满意才升质量，多次抱怨慢才换快稳；`Veo 3.1` 只在用户明确要求“4K 视频/视频要 4K/输出 4K 分辨率视频”时调用，`4K画质/4K质感/高清/高品质` 不触发 Veo。
+- 2026-05-14 最新接手重点：红字错误显示已统一中文化，新增 `src/lib/error-message.ts`。前端和主要 API 会清洗 HTML、堆栈、平台代码，常见 413/401/403/429/500/敏感图/参数不支持等错误会转成中文可读提示。系统提示图标已改成和第一行文字顶部对齐。
+- 2026-05-14 最新接手重点：Agent Planner 阶段不再把参考图转 base64 发给 OpenRouter，只传文字和“本轮带了几张参考图”的提示，避免规划阶段 413；真正生图/生视频阶段仍按原参考图链路处理。
+- 2026-05-14 最新接手重点：`AI-Video-Assistant_Project Planning\对话流三种模式基础规则.md` 里已放入模型排序表。用户确认“价格/质量”按他给的顺序，且文档中要用定宽 Markdown 表格，避免编辑器里列不对齐。
+- 2026-05-14 公网部署重点提醒：上传图、资产图、历史参考图在本地开发阶段会转 base64 传给 OpenRouter，容易触发 `413 Request Entity Too Large`。正式部署前必须改为先上传到可公网访问的 HTTPS 地址（对象存储 / CDN / 静态资源服务），再把 HTTPS URL 传给 OpenRouter，不再传 base64，以减少请求体、保留原图质量并降低参考图生成失败率。
+- 2026-05-14 最新协作/产品规则：以后所有 Agent 对话逻辑都必须优先保证“像人一样自然对话”，这条规则高于其它执行细节。内部执行约束（如禁止拼图、单张独立、参数拆分）不要默认暴露给用户；只有用户明确提到不要拼图/合集或刚才结果不对时才自然回应相关说明。
+- 2026-05-14 最新接手重点：Agent 多图生成已支持 Planner `items[]`。每张图优先使用自己的 `items[index].prompt`，并按图片 URL 保存到 `message.imagePrompts[url]`；预览页和 Agent 媒体结果提示词条都应显示当前图片真实 prompt，不再显示总规则或 Agent 理解说明。
+- 2026-05-14 最新接手重点：Agent 文字回复阶段默认不再携带历史图片，避免历史生成图转 base64 导致 413。只有本轮明确上传图或引用资产时，才保留最新用户消息中的参考图；如 `/api/chat` 仍遇到 413，会自动用纯文本上下文重试。
+- 2026-05-14 最新接手重点：用户要求所有用户可见提示里不要出现 `OpenRouter` 字样。错误提示应使用“平台 / 请求 / 图片生成 / 视频任务”等通用表述；内部函数名、日志和技术文档可保留 OpenRouter。
+- 2026-05-14 最新接手重点：Agent 对“只要场景、不要人物、纯场景、空镜”等最新纠错必须覆盖旧上下文。最终 prompt 需要清理人物词，并加入无人物约束，如 `no people, no person, no human, no character, no figure, no silhouette`。
