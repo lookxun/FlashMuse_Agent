@@ -328,6 +328,62 @@
 
 公网部署重点待办：上传图、资产图、历史参考图当前在本地开发阶段会转 base64 传给 OpenRouter，容易触发 `413 Request Entity Too Large`。正式部署前必须改成先保存到可公网访问的 HTTPS 地址（对象存储 / CDN / 静态资源服务），再把 HTTPS URL 传给 OpenRouter，不再传 base64；同时要处理 URL 持久化、旧本地路径兼容和生成接口传参。
 
+## 2026-05-15 本轮对话补充：资产管理上传、分批加载和提醒消息统一
+
+本轮完成：
+
+1. 资产管理页新增直接上传图片功能。入口位于资产管理内容标题右侧，不在顶部标题栏；按钮为蓝色无底样式，图标使用 Remix `upload-2-line`，文案为 `上传图片`。
+2. 上传弹窗支持最多 `8` 张图片。弹窗内只保留一个 `80x80` 上传按钮，初始在第一个位置；用户选择图片后该位置变为图片缩略图，上传按钮自动移动到下一个位置。支持一次多选，多选超过上限时提醒 `最多同时上传8张`。
+3. 上传缩略图为 `80x80` 直角，图片完整显示不裁切；右上角删除按钮为圆形；底部增加黑色渐变并显示真实图片尺寸。尺寸在前端读取本地 data URL 的 `naturalWidth / naturalHeight`。
+4. 上传弹窗下方显示当前选中图片的文件名和分类。文件名标签为 `文件名(支持改名)`，输入框右侧有灰底 `X` 可清空当前文件名。清空后如果不重新输入，失焦或点到其它图片时会恢复原文件名；上传时也会用原文件名兜底。
+5. 分类滑块支持 `角色图片 / 场景图片 / 分镜图片`。上传成功后资产写入 `yinzao-assets-v1`，保存 `type / name / url / sourcePrompt / sessionId / lockedType / createdAt`，其中 `lockedType: true` 防止后续自动分类覆盖。
+6. 上传逻辑复用 `/api/upload-image` 和 `saveUploadedImageAsset()`，图片保存到 `public/generated/upload_image`，服务端按图片内容 hash 去重。资产库前端继续按 URL 去重，已存在的同图不重复添加。
+7. 重复图片处理已细化。全部重复时弹窗不关闭，重复图缩略图保留并显示红色边框，提醒 `图片已存在，无需要重复添加`。新图和重复图混合时，新图正常入库并从弹窗消失，弹窗只保留重复图红框。
+8. 成功上传时显示绿色提醒 `成功上传X张图片`，成功图标使用 `checkbox-circle-line`，成功底色为 `#75d06a`。如果全部上传成功，弹窗立即关闭，成功提醒显示在页面上方；如果混合重复，弹窗不关闭，先显示成功提醒，再显示重复提醒。
+9. 项目内自动消失的提示统一命名为“提醒消息”，当前已统一输入框提醒和上传相关提醒。提醒消息高度统一 `40px`；普通黑底，成功绿底；出现动画 `0.1秒` 从上往下，停留 `2秒`，消失动画 `0.1秒` 从下往上；相同文案显示期间不重复入队，不同文案按顺序排队。
+10. 资产管理列表已改成分批渲染。初始只渲染约 `30` 个资产，滚动接近底部再追加 `30` 个；进入资产管理或切换资产分类时，右侧滚动层自动回到顶部并重置加载数量，避免资产多时卡顿和首次定位到中间。
+11. 本轮曾出现浏览器左下角 Next `N` 长时间停在 `Compiling...`。排查后 `npm run lint` 和 `npm run build` 均通过，判断为 Next dev 进程 / `.next` 缓存卡住。已停止旧端口 `3000` Node 进程、清理 `.next` 并重新启动 dev server。
+12. 本轮涉及文件主要为 `src/components/chat-workbench.tsx`、`src/app/globals.css` 和多个 `handover/*.md`。本轮验证：`npm run lint` 通过，`npm run build` 通过；曾遇到 `.next/dev/types/routes.d.ts` 缓存错误，清 `.next` 后通过。
+
+## 2026-05-15 本轮对话补充：输入框、@资产、Agent 图标和费用估算
+
+本轮完成：
+
+1. 修复 `contenteditable` 输入框对拼音输入法不兼容的问题。新增 composition 保护，拼音组合期间不重绘 DOM；结束后再同步文本和 `@` 高亮。输入框同时加 `translate="no"`、`spellCheck={false}`、`autoCorrect="off"`、`autoCapitalize="off"` 和 Grammarly 禁用属性。
+2. `@` 资产弹窗新增 `待分类`，只显示待分类图片；视频资产仍不显示、不能引用。分类按钮改成 `角色图片(29)` 格式，每个分类全部显示，不再只显示 8 张；弹窗加宽到 `380px` 并强制按钮不换行。
+3. 当没有任何可引用图片时，用户输入 `@` 或点击两个 `@` 入口，会在输入框上方黑框提示 `当前资产库没有图片`。
+4. 输入框参考图上限从 `5` 张改为 `10` 张；超限文案统一为 `@或上传最多支持10张图片`。此改动只放宽产品侧上限，不改 URL 上传或模型筛图规则。
+5. 输入框上方缩略图中，`@资产` 图显示为 `60x60`，普通上传图继续 `100x100`。
+6. 输入框新增透明无底的 `清空输入框` 按钮，带 `format-clear` 图标和 `清空输入框` 文案。点击清空草稿、上传图、`@资产` 参考图和已打开输入弹窗。
+7. `正在认真思考` 时，输入框内容区和左侧工具按钮淡化成无效状态；停止按钮保持黑色不淡化并可点击。专业模式模型/参数按钮也补了思考中禁用。
+8. `Shift+Enter` 换行已修复为真实多行。换行使用 `<br>` 渲染，读取文本和光标计算都识别 `<br>`；末尾空行用 `data-trailing-break` 视觉占位。
+9. Agent 前置图标与输入框 Agent 模式图标都改为 Remix `ri-ai`。因 `react-icons/ri` 没导出 `RiAi`，项目本地新增 `RiAiIcon`，使用用户给的 SVG。Agent 回复图标改为插入首行文本流，兼容普通段落、标题、列表、提示块和媒体说明对齐。
+10. 估算 Seedance 2.0 生成 100 分钟视频费用：按 OpenRouter 当前 `$7/M video tokens` 和公式 `宽 × 高 × 秒数 × 24 / 1024`，`1280x720 / 100分钟` 约 `$907.20`，按汇率 `7.2` 约 `¥6532`；`Seedance 2.0 Fast` 同规格约 `¥5225`。
+11. 安全检查确认 `handover/` 中没有明文 GitHub 密码、token 或 OpenRouter key；但规划目录 README 有压缩包密码说明。`AI-Video-Assistant_Project Planning/` 当前未跟踪，不要直接上传。
+12. GitHub 状态：`cd89681` 和 `5d9aae4` 已推送；本节记录的大部分后续输入框/图标/文档改动仍是本地改动，尚未推送。
+13. 本轮验证：相关改动后多次 `npm run lint` 和 `npm run build` 均通过。
+
+## 2026-05-15 本轮对话补充：Agent 多视频、停止思考和失败原地重试
+
+本轮完成：
+
+1. 用户反馈 Agent 把 10 个镜头做成视频时只生成了 1 个视频。排查确认旧数据结构只有单个 `videoUrl?: string`，执行器视频分支也只创建一次 `/api/video`，所以本质是批量视频未实现。
+2. Agent 视频已支持批量生成。Planner `items[]` 对视频生效，一镜一段视频；如果 Planner 只给 `count > 1` 没给 items，前端按 count 兜底生成多段视频。
+3. 视频消息结构新增/使用 `videos[]`、`videoPrompts`、`videoDimensionsMap`、`pendingVideoCount`、`failedVideoCount`、`generationMeta.itemPrompts` 等字段，支持一条 assistant 消息里同时显示多个视频、等待卡和失败卡。
+4. Agent 分镜视频时长规则已加入 Planner 提示词和 `AI-Video-Assistant_Project Planning\对话流三种模式基础规则.md`：分镜/镜头视频按镜头内容和动作复杂度决定时长，只有普通单段视频才默认最低时长。
+5. Agent 视频显示已改为同一两列 grid：成功视频、等待卡、失败卡混排；一行 2 个，超过换行；统一高度 `360px`、圆角 `10px`、间距 `2px`。单个视频保持左半宽。
+6. 视频失败卡的重新生成已改为原地重试。点击失败卡后不再 append 新 assistant 消息，而是更新原消息的 `requestId`、pending/failed 计数，失败格子原地变等待卡，成功后填回原 grid。
+7. 图片多图结果本来已在 `ImageResultStrip` 中将成功图、等待卡、失败卡混排；本轮只同步了失败卡按钮样式。
+8. 失败卡“重新生成”按钮改为居中灰色空心按钮，前置 `reset-left-line` 图标。图片和视频失败卡保持一致。
+9. 曾临时加 `/api/video-recovery` 自动扫描本地 `public/generated/videos` 以恢复未归档视频，但用户重启后误恢复了早期测试视频。该自动恢复功能已删除，后续不要自动把本地视频塞进对话流。`src/lib/video-manifest.ts` 保留为视频任务 manifest 记录能力。
+10. `src/app/api/video/route.ts` 在创建/查询视频任务时写入 video manifest：`taskId / prompt / model / settings / localVideoUrl / remoteVideoUrl / createdAt / updatedAt`。当前 manifest 只用于记录，不做自动恢复。
+11. `saveSessions()` 已修正：如果 `localStorage.setItem` 失败，不再删除 `yinzao-sessions-v2`，只保留上一次成功保存的历史并输出 warning。
+12. 输入框发送按钮改为正方形图标按钮：普通状态是 `arrow-up-line`；Agent 思考中是黑色 `stop-fill`，带走光，可点击中断 Agent 思考。
+13. 点击停止会 abort 当前 Agent 请求，移除 Agent pending，并追加系统消息 `已中断思考`。非红字系统消息顶部显示灰色横线，红字错误系统消息不加。
+14. 修复部分 Next dev 红色 `N` 中的 `next/image` 尺寸 warning：给若干 `h-full w-full object-cover` 的 `<Image>` 补 `style={{ width: "100%", height: "100%" }}`。
+15. 本轮中途已推送 GitHub：`89723bf Update agent media generation flow`。注意：该提交之后又继续做了停止按钮、视频 grid、失败原地重试和本文档更新，下一次同步 GitHub 需要再提交。
+16. 本轮验证：多次 `npm run lint` 和 `npm run build` 均通过。
+
 ## 2026-05-14 本轮对话补充：Agent Planner、模型调用规则、错误中文化
 
 本轮完成：

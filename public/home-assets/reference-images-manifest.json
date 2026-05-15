@@ -1,0 +1,53 @@
+{
+  "createdAt": "2026-05-15T13:55:32.963Z",
+  "style": "same-as-home-poster-seedream-4.5-16x9-4k",
+  "images": [
+    {
+      "name": "hero-dragon-reference",
+      "title": "Chinese dragon",
+      "prompt": "A very large majestic Chinese dragon head as the only main subject, close-up cinematic portrait, the dragon head faces left, only the head and a little neck are visible, elegant horns, long flowing whiskers, subtle dark scales, translucent glowing liquid energy and high-tech light filaments around the dragon head. Deep black cinematic background, electric cyan and sapphire blue shadows, violet and magenta glow, orange and gold liquid particles, premium luxury technology atmosphere, dramatic depth, clean dark empty space in all four corners, uninterrupted pure visual artwork, 16:9 composition, ultra detailed.",
+      "file": "/home-assets/hero-dragon-reference.jpg",
+      "model": "bytedance-seed/seedream-4.5",
+      "settings": {
+        "aspect_ratio": "16:9",
+        "image_size": "4K"
+      },
+      "regeneratedAt": "2026-05-15T14:08:42.852Z"
+    },
+    {
+      "name": "hero-great-wall-reference",
+      "title": "Great Wall landscape",
+      "prompt": "A cinematic surreal Great Wall of China landscape, the Great Wall sweeping across dark mountains and dissolving into colorful liquid light currents, mist, gold rim light, blue cyan shadows, epic wide scene, no people. premium cinematic abstract AI creation homepage hero image, deep black background, high contrast, luminous liquid color trails, electric cyan, sapphire blue, violet, magenta, orange and gold, glossy pigment particles, elegant luxury technology mood, dramatic depth, clean negative space for website UI overlay, no readable text, no logo, no watermark, 16:9 composition, ultra detailed",
+      "file": "/home-assets/hero-great-wall-reference.jpg",
+      "model": "bytedance-seed/seedream-4.5",
+      "settings": {
+        "aspect_ratio": "16:9",
+        "image_size": "4K"
+      }
+    },
+    {
+      "name": "hero-global-human-reference",
+      "title": "international human",
+      "prompt": "A stylish international-looking human portrait with strong global fashion and technology feeling, one person only, elegant face profile, luminous cyan and violet light patterns across skin, colorful liquid hair-like trails flowing backward, refined and cinematic, not cartoon, not plastic. premium cinematic abstract AI creation homepage hero image, deep black background, high contrast, luminous liquid color trails, electric cyan, sapphire blue, violet, magenta, orange and gold, glossy pigment particles, elegant luxury technology mood, dramatic depth, clean negative space for website UI overlay, no readable text, no logo, no watermark, 16:9 composition, ultra detailed",
+      "file": "/home-assets/hero-global-human-reference.jpg",
+      "model": "bytedance-seed/seedream-4.5",
+      "settings": {
+        "aspect_ratio": "16:9",
+        "image_size": "4K"
+      }
+    },
+    {
+      "name": "hero-mecha-robot-reference",
+      "title": "high-tech mechanical robot",
+      "prompt": "A high-tech mechanical humanoid robot positioned on the right side of the frame, strong advanced machinery details, precision metal panels, visible mechanical structure, glowing cyan circuits, heavy futuristic engineering feeling, not glass, not transparent, not toy-like, no extra objects, no screens, no webpage, no navigation, no top or bottom white stripe, surrounded by orange gold and violet liquid energy particles, powerful cinematic presence. premium cinematic abstract AI creation homepage hero image, deep black background, high contrast, luminous liquid color trails, electric cyan, sapphire blue, violet, magenta, orange and gold, glossy pigment particles, elegant luxury technology mood, dramatic depth, clean negative space for website UI overlay, no readable text, no logo, no watermark, no website interface, no UI frame, no browser frame, no menu bar, no white bars, no borders, 16:9 composition, ultra detailed",
+      "file": "/home-assets/hero-mecha-robot-reference.jpg",
+      "model": "bytedance-seed/seedream-4.5",
+      "settings": {
+        "aspect_ratio": "16:9",
+        "image_size": "4K"
+      },
+      "regeneratedAt": "2026-05-15T14:02:29.532Z"
+    }
+  ],
+  "updatedAt": "2026-05-15T14:08:42.852Z"
+}

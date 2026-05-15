@@ -1,0 +1,14 @@
+{
+  "createdAt": "2026-05-15T13:02:05.064Z",
+  "style": "color-fluid-cinematic",
+  "poster": {
+    "model": "bytedance-seed/seedream-4.5",
+    "prompt": "A premium cinematic abstract homepage hero image on a deep black background, explosive colorful fluid pigments and luminous ink clouds in electric cyan, sapphire blue, violet, magenta, orange and gold, swirling like ocean currents and nebula smoke, elegant high-end AI creativity visual, dramatic contrast, glossy liquid particles, no text, no logo, no watermark, 16:9, ultra detailed, luxury technology aesthetic, clean dark negative space for website UI overlay"
+  },
+  "video": {
+    "model": "google/veo-3.1",
+    "prompt": "A premium full-screen website hero background video on a deep black background. Vibrant liquid color waves and powder-like pigment clouds bloom and swirl in slow motion, electric cyan and sapphire blue colliding with violet, magenta, orange and gold, like ocean currents, glowing jellyfish trails and abstract ink explosions. Cinematic macro detail, glossy fluid particles, elegant luxury technology mood, slow smooth camera drift, high contrast, no text, no logo, no watermark, no people, seamless atmospheric motion, suitable for a high-end AI video creation homepage.",
+    "taskId": "https://openrouter.ai/api/v1/videos/PMTQ4x70LwhvdFVmMAjq",
+    "remoteUrl": "https://openrouter.ai/api/v1/videos/PMTQ4x70LwhvdFVmMAjq/content?index=0"
+  }
+}

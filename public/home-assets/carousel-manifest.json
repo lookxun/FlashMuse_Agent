@@ -1,0 +1,38 @@
+{
+  "createdAt": "2026-05-15T13:26:54.234Z",
+  "style": "color-fluid-carousel",
+  "videos": [
+    {
+      "name": "hero-animal",
+      "title": "animal",
+      "prompt": "A premium cinematic full-screen website hero background video on a deep black background. A majestic translucent whale and glowing jellyfish-like animal silhouettes emerge from vibrant liquid pigments, electric cyan, sapphire blue, violet, magenta, orange and gold. Colorful fluid trails swirl around the animal forms like nebula ink in water, elegant AI creativity mood, slow smooth camera drift, macro particles, high contrast, no text, no logo, no watermark, no humans, luxury technology aesthetic.",
+      "file": "/home-assets/hero-animal.mp4",
+      "taskId": "https://openrouter.ai/api/v1/videos/RAmKfT8TXEu8vHXE38xH",
+      "remoteUrl": "https://openrouter.ai/api/v1/videos/RAmKfT8TXEu8vHXE38xH/content?index=0"
+    },
+    {
+      "name": "hero-landscape",
+      "title": "landscape",
+      "prompt": "A premium cinematic full-screen website hero background video on a deep black background. An abstract surreal landscape forms from colored liquid sand dunes, ocean currents and glowing mist, electric cyan shadows blending into violet, magenta, orange and gold highlights. Wide epic scale, slow aerial camera movement, fluid pigment rivers flowing through the scene, elegant high-end AI film visual, no text, no logo, no watermark, no people, high contrast luxury technology aesthetic.",
+      "file": "/home-assets/hero-landscape.mp4",
+      "taskId": "https://openrouter.ai/api/v1/videos/RZlv04f1Y1s2oVWBl3Le",
+      "remoteUrl": "https://openrouter.ai/api/v1/videos/RZlv04f1Y1s2oVWBl3Le/content?index=0"
+    },
+    {
+      "name": "hero-human",
+      "title": "human",
+      "prompt": "A premium cinematic full-screen website hero background video on a deep black background. A graceful human face profile made of luminous liquid light and flowing colorful hair trails, electric cyan and blue lines across the skin, violet, magenta, orange and gold pigment ribbons streaming backward. Elegant, futuristic, emotional, high-end AI creativity visual, slow smooth motion, detailed particles, no text, no logo, no watermark, tasteful and cinematic, luxury technology mood.",
+      "file": "/home-assets/hero-human.mp4",
+      "taskId": "https://openrouter.ai/api/v1/videos/r0GwlDderfIR39lfwKGp",
+      "remoteUrl": "https://openrouter.ai/api/v1/videos/r0GwlDderfIR39lfwKGp/content?index=0"
+    },
+    {
+      "name": "hero-robot",
+      "title": "robot",
+      "prompt": "A premium cinematic full-screen website hero background video on a deep black background. A sleek abstract humanoid robot silhouette forms from glossy black metal and luminous colorful liquid energy, electric cyan circuits, violet and magenta glow, orange and gold fluid particles blooming around it. Slow smooth camera push-in, high contrast, elegant futuristic AI film creation mood, no text, no logo, no watermark, luxury technology aesthetic.",
+      "file": "/home-assets/hero-robot.mp4",
+      "taskId": "https://openrouter.ai/api/v1/videos/ICBgjTOrIKgl56oQIWeI",
+      "remoteUrl": "https://openrouter.ai/api/v1/videos/ICBgjTOrIKgl56oQIWeI/content?index=0"
+    }
+  ]
+}

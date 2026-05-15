@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject, type SVGProps } from "react";
 import Image from "next/image";
 import {
   RiAddLine,
@@ -16,6 +16,7 @@ import {
   RiChatSmileAiLine,
   RiChatDeleteFill,
   RiChatDeleteLine,
+  RiCheckboxCircleLine,
   RiCheckboxMultipleBlankLine,
   RiCloseLine,
   RiCoinsLine,
@@ -26,6 +27,7 @@ import {
   RiErrorWarningLine,
   RiFolderLine,
   RiFolderOpenLine,
+  RiFormatClear,
   RiLandscapeLine,
   RiImageLine,
   RiLayoutLeft2Line,
@@ -47,6 +49,7 @@ import {
   RiThumbUpLine,
   RiThumbUpFill,
   RiTimeLine,
+  RiUpload2Line,
   RiAccountBoxLine,
   RiFilmLine,
   Ri4kLine,
@@ -73,6 +76,7 @@ type Message = {
   createdAt?: number;
   requestId?: string;
   images?: string[];
+  imageResultSlots?: ImageResultSlot[];
   imageDimensions?: Record<string, ImageDimensions>;
   imagePrompts?: Record<string, string>;
   imageReferences?: ImageReference[];
@@ -84,8 +88,12 @@ type Message = {
   statusText?: string;
   pendingImageCount?: number;
   failedImageCount?: number;
+  retryingFailedImageIndexes?: number[];
+  retryingFailedImageStartedAt?: Record<number, number>;
   pendingVideoCount?: number;
   failedVideoCount?: number;
+  retryingFailedVideoIndexes?: number[];
+  retryingFailedVideoStartedAt?: Record<number, number>;
   error?: string;
   mode?: WorkMode;
   generationMeta?: MessageGenerationMeta;
@@ -100,6 +108,10 @@ type ImageDimensions = {
   width: number;
   height: number;
 };
+
+type ImageResultSlot =
+  | { type: "image"; url: string }
+  | { type: "failed"; retryingStartedAt?: number };
 
 type AssetType = "character_image" | "scene_image" | "shot_image" | "shot_video" | "other" | "trash";
 type AssetTargetType = AssetType;
@@ -123,6 +135,24 @@ type AssetItem = {
   createdAt: number;
   deletedAt?: number;
   purgeAt?: number;
+};
+
+type UploadableImageAssetType = "character_image" | "scene_image" | "shot_image";
+
+type AssetUploadSlot = {
+  id: string;
+  fileName: string;
+  originalFileName: string;
+  dataUrl: string;
+  dimensions?: ImageDimensions;
+  isDuplicate?: boolean;
+  type: UploadableImageAssetType;
+};
+
+type ReminderMessage = {
+  message: string;
+  tone: "default" | "success";
+  exiting?: boolean;
 };
 
 type VideoTaskState = {
@@ -157,6 +187,7 @@ type PendingGeneration = {
   agentDisplayText?: string;
   agentItemPrompts?: string[];
   agentItemSettings?: GenerationSettings[];
+  retryFailedIndex?: number;
   needsIntentResolution?: boolean;
   sourceText?: string;
 };
@@ -306,7 +337,7 @@ const MAX_PERSISTED_SESSIONS = 30;
 const MAX_INTENT_MEMORY_RULES = 50;
 const MAX_FEEDBACK_LOGS = 300;
 const USD_TO_CNY_RATE = 7.2;
-const MAX_UPLOADED_IMAGES = 5;
+const MAX_UPLOADED_IMAGES = 10;
 const MAX_SESSION_PENDING_REQUESTS = 10;
 const MAX_DRAFT_INPUT_LENGTH = 2000;
 const RETRY_IMAGE_SIDE = 1280;
@@ -329,6 +360,10 @@ const assetTypeLabels: Record<AssetType, string> = {
   trash: "回收站",
 };
 const assetTypeOrder: AssetType[] = ["character_image", "scene_image", "shot_image", "shot_video", "other", "trash"];
+const mentionAssetTypes: AssetType[] = ["character_image", "scene_image", "shot_image", "other"];
+const assetUploadTypes: UploadableImageAssetType[] = ["character_image", "scene_image", "shot_image"];
+const ASSET_UPLOAD_SLOT_COUNT = 8;
+const ASSET_RENDER_PAGE_SIZE = 30;
 const assetTypeIcons: Record<AssetType, typeof RiImageLine> = {
   character_image: RiAccountBoxLine,
   scene_image: RiLandscapeLine,
@@ -406,7 +441,7 @@ const imageCountOptions = ["1张", "2张", "3张", "4张"];
 const styleOptions = ["写实风格", "2D风格", "3D风格"];
 const durationOptions = ["5秒", "10秒", "15秒"];
 const modeOptions: Array<{ label: string; value: WorkMode; icon: typeof RiImageLine }> = [
-  { label: "Agent 模式", value: "agent", icon: RiRobot2Line },
+  { label: "Agent 模式", value: "agent", icon: RiAiIcon },
   { label: "图片生成", value: "image", icon: RiImageAiLine },
   { label: "视频生成", value: "video", icon: RiFilmAiLine },
 ];
@@ -1301,10 +1336,18 @@ function MediaPromptBlock({ message, references, onUsePrompt, copyState, display
   );
 }
 
-function AiGenerate3dIcon() {
+function AiGenerate3dIcon({ className = "h-[18px] w-[18px] shrink-0 text-[#777777]" }: { className?: string }) {
   return (
-    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" className="h-[18px] w-[18px] shrink-0 text-[#777777]">
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" className={className}>
       <path d="M15.1416 2.81836L13.1016 3.94824L12 3.31055L4.5 7.65234V7.6582L12 12V20.6895L19.5 16.3467V11.5L21.5 10.3291V17.5L12 23L2.5 17.5V6.5L12 1L15.1416 2.81836ZM18.5293 2.31934C18.7059 1.8935 19.2943 1.89349 19.4707 2.31934L19.7236 2.93066C20.1556 3.97346 20.9615 4.80618 21.9746 5.25684L22.6924 5.57617C23.1026 5.75901 23.1026 6.3562 22.6924 6.53906L21.9326 6.87695C20.9449 7.31624 20.1534 8.11944 19.7139 9.12793L19.4668 9.69336C19.2864 10.1075 18.7137 10.1075 18.5332 9.69336L18.2871 9.12793C17.8476 8.11929 17.0552 7.31628 16.0674 6.87695L15.3076 6.53906C14.8974 6.35622 14.8974 5.75899 15.3076 5.57617L16.0254 5.25684C17.0385 4.80618 17.8445 3.97348 18.2764 2.93066L18.5293 2.31934Z" />
+    </svg>
+  );
+}
+
+function RiAiIcon({ className = "h-4 w-4", ...props }: SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" className={className} {...props}>
+      <path d="M16.4004 21H14.2461L12.2461 16H5.75391L3.75391 21H1.59961L8 4.99996H10L16.4004 21ZM21 12V21H19V12H21ZM6.55371 14H11.4463L9 7.88473L6.55371 14ZM19.5293 2.3193C19.7058 1.89351 20.2942 1.8935 20.4707 2.3193L20.7236 2.93063C21.1555 3.97343 21.9615 4.80613 22.9746 5.2568L23.6914 5.57613C24.1022 5.75881 24.1022 6.35634 23.6914 6.53902L22.9326 6.87691C21.945 7.31619 21.1534 8.11942 20.7139 9.12789L20.4668 9.69332C20.2863 10.1075 19.7136 10.1075 19.5332 9.69332L19.2861 9.12789C18.8466 8.11941 18.0551 7.31619 17.0674 6.87691L16.3076 6.53902C15.8974 6.35617 15.8974 5.75894 16.3076 5.57613L17.0254 5.2568C18.0384 4.80613 18.8445 3.97343 19.2764 2.93063L19.5293 2.3193Z" />
     </svg>
   );
 }
@@ -1425,12 +1468,14 @@ function TypewriterFormattedMessage({
   isComplete,
   onComplete,
   onTick,
+  leadingIcon,
 }: {
   messageId: string;
   content: string;
   isComplete: boolean;
   onComplete: (messageId: string) => void;
   onTick: () => void;
+  leadingIcon?: ReactNode;
 }) {
   const characters = Array.from(content);
   const [visibleCount, setVisibleCount] = useState(isComplete ? characters.length : 0);
@@ -1474,7 +1519,7 @@ function TypewriterFormattedMessage({
 
   return (
     <>
-      <FormattedMessage content={visibleContent} />
+      <FormattedMessage content={visibleContent} leadingIcon={leadingIcon} />
       {!isComplete ? <span className="ml-0.5 inline-block h-4 w-1 animate-pulse rounded-full bg-[#111111] align-[-2px]" aria-hidden="true" /> : null}
     </>
   );
@@ -1974,6 +2019,43 @@ function getUploadedReferenceBaseName(fileName: string) {
   return sanitizeAssetName(fileName.replace(/\.[^.]+$/, "")) || "上传图片";
 }
 
+function createAssetUploadSlots(type: UploadableImageAssetType): AssetUploadSlot[] {
+  return Array.from({ length: ASSET_UPLOAD_SLOT_COUNT }, () => ({
+    id: crypto.randomUUID(),
+    fileName: "",
+    originalFileName: "",
+    dataUrl: "",
+    type,
+  }));
+}
+
+function normalizeAssetUploadSlots(slots: AssetUploadSlot[], type: UploadableImageAssetType): AssetUploadSlot[] {
+  if (slots.length >= ASSET_UPLOAD_SLOT_COUNT) return slots.slice(0, ASSET_UPLOAD_SLOT_COUNT);
+  return [...slots, ...createAssetUploadSlots(type).slice(0, ASSET_UPLOAD_SLOT_COUNT - slots.length)];
+}
+
+function getDefaultAssetUploadType(assetFilter: AssetFilter): UploadableImageAssetType {
+  return assetUploadTypes.includes(assetFilter as UploadableImageAssetType) ? assetFilter as UploadableImageAssetType : "character_image";
+}
+
+function readFileAsDataUrl(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "");
+    reader.onerror = () => reject(reader.error ?? new Error("图片读取失败"));
+    reader.readAsDataURL(file);
+  });
+}
+
+function getDataUrlImageDimensions(dataUrl: string) {
+  return new Promise<ImageDimensions>((resolve, reject) => {
+    const image = new window.Image();
+    image.onload = () => resolve({ width: image.naturalWidth, height: image.naturalHeight });
+    image.onerror = () => reject(new Error("图片尺寸读取失败"));
+    image.src = dataUrl;
+  });
+}
+
 function toUploadedAssetReference(asset: Pick<AssetItem, "name" | "url">): UploadedImage {
   return {
     id: crypto.randomUUID(),
@@ -2183,12 +2265,16 @@ function renderInlineFormatting(text: string) {
   return nodes.length > 0 ? nodes : text;
 }
 
-function FormattedMessage({ content }: { content: string }) {
+function InlineAgentIcon() {
+  return <RiAiIcon className="mr-1.5 inline-block h-5 w-5 align-[-3px] text-[#367cee]" />;
+}
+
+function FormattedMessage({ content, leadingIcon }: { content: string; leadingIcon?: ReactNode }) {
   const blocks = content.split(/\n{2,}/).map((block) => block.trim()).filter(Boolean);
 
   if (blocks.length === 0) return null;
 
-  const renderLine = (line: string, key: string) => {
+  const renderLine = (line: string, key: string, lineLeadingIcon?: ReactNode) => {
     const redCallout = line.match(/^\[red\]([\s\S]+)\[\/red\]$/);
     const blueCallout = line.match(/^\[blue\]([\s\S]+)\[\/blue\]$/);
     const divider = /^-{3,}$/.test(line);
@@ -2204,6 +2290,7 @@ function FormattedMessage({ content }: { content: string }) {
       const isRed = Boolean(redCallout);
       return (
         <div key={key} className={isRed ? "rounded-xl bg-[#fff1f1] px-3 py-2 text-[14px] font-semibold leading-6 text-[#d36b63]" : "rounded-xl bg-[#eef5ff] px-3 py-2 text-[14px] font-semibold leading-6 text-[#6f95d8]"}>
+          {lineLeadingIcon}
           {redCallout?.[1] ?? blueCallout?.[1]}
         </div>
       );
@@ -2215,6 +2302,7 @@ function FormattedMessage({ content }: { content: string }) {
       if (level === 1) {
         return (
           <h1 key={key} className="pt-2 text-[22px] font-semibold leading-8 tracking-[-0.02em] text-[#111111]">
+            {lineLeadingIcon}
             {renderInlineFormatting(heading[2])}
           </h1>
         );
@@ -2222,10 +2310,12 @@ function FormattedMessage({ content }: { content: string }) {
 
       return level === 2 ? (
         <h2 key={key} className="pt-2 text-[19px] font-semibold leading-7 tracking-[-0.01em] text-[#111111]">
+          {lineLeadingIcon}
           {renderInlineFormatting(heading[2])}
         </h2>
       ) : (
         <h3 key={key} className="pt-1 text-[16px] font-semibold leading-6 text-[#111111]">
+          {lineLeadingIcon}
           {renderInlineFormatting(heading[2])}
         </h3>
       );
@@ -2234,6 +2324,7 @@ function FormattedMessage({ content }: { content: string }) {
     if (boldHeading) {
       return (
         <h3 key={key} className="pt-1 text-[16px] font-semibold leading-6 text-[#111111]">
+          {lineLeadingIcon}
           {boldHeading[1]}
         </h3>
       );
@@ -2244,6 +2335,7 @@ function FormattedMessage({ content }: { content: string }) {
         <div key={key} className="flex gap-2">
           <span className="mt-[0.72em] h-1.5 w-1.5 shrink-0 rounded-full bg-[#111111]" aria-hidden="true" />
           <p className="min-w-0 flex-1">
+            {lineLeadingIcon}
             <strong className="font-semibold text-[#111111]">{labeledListItem[1]}</strong>
             {labeledListItem[2] ? renderInlineFormatting(labeledListItem[2]) : null}
           </p>
@@ -2251,7 +2343,7 @@ function FormattedMessage({ content }: { content: string }) {
       );
     }
 
-    return <p key={key}>{renderInlineFormatting(line)}</p>;
+    return <p key={key}>{lineLeadingIcon}{renderInlineFormatting(line)}</p>;
   };
 
   return (
@@ -2269,6 +2361,7 @@ function FormattedMessage({ content }: { content: string }) {
 
                 return (
                   <li key={`${blockIndex}-${lineIndex}`} className="list-disc">
+                    {blockIndex === 0 && lineIndex === 0 ? leadingIcon : null}
                     {labeledItem ? (
                       <>
                         <strong className="font-semibold text-[#111111]">{labeledItem[1]}</strong>
@@ -2286,7 +2379,7 @@ function FormattedMessage({ content }: { content: string }) {
 
         return (
           <div key={blockIndex} className="space-y-2">
-            {lines.map((line, lineIndex) => renderLine(line, `${blockIndex}-${lineIndex}`))}
+            {lines.map((line, lineIndex) => renderLine(line, `${blockIndex}-${lineIndex}`, blockIndex === 0 && lineIndex === 0 ? leadingIcon : undefined))}
           </div>
         );
       })}
@@ -2317,7 +2410,32 @@ function SuggestionButtons({ suggestions, onSelect }: { suggestions?: Suggestion
 }
 
 function getEditableText(element: HTMLElement) {
-  return (element.innerText ?? "").replace(/\u00a0/g, " ").replace(/\n$/, "");
+  let text = "";
+  const walk = (node: Node) => {
+    node.childNodes.forEach((child) => {
+      if (child.nodeType === Node.TEXT_NODE) {
+        text += child.textContent ?? "";
+        return;
+      }
+
+      if (child.nodeName === "BR") {
+        if (!(child instanceof HTMLElement) || child.dataset.trailingBreak !== "true") text += "\n";
+        return;
+      }
+
+      walk(child);
+    });
+  };
+
+  walk(element);
+  return text.replace(/\u00a0/g, " ");
+}
+
+function appendEditorText(element: HTMLElement, text: string) {
+  text.split("\n").forEach((line, index) => {
+    if (index > 0) element.append(document.createElement("br"));
+    if (line) element.append(document.createTextNode(line));
+  });
 }
 
 function getSelectionTextOffset(element: HTMLElement) {
@@ -2327,10 +2445,38 @@ function getSelectionTextOffset(element: HTMLElement) {
   const range = selection.getRangeAt(0);
   if (!element.contains(range.startContainer)) return getEditableText(element).length;
 
-  const prefixRange = range.cloneRange();
-  prefixRange.selectNodeContents(element);
-  prefixRange.setEnd(range.startContainer, range.startOffset);
-  return prefixRange.toString().length;
+  let offset = 0;
+  let found = false;
+  const nodeTextLength = (node: Node): number => {
+    if (node.nodeType === Node.TEXT_NODE) return node.textContent?.length ?? 0;
+    if (node.nodeName === "BR") return node instanceof HTMLElement && node.dataset.trailingBreak === "true" ? 0 : 1;
+    return Array.from(node.childNodes).reduce((sum, child) => sum + nodeTextLength(child), 0);
+  };
+  const walk = (node: Node) => {
+    if (found) return;
+
+    if (node === range.startContainer) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        offset += range.startOffset;
+      } else {
+        Array.from(node.childNodes).slice(0, range.startOffset).forEach((child) => {
+          offset += nodeTextLength(child);
+        });
+      }
+      found = true;
+      return;
+    }
+
+    if (node.nodeType === Node.TEXT_NODE || node.nodeName === "BR") {
+      offset += nodeTextLength(node);
+      return;
+    }
+
+    node.childNodes.forEach(walk);
+  };
+
+  walk(element);
+  return found ? offset : getEditableText(element).length;
 }
 
 function setSelectionTextOffset(element: HTMLElement, offset: number) {
@@ -2338,6 +2484,56 @@ function setSelectionTextOffset(element: HTMLElement, offset: number) {
   if (!selection) return;
 
   let remaining = Math.max(0, offset);
+  const placeCaret = (container: Node): boolean => {
+    const children = Array.from(container.childNodes);
+
+    for (const child of children) {
+      if (child.nodeType === Node.TEXT_NODE) {
+        const length = child.textContent?.length ?? 0;
+        if (remaining <= length) {
+          const range = document.createRange();
+          range.setStart(child, remaining);
+          range.collapse(true);
+          selection.removeAllRanges();
+          selection.addRange(range);
+          return true;
+        }
+        remaining -= length;
+        continue;
+      }
+
+      if (child.nodeName === "BR") {
+        if (remaining <= 1) {
+          const parent = child.parentNode;
+          if (!parent) return false;
+          const range = document.createRange();
+          range.setStart(parent, children.indexOf(child) + 1);
+          range.collapse(true);
+          selection.removeAllRanges();
+          selection.addRange(range);
+          return true;
+        }
+        remaining -= 1;
+        continue;
+      }
+
+      if (placeCaret(child)) return true;
+    }
+
+    return false;
+  };
+
+  if (placeCaret(element)) return;
+
+  if (element.lastChild?.nodeName === "BR") {
+    const range = document.createRange();
+    range.setStart(element, element.childNodes.length);
+    range.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    return;
+  }
+
   const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
   let node = walker.nextNode() as Text | null;
 
@@ -2379,8 +2575,14 @@ function renderEditorContent(element: HTMLElement, value: string, validReference
       return;
     }
 
-    element.append(document.createTextNode(part));
+    appendEditorText(element, part);
   });
+
+  if (value.endsWith("\n")) {
+    const trailingBreak = document.createElement("br");
+    trailingBreak.dataset.trailingBreak = "true";
+    element.append(trailingBreak);
+  }
 }
 
 function PlainMentionEditor({
@@ -2570,6 +2772,21 @@ function UserMessageContent({ content, references }: { content: string; referenc
   return <ReferencedTextContent content={content} references={references} />;
 }
 
+function ReminderToast({ reminder, fixed = false }: { reminder: ReminderMessage; fixed?: boolean }) {
+  const baseClass = fixed
+    ? "pointer-events-none fixed left-1/2 top-20 z-50 inline-flex h-10 -translate-x-1/2 items-center gap-1.5 whitespace-nowrap rounded-lg px-3 text-[12px] font-medium leading-none text-white shadow-[0_8px_18px_rgba(0,0,0,0.18)]"
+    : "pointer-events-none inline-flex h-10 items-center gap-1.5 whitespace-nowrap rounded-lg px-3 text-[12px] font-medium leading-none text-white shadow-[0_8px_18px_rgba(0,0,0,0.18)]";
+  const toneClass = reminder.tone === "success" ? "bg-[#75d06a]" : "bg-[#111111]";
+  const animationClass = reminder.exiting ? "yinzao-asset-upload-tip-exit" : "yinzao-asset-upload-tip-enter";
+
+  return (
+    <div className={`${baseClass} ${toneClass} ${animationClass}`}>
+      {reminder.tone === "success" ? <RiCheckboxCircleLine className="h-3.5 w-3.5" aria-hidden="true" /> : null}
+      <span>{reminder.message}</span>
+    </div>
+  );
+}
+
 function ReferenceThumbnailStrip({ references, onUseReference }: { references?: ImageReference[]; onUseReference: (reference: ImageReference) => void }) {
   if (!references?.length) return null;
 
@@ -2606,6 +2823,7 @@ function getDisplayImageReferences(message: Message) {
 function AssetManagementPanel({
   assets,
   assetFilter,
+  renderLimit,
   openAssetMenuId,
   openAssetActionMenuId,
   assetMenuPlacement,
@@ -2617,10 +2835,12 @@ function AssetManagementPanel({
   onChangeType,
   onDelete,
   onRestore,
+  onOpenUpload,
   now,
 }: {
   assets: AssetItem[];
   assetFilter: AssetFilter;
+  renderLimit: number;
   openAssetMenuId: string;
   openAssetActionMenuId: string;
   assetMenuPlacement: AssetMenuPlacement;
@@ -2632,10 +2852,19 @@ function AssetManagementPanel({
   onChangeType: (assetId: string, type: AssetType) => void;
   onDelete: (assetId: string) => void;
   onRestore: (assetId: string) => void;
+  onOpenUpload: () => void;
   now: number;
 }) {
   const visibleTypes = assetFilter === "all" ? assetTypeOrder : [assetFilter];
   const title = assetFilter === "all" ? "全部资产" : assetTypeLabels[assetFilter];
+  const canUploadImages = assetFilter !== "trash";
+  let remainingRenderCount = renderLimit;
+  const getRenderableAssets = (typeAssets: AssetItem[]) => {
+    const count = Math.max(0, remainingRenderCount);
+    const renderableAssets = typeAssets.slice(0, count);
+    remainingRenderCount -= renderableAssets.length;
+    return renderableAssets;
+  };
   const renderAssetGrid = (typeAssets: AssetItem[]) => (
     <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
       {typeAssets.map((asset) => (
@@ -2710,7 +2939,15 @@ function AssetManagementPanel({
   return (
     <div className="mx-auto flex w-full max-w-5xl flex-col gap-8 py-2">
       <div>
-        <div className="text-[26px] font-semibold tracking-[-0.02em] text-[#111111]">{title}</div>
+        <div className="flex items-center justify-between gap-4">
+          <div className="text-[26px] font-semibold tracking-[-0.02em] text-[#111111]">{title}</div>
+          {canUploadImages ? (
+            <button type="button" onClick={onOpenUpload} className="inline-flex h-8 shrink-0 items-center gap-1.5 bg-transparent px-0 py-0 font-medium leading-none text-[#367cee] transition hover:text-[#255fc3]" aria-label="上传图片">
+              <RiUpload2Line className="h-4 w-4" aria-hidden="true" />
+              <span className="text-[13px] leading-none">上传图片</span>
+            </button>
+          ) : null}
+        </div>
         {assetFilter !== "trash" ? <div className="mt-2 text-sm leading-6 text-[#777777]">自动收集生成出的角色图片、场景图片、分镜图片和分镜视频。点击小图预览，左下角可引用资产，右上角可改分类，右下角可重命名或删除。</div> : null}
         {assetFilter === "trash" ? <div className="mt-2 text-sm leading-6 text-red-500">回收站中的内容将在30天后删除，不可恢复。</div> : null}
       </div>
@@ -2725,30 +2962,34 @@ function AssetManagementPanel({
           if (type === "other") {
             const imageAssets = typeAssets.filter((asset) => !isVideoAsset(asset));
             const videoAssets = typeAssets.filter(isVideoAsset);
+            const renderableImageAssets = getRenderableAssets(imageAssets);
+            const renderableVideoAssets = getRenderableAssets(videoAssets);
 
             return (
               <section key={type} className="space-y-6">
-                {imageAssets.length > 0 ? (
+                {renderableImageAssets.length > 0 ? (
                   <div>
                     <div className="mb-3 flex items-center justify-between">
                       <div className="text-[15px] font-semibold text-[#111111]">待分类图片</div>
                       <div className="text-xs text-[#9a9a9a]">{imageAssets.length} 个</div>
                     </div>
-                    {renderAssetGrid(imageAssets)}
+                    {renderAssetGrid(renderableImageAssets)}
                   </div>
                 ) : null}
-                {videoAssets.length > 0 ? (
+                {renderableVideoAssets.length > 0 ? (
                   <div>
                     <div className="mb-3 flex items-center justify-between">
                       <div className="text-[15px] font-semibold text-[#111111]">待分类视频</div>
                       <div className="text-xs text-[#9a9a9a]">{videoAssets.length} 个</div>
                     </div>
-                    {renderAssetGrid(videoAssets)}
+                    {renderAssetGrid(renderableVideoAssets)}
                   </div>
                 ) : null}
               </section>
             );
           }
+          const renderableTypeAssets = getRenderableAssets(typeAssets);
+          if (renderableTypeAssets.length === 0) return null;
 
           return (
             <section key={type}>
@@ -2756,11 +2997,142 @@ function AssetManagementPanel({
                 <div className="text-[15px] font-semibold text-[#111111]">{assetTypeLabels[type]}</div>
                 <div className="text-xs text-[#9a9a9a]">{typeAssets.length} 个</div>
               </div>
-              {renderAssetGrid(typeAssets)}
+              {renderAssetGrid(renderableTypeAssets)}
             </section>
           );
         }) : <div className="flex min-h-[280px] items-center justify-center text-sm text-[#a0a0a0]">当前没有内容</div>
       )}
+    </div>
+  );
+}
+
+function AssetUploadDialog({
+  slots,
+  activeIndex,
+  isUploading,
+  tip,
+  onClose,
+  onSelectSlot,
+  onSelectFiles,
+  onRemoveSlot,
+  onChangeName,
+  onRestoreEmptyName,
+  onClearName,
+  onChangeType,
+  onSubmit,
+}: {
+  slots: AssetUploadSlot[];
+  activeIndex: number;
+  isUploading: boolean;
+  tip?: ReminderMessage;
+  onClose: () => void;
+  onSelectSlot: (index: number) => void;
+  onSelectFiles: (files: File[]) => void;
+  onRemoveSlot: (index: number) => void;
+  onChangeName: (value: string) => void;
+  onRestoreEmptyName: () => void;
+  onClearName: () => void;
+  onChangeType: (type: UploadableImageAssetType) => void;
+  onSubmit: () => void;
+}) {
+  const filledSlots = slots.map((slot, index) => ({ slot, index })).filter((item) => item.slot.dataUrl);
+  const activeSlot = slots[activeIndex]?.dataUrl ? slots[activeIndex] : filledSlots[0]?.slot;
+  const hasImages = filledSlots.length > 0;
+
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-black/35 px-4">
+      <div className="mb-3 h-8">
+        {tip ? (
+          <ReminderToast reminder={tip} />
+        ) : null}
+      </div>
+      <div className="relative flex min-h-[560px] w-full max-w-[420px] flex-col rounded-2xl bg-white p-5 shadow-[0_24px_60px_rgba(15,23,42,0.28)]">
+        <button type="button" onClick={onClose} disabled={isUploading} className="absolute right-4 top-4 flex h-7 w-7 items-center justify-center rounded-full bg-[#111111] text-white transition hover:bg-[#252525] disabled:pointer-events-none disabled:opacity-40" aria-label="关闭上传图片弹窗">
+          <RiCloseLine className="h-4 w-4" aria-hidden="true" />
+        </button>
+
+        <div className="text-[15px] font-semibold text-[#111111]">上传图片</div>
+        <div className="mt-1 text-[12px] leading-5 text-[#8a8a8a]">最多同时上传八张图片。点击图片位置后，下方会显示该图片的文件名和分类。</div>
+
+        <div className="mt-5 grid w-max grid-cols-4 justify-start gap-2">
+          {filledSlots.map(({ slot, index }) => {
+            const isActive = index === activeIndex;
+
+            return (
+              <div key={slot.id} className="space-y-2">
+                  <div className={`relative h-[80px] w-[80px] overflow-hidden border bg-[#f8f8f8] transition ${slot.isDuplicate ? "border-red-500" : isActive ? "border-[#367cee]" : "border-[#e1e1e1] hover:border-[#bdbdbd]"}`}>
+                    <button type="button" onClick={() => onSelectSlot(index)} className="relative block h-full w-full" aria-label={`选择第 ${index + 1} 张图片`}>
+                      <Image src={slot.dataUrl} alt={slot.fileName || "上传图片"} fill sizes="80px" unoptimized className="object-contain" />
+                      {slot.dimensions ? (
+                        <span className="absolute inset-x-0 bottom-0 flex h-6 items-end justify-center bg-gradient-to-t from-black/75 to-transparent pb-1 text-[9px] font-medium leading-none text-white">
+                          {slot.dimensions.width} x {slot.dimensions.height}
+                        </span>
+                      ) : null}
+                    </button>
+                    <button type="button" onClick={() => onRemoveSlot(index)} className="absolute right-0.5 top-0.5 flex h-5 w-5 items-center justify-center rounded-full bg-black/45 text-white backdrop-blur-[6px] transition hover:bg-black/62" aria-label="移除图片">
+                      <RiCloseLine className="h-3.5 w-3.5" aria-hidden="true" />
+                    </button>
+                  </div>
+              </div>
+            );
+          })}
+          {filledSlots.length < ASSET_UPLOAD_SLOT_COUNT ? (
+            <label className="flex h-[80px] w-[80px] cursor-pointer items-center justify-center border border-dashed border-[#cfcfcf] bg-[#fbfbfb] transition hover:border-[#367cee]/70">
+              <input type="file" accept="image/*" multiple className="hidden" disabled={isUploading} onChange={(event) => {
+                const files = Array.from(event.target.files ?? []);
+                event.currentTarget.value = "";
+                if (files.length > 0) onSelectFiles(files);
+              }} />
+              <RiAddLine className="h-7 w-7 text-[#9a9a9a]" aria-hidden="true" />
+            </label>
+          ) : null}
+        </div>
+
+        <div className="mt-5">
+          <label className="mb-2 block text-[12px] font-medium leading-none text-[#777777]">文件名(支持改名)</label>
+          <div className="relative">
+            <input
+              value={activeSlot?.fileName ?? ""}
+              onChange={(event) => onChangeName(event.target.value)}
+              onBlur={onRestoreEmptyName}
+              disabled={!activeSlot?.dataUrl || isUploading}
+              placeholder="请先选择图片"
+              className="h-10 w-full rounded-lg border border-[#e3e3e3] px-3 pr-11 text-[13px] text-[#111111] outline-none transition placeholder:text-[#b5b5b5] hover:border-[#cfcfcf] focus:border-[#367cee] disabled:bg-[#f7f7f7] disabled:text-[#b0b0b0]"
+            />
+            {activeSlot?.dataUrl ? (
+              <button type="button" onClick={onClearName} disabled={isUploading} className="absolute right-2 top-1/2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md bg-[#eeeeee] text-[#777777] transition hover:bg-[#e2e2e2] hover:text-[#333333] disabled:pointer-events-none disabled:opacity-50" aria-label="清除文件名">
+                <RiCloseLine className="h-3.5 w-3.5" aria-hidden="true" />
+              </button>
+            ) : null}
+          </div>
+        </div>
+
+        <div className="mt-4">
+          <div className="mb-2 text-[12px] font-medium leading-none text-[#777777]">分类</div>
+          <div className="inline-flex h-10 rounded-[10px] bg-[#f3f3f3] p-1">
+            {assetUploadTypes.map((type) => {
+              const AssetIcon = assetTypeIcons[type];
+              const isActive = activeSlot?.type === type;
+
+              return (
+                <button key={type} type="button" disabled={!activeSlot?.dataUrl || isUploading} onClick={() => onChangeType(type)} className={isActive ? "inline-flex h-8 min-w-[92px] items-center justify-center gap-1.5 rounded-[8px] bg-white px-3 text-[#111111] shadow-sm" : "inline-flex h-8 min-w-[92px] items-center justify-center gap-1.5 rounded-[8px] px-3 text-[#777777] transition hover:text-[#333333] disabled:hover:text-[#777777]"}>
+                  <AssetIcon className="h-3.5 w-3.5" aria-hidden="true" />
+                  <span className="text-[12px] font-medium leading-none">{assetTypeLabels[type]}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="mt-auto flex justify-end gap-2 pt-6">
+          <button type="button" onClick={onClose} disabled={isUploading} className="h-9 w-20 rounded-lg border border-[#e0e0e0] px-4 text-[13px] font-medium text-[#777777] transition hover:bg-[#f7f7f7] disabled:pointer-events-none disabled:opacity-50">
+            取消
+          </button>
+          <button type="button" onClick={onSubmit} disabled={!hasImages || isUploading} className="h-9 min-w-20 rounded-lg bg-[#111111] px-4 text-[13px] font-medium text-white transition hover:bg-[#252525] disabled:cursor-not-allowed disabled:bg-[#d7d7d7]">
+            {isUploading ? "上传中..." : "确定上传"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -2890,7 +3262,7 @@ function ImageResultThumb({ url, imageIndex, onPreview, onLoadedDimensions, roun
   );
 }
 
-function ImageResultStrip({ images, pendingCount, failedCount, createdAt, now, pageIndex = 0, onPageChange, onPreview, onLoadedDimensions, noPagination = false, rounded = false, onRetryFailed }: { images: string[]; pendingCount: number; failedCount: number; createdAt?: number; now: number; pageIndex?: number; onPageChange?: (index: number) => void; onPreview: (url: string, index: number) => void; onLoadedDimensions?: (url: string, dimensions: ImageDimensions) => void; noPagination?: boolean; rounded?: boolean; onRetryFailed?: () => void }) {
+function ImageResultStrip({ images, pendingCount, failedCount, retryingFailedIndexes = [], retryingFailedStartedAt = {}, createdAt, now, pageIndex = 0, onPageChange, onPreview, onLoadedDimensions, noPagination = false, rounded = false, onRetryFailed }: { images: string[]; pendingCount: number; failedCount: number; retryingFailedIndexes?: number[]; retryingFailedStartedAt?: Record<number, number>; createdAt?: number; now: number; pageIndex?: number; onPageChange?: (index: number) => void; onPreview: (url: string, index: number) => void; onLoadedDimensions?: (url: string, dimensions: ImageDimensions) => void; noPagination?: boolean; rounded?: boolean; onRetryFailed?: (failedIndex: number) => void }) {
   if (images.length + pendingCount + failedCount === 0) return null;
   const items = [
     ...images.map((url, imageIndex) => ({ type: "image" as const, url, imageIndex })),
@@ -2914,6 +3286,10 @@ function ImageResultStrip({ images, pendingCount, failedCount, createdAt, now, p
             return <MediaWaitingCard key={`pending-${item.pendingIndex}`} createdAt={createdAt} now={now} isImage index={images.length + item.pendingIndex + 1} rounded={rounded} />;
           }
 
+          if (retryingFailedIndexes.includes(item.failedIndex)) {
+            return <MediaWaitingCard key={`retrying-failed-${item.failedIndex}`} createdAt={retryingFailedStartedAt[item.failedIndex] ?? createdAt} now={now} isImage index={images.length + pendingCount + item.failedIndex + 1} rounded={rounded} />;
+          }
+
           return (
             <div key={`failed-${item.failedIndex}`} className={`relative h-[250px] w-[250px] shrink-0 overflow-hidden bg-[#f3f3f3] text-[#777777] ${rounded ? "rounded-[10px]" : ""}`}>
               <div className="absolute left-4 top-4 inline-flex items-center gap-2 text-[13px] font-medium leading-none text-[#777777]">
@@ -2921,9 +3297,66 @@ function ImageResultStrip({ images, pendingCount, failedCount, createdAt, now, p
                 <span>图片生成失败</span>
               </div>
               {onRetryFailed ? (
-                <button type="button" onClick={onRetryFailed} className="absolute left-1/2 top-1/2 inline-flex -translate-x-1/2 -translate-y-1/2 items-center gap-1.5 rounded-[7px] border border-[#9a9a9a] bg-transparent px-3 py-1.5 text-[12px] font-medium text-[#777777] transition hover:bg-white/60 hover:text-[#555555]">
+                <button type="button" onClick={() => onRetryFailed(item.failedIndex)} className="absolute left-1/2 top-1/2 inline-flex -translate-x-1/2 -translate-y-1/2 items-center gap-1 bg-transparent text-[10px] font-medium text-[#367cee] transition hover:text-[#2568d8]">
                   <RiResetLeftLine className="h-3.5 w-3.5" aria-hidden="true" />
-                  <span>重新生成</span>
+                  <span className="text-[14px] leading-none">重新生成</span>
+                </button>
+              ) : null}
+            </div>
+          );
+        })}
+      </div>
+      {!noPagination && pageCount > 1 ? (
+        <div className="mt-2 flex justify-end">
+          <span className="inline-flex items-center gap-0.5 px-0.5 py-0.5 text-[12px] font-medium leading-none text-[#777777]">
+            <button type="button" onClick={() => switchPage(safePageIndex - 1)} className="flex h-4 w-4 items-center justify-center rounded-[3px] text-[#777777] transition hover:bg-white hover:text-[#111111]" aria-label="上一页图片"><RiArrowLeftSLine className="h-4 w-4" aria-hidden="true" /></button>
+            <span className="min-w-7 text-center">{safePageIndex + 1}/{pageCount}</span>
+            <button type="button" onClick={() => switchPage(safePageIndex + 1)} className="flex h-4 w-4 items-center justify-center rounded-[3px] text-[#777777] transition hover:bg-white hover:text-[#111111]" aria-label="下一页图片"><RiArrowRightSLine className="h-4 w-4" aria-hidden="true" /></button>
+          </span>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ImageResultSlotStrip({ slots, pendingCount, createdAt, now, pageIndex = 0, onPageChange, onPreview, onLoadedDimensions, noPagination = false, rounded = false, onRetryFailed }: { slots: ImageResultSlot[]; pendingCount: number; createdAt?: number; now: number; pageIndex?: number; onPageChange?: (index: number) => void; onPreview: (url: string, index: number) => void; onLoadedDimensions?: (url: string, dimensions: ImageDimensions) => void; noPagination?: boolean; rounded?: boolean; onRetryFailed?: (failedIndex: number) => void }) {
+  if (slots.length + pendingCount === 0) return null;
+  const items = [
+    ...slots.map((slot, slotIndex) => ({ type: "slot" as const, slot, slotIndex })),
+    ...Array.from({ length: pendingCount }).map((_, pendingIndex) => ({ type: "pending" as const, pendingIndex })),
+  ];
+  const pageCount = noPagination ? 1 : Math.max(1, Math.ceil(items.length / 4));
+  const safePageIndex = Math.min(Math.max(0, pageIndex), pageCount - 1);
+  const visibleItems = noPagination ? items : items.slice(safePageIndex * 4, safePageIndex * 4 + 4);
+  const switchPage = (nextIndex: number) => onPageChange?.((nextIndex + pageCount) % pageCount);
+
+  return (
+    <div className="relative max-w-full pb-1">
+      <div className="grid grid-cols-4 gap-0.5">
+        {visibleItems.map((item) => {
+          if (item.type === "pending") {
+            return <MediaWaitingCard key={`pending-${item.pendingIndex}`} createdAt={createdAt} now={now} isImage index={slots.length + item.pendingIndex + 1} rounded={rounded} />;
+          }
+
+          if (item.slot.type === "image") {
+            return <ImageResultThumb key={`${item.slot.url}-${item.slotIndex}`} url={item.slot.url} imageIndex={item.slotIndex} onPreview={onPreview} onLoadedDimensions={onLoadedDimensions} rounded={rounded} />;
+          }
+
+          const failedIndex = slots.slice(0, item.slotIndex + 1).filter((slot) => slot.type === "failed").length - 1;
+          if (item.slot.retryingStartedAt) {
+            return <MediaWaitingCard key={`retrying-failed-${item.slotIndex}`} createdAt={item.slot.retryingStartedAt} now={now} isImage index={item.slotIndex + 1} rounded={rounded} />;
+          }
+
+          return (
+            <div key={`failed-${item.slotIndex}`} className={`relative h-[250px] w-[250px] shrink-0 overflow-hidden bg-[#f3f3f3] text-[#777777] ${rounded ? "rounded-[10px]" : ""}`}>
+              <div className="absolute left-4 top-4 inline-flex items-center gap-2 text-[13px] font-medium leading-none text-[#777777]">
+                <RiEmotionSadLine className="h-5 w-5 shrink-0" aria-hidden="true" />
+                <span>图片生成失败</span>
+              </div>
+              {onRetryFailed ? (
+                <button type="button" onClick={() => onRetryFailed(failedIndex)} className="absolute left-1/2 top-1/2 inline-flex -translate-x-1/2 -translate-y-1/2 items-center gap-1 bg-transparent text-[10px] font-medium text-[#367cee] transition hover:text-[#2568d8]">
+                  <RiResetLeftLine className="h-3.5 w-3.5" aria-hidden="true" />
+                  <span className="text-[14px] leading-none">重新生成</span>
                 </button>
               ) : null}
             </div>
@@ -2951,9 +3384,9 @@ function VideoFailedCard({ rounded = false, onRetry }: { rounded?: boolean; onRe
         <span>视频生成失败</span>
       </div>
       {onRetry ? (
-        <button type="button" onClick={onRetry} className="absolute left-1/2 top-1/2 inline-flex -translate-x-1/2 -translate-y-1/2 items-center gap-1.5 rounded-[7px] border border-[#9a9a9a] bg-transparent px-3 py-1.5 text-[12px] font-medium text-[#777777] transition hover:bg-white/60 hover:text-[#555555]">
+        <button type="button" onClick={onRetry} className="absolute left-1/2 top-1/2 inline-flex -translate-x-1/2 -translate-y-1/2 items-center gap-1 bg-transparent text-[10px] font-medium text-[#367cee] transition hover:text-[#2568d8]">
           <RiResetLeftLine className="h-3.5 w-3.5" aria-hidden="true" />
-          <span>重新生成</span>
+          <span className="text-[14px] leading-none">重新生成</span>
         </button>
       ) : null}
     </div>
@@ -3119,6 +3552,12 @@ export function ChatWorkbench() {
   const [intentMemoryRules, setIntentMemoryRules] = useState<IntentMemoryRule[]>([]);
   const [feedbackLogs, setFeedbackLogs] = useState<FeedbackLogEntry[]>([]);
   const [assets, setAssets] = useState<AssetItem[]>([]);
+  const [assetRenderLimit, setAssetRenderLimit] = useState(ASSET_RENDER_PAGE_SIZE);
+  const [isAssetUploadOpen, setIsAssetUploadOpen] = useState(false);
+  const [assetUploadSlots, setAssetUploadSlots] = useState<AssetUploadSlot[]>(() => createAssetUploadSlots("character_image"));
+  const [activeAssetUploadIndex, setActiveAssetUploadIndex] = useState(0);
+  const [isAssetUploading, setIsAssetUploading] = useState(false);
+  const [assetUploadTip, setAssetUploadTip] = useState<ReminderMessage | undefined>();
   const [previewAsset, setPreviewAsset] = useState<AssetItem | null>(null);
   const [previewScale, setPreviewScale] = useState(1);
   const [previewFitMode, setPreviewFitMode] = useState<"fit" | "actual">("fit");
@@ -3130,7 +3569,7 @@ export function ChatWorkbench() {
   const [copyFeedback, setCopyFeedback] = useState<{ messageId: string; state: "success" | "error" } | null>(null);
   const [messageReactions, setMessageReactions] = useState<Record<string, "like" | "dislike">>({});
   const [messageIssueFeedback, setMessageIssueFeedback] = useState<Record<string, "wrong" | "wrong_mode">>({});
-  const [inputTipMessage, setInputTipMessage] = useState("");
+  const [inputReminder, setInputReminder] = useState<ReminderMessage | undefined>();
   const [draftCursorOffset, setDraftCursorOffset] = useState(0);
   const [sendingSessionIds, setSendingSessionIds] = useState<Set<string>>(() => new Set());
   const [resolvingSessionIds] = useState<Set<string>>(() => new Set());
@@ -3154,6 +3593,13 @@ export function ChatWorkbench() {
   const typingScrollFrameRef = useRef<number | null>(null);
   const copyFeedbackTimerRef = useRef<number | null>(null);
   const inputTipTimerRef = useRef<number | null>(null);
+  const inputTipQueueRef = useRef<ReminderMessage[]>([]);
+  const inputCurrentTipRef = useRef<ReminderMessage | undefined>(undefined);
+  const showNextInputTipRef = useRef<(() => void) | null>(null);
+  const assetUploadTipTimerRef = useRef<number | null>(null);
+  const assetUploadTipQueueRef = useRef<ReminderMessage[]>([]);
+  const assetUploadCurrentTipRef = useRef<ReminderMessage | undefined>(undefined);
+  const showNextAssetUploadTipRef = useRef<(() => void) | null>(null);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const selectedRatio = mode === "video" ? (selectedRatios.video === "智能比例" ? "智能比例" : normalizeVideoRatioForModel(selectedGenerationModels.video, selectedRatios.video, selectedResolutions.video)) : selectedRatios[mode];
   const selectedResolution = mode === "image" ? normalizeImageResolutionForModel(selectedGenerationModels.image, selectedRatios.image === "智能比例" ? "智能比例" : selectedResolutions.image) : mode === "video" ? (selectedRatios.video === "智能比例" ? "720p" : normalizeVideoResolutionForModel(selectedGenerationModels.video, selectedResolutions.video)) : selectedResolutions[mode];
@@ -3173,6 +3619,7 @@ export function ChatWorkbench() {
   const activeUploadedImages = activeSession?.uploadedImages ?? [];
   const activeSessionIdValue = activeSession?.id ?? "";
   const activeConversationImageReferences = useMemo(() => getConversationImageReferences(messages), [messages]);
+  const visibleAssetUploadSlots = normalizeAssetUploadSlots(assetUploadSlots, getDefaultAssetUploadType(assetFilter));
   const previewImageOptions = useMemo(() => {
     return messages.flatMap((message) => {
       if (message.role !== "assistant") return [];
@@ -3336,15 +3783,289 @@ export function ChatWorkbench() {
   }, []);
 
   const showInputTip = useCallback((message: string) => {
-    setInputTipMessage(message);
-    if (inputTipTimerRef.current !== null) {
-      window.clearTimeout(inputTipTimerRef.current);
+    const nextTip: ReminderMessage = { message, tone: "default" };
+    const currentTip = inputCurrentTipRef.current;
+
+    if (inputTipTimerRef.current !== null || currentTip) {
+      if (currentTip?.message === nextTip.message && currentTip.tone === nextTip.tone) return;
+      const lastQueuedTip = inputTipQueueRef.current[inputTipQueueRef.current.length - 1];
+      if (lastQueuedTip?.message === nextTip.message && lastQueuedTip.tone === nextTip.tone) return;
+      inputTipQueueRef.current.push(nextTip);
+      return;
     }
+
+    inputCurrentTipRef.current = nextTip;
+    setInputReminder(nextTip);
     inputTipTimerRef.current = window.setTimeout(() => {
-      setInputTipMessage("");
-      inputTipTimerRef.current = null;
-    }, 1500);
+      setInputReminder((current) => current ? { ...current, exiting: true } : current);
+      inputTipTimerRef.current = window.setTimeout(() => {
+        inputCurrentTipRef.current = undefined;
+        if (inputTipQueueRef.current.length > 0) {
+          showNextInputTipRef.current?.();
+          return;
+        }
+
+        setInputReminder(undefined);
+        inputTipTimerRef.current = null;
+      }, 100);
+    }, 2000);
   }, []);
+
+  useEffect(() => {
+    showNextInputTipRef.current = () => {
+      const nextTip = inputTipQueueRef.current.shift();
+      if (!nextTip) {
+        setInputReminder(undefined);
+        inputTipTimerRef.current = null;
+        return;
+      }
+
+      inputCurrentTipRef.current = nextTip;
+      setInputReminder(nextTip);
+      if (inputTipTimerRef.current !== null) {
+        window.clearTimeout(inputTipTimerRef.current);
+      }
+      inputTipTimerRef.current = window.setTimeout(() => {
+        setInputReminder((current) => current ? { ...current, exiting: true } : current);
+        inputTipTimerRef.current = window.setTimeout(() => {
+          inputCurrentTipRef.current = undefined;
+          if (inputTipQueueRef.current.length > 0) {
+            showNextInputTipRef.current?.();
+            return;
+          }
+
+          setInputReminder(undefined);
+          inputTipTimerRef.current = null;
+        }, 100);
+      }, 2000);
+    };
+  }, []);
+
+  const showAssetUploadTipNow = useCallback((tip: ReminderMessage) => {
+    assetUploadCurrentTipRef.current = tip;
+    setAssetUploadTip(tip);
+    if (assetUploadTipTimerRef.current !== null) {
+      window.clearTimeout(assetUploadTipTimerRef.current);
+    }
+    assetUploadTipTimerRef.current = window.setTimeout(() => {
+      setAssetUploadTip((current) => current ? { ...current, exiting: true } : current);
+      assetUploadTipTimerRef.current = window.setTimeout(() => {
+        assetUploadCurrentTipRef.current = undefined;
+        if (assetUploadTipQueueRef.current.length > 0) {
+          showNextAssetUploadTipRef.current?.();
+          return;
+        }
+        setAssetUploadTip(undefined);
+        assetUploadTipTimerRef.current = null;
+      }, 100);
+    }, 2000);
+  }, []);
+  useEffect(() => {
+    showNextAssetUploadTipRef.current = () => {
+      const nextTip = assetUploadTipQueueRef.current.shift();
+      if (!nextTip) {
+        setAssetUploadTip(undefined);
+        assetUploadTipTimerRef.current = null;
+        return;
+      }
+      showAssetUploadTipNow(nextTip);
+    };
+  }, [showAssetUploadTipNow]);
+
+  const showAssetUploadTip = useCallback((message: string, tone: ReminderMessage["tone"] = "default") => {
+    const nextTip = { message, tone };
+    const currentTip = assetUploadCurrentTipRef.current;
+
+    if (assetUploadTipTimerRef.current !== null || currentTip) {
+      if (currentTip?.message === nextTip.message && currentTip.tone === nextTip.tone) return;
+      const lastQueuedTip = assetUploadTipQueueRef.current[assetUploadTipQueueRef.current.length - 1];
+      if (lastQueuedTip?.message === nextTip.message && lastQueuedTip.tone === nextTip.tone) return;
+      assetUploadTipQueueRef.current.push(nextTip);
+      return;
+    }
+
+    showAssetUploadTipNow(nextTip);
+  }, [showAssetUploadTipNow]);
+
+  const openAssetUploadDialog = useCallback(() => {
+    const defaultType = getDefaultAssetUploadType(assetFilter);
+    setAssetUploadSlots(createAssetUploadSlots(defaultType));
+    setActiveAssetUploadIndex(0);
+    setIsAssetUploadOpen(true);
+    assetUploadTipQueueRef.current = [];
+    assetUploadCurrentTipRef.current = undefined;
+    setAssetUploadTip(undefined);
+    if (assetUploadTipTimerRef.current !== null) {
+      window.clearTimeout(assetUploadTipTimerRef.current);
+      assetUploadTipTimerRef.current = null;
+    }
+    setOpenAssetMenuId("");
+    setOpenAssetActionMenuId("");
+  }, [assetFilter]);
+
+  const closeAssetUploadDialog = useCallback(() => {
+    if (isAssetUploading) return;
+    setIsAssetUploadOpen(false);
+  }, [isAssetUploading]);
+
+  const selectAssetUploadFiles = useCallback(async (files: File[]) => {
+    const imageFiles = files.filter((file) => file.type.startsWith("image/"));
+    if (imageFiles.length === 0) {
+      showAssetUploadTip("请选择图片文件");
+      return;
+    }
+
+    try {
+      const defaultType = getDefaultAssetUploadType(assetFilter);
+      const newItems = await Promise.all(imageFiles.map(async (file) => {
+        const dataUrl = await readFileAsDataUrl(file);
+        return {
+          fileName: getUploadedReferenceBaseName(file.name),
+          dataUrl,
+        };
+      }));
+      const newItemsWithDimensions = await Promise.all(newItems.map(async (item) => ({
+        ...item,
+        dimensions: await getDataUrlImageDimensions(item.dataUrl).catch(() => undefined),
+      })));
+
+      setAssetUploadSlots((current) => {
+        const normalized = normalizeAssetUploadSlots(current, defaultType);
+        const existingCount = normalized.filter((slot) => slot.dataUrl).length;
+        const availableCount = Math.max(0, ASSET_UPLOAD_SLOT_COUNT - existingCount);
+        const acceptedItems = newItemsWithDimensions.slice(0, availableCount);
+        let itemIndex = 0;
+
+        return normalized.map((slot) => {
+          if (slot.dataUrl || itemIndex >= acceptedItems.length) return slot;
+          const item = acceptedItems[itemIndex];
+          itemIndex += 1;
+          return { ...slot, fileName: item.fileName, originalFileName: item.fileName, dataUrl: item.dataUrl, dimensions: item.dimensions, isDuplicate: false };
+        });
+      });
+      setActiveAssetUploadIndex((current) => {
+        const normalized = normalizeAssetUploadSlots(assetUploadSlots, defaultType);
+        const firstEmptyIndex = normalized.findIndex((slot) => !slot.dataUrl);
+        return firstEmptyIndex >= 0 ? firstEmptyIndex : current;
+      });
+      if (newItemsWithDimensions.length > Math.max(0, ASSET_UPLOAD_SLOT_COUNT - assetUploadSlots.filter((slot) => slot.dataUrl).length)) showAssetUploadTip("最多同时上传8张");
+    } catch (error) {
+      showAssetUploadTip(toUserErrorMessage(error, "图片读取失败"));
+    }
+  }, [assetFilter, assetUploadSlots, showAssetUploadTip]);
+
+  const removeAssetUploadSlot = useCallback((index: number) => {
+    setAssetUploadSlots((current) => {
+      const defaultType = getDefaultAssetUploadType(assetFilter);
+      const normalized = normalizeAssetUploadSlots(current, defaultType);
+      const kept = normalized.filter((_, slotIndex) => slotIndex !== index && normalized[slotIndex].dataUrl);
+      return normalizeAssetUploadSlots(kept, defaultType);
+    });
+    setActiveAssetUploadIndex(0);
+  }, [assetFilter]);
+
+  const updateActiveAssetUploadName = useCallback((value: string) => {
+    setAssetUploadSlots((current) => normalizeAssetUploadSlots(current, getDefaultAssetUploadType(assetFilter)).map((slot, index) => (index === activeAssetUploadIndex ? { ...slot, fileName: value } : slot)));
+  }, [activeAssetUploadIndex, assetFilter]);
+
+  const restoreEmptyAssetUploadName = useCallback((slotIndex = activeAssetUploadIndex) => {
+    setAssetUploadSlots((current) => normalizeAssetUploadSlots(current, getDefaultAssetUploadType(assetFilter)).map((slot, index) => (index === slotIndex && slot.dataUrl && !slot.fileName.trim() ? { ...slot, fileName: slot.originalFileName || "上传图片" } : slot)));
+  }, [activeAssetUploadIndex, assetFilter]);
+
+  const selectAssetUploadSlot = useCallback((index: number) => {
+    restoreEmptyAssetUploadName(activeAssetUploadIndex);
+    setActiveAssetUploadIndex(index);
+  }, [activeAssetUploadIndex, restoreEmptyAssetUploadName]);
+
+  const clearActiveAssetUploadName = useCallback(() => {
+    setAssetUploadSlots((current) => normalizeAssetUploadSlots(current, getDefaultAssetUploadType(assetFilter)).map((slot, index) => (index === activeAssetUploadIndex ? { ...slot, fileName: "" } : slot)));
+  }, [activeAssetUploadIndex, assetFilter]);
+
+  const updateActiveAssetUploadType = useCallback((type: UploadableImageAssetType) => {
+    setAssetUploadSlots((current) => normalizeAssetUploadSlots(current, getDefaultAssetUploadType(assetFilter)).map((slot, index) => (index === activeAssetUploadIndex ? { ...slot, type } : slot)));
+  }, [activeAssetUploadIndex, assetFilter]);
+
+  const submitAssetUpload = useCallback(async () => {
+    const uploadItems = visibleAssetUploadSlots.filter((slot) => slot.dataUrl);
+    if (uploadItems.length === 0 || isAssetUploading) return;
+
+    setIsAssetUploading(true);
+
+    try {
+      const uploadedItems = await Promise.all(uploadItems.map(async (slot) => {
+        const response = await fetch("/api/upload-image", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ image: slot.dataUrl }),
+        });
+        const data = await readJson<{ url?: string }>(response);
+
+        return {
+          name: sanitizeAssetName(slot.fileName) || sanitizeAssetName(slot.originalFileName) || "上传图片",
+          type: slot.type,
+          url: data.url ?? "",
+          slot,
+        };
+      }));
+
+      const validItems = uploadedItems.filter((item) => item.url);
+      const knownUrls = new Set(assets.map((asset) => asset.url));
+      const newItems: typeof validItems = [];
+      const duplicateItems: typeof validItems = [];
+
+      validItems.forEach((item) => {
+        if (knownUrls.has(item.url)) {
+          duplicateItems.push(item);
+          return;
+        }
+
+        knownUrls.add(item.url);
+        newItems.push(item);
+      });
+
+      if (newItems.length > 0) {
+        setAssets((current) => {
+          let nextAssets = current;
+
+          newItems.forEach((item) => {
+            if (nextAssets.some((asset) => asset.url === item.url)) return;
+            const name = getVersionedName(item.name, nextAssets);
+            nextAssets = [
+              {
+                id: crypto.randomUUID(),
+                type: item.type,
+                name,
+                url: item.url,
+                sourcePrompt: "资产管理上传",
+                sessionId: activeSessionIdValue,
+                lockedType: true,
+                createdAt: Date.now(),
+              },
+              ...nextAssets,
+            ];
+          });
+
+          return nextAssets;
+        });
+      }
+
+      if (duplicateItems.length > 0) {
+        const defaultType = getDefaultAssetUploadType(assetFilter);
+        setAssetUploadSlots(normalizeAssetUploadSlots(duplicateItems.map((item) => ({ ...item.slot, isDuplicate: true })), defaultType));
+        setActiveAssetUploadIndex(0);
+        if (newItems.length > 0) showAssetUploadTip(`成功上传${newItems.length}张图片`, "success");
+        showAssetUploadTip("图片已存在，无需要重复添加");
+        return;
+      }
+
+      showAssetUploadTip(`成功上传${newItems.length}张图片`, "success");
+      setIsAssetUploadOpen(false);
+    } catch (error) {
+      showAssetUploadTip(toUserErrorMessage(error, "图片上传失败，请稍后再试。"));
+    } finally {
+      setIsAssetUploading(false);
+    }
+  }, [activeSessionIdValue, assetFilter, assets, isAssetUploading, showAssetUploadTip, visibleAssetUploadSlots]);
 
   const setActiveDraftInput = useCallback((value: string) => {
     const nextValue = Array.from(value).slice(0, MAX_DRAFT_INPUT_LENGTH).join("");
@@ -3607,14 +4328,28 @@ export function ChatWorkbench() {
       if (inputTipTimerRef.current !== null) {
         window.clearTimeout(inputTipTimerRef.current);
       }
+      inputTipQueueRef.current = [];
+      inputCurrentTipRef.current = undefined;
+      if (assetUploadTipTimerRef.current !== null) {
+        window.clearTimeout(assetUploadTipTimerRef.current);
+      }
+      assetUploadTipQueueRef.current = [];
+      assetUploadCurrentTipRef.current = undefined;
     };
   }, []);
 
   useEffect(() => {
+    if (activePanel !== "chat") return;
     messageEndRef.current?.scrollIntoView({ behavior: "auto", block: "end" });
-  }, [activeSessionId, messages.length, isThinking]);
+  }, [activePanel, activeSessionId, messages.length, isThinking]);
 
   useEffect(() => {
+    if (activePanel !== "assets") return;
+    chatScrollRef.current?.scrollTo({ top: 0, behavior: "auto" });
+  }, [activePanel, assetFilter]);
+
+  useEffect(() => {
+    if (activePanel !== "chat") return;
     const timer = window.setTimeout(() => {
       messageEndRef.current?.scrollIntoView({ behavior: "auto", block: "end" });
       const element = chatScrollRef.current;
@@ -3625,7 +4360,7 @@ export function ChatWorkbench() {
     }, 0);
 
     return () => window.clearTimeout(timer);
-  }, [activeSessionId]);
+  }, [activePanel, activeSessionId]);
 
   const scrollToBottom = () => {
     messageEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -3636,6 +4371,14 @@ export function ChatWorkbench() {
     if (!element) return;
 
     const distanceToBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
+    if (activePanel === "assets") {
+      setShowScrollToBottom(false);
+      if (distanceToBottom < 520) {
+        setAssetRenderLimit((current) => current + ASSET_RENDER_PAGE_SIZE);
+      }
+      return;
+    }
+
     setShowScrollToBottom(distanceToBottom > 120);
   };
 
@@ -3748,11 +4491,12 @@ export function ChatWorkbench() {
 
   const renderControlMenu = (name: ControlMenuName, label: string, title: string, options: string[], value: string, onChange: (value: string) => void, icon?: typeof RiImageLine) => (
     <div className="relative" onClick={(event) => event.stopPropagation()}>
-      <button
-        type="button"
-        onClick={() => {
-          setIsAtAssetMenuOpen(false);
-          setOpenControlMenu((current) => (current === name ? "" : name));
+        <button
+          type="button"
+          disabled={isThinking}
+          onClick={() => {
+            setIsAtAssetMenuOpen(false);
+            setOpenControlMenu((current) => (current === name ? "" : name));
         }}
         className={`${toolButtonClassName} ${openControlMenu === name ? toolButtonActiveClassName : ""}`}
       >
@@ -3798,6 +4542,7 @@ export function ChatWorkbench() {
       <div className="relative min-w-0" onClick={(event) => event.stopPropagation()}>
         <button
           type="button"
+          disabled={isThinking}
           onClick={() => {
             setIsAtAssetMenuOpen(false);
             setOpenControlMenu((current) => (current === "model" ? "" : "model"));
@@ -4112,6 +4857,7 @@ export function ChatWorkbench() {
                     createdAt: Date.now(),
                     requestId: payload.requestId,
                     images: payload.images,
+                    imageResultSlots: payload.imageResultSlots,
                     imageDimensions: payload.imageDimensions,
                     imagePrompts: payload.imagePrompts,
                     imageReferences: payload.imageReferences,
@@ -4181,7 +4927,7 @@ export function ChatWorkbench() {
     );
   }, []);
 
-  const appendImagesToAssistantMessage = useCallback((sessionId: string, requestId: string, imageUrls: string[], imageDimensions: Record<string, ImageDimensions> = {}, pendingCompleteCount = 1, imagePrompts: Record<string, string> = {}) => {
+  const appendImagesToAssistantMessage = useCallback((sessionId: string, requestId: string, imageUrls: string[], imageDimensions: Record<string, ImageDimensions> = {}, pendingCompleteCount = 1, imagePrompts: Record<string, string> = {}, retryFailedIndex?: number) => {
     setSessions((current) =>
       current.map((session) =>
         session.id === sessionId
@@ -4192,10 +4938,33 @@ export function ChatWorkbench() {
                 message.role === "assistant" && message.requestId === requestId
                   ? {
                       ...message,
-                      images: [...(message.images ?? []), ...imageUrls],
+                      images: message.retryingFailedImageIndexes?.length ? [...(message.images ?? []), ...imageUrls] : [...(message.images ?? []), ...imageUrls],
+                      imageResultSlots: (() => {
+                        if (!message.imageResultSlots && !(message.failedImageCount ?? 0) && retryFailedIndex === undefined && !message.retryingFailedImageIndexes?.length) return undefined;
+                        const currentSlots = message.imageResultSlots ?? [
+                          ...(message.images ?? []).map((url) => ({ type: "image" as const, url })),
+                          ...Array.from({ length: message.failedImageCount ?? 0 }).map((_, index) => ({ type: "failed" as const, retryingStartedAt: message.retryingFailedImageStartedAt?.[index] })),
+                        ];
+                        let failedOrdinal = -1;
+                        const retryingSlotIndex = retryFailedIndex === undefined
+                          ? currentSlots.findIndex((slot) => slot.type === "failed" && slot.retryingStartedAt)
+                          : currentSlots.findIndex((slot) => {
+                              if (slot.type !== "failed") return false;
+                              failedOrdinal += 1;
+                              return failedOrdinal === retryFailedIndex;
+                            });
+                        if (retryingSlotIndex >= 0 && imageUrls[0]) {
+                          return currentSlots.flatMap((slot, index) => index === retryingSlotIndex ? imageUrls.map((url) => ({ type: "image" as const, url })) : [slot]);
+                        }
+
+                        return [...currentSlots, ...imageUrls.map((url) => ({ type: "image" as const, url }))];
+                      })(),
                       imageDimensions: { ...(message.imageDimensions ?? {}), ...imageDimensions },
                       imagePrompts: { ...(message.imagePrompts ?? {}), ...imagePrompts },
-                      pendingImageCount: Math.max(0, (message.pendingImageCount ?? 1) - pendingCompleteCount),
+                      pendingImageCount: Math.max(0, (message.pendingImageCount ?? (message.retryingFailedImageIndexes?.length ? 0 : 1)) - pendingCompleteCount),
+                      failedImageCount: message.retryingFailedImageIndexes?.length ? Math.max(0, (message.failedImageCount ?? 1) - pendingCompleteCount) : message.failedImageCount,
+                      retryingFailedImageIndexes: message.retryingFailedImageIndexes?.slice(pendingCompleteCount),
+                      retryingFailedImageStartedAt: message.retryingFailedImageIndexes?.slice(pendingCompleteCount).reduce<Record<number, number>>((next, index) => ({ ...next, [index]: message.retryingFailedImageStartedAt?.[index] ?? Date.now() }), {}),
                       mode: "image",
                     }
                   : message,
@@ -4206,7 +4975,7 @@ export function ChatWorkbench() {
     );
   }, []);
 
-  const markAssistantImageFailure = useCallback((sessionId: string, requestId: string) => {
+  const markAssistantImageFailure = useCallback((sessionId: string, requestId: string, retryFailedIndex?: number) => {
     setSessions((current) =>
       current.map((session) =>
         session.id === sessionId
@@ -4217,8 +4986,29 @@ export function ChatWorkbench() {
                 message.role === "assistant" && message.requestId === requestId
                   ? {
                       ...message,
-                      failedImageCount: (message.failedImageCount ?? 0) + 1,
-                      pendingImageCount: Math.max(0, (message.pendingImageCount ?? 1) - 1),
+                      failedImageCount: message.retryingFailedImageIndexes?.length ? message.failedImageCount : (message.failedImageCount ?? 0) + 1,
+                      imageResultSlots: (() => {
+                        const currentSlots = message.imageResultSlots ?? [
+                          ...(message.images ?? []).map((url) => ({ type: "image" as const, url })),
+                          ...Array.from({ length: message.failedImageCount ?? 0 }).map((_, index) => ({ type: "failed" as const, retryingStartedAt: message.retryingFailedImageStartedAt?.[index] })),
+                        ];
+                        let failedOrdinal = -1;
+                        const retryingSlotIndex = retryFailedIndex === undefined
+                          ? currentSlots.findIndex((slot) => slot.type === "failed" && slot.retryingStartedAt)
+                          : currentSlots.findIndex((slot) => {
+                              if (slot.type !== "failed") return false;
+                              failedOrdinal += 1;
+                              return failedOrdinal === retryFailedIndex;
+                            });
+                        if (retryingSlotIndex >= 0) {
+                          return currentSlots.map((slot, index) => index === retryingSlotIndex ? { type: "failed" as const } : slot);
+                        }
+
+                        return [...currentSlots, { type: "failed" as const }];
+                      })(),
+                      pendingImageCount: Math.max(0, (message.pendingImageCount ?? (message.retryingFailedImageIndexes?.length ? 0 : 1)) - 1),
+                      retryingFailedImageIndexes: message.retryingFailedImageIndexes?.slice(1),
+                      retryingFailedImageStartedAt: message.retryingFailedImageIndexes?.slice(1).reduce<Record<number, number>>((next, index) => ({ ...next, [index]: message.retryingFailedImageStartedAt?.[index] ?? Date.now() }), {}),
                       mode: "image",
                     }
                   : message,
@@ -4243,7 +5033,10 @@ export function ChatWorkbench() {
                       videoUrl: message.videoUrl ?? videoUrl,
                       videos: [...(message.videos ?? (message.videoUrl ? [message.videoUrl] : [])), videoUrl].filter((url, index, array) => array.indexOf(url) === index),
                       videoPrompts: { ...(message.videoPrompts ?? {}), [videoUrl]: prompt },
-                      pendingVideoCount: Math.max(0, (message.pendingVideoCount ?? 1) - 1),
+                      pendingVideoCount: Math.max(0, (message.pendingVideoCount ?? (message.retryingFailedVideoIndexes?.length ? 0 : 1)) - 1),
+                      failedVideoCount: message.retryingFailedVideoIndexes?.length ? Math.max(0, (message.failedVideoCount ?? 1) - 1) : message.failedVideoCount,
+                      retryingFailedVideoIndexes: message.retryingFailedVideoIndexes?.slice(1),
+                      retryingFailedVideoStartedAt: message.retryingFailedVideoIndexes?.slice(1).reduce<Record<number, number>>((next, index) => ({ ...next, [index]: message.retryingFailedVideoStartedAt?.[index] ?? Date.now() }), {}),
                       mode: "video",
                     }
                   : message,
@@ -4265,8 +5058,10 @@ export function ChatWorkbench() {
                 message.role === "assistant" && message.requestId === requestId
                   ? {
                       ...message,
-                      failedVideoCount: (message.failedVideoCount ?? 0) + 1,
-                      pendingVideoCount: Math.max(0, (message.pendingVideoCount ?? 1) - 1),
+                      failedVideoCount: message.retryingFailedVideoIndexes?.length ? message.failedVideoCount : (message.failedVideoCount ?? 0) + 1,
+                      pendingVideoCount: Math.max(0, (message.pendingVideoCount ?? (message.retryingFailedVideoIndexes?.length ? 0 : 1)) - 1),
+                      retryingFailedVideoIndexes: message.retryingFailedVideoIndexes?.slice(1),
+                      retryingFailedVideoStartedAt: message.retryingFailedVideoIndexes?.slice(1).reduce<Record<number, number>>((next, index) => ({ ...next, [index]: message.retryingFailedVideoStartedAt?.[index] ?? Date.now() }), {}),
                       mode: "video",
                     }
                   : message,
@@ -4610,11 +5405,11 @@ export function ChatWorkbench() {
               const imageResult = await createImageWithRetry(itemPrompt);
               addSessionUsage(sessionId, imageResult.usage);
               const imagePrompts = Object.fromEntries(imageResult.images.map((url) => [url, itemPrompt]));
-              appendImagesToAssistantMessage(sessionId, pendingRequest.id, imageResult.images, imageResult.imageDimensions, 1, imagePrompts);
+              appendImagesToAssistantMessage(sessionId, pendingRequest.id, imageResult.images, imageResult.imageDimensions, 1, imagePrompts, pendingRequest.retryFailedIndex);
               addGeneratedAssets(sessionId, pendingRequest.mode, itemPrompt, imageResult.images, undefined, pendingRequest.assetTargetType, contextText);
               return imageResult.images;
             } catch (error) {
-              markAssistantImageFailure(sessionId, pendingRequest.id);
+              markAssistantImageFailure(sessionId, pendingRequest.id, pendingRequest.retryFailedIndex);
               throw error;
             }
           }),
@@ -5261,16 +6056,18 @@ export function ChatWorkbench() {
     void runGeneration(sessionId, pendingRequest);
   };
 
-  const retryFailedMedia = (message: Message) => {
+  const retryFailedMedia = (message: Message, failedIndex = 0) => {
     if (!activeSession || message.role !== "assistant") return;
     const meta = message.generationMeta;
     if (!meta || (meta.mode !== "image" && meta.mode !== "video")) return;
-    const existingVideos = getMessageVideos(message);
-    const prompt = ((meta.mode === "video" ? meta.itemPrompts?.[existingVideos.length] ?? meta.originalPrompt : meta.originalPrompt) ?? "").trim();
+    const existingMediaCount = meta.mode === "video" ? getMessageVideos(message).length : message.images?.length ?? 0;
+    const targetItemIndex = existingMediaCount + Math.max(0, failedIndex);
+    const prompt = ((meta.mode === "video" || meta.agentGenerated ? meta.itemPrompts?.[targetItemIndex] ?? meta.originalPrompt : meta.originalPrompt) ?? "").trim();
     if (!prompt) return;
 
     const sessionId = activeSession.id;
     const requestId = crypto.randomUUID();
+    const retryStartedAt = Date.now();
     const pendingRequest: PendingGeneration = {
       id: requestId,
       model: meta.model,
@@ -5285,6 +6082,7 @@ export function ChatWorkbench() {
       agentGenerated: meta.agentGenerated,
       agentDisplayText: meta.agentGenerated ? message.content : undefined,
       agentItemPrompts: meta.mode === "video" ? [prompt] : undefined,
+      retryFailedIndex: failedIndex,
       settings: meta.mode === "image" ? { ...meta.settings, imageCount: "1张" } : meta.settings,
       messages: activeSession.messages.filter((item) => item.role !== "system").map((item) => ({ role: item.role === "assistant" ? "assistant" : "user", content: item.content, images: item.images })),
     };
@@ -5303,10 +6101,22 @@ export function ChatWorkbench() {
                       ...item,
                       requestId,
                       statusText: meta.mode === "video" ? videoStatusLabels.creating : imageStatusLabels.creating,
-                      pendingImageCount: meta.mode === "image" ? (item.pendingImageCount ?? 0) + 1 : item.pendingImageCount,
-                      failedImageCount: meta.mode === "image" ? Math.max(0, (item.failedImageCount ?? 1) - 1) : item.failedImageCount,
-                      pendingVideoCount: meta.mode === "video" ? (item.pendingVideoCount ?? 0) + 1 : item.pendingVideoCount,
-                      failedVideoCount: meta.mode === "video" ? Math.max(0, (item.failedVideoCount ?? 1) - 1) : item.failedVideoCount,
+                      imageResultSlots: meta.mode === "image" ? (() => {
+                        let failedOrdinal = -1;
+                        const currentSlots = item.imageResultSlots ?? [
+                          ...(item.images ?? []).map((url) => ({ type: "image" as const, url })),
+                          ...Array.from({ length: item.failedImageCount ?? 0 }).map(() => ({ type: "failed" as const })),
+                        ];
+                        return currentSlots.map((slot) => {
+                          if (slot.type !== "failed") return slot;
+                          failedOrdinal += 1;
+                          return failedOrdinal === failedIndex ? { type: "failed" as const, retryingStartedAt: retryStartedAt } : slot;
+                        });
+                      })() : item.imageResultSlots,
+                      retryingFailedImageIndexes: meta.mode === "image" ? Array.from(new Set([...(item.retryingFailedImageIndexes ?? []), failedIndex])) : item.retryingFailedImageIndexes,
+                      retryingFailedImageStartedAt: meta.mode === "image" ? { ...(item.retryingFailedImageStartedAt ?? {}), [failedIndex]: retryStartedAt } : item.retryingFailedImageStartedAt,
+                      retryingFailedVideoIndexes: meta.mode === "video" ? Array.from(new Set([...(item.retryingFailedVideoIndexes ?? []), failedIndex])) : item.retryingFailedVideoIndexes,
+                      retryingFailedVideoStartedAt: meta.mode === "video" ? { ...(item.retryingFailedVideoStartedAt ?? {}), [failedIndex]: retryStartedAt } : item.retryingFailedVideoStartedAt,
                       error: undefined,
                     }
                   : item,
@@ -5401,7 +6211,7 @@ export function ChatWorkbench() {
     const imageFiles = allImageFiles.slice(0, Math.max(0, allowedCount));
 
     if (allImageFiles.length > allowedCount) {
-      showInputTip("最多上传五张图片");
+      showInputTip("@或上传最多支持10张图片");
     }
 
     if (imageFiles.length === 0) return;
@@ -5433,10 +6243,10 @@ export function ChatWorkbench() {
     focusEditorAt(cursor + text.length);
   }, [activeInput, focusEditorAt, getCurrentDraftCursor, setActiveDraftInput]);
   const activeAtQuery = getAtQueryAtCursor(activeInput, draftCursorOffset);
-  const atAssetTypes: AssetType[] = ["character_image", "scene_image", "shot_image", "other"];
+  const hasMentionAssetImages = assets.some((asset) => mentionAssetTypes.includes(asset.type) && !isVideoAsset(asset));
   const atAssetSearch = activeAtQuery?.query ?? "";
   const atAssetGroups = activeAtQuery
-    ? atAssetTypes.map((type) => ({
+    ? mentionAssetTypes.map((type) => ({
         type,
         assets: assets.filter((asset) => asset.type === type && !isVideoAsset(asset) && asset.name.includes(atAssetSearch)),
       }))
@@ -5445,7 +6255,7 @@ export function ChatWorkbench() {
   const activeAtAssetGroup = atAssetGroups.find((group) => group.type === atAssetFilter && group.assets.length > 0) ?? atAssetGroups.find((group) => group.assets.length > 0);
   const insertAssetReference = (asset: AssetItem) => {
     if (activeUploadedImages.length >= MAX_UPLOADED_IMAGES && !activeUploadedImages.some((image) => image.url === asset.url)) {
-      showInputTip("最多上传五张图片");
+      showInputTip("@或上传最多支持10张图片");
       setIsAtAssetMenuOpen(false);
       return;
     }
@@ -5456,6 +6266,33 @@ export function ChatWorkbench() {
     addActiveUploadedImages([toUploadedAssetReference(asset)], { draftBase: insertBase, draftSuffix: insertSuffix, insertReferenceText: true });
     setIsAtAssetMenuOpen(false);
     focusEditorAt(Math.min(MAX_DRAFT_INPUT_LENGTH, insertBase.length + referenceText.length));
+  };
+  const clearActiveInput = () => {
+    closeInputMenus();
+    setSessions((current) =>
+      current.map((session) =>
+        session.id === activeSessionId
+          ? {
+              ...session,
+              draftInput: "",
+              uploadedFiles: [],
+              uploadedImages: [],
+            }
+          : session,
+      ),
+    );
+    setDraftCursorOffset(0);
+    requestAnimationFrame(() => editorRef.current?.focus());
+  };
+  const openMentionAssetMenu = () => {
+    setOpenControlMenu("");
+    if (!hasMentionAssetImages) {
+      setIsAtAssetMenuOpen(false);
+      showInputTip("当前资产库没有图片");
+      return;
+    }
+
+    setIsAtAssetMenuOpen(true);
   };
   const switchAgentModelTier = (tier: AgentModelTier) => {
     if (agentModelTier === tier) return;
@@ -5504,7 +6341,12 @@ export function ChatWorkbench() {
             <span className="text-[13px] leading-[1.2]">工作流模式</span>
             <span className="ml-auto rounded-full bg-white px-2 py-0.5 text-[11px] text-[#8a8a8a] ring-1 ring-[#e3e3e3]">未开放</span>
           </button>
-          <button type="button" onClick={() => setActivePanel("assets")} className={activePanel === "assets" ? "flex h-10 w-full items-center gap-2 rounded-lg bg-[#ececec] px-3 text-left font-medium text-[#111111]" : "flex h-10 w-full items-center gap-2 rounded-lg px-3 text-left font-medium text-[#555555] transition hover:bg-[#ececec]"}>
+          <button type="button" onClick={() => {
+            setAssetRenderLimit(ASSET_RENDER_PAGE_SIZE);
+            setShowScrollToBottom(false);
+            setActivePanel("assets");
+            requestAnimationFrame(() => chatScrollRef.current?.scrollTo({ top: 0, behavior: "auto" }));
+          }} className={activePanel === "assets" ? "flex h-10 w-full items-center gap-2 rounded-lg bg-[#ececec] px-3 text-left font-medium text-[#111111]" : "flex h-10 w-full items-center gap-2 rounded-lg px-3 text-left font-medium text-[#555555] transition hover:bg-[#ececec]"}>
             {activePanel === "assets" ? <RiFolderOpenLine className="h-5 w-5 shrink-0 text-[#111111]" aria-hidden="true" /> : <RiFolderLine className="h-5 w-5 shrink-0 text-[#555555]" aria-hidden="true" />}
             <span className="text-[13px] leading-[1.2]">资产管理</span>
           </button>
@@ -5525,7 +6367,11 @@ export function ChatWorkbench() {
                   <button
                     key={item.value}
                     type="button"
-                    onClick={() => setAssetFilter(item.value)}
+                    onClick={() => {
+                      setAssetRenderLimit(ASSET_RENDER_PAGE_SIZE);
+                      setAssetFilter(item.value);
+                      requestAnimationFrame(() => chatScrollRef.current?.scrollTo({ top: 0, behavior: "auto" }));
+                    }}
                     className={isActive ? "flex h-9 w-full items-center rounded-lg bg-[#ececec] px-3 text-left" : "flex h-9 w-full items-center rounded-lg px-3 text-left transition hover:bg-[#ececec]"}
                   >
                     <AssetIcon className="mr-2 h-5 w-5 shrink-0 text-[#777777]" aria-hidden="true" />
@@ -5694,16 +6540,16 @@ export function ChatWorkbench() {
             ) : null}
           </div>
 
-          {activePanel === "chat" ? <UsageSummaryButton summary={activeSession?.usageSummary} /> : null}
+          {activePanel === "chat" ? <div className="absolute right-4 top-1/2 flex -translate-y-1/2 items-center justify-end"><UsageSummaryButton summary={activeSession?.usageSummary} /></div> : null}
 
         </div>
 
         <div className="relative flex-1 overflow-hidden">
           <div ref={chatScrollRef} onScroll={updateScrollToBottomButton} className="yinzao-chat-scroll h-full overflow-y-auto bg-white px-4 py-8 pb-6 sm:px-6 lg:px-8">
           {activePanel === "assets" ? (
-            <AssetManagementPanel assets={assets} assetFilter={assetFilter} openAssetMenuId={openAssetMenuId} openAssetActionMenuId={openAssetActionMenuId} assetMenuPlacement={assetMenuPlacement} now={timerNow} onPreview={setPreviewAsset} onUseAsset={(asset) => {
+            <AssetManagementPanel assets={assets} assetFilter={assetFilter} renderLimit={assetRenderLimit} openAssetMenuId={openAssetMenuId} openAssetActionMenuId={openAssetActionMenuId} assetMenuPlacement={assetMenuPlacement} now={timerNow} onOpenUpload={openAssetUploadDialog} onPreview={setPreviewAsset} onUseAsset={(asset) => {
               if (activeUploadedImages.length >= MAX_UPLOADED_IMAGES && !activeUploadedImages.some((image) => image.url === asset.url)) {
-                showInputTip("最多上传五张图片");
+                showInputTip("@或上传最多支持10张图片");
                 return;
               }
 
@@ -5857,7 +6703,9 @@ export function ChatWorkbench() {
                       }
                     >
                       {message.role === "assistant" ? (
-                        isAgentMediaMessage ? <ReferencedTextContent content={message.content} references={mediaPromptReferences} /> : message.mode === "image" || message.mode === "video" ? <MediaPromptBlock message={message} references={mediaPromptReferences} onUsePrompt={(item) => void copyPrompt(item)} copyState={copyFeedback?.messageId === message.id ? copyFeedback.state : undefined} displayImageUrl={displayedMessageImages[0]} variantIndex={selectedImageVariantIndex} variantCount={imageVariantCount} onPreviousVariant={() => setImageVariantIndex(selectedImageVariantIndex - 1)} onNextVariant={() => setImageVariantIndex(selectedImageVariantIndex + 1)} /> : <TypewriterFormattedMessage messageId={message.id} content={message.content} isComplete={isAssistantMessageComplete} onComplete={markTypingComplete} onTick={keepTypingAtBottom} />
+                        message.mode === "agent" || isAgentMediaMessage ? (
+                          isAgentMediaMessage ? <><InlineAgentIcon /><ReferencedTextContent content={message.content} references={mediaPromptReferences} /></> : <TypewriterFormattedMessage messageId={message.id} content={message.content} isComplete={isAssistantMessageComplete} onComplete={markTypingComplete} onTick={keepTypingAtBottom} leadingIcon={<InlineAgentIcon />} />
+                        ) : message.mode === "image" || message.mode === "video" ? <MediaPromptBlock message={message} references={mediaPromptReferences} onUsePrompt={(item) => void copyPrompt(item)} copyState={copyFeedback?.messageId === message.id ? copyFeedback.state : undefined} displayImageUrl={displayedMessageImages[0]} variantIndex={selectedImageVariantIndex} variantCount={imageVariantCount} onPreviousVariant={() => setImageVariantIndex(selectedImageVariantIndex - 1)} onNextVariant={() => setImageVariantIndex(selectedImageVariantIndex + 1)} /> : <TypewriterFormattedMessage messageId={message.id} content={message.content} isComplete={isAssistantMessageComplete} onComplete={markTypingComplete} onTick={keepTypingAtBottom} />
                       ) : (
                         <UserMessageContent content={message.content} references={userImageReferences} />
                       )}
@@ -5866,7 +6714,7 @@ export function ChatWorkbench() {
                     {message.role === "user" ? (
                       <ReferenceThumbnailStrip references={userImageReferences} onUseReference={(reference) => {
                         if (activeUploadedImages.length >= MAX_UPLOADED_IMAGES && !activeUploadedImages.some((image) => image.url === reference.url)) {
-                          showInputTip("最多上传五张图片");
+                          showInputTip("@或上传最多支持10张图片");
                           return;
                         }
 
@@ -5893,7 +6741,11 @@ export function ChatWorkbench() {
 
                      {message.role === "assistant" && message.mode === "image" && isAssistantMessageComplete && ((message.images?.length ?? 0) > 0 || imagePendingCount > 0 || imageFailedCount > 0) ? (
                         <div className="mt-2">
-                            <ImageResultStrip images={displayedMessageImages} pendingCount={imagePendingCount} failedCount={imageFailedCount} createdAt={message.createdAt} now={timerNow} pageIndex={imageResultPageIndex} onPageChange={setImageResultPageIndex} noPagination={isAgentMediaMessage} rounded={isAgentMediaMessage} onRetryFailed={() => retryFailedMedia(message)} onLoadedDimensions={(url, dimensions) => updateMessageImageDimensions(activeSession?.id ?? "", message.id, url, dimensions)} onPreview={(url, imageIndex) => setPreviewAsset({ id: `${message.id}-${selectedImageVariantIndex}-${imageIndex}`, type: "other", name: `生成图片${imageIndex + 1}`, url, sourcePrompt: getImageSourcePrompt(message, url), previewMeta: getPreviewMediaMeta(message, url), sessionId: activeSession?.id ?? "", messageId: message.id, createdAt: message.createdAt ?? Date.now() })} />
+                            {message.imageResultSlots ? (
+                              <ImageResultSlotStrip slots={message.imageResultSlots} pendingCount={imagePendingCount} createdAt={message.createdAt} now={timerNow} pageIndex={imageResultPageIndex} onPageChange={setImageResultPageIndex} noPagination={isAgentMediaMessage} rounded={isAgentMediaMessage} onRetryFailed={(failedIndex) => retryFailedMedia(message, failedIndex)} onLoadedDimensions={(url, dimensions) => updateMessageImageDimensions(activeSession?.id ?? "", message.id, url, dimensions)} onPreview={(url, imageIndex) => setPreviewAsset({ id: `${message.id}-${selectedImageVariantIndex}-${imageIndex}`, type: "other", name: `生成图片${imageIndex + 1}`, url, sourcePrompt: getImageSourcePrompt(message, url), previewMeta: getPreviewMediaMeta(message, url), sessionId: activeSession?.id ?? "", messageId: message.id, createdAt: message.createdAt ?? Date.now() })} />
+                            ) : (
+                              <ImageResultStrip images={displayedMessageImages} pendingCount={imagePendingCount} failedCount={imageFailedCount} retryingFailedIndexes={message.retryingFailedImageIndexes} retryingFailedStartedAt={message.retryingFailedImageStartedAt} createdAt={message.createdAt} now={timerNow} pageIndex={imageResultPageIndex} onPageChange={setImageResultPageIndex} noPagination={isAgentMediaMessage} rounded={isAgentMediaMessage} onRetryFailed={(failedIndex) => retryFailedMedia(message, failedIndex)} onLoadedDimensions={(url, dimensions) => updateMessageImageDimensions(activeSession?.id ?? "", message.id, url, dimensions)} onPreview={(url, imageIndex) => setPreviewAsset({ id: `${message.id}-${selectedImageVariantIndex}-${imageIndex}`, type: "other", name: `生成图片${imageIndex + 1}`, url, sourcePrompt: getImageSourcePrompt(message, url), previewMeta: getPreviewMediaMeta(message, url), sessionId: activeSession?.id ?? "", messageId: message.id, createdAt: message.createdAt ?? Date.now() })} />
+                            )}
                          </div>
                        ) : null}
 
@@ -5905,9 +6757,13 @@ export function ChatWorkbench() {
                          {Array.from({ length: isActiveVideoPending ? videoPendingCount : 0 }).map((_, pendingIndex) => (
                            <MediaWaitingCard key={`video-pending-${pendingIndex}`} createdAt={message.createdAt} now={timerNow} isImage={false} index={videoPendingCount > 1 ? displayedMessageVideos.length + pendingIndex + 1 : undefined} rounded={isAgentMediaMessage} />
                          ))}
-                         {Array.from({ length: videoFailedCount }).map((_, failedIndex) => (
-                           <VideoFailedCard key={`video-failed-${failedIndex}`} rounded={isAgentMediaMessage} onRetry={isAgentMediaMessage ? () => retryFailedMedia(message) : undefined} />
-                         ))}
+                          {Array.from({ length: videoFailedCount }).map((_, failedIndex) => (
+                            message.retryingFailedVideoIndexes?.includes(failedIndex) ? (
+                              <MediaWaitingCard key={`video-retrying-failed-${failedIndex}`} createdAt={message.retryingFailedVideoStartedAt?.[failedIndex] ?? message.createdAt} now={timerNow} isImage={false} index={displayedMessageVideos.length + videoPendingCount + failedIndex + 1} rounded={isAgentMediaMessage} />
+                            ) : (
+                              <VideoFailedCard key={`video-failed-${failedIndex}`} rounded={isAgentMediaMessage} onRetry={() => retryFailedMedia(message, failedIndex)} />
+                            )
+                          ))}
                        </div>
                      ) : null}
 
@@ -6012,9 +6868,9 @@ export function ChatWorkbench() {
           </div>
 
           {activePanel === "chat" ? <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 bg-transparent px-4 pb-3 sm:px-6 lg:px-8">
-          {inputTipMessage ? (
-            <div className="pointer-events-none absolute bottom-full left-1/2 z-40 mb-3 -translate-x-1/2 whitespace-nowrap rounded-lg bg-[#111111] px-3 py-2 text-[12px] font-medium leading-none text-white shadow-[0_8px_18px_rgba(0,0,0,0.18)]">
-              {inputTipMessage}
+          {inputReminder ? (
+            <div className="pointer-events-none absolute bottom-full left-1/2 z-40 mb-3 -translate-x-1/2">
+              <ReminderToast reminder={inputReminder} />
             </div>
           ) : null}
           {showScrollToBottom ? (
@@ -6028,11 +6884,26 @@ export function ChatWorkbench() {
             </button>
           ) : null}
           <div onClick={() => closeInputMenus()} style={{ width: inputShellWidth }} className="pointer-events-auto relative z-10 mx-auto w-full max-w-[calc(100vw-32px)] rounded-[26px] border-0 bg-transparent px-0 py-0 transition min-[840px]:min-w-[800px]">
-            <div className="rounded-[26px] border-2 border-[#f1f2f2] bg-white/78 px-4 py-3 shadow-none backdrop-blur-[18px] transition focus-within:border-white/70 focus-within:shadow-[0_10px_32px_rgba(0,0,0,0.12)]">
+            {!isThinking && (activeInput || activeUploadedImages.length > 0 || activeUploadedFiles.length > 0) ? (
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  clearActiveInput();
+                }}
+                className="absolute -top-7 right-12 z-30 inline-flex items-center gap-1 bg-transparent px-0 py-0 font-medium leading-none text-[#8a8a8a] transition hover:text-[#111111]"
+                aria-label="清空输入框"
+              >
+                <RiFormatClear className="h-3.5 w-3.5" aria-hidden="true" />
+                <span className="text-[11px] leading-none">清空输入框</span>
+              </button>
+            ) : null}
+            <div className={`rounded-[26px] border-2 border-[#f1f2f2] bg-white/78 px-4 py-3 shadow-none backdrop-blur-[18px] transition focus-within:border-white/70 focus-within:shadow-[0_10px_32px_rgba(0,0,0,0.12)] ${isThinking ? "border-[#f4f4f4] bg-white/54" : ""}`}>
+            <div className={isThinking ? "pointer-events-none opacity-45 grayscale-[0.15] transition" : "transition"}>
             {activeUploadedImages.length > 0 ? (
               <div className="mb-3 flex flex-wrap gap-2 px-2">
                 {activeUploadedImages.map((image) => (
-                  <div key={image.id} className="group relative h-[100px] w-[100px] overflow-hidden rounded-xl border border-[#e5e5e5] bg-[#f7f7f7]">
+                  <div key={image.id} className={image.source === "asset" ? "group relative h-[60px] w-[60px] overflow-hidden rounded-xl border border-[#e5e5e5] bg-[#f7f7f7]" : "group relative h-[100px] w-[100px] overflow-hidden rounded-xl border border-[#e5e5e5] bg-[#f7f7f7]"}>
                         <Image src={image.url} alt={image.name} width={100} height={100} unoptimized className="h-full w-full object-cover" style={{ width: "100%", height: "100%" }} />
                     <button
                       type="button"
@@ -6076,8 +6947,12 @@ export function ChatWorkbench() {
                       className="pointer-events-auto inline-flex items-center px-0.5 text-[#367cee] transition hover:text-[#367cee]"
                       onClick={(event) => {
                         event.stopPropagation();
-                        setOpenControlMenu("");
-                        setIsAtAssetMenuOpen(true);
+                        if (!hasMentionAssetImages) {
+                          showInputTip("当前资产库没有图片");
+                          return;
+                        }
+
+                        openMentionAssetMenu();
                         insertTextAtDraftCursor("@");
                     }}
                     >
@@ -6087,7 +6962,7 @@ export function ChatWorkbench() {
                 </div>
               ) : null}
               {hasAtAssetOptions ? (
-                <div onClick={(event) => event.stopPropagation()} className="absolute bottom-full left-2 z-50 mb-4 max-h-80 w-[320px] overflow-y-auto rounded-[12px] bg-white p-2 shadow-[0_18px_44px_rgba(0,0,0,0.14)]">
+                <div onClick={(event) => event.stopPropagation()} className="absolute bottom-full left-2 z-50 mb-4 max-h-80 w-[380px] overflow-y-auto rounded-[12px] bg-white p-2 shadow-[0_18px_44px_rgba(0,0,0,0.14)]">
                   <div className="px-2 pb-2 text-[12px] text-[#8a8a8a]">引用资产</div>
                   <div className="mb-2 flex flex-nowrap gap-1.5 px-1">
                     {atAssetGroups.map((group) => {
@@ -6100,9 +6975,9 @@ export function ChatWorkbench() {
                           type="button"
                           disabled={count === 0}
                           onClick={() => setAtAssetFilter(group.type)}
-                           className={isActive ? "h-7 rounded-[8px] bg-[#111111] px-2 text-[12px] font-medium text-white disabled:cursor-not-allowed disabled:opacity-40" : "h-7 rounded-[8px] bg-[#f4f4f4] px-2 text-[12px] font-medium text-[#666666] transition hover:bg-[#ececec] disabled:cursor-not-allowed disabled:opacity-40"}
+                            className={isActive ? "h-7 shrink-0 whitespace-nowrap rounded-[8px] bg-[#111111] px-2 text-[12px] font-medium text-white disabled:cursor-not-allowed disabled:opacity-40" : "h-7 shrink-0 whitespace-nowrap rounded-[8px] bg-[#f4f4f4] px-2 text-[12px] font-medium text-[#666666] transition hover:bg-[#ececec] disabled:cursor-not-allowed disabled:opacity-40"}
                         >
-                          <span className="text-[12px] leading-none">{assetTypeLabels[group.type]}({count})</span>
+                          <span className="whitespace-nowrap text-[12px] leading-none">{assetTypeLabels[group.type]}({count})</span>
                         </button>
                       );
                     })}
@@ -6129,16 +7004,16 @@ export function ChatWorkbench() {
                 onPasteImages={(files) => void addFilesToInput(files)}
                 onSubmit={() => void sendMessage()}
                 onAtTrigger={() => {
-                  setOpenControlMenu("");
-                  setIsAtAssetMenuOpen(true);
+                  openMentionAssetMenu();
                 }}
                 onAtClose={() => setIsAtAssetMenuOpen(false)}
                 onLimit={() => showInputTip("最多输入2000字")}
                 onCursorChange={setDraftCursorOffset}
               />
+              </div>
             </div>
             <div className="mt-3 flex flex-nowrap items-center justify-between gap-3 pb-0.5">
-              <div className="flex min-w-max flex-nowrap items-center gap-2 text-[12px]">
+              <div className={`flex min-w-max flex-nowrap items-center gap-2 text-[12px] transition ${isThinking ? "pointer-events-none opacity-45 grayscale-[0.15]" : ""}`}>
                 <input
                   ref={fileInputRef}
                   type="file"
@@ -6233,8 +7108,12 @@ export function ChatWorkbench() {
                   disabled={isThinking}
                   onClick={(event) => {
                     event.stopPropagation();
-                    setOpenControlMenu("");
-                    setIsAtAssetMenuOpen(true);
+                    if (!hasMentionAssetImages) {
+                      showInputTip("当前资产库没有图片");
+                      return;
+                    }
+
+                    openMentionAssetMenu();
                     insertTextAtDraftCursor("@");
                   }}
                   className={`yinzao-tool-button inline-flex h-9 shrink-0 items-center rounded-[8px] px-3.5 text-[#777777] outline-none transition ${isAtAssetMenuOpen ? toolButtonActiveClassName : ""}`}
@@ -6289,6 +7168,27 @@ export function ChatWorkbench() {
 
         </div>
       </section>
+
+      {isAssetUploadOpen ? (
+        <AssetUploadDialog
+          slots={visibleAssetUploadSlots}
+          activeIndex={activeAssetUploadIndex}
+          isUploading={isAssetUploading}
+          tip={assetUploadTip}
+          onClose={closeAssetUploadDialog}
+          onSelectSlot={selectAssetUploadSlot}
+          onSelectFiles={(files) => void selectAssetUploadFiles(files)}
+          onRemoveSlot={removeAssetUploadSlot}
+          onChangeName={updateActiveAssetUploadName}
+          onRestoreEmptyName={() => restoreEmptyAssetUploadName()}
+          onClearName={clearActiveAssetUploadName}
+          onChangeType={updateActiveAssetUploadType}
+          onSubmit={() => void submitAssetUpload()}
+        />
+      ) : null}
+      {!isAssetUploadOpen && assetUploadTip ? (
+        <ReminderToast reminder={assetUploadTip} fixed />
+      ) : null}
 
       {renamingSessionId ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4">

@@ -1,0 +1,70 @@
+{
+  "createdAt": "2026-05-15T14:19:35.742Z",
+  "videos": [
+    {
+      "name": "hero-dragon",
+      "file": "/home-assets/hero-dragon.mp4",
+      "reference": "/home-assets/hero-dragon-reference.jpg",
+      "model": "google/veo-3.1",
+      "settings": {
+        "duration": 8,
+        "resolution": "1080p",
+        "aspect_ratio": "16:9",
+        "generate_audio": false
+      },
+      "prompt": "Animate the provided Chinese dragon head reference into a premium cinematic homepage background video. Keep the same composition: a very large dragon head facing left, only head and a little neck visible, deep black background, electric cyan, sapphire blue, violet, magenta, orange and gold liquid energy. The dragon slowly breathes and subtly turns, whiskers and light filaments flow in slow motion, colorful fluid particles drift around it, elegant luxury technology mood, high contrast, no text, no logo, no watermark, no UI, no extra subjects, seamless atmospheric motion.",
+      "generatedAt": "2026-05-15T14:19:35.742Z",
+      "taskId": "https://openrouter.ai/api/v1/videos/S60zx7eGWIn4URMvSfmC",
+      "remoteUrl": "https://openrouter.ai/api/v1/videos/S60zx7eGWIn4URMvSfmC/content?index=0"
+    },
+    {
+      "name": "hero-great-wall",
+      "file": "/home-assets/hero-great-wall.mp4",
+      "reference": "/home-assets/hero-great-wall-reference.jpg",
+      "model": "google/veo-3.1",
+      "settings": {
+        "duration": 8,
+        "resolution": "1080p",
+        "aspect_ratio": "16:9",
+        "generate_audio": false
+      },
+      "prompt": "Animate the provided Great Wall reference into a premium cinematic homepage background video. Keep the same composition and black high-contrast color-fluid style. The Great Wall slowly stretches through dark mountains as cyan, violet, magenta, orange and gold liquid light flows along the ridges like glowing rivers. Slow aerial camera drift, atmospheric mist, elegant luxury technology mood, no people, no text, no logo, no watermark, no UI, no extra objects, seamless motion.",
+      "generatedAt": "2026-05-15T14:31:25.756Z",
+      "taskId": "https://openrouter.ai/api/v1/videos/ygCJtYz8FuNFnIsyU71e",
+      "remoteUrl": "https://openrouter.ai/api/v1/videos/ygCJtYz8FuNFnIsyU71e/content?index=0"
+    },
+    {
+      "name": "hero-global-human",
+      "file": "/home-assets/hero-global-human.mp4",
+      "reference": "/home-assets/hero-global-human-reference.jpg",
+      "model": "google/veo-3.1",
+      "settings": {
+        "duration": 8,
+        "resolution": "1080p",
+        "aspect_ratio": "16:9",
+        "generate_audio": false
+      },
+      "prompt": "Animate the provided international human portrait reference into a premium cinematic homepage background video. Keep one elegant person only, refined global fashion and technology feeling, deep black background, luminous cyan and violet light patterns across the face, colorful liquid hair-like trails flowing slowly backward in magenta, orange and gold. Subtle breathing and head motion, slow graceful camera drift, no text, no logo, no watermark, no UI, no extra people, seamless atmospheric motion.",
+      "generatedAt": "2026-05-15T14:31:15.773Z",
+      "taskId": "https://openrouter.ai/api/v1/videos/JXeetaeCYZ3zfH4e1hFG",
+      "remoteUrl": "https://openrouter.ai/api/v1/videos/JXeetaeCYZ3zfH4e1hFG/content?index=0"
+    },
+    {
+      "name": "hero-mecha-robot",
+      "file": "/home-assets/hero-mecha-robot.mp4",
+      "reference": "/home-assets/hero-mecha-robot-reference.jpg",
+      "model": "google/veo-3.1",
+      "settings": {
+        "duration": 8,
+        "resolution": "1080p",
+        "aspect_ratio": "16:9",
+        "generate_audio": false
+      },
+      "prompt": "Animate the provided high-tech mechanical robot reference into a premium cinematic homepage background video. Keep the robot on the right side with strong advanced machinery details, precision metal panels and glowing cyan circuits, not glass, not transparent. Orange gold, violet and magenta liquid energy particles move around the robot, subtle mechanical head and shoulder movement, slow camera push-in, deep black background, no text, no logo, no watermark, no UI, no screens, no extra objects, seamless motion.",
+      "generatedAt": "2026-05-15T14:31:46.237Z",
+      "taskId": "https://openrouter.ai/api/v1/videos/eh0zFVXy5CPAtaSOBVbr",
+      "remoteUrl": "https://openrouter.ai/api/v1/videos/eh0zFVXy5CPAtaSOBVbr/content?index=0"
+    }
+  ],
+  "updatedAt": "2026-05-15T14:31:46.237Z"
+}

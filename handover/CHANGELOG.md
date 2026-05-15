@@ -2,6 +2,54 @@
 
 ## Current Snapshot
 
+### 2026-05-15 资产管理上传、分批加载和提醒消息统一
+
+- 资产管理页新增直接上传图片能力。入口在资产管理内容标题右侧，蓝色无底按钮，图标使用 Remix `upload-2-line`，文案为 `上传图片`。此前曾短暂放到顶部标题栏最右侧，后按用户要求恢复到内容标题右侧。
+- 上传图片弹窗支持最多 `8` 张图片。弹窗内只显示一个 `80x80` 上传入口，用户选图后该位置变成缩略图，上传入口自动移动到下一个位置。支持一次多选；超过剩余上限时弹窗上方提醒 `最多同时上传8张`。
+- 上传缩略图为 `80x80` 直角，图片使用 `object-contain` 完整显示不裁切；右上角删除按钮改为圆形并微调到更靠右上；底部加黑色渐变条，显示前端读取到的真实图片尺寸。
+- 上传弹窗下方显示当前选中图片的文件名和分类。文件名标签改为 `文件名(支持改名)`，输入框右侧加灰底 `X` 清除按钮。用户清空后如果不重新输入，失焦或切换图片时恢复原文件名；上传时也用原文件名兜底。
+- 分类滑块支持 `角色图片 / 场景图片 / 分镜图片`。上传后写入 `yinzao-assets-v1`，新资产带 `lockedType: true`，避免后续自动分类覆盖。上传接口复用 `/api/upload-image`，服务端保存到 `public/generated/upload_image` 并按内容 hash 去重。
+- 重复图处理已完善：同 URL 已在资产库中时不重复添加。全部重复时弹窗不关闭，重复缩略图保留且边框变红，提醒 `图片已存在，无需要重复添加`。如果同一批既有新图又有重复图，新图先正常入库并从弹窗消失，弹窗只留下重复图红框。
+- 成功上传新增绿色提醒消息：`成功上传X张图片`，前置图标为 `checkbox-circle-line`，绿色底色为 `#75d06a`。全部成功时弹窗立即关闭，成功提醒显示在页面上方；混合重复时弹窗不关闭，成功提醒和重复提醒按顺序显示。
+- 项目中自动消失的提示统一命名为“提醒消息”。当前已统一输入框上方提醒和资产上传提醒：高度 `40px`，普通黑底，成功绿底；出现动画 `0.1s` 从上往下，停留 `2s`，消失动画 `0.1s` 从下往上；同一提醒显示期间相同文案不重复入队，不同文案按顺序排队。
+- 资产管理列表改为分批渲染。初始渲染约 `30` 个资产，滚动接近底部再追加 `30` 个；进入资产管理和切换资产分类时滚动层自动回到顶部，避免资产多时卡顿和进入页面定位到中间。
+- 本轮排查 Next dev 左下角 `N` 长时间停在 `Compiling...`：`npm run lint` 和 `npm run build` 均通过，确认代码无误，问题来自 dev 进程 / `.next` 缓存。已停止旧 `3000` 端口 Node 进程、清理 `.next` 后重启开发服务器。之后遇到 `.next/dev/types/routes.d.ts` 类型缓存错误，也通过清 `.next` 解决。
+- 本轮主要涉及文件：`src/components/chat-workbench.tsx`、`src/app/globals.css`、多个 `handover/*.md`。验证：`npm run lint` 通过，清理 `.next` 后 `npm run build` 通过。
+
+### 2026-05-15 输入框、@资产、Agent 图标和本地交互细调
+
+- 本轮先确认 GitHub 状态：`cd89681 Fix Chinese IME input handling` 与 `5d9aae4 Update asset mention picker` 已推送到 `origin/main`。当前本地在 `5d9aae4` 之后继续有 `src/components/chat-workbench.tsx` 和交接文档改动，尚未再次推送。`AI-Video-Assistant_Project Planning/` 仍为未跟踪目录，不应直接上传。
+- 修复其它电脑拼音输入法在 `contenteditable` 输入框中只能输入英文/拼音的问题。原因是输入法 composition 期间 `onInput -> renderEditorContent -> replaceChildren()` 会打断拼音候选。现在用 `isComposingRef` 保护 `compositionstart / compositionend`，composition 期间不重绘 DOM，结束后再同步文本和 `@` 高亮；同时加 `translate="no"`、`spellCheck={false}`、`autoCorrect="off"`、`autoCapitalize="off"` 和 Grammarly 禁用属性。
+- `@` 资产弹窗增加 `待分类` 标签，只显示待分类里的图片；视频仍不显示也不能引用。弹窗分类改为 `角色图片 / 场景图片 / 分镜图片 / 待分类`，每类全部显示，不再 `slice(0, 8)` 限制。分类按钮文案改为 `角色图片(数量)`，弹窗加宽到 `380px` 并加 `whitespace-nowrap`，避免数量被挤到下一行。
+- 如果当前资产库没有任何可引用图片，输入 `@`、点击 placeholder 里的 `@` 或底部 `@` 按钮时，统一在输入框上方黑色提示框显示 `当前资产库没有图片`，不打开空弹窗。
+- 输入框可引用/上传参考图上限从 `5` 张改为 `10` 张。所有超限黑色提示统一为 `@或上传最多支持10张图片`，覆盖上传、`@资产`、资产管理引用和历史缩略图再引用。
+- 输入框上方缩略图区区分来源：`@资产` 缩略图改为 `60x60`，普通上传图继续 `100x100`。
+- 输入框新增透明无底的 `清空输入框` 按钮。只有当前输入框有文字、上传图或 `@资产` 时显示在输入框外右上方，图标为 `format-clear`，点击会清空草稿、上传图、`@资产` 参考图并关闭输入相关弹窗。因全局 `button { font: inherit; }`，按钮文字字号写在内部 `span` 上。
+- `正在认真思考` 期间输入框视觉改为禁用态：输入内容区和左侧工具按钮整体淡化且不可点；黑色 `stop-fill` 停止按钮保持不淡化、可点击。顺手给专业模式模型/参数按钮补了 `disabled={isThinking}`。
+- 修复 `Shift+Enter` 换行。旧实现虽然拦截了 `Shift+Enter`，但 `contenteditable` 中纯文本 `\n` 与浏览器 `<br>` 显示/光标不一致，导致多次换行后打字回到第二行。现在渲染时把换行变成 `<br>`，读取文本和计算光标偏移时都把 `<br>` 当作 `\n`，末尾空行用 `data-trailing-break` 视觉占位但不计入文本。
+- Agent 回复图标改为 Remix `ri-ai`。`react-icons/ri` 没有导出 `RiAi`，所以项目内新增本地 `RiAiIcon`，SVG 来自用户指定的 `https://cdn.jsdelivr.net/npm/remixicon@4.9.1/icons/Editor/ai.svg`。输入框模式按钮里的 `Agent 模式` 图标也改为同一个 `RiAiIcon`。
+- Agent 回复前置图标从左侧独立 flex 改成插入首行文本流的 `InlineAgentIcon`，解决普通段落、Markdown 标题、加粗标题、列表、提示块、Agent 自动媒体说明之间无法同时对齐的问题。专业 `图片生成 / 视频生成` 提示词块不加该图标。
+- 本轮查了 OpenRouter 当前 `Seedance 2.0` 价格：页面说明为 `$7/M video tokens`，token 公式 `width * height * duration * 24 / 1024`。按 `100分钟=6000秒` 和项目汇率 `7.2` 估算：`1280x720` 约 `$907.20` / `¥6532`；`Seedance 2.0 Fast` 当前约 `$5.6/M video tokens`，同规格约 `¥5225`。费用会随真实输出尺寸和模型计费变化。
+- 安全检查：`handover/` 中未发现 GitHub 密码、token 或 OpenRouter key 明文；但 `AI-Video-Assistant_Project Planning\README.md` 内有压缩包密码说明。该规划目录未跟踪，后续不要直接提交原目录。
+- 本轮验证：多次 `npm run lint` 与 `npm run build` 均通过。
+
+### 2026-05-15 Agent 多视频、停止思考、失败原地重试和视频恢复撤回
+
+- 本轮用户反馈：Agent 按 10 个镜头生成分镜视频时理论应生成 10 个视频，但旧实现只生成 1 个；重启后该 1 个视频文件已落盘到 `public/generated/videos/...mp4`，但对话流里对应用户消息和视频结果消失。排查结论：视频文件保存发生在服务端，聊天历史保存在浏览器 `localStorage`，两者不是事务；旧代码视频消息结构只有 `videoUrl?: string`，也没有批量视频结构。
+- Agent 视频生成已扩展为批量执行：Planner `items[]` 现在对视频也生效，一镜一段视频并发创建 `/api/video` 任务；若 Planner 只返回 `count > 1` 但没返回 items，会按 count 兜底创建多段视频任务，避免再次只生成 1 个。
+- Agent 分镜视频时长规则已加入 Planner 和规则文档：把文字分镜、图片分镜或多个镜头做成视频时，`count` 必须等于镜头数，`items[]` 必须一镜一段；每段 `duration` 应按该镜头分镜内容、动作复杂度或剧本时长判断，不能默认全部用最低秒数。只有用户随便要求生成一个普通单段视频且没有分镜/镜头上下文时，才使用当前模型最低时长。
+- Agent 视频消息结构已支持多视频：新增 `videos[] / videoPrompts / videoDimensionsMap / pendingVideoCount / failedVideoCount` 等字段。成功视频、等待卡、失败卡现在合并在同一个两列 grid 中渲染，一行 2 个，超过自动换行；单个视频保持左半宽。视频等待卡、成功卡、失败卡统一 `360px` 高度、`10px` 圆角和相同间距。
+- Agent 视频失败卡的“重新生成”已改为原地重试：点击失败卡后，当前失败格子原地变等待卡，成功后填回同一条消息的同一组 grid，不再在下方新增一条新的 assistant 视频消息。图片失败卡本来已在同一个 `ImageResultStrip` 中混排；本轮也统一了图片/视频失败卡按钮样式。
+- 失败卡中的“重新生成”按钮改为居中显示，图标为 `reset-left-line`，按钮为灰色空心样式：透明底、灰色边框、灰色文字和图标。
+- 本轮曾临时加入 `/api/video-recovery` 和启动时扫描 `public/generated/videos` 的自动恢复逻辑，用于把未写入对话流的本地视频补回当前对话。用户重启后发现该逻辑恢复了更早的测试视频，因此已撤回：删除 `/api/video-recovery`，前端不再自动扫描和恢复旧视频。`src/lib/video-manifest.ts` 仍保留，用于 `/api/video` 保存任务 manifest，但目前只记录，不自动写回聊天。
+- `saveSessions()` 的危险兜底已修正：旧逻辑在两次 `localStorage.setItem` 都失败时会 `removeItem(STORAGE_KEY)`，可能导致历史整体丢失；现在失败时只 `console.warn`，保留上一次成功保存的历史。
+- 输入框发送按钮已改成正方形 `36x36`，圆角保持 `10px`；默认用 `arrow-up-line` 图标，不显示“发送”文字。Agent 正在思考时，输入框其它控件仍禁用，但发送按钮变为黑色可点击的 `stop-fill` 停止按钮，并带走光动画。
+- 点击停止按钮会中断当前 Agent 思考请求，清掉当前 Agent pending，并在对话流插入系统消息 `已中断思考`。非红字系统消息顶部新增灰色横线；红字错误系统消息不加横线。
+- 修复多处 Next dev 红色 `N` 里的图片尺寸 warning：部分 `next/image` 使用 `h-full w-full object-cover` 时补充 `style={{ width: "100%", height: "100%" }}`，避免只改宽高一边的提示。
+- 本轮中途按用户要求已提交并推送 GitHub：`89723bf Update agent media generation flow` 到 `origin/main`。注意：该提交之后又继续做了停止按钮、视频 grid、失败原地重试和本文档更新；如果需要同步 GitHub，需要再次提交推送。
+- 本轮涉及文件主要包括：`src/components/chat-workbench.tsx`、`src/app/globals.css`、`src/app/api/video/route.ts`、`src/lib/openrouter.ts`、`src/lib/video-manifest.ts`、`AI-Video-Assistant_Project Planning\对话流三种模式基础规则.md`、多个 `handover/*.md`。
+- 本轮验证：多次运行 `npm run lint` 和 `npm run build`，最终均通过。
+
 ### 2026-05-14 Agent 意图理解、逐图提示词、上下文瘦身和提示词 UI 更新
 
 - 本轮重点围绕 Agent 模式的真实意图理解和最终行为修正。用户明确要求：后续所有 Agent 对话逻辑都必须优先保证“像人一样自然对话”，这条规则高于其它执行细节；内部执行约束不能机械复读给用户。

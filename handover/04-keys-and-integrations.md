@@ -163,6 +163,9 @@
 22. OpenRouter / Gemini 3 Pro 可能一次响应返回多张候选图。项目会保存响应里的所有图片并返回给前端，前端按尺寸组和分页进行展示。
 23. 图片生成 `/api/image` 当前会把 OpenRouter 响应里的 `usage` 透传给前端。实测 `Seedream 4.5 / 1:1 / 2K / 1张` 返回 `promptTokens: 4`、`completionTokens: 16384`、`totalTokens: 16388`、`usd: 0.04`。
 24. 视频生成 `/api/video` 当前会从创建任务和查询任务响应中提取 `usage.cost`。实测已有视频任务 `P14NkUI1MIBIgF3op7KG` 返回 `usd: 0.84`，Token 为 0；前端只累计一次，避免轮询重复计费。
+25. 2026-05-15 更新：`/api/video` 创建任务和查询到本地视频后会写 `src/lib/video-manifest.ts` 管理的 `public/generated/videos/manifest.json`，记录 `taskId / prompt / model / settings / localVideoUrl / remoteVideoUrl` 等信息。该 manifest 只用于记录排查，不会自动恢复到聊天对话流。
+26. 2026-05-15 注意：曾短暂加入启动时扫描本地 `public/generated/videos` 并自动把未归档视频补回当前对话流的功能，但会误恢复旧测试视频，已按用户要求删除。后续不要再默认自动恢复旧视频，除非用户明确确认恢复范围和目标会话。
+27. 2026-05-15 费用估算记录：OpenRouter 当前 `Seedance 2.0` 页面显示 `from $7/M tokens`，video token 公式为 `(height * width * duration * 24) / 1024`。按 100 分钟、`1280x720` 和汇率 `7.2` 算，约 `$907.20` / `¥6532`；`Seedance 2.0 Fast` 当前 `video_tokens: 0.0000056`，同规格约 `¥5225`。费用估算不是固定报价，后续以 OpenRouter 当前价格和真实输出尺寸为准。
 
 ## 敏感信息说明
 
