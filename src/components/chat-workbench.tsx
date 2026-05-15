@@ -5433,12 +5433,12 @@ export function ChatWorkbench() {
     focusEditorAt(cursor + text.length);
   }, [activeInput, focusEditorAt, getCurrentDraftCursor, setActiveDraftInput]);
   const activeAtQuery = getAtQueryAtCursor(activeInput, draftCursorOffset);
-  const atAssetTypes: AssetType[] = ["character_image", "scene_image", "shot_image"];
+  const atAssetTypes: AssetType[] = ["character_image", "scene_image", "shot_image", "other"];
   const atAssetSearch = activeAtQuery?.query ?? "";
   const atAssetGroups = activeAtQuery
     ? atAssetTypes.map((type) => ({
         type,
-        assets: assets.filter((asset) => asset.type === type && asset.name.includes(atAssetSearch)).slice(0, 8),
+        assets: assets.filter((asset) => asset.type === type && !isVideoAsset(asset) && asset.name.includes(atAssetSearch)),
       }))
     : [];
   const hasAtAssetOptions = atAssetGroups.some((group) => group.assets.length > 0) && isAtAssetMenuOpen;
@@ -6102,7 +6102,7 @@ export function ChatWorkbench() {
                           onClick={() => setAtAssetFilter(group.type)}
                            className={isActive ? "h-7 rounded-[8px] bg-[#111111] px-2 text-[12px] font-medium text-white disabled:cursor-not-allowed disabled:opacity-40" : "h-7 rounded-[8px] bg-[#f4f4f4] px-2 text-[12px] font-medium text-[#666666] transition hover:bg-[#ececec] disabled:cursor-not-allowed disabled:opacity-40"}
                         >
-                          <span className="text-[12px] leading-none">{assetTypeLabels[group.type]} {count}</span>
+                          <span className="text-[12px] leading-none">{assetTypeLabels[group.type]}({count})</span>
                         </button>
                       );
                     })}
