@@ -2408,6 +2408,8 @@ function PlainMentionEditor({
   onLimit: () => void;
   onCursorChange: (offset: number) => void;
 }) {
+  const isComposingRef = useRef(false);
+
   const syncEditor = useCallback((nextValue: string, caretOffset?: number) => {
     const element = editorRef.current;
     if (!element) return;
@@ -2437,6 +2439,7 @@ function PlainMentionEditor({
 
   const syncCursorFromDom = useCallback(() => {
     if (disabled) return;
+    if (isComposingRef.current) return;
 
     const element = editorRef.current;
     if (!element) return;
@@ -2452,6 +2455,7 @@ function PlainMentionEditor({
   useEffect(() => {
     const element = editorRef.current;
     if (!element) return;
+    if (isComposingRef.current) return;
     if (getEditableText(element) === value) return;
 
     renderEditorContent(element, value, validReferences);
@@ -2465,9 +2469,26 @@ function PlainMentionEditor({
       role="textbox"
       aria-multiline="true"
       aria-disabled={disabled}
+      translate="no"
+      spellCheck={false}
+      autoCorrect="off"
+      autoCapitalize="off"
+      data-gramm="false"
+      data-gramm_editor="false"
+      data-enable-grammarly="false"
       suppressContentEditableWarning
+      onCompositionStart={() => {
+        isComposingRef.current = true;
+      }}
+      onCompositionEnd={(event) => {
+        if (disabled) return;
+        isComposingRef.current = false;
+        const element = event.currentTarget;
+        commitInput(getEditableText(element), getSelectionTextOffset(element));
+      }}
       onInput={(event) => {
         if (disabled) return;
+        if (isComposingRef.current) return;
         const element = event.currentTarget;
         commitInput(getEditableText(element), getSelectionTextOffset(element));
       }}
