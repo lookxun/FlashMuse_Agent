@@ -4,6 +4,15 @@
 
 ## 2026-06-08 本轮关键交接
 
+### 本轮追加：Logo 切换、上传图提示词、缩略图回退
+
+- 首页和工作台 Logo 都已支持马来/阿里互切。马来入口显示 `Intl.`，阿里入口不显示；首页跳首页，工作台跳工作台。马来工作台点 Logo 到 `https://ali.venusface.com/workspace`，阿里工作台点 Logo 到 `https://main.venusface.com/workspace`。
+- 工作台切换后看似退出账号的问题不是同账号单会话，是 Cookie 子域不共享。已设置 `AUTH_COOKIE_DOMAIN=.venusface.com`，前台/后台 Cookie 都带 Domain，`/api/auth/me` 会补写新域 Cookie。切换入口不会触发新登录，也不会触发单会话踢下线。
+- 工作台左侧副标题统一为 `AI视频助手`，修复切换瞬间从 `AI视频助手` 闪成 `AI影片助手` 的问题。
+- 对话流上传图现在永远无提示词。用户在任何模式下输入的文字都不能写入上传图 `sourcePrompt`。上传图固定 `sourcePrompt: "资产库上传"`、`promptSource: "upload"`；反推成功后才写 `promptSource: "reverse"` 和真正提示词；生成图写 `promptSource: "generated"`。预览上传图默认显示 `反推提示词` 按钮。
+- 后台生成/媒体记录也已同步规则：上传图 URL 匹配 `/generated/(users/{id}/)?upload_image/` 时，不再用用户输入或 generation originalPrompt 兜底当 prompt，避免后台误显示上传图提示词。
+- 马来入口资产库缩略图缺失已修：马来走 `/api/media-thumbnail?url=...` 生成/兜底，阿里入口继续走静态 `image-thumbnails`。如果用户说“马来资产库很多缩略图裂了”，优先确认当前前端包是否包含 `getMediaThumbnailUrl()` 的马来 API 回退逻辑。
+
 ### 阿里 `_next/static` 自动同步脚本
 
 - 已新增并部署 `scripts/sync-flashmuse-next-static.sh` 和 `scripts/deploy-flashmuse-production.sh`。线上脚本路径在马来 `/usr/local/bin/`。

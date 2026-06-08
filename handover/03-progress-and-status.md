@@ -2,6 +2,21 @@
 
 ## 当前已完成内容
 
+### 2026-06-09 本轮最新更新：Logo 入口切换、上传图无提示词、马来缩略图回退
+
+- 首页 Logo 切换已上线。`src/app/page.tsx` 中左上角图形 Logo 和文字 Logo 包成按钮：马来首页点击跳 `https://ali.venusface.com/`，阿里首页点击跳 `https://main.venusface.com/`。马来首页文字 Logo 右侧显示 `Intl.`，字号 `13px`，下对齐；阿里首页不显示。
+- 工作台 Logo 切换已上线。`src/components/chat-workbench.tsx` 中左侧栏 Logo 按钮：马来工作台点击跳 `https://ali.venusface.com/workspace`，阿里工作台点击跳 `https://main.venusface.com/workspace`。马来工作台显示 `Intl.`，阿里不显示。工作台副标题已统一为 `AI视频助手`，避免切换瞬间显示旧文案 `AI影片助手`。
+- Logo 切换导致退出账号的问题已确认不是同账号单会话。根因是 host-only Cookie 不跨子域；已通过 `AUTH_COOKIE_DOMAIN=.venusface.com` 和 `auth.ts/admin-auth.ts` 的 Cookie domain 修复。切换入口不会创建新 session，也不会触发 `createUserSession()` 中的单会话删除旧 session。
+- 对话流上传图片“无提示词”规则已落地。`addUploadedImagesToAssets()` 不再把用户输入的文字 `contextText` 写到上传图 `sourcePrompt`，而是固定写 `sourcePrompt: "资产库上传"`、`promptSource: "upload"`。预览上传图时，如果没有反推，显示 `暂无提示词` 和 `反推提示词` 按钮；用户点击反推成功后写 `sourcePrompt: nextPrompt`、`promptSource: "reverse"`。
+- 生成图入库时写 `promptSource: "generated"`。后台 `src/app/admin/page.tsx` 已同步：如果 URL 是 `/generated/.../upload_image/...`，不再用 `generationMeta.originalPrompt` 或消息内容作为上传图 prompt 兜底，只读已有 `imagePrompts[url]`。这样上传图不会在后台误显示用户输入文字为提示词。
+- 马来资产库缩略图缺失已修。`getMediaThumbnailUrl()` 现在在马来主站/上传 API host 下返回 `/api/media-thumbnail?url=...&v=thumb256-20260606`，让马来按需生成缩略图并在失败时回退原图；阿里入口仍使用 `https://static.venusface.com/generated/.../image-thumbnails/...jpg`，避免回源 API。已验证马来 `/api/media-thumbnail` 对用户目录图片返回 `200 image/jpeg` 和 `X-Thumbnail-Url`。
+- 本轮所有前端改动均已使用 `/usr/local/bin/deploy-flashmuse-production.sh` 部署：马来 build 通过，仅有既有 Turbopack tracing warning；PM2 已重启保存；阿里 `.next/static` 已同步并清缓存。相关提交已推 GitHub：`39edc73`、`d7a156a`、`a2fc64f`、`7636d90`、`091afd9`、`edb8211`、`93597bd`。
+
+后续注意：
+
+1. 旧上传图如果历史里曾错误写入用户文字为 `sourcePrompt`，打开资产库预览时可能仍显示旧数据。新上传图不会再写提示词。如需彻底修旧数据，可单独做 workspace 迁移，把 `/upload_image/` 资产的 `sourcePrompt` 重置为 `资产库上传`，除非已有 `promptSource: "reverse"` 或后台反推流水可证明是反推结果。
+2. 马来入口缩略图走 `/api/media-thumbnail` 会比阿里静态略慢，但能修复旧缩略图缺失；阿里入口仍保持静态缩略图优先。
+
 ### 2026-06-08 本轮最新更新：阿里 `_next/static` 自动同步脚本
 
 - 已新增仓库脚本 `scripts/sync-flashmuse-next-static.sh`，用于从马来主动 rsync `/var/www/flashmuse/.next/static/` 到阿里 `/var/www/flashmuse-static/_next/static/`。脚本默认使用马来已有 SSH key `/root/.ssh/flashmuse_to_ali_ed25519` 连接阿里 `101.37.129.164`，带 `flock` 防重入，支持 `--dry-run` 和 `--clear-cache`。

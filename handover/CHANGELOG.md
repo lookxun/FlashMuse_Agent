@@ -2,6 +2,18 @@
 
 ## Current Snapshot
 
+### 2026-06-09 本轮追加：Logo 切换、上传图无提示词和马来缩略图回退
+
+- 首页 Logo 切换已完成。`src/app/page.tsx` 新增马来/阿里站点识别：马来首页点击左上角图形 Logo 或文字 Logo 跳 `https://ali.venusface.com/`；阿里首页点击跳 `https://main.venusface.com/`。马来首页文字 Logo 右侧显示短标 `Intl.`，字体调为 `13px` 并下对齐；阿里首页不显示该标识。
+- 工作台 Logo 切换已完成。`src/components/chat-workbench.tsx` 新增 `WorkspaceSite` 判断，马来工作台点击左侧 Logo 跳 `https://ali.venusface.com/workspace`，阿里工作台点击跳 `https://main.venusface.com/workspace`。马来工作台显示 `Intl.`，阿里不显示。
+- 修复工作台 Logo 切换后看似退出账号：不是同账号单会话导致，真实原因是 `flashmuse-session` 以前是 host-only Cookie，不能从 `main.venusface.com` 带到 `ali.venusface.com`。已新增线上 `AUTH_COOKIE_DOMAIN=.venusface.com`，并修改 `src/lib/auth.ts` 与 `src/lib/admin-auth.ts`，设置和清除 Cookie 都带 Domain；`/api/auth/me` 会在旧 host-only Cookie 有效时补写新的域名 Cookie。验证 `Set-Cookie` 已包含 `Domain=.venusface.com`。
+- 风险记录：`.venusface.com` 域 Cookie 会随请求发送到同主域子域名，包括 `dvideo.venusface.com`。Cookie 是 `HttpOnly + Secure + SameSite=Lax`，前端 JS 读不到。内部项目当前可接受；未来正式对外如要严格隔离，应改一次性跨域登录转移 token，而不是共享父域 Cookie。
+- 工作台副标题统一为 `AI视频助手`。此前代码里仍有硬编码 `AI影片助手`，切换时服务端/新包先显示旧文案，客户端再变回 `AI视频助手`，导致闪一下；已统一。
+- 对话流上传图提示词规则已改为“上传图永远无提示词”。`addUploadedImagesToAssets()` 不再把发送时的用户文字 `contextText` 写入上传图 `sourcePrompt`，而是固定 `sourcePrompt: "资产库上传"`、`promptSource: "upload"`。预览上传图默认显示 `暂无提示词` 和 `反推提示词` 按钮。反推成功后才写 `sourcePrompt: nextPrompt`、`promptSource: "reverse"`；生成图入库写 `promptSource: "generated"`。
+- 后台也同步上传图无提示词规则。`src/app/admin/page.tsx` 对 `/generated/(users/{id}/)?upload_image/` URL 不再用 `generationMeta.originalPrompt` 或消息内容作为 prompt 兜底，只读 `imagePrompts[url]`。这样后台不会把用户输入文字误当作上传图提示词。
+- 修复马来入口资产库缩略图大量不显示。根因是 `getMediaThumbnailUrl()` 在马来入口也直接拼 `/generated/.../image-thumbnails/...jpg`，很多旧资产缺静态缩略图会 404。现在马来主站/上传 API host 下返回 `/api/media-thumbnail?url=...&v=thumb256-20260606`，由马来按需生成缩略图并失败回退原图；阿里入口继续走 `https://static.venusface.com/generated/.../image-thumbnails/...jpg`，保持静态速度。已验证马来 `/api/media-thumbnail` 对用户图片返回 `200 image/jpeg`。
+- 本轮相关部署均使用 `/usr/local/bin/deploy-flashmuse-production.sh`，确认马来 build 通过，仅有既有 Turbopack tracing warning；PM2 重启保存；阿里 `_next/static` 同步并清缓存。相关 GitHub 提交包括：`39edc73 Add homepage region switch logo`、`d7a156a Shorten homepage international label`、`a2fc64f Add workspace region switch logo`、`7636d90 Share auth cookies across Venusface domains`、`091afd9 Unify workspace assistant subtitle`、`edb8211 Treat uploaded chat images as promptless`、`93597bd Use thumbnail API on Malaysia entry`。
+
 ### 2026-06-08 本轮追加：跨马来/阿里工作台共享登录 Cookie
 
 - 用户反馈工作台点击 Logo 从马来切到阿里后被跳回首页。确认不是同账号单会话导致：单会话删除只在 `createUserSession()` 新登录时触发，Logo 切换只是跨子域跳转，不会创建新 session。
