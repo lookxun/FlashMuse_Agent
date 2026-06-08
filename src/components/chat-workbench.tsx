@@ -531,8 +531,18 @@ const legacyMediaUrlReplacements = new Map([
 const staticAssetBaseUrl = (process.env.NEXT_PUBLIC_STATIC_BASE_URL ?? "").replace(/\/$/, "");
 const uploadApiBaseUrl = (process.env.NEXT_PUBLIC_UPLOAD_BASE_URL ?? "").replace(/\/$/, "");
 const primaryAppBaseUrl = (process.env.NEXT_PUBLIC_PRIMARY_BASE_URL ?? "").replace(/\/$/, "");
+const MALAYSIA_WORKSPACE_URL = "https://main.venusface.com/workspace";
+const ALI_WORKSPACE_URL = "https://ali.venusface.com/workspace";
 const mediaThumbnailVersion = "thumb256-20260606";
 const videoPosterVersion = "poster640-20260606";
+
+type WorkspaceSite = "malaysia" | "ali" | "other";
+
+function getCurrentWorkspaceSite(hostname: string): WorkspaceSite {
+  if (hostname === "main.venusface.com" || hostname === "api.venusface.com" || hostname === "101.47.19.109") return "malaysia";
+  if (hostname === "ali.venusface.com" || hostname === "static.venusface.com" || hostname === "101.37.129.164") return "ali";
+  return "other";
+}
 
 function toLocalGeneratedUrl(url: string) {
   if (/^https?:\/\/(101\.47\.19\.109|101\.37\.129\.164|main\.venusface\.com|api\.venusface\.com|ali\.venusface\.com|static\.venusface\.com)\/generated\//i.test(url)) {
@@ -5924,6 +5934,7 @@ export function ChatWorkbench() {
   const [openControlMenu, setOpenControlMenu] = useState<ControlMenuName | ModeMenuName | "">("");
   const [isLoaded, setIsLoaded] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
+  const [workspaceSite, setWorkspaceSite] = useState<WorkspaceSite>("other");
   const [modelInfoSessionId, setModelInfoSessionId] = useState("");
   const [completedTypingMessageIds, setCompletedTypingMessageIds] = useState<Set<string>>(() => new Set());
   const [intentMemoryRules, setIntentMemoryRules] = useState<IntentMemoryRule[]>([]);
@@ -7311,6 +7322,8 @@ export function ChatWorkbench() {
   useEffect(() => {
     const timer = window.setTimeout(() => {
       void (async () => {
+        setWorkspaceSite(getCurrentWorkspaceSite(window.location.hostname));
+
         const applyInputSettings = (parsedInputSettings: StoredInputSettings | null | undefined) => {
           if (!parsedInputSettings) return;
           const storedImageModel = parsedInputSettings.selectedGenerationModels?.image;
@@ -10860,20 +10873,27 @@ export function ChatWorkbench() {
     );
   };
 
+  const workspaceSwitchUrl = workspaceSite === "malaysia" ? ALI_WORKSPACE_URL : MALAYSIA_WORKSPACE_URL;
+  const workspaceSwitchLabel = workspaceSite === "malaysia" ? "切换到阿里工作台" : "切换到马来工作台";
+  const showWorkspaceIntlBadge = workspaceSite === "malaysia";
+
   return (
     <section className={isSidebarCollapsed ? "flashmuse-workspace-root grid h-screen min-h-screen grid-cols-1 overflow-hidden bg-white" : "flashmuse-workspace-root grid h-screen min-h-screen grid-cols-1 overflow-hidden bg-white lg:grid-cols-[262px_minmax(0,1fr)]"}>
       <aside className={isSidebarCollapsed ? "hidden" : "flashmuse-sidebar relative z-10 hidden h-screen min-h-0 flex-col overflow-visible border-r border-[#e5e5e5] bg-[#f9f9f9] px-3 pb-1 pt-4 lg:flex"}>
-          <div className="mb-5 flex items-center gap-3 px-2">
+          <button type="button" onClick={() => window.location.assign(workspaceSwitchUrl)} className="mb-5 flex items-center gap-3 px-2 text-left" aria-label={workspaceSwitchLabel} title={workspaceSwitchLabel}>
           <div className="flex h-[50px] w-[50px] items-center justify-center">
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src="/home-assets/logo.png" alt="闪念 FlashMuse" className="h-[50px] w-[50px] object-contain" />
           </div>
           <div className="flex min-w-0 flex-col justify-center">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src="/home-assets/logo-text.png" alt="闪念" className="flashmuse-logo-text w-auto object-contain" style={{ height: 26 }} />
+            <span className="flex items-end gap-1.5">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img src="/home-assets/logo-text.png" alt="闪念" className="flashmuse-logo-text w-auto object-contain" style={{ height: 26 }} />
+              {showWorkspaceIntlBadge ? <span className="pb-[1px] text-[12px] font-medium leading-none text-[#8a8a8a]">Intl.</span> : null}
+            </span>
             <div className="mt-1 whitespace-nowrap text-xs leading-4 text-[#8a8a8a]">AI影片助手</div>
           </div>
-        </div>
+        </button>
         <div className="mb-[22px] space-y-[5px]">
           <button type="button" onClick={() => { setStoredWorkspaceUiState({ activePanel: "chat" }); setActivePanel("chat"); }} className={activePanel === "chat" ? "flex h-10 w-full items-center gap-2 rounded-lg bg-[#ececec] px-3 text-left font-medium text-[#111111]" : "flex h-10 w-full items-center gap-2 rounded-lg px-3 text-left font-medium text-[#555555] transition hover:bg-[#ececec]"}>
             {activePanel === "chat" ? <RiChatSmileAiLine className="h-5 w-5 shrink-0 text-[#111111]" aria-hidden="true" /> : <RiChat3Line className="h-5 w-5 shrink-0 text-[#555555]" aria-hidden="true" />}
