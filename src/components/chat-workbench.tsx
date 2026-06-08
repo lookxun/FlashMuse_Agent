@@ -903,6 +903,7 @@ function getMediaThumbnailUrl(url: string) {
   const normalizedUrl = toLocalGeneratedUrl(url);
   if (!normalizedUrl.startsWith("/generated/")) return normalizedUrl;
   const cleanUrl = normalizedUrl.split("?")[0].split("#")[0];
+  if (!shouldUseStaticAssetBaseUrl()) return `/api/media-thumbnail?url=${encodeURIComponent(cleanUrl)}&v=${mediaThumbnailVersion}`;
   const userPathMatch = cleanUrl.match(/^\/generated\/users\/([^/]+)\/(.+)$/);
   const thumbnailRelativePath = (userPathMatch ? userPathMatch[2] : cleanUrl.replace(/^\/generated\//, "")).replace(/\.[^.\/\\]+$/, ".jpg");
   const thumbnailUrl = userPathMatch ? `/generated/users/${userPathMatch[1]}/image-thumbnails/${thumbnailRelativePath}` : `/generated/image-thumbnails/${thumbnailRelativePath}`;
