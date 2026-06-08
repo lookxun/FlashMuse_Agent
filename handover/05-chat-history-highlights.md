@@ -4,6 +4,12 @@
 
 ## 2026-06-08 本轮关键交接
 
+### 阿里 `_next/static` 自动同步脚本
+
+- 已新增并部署 `scripts/sync-flashmuse-next-static.sh` 和 `scripts/deploy-flashmuse-production.sh`。线上脚本路径在马来 `/usr/local/bin/`。
+- 以后线上改前端，优先在马来执行 `/usr/local/bin/deploy-flashmuse-production.sh`。它会自动 `npm run build`、`pm2 restart flashmuse --update-env`、`pm2 save`、同步 `.next/static/` 到阿里 `/var/www/flashmuse-static/_next/static/`，并清阿里 Nginx 缓存。
+- 如果只需要补同步阿里静态，执行 `/usr/local/bin/sync-flashmuse-next-static.sh --clear-cache`；如果只想看会同步什么，执行 `/usr/local/bin/sync-flashmuse-next-static.sh --dry-run`。
+
 ### 正式域名、HTTPS 和 DNS-01 证书
 
 - 本轮后续已把应用环境变量正式切到域名。马来 `.env.local` 关键项现在是：`NEXT_PUBLIC_UPLOAD_BASE_URL=https://api.venusface.com`、`NEXT_PUBLIC_STATIC_BASE_URL=https://static.venusface.com`、`NEXT_PUBLIC_PRIMARY_BASE_URL=https://main.venusface.com`、`UPLOAD_CORS_ORIGINS=https://main.venusface.com,https://ali.venusface.com,https://static.venusface.com`、`FORCE_INSECURE_AUTH_COOKIE=false`。已重新 build、重启 PM2、同步阿里 `_next/static`，并清阿里 Nginx 缓存。

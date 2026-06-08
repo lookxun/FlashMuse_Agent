@@ -2,6 +2,12 @@
 
 ## Current Snapshot
 
+### 2026-06-08 本轮追加：阿里 `_next/static` 自动同步脚本
+
+- 新增 `scripts/sync-flashmuse-next-static.sh`。该脚本用于在马来服务器主动同步 `.next/static/` 到阿里 `/var/www/flashmuse-static/_next/static/`，默认参数为：`FLASHMUSE_APP_ROOT=/var/www/flashmuse`、`ALI_SYNC_HOST=101.37.129.164`、`ALI_SYNC_SSH_KEY=/root/.ssh/flashmuse_to_ali_ed25519`、`ALI_NEXT_STATIC_DEST=/var/www/flashmuse-static/_next/static/`。脚本支持 `--dry-run` 和 `--clear-cache`，并用 `/tmp/flashmuse-next-static-sync.lock` 防止并发同步。
+- 新增 `scripts/deploy-flashmuse-production.sh`。该脚本是马来线上前端部署入口，流程为：`npm run build` -> `pm2 restart flashmuse --update-env` -> `pm2 save` -> `/usr/local/bin/sync-flashmuse-next-static.sh --clear-cache`。以后线上改前端优先跑这个脚本，避免忘记同步阿里 `/_next/static` 或忘记清阿里首页缓存。
+- 两个脚本已上传到马来 `/usr/local/bin/` 并 `chmod +x`。已验证 `bash -n` 通过；已运行 `sync-flashmuse-next-static.sh --dry-run` 成功；已运行真实 `sync-flashmuse-next-static.sh --clear-cache` 成功，阿里 Nginx cache 已清并 reload。阿里本机验证 `https://ali.venusface.com/` 返回 200。
+
 ### 2026-06-08 本轮追加：正式域名 HTTPS、阿里 DNS-01 证书和自动续期提醒
 
 - 本轮继续完成应用层正式域名切换。马来 `/var/www/flashmuse/.env.local` 已备份为 `.env.local.bak.20260608-domain-switch`，并将 `NEXT_PUBLIC_UPLOAD_BASE_URL` 改为 `https://api.venusface.com`，`NEXT_PUBLIC_STATIC_BASE_URL` 改为 `https://static.venusface.com`，新增/设置 `NEXT_PUBLIC_PRIMARY_BASE_URL=https://main.venusface.com`，`UPLOAD_CORS_ORIGINS=https://main.venusface.com,https://ali.venusface.com,https://static.venusface.com`，`FORCE_INSECURE_AUTH_COOKIE=false`。

@@ -2,6 +2,18 @@
 
 ## 当前已完成内容
 
+### 2026-06-08 本轮最新更新：阿里 `_next/static` 自动同步脚本
+
+- 已新增仓库脚本 `scripts/sync-flashmuse-next-static.sh`，用于从马来主动 rsync `/var/www/flashmuse/.next/static/` 到阿里 `/var/www/flashmuse-static/_next/static/`。脚本默认使用马来已有 SSH key `/root/.ssh/flashmuse_to_ali_ed25519` 连接阿里 `101.37.129.164`，带 `flock` 防重入，支持 `--dry-run` 和 `--clear-cache`。
+- 已新增仓库脚本 `scripts/deploy-flashmuse-production.sh`，用于马来线上标准部署：进入 `/var/www/flashmuse`，执行 `npm run build`，`pm2 restart flashmuse --update-env`，`pm2 save`，再调用 `sync-flashmuse-next-static.sh --clear-cache`。这样以后改前端不需要手动 rsync，也避免阿里首页 30 分钟缓存旧 HTML。
+- 两个脚本已部署到马来服务器 `/usr/local/bin/sync-flashmuse-next-static.sh` 和 `/usr/local/bin/deploy-flashmuse-production.sh`，权限已设为可执行。已执行 `sync-flashmuse-next-static.sh --dry-run` 和真实 `sync-flashmuse-next-static.sh --clear-cache`，均成功；阿里 `/var/www/flashmuse-static/_next/static` 已有最新 chunk，阿里本机 `https://ali.venusface.com/` 返回 200。
+
+后续使用：
+
+1. 以后线上前端/Next 构建部署，优先在马来执行：`/usr/local/bin/deploy-flashmuse-production.sh`。
+2. 如果只是补同步阿里静态，不重新 build，可执行：`/usr/local/bin/sync-flashmuse-next-static.sh --clear-cache`。
+3. 如只想预览会同步哪些文件，可执行：`/usr/local/bin/sync-flashmuse-next-static.sh --dry-run`。
+
 ### 2026-06-08 本轮最新更新：正式域名 HTTPS 接入和 DNS-01 证书提醒
 
 - 已继续把线上应用配置从 IP 切到正式域名。马来 `/var/www/flashmuse/.env.local` 已备份为 `.env.local.bak.20260608-domain-switch`，关键项已改为：`NEXT_PUBLIC_UPLOAD_BASE_URL=https://api.venusface.com`、`NEXT_PUBLIC_STATIC_BASE_URL=https://static.venusface.com`、`NEXT_PUBLIC_PRIMARY_BASE_URL=https://main.venusface.com`、`UPLOAD_CORS_ORIGINS=https://main.venusface.com,https://ali.venusface.com,https://static.venusface.com`、`FORCE_INSECURE_AUTH_COOKIE=false`。
