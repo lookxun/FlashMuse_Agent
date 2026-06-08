@@ -10,6 +10,7 @@ export const authCookieName = "flashmuse-session";
 const sessionMaxAgeSeconds = 60 * 60 * 24 * 30;
 const authSecret = process.env.AUTH_SECRET || "flashmuse-local-dev-secret-change-me";
 const forceInsecureAuthCookie = process.env.FORCE_INSECURE_AUTH_COOKIE === "true";
+const authCookieDomain = process.env.AUTH_COOKIE_DOMAIN?.trim() || undefined;
 
 export function normalizeEmail(value: unknown) {
   return typeof value === "string" ? value.trim().toLowerCase() : "";
@@ -96,12 +97,29 @@ export async function createUserSession(userId: string) {
   });
 
   const cookieStore = await cookies();
+  setAuthCookie(cookieStore, token, sessionMaxAgeSeconds);
+}
+
+function setAuthCookie(cookieStore: Awaited<ReturnType<typeof cookies>>, token: string, maxAge: number) {
   cookieStore.set(authCookieName, token, {
     httpOnly: true,
     sameSite: "lax",
     secure: process.env.NODE_ENV === "production" && !forceInsecureAuthCookie,
     path: "/",
-    maxAge: sessionMaxAgeSeconds,
+    maxAge,
+    ...(authCookieDomain ? { domain: authCookieDomain } : {}),
+  });
+}
+
+async function clearAuthCookie() {
+  const cookieStore = await cookies();
+  cookieStore.set(authCookieName, "", {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production" && !forceInsecureAuthCookie,
+    path: "/",
+    maxAge: 0,
+    ...(authCookieDomain ? { domain: authCookieDomain } : {}),
   });
 }
 
@@ -117,17 +135,18 @@ export async function getCurrentUser() {
 
   if (!session || session.expiresAt <= new Date()) {
     if (session) await prisma.session.delete({ where: { id: session.id } }).catch(() => null);
-    cookieStore.delete(authCookieName);
+    await clearAuthCookie();
     return null;
   }
 
   if (session.user.disabled) {
     await prisma.session.deleteMany({ where: { userId: session.user.id } }).catch(() => null);
-    cookieStore.delete(authCookieName);
+    await clearAuthCookie();
     return null;
   }
 
   await prisma.session.update({ where: { id: session.id }, data: { lastSeenAt: new Date() } }).catch(() => null);
+  if (authCookieDomain) setAuthCookie(cookieStore, token, sessionMaxAgeSeconds);
   return session.user;
 }
 
@@ -139,5 +158,5 @@ export async function clearCurrentSession() {
     await prisma.session.delete({ where: { tokenHash: hashSessionToken(token) } }).catch(() => null);
   }
 
-  cookieStore.delete(authCookieName);
+  await clearAuthCookie();
 }

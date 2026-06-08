@@ -7,6 +7,7 @@ export const adminCookieName = "flashmuse-admin-session";
 const adminSessionMaxAgeSeconds = 60 * 60 * 8;
 const authSecret = process.env.AUTH_SECRET || "flashmuse-local-dev-secret-change-me";
 const forceInsecureAuthCookie = process.env.FORCE_INSECURE_AUTH_COOKIE === "true";
+const authCookieDomain = process.env.AUTH_COOKIE_DOMAIN?.trim() || undefined;
 
 function signAdminPayload(payload: string) {
   return createHmac("sha256", `${authSecret}:admin-session`).update(payload).digest("base64url");
@@ -31,6 +32,7 @@ export async function createAdminSession(email: string) {
     secure: process.env.NODE_ENV === "production" && !forceInsecureAuthCookie,
     path: "/admin",
     maxAge: adminSessionMaxAgeSeconds,
+    ...(authCookieDomain ? { domain: authCookieDomain } : {}),
   });
 }
 
@@ -41,7 +43,7 @@ export async function getCurrentAdminEmail() {
 
   const [payload, signature] = token.split(".");
   if (!payload || !signature || !safeEqualText(signature, signAdminPayload(payload))) {
-    cookieStore.delete(adminCookieName);
+    await clearAdminSession();
     return null;
   }
 
@@ -51,13 +53,13 @@ export async function getCurrentAdminEmail() {
     const expiresAt = typeof parsed.expiresAt === "number" ? parsed.expiresAt : 0;
 
     if (!email || expiresAt <= Date.now() || !isAdminEmail(email)) {
-      cookieStore.delete(adminCookieName);
+      await clearAdminSession();
       return null;
     }
 
     return email;
   } catch {
-    cookieStore.delete(adminCookieName);
+    await clearAdminSession();
     return null;
   }
 }
@@ -71,5 +73,6 @@ export async function clearAdminSession() {
     secure: process.env.NODE_ENV === "production" && !forceInsecureAuthCookie,
     path: "/admin",
     maxAge: 0,
+    ...(authCookieDomain ? { domain: authCookieDomain } : {}),
   });
 }

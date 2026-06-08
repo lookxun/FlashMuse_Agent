@@ -2,6 +2,14 @@
 
 ## Current Snapshot
 
+### 2026-06-08 本轮追加：跨马来/阿里工作台共享登录 Cookie
+
+- 用户反馈工作台点击 Logo 从马来切到阿里后被跳回首页。确认不是同账号单会话导致：单会话删除只在 `createUserSession()` 新登录时触发，Logo 切换只是跨子域跳转，不会创建新 session。
+- 根因是前台登录 Cookie `flashmuse-session` 之前没有设置 `Domain`，属于 host-only Cookie。用户在 `main.venusface.com` 登录后，浏览器不会把该 Cookie 发给 `ali.venusface.com`，阿里工作台请求 `/api/auth/me` 无 Cookie，就按未登录跳首页。
+- 已新增线上环境变量 `AUTH_COOKIE_DOMAIN=.venusface.com`。`src/lib/auth.ts` 的用户 Cookie 和 `src/lib/admin-auth.ts` 的后台 Cookie 都会在设置/清除时带 `Domain=.venusface.com`。`/api/auth/me` 在识别到旧 host-only Cookie 仍有效时，会自动补写新的域名 Cookie，减少用户重新登录需求。
+- 已部署到马来并通过部署脚本同步阿里静态。验证：`POST https://main.venusface.com/api/auth/logout` 和 `POST https://api.venusface.com/api/auth/logout` 的 `Set-Cookie` 已带 `Domain=.venusface.com`。如果用户当前页面仍加载旧 JS 或旧 Cookie，刷新一次原工作台；如仍不行，重新登录一次即可拿到共享 Cookie。
+- 风险说明：`.venusface.com` 域 Cookie 会随请求发送到同主域下子域名，包括 `main/api/ali/static`，以及同主域下其它服务如 `dvideo`。Cookie 为 `HttpOnly + Secure + SameSite=Lax`，前端 JS 读不到；但其它子域服务的服务器侧可能在请求头中看到该 Cookie。当前为内部项目可接受。若未来正式对外并要求更严格隔离，应改为一次性跨域登录转移 token，而不是共享父域 Cookie。
+
 ### 2026-06-08 本轮追加：阿里 `_next/static` 自动同步脚本
 
 - 新增 `scripts/sync-flashmuse-next-static.sh`。该脚本用于在马来服务器主动同步 `.next/static/` 到阿里 `/var/www/flashmuse-static/_next/static/`，默认参数为：`FLASHMUSE_APP_ROOT=/var/www/flashmuse`、`ALI_SYNC_HOST=101.37.129.164`、`ALI_SYNC_SSH_KEY=/root/.ssh/flashmuse_to_ali_ed25519`、`ALI_NEXT_STATIC_DEST=/var/www/flashmuse-static/_next/static/`。脚本支持 `--dry-run` 和 `--clear-cache`，并用 `/tmp/flashmuse-next-static-sync.lock` 防止并发同步。
