@@ -14,6 +14,14 @@
 
 所以当前项目没有使用 MiniMax。
 
+## 2026-06-08 正式域名与 HTTPS 状态
+
+- 当前正式域名解析：`main.venusface.com -> 101.47.19.109`，`api.venusface.com -> 101.47.19.109`，`ali.venusface.com -> 101.37.129.164`，`static.venusface.com -> 101.37.129.164`。
+- 马来 `main/api` 已通过 certbot nginx 插件签发 Let's Encrypt 证书，证书路径 `/etc/letsencrypt/live/main.venusface.com/`，有效期到 `2026-09-06`。`https://main.venusface.com/` 和 `https://api.venusface.com/api/model-availability` 已测 200。
+- 阿里 `ali/static` 因 HTTP-01 验证被公网 `Server: Beaver` 403 拦截，已改用 DNS-01 手动 TXT 验证签发证书。证书名 `flashmuse-ali-static`，路径 `/etc/letsencrypt/live/flashmuse-ali-static/`，有效期到 `2026-09-06`。阿里 Nginx 已配置 443，服务器本机 SNI 测试 `ali/static/dvideo` 都 200。
+- 重要提醒：`flashmuse-ali-static` 是手动 DNS-01 证书，不会自动续期。以后要么到期前手动再走 TXT，要么接阿里云 DNS API 自动续期。
+- DNS API 自动续期后续做法：创建阿里云 RAM 专用 AccessKey，权限最小化到只管理 `venusface.com` 解析；在阿里服务器安装兼容 certbot 的 Aliyun DNS 插件；凭据放 `/root/.secrets/certbot/aliyun.ini`，权限 `600`；用 DNS 插件重新签 `ali/static`，再跑 `certbot renew --dry-run`。不要使用全局管理员 AccessKey，不要把 Key 写进交接文档或 Git。
+
 ## 2026-06-05 线上部署和环境变量
 
 - 第一版线上部署已完成，服务器资料目录：`E:\project\【2】server\马来西亚服务器`，IP：`101.47.19.109`，线上项目目录：`/var/www/flashmuse`。

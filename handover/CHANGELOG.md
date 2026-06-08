@@ -2,6 +2,101 @@
 
 ## Current Snapshot
 
+### 2026-06-08 本轮追加：正式域名 HTTPS、阿里 DNS-01 证书和自动续期提醒
+
+- 本轮继续完成应用层正式域名切换。马来 `/var/www/flashmuse/.env.local` 已备份为 `.env.local.bak.20260608-domain-switch`，并将 `NEXT_PUBLIC_UPLOAD_BASE_URL` 改为 `https://api.venusface.com`，`NEXT_PUBLIC_STATIC_BASE_URL` 改为 `https://static.venusface.com`，新增/设置 `NEXT_PUBLIC_PRIMARY_BASE_URL=https://main.venusface.com`，`UPLOAD_CORS_ORIGINS=https://main.venusface.com,https://ali.venusface.com,https://static.venusface.com`，`FORCE_INSECURE_AUTH_COOKIE=false`。
+- `src/components/chat-workbench.tsx` 已补正式域名逻辑：`main.venusface.com` 作为马来主站不应被阿里静态同步状态卡住，因此当前 host 等于 `NEXT_PUBLIC_PRIMARY_BASE_URL` 或 `NEXT_PUBLIC_UPLOAD_BASE_URL` 时，`/generated` 保持同源/马来源站；阿里入口才使用 `NEXT_PUBLIC_STATIC_BASE_URL=https://static.venusface.com`。同时 `toLocalGeneratedUrl()` 已把 `main/api/ali/static.venusface.com` 的 absolute generated URL 归一为相对路径。
+- 已在马来重新 `npm run build`，通过，仅剩既有 Turbopack tracing warning；已 `pm2 restart flashmuse --update-env`、`pm2 save`；已同步马来 `.next/static/` 到阿里 `/var/www/flashmuse-static/_next/static/`；已清理阿里 `/var/cache/nginx/flashmuse_static/*` 并 reload Nginx，避免首页缓存旧构建。
+- 验证通过：`https://main.venusface.com/` 返回 200，HTML 已使用 `https://static.venusface.com/home-assets/...`；`https://api.venusface.com/api/model-availability` 返回 200；`OPTIONS https://api.venusface.com/api/asset-upload-temp` 对 `Origin: https://main.venusface.com` 和 `Origin: https://ali.venusface.com` 均返回 204；阿里服务器本机 SNI 验证 `https://ali.venusface.com/` 返回新首页 200，`https://static.venusface.com/flashmuse-cache-health` 返回 200。
+- 正式域名 DNS 已确认：`main.venusface.com -> 101.47.19.109`，`api.venusface.com -> 101.47.19.109`，`ali.venusface.com -> 101.37.129.164`，`static.venusface.com -> 101.37.129.164`。
+- 马来服务器 `main.venusface.com`、`api.venusface.com` 已通过 certbot nginx 插件签发 Let's Encrypt 证书，证书路径 `/etc/letsencrypt/live/main.venusface.com/`，有效期至 `2026-09-06`。已验证 `https://main.venusface.com/` 返回 200，`https://api.venusface.com/api/model-availability` 返回 200，HTTP 会跳转 HTTPS。
+- certbot 曾把马来 HTTP 配置改成域名跳 HTTPS、其它返回 404，导致 `101.47.19.109` IP 入口可能坏掉。已新增 `/etc/nginx/conf.d/flashmuse-ip.conf`，并让 FlashMuse IP 站点成为 80 默认站，恢复 `http://101.47.19.109/` 返回 FlashMuse 首页，保证阿里继续能用 IP 回源马来。
+- 阿里 `ali.venusface.com`、`static.venusface.com` 起初 HTTP-01 验证失败，公网访问 HTTP 返回 `Server: Beaver` 403，Let’s Encrypt 无法访问 `.well-known/acme-challenge`。后改用 DNS-01 手动 TXT 验证，用户在 DNS 后台添加 `_acme-challenge.ali` 和 `_acme-challenge.static` 后成功签发证书。
+- 阿里证书名为 `flashmuse-ali-static`，包含 `ali.venusface.com static.venusface.com`，证书路径 `/etc/letsencrypt/live/flashmuse-ali-static/`，有效期至 `2026-09-06`。阿里 Nginx `/etc/nginx/sites-available/flashmuse-static-ip` 已新增 443 server，保留本地静态镜像、`/generated` 本地优先和动态反代马来的原规则。服务器本机 SNI 验证 `https://ali.venusface.com/`、`https://static.venusface.com/flashmuse-cache-health`、`https://dvideo.venusface.com/` 均 200。
+- 当前本机外网直连阿里 443 会 `Connection reset`，原 `dvideo.venusface.com` 也一样；服务器本机 HTTPS 路由正常。后续需要用用户浏览器或国内网络确认 `https://ali.venusface.com/` 和 `https://static.venusface.com/flashmuse-cache-health` 是否实际可打开。
+- 重要后续提醒：`flashmuse-ali-static` 是手动 DNS-01 证书，certbot 提示不会自动续期。以后到期前需要手动再走 TXT，或接入 DNS API 自动续期。自动续期建议以后再做：创建阿里云 RAM 最小权限 AccessKey，仅允许管理 `venusface.com` DNS；安装兼容 certbot 的 Aliyun DNS 插件；凭据放 `/root/.secrets/certbot/aliyun.ini` 并 `chmod 600`；用 DNS 插件重签证书并执行 `certbot renew --dry-run`。不要使用全局管理员 AccessKey，不要把 Key 写入文档、聊天或 Git。
+
+### 2026-06-08 本轮追加：马来主站优先、媒体处理完成后主动同步阿里
+
+- 用户明确确认后续架构原则：马来是主站，阿里是副站/国内加速节点。以后所有媒体、上传、生成、保存流程都必须先保证马来正确和速度，再保证阿里的同步、速度和正确性。马来直连访问不能因为阿里未同步而卡住；阿里入口访问才使用阿里静态资源并等待阿里同步确认。
+- 新增 `src/lib/ali-sync.ts`，让马来在媒体处理完成后主动 rsync 单组文件到阿里 `/var/www/flashmuse-static/generated`。马来服务器已生成专用 SSH key `/root/.ssh/flashmuse_to_ali_ed25519`，阿里已追加对应公钥到 `authorized_keys`。马来 `.env.local` 已新增 `ALI_SYNC_GENERATED_ENABLED=true`、`ALI_SYNC_HOST=101.37.129.164`、`ALI_SYNC_USER=root`、`ALI_SYNC_PORT=22`、`ALI_SYNC_SSH_KEY=/root/.ssh/flashmuse_to_ali_ed25519`、`ALI_SYNC_DEST_ROOT=/var/www/flashmuse-static/generated`。
+- 图片远程 URL 保存流程已改完整：供应商临时 URL 先显示；马来后台下载；保存层统一 JPG；马来立刻生成 256px JPG 缩略图；马来主动同步原图和缩略图到阿里；`/api/media-save-status` 返回 `localUrl / thumbnailUrl / aliSynced / aliSyncedAt / aliSyncError`；前端在阿里入口等 `aliSynced === true` 且阿里静态资源预加载成功后替换。旧 saved job 没有 `thumbnailUrl` 时，状态查询会懒补生成并写回 job。
+- GPT-5.4 Image 2、Gemini 等部分模型可能返回 `data/base64` 或 inline 图片，不走远程临时 URL 队列。此前 inline 图片保存为马来 JPG 后直接返回，没有生成缩略图，也没有主动同步阿里，导致阿里入口缩略图慢/裂图。本轮已补：inline 图片保存后会生成缩略图并主动同步阿里，然后再返回本地 URL。
+- 视频远程 URL 保存流程已改完整：供应商临时视频先显示；马来后台下载视频；马来抽 640px 封面；马来生成封面 256px 缩略图；马来主动同步视频、封面、封面缩略图到阿里；`/api/media-save-status` 返回 `localUrl / posterUrl / posterThumbnailUrl / aliSynced`。旧 saved 视频如缺 `posterThumbnailUrl` 会在状态查询时懒补。
+- 前端媒体显示逻辑已按“马来主站”调整。`getStaticMediaUrl()` 在当前浏览器访问马来 `101.47.19.109` 或当前 host 等于上传 API host 时，不再把 `/generated` 强制转成阿里静态地址，而是用马来本机 `/generated`。阿里入口或未来静态域名才走 `NEXT_PUBLIC_STATIC_BASE_URL`。`preloadSavedMediaBeforeReplace()` 也只在需要走阿里静态时等待 `aliSynced`。
+- 阿里原有每分钟 `/generated` cron 保留，定位改为兜底修复；实时替换链路不再依赖 cron。若主动同步失败，`aliSyncError` 会写入 job，后续状态查询会继续尝试同步。
+- 资产库上传卡 `6%` 已修。`6%` 是前端选择图片后写入槽位的初始进度，线上曾因为旧 JS 或上传启动依赖回调内临时数组导致真实 XHR 没启动。当前 `AssetUploadSlot` 带 `uploadFile`，有 effect 自动扫描 `uploading + uploadFile` 的槽位并启动临时上传。`uploadTemporaryAssetImage()` 会在拿 token 前显示 `8%`、拿到 token 后显示 `12%`、XHR 上传阶段最低 `15%`，并设置 token 请求 20 秒超时和 XHR 10 分钟超时。资产库和对话流上传链路现在同样走马来 `/api/asset-upload-temp`。
+- 专业图片/视频模式的提示词参考图显示已按用户要求修正。若提示词文本中已有 `@文件名`，图片小缩略图与 `@文件名` 显示在原文位置，且同一图不再额外重复；若没有 `@`，参考图小缩略图显示在提示词最前面。小图和悬停预览改为直接用原图静态地址，避免因缩略图未生成导致 18px 小图裂开。
+- 预览页下载按钮已修。此前马来入口打开预览页时下载按钮可能因为 `href` 被转成阿里静态跨域地址而被浏览器当作普通跳转。现在下载链接使用同源 `/generated/...`；`toLocalGeneratedUrl()` 已把 `http://101.47.19.109/generated/...` 和 `http://101.37.129.164/generated/...` 都归一为相对路径。
+- 对话流图片卡缩略图缺失兜底已补：卡片先加载静态缩略图，如果缩略图 `onError`，自动回退加载原图静态地址，避免 Gemini/GPT 旧图因缩略图缺失一直“正在加载中”。主链路仍要求马来保存时生成缩略图并主动同步阿里。
+- 域名结论：`.cn` 可以申请，不必须 `.com`。关键不是后缀，而是是否解析到中国大陆服务器；主站如果走阿里国内 IP，通常需要 ICP 备案。推荐正式结构为主域名或 `app.xxx.com` 指向阿里，`static.xxx.com` 指向阿里，`api.xxx.com` 指向马来。当前 `http://101.47.19.109/admin?tab=records` 是直连马来后台；阿里后台入口为 `http://101.37.129.164/admin`。
+- 部署验证：本地 `npx tsc --noEmit` 通过；相关 ESLint 无错误，仅既有 `chat-workbench.tsx` warning；马来 `npm run build` 通过，PM2 已重启并保存；马来主动推送 `/_next/static` 到阿里并 reload Nginx；马来主动推送 `/generated/sync-test/final-active-sync-check.txt` 到阿里验证成功，输出 `active-sync-ok`。
+
+### 2026-06-08 本轮追加：直传马来上传、临时文件确认提交、JPG 落盘和阿里静态缩略图
+
+- 本轮先排查用户反馈“首页很快，但资产页/对话流 generated 媒体很慢”。确认阿里 `/generated` 原图和视频本地命中，响应头 `X-FlashMuse-Generated-Source: local`。阿里升配后下载已正常：943KB JPG 约 `0.10s`，7.9MB PNG 约 `2.24s`，13.6MB 视频约 `2.51s`。因此后续慢点不再是阿里下载带宽本身。
+- 缩略图慢的根因是前端仍请求 `/api/media-thumbnail?url=...`，阿里该接口走反代缓存，首次 `MISS` 需要回源马来生成/读取，每张可达 `0.4s-2.7s`。已把 `getMediaThumbnailUrl()` 改为直接读静态缩略图：`/generated/.../image-thumbnails/...jpg`，由阿里本地 `/generated` 直接提供，避免换资产标签时大量 API 回源。
+- 阿里新增脚本 `/usr/local/bin/generate-flashmuse-thumbnails.sh`，用 ffmpeg 为 `/var/www/flashmuse-static/generated` 下图片补 256px JPG 缩略图。本轮手动运行生成 57 个缺失缩略图。脚本已追加进 `/usr/local/bin/sync-flashmuse-generated.sh`，每分钟从马来 rsync 后会自动补缩略图，日志 `/var/log/flashmuse-generated-thumbnails.log`。注意 `/api/media-thumbnail` 仍保留作为兼容接口，但前台主要缩略图不再依赖它。
+- 排查“不是之前已经改 JPG 了吗”：BytePlus Seedream 新图基本是 JPG；仍产生 PNG 的主要是 OpenRouter `openai/gpt-5.4-image-2`，少量 Gemini。通过工作区 JSON 统计，PNG 图片模型来源大致为 GPT-5.4 Image 2 23 张、Gemini 3.1 Flash 3 张、Gemini 3 Pro 1 张；文件系统还有约 50 个旧 PNG。`metadata.model` 很多旧流水为空，模型更多依赖 `message.generationMeta.model` 反查。
+- `src/lib/local-assets.ts` 已改：所有生成图 `saveGeneratedAsset(source, "image")` 统一转成 JPG 再落盘。data URL、远程 URL、OpenRouter base64 PNG、Gemini PNG 等都会用 `ffmpeg-static` 转成 `.jpg`。上传图也已改为 JPG 逻辑，但旧 PNG 不批量转换。上传图透明区域会变白底。
+- 对话流上传最初改成进输入框即上传后，发现卡在 95%。原因是旧上传路径 `/api/upload-image` 走阿里同源反代到马来，并且旧方案用 base64 JSON，浏览器上传完成后仍要等阿里把大请求体转发马来并等响应。实测旧链路：1MB `90.55s`、2MB `144.59s`、3MB `173.94s`、4MB `463.14s`、5MB 超过 `600s` 超时。
+- 改成 `multipart/form-data` 二进制后继续测试，发现直传马来 1MB 约 `3.24s`，走阿里入口 1MB 仍约 `61.99s`，说明真正瓶颈是阿里反代上传到马来这一跳，不是马来保存，也不是二进制本身。因此采用临时“方案 B”：同源拿 token，浏览器直传马来。
+- 新增 `src/lib/upload-token.ts`：使用 `AUTH_SECRET` HMAC 签发 5 分钟 token，payload 包含 `userId`、`purpose=upload-image`、`exp`。新增 `/api/upload-token`：前端在阿里同源下带正常 Cookie 请求该接口，拿到 token 后再直传马来。token 不建表，不依赖跨 IP Cookie。HTTP 阶段 token 明文传输，正式 HTTPS 后自然解决。
+- `/api/upload-image` 已支持 `multipart/form-data`、Bearer 上传 token、CORS 和 OPTIONS，同时保留旧 base64 JSON 兼容。没有有效登录态且没有有效 token 会 401。CORS 当前允许 `http://101.37.129.164`、`http://101.47.19.109`，以及 `UPLOAD_CORS_ORIGINS` 中的额外来源。马来 `.env.local` 已新增/设置 `NEXT_PUBLIC_UPLOAD_BASE_URL=http://101.47.19.109`，前端构建后会直传马来。
+- 新增 `/api/asset-upload-temp` 专门用于临时上传：`POST` 上传到马来 `.runtime/asset-upload-temp/users/{userId}/...jpg`，`PATCH` 将临时文件提交到正式 `/generated/users/{userId}/upload_image/*.jpg`，`DELETE` 删除临时文件，`OPTIONS` 支持 CORS 预检。相关本地资产函数：`saveTemporaryUploadedImageBuffer()`、`commitTemporaryUploadedImage()`、`deleteTemporaryUploadedImage()`。
+- 对话流上传图片最终流程：用户选择/粘贴/拖拽图片后，前端先用 canvas 转 JPG，质量 `0.95`、不缩尺寸、透明背景铺白底；输入框立即显示本地 dataURL 预览和圆形百分比；图片直传马来临时区；用户移除图片或点“清空输入框”会 abort 正在上传的 XHR 并删除临时文件；用户点击发送时，前端先 `PATCH /api/asset-upload-temp` 提交临时文件到正式目录，再把正式 URL 写入用户消息和后续生成链路。发送前如有上传失败图片，会提示删除重传。
+- 资产库上传图片最终流程：打开上传弹窗，选择图片后立即转 JPG 并直传马来临时区，卡片显示百分比遮罩；点取消或移除图片会删除临时文件；点“确定上传”才提交到正式 `upload_image` 目录并加入资产库。若有上传中或失败项，确定按钮禁用并提示。这样用户取消不会污染正式 `/generated`。
+- 输入框缩略图裂图问题已修：上传完成后输入框仍使用本地 `previewUrl` dataURL 显示，不再立刻切到阿里静态缩略图；真正发送时才提交并使用正式 `/generated/...` URL。`previewUrl` 不会持久化到 workspace，`getPersistableSessions()` 仍会清空 `uploadedImages`。
+- 关键改动文件：`src/components/chat-workbench.tsx`、`src/lib/local-assets.ts`、`src/lib/upload-token.ts`、`src/app/api/upload-token/route.ts`、`src/app/api/upload-image/route.ts`、`src/app/api/asset-upload-temp/route.ts`。阿里脚本：`/usr/local/bin/generate-flashmuse-thumbnails.sh`、`/usr/local/bin/sync-flashmuse-generated.sh`。
+- 本轮验证与部署：本地 `npx eslint` 目标文件无错误，仅既有 warning；`npx tsc --noEmit` 通过；马来多次 `npm run build` 通过，仅既有 Turbopack tracing warning；PM2 多次重启并 `pm2 save`；阿里 `/_next/static` 每次构建后已手动 rsync。马来 `/api/asset-upload-temp` CORS 预检 204，未授权上传 401。直传马来 token 上传实测：1MB `1.79s`、2MB `5.60s`、3MB `5.21s`、4MB `3.70s`、5MB `5.34s`。
+- 后续注意：当前“方案 B：阿里同源拿上传 token -> 浏览器直传马来 IP”只是 HTTP/IP 阶段临时方案。正式域名/HTTPS 后迁到“方案 D”建议为：`https://app.xxx.com` 指向阿里入口/应用，`https://api.xxx.com` 指向马来 API，`https://static.xxx.com` 指向阿里静态。届时将 `NEXT_PUBLIC_UPLOAD_BASE_URL` 改为 `https://api.xxx.com`，将 `NEXT_PUBLIC_STATIC_BASE_URL` 改为 `https://static.xxx.com` 或正式静态域名，把 CORS allowlist / `UPLOAD_CORS_ORIGINS` 收敛为 `https://app.xxx.com`，关闭 `FORCE_INSECURE_AUTH_COOKIE`。上传 token 机制建议继续保留，不必改成跨域 Cookie；HTTPS 后 token 不再明文传输，也方便未来接对象存储/CDN。
+- 后续注意：建议后续加 cron 清理 `.runtime/asset-upload-temp` 中超过 1 小时的残留临时文件。旧 PNG -> JPG 迁移未做，若做必须同步更新 workspace、ledger 和阿里镜像。
+
+### 2026-06-07 本轮追加：阿里本地静态镜像、/generated 增量同步、历史包瘦身和单会话懒加载
+
+- 本轮用户说明当前架构约束：马来服务器必须保留，因为部分模型不支持国内访问，国内完全部署也可能有合规风险；马来服务器由 BytePlus 提供，调用马来/BytePlus 模型更快。当前暂不接正式 CDN，域名后面再申请，先用 IP。基于此，最终采用“马来继续做源站和模型调用，阿里做国内入口、本地静态镜像和同源动态反代”的临时最优方案。
+- 本轮排查首页和工作台慢，确认首页慢的主因是阿里 `/_next/static` 曾经走反代缓存且受马来上游 `Cache-Control: no-store` 干扰；后来首页变快，但工作台仍慢，进一步确认动态历史加载和工作台 JS/CSS 首次回源仍是瓶颈。最终不再继续把阿里当“全站反代 CDN”，而改成阿里本地直接读取前端静态文件。
+- 阿里 Nginx 已改成本地静态镜像：`/_next/static/` 通过 `alias /var/www/flashmuse-static/_next/static/` 读取，`/home-assets/` 通过 `alias /var/www/flashmuse-static/home-assets/` 读取，均返回 `Cache-Control: public, max-age=2592000, immutable` 和 `Access-Control-Allow-Origin: *`。响应头可看到 `X-FlashMuse-Local-Static: next-static` 或 `home-assets`。
+- 阿里 `/generated/` 已改成本地优先、马来兜底。Nginx 使用 `root /var/www/flashmuse-static; try_files $uri @generated_proxy;`。本地命中响应头为 `X-FlashMuse-Generated-Source: local`；缺失回源马来时为 `X-FlashMuse-Generated-Source: malaysia-proxy`，并使用 `flashmuse_static` 缓存。已验证 `video_2_d7` 对应 `/generated/users/ID_636611/videos/1780780189077-2ac3cc31-a379-4a56-9448-84ba91cb88d3.mp4` 和封面都从阿里本地读取。
+- 阿里 `/generated` 已首次同步约 `511MB`。新增脚本 `/usr/local/bin/sync-flashmuse-generated.sh`，内容为 rsync 马来 `/var/www/flashmuse/public/generated/` 到阿里 `/var/www/flashmuse-static/generated/`。root crontab 每分钟执行一次，并用 `flock -n /tmp/flashmuse-generated-sync.lock` 防重入，日志写 `/var/log/flashmuse-generated-sync.log`。阿里生成了专用 key `/root/.ssh/flashmuse_malaysia_sync_ed25519`，公钥已加入马来 root `authorized_keys`。
+- 阿里 Nginx 已新增慢请求日志格式 `flashmuse_timing`，配置在 `/etc/nginx/conf.d/flashmuse-timing-log.conf`。`/var/log/nginx/flashmuse-static-access.log` 现在包含 `rt / urt / uct / uht / cache / gzip` 字段。后续如果用户反馈慢，优先看阿里 access log 中该请求的 `rt` 和 `urt`，判断是浏览器到阿里慢、阿里本地发送慢，还是阿里回源马来慢。
+- 阿里 Nginx 相关备份：`/etc/nginx/sites-available/flashmuse-static-ip.bak.20260607184458`、`/etc/nginx/sites-available/flashmuse-static-ip.gzip.bak.20260607191419`、`/etc/nginx/sites-available/flashmuse-static-ip.local-static.bak.20260607201518`。阿里旧项目 `dvideo.venusface.com` 未删除未改坏，仍按 Host 路由到 `127.0.0.1:3001`。
+- 本轮曾尝试开启阿里 gzip 动态压缩，确认 `/api/workspace-state` 从 489KB 压到约 37KB，但用户实际仍觉得慢。随后进一步排查发现慢点不只是传输，而是工作台首次拿完整历史和前端处理历史，因而继续做历史包瘦身和接口拆分。
+- 新增 `src/lib/workspace-state-cleanup.ts`，抽出工作区清理逻辑：`replaceLegacyMediaUrls()`、`compactWorkspaceState()`、`summarizeWorkspaceState()`、`mergeUnloadedSessions()`。它统一处理旧媒体 URL 替换、消息内重复媒体映射瘦身、summary 模式生成，以及未加载会话保存时与数据库原始完整会话合并。
+- `/api/workspace-state` 已支持 `?summary=1`。summary 模式只返回会话列表和当前 active 会话的完整消息，其它会话返回 `messages: []` 和 `messagesLoaded: false`。GET 会自动 compact workspace；PUT 会先 `mergeUnloadedSessions()`，确保未加载会话不会被前端空 messages 覆盖。
+- 新增 `/api/workspace-session?id=xxx`，用户点击某条历史对话时才返回该会话完整内容，并标记 `messagesLoaded: true`。该接口也会复用 compact 逻辑，如果发现数据库仍有未瘦身状态，会先写回瘦身后的 workspace。
+- 前端 `src/components/chat-workbench.tsx` 已改为初始并行请求 `/api/auth/me` 和 `/api/workspace-state?summary=1`。账号信息返回后先显示；当前会话和历史列表来自 summary；点击 `messagesLoaded:false` 的历史项时，调用 `/api/workspace-session?id=...` 补拉详情。
+- 历史未加载时的右侧 UI 已按用户要求改为白底加载态：不再显示“hi~把你的闪念跟我聊一聊！”新对话首页，而是显示 `加载中...0%` 起步，下面是约 `100px` 宽、`4px` 高、直角细蓝色进度条；进度随时间增长，最高到 `96%`，加载完成后替换为该会话内容。用户最初举例 `18%`，后明确要求能正确就从 `0%` 开始，已按 `0%` 起步实现。
+- 已对线上 `12424740@qq.com` 的 workspace 做一次手动瘦身。清理前数据库 `UserWorkspaceState.state` 为约 `503KB / 515413 bytes`；清理后约 `151KB / 154571 bytes`。主要移除很多消息里重复携带的 `videoPosters / imageDimensions / mediaSystemNames / imagePrompts / videoPrompts / videoDimensionsMap`，只保留当前消息实际媒体 URL 相关映射。后续保存和读取都会自动继续 compact。
+- 媒体预加载逻辑已优化。此前 `preloadSavedMediaBeforeReplace()` 对视频会 `fetch()` 完整 mp4 并 `arrayBuffer()`，例如 8MB 视频会占用几十秒传输，容易拖慢工作台。现在视频只用 `Range: bytes=0-0` 做可读性检查，浏览器日志为 `[media-preload] video-range`。图片仍预加载原图和缩略图。
+- 阿里本地静态同步注意事项：`/generated` 已有每分钟 cron 自动同步；但 `/_next/static` 目前不是自动的。每次马来执行 `npm run build` 后，都必须从马来 `/var/www/flashmuse/.next/static/` rsync 到阿里 `/var/www/flashmuse-static/_next/static/`，否则阿里会继续服务旧前端 JS。当前本轮每次构建后都已手动同步过最新静态 chunk。
+- 本轮部署和验证：多次本地 `npm run build` 通过；多次马来线上 `npm run build` 通过；PM2 多次重启并 `pm2 save`；阿里 Nginx 多次 `nginx -t` 通过并 reload。当前仍只有既有 Turbopack warning：`local-assets.ts` 动态 generated 路径、`ffmpeg-static` tracing / `next.config.ts` unexpected file in NFT list，均非阻断。
+- 本轮临时工具：为操作阿里密码 SSH，下载了 PuTTY `plink.exe` 和 `pscp.exe` 到 `C:\Users\ASUS\AppData\Local\Temp\opencode`。没有放进项目。阿里 SSH 指纹为 `SHA256:swmcHkH3QmccAOKZFuU7kLJ6RWCQmCbAAtfug4O8apA`。
+- 后续建议：如果历史和资产继续增大，下一步把资产库也拆成 `/api/workspace-assets`，初始 summary 只带资产数量和当前会话必要资产，点资产库时再加载完整 assets。另建议给阿里加 `sync-flashmuse-next-static.sh`，避免每次马来 build 后忘记同步 `/_next/static`。
+
+### 2026-06-07 本轮追加：阿里单节点缓存、媒体用户目录隔离、旧数据迁移、预加载策略和单会话登录
+
+- 本轮用户继续要求后续回答简单直接，并要求把当前对话框内所有重要改动写入交接文档和更新日志，方便下一个 AI 继续接手。当前本地代码与马来线上关键运行代码已多次通过 SHA256/构建确认同步，但这些改动尚未提交 GitHub。
+- 新增阿里服务器作为国内快速入口和单节点静态缓存。阿里服务器资料在 `E:\project\【2】server\阿里服务器`，IP 为 `101.37.129.164`，系统 Ubuntu 22.04，已有旧项目 `dvideo.venusface.com` 运行在 `127.0.0.1:3001`。本轮没有删除或改坏旧项目：本机 Nginx Host 路由验证 `Host: dvideo.venusface.com` 仍 301 到 HTTPS。阿里 IP 当前可作为 FlashMuse 国内入口访问：`http://101.37.129.164`。
+- 阿里 Nginx 新增 `flashmuse-static-ip` 默认站点：`/` 反代马来首页并缓存 30 分钟；`/home-assets/`、`/generated/`、`/_next/static/`、`/api/media-thumbnail` 走 `proxy_cache flashmuse_static`；`/api/*`、`/workspace`、`/admin` 等动态路径不缓存，实时反代马来，避免登录和生成接口缓存污染。阿里缓存目录为 `/var/cache/nginx/flashmuse_static`。
+- 阿里代理曾因 `proxy_hide_header Set-Cookie` 放在 server 级别导致登录成功后 Cookie 被吃掉、读账号信息又回到未登录；已修复为只在缓存首页 `/` 时隐藏 Cookie，动态接口放行 `Set-Cookie`。已用 `POST /api/auth/logout` 验证 `Set-Cookie: flashmuse-session=...` 能穿过阿里代理。
+- 马来服务器 `.env.local` 已配置 `NEXT_PUBLIC_STATIC_BASE_URL=http://101.37.129.164`，首页图片/视频/Logo 和工作台显示层里的 `/generated/...` 媒体会优先转成阿里地址显示。注意当前仍是 HTTP；后续有域名和 HTTPS 后，把该变量替换为 `https://static.xxx.com` 或正式静态域名即可。
+- 首页完整素材已上传到马来和阿里缓存链路，随后因原视频/图片太大已压缩为 `*-lite` 资源。首页 5 个轻量视频总量约 `5.8MB`，首屏图片约 `120KB-243KB/张`。首页逻辑为先显示图片轮播，后台原生 video preload；第一个视频可播放后立即切视频并写 `flashmuse-home-videos-ready-home-lite-carousel-20260605` 标记。若本地或浏览器旧缓存导致视频不切，需强刷或清对应 localStorage key。
+- 首页最初国内访问白屏约 11 秒，根因是首页 HTML 首包仍从马来跨境加载。现在阿里 IP 也代理并短缓存首页 HTML，因此国内入口应使用 `http://101.37.129.164`，马来入口 `http://101.47.19.109` 仍保留但国内首屏较慢。首页 `<main>` 也加了内联黑底，避免 CSS 未加载时白屏。
+- 图片缩略图规则已从最长边 `512px` 改为 `256px`，仍不裁切、不拉伸，输出 jpg，接口 `/api/media-thumbnail`。视频封面抽第一帧后最长边限制为 `640px`，质量参数 `q=3`。已清马来旧 `image-thumbnails` 和 `video-posters` 并重建线上视频封面；阿里缓存也清过一次。前端缩略图版本为 `thumb256-20260606`，视频封面版本为 `poster640-20260606`，避免浏览器继续用旧缓存。
+- 前端显示媒体 URL 已统一：旧 `http://101.47.19.109/generated/...` 会显示时归一为 `/generated/...`，再转为 `NEXT_PUBLIC_STATIC_BASE_URL + /generated/...`。预览页左侧主图/主视频、下载链接、悬停原图、对话流/资产库卡片、预览右侧缩略图、视频封面等都已优先走阿里静态地址。旧数据中的马来绝对地址不会再直接绕过阿里显示。
+- 媒体远程 URL 替换策略已改。生成成功后先显示供应商远程 URL；马来后台异步下载落盘；前端轮询 `/api/media-save-status` 发现保存成功后，不再立即替换为 `/generated/...`。现在必须先预加载阿里资源成功：图片需要阿里原图 + 256 缩略图；视频需要阿里原视频完整 `fetch` + 640 封面 + 封面 256 缩略图。全部成功后才替换 URL。若超时/失败，不替换，下一轮 12 秒轮询继续尝试，供应商临时 URL 继续显示。
+- 媒体预加载已加浏览器控制台日志，前缀 `[media-preload]`。会记录单个 image/fetch 的 `loaded/error/timeout`、耗时 `ms`、字节数、URL 尾部，以及整组媒体 `ready` 和 `results`。以后测试生成图/视频时打开浏览器控制台搜 `media-preload`，可据此调整图片 60 秒、视频原文件 180 秒、封面 60 秒的等待时间。
+- 用户媒体目录隔离已完成第一阶段并已迁移旧文件。新结构为 `/generated/users/{userId}/images/`、`videos/`、`upload_image/`、`files/`、`video-posters/`、`image-thumbnails/`。`local-assets.ts`、`media-save-queue.ts`、`video-poster.ts`、`media-thumbnail`、上传/生图/生视频 API、前端上传图识别、后台视频封面兜底都已兼容新旧路径。新上传文件也新增 `/api/upload-file`，会保存到 `/generated/users/{userId}/files/`，同时前端仍读取文本供 Agent 使用。
+- 旧媒体迁移脚本为 `scripts/migrate-generated-media-to-user-dirs.mjs`，默认 dry-run，`--apply` 执行。迁移策略是复制旧文件到用户目录，不删除旧文件；同步更新 `UserWorkspaceState.state` 和 `CreditLedger.metadata` 中的媒体 URL；旧路径仍保留兜底。脚本会备份到 `.runtime/migration-backups/`。本地迁移结果：`users=102`、`usersWithMappings=2`、`mappings=516`、`copiedFiles=516`、`missingFiles=0`、`updatedWorkspaces=2`、`updatedLedgers=286`。线上迁移结果：`users=3`、`usersWithMappings=3`、`mappings=79`、`copiedFiles=79`、`missingFiles=0`、`updatedWorkspaces=3`、`updatedLedgers=86`。
+- 已验证线上用户 `12424740@qq.com` 对应 `userId=ID_636611`。其新上传图、生图、视频、视频封面、缩略图都进入 `/generated/users/ID_636611/...`。示例：`/generated/users/ID_636611/upload_image/52ad11c22480ea20398e2103.png`、`/generated/users/ID_636611/videos/1780768012580-e5597961-4c92-4a54-9d13-0983f94235b1.mp4`。阿里访问这些新用户目录资源均返回 200 且带 `Cache-Control: public, max-age=2592000, immutable`。
+- Agent 自动生成模型策略已按用户要求重写。普通 Agent 生图优先 `Seedream 4.5`（BytePlus 开着优先 BytePlus，OpenRouter 开着用 OpenRouter）；高级 Agent 生图优先 `GPT-5.4 Image 2`；普通 Agent 生视频优先 `Seedance 2.0 Fast`；高级 Agent 生视频优先 `Seedance 2.0`。只要首选模型在后台开启且可连，就必须使用；首选不可用才用后台打开的备选模型。移除了“用户说高质量/多次不满意/4K 就自动切贵模型”的旧逻辑。
+- 后台 `系统设置 -> Agent 自动生成策略` 已重排：顶部为 `普通图片 / 高级图片 / 普通视频 / 高级视频`；下面为 `备选图片 / 备选视频`。左侧 OpenRouter 的其它图片/视频模型都显示为备选并有开关。服务端 `isAgentImageModelEnabled` / `isAgentVideoModelEnabled` 和 `/api/model-availability` 已按新 badge 兼容。
+- Agent 视频卡布局修复：用户最终要求 Agent 自动视频无论几个都固定一行两个，每个半宽；单视频也只占半行，但外层必须有 `w-full max-w-[1006px]`，避免之前被父级压到“半宽还更窄”。Agent 媒体提示词面板保持整行宽度。预览页主视频初始变小问题已修：主视频 `preload="metadata"` 且 `h-full w-full object-contain`，避免点播放后才知道尺寸、突然变大。
+- 登录策略已改为同账号单会话。`createUserSession()` 现在在事务里先 `deleteMany({ userId })` 删除旧 session，再创建新 session。后登录会踢掉前登录；旧电脑工作台已有每 5 秒 `/api/auth/me` 检查和 focus 检查，检测到失效会 `window.location.replace('/')` 回首页非登录状态。
+- 本地曾出现登录接口 404、前端显示“请求失败”，根因是本地 3000 的 Next dev 进程状态坏了，不是代码逻辑。已杀掉占用 3000 的旧进程并重启 `npm run dev` 后恢复。若本地再出现 `/api/auth/check-email` 404，优先重启本地 dev server。
+- 本轮多次本地 `npm run build` 和马来线上 `npm run build` 通过，仅剩既有 Turbopack tracing warning（`local-assets.ts` 动态 generated 路径、`ffmpeg-static`）。马来 PM2 多次重启并在线。注意本轮改动很多，本地 Git 工作区仍是 dirty，尚未提交/推送。
+
 ### 2026-06-05 本轮追加：马来西亚服务器部署、HTTP 登录修复、工作台兼容和前台细节
 
 - 用户要求先阅读交接文档和更新日志，并要求后续回答简单直接。本轮随后开始做公网部署。服务器资料目录为 `E:\project\【2】server\马来西亚服务器`，IP 为 `101.47.19.109`，SSH 私钥 `ByteplusVPS.pem`。最初本机私钥权限过宽，SSH 拒绝使用，已用 `icacls` 收紧权限后成功以 `root` 登录。

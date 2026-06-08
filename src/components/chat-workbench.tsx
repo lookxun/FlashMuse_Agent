@@ -204,6 +204,12 @@ type AssetUploadSlot = {
   fileName: string;
   originalFileName: string;
   dataUrl: string;
+  uploadFile?: File;
+  tempToken?: string;
+  tempUrl?: string;
+  uploadStatus?: UploadTransferStatus;
+  uploadProgress?: number;
+  error?: string;
   dimensions?: ImageDimensions;
   isDuplicate?: boolean;
   type: UploadableImageAssetType;
@@ -230,6 +236,7 @@ type ChatPayloadMessage = {
 };
 
 type UploadedDocumentStatus = "reading" | "ready" | "error";
+type UploadTransferStatus = "uploading" | "ready" | "error";
 
 type UploadedDocumentFile = {
   id: string;
@@ -237,6 +244,9 @@ type UploadedDocumentFile = {
   storageName: string;
   size: number;
   extension: string;
+  url?: string;
+  uploadStatus?: UploadTransferStatus;
+  uploadProgress?: number;
   status?: UploadedDocumentStatus;
   progress?: number;
   text?: string;
@@ -276,8 +286,14 @@ type UploadedImage = {
   id: string;
   name: string;
   url: string;
+  previewUrl?: string;
+  uploadFile?: File;
+  tempToken?: string;
   referenceName?: string;
   source?: "upload" | "asset";
+  uploadStatus?: UploadTransferStatus;
+  uploadProgress?: number;
+  error?: string;
 };
 
 type GenerationSettings = {
@@ -322,6 +338,7 @@ type WorkSession = {
   pendingRequest?: PendingGeneration | null;
   pendingRequests?: PendingGeneration[];
   usageSummary?: UsageSummary;
+  messagesLoaded?: boolean;
 };
 
 type WorkspaceStatePayload = {
@@ -511,6 +528,51 @@ const GENERIC_MEDIA_ERROR_MESSAGE = "服务器繁忙，请稍候再试.....";
 const legacyMediaUrlReplacements = new Map([
   ["/generated/videos/1780454968504-21fb484e-7894-45cb-b730-63c475ee71f2.mp4", "/generated/videos/1780454887939-f010e856-7f46-4fdc-9290-8dd58bd22d85.mp4"],
 ]);
+const staticAssetBaseUrl = (process.env.NEXT_PUBLIC_STATIC_BASE_URL ?? "").replace(/\/$/, "");
+const uploadApiBaseUrl = (process.env.NEXT_PUBLIC_UPLOAD_BASE_URL ?? "").replace(/\/$/, "");
+const primaryAppBaseUrl = (process.env.NEXT_PUBLIC_PRIMARY_BASE_URL ?? "").replace(/\/$/, "");
+const mediaThumbnailVersion = "thumb256-20260606";
+const videoPosterVersion = "poster640-20260606";
+
+function toLocalGeneratedUrl(url: string) {
+  if (/^https?:\/\/(101\.47\.19\.109|101\.37\.129\.164|main\.venusface\.com|api\.venusface\.com|ali\.venusface\.com|static\.venusface\.com)\/generated\//i.test(url)) {
+    return url.replace(/^https?:\/\/(101\.47\.19\.109|101\.37\.129\.164|main\.venusface\.com|api\.venusface\.com|ali\.venusface\.com|static\.venusface\.com)/i, "");
+  }
+  return url;
+}
+
+function getDownloadUrl(url: string) {
+  return toLocalGeneratedUrl(url);
+}
+
+function withMediaVersion(url: string, version?: string) {
+  if (!version) return url;
+  return `${url}${url.includes("?") ? "&" : "?"}v=${version}`;
+}
+
+function shouldUseStaticAssetBaseUrl() {
+  if (!staticAssetBaseUrl || typeof window === "undefined") return Boolean(staticAssetBaseUrl);
+
+  try {
+    const currentHost = window.location.host;
+    const staticHost = new URL(staticAssetBaseUrl).host;
+    const uploadHost = uploadApiBaseUrl ? new URL(uploadApiBaseUrl).host : "";
+    const primaryHost = primaryAppBaseUrl ? new URL(primaryAppBaseUrl).host : "";
+    if (currentHost === staticHost || currentHost === uploadHost || currentHost === primaryHost || window.location.hostname === "101.47.19.109") return false;
+  } catch {
+    return Boolean(staticAssetBaseUrl);
+  }
+
+  return true;
+}
+
+function getStaticMediaUrl(url: string | undefined, version?: string) {
+  if (!url) return url;
+  const normalizedUrl = toLocalGeneratedUrl(url);
+  if (!shouldUseStaticAssetBaseUrl() || !normalizedUrl.startsWith("/generated/")) return withMediaVersion(normalizedUrl, version);
+  return withMediaVersion(`${staticAssetBaseUrl}${normalizedUrl}`, version);
+}
+
 function stripErrorCodePrefix(value: string) {
   return value.replace(/^\(B_\d+\)\s*/, "").trim();
 }
@@ -532,10 +594,110 @@ function isGenericMediaReason(value: string | undefined) {
 type MediaSaveStatusJob = {
   remoteUrl: string;
   localUrl?: string;
+  thumbnailUrl?: string;
   posterUrl?: string;
+  posterThumbnailUrl?: string;
+  aliSynced?: boolean;
+  type?: "image" | "video";
   status: "pending" | "downloading" | "saved" | "failed" | "expired";
   dimensions?: ImageDimensions;
 };
+
+function preloadImageUrl(url: string | undefined, timeoutMs = 30_000) {
+  if (!url || typeof window === "undefined") return Promise.resolve(true);
+  const startedAt = performance.now();
+  let settled = false;
+  return new Promise<boolean>((resolve) => {
+    const image = new window.Image();
+    const finish = (ok: boolean, status: "loaded" | "error" | "timeout") => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      console.info("[media-preload] image", { status, ok, ms: Math.round(performance.now() - startedAt), url: getMediaDebugTail(url), timeoutMs });
+      resolve(ok);
+    };
+    const timer = window.setTimeout(() => finish(false, "timeout"), timeoutMs);
+    image.onload = () => {
+      finish(true, "loaded");
+    };
+    image.onerror = () => {
+      finish(false, "error");
+    };
+    image.src = url;
+  });
+}
+
+async function preloadFetchUrl(url: string | undefined, timeoutMs = 180_000) {
+  if (!url || typeof window === "undefined") return true;
+  const startedAt = performance.now();
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { cache: "force-cache", signal: controller.signal });
+    if (!response.ok) {
+      console.info("[media-preload] fetch", { status: "http-error", ok: false, httpStatus: response.status, ms: Math.round(performance.now() - startedAt), url: getMediaDebugTail(url), timeoutMs });
+      return false;
+    }
+    const buffer = await response.arrayBuffer();
+    console.info("[media-preload] fetch", { status: "loaded", ok: true, bytes: buffer.byteLength, ms: Math.round(performance.now() - startedAt), url: getMediaDebugTail(url), timeoutMs });
+    return true;
+  } catch (error) {
+    console.info("[media-preload] fetch", { status: error instanceof DOMException && error.name === "AbortError" ? "timeout" : "error", ok: false, ms: Math.round(performance.now() - startedAt), url: getMediaDebugTail(url), timeoutMs });
+    return false;
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+async function preloadVideoUrl(url: string | undefined, timeoutMs = 30_000) {
+  if (!url || typeof window === "undefined") return true;
+  const startedAt = performance.now();
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { cache: "force-cache", headers: { Range: "bytes=0-0" }, signal: controller.signal });
+    const ok = response.ok || response.status === 206;
+    console.info("[media-preload] video-range", { status: ok ? "loaded" : "http-error", ok, httpStatus: response.status, ms: Math.round(performance.now() - startedAt), url: getMediaDebugTail(url), timeoutMs });
+    return ok;
+  } catch (error) {
+    console.info("[media-preload] video-range", { status: error instanceof DOMException && error.name === "AbortError" ? "timeout" : "error", ok: false, ms: Math.round(performance.now() - startedAt), url: getMediaDebugTail(url), timeoutMs });
+    return false;
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+async function preloadSavedMediaBeforeReplace(job: MediaSaveStatusJob) {
+  if (!job.localUrl) return false;
+  if (shouldUseStaticAssetBaseUrl() && job.aliSynced !== true) return false;
+  const isVideo = job.type === "video" || /\.(mp4|webm|mov)(\?|#|$)/i.test(job.localUrl);
+  const startedAt = performance.now();
+  const preloadResults = isVideo
+    ? await Promise.all([
+        preloadVideoUrl(getStaticMediaUrl(job.localUrl), 30_000),
+        preloadImageUrl(getStaticMediaUrl(job.posterUrl, videoPosterVersion), 60_000),
+        preloadImageUrl(getStaticMediaUrl(job.posterThumbnailUrl, mediaThumbnailVersion) ?? (job.posterUrl ? getMediaThumbnailUrl(job.posterUrl) : undefined), 60_000),
+      ])
+    : await Promise.all([
+        preloadImageUrl(getStaticMediaUrl(job.localUrl), 60_000),
+        preloadImageUrl(getStaticMediaUrl(job.thumbnailUrl, mediaThumbnailVersion) ?? getMediaThumbnailUrl(job.localUrl), 60_000),
+      ]);
+  const ready = preloadResults.every(Boolean);
+  console.info("[media-preload] media", { type: isVideo ? "video" : "image", ready, ms: Math.round(performance.now() - startedAt), remoteUrl: getMediaDebugTail(job.remoteUrl), localUrl: getMediaDebugTail(job.localUrl), posterUrl: getMediaDebugTail(job.posterUrl), results: preloadResults });
+  return ready;
+}
+
+function getMediaDebugTail(url: string | undefined) {
+  if (!url) return undefined;
+  try {
+    const parsed = /^https?:\/\//i.test(url) ? new URL(url) : undefined;
+    const path = parsed?.pathname ?? url.split("?")[0].split("#")[0];
+    const tail = path.split("/").filter(Boolean).slice(-3).join("/");
+    return parsed ? `${parsed.host}/${tail}` : tail;
+  } catch {
+    return url.slice(-120);
+  }
+}
 
 function isRemoteMediaUrl(url: string | undefined): url is string {
   return typeof url === "string" && /^https?:\/\//i.test(url);
@@ -727,8 +889,13 @@ function isMentionGroupAsset(asset: AssetItem, groupType: MentionAssetGroupType)
 }
 
 function getMediaThumbnailUrl(url: string) {
-  if (!url.startsWith("/generated/")) return url;
-  return `/api/media-thumbnail?url=${encodeURIComponent(url)}`;
+  const normalizedUrl = toLocalGeneratedUrl(url);
+  if (!normalizedUrl.startsWith("/generated/")) return normalizedUrl;
+  const cleanUrl = normalizedUrl.split("?")[0].split("#")[0];
+  const userPathMatch = cleanUrl.match(/^\/generated\/users\/([^/]+)\/(.+)$/);
+  const thumbnailRelativePath = (userPathMatch ? userPathMatch[2] : cleanUrl.replace(/^\/generated\//, "")).replace(/\.[^.\/\\]+$/, ".jpg");
+  const thumbnailUrl = userPathMatch ? `/generated/users/${userPathMatch[1]}/image-thumbnails/${thumbnailRelativePath}` : `/generated/image-thumbnails/${thumbnailRelativePath}`;
+  return getStaticMediaUrl(thumbnailUrl, mediaThumbnailVersion) ?? thumbnailUrl;
 }
 
 type HoverImagePreviewPosition = {
@@ -769,10 +936,11 @@ function HoverImagePreview({ src, alt, wrapperClassName = "inline-block", childr
     pointerRef.current = { x: clientX, y: clientY };
     setPosition(getHoverImagePreviewPosition(clientX, clientY, size));
   };
+  const displaySrc = getStaticMediaUrl(src) ?? src;
   const preview = position && typeof document !== "undefined" ? createPortal(
     <span className="pointer-events-none fixed z-[9999] flex items-center justify-center rounded-[10px] border border-white/70 bg-white p-1 shadow-[0_18px_60px_rgba(0,0,0,0.32)]" style={{ left: position.left, top: position.top, width: position.width + 8, height: position.height + 8 }}>
       {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img src={src} alt={alt} className="block object-contain" style={{ width: position.width, height: position.height }} onLoad={(event) => {
+      <img src={displaySrc} alt={alt} className="block object-contain" style={{ width: position.width, height: position.height }} onLoad={(event) => {
         const image = event.currentTarget;
         if (!image.naturalWidth || !image.naturalHeight) return;
         const nextSize = { width: image.naturalWidth, height: image.naturalHeight };
@@ -1261,30 +1429,22 @@ function getFeedbackDissatisfactionCount(sessionId: string, mode: "image" | "vid
     .length;
 }
 
-function getAvailableGenerationModel(generationMode: "image" | "video", desiredModel: ModelName, enabledModels?: Record<"image" | "video", string[]>) {
+function getPreferredAvailableGenerationModel(generationMode: "image" | "video", desiredModels: ModelName[], enabledModels?: Record<"image" | "video", string[]>) {
   const availableModels = enabledModels?.[generationMode] ?? [];
-  if (availableModels.length === 0 || availableModels.includes(desiredModel)) return desiredModel;
-  return availableModels[0] as ModelName;
+  if (availableModels.length === 0) return desiredModels[0];
+  const preferredModel = desiredModels.find((model) => availableModels.includes(model));
+  return (preferredModel ?? availableModels[0]) as ModelName;
 }
 
 function getAgentGenerationModel(agentTier: AgentModelTier, generationMode: WorkMode, selectedGenerationModels: Record<"image" | "video", ModelName>, options?: { sourceText?: string; session?: WorkSession; feedbackLogs?: FeedbackLogEntry[]; enabledModels?: Record<"image" | "video", string[]> }) {
   if (generationMode === "image") {
-    if (agentTier === "normal") return getAvailableGenerationModel("image", DEFAULT_IMAGE_MODEL, options?.enabledModels);
-    const dissatisfactionCount = getRecentUserDissatisfactionCount(options?.session, "image") + getFeedbackDissatisfactionCount(options?.session?.id ?? "", "image", options?.feedbackLogs ?? []);
-    const slowCount = getRecentSlowComplaintCount(options?.session, "image");
-    if (dissatisfactionCount >= 2) return getAvailableGenerationModel("image", "openai/gpt-5.4-image-2", options?.enabledModels);
-    if (slowCount >= 2) return getAvailableGenerationModel("image", "google/gemini-3.1-flash-image-preview", options?.enabledModels);
-    return getAvailableGenerationModel("image", selectedGenerationModels.image, options?.enabledModels);
+    if (agentTier === "normal") return getPreferredAvailableGenerationModel("image", ["byteplus:conversation-image.seedream-4-5", "bytedance-seed/seedream-4.5"], options?.enabledModels);
+    return getPreferredAvailableGenerationModel("image", ["openai/gpt-5.4-image-2"], options?.enabledModels);
   }
 
   if (generationMode === "video") {
-    if (isExplicit4KVideoRequest(options?.sourceText ?? "")) return getAvailableGenerationModel("video", "google/veo-3.1", options?.enabledModels);
-    if (agentTier === "normal") return getAvailableGenerationModel("video", DEFAULT_VIDEO_MODEL, options?.enabledModels);
-    const dissatisfactionCount = getRecentUserDissatisfactionCount(options?.session, "video") + getFeedbackDissatisfactionCount(options?.session?.id ?? "", "video", options?.feedbackLogs ?? []);
-    const slowCount = getRecentSlowComplaintCount(options?.session, "video");
-    if (dissatisfactionCount >= 2) return getAvailableGenerationModel("video", "bytedance/seedance-2.0", options?.enabledModels);
-    if (slowCount >= 2) return getAvailableGenerationModel("video", "bytedance/seedance-2.0-fast", options?.enabledModels);
-    return getAvailableGenerationModel("video", selectedGenerationModels.video, options?.enabledModels);
+    if (agentTier === "normal") return getPreferredAvailableGenerationModel("video", ["byteplus:video.seedance-2-0-fast", "bytedance/seedance-2.0-fast"], options?.enabledModels);
+    return getPreferredAvailableGenerationModel("video", ["byteplus:video.seedance-2-0", "bytedance/seedance-2.0"], options?.enabledModels);
   }
 
   return agentTier === "advanced" ? ADVANCED_CHAT_MODEL : DEFAULT_CHAT_MODEL;
@@ -1564,11 +1724,15 @@ function getSessionMediaCounts(session?: WorkSession | null) {
 }
 
 function getLocalVideoPosterUrl(url: string | undefined) {
-  if (!url?.startsWith("/generated/videos/")) return undefined;
+  if (!url?.startsWith("/generated/")) return undefined;
+  const userVideoMatch = url.match(/^\/generated\/users\/([^/]+)\/videos\//);
+  const isLegacyVideo = url.startsWith("/generated/videos/");
+  if (!userVideoMatch && !isLegacyVideo) return undefined;
   const fileName = url.split("/").pop()?.split("?")[0];
   if (!fileName) return undefined;
   const baseName = fileName.replace(/\.(mp4|webm|mov)$/i, "");
-  return baseName === fileName ? undefined : `/generated/video-posters/${baseName}.jpg`;
+  if (baseName === fileName) return undefined;
+  return userVideoMatch ? `/generated/users/${userVideoMatch[1]}/video-posters/${baseName}.jpg` : `/generated/video-posters/${baseName}.jpg`;
 }
 
 function getVideoPosterForMessage(message: Message, url: string) {
@@ -2076,7 +2240,7 @@ function AgentMediaPromptPanel({ items, pageIndex, expanded, onToggle, onUseProm
   ) : null;
 
   return (
-    <div className="mt-2 max-w-[1006px]">
+    <div className="mt-2 w-full max-w-[1006px]">
       <button type="button" onClick={onToggle} className={`flex w-full items-center gap-3 px-3 py-2 text-left transition ${expanded ? "rounded-t-[8px] border-b border-[#e4e4e4] bg-[#f3f3f3] text-[#333333] ring-1 ring-[#e7e7e7] hover:bg-[#ededed]" : "rounded-[8px] bg-[#f8f8f8] text-[#9a9a9a] ring-1 ring-[#f0f0f0] hover:bg-[#f4f4f4]"}`} aria-expanded={expanded}>
         {expanded ? (
           <span className="inline-flex shrink-0 items-center gap-1.5 text-[12px] font-medium leading-none text-[#777777]"><RiInformationLine className="h-3.5 w-3.5" aria-hidden="true" />{item.label.replace(/\d+$/, "")}</span>
@@ -2123,6 +2287,15 @@ function MediaPromptBlock({ message, references, onUsePrompt, copyState, display
   const displayResolution = mode === "image" ? (getImageResolutionFromDimensions(actualDimensions) ?? resolution) : (getVideoResolutionFromDimensions(actualDimensions ?? dimensions) ?? resolution);
   const qualityBadgeLabel = mode === "image" ? getImageQualityBadgeLabel(displayResolution) : "";
   const promptReferences = references ?? message.imageReferences;
+  const shouldShowReferenceThumbnails = !meta?.agentGenerated && (mode === "image" || mode === "video");
+  const mentionedReferenceUrls = new Set(
+    message.content
+      .split(/(@[^@\s，。！？；;、]+)/g)
+      .filter((part) => part.startsWith("@"))
+      .map((part) => promptReferences?.find((reference) => reference.name === part.slice(1))?.url)
+      .filter((url): url is string => Boolean(url))
+      .map(normalizeMediaUrlForMatch),
+  );
   const renderCopyButton = (variant: "inline" | "overlay") => (
     <button
       type="button"
@@ -2179,6 +2352,7 @@ function MediaPromptBlock({ message, references, onUsePrompt, copyState, display
     <div className="relative mb-0 max-w-[1006px]">
       <div className="group/prompt relative">
         <div ref={promptRef} className="relative max-h-[56px] overflow-hidden text-[14px] leading-7 text-[#111111]">
+          {shouldShowReferenceThumbnails ? <InlineReferenceThumbnails references={promptReferences} excludeUrls={mentionedReferenceUrls} /> : null}
           <ReferencedTextContent content={message.content} references={promptReferences} />
           {inlineCopyButton}
           {shouldShowPromptOverlay ? <div className="pointer-events-none absolute bottom-0 right-0 h-7 w-16 bg-gradient-to-r from-white/0 via-white/90 to-white" /> : null}
@@ -2186,7 +2360,7 @@ function MediaPromptBlock({ message, references, onUsePrompt, copyState, display
         {shouldShowPromptOverlay ? (
           <div className="pointer-events-none absolute -inset-x-4 -top-3 z-30 max-h-[250px] rounded-[12px] bg-white/88 px-4 pb-3 pt-3 text-[14px] leading-7 text-[#111111] opacity-0 shadow-[0_18px_36px_rgba(0,0,0,0.08)] backdrop-blur-[10px] transition-opacity delay-500 duration-200 group-hover/prompt:pointer-events-auto group-hover/prompt:opacity-100 group-hover/prompt:delay-0">
             {blockCopyButton}
-            <div className="max-h-[198px] overflow-y-auto pr-2"><ReferencedTextContent content={message.content} references={promptReferences} /></div>
+            <div className="max-h-[198px] overflow-y-auto pr-2">{shouldShowReferenceThumbnails ? <InlineReferenceThumbnails references={promptReferences} excludeUrls={mentionedReferenceUrls} /> : null}<ReferencedTextContent content={message.content} references={promptReferences} /></div>
           </div>
         ) : null}
       </div>
@@ -2918,7 +3092,7 @@ function getMediaSystemName(message: Message, url: string, fallbackName: string)
 }
 
 function isUploadedAssetUrl(url: string) {
-  return /\/generated\/upload_image\//.test(url);
+  return /\/generated\/(?:users\/[^/]+\/)?upload_image\//.test(url);
 }
 
 function isUploadedAsset(asset: Pick<AssetItem, "url" | "sourcePrompt">) {
@@ -3172,6 +3346,187 @@ function readFileAsDataUrl(file: File) {
     reader.onerror = () => reject(reader.error ?? new Error("图片读取失败"));
     reader.readAsDataURL(file);
   });
+}
+
+function readBlobAsDataUrl(blob: Blob) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "");
+    reader.onerror = () => reject(reader.error ?? new Error("图片读取失败"));
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function convertImageFileToJpeg(file: File, quality = 0.95) {
+  const sourceUrl = URL.createObjectURL(file);
+  try {
+    const image = new window.Image();
+    image.decoding = "async";
+    const loaded = new Promise<void>((resolve, reject) => {
+      image.onload = () => resolve();
+      image.onerror = () => reject(new Error("图片读取失败"));
+    });
+    image.src = sourceUrl;
+    await loaded;
+
+    const canvas = document.createElement("canvas");
+    canvas.width = image.naturalWidth || image.width;
+    canvas.height = image.naturalHeight || image.height;
+    const context = canvas.getContext("2d");
+    if (!context || !canvas.width || !canvas.height) throw new Error("图片转换失败");
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(image, 0, 0);
+
+    const blob = await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob((result) => result ? resolve(result) : reject(new Error("图片转换失败")), "image/jpeg", quality);
+    });
+    const baseName = (file.name || "upload").replace(/\.[^.]+$/, "") || "upload";
+    const jpegFile = new File([blob], `${baseName}.jpg`, { type: "image/jpeg", lastModified: file.lastModified || Date.now() });
+    const dataUrl = await readBlobAsDataUrl(blob);
+    return { file: jpegFile, dataUrl };
+  } finally {
+    URL.revokeObjectURL(sourceUrl);
+  }
+}
+
+function uploadJsonWithProgress<T>(url: string, payload: unknown, onProgress?: (progress: number) => void) {
+  return new Promise<T>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("POST", url);
+    xhr.setRequestHeader("Content-Type", "application/json");
+    xhr.upload.onprogress = (event) => {
+      if (!event.lengthComputable) return;
+      onProgress?.(Math.min(95, Math.max(8, Math.round((event.loaded / event.total) * 95))));
+    };
+    xhr.onload = () => {
+      let data: T & { error?: string };
+      try {
+        data = JSON.parse(xhr.responseText || "{}") as T & { error?: string };
+      } catch {
+        reject(new Error("上传失败"));
+        return;
+      }
+      if (xhr.status < 200 || xhr.status >= 300) {
+        reject(new Error(data.error || "上传失败"));
+        return;
+      }
+      onProgress?.(100);
+      resolve(data);
+    };
+    xhr.onerror = () => reject(new Error("上传失败"));
+    xhr.send(JSON.stringify(payload));
+  });
+}
+
+function uploadFormDataWithProgress<T>(url: string, formData: FormData, onProgress?: (progress: number) => void, token?: string, signal?: AbortSignal) {
+  return new Promise<T>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    let settled = false;
+    const rejectOnce = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    };
+    const resolveOnce = (data: T) => {
+      if (settled) return;
+      settled = true;
+      resolve(data);
+    };
+    const abortUpload = () => {
+      xhr.abort();
+      rejectOnce(new Error("上传已取消"));
+    };
+    xhr.open("POST", url);
+    xhr.timeout = 10 * 60 * 1000;
+    if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+    xhr.upload.onprogress = (event) => {
+      if (!event.lengthComputable) return;
+      onProgress?.(Math.min(95, Math.max(15, Math.round((event.loaded / event.total) * 95))));
+    };
+    xhr.onload = () => {
+      let data: T & { error?: string };
+      try {
+        data = JSON.parse(xhr.responseText || "{}") as T & { error?: string };
+      } catch {
+        rejectOnce(new Error("上传失败"));
+        return;
+      }
+      if (xhr.status < 200 || xhr.status >= 300) {
+        rejectOnce(new Error(data.error || "上传失败"));
+        return;
+      }
+      onProgress?.(100);
+      resolveOnce(data);
+    };
+    xhr.onabort = () => rejectOnce(new Error("上传已取消"));
+    xhr.onerror = () => rejectOnce(new Error("上传失败，请检查网络或跨域配置"));
+    xhr.ontimeout = () => rejectOnce(new Error("上传超时，请重试"));
+    signal?.addEventListener("abort", abortUpload, { once: true });
+    xhr.send(formData);
+  });
+}
+
+async function getDirectUploadToken() {
+  if (!uploadApiBaseUrl) return "";
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), 20 * 1000);
+  try {
+    const tokenResponse = await fetch("/api/upload-token", { method: "POST", cache: "no-store", signal: controller.signal });
+    const tokenData = await readJson<{ token?: string }>(tokenResponse);
+    if (!tokenData.token) throw new Error("上传授权失败");
+    return tokenData.token;
+  } catch (error) {
+    if (controller.signal.aborted) throw new Error("上传授权超时，请重试");
+    throw error;
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+async function uploadDocumentFileAsset(file: File, onProgress?: (progress: number) => void) {
+  onProgress?.(6);
+  const dataUrl = await readFileAsDataUrl(file);
+  onProgress?.(12);
+  const data = await uploadJsonWithProgress<{ url?: string; error?: string }>("/api/upload-file", { file: dataUrl, name: file.name }, onProgress);
+  if (!data.url) throw new Error(data.error || "文件上传失败");
+  return data.url;
+}
+
+async function uploadTemporaryAssetImage(file: File, onProgress?: (progress: number) => void, signal?: AbortSignal) {
+  const formData = new FormData();
+  formData.append("image", file, file.name);
+  const uploadUrl = uploadApiBaseUrl ? `${uploadApiBaseUrl}/api/asset-upload-temp` : "/api/asset-upload-temp";
+  onProgress?.(8);
+  const token = await getDirectUploadToken();
+  onProgress?.(12);
+  const data = await uploadFormDataWithProgress<{ token?: string; error?: string }>(uploadUrl, formData, onProgress, token, signal);
+  if (!data.token) throw new Error(data.error || "图片上传失败");
+  return data.token;
+}
+
+async function commitTemporaryAssetImage(tempToken: string) {
+  const uploadUrl = uploadApiBaseUrl ? `${uploadApiBaseUrl}/api/asset-upload-temp` : "/api/asset-upload-temp";
+  const token = await getDirectUploadToken();
+  const response = await fetch(uploadUrl, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    body: JSON.stringify({ token: tempToken }),
+  });
+  const data = await readJson<{ url?: string }>(response);
+  if (!data.url) throw new Error("图片保存失败");
+  return data.url;
+}
+
+async function deleteTemporaryAssetImages(tempTokens: string[]) {
+  if (tempTokens.length === 0) return;
+  const uploadUrl = uploadApiBaseUrl ? `${uploadApiBaseUrl}/api/asset-upload-temp` : "/api/asset-upload-temp";
+  const token = await getDirectUploadToken().catch(() => "");
+  await fetch(uploadUrl, {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    body: JSON.stringify({ tokens: tempTokens }),
+  }).catch(() => undefined);
 }
 
 function getDataUrlImageDimensions(dataUrl: string) {
@@ -4233,9 +4588,9 @@ function ReferencedTextContent({ content, references }: { content: string; refer
 
         return (
           <span key={`${part}-${index}`} className="mx-0.5 inline-flex items-center gap-1 align-[-3px] leading-none text-[#4f7cff]">
-            <HoverImagePreview src={reference.url} alt={reference.name} wrapperClassName="inline-flex h-[18px] w-[18px] shrink-0 items-center align-middle">
+            <HoverImagePreview src={getStaticMediaUrl(reference.url) ?? reference.url} alt={reference.name} wrapperClassName="inline-flex h-[18px] w-[18px] shrink-0 items-center align-middle">
               {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={getMediaThumbnailUrl(reference.url)} alt={reference.name} className="block h-[18px] w-[18px] rounded object-cover" />
+              <img src={getStaticMediaUrl(reference.url) ?? reference.url} alt={reference.name} className="block h-[18px] w-[18px] rounded object-cover" />
             </HoverImagePreview>
             <span className="leading-[18px]">{part}</span>
           </span>
@@ -4247,6 +4602,28 @@ function ReferencedTextContent({ content, references }: { content: string; refer
 
 function UserMessageContent({ content, references }: { content: string; references?: ImageReference[] }) {
   return <ReferencedTextContent content={content} references={references} />;
+}
+
+function InlineReferenceThumbnails({ references, excludeUrls }: { references?: ImageReference[]; excludeUrls?: Set<string> }) {
+  const uniqueReferences: ImageReference[] = [];
+  (references ?? []).forEach((reference) => {
+    const normalizedUrl = normalizeMediaUrlForMatch(reference.url);
+    if (!reference.url || excludeUrls?.has(normalizedUrl) || uniqueReferences.some((item) => normalizeMediaUrlForMatch(item.url) === normalizedUrl)) return;
+    uniqueReferences.push(reference);
+  });
+
+  if (uniqueReferences.length === 0) return null;
+
+  return (
+    <span className="mr-1 inline-flex items-center gap-1 align-[-3px]">
+      {uniqueReferences.map((reference, index) => (
+        <HoverImagePreview key={`${reference.url}-${index}`} src={getStaticMediaUrl(reference.url) ?? reference.url} alt={reference.name || `参考图${index + 1}`} wrapperClassName="inline-flex h-[18px] w-[18px] shrink-0 items-center align-middle">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={getStaticMediaUrl(reference.url) ?? reference.url} alt={reference.name || `参考图${index + 1}`} className="block h-[18px] w-[18px] rounded object-cover" />
+        </HoverImagePreview>
+      ))}
+    </span>
+  );
 }
 
 function ReminderToast({ reminder, fixed = false }: { reminder: ReminderMessage; fixed?: boolean }) {
@@ -4735,6 +5112,8 @@ function AssetUploadDialog({
   const filledSlots = slots.map((slot, index) => ({ slot, index })).filter((item) => item.slot.dataUrl);
   const activeSlot = slots[activeIndex]?.dataUrl ? slots[activeIndex] : filledSlots[0]?.slot;
   const hasImages = filledSlots.length > 0;
+  const hasPendingUpload = filledSlots.some((item) => item.slot.uploadStatus === "uploading");
+  const hasFailedUpload = filledSlots.some((item) => item.slot.uploadStatus === "error" || (item.slot.dataUrl && !item.slot.tempToken));
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col items-center justify-center overscroll-contain bg-black/35 px-4">
@@ -4766,6 +5145,8 @@ function AssetUploadDialog({
                         </span>
                       ) : null}
                     </button>
+                    {slot.uploadStatus === "uploading" ? <UploadProgressOverlay progress={slot.uploadProgress} /> : null}
+                    {slot.uploadStatus === "error" ? <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/50 px-2 text-center text-[11px] font-medium leading-4 text-white">上传失败</div> : null}
                     <button type="button" onClick={() => onRemoveSlot(index)} className="absolute right-0.5 top-0.5 flex h-5 w-5 items-center justify-center rounded-full bg-black/45 text-white backdrop-blur-[6px] transition hover:bg-black/62" aria-label="移除图片">
                       <RiCloseLine className="h-3.5 w-3.5" aria-hidden="true" />
                     </button>
@@ -4825,8 +5206,8 @@ function AssetUploadDialog({
           <button type="button" onClick={onClose} disabled={isUploading} className="h-9 w-20 rounded-lg border border-[#e0e0e0] px-4 text-[13px] font-medium text-[#777777] transition hover:bg-[#f7f7f7] disabled:pointer-events-none disabled:opacity-50">
             取消
           </button>
-          <button type="button" onClick={onSubmit} disabled={!hasImages || isUploading} className="h-9 min-w-20 rounded-lg bg-[#111111] px-4 text-[13px] font-medium text-white transition hover:bg-[#252525] disabled:cursor-not-allowed disabled:bg-[#d7d7d7]">
-            {isUploading ? "上传中..." : "确定上传"}
+          <button type="button" onClick={onSubmit} disabled={!hasImages || isUploading || hasPendingUpload || hasFailedUpload} className="h-9 min-w-20 rounded-lg bg-[#111111] px-4 text-[13px] font-medium text-white transition hover:bg-[#252525] disabled:cursor-not-allowed disabled:bg-[#d7d7d7]">
+            {isUploading ? "保存中..." : hasPendingUpload ? "上传中..." : "确定上传"}
           </button>
         </div>
       </div>
@@ -4878,6 +5259,20 @@ function mediaFailureReasons(results: PromiseSettledResult<unknown>[], fallback:
     .map((result) => toUserErrorMessage(result.reason, fallback));
 }
 
+function UploadProgressOverlay({ progress }: { progress?: number }) {
+  const value = Math.min(100, Math.max(0, Math.floor(progress ?? 0)));
+  const degrees = value * 3.6;
+
+  return (
+    <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/45 backdrop-blur-[1px]">
+      <div className="relative flex h-11 w-11 items-center justify-center rounded-full" style={{ background: `conic-gradient(#367cee ${degrees}deg, rgba(255,255,255,0.26) 0deg)` }}>
+        <div className="absolute inset-[4px] rounded-full bg-black/62" />
+        <span className="relative text-[11px] font-semibold leading-none text-white">{value}%</span>
+      </div>
+    </div>
+  );
+}
+
 function normalizeMediaErrorText(error: string | undefined, mode: WorkMode | undefined) {
   if (!error) return undefined;
   const imageMatch = error.match(/^有\s*\d+\s*张图片生成失败[：:]\s*(.+)$/);
@@ -4893,6 +5288,10 @@ function normalizeMediaErrorText(error: string | undefined, mode: WorkMode | und
 async function persistUploadedImagesForSend(images: UploadedImage[]) {
   return Promise.all(
     images.map(async (image) => {
+      if (image.tempToken) {
+        const url = await commitTemporaryAssetImage(image.tempToken);
+        return { ...image, url, tempToken: undefined, uploadStatus: "ready" as const, uploadProgress: 100 };
+      }
       if (!image.url.startsWith("data:")) return image;
 
       const response = await fetch("/api/upload-image", {
@@ -4941,6 +5340,8 @@ function InlineVideoResult({ url, posterUrl, onPreview, onLoadedDimensions, roun
   const [shouldLoadVideo, setShouldLoadVideo] = useState(!posterUrl);
   const [isHovering, setIsHovering] = useState(false);
   const mediaSurfaceStyle = { backgroundColor: "var(--flashmuse-media-surface)" } as CSSProperties;
+  const displayUrl = getStaticMediaUrl(url) ?? url;
+  const displayPosterUrl = getStaticMediaUrl(posterUrl, videoPosterVersion) ?? posterUrl;
 
   useEffect(() => {
     if (!shouldLoadVideo || !isHovering) return;
@@ -4960,9 +5361,9 @@ function InlineVideoResult({ url, posterUrl, onPreview, onLoadedDimensions, roun
 
   return (
     <button type="button" onClick={onPreview} className={`flashmuse-success-media-card flex h-[360px] ${compact ? "w-full" : "w-[640px]"} max-w-full items-center justify-center overflow-hidden bg-[#f4f4f4] text-left ${rounded ? "rounded-[10px]" : ""}`} style={mediaSurfaceStyle}>
-      {posterUrl && !shouldLoadVideo ? (
+      {displayPosterUrl && !shouldLoadVideo ? (
         <span onMouseEnter={playVideo} onFocus={playVideo} className="relative flex h-full w-full items-center justify-center">
-          <Image src={posterUrl} alt="视频封面" fill sizes={compact ? "50vw" : "640px"} unoptimized className="object-contain" />
+          <Image src={displayPosterUrl} alt="视频封面" fill sizes={compact ? "50vw" : "640px"} unoptimized className="object-contain" />
           <span className="pointer-events-none absolute left-1/2 top-1/2 flex h-14 w-14 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-black/42 text-white shadow-[0_8px_24px_rgba(0,0,0,0.22)] backdrop-blur-[4px]">
             <RiPlayLargeFill className="ml-0.5 h-7 w-7" aria-hidden="true" />
           </span>
@@ -4970,13 +5371,13 @@ function InlineVideoResult({ url, posterUrl, onPreview, onLoadedDimensions, roun
       ) : (
         <video
           ref={videoRef}
-          src={url}
-          poster={posterUrl}
+          src={displayUrl}
+          poster={displayPosterUrl}
           className="block max-h-full max-w-full object-contain"
           controls
           loop
           playsInline
-          preload={posterUrl ? "none" : "metadata"}
+          preload={displayPosterUrl ? "none" : "metadata"}
           onMouseEnter={playVideo}
           onMouseLeave={pauseVideo}
           onFocus={playVideo}
@@ -4993,9 +5394,12 @@ function InlineVideoResult({ url, posterUrl, onPreview, onLoadedDimensions, roun
 }
 
 function ImageResultThumb({ url, imageIndex, onPreview, onLoadedDimensions, rounded = false }: { url: string; imageIndex: number; onPreview: (url: string, index: number) => void; onLoadedDimensions?: (url: string, dimensions: ImageDimensions) => void; rounded?: boolean }) {
-  const [isLoaded, setIsLoaded] = useState(false);
+  const [loadedUrl, setLoadedUrl] = useState("");
+  const [failedThumbnailUrl, setFailedThumbnailUrl] = useState("");
   const mediaSurfaceStyle = { backgroundColor: "var(--flashmuse-media-surface)" } as CSSProperties;
-  const displayUrl = getMediaThumbnailUrl(url);
+  const useOriginalImage = failedThumbnailUrl === url;
+  const displayUrl = useOriginalImage ? getStaticMediaUrl(url) ?? url : getMediaThumbnailUrl(url);
+  const isLoaded = loadedUrl === displayUrl;
 
   return (
     <button
@@ -5019,10 +5423,15 @@ function ImageResultThumb({ url, imageIndex, onPreview, onLoadedDimensions, roun
         sizes="250px"
         className="object-contain transition group-hover:scale-[1.02]"
         onLoad={(event) => {
-          setIsLoaded(true);
-          if (displayUrl !== url) return;
+          setLoadedUrl(displayUrl);
+          if (!useOriginalImage && displayUrl !== url) return;
           const image = event.currentTarget;
           if (image.naturalWidth && image.naturalHeight) onLoadedDimensions?.(url, { width: image.naturalWidth, height: image.naturalHeight });
+        }}
+        onError={() => {
+          if (useOriginalImage) return;
+          setFailedThumbnailUrl(url);
+          setLoadedUrl("");
         }}
       />
     </button>
@@ -5207,21 +5616,19 @@ function isRequestTooLargeError(message: string) {
   return /413|Request Entity Too Large/i.test(message);
 }
 
-function readFileAsUploadedImage(file: File): Promise<UploadedImage> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      resolve({
-        id: createClientId(),
-        name: file.name || "粘贴图片",
-        referenceName: getUploadedReferenceBaseName(file.name || "粘贴图片"),
-        source: "upload",
-        url: String(reader.result),
-      });
-    };
-    reader.onerror = () => reject(new Error("图片读取失败"));
-    reader.readAsDataURL(file);
-  });
+async function readFileAsUploadedImage(file: File): Promise<UploadedImage> {
+  const converted = await convertImageFileToJpeg(file);
+  return {
+    id: createClientId(),
+    name: converted.file.name || file.name || "粘贴图片",
+    referenceName: getUploadedReferenceBaseName(file.name || "粘贴图片"),
+    source: "upload",
+    url: converted.dataUrl,
+    previewUrl: converted.dataUrl,
+    uploadFile: converted.file,
+    uploadStatus: "uploading",
+    uploadProgress: 6,
+  };
 }
 
 function getFileExtension(fileName: string) {
@@ -5368,6 +5775,8 @@ function createUploadedDocumentEntry(file: File): UploadedDocumentFile {
     storageName: getUploadedFileStorageName(file),
     size: file.size,
     extension,
+    uploadStatus: "uploading",
+    uploadProgress: 6,
     status: readable ? "reading" : undefined,
     progress: readable ? 6 : undefined,
   };
@@ -5457,6 +5866,8 @@ export function ChatWorkbench() {
   const sessionsRef = useRef<WorkSession[]>([]);
   const [workflowItems, setWorkflowItems] = useState<WorkflowItem[]>([]);
   const [activeSessionId, setActiveSessionId] = useState("");
+  const [loadingSessionIds, setLoadingSessionIds] = useState<Set<string>>(() => new Set());
+  const [loadingSessionStartedAt, setLoadingSessionStartedAt] = useState<Record<string, number>>({});
   const [pendingHomePrompt, setPendingHomePrompt] = useState<{ sessionId: string; prompt: string } | null>(null);
   const [openWorkflowMenuId, setOpenWorkflowMenuId] = useState("");
   const [openSessionMenuId, setOpenSessionMenuId] = useState("");
@@ -5595,6 +6006,8 @@ export function ChatWorkbench() {
   const previewThumbListRef = useRef<HTMLDivElement | null>(null);
   const previewAssetRef = useRef<AssetItem | null>(null);
   const preloadedPreviewThumbUrlsRef = useRef<Set<string>>(new Set());
+  const preloadingSavedMediaUrlsRef = useRef<Set<string>>(new Set());
+  const inputImageUploadAbortControllersRef = useRef<Map<string, AbortController>>(new Map());
   const previewDragStartRef = useRef({ pointerX: 0, pointerY: 0, panX: 0, panY: 0 });
   const activeAssetGenerateJobIdRef = useRef("");
   const runningRequestIdsRef = useRef<Set<string>>(new Set());
@@ -5614,6 +6027,7 @@ export function ChatWorkbench() {
   const assetUploadTipTimerRef = useRef<number | null>(null);
   const assetUploadTipQueueRef = useRef<ReminderMessage[]>([]);
   const assetUploadCurrentTipRef = useRef<ReminderMessage | undefined>(undefined);
+  const assetUploadAbortControllersRef = useRef<Map<string, AbortController>>(new Map());
   const showNextAssetUploadTipRef = useRef<(() => void) | null>(null);
   const generationCompleteTipTimerRef = useRef<number | null>(null);
   const generationCompleteTipQueueRef = useRef<ReminderMessage[]>([]);
@@ -5887,6 +6301,8 @@ export function ChatWorkbench() {
   const activeUploadedFiles = activeSession?.uploadedFiles ?? [];
   const activeUploadedImages = activeSession?.uploadedImages ?? [];
   const hasReadingUploadedFiles = activeUploadedFiles.some((file) => typeof file !== "string" && file.status === "reading");
+  const hasUploadingInputs = activeUploadedImages.some((image) => image.uploadStatus === "uploading") || activeUploadedFiles.some((file) => typeof file !== "string" && file.uploadStatus === "uploading");
+  const hasFailedUploadInputs = activeUploadedImages.some((image) => image.uploadStatus === "error");
   const activeSessionIdValue = activeSession?.id ?? "";
   const resolvedTheme: "light" | "dark" = themeMode === "system" ? systemPrefersDark ? "dark" : "light" : themeMode;
   const themeModeLabel = themeMode === "dark" ? "深色模式" : themeMode === "system" ? `跟随系统 · ${resolvedTheme === "dark" ? "深色" : "浅色"}` : "浅色模式";
@@ -6064,6 +6480,9 @@ export function ChatWorkbench() {
   const visibleCharacterImageScale = characterImageFitMode === "fit" ? characterImageFitScale : characterImageScale;
   const characterImageScalePercent = hasCharacterGeneratedImage ? `${Math.round(visibleCharacterImageScale * 100)}%` : "适合";
   const hasConversation = messages.length > 0;
+  const isActiveSessionLoading = activeSession?.messagesLoaded === false || (activeSession ? loadingSessionIds.has(activeSession.id) : false);
+  const activeSessionLoadingStartedAt = activeSession ? loadingSessionStartedAt[activeSession.id] ?? timerNow : timerNow;
+  const activeSessionLoadingProgress = isActiveSessionLoading ? Math.min(96, Math.floor(Math.max(0, timerNow - activeSessionLoadingStartedAt) / 180)) : 100;
   const activeIsResolving = activeSession ? resolvingSessionIds.has(activeSession.id) : false;
   const activePendingRequests = getSessionPendingRequests(activeSession);
   const activePendingRequestCount = activePendingRequests.length;
@@ -6512,8 +6931,13 @@ export function ChatWorkbench() {
 
   const closeAssetUploadDialog = useCallback(() => {
     if (isAssetUploading) return;
+    assetUploadAbortControllersRef.current.forEach((controller) => controller.abort());
+    assetUploadAbortControllersRef.current.clear();
+    const tempTokens = assetUploadSlots.map((slot) => slot.tempToken).filter((token): token is string => Boolean(token));
+    void deleteTemporaryAssetImages(tempTokens);
     setIsAssetUploadOpen(false);
-  }, [isAssetUploading]);
+    setAssetUploadSlots(createAssetUploadSlots(getDefaultAssetUploadType(assetFilter)));
+  }, [assetFilter, assetUploadSlots, isAssetUploading]);
 
   const selectAssetUploadFiles = useCallback(async (files: File[]) => {
     const imageFiles = files.filter((file) => file.type.startsWith("image/"));
@@ -6525,43 +6949,68 @@ export function ChatWorkbench() {
     try {
       const defaultType = getDefaultAssetUploadType(assetFilter);
       const newItems = await Promise.all(imageFiles.map(async (file) => {
-        const dataUrl = await readFileAsDataUrl(file);
+        const converted = await convertImageFileToJpeg(file);
         return {
           fileName: getUploadedReferenceBaseName(file.name),
-          dataUrl,
+          dataUrl: converted.dataUrl,
+          file: converted.file,
         };
       }));
       const newItemsWithDimensions = await Promise.all(newItems.map(async (item) => ({
         ...item,
         dimensions: await getDataUrlImageDimensions(item.dataUrl).catch(() => undefined),
       })));
-
-      setAssetUploadSlots((current) => {
-        const normalized = normalizeAssetUploadSlots(current, defaultType);
-        const existingCount = normalized.filter((slot) => slot.dataUrl).length;
-        const availableCount = Math.max(0, ASSET_UPLOAD_SLOT_COUNT - existingCount);
-        const acceptedItems = newItemsWithDimensions.slice(0, availableCount);
-        let itemIndex = 0;
-
-        return normalized.map((slot) => {
-          if (slot.dataUrl || itemIndex >= acceptedItems.length) return slot;
-          const item = acceptedItems[itemIndex];
-          itemIndex += 1;
-          return { ...slot, fileName: item.fileName, originalFileName: item.fileName, dataUrl: item.dataUrl, dimensions: item.dimensions, isDuplicate: false };
-        });
+      const normalizedSlots = normalizeAssetUploadSlots(assetUploadSlots, defaultType);
+      const existingCount = normalizedSlots.filter((slot) => slot.dataUrl).length;
+      const availableCount = Math.max(0, ASSET_UPLOAD_SLOT_COUNT - existingCount);
+      const acceptedItems = newItemsWithDimensions.slice(0, availableCount);
+      let itemIndex = 0;
+      const nextSlots: AssetUploadSlot[] = normalizedSlots.map((slot) => {
+        if (slot.dataUrl || itemIndex >= acceptedItems.length) return slot;
+        const item = acceptedItems[itemIndex];
+        itemIndex += 1;
+        return { ...slot, fileName: item.fileName, originalFileName: item.fileName, dataUrl: item.dataUrl, uploadFile: item.file, dimensions: item.dimensions, isDuplicate: false, tempToken: undefined, uploadStatus: "uploading", uploadProgress: 6, error: undefined };
       });
+
+      setAssetUploadSlots(nextSlots);
       setActiveAssetUploadIndex((current) => {
-        const normalized = normalizeAssetUploadSlots(assetUploadSlots, defaultType);
-        const firstEmptyIndex = normalized.findIndex((slot) => !slot.dataUrl);
+        const firstEmptyIndex = nextSlots.findIndex((slot) => !slot.dataUrl);
         return firstEmptyIndex >= 0 ? firstEmptyIndex : current;
       });
-      if (newItemsWithDimensions.length > Math.max(0, ASSET_UPLOAD_SLOT_COUNT - assetUploadSlots.filter((slot) => slot.dataUrl).length)) showAssetUploadTip("最多同时上传8张");
+      if (newItemsWithDimensions.length > availableCount) showAssetUploadTip("最多同时上传8张");
     } catch (error) {
       showAssetUploadTip(toUserErrorMessage(error, "图片读取失败"));
     }
   }, [assetFilter, assetUploadSlots, showAssetUploadTip]);
 
+  useEffect(() => {
+    assetUploadSlots.forEach((slot) => {
+      if (slot.uploadStatus !== "uploading" || !slot.uploadFile || assetUploadAbortControllersRef.current.has(slot.id)) return;
+
+      const controller = new AbortController();
+      assetUploadAbortControllersRef.current.set(slot.id, controller);
+      void uploadTemporaryAssetImage(slot.uploadFile, (progress) => {
+        setAssetUploadSlots((current) => current.map((item) => item.id === slot.id ? { ...item, uploadStatus: "uploading", uploadProgress: progress } : item));
+      }, controller.signal)
+        .then((tempToken) => {
+          assetUploadAbortControllersRef.current.delete(slot.id);
+          setAssetUploadSlots((current) => current.map((item) => item.id === slot.id ? { ...item, uploadFile: undefined, tempToken, uploadStatus: "ready", uploadProgress: 100, error: undefined } : item));
+        })
+        .catch((error) => {
+          assetUploadAbortControllersRef.current.delete(slot.id);
+          if (controller.signal.aborted) return;
+          setAssetUploadSlots((current) => current.map((item) => item.id === slot.id ? { ...item, uploadFile: undefined, uploadStatus: "error", uploadProgress: 100, error: toUserErrorMessage(error, "上传失败") } : item));
+        });
+    });
+  }, [assetUploadSlots]);
+
   const removeAssetUploadSlot = useCallback((index: number) => {
+    const slot = assetUploadSlots[index];
+    if (slot) {
+      assetUploadAbortControllersRef.current.get(slot.id)?.abort();
+      assetUploadAbortControllersRef.current.delete(slot.id);
+      if (slot.tempToken) void deleteTemporaryAssetImages([slot.tempToken]);
+    }
     setAssetUploadSlots((current) => {
       const defaultType = getDefaultAssetUploadType(assetFilter);
       const normalized = normalizeAssetUploadSlots(current, defaultType);
@@ -6569,7 +7018,7 @@ export function ChatWorkbench() {
       return normalizeAssetUploadSlots(kept, defaultType);
     });
     setActiveAssetUploadIndex(0);
-  }, [assetFilter]);
+  }, [assetFilter, assetUploadSlots]);
 
   const updateActiveAssetUploadName = useCallback((value: string) => {
     setAssetUploadSlots((current) => normalizeAssetUploadSlots(current, getDefaultAssetUploadType(assetFilter)).map((slot, index) => (index === activeAssetUploadIndex ? { ...slot, fileName: value } : slot)));
@@ -6595,22 +7044,25 @@ export function ChatWorkbench() {
   const submitAssetUpload = useCallback(async () => {
     const uploadItems = visibleAssetUploadSlots.filter((slot) => slot.dataUrl);
     if (uploadItems.length === 0 || isAssetUploading) return;
+    if (uploadItems.some((slot) => slot.uploadStatus === "uploading")) {
+      showAssetUploadTip("图片上传中，请稍候");
+      return;
+    }
+    if (uploadItems.some((slot) => slot.uploadStatus === "error" || !slot.tempToken)) {
+      showAssetUploadTip("有图片上传失败，请删除后重新上传");
+      return;
+    }
 
     setIsAssetUploading(true);
 
     try {
       const uploadedItems = await Promise.all(uploadItems.map(async (slot) => {
-        const response = await fetch("/api/upload-image", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ image: slot.dataUrl }),
-        });
-        const data = await readJson<{ url?: string }>(response);
+        const url = await commitTemporaryAssetImage(slot.tempToken as string);
 
         return {
           name: sanitizeAssetName(slot.fileName) || sanitizeAssetName(slot.originalFileName) || "上传图片",
           type: slot.type,
-          url: data.url ?? "",
+          url,
           slot,
         };
       }));
@@ -6660,7 +7112,7 @@ export function ChatWorkbench() {
 
       if (duplicateItems.length > 0) {
         const defaultType = getDefaultAssetUploadType(assetFilter);
-        setAssetUploadSlots(normalizeAssetUploadSlots(duplicateItems.map((item) => ({ ...item.slot, isDuplicate: true })), defaultType));
+        setAssetUploadSlots(normalizeAssetUploadSlots(duplicateItems.map((item) => ({ ...item.slot, tempToken: undefined, uploadStatus: "ready", uploadProgress: 100, isDuplicate: true })), defaultType));
         setActiveAssetUploadIndex(0);
         if (newItems.length > 0) showAssetUploadTip(`成功上传${newItems.length}张图片`, "success");
         showAssetUploadTip("图片已存在，无需要重复添加");
@@ -6668,6 +7120,8 @@ export function ChatWorkbench() {
       }
 
       showAssetUploadTip(`成功上传${newItems.length}张图片`, "success");
+      assetUploadAbortControllersRef.current.clear();
+      setAssetUploadSlots(createAssetUploadSlots(getDefaultAssetUploadType(assetFilter)));
       setIsAssetUploadOpen(false);
     } catch (error) {
       showAssetUploadTip(toUserErrorMessage(error, "图片上传失败，请稍后再试。"));
@@ -6781,8 +7235,12 @@ export function ChatWorkbench() {
   }, [activeSessionId, currentUploadRule.image.maxCount]);
 
   const removeActiveUploadedImage = useCallback((imageId: string) => {
+    const image = activeUploadedImages.find((item) => item.id === imageId);
+    inputImageUploadAbortControllersRef.current.get(imageId)?.abort();
+    inputImageUploadAbortControllersRef.current.delete(imageId);
+    if (image?.tempToken) void deleteTemporaryAssetImages([image.tempToken]);
     setSessions((current) => current.map((session) => (session.id === activeSessionId ? { ...session, uploadedImages: (session.uploadedImages ?? []).filter((image) => image.id !== imageId) } : session)));
-  }, [activeSessionId]);
+  }, [activeSessionId, activeUploadedImages]);
 
   const removeActiveUploadedFile = useCallback((fileIndex: number) => {
     setSessions((current) => current.map((session) => (session.id === activeSessionId ? { ...session, uploadedFiles: (session.uploadedFiles ?? []).filter((_, index) => index !== fileIndex) } : session)));
@@ -6822,6 +7280,33 @@ export function ChatWorkbench() {
   useEffect(() => {
     sessionsRef.current = sessions;
   }, [sessions]);
+
+  const loadSessionDetails = useCallback(async (sessionId: string) => {
+    const targetSession = sessionsRef.current.find((session) => session.id === sessionId);
+    if (!targetSession || targetSession.messagesLoaded !== false || loadingSessionIds.has(sessionId)) return;
+
+    setLoadingSessionIds((current) => new Set(current).add(sessionId));
+    setLoadingSessionStartedAt((current) => ({ ...current, [sessionId]: current[sessionId] ?? Date.now() }));
+    try {
+      const response = await fetch(`/api/workspace-session?id=${encodeURIComponent(sessionId)}`, { cache: "no-store" });
+      const data = await readJson<{ session?: WorkSession | null }>(response);
+      if (!data.session) return;
+      setSessions((current) => current.map((session) => session.id === sessionId ? { ...data.session, messagesLoaded: true } as WorkSession : session));
+    } catch {
+      showInputTip("历史对话加载失败，请稍后重试");
+    } finally {
+      setLoadingSessionIds((current) => {
+        const next = new Set(current);
+        next.delete(sessionId);
+        return next;
+      });
+      setLoadingSessionStartedAt((current) => {
+        const next = { ...current };
+        delete next[sessionId];
+        return next;
+      });
+    }
+  }, [loadingSessionIds, showInputTip]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -6883,17 +7368,16 @@ export function ChatWorkbench() {
         };
 
         try {
-          const meResponse = await fetch("/api/auth/me", { cache: "no-store" });
+          const meRequest = fetch("/api/auth/me", { cache: "no-store" });
+          const workspaceRequest = fetch("/api/workspace-state?summary=1", { cache: "no-store" });
+          const meResponse = await meRequest;
           const meData = (await meResponse.json().catch(() => ({}))) as { user?: CurrentUserProfile | null };
 
           if (typeof meData.user?.email === "string") {
             applyCurrentUserProfile(meData.user);
-            const workspaceResponse = await fetch("/api/workspace-state", { cache: "no-store" });
+            const workspaceResponse = await workspaceRequest;
             const workspaceData = await readJson<{ state?: WorkspaceStatePayload | null }>(workspaceResponse);
             applyWorkspaceState(workspaceData.state ?? {}, "user");
-            const profileResponse = await fetch("/api/user-profile", { cache: "no-store" });
-            const profileData = await readJson<{ user?: CurrentUserProfile | null }>(profileResponse);
-            if (profileData.user) applyCurrentUserProfile(profileData.user);
           } else {
             window.location.replace("/");
           }
@@ -7098,10 +7582,18 @@ export function ChatWorkbench() {
 
         const savedJobs = (data.jobs ?? []).filter((job) => job.status === "saved" && job.localUrl && job.remoteUrl && job.localUrl !== job.remoteUrl);
         if (savedJobs.length === 0) return;
+        const jobsToPreload = savedJobs.filter((job) => !preloadingSavedMediaUrlsRef.current.has(job.remoteUrl));
+        if (jobsToPreload.length === 0) return;
+        jobsToPreload.forEach((job) => preloadingSavedMediaUrlsRef.current.add(job.remoteUrl));
+        const preloadResults = await Promise.all(jobsToPreload.map(async (job) => ({ job, ready: await preloadSavedMediaBeforeReplace(job) })));
+        preloadResults.forEach(({ job }) => preloadingSavedMediaUrlsRef.current.delete(job.remoteUrl));
+        if (cancelled) return;
+        const readyJobs = preloadResults.filter((item) => item.ready).map((item) => item.job);
+        if (readyJobs.length === 0) return;
 
-        const replacements = new Map(savedJobs.map((job) => [job.remoteUrl, job.localUrl as string]));
-        const dimensions = Object.fromEntries(savedJobs.filter((job) => job.localUrl && job.dimensions).map((job) => [job.localUrl as string, job.dimensions as ImageDimensions]));
-        const videoPosters = Object.fromEntries(savedJobs.filter((job) => job.localUrl && job.posterUrl).map((job) => [job.localUrl as string, job.posterUrl as string]));
+        const replacements = new Map(readyJobs.map((job) => [job.remoteUrl, job.localUrl as string]));
+        const dimensions = Object.fromEntries(readyJobs.filter((job) => job.localUrl && job.dimensions).map((job) => [job.localUrl as string, job.dimensions as ImageDimensions]));
+        const videoPosters = Object.fromEntries(readyJobs.filter((job) => job.localUrl && job.posterUrl).map((job) => [job.localUrl as string, job.posterUrl as string]));
 
         setSessions((current) => current.map((session) => replaceSessionMediaUrls(session, replacements, dimensions, videoPosters)));
         setAssets((current) => current.map((asset) => replaceAssetMediaUrls(asset, replacements, videoPosters)));
@@ -9005,12 +9497,21 @@ export function ChatWorkbench() {
       showInputTip(`当前模型最多支持 ${submitUploadRule.image.maxCount} 张参考图，不能上传更多图片`);
       return;
     }
-    if (availableUploadedFiles.length > submitUploadRule.document.maxCount) {
-      showInputTip(`当前模型最多支持 ${submitUploadRule.document.maxCount} 个文件`);
+    const submitMaxUploadFiles = submitUploadRule.document.maxCount + submitUploadRule.video.maxCount + submitUploadRule.audio.maxCount;
+    if (availableUploadedFiles.length > submitMaxUploadFiles) {
+      showInputTip(`当前模型最多支持 ${submitMaxUploadFiles} 个文件`);
       return;
     }
     if (hasReadingUploadedFiles && !isSuggestionSend) {
       showInputTip("文件读取中");
+      return;
+    }
+    if (hasUploadingInputs && !isSuggestionSend) {
+      showInputTip("文件上传中");
+      return;
+    }
+    if (hasFailedUploadInputs && !isSuggestionSend) {
+      showInputTip("有图片上传失败，请删除后重新上传");
       return;
     }
     if ((!rawText && availableUploadedImages.length === 0 && availableUploadedFiles.length === 0) || !activeSession || (submitMode !== "agent" && activeHasMaxPendingRequests) || sendingSessionIdsRef.current.has(activeSession.id)) return;
@@ -9697,9 +10198,9 @@ export function ChatWorkbench() {
     let acceptedImageCount = 0;
     let acceptedDocumentCount = 0;
     const maxImages = currentUploadRule.image.maxCount;
-    const maxDocuments = currentUploadRule.document.maxCount;
+    const maxUploadFiles = currentUploadRule.document.maxCount + currentUploadRule.video.maxCount + currentUploadRule.audio.maxCount;
     const remainingImages = Math.max(0, maxImages - activeUploadedImages.length);
-    const remainingDocuments = Math.max(0, maxDocuments - activeUploadedFiles.length);
+    const remainingDocuments = Math.max(0, maxUploadFiles - activeUploadedFiles.length);
 
     for (const file of files) {
       const kind = file.type.startsWith("image/") ? "image" : file.type.startsWith("video/") ? "video" : file.type.startsWith("audio/") ? "audio" : getUploadKindFromFileName(file.name || file.type);
@@ -9729,7 +10230,7 @@ export function ChatWorkbench() {
         } else if (file.size > currentUploadRule.document.maxSizeMb * 1024 * 1024) {
           tips.add(`当前模型支持的单个文件最大为 ${currentUploadRule.document.maxSizeMb}MB`);
         } else if (acceptedDocumentCount >= remainingDocuments) {
-          tips.add(`当前模型最多支持 ${maxDocuments} 个文件`);
+          tips.add(`当前模型最多支持 ${maxUploadFiles} 个文件`);
         } else {
           documentFiles.push(file);
           acceptedDocumentCount += 1;
@@ -9738,12 +10239,34 @@ export function ChatWorkbench() {
       }
 
       if (kind === "video") {
-        tips.add(currentUploadRule.video.enabled ? "参考视频需要服务器公网链接，当前本地环境暂不支持" : "当前模型不支持上传视频");
+        if (!currentUploadRule.video.enabled) {
+          tips.add("当前模型不支持上传视频");
+        } else if (!currentUploadRule.video.formats.includes(extension)) {
+          tips.add("当前模型不支持该视频格式");
+        } else if (file.size > currentUploadRule.video.maxSizeMb * 1024 * 1024) {
+          tips.add(`当前模型支持的单个视频最大为 ${currentUploadRule.video.maxSizeMb}MB`);
+        } else if (acceptedDocumentCount >= remainingDocuments) {
+          tips.add(`当前模型最多支持 ${maxUploadFiles} 个文件`);
+        } else {
+          documentFiles.push(file);
+          acceptedDocumentCount += 1;
+        }
         continue;
       }
 
       if (kind === "audio") {
-        tips.add(currentUploadRule.audio.enabled ? "参考音频需要服务器公网链接，当前本地环境暂不支持" : "当前模型不支持上传音频");
+        if (!currentUploadRule.audio.enabled) {
+          tips.add("当前模型不支持上传音频");
+        } else if (!currentUploadRule.audio.formats.includes(extension)) {
+          tips.add("当前模型不支持该音频格式");
+        } else if (file.size > currentUploadRule.audio.maxSizeMb * 1024 * 1024) {
+          tips.add(`当前模型支持的单个音频最大为 ${currentUploadRule.audio.maxSizeMb}MB`);
+        } else if (acceptedDocumentCount >= remainingDocuments) {
+          tips.add(`当前模型最多支持 ${maxUploadFiles} 个文件`);
+        } else {
+          documentFiles.push(file);
+          acceptedDocumentCount += 1;
+        }
         continue;
       }
 
@@ -9759,14 +10282,26 @@ export function ChatWorkbench() {
           if (session.id !== activeSessionId) return session;
           const existingFiles = session.uploadedFiles ?? [];
           const existingKeys = new Set(existingFiles.map(getUploadedFileStorageValue));
-          const nextFiles = [...existingFiles, ...documentEntries.filter((file) => !existingKeys.has(file.storageName))].slice(0, maxDocuments);
+          const nextFiles = [...existingFiles, ...documentEntries.filter((file) => !existingKeys.has(file.storageName))].slice(0, maxUploadFiles);
           return { ...session, uploadedFiles: nextFiles };
         }),
       );
 
       documentFiles.forEach((file, index) => {
         const entry = documentEntries[index];
-        if (!entry || !isReadableDocumentFile(file)) return;
+        if (!entry) return;
+
+        void uploadDocumentFileAsset(file, (progress) => {
+          setSessions((current) => current.map((session) => session.id === activeSessionId ? { ...session, uploadedFiles: (session.uploadedFiles ?? []).map((item) => typeof item !== "string" && item.id === entry.id ? { ...item, uploadProgress: progress, uploadStatus: "uploading" } : item) } : session));
+        })
+          .then((url) => {
+            setSessions((current) => current.map((session) => session.id === activeSessionId ? { ...session, uploadedFiles: (session.uploadedFiles ?? []).map((item) => typeof item !== "string" && item.id === entry.id ? { ...item, url, uploadProgress: 100, uploadStatus: "ready" } : item) } : session));
+          })
+          .catch((error) => {
+            setSessions((current) => current.map((session) => session.id === activeSessionId ? { ...session, uploadedFiles: (session.uploadedFiles ?? []).map((item) => typeof item !== "string" && item.id === entry.id ? { ...item, uploadProgress: 100, uploadStatus: "error", error: item.error ?? toUserErrorMessage(error, "上传失败") } : item) } : session));
+          });
+
+        if (!isReadableDocumentFile(file)) return;
 
         void readDocumentFileText(file, (progress) => {
           setSessions((current) => current.map((session) => session.id === activeSessionId ? { ...session, uploadedFiles: (session.uploadedFiles ?? []).map((item) => typeof item !== "string" && item.id === entry.id ? { ...item, progress, status: "reading" } : item) } : session));
@@ -9782,8 +10317,28 @@ export function ChatWorkbench() {
 
     if (imageFiles.length === 0) return;
 
-    const images = await Promise.all(imageFiles.map(readFileAsUploadedImage));
+    const imageResults = await Promise.allSettled(imageFiles.map(readFileAsUploadedImage));
+    const images = imageResults.filter((result): result is PromiseFulfilledResult<UploadedImage> => result.status === "fulfilled").map((result) => result.value);
+    const imageError = imageResults.find((result) => result.status === "rejected");
+    if (imageError) showInputTip("图片读取失败");
     addActiveUploadedImages(images);
+
+    images.forEach((image) => {
+      const controller = new AbortController();
+      inputImageUploadAbortControllersRef.current.set(image.id, controller);
+      void uploadTemporaryAssetImage(image.uploadFile as File, (progress) => {
+        setSessions((current) => current.map((session) => session.id === activeSessionId ? { ...session, uploadedImages: (session.uploadedImages ?? []).map((item) => item.id === image.id ? { ...item, uploadProgress: progress, uploadStatus: "uploading" } : item) } : session));
+      }, controller.signal)
+        .then((tempToken) => {
+          inputImageUploadAbortControllersRef.current.delete(image.id);
+          setSessions((current) => current.map((session) => session.id === activeSessionId ? { ...session, uploadedImages: (session.uploadedImages ?? []).map((item) => item.id === image.id ? { ...item, tempToken, uploadProgress: 100, uploadStatus: "ready", error: undefined } : item) } : session));
+        })
+        .catch((error) => {
+          inputImageUploadAbortControllersRef.current.delete(image.id);
+          if (controller.signal.aborted) return;
+          setSessions((current) => current.map((session) => session.id === activeSessionId ? { ...session, uploadedImages: (session.uploadedImages ?? []).map((item) => item.id === image.id ? { ...item, uploadProgress: 100, uploadStatus: "error", error: toUserErrorMessage(error, "上传失败") } : item) } : session));
+        });
+    });
   }, [activeSessionId, activeUploadedFiles.length, activeUploadedImages.length, addActiveUploadedImages, currentUploadRule, showInputTip]);
 
   const hasDraggedFiles = (event: DragEvent) => Array.from(event.dataTransfer.types).includes("Files");
@@ -10164,6 +10719,12 @@ export function ChatWorkbench() {
   };
   const clearActiveInput = () => {
     closeInputMenus();
+    activeUploadedImages.forEach((image) => {
+      inputImageUploadAbortControllersRef.current.get(image.id)?.abort();
+      inputImageUploadAbortControllersRef.current.delete(image.id);
+    });
+    const tempTokens = activeUploadedImages.map((image) => image.tempToken).filter((token): token is string => Boolean(token));
+    void deleteTemporaryAssetImages(tempTokens);
     setSessions((current) =>
       current.map((session) =>
         session.id === activeSessionId
@@ -10507,6 +11068,7 @@ export function ChatWorkbench() {
                   onClick={() => {
                     setActiveSessionId(session.id);
                     setOpenSessionMenuId("");
+                    void loadSessionDetails(session.id);
                   }}
                   className={
                     isActive
@@ -10514,7 +11076,7 @@ export function ChatWorkbench() {
                       : "flex h-9 w-full items-center rounded-lg px-3 pr-10 text-left transition hover:bg-[#ececec]"
                   }
                 >
-                  <div className={isActive ? "min-w-0 truncate text-[13px] font-medium leading-[1.2] text-[#111111]" : "min-w-0 truncate text-[13px] font-medium leading-[1.2] text-[#333333]"}>{session.title}</div>
+                  <div className={isActive ? "min-w-0 truncate text-[13px] font-medium leading-[1.2] text-[#111111]" : "min-w-0 truncate text-[13px] font-medium leading-[1.2] text-[#333333]"}>{session.title}{loadingSessionIds.has(session.id) ? " · 加载中" : ""}</div>
                 </button>
 
                 {isSessionRunning ? (
@@ -10753,6 +11315,15 @@ export function ChatWorkbench() {
             }} onDelete={deleteAsset} onRestore={restoreAsset} />
           ) : activePanel === "workflow" ? (
             <div className="min-h-full bg-[#f3f3f3] bg-[linear-gradient(to_right,#e4e4e4_1px,transparent_1px),linear-gradient(to_bottom,#e4e4e4_1px,transparent_1px)] bg-[size:24px_24px]" />
+          ) : isActiveSessionLoading ? (
+            <div className="flex min-h-full items-center justify-center bg-white pb-20 pt-10 text-center">
+              <div className="flex flex-col items-center gap-2">
+                <div className="text-[13px] font-medium leading-none text-[#367cee]">加载中...{activeSessionLoadingProgress}%</div>
+                <div className="h-1 w-[100px] overflow-hidden bg-[#dbe8ff]">
+                  <div className="h-full bg-[#367cee] transition-[width] duration-300 ease-out" style={{ width: `${activeSessionLoadingProgress}%` }} />
+                </div>
+              </div>
+            </div>
           ) : !hasConversation ? (
             <div className="flex min-h-full flex-col items-center justify-center pb-20 pt-10 text-center">
               <div className="mb-9 text-[28px] font-semibold tracking-[-0.03em] text-[#050505] sm:text-[32px]">hi~把你的闪念跟我聊一聊！</div>
@@ -10868,13 +11439,13 @@ export function ChatWorkbench() {
 
                 return (
                 <div key={message.id} className={message.role === "user" ? "flex justify-end" : "flex justify-start"}>
-                  <div className={message.role === "user" ? "max-w-[92%]" : "flex max-w-full"}>
+                  <div className={message.role === "user" ? "max-w-[92%]" : isAgentMediaMessage ? "flex w-full max-w-full" : "flex max-w-full"}>
                     {false && message.role === "assistant" ? (
                       <div className="mt-3 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-[#e5ddff] bg-[#f1ecff] text-[#6d4aff]">
                         <RiStarSmileLine className="h-3.5 w-3.5" aria-hidden="true" />
                       </div>
                     ) : null}
-                    <div className={message.role === "user" ? "flex min-w-0 flex-col items-end" : "min-w-0"}>
+                    <div className={message.role === "user" ? "flex min-w-0 flex-col items-end" : isAgentMediaMessage ? "min-w-0 w-full" : "min-w-0"}>
                     {message.role !== "user" || message.content.trim() ? (
                       <div
                         className={
@@ -10937,7 +11508,7 @@ export function ChatWorkbench() {
                         ) : null}
 
                      {message.role === "assistant" && message.mode === "video" && isAssistantMessageComplete && (displayedMessageVideos.length > 0 || videoFailedCount > 0 || (isActiveVideoPending && videoPendingCount > 0)) ? (
-                       <LazyMediaMount height={360} className={isAgentMediaMessage ? "mt-2 grid max-w-[1006px] grid-cols-2 gap-0.5" : "mt-2 flex max-w-full flex-wrap gap-0.5"}>
+                       <LazyMediaMount height={360} className={isAgentMediaMessage ? "mt-2 grid w-full max-w-[1006px] grid-cols-2 gap-0.5" : "mt-2 flex max-w-full flex-wrap gap-0.5"}>
                           {displayedMessageVideos.map((url, videoIndex) => (
                              <InlineVideoResult key={`${url}-${videoIndex}`} url={url} posterUrl={getVideoPosterForMessage(message, url)} rounded={isAgentMediaMessage} compact={isAgentMediaMessage} onLoadedDimensions={(dimensions) => updateMessageVideoDimensions(activeSession?.id ?? "", message.id, dimensions)} onPreview={() => setPreviewAsset({ id: `${message.id}-video-${videoIndex}`, type: "shot_video", name: getCanonicalMediaName(message, url, `生成视频${videoIndex + 1}`), url, posterUrl: getVideoPosterForMessage(message, url), sourcePrompt: message.videoPrompts?.[url] ?? message.generationMeta?.itemPrompts?.[videoIndex] ?? message.generationMeta?.originalPrompt ?? message.content, previewMeta: getPreviewMediaMeta(message), sessionId: activeSession?.id ?? "", messageId: message.id, createdAt: message.createdAt ?? Date.now() })} />
                           ))}
@@ -11132,6 +11703,8 @@ export function ChatWorkbench() {
                       const meta = getUploadedDocumentMeta(displayName);
                       const sizeText = formatUploadedFileSize(file);
                       const progress = typeof file === "string" ? 0 : Math.min(100, Math.max(0, Math.floor(file.progress ?? 0)));
+                      const uploadProgress = typeof file === "string" ? 0 : Math.min(100, Math.max(0, Math.floor(file.uploadProgress ?? 0)));
+                      const isUploading = typeof file !== "string" && file.uploadStatus === "uploading";
 
                       return (
                         <div key={`${getUploadedFileKey(file)}-${index}`} onClick={() => setPreviewDocumentFile(file)} className="relative flex h-[54px] w-[200px] shrink-0 cursor-pointer items-center gap-3 overflow-hidden rounded-[10px] bg-[#f2f2f2] px-4 transition hover:bg-[#ececec]">
@@ -11142,7 +11715,7 @@ export function ChatWorkbench() {
                               event.stopPropagation();
                               removeActiveUploadedFile(index);
                             }}
-                            className="absolute right-1 top-1 flex h-4.5 w-4.5 items-center justify-center rounded-full bg-black/35 text-white transition hover:bg-black/55 disabled:pointer-events-none disabled:opacity-40"
+                            className="absolute right-1 top-1 z-30 flex h-4.5 w-4.5 items-center justify-center rounded-full bg-black/35 text-white transition hover:bg-black/55 disabled:pointer-events-none disabled:opacity-40"
                             aria-label="移除文件"
                           >
                             <RiCloseLine className="h-3 w-3" aria-hidden="true" />
@@ -11154,7 +11727,8 @@ export function ChatWorkbench() {
                             <div className="truncate text-[13px] font-medium leading-4 text-[#222222]">{displayName}</div>
                             <div className="mt-0.5 truncate text-[11px] leading-4 text-[#9a9a9a]">{meta.label}{sizeText ? ` · ${sizeText}` : ""}</div>
                           </div>
-                          {typeof file !== "string" && file.status === "reading" ? <div className="absolute inset-x-0 bottom-0 h-[2px] bg-black/8"><div className="h-full bg-[#367cee] transition-all" style={{ width: `${progress}%` }} /></div> : null}
+                          {isUploading ? <UploadProgressOverlay progress={uploadProgress} /> : null}
+                          {!isUploading && typeof file !== "string" && file.status === "reading" ? <div className="absolute inset-x-0 bottom-0 h-[2px] bg-black/8"><div className="h-full bg-[#367cee] transition-all" style={{ width: `${progress}%` }} /></div> : null}
                         </div>
                       );
                     })}
@@ -11176,16 +11750,21 @@ export function ChatWorkbench() {
                   ) : null}
                   {canScrollUploadedImages.left ? <div className="pointer-events-none absolute bottom-0 left-0 top-0 z-[5] w-10 bg-gradient-to-r from-white/95 to-transparent" /> : null}
                   <div ref={uploadedImagesRowRef} onScroll={updateUploadedRowScrollState} className="yinzao-upload-row-scroll flex flex-nowrap gap-2 overflow-x-auto overflow-y-hidden scroll-smooth px-0.5">
-                    {activeUploadedImages.map((image) => (
+                    {activeUploadedImages.map((image) => {
+                      const isUploading = image.uploadStatus === "uploading";
+                      const uploadProgress = Math.min(100, Math.max(0, Math.floor(image.uploadProgress ?? 0)));
+                      const previewUrl = image.previewUrl ?? getMediaThumbnailUrl(image.url);
+
+                      return (
                       <div key={image.id} className="group relative h-[80px] w-[80px] shrink-0 overflow-hidden rounded-xl border border-[#e5e5e5] bg-[#f7f7f7]">
-                          <HoverImagePreview src={image.url} alt={image.name} wrapperClassName="block h-full w-full">
-                            <Image src={getMediaThumbnailUrl(image.url)} alt={image.name} width={100} height={100} unoptimized className="h-full w-full object-cover" style={{ width: "100%", height: "100%" }} />
+                          <HoverImagePreview src={previewUrl} alt={image.name} wrapperClassName="block h-full w-full">
+                            <Image src={previewUrl} alt={image.name} width={100} height={100} unoptimized className="h-full w-full object-cover" style={{ width: "100%", height: "100%" }} />
                           </HoverImagePreview>
                         <button
                           type="button"
                           disabled={isMainInputDisabled}
                           onClick={() => removeActiveUploadedImage(image.id)}
-                          className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-black/55 text-white transition hover:bg-black/70"
+                          className="absolute right-1 top-1 z-30 flex h-5 w-5 items-center justify-center rounded-full bg-black/55 text-white transition hover:bg-black/70"
                           aria-label="移除图片"
                         >
                           <RiCloseLine className="h-3 w-3" aria-hidden="true" />
@@ -11200,8 +11779,11 @@ export function ChatWorkbench() {
                         >
                           <span className="text-[10px] leading-4">@{getUploadedImageReferenceName(image, activeUploadedImages)}</span>
                         </button>
+                        {isUploading ? <UploadProgressOverlay progress={uploadProgress} /> : null}
+                        {image.uploadStatus === "error" ? <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/50 px-2 text-center text-[11px] font-medium leading-4 text-white">上传失败</div> : null}
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
                   {canScrollUploadedImages.right ? (
                     <button type="button" onClick={() => scrollUploadedRow("images", 1)} className="absolute right-0 top-1/2 z-10 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full bg-white/92 text-[#777777] shadow-[0_4px_12px_rgba(0,0,0,0.12)] transition hover:text-[#111111]" aria-label="向右查看图片">
@@ -11434,7 +12016,7 @@ export function ChatWorkbench() {
               <button
                 type="button"
                 onClick={() => isThinking ? stopAgentThinking() : void sendMessage()}
-                disabled={!isThinking && (isInputPromptOptimizing || (mode !== "agent" && activeHasMaxPendingRequests) || activeIsSending || (!activeInput.trim() && activeUploadedImages.length === 0 && activeUploadedFiles.length === 0))}
+                disabled={!isThinking && (isInputPromptOptimizing || hasUploadingInputs || hasFailedUploadInputs || (mode !== "agent" && activeHasMaxPendingRequests) || activeIsSending || (!activeInput.trim() && activeUploadedImages.length === 0 && activeUploadedFiles.length === 0))}
                 className={`inline-flex h-9 w-9 shrink-0 items-center justify-center whitespace-nowrap rounded-[10px] bg-[#111111] text-white transition hover:bg-[#000000] disabled:cursor-not-allowed disabled:bg-[#d7d7d7] disabled:text-white ${isThinking ? "yinzao-stop-shimmer" : ""}`}
                 aria-label={isThinking ? "停止思考" : "发送"}
               >
@@ -12204,7 +12786,7 @@ export function ChatWorkbench() {
                     )}
                   </div>
                   <div className="flex items-center gap-3">
-                    <a href={previewAsset.url} download={getDownloadName(previewAsset)} className="inline-flex h-9 min-w-[112px] items-center justify-center gap-2 rounded-[8px] bg-[#111111] px-6 text-[13px] font-medium text-white transition hover:bg-[#252525]" aria-label={isVideoAsset(previewAsset) ? "下载视频" : "下载图片"}>
+                    <a href={getDownloadUrl(previewAsset.url)} download={getDownloadName(previewAsset)} className="inline-flex h-9 min-w-[112px] items-center justify-center gap-2 rounded-[8px] bg-[#111111] px-6 text-[13px] font-medium text-white transition hover:bg-[#252525]" aria-label={isVideoAsset(previewAsset) ? "下载视频" : "下载图片"}>
                       <RiDownloadLine className="h-4 w-4" aria-hidden="true" />
                       <span>下载</span>
                     </a>
@@ -12238,7 +12820,7 @@ export function ChatWorkbench() {
                             <button key={image.id} type="button" data-preview-thumb-id={image.id} data-preview-thumb-url={image.url} onDoubleClick={(event) => { event.preventDefault(); event.stopPropagation(); }} onClick={() => { if (isSelected) return; resetPreviewTransform(); setPreviewAsset(image); }} className={`flashmuse-preview-thumb relative h-[50px] w-[50px] shrink-0 overflow-hidden rounded-[5px] border-2 bg-[#f1f1f1] transition ${isSelected ? "flashmuse-preview-thumb-selected" : "flashmuse-preview-thumb-rest"}`} aria-label={`查看${image.name}`}>
                               {isVideoThumb ? (
                                 <>
-                                  {image.posterUrl ? <Image src={getMediaThumbnailUrl(image.posterUrl)} alt={image.name} fill sizes="50px" unoptimized className="object-cover" /> : <video src={image.url} className="h-full w-full object-cover" muted playsInline preload="metadata" />}
+                                  {image.posterUrl ? <Image src={getMediaThumbnailUrl(image.posterUrl)} alt={image.name} fill sizes="50px" unoptimized className="object-cover" /> : <video src={getStaticMediaUrl(image.url)} className="h-full w-full object-cover" muted playsInline preload="metadata" />}
                                   <span className="absolute left-1 top-1 flex h-4 w-4 items-center justify-center rounded-[3px] bg-black/56 text-white backdrop-blur-[4px]">
                                     <RiFilmLine className="h-3 w-3" aria-hidden="true" />
                                   </span>
@@ -12279,7 +12861,7 @@ export function ChatWorkbench() {
                 }} onMouseUp={() => setIsPreviewDragging(false)} onMouseLeave={() => setIsPreviewDragging(false)}>
                   <div className="flex h-full w-full items-center justify-center bg-transparent">
                     {isVideoAsset(previewAsset) ? (
-                      <video src={previewAsset.url} poster={previewAsset.posterUrl} preload={previewAsset.posterUrl ? "none" : "metadata"} className="max-h-full max-w-full object-contain shadow-[0_8px_30px_rgba(0,0,0,0.08)]" controls playsInline onLoadedMetadata={(event) => {
+                      <video src={getStaticMediaUrl(previewAsset.url)} poster={getStaticMediaUrl(previewAsset.posterUrl, videoPosterVersion)} preload="metadata" className="h-full w-full max-h-full max-w-full object-contain shadow-[0_8px_30px_rgba(0,0,0,0.08)]" controls playsInline onLoadedMetadata={(event) => {
                         const video = event.currentTarget;
                         if (!video.videoWidth || !video.videoHeight) return;
                         const dimensions = { width: video.videoWidth, height: video.videoHeight };
@@ -12289,7 +12871,7 @@ export function ChatWorkbench() {
                     ) : (
                       <>
                       {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img key={`${previewAsset.id}-${previewAsset.url}`} ref={previewImageRef} src={previewAsset.url} alt={previewAsset.name} draggable={false} onDoubleClick={(event) => { event.preventDefault(); event.stopPropagation(); }} onLoad={(event) => {
+                      <img key={`${previewAsset.id}-${previewAsset.url}`} ref={previewImageRef} src={getStaticMediaUrl(previewAsset.url)} alt={previewAsset.name} draggable={false} onDoubleClick={(event) => { event.preventDefault(); event.stopPropagation(); }} onLoad={(event) => {
                         const image = event.currentTarget;
                         const currentPreviewAsset = previewAssetRef.current;
                         if (!currentPreviewAsset || (currentPreviewAsset.id !== previewAsset.id && normalizeMediaUrlForMatch(currentPreviewAsset.url) !== normalizeMediaUrlForMatch(previewAsset.url))) return;

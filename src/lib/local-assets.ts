@@ -1,14 +1,17 @@
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir, unlink, writeFile } from "node:fs/promises";
+import { mkdir, rename, unlink, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { extname, join } from "node:path";
+import { dirname, extname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
+import ffmpegPath from "ffmpeg-static";
 
 type AssetType = "image" | "video";
+type SaveAssetOptions = { userId?: string };
 
 const GENERATED_ROOT = join(process.cwd(), "public", "generated");
+const ASSET_UPLOAD_TEMP_ROOT = join(process.cwd(), ".runtime", "asset-upload-temp");
 const execFileAsync = promisify(execFile);
 
 export type ImageDimensions = {
@@ -24,10 +27,28 @@ const mimeExtensions: Record<string, string> = {
   "video/mp4": "mp4",
   "video/webm": "webm",
   "video/quicktime": "mov",
+  "text/plain": "txt",
+  "text/markdown": "md",
+  "text/csv": "csv",
+  "application/pdf": "pdf",
+  "application/msword": "doc",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+  "application/vnd.ms-excel": "xls",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
 };
 
 function getAssetFolder(type: AssetType) {
   return type === "image" ? "images" : "videos";
+}
+
+function getSafeUserSegment(userId?: string) {
+  const safeUserId = userId?.trim().replace(/[^A-Za-z0-9_-]/g, "_");
+  return safeUserId ? join("users", safeUserId) : "";
+}
+
+function getGeneratedFolder(folder: string, options: SaveAssetOptions = {}) {
+  const userSegment = getSafeUserSegment(options.userId);
+  return userSegment ? join(userSegment, folder) : folder;
 }
 
 function getExtensionFromMime(mimeType?: string | null) {
@@ -64,15 +85,43 @@ function parseDataUrl(dataUrl: string) {
   };
 }
 
-function createPublicAssetPath(type: AssetType, extension: string) {
-  const folder = getAssetFolder(type);
+function createPublicAssetPath(type: AssetType, extension: string, options: SaveAssetOptions = {}) {
+  const folder = getGeneratedFolder(getAssetFolder(type), options);
   const filename = `${Date.now()}-${randomUUID()}.${extension}`;
+  const publicFolder = folder.replace(/\\/g, "/");
 
   return {
     directory: join(GENERATED_ROOT, folder),
     filePath: join(GENERATED_ROOT, folder, filename),
-    publicUrl: `/generated/${folder}/${filename}`,
+    publicUrl: `/generated/${publicFolder}/${filename}`,
   };
+}
+
+async function writeGeneratedImageAsJpeg(buffer: Buffer, filePath: string) {
+  if (!ffmpegPath) {
+    await writeFile(filePath, buffer);
+    return;
+  }
+
+  const tempInputPath = `${filePath}.${randomUUID()}.input`;
+  await writeFile(tempInputPath, buffer);
+  try {
+    await execFileAsync(ffmpegPath, [
+      "-y",
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-i",
+      tempInputPath,
+      "-frames:v",
+      "1",
+      "-q:v",
+      "3",
+      filePath,
+    ], { maxBuffer: 20 * 1024 * 1024 });
+  } finally {
+    await unlink(tempInputPath).catch(() => undefined);
+  }
 }
 
 function getCurlCommand() {
@@ -90,23 +139,28 @@ function toCurlHeaderArgs(headers?: HeadersInit) {
   return Object.entries(toHeaderRecord(headers)).flatMap(([key, value]) => ["-H", `${key}: ${value}`]);
 }
 
-export async function saveDataUrlAsset(dataUrl: string, type: AssetType) {
+export async function saveDataUrlAsset(dataUrl: string, type: AssetType, options: SaveAssetOptions = {}) {
   const parsed = parseDataUrl(dataUrl);
 
   if (!parsed) {
     throw new Error("图片数据格式不正确，无法保存到本地。请稍后再试。");
   }
 
-  const extension = getExtensionFromMime(parsed.mimeType) ?? (type === "image" ? "png" : "mp4");
-  const asset = createPublicAssetPath(type, extension);
+  const extension = type === "image" ? "jpg" : getExtensionFromMime(parsed.mimeType) ?? "mp4";
+  const asset = createPublicAssetPath(type, extension, options);
+  const buffer = Buffer.from(parsed.base64, "base64");
 
   await mkdir(asset.directory, { recursive: true });
-  await writeFile(asset.filePath, Buffer.from(parsed.base64, "base64"));
+  if (type === "image") {
+    await writeGeneratedImageAsJpeg(buffer, asset.filePath);
+  } else {
+    await writeFile(asset.filePath, buffer);
+  }
 
   return asset.publicUrl;
 }
 
-export async function saveUploadedImageAsset(dataUrl: string, folder = "upload_image") {
+export async function saveUploadedImageAsset(dataUrl: string, folder = "upload_image", options: SaveAssetOptions = {}) {
   const parsed = parseDataUrl(dataUrl);
 
   if (!parsed) {
@@ -114,36 +168,117 @@ export async function saveUploadedImageAsset(dataUrl: string, folder = "upload_i
   }
 
   const buffer = Buffer.from(parsed.base64, "base64");
-  const extension = getExtensionFromMime(parsed.mimeType) ?? "png";
+  return saveUploadedImageBufferAsset(buffer, parsed.mimeType, folder, options);
+}
+
+export async function saveUploadedImageBufferAsset(buffer: Buffer, mimeType = "image/jpeg", folder = "upload_image", options: SaveAssetOptions = {}) {
+  const extension = "jpg";
   const hash = createHash("sha256").update(buffer).digest("hex").slice(0, 24);
-  const directory = join(GENERATED_ROOT, folder);
+  const generatedFolder = getGeneratedFolder(folder, options);
+  const publicFolder = generatedFolder.replace(/\\/g, "/");
+  const directory = join(GENERATED_ROOT, generatedFolder);
   const filePath = join(directory, `${hash}.${extension}`);
 
   await mkdir(directory, { recursive: true });
 
   if (!existsSync(filePath)) {
-    await writeFile(filePath, buffer);
+    if (getExtensionFromMime(mimeType) === "jpg") {
+      await writeFile(filePath, buffer);
+    } else {
+      await writeGeneratedImageAsJpeg(buffer, filePath);
+    }
   }
 
-  return `/generated/${folder}/${hash}.${extension}`;
+  return `/generated/${publicFolder}/${hash}.${extension}`;
+}
+
+export async function saveTemporaryUploadedImageBuffer(buffer: Buffer, mimeType = "image/jpeg", options: SaveAssetOptions = {}) {
+  const userSegment = getSafeUserSegment(options.userId) || "anonymous";
+  const token = `${Date.now()}-${randomUUID()}`;
+  const directory = join(ASSET_UPLOAD_TEMP_ROOT, userSegment);
+  const filePath = join(directory, `${token}.jpg`);
+  await mkdir(directory, { recursive: true });
+  if (getExtensionFromMime(mimeType) === "jpg") {
+    await writeFile(filePath, buffer);
+  } else {
+    await writeGeneratedImageAsJpeg(buffer, filePath);
+  }
+  return { token };
+}
+
+export async function commitTemporaryUploadedImage(token: string, options: SaveAssetOptions = {}) {
+  const userSegment = getSafeUserSegment(options.userId) || "anonymous";
+  const safeToken = token.trim().replace(/[^A-Za-z0-9_-]/g, "");
+  if (!safeToken) throw new Error("上传文件不存在");
+
+  const tempPath = join(ASSET_UPLOAD_TEMP_ROOT, userSegment, `${safeToken}.jpg`);
+  if (!existsSync(tempPath)) throw new Error("上传文件不存在或已过期");
+
+  const buffer = readFileSync(tempPath);
+  const hash = createHash("sha256").update(buffer).digest("hex").slice(0, 24);
+  const generatedFolder = getGeneratedFolder("upload_image", options);
+  const publicFolder = generatedFolder.replace(/\\/g, "/");
+  const directory = join(GENERATED_ROOT, generatedFolder);
+  const filePath = join(directory, `${hash}.jpg`);
+  await mkdir(directory, { recursive: true });
+  if (!existsSync(filePath)) await rename(tempPath, filePath);
+  else await unlink(tempPath).catch(() => undefined);
+  return `/generated/${publicFolder}/${hash}.jpg`;
+}
+
+export async function deleteTemporaryUploadedImage(token: string, options: SaveAssetOptions = {}) {
+  const userSegment = getSafeUserSegment(options.userId) || "anonymous";
+  const safeToken = token.trim().replace(/[^A-Za-z0-9_-]/g, "");
+  if (!safeToken) return false;
+  const tempPath = join(ASSET_UPLOAD_TEMP_ROOT, userSegment, `${safeToken}.jpg`);
+  await unlink(tempPath).catch(() => undefined);
+  return true;
 }
 
 export async function saveUserAvatarAsset(dataUrl: string) {
   return saveUploadedImageAsset(dataUrl, "user_avatar");
 }
 
-export async function saveRemoteAsset(url: string, type: AssetType, init?: RequestInit) {
+function getSafeFileBaseName(name: string) {
+  return name.trim().replace(/[\\/:*?"<>|#%&{}$!'@+=`]/g, "_").replace(/\s+/g, "_").slice(0, 80) || "file";
+}
+
+export async function saveUploadedFileAsset(dataUrl: string, originalName = "file", options: SaveAssetOptions = {}) {
+  const parsed = parseDataUrl(dataUrl);
+  if (!parsed) throw new Error("文件数据格式不正确，无法保存到本地。请稍后再试。");
+
+  const buffer = Buffer.from(parsed.base64, "base64");
+  const extension = getExtensionFromUrl(originalName) ?? getExtensionFromMime(parsed.mimeType) ?? "bin";
+  const hash = createHash("sha256").update(buffer).digest("hex").slice(0, 24);
+  const baseName = getSafeFileBaseName(originalName.replace(/\.[^.]+$/, ""));
+  const generatedFolder = getGeneratedFolder("files", options);
+  const publicFolder = generatedFolder.replace(/\\/g, "/");
+  const directory = join(GENERATED_ROOT, generatedFolder);
+  const filename = `${hash}-${baseName}.${extension}`;
+  const filePath = join(directory, filename);
+
+  await mkdir(directory, { recursive: true });
+  if (!existsSync(filePath)) await writeFile(filePath, buffer);
+  return `/generated/${publicFolder}/${filename}`;
+}
+
+export async function saveRemoteAsset(url: string, type: AssetType, init?: RequestInit, options: SaveAssetOptions = {}) {
   const response = await fetch(url, { ...init, cache: "no-store" });
 
   if (!response.ok) {
-    const extension = getExtensionFromUrl(url) ?? (type === "image" ? "png" : "mp4");
-    const asset = createPublicAssetPath(type, extension);
+    const extension = type === "image" ? "jpg" : getExtensionFromUrl(url) ?? "mp4";
+    const asset = createPublicAssetPath(type, extension, options);
 
     await mkdir(asset.directory, { recursive: true });
 
     try {
       const { stdout } = await execFileAsync(getCurlCommand(), ["-fL", "-sS", ...toCurlHeaderArgs(init?.headers), url], { encoding: "buffer", maxBuffer: 500 * 1024 * 1024 });
-      await writeFile(asset.filePath, Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout));
+      const buffer = Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout);
+      if (type === "image") {
+        await writeGeneratedImageAsJpeg(buffer, asset.filePath);
+      } else {
+        await writeFile(asset.filePath, buffer);
+      }
       return asset.publicUrl;
     } catch {
       throw new Error(`保存${type === "image" ? "图片" : "视频"}失败：${response.status}`);
@@ -151,20 +286,24 @@ export async function saveRemoteAsset(url: string, type: AssetType, init?: Reque
   }
 
   const contentType = response.headers.get("content-type");
-  const extension = getExtensionFromMime(contentType) ?? getExtensionFromUrl(url) ?? (type === "image" ? "png" : "mp4");
-  const asset = createPublicAssetPath(type, extension);
+  const extension = type === "image" ? "jpg" : getExtensionFromMime(contentType) ?? getExtensionFromUrl(url) ?? "mp4";
+  const asset = createPublicAssetPath(type, extension, options);
   const buffer = Buffer.from(await response.arrayBuffer());
 
   await mkdir(asset.directory, { recursive: true });
-  await writeFile(asset.filePath, buffer);
+  if (type === "image") {
+    await writeGeneratedImageAsJpeg(buffer, asset.filePath);
+  } else {
+    await writeFile(asset.filePath, buffer);
+  }
 
   return asset.publicUrl;
 }
 
-export async function saveGeneratedAsset(source: string, type: AssetType, init?: RequestInit) {
+export async function saveGeneratedAsset(source: string, type: AssetType, init?: RequestInit, options: SaveAssetOptions = {}) {
   if (source.startsWith("/generated/")) return source;
-  if (source.startsWith("data:")) return saveDataUrlAsset(source, type);
-  return saveRemoteAsset(source, type, init);
+  if (source.startsWith("data:")) return saveDataUrlAsset(source, type, options);
+  return saveRemoteAsset(source, type, init, options);
 }
 
 function getPngDimensions(buffer: Buffer): ImageDimensions | undefined {
@@ -235,6 +374,40 @@ export function getLocalImageDimensions(publicUrl: string): ImageDimensions | un
   if (!existsSync(filePath)) return undefined;
 
   return getImageDimensionsFromBuffer(readFileSync(filePath));
+}
+
+export async function createGeneratedImageThumbnail(publicUrl: string) {
+  if (!publicUrl.startsWith("/generated/")) return undefined;
+  if (!ffmpegPath) return undefined;
+
+  const cleanPublicUrl = publicUrl.split("?")[0].split("#")[0];
+  const sourcePath = join(process.cwd(), "public", cleanPublicUrl.replace(/^\//, ""));
+  if (!existsSync(sourcePath)) return undefined;
+
+  const userPathMatch = cleanPublicUrl.match(/^\/generated\/users\/([^/]+)\/(.+)$/);
+  const generatedRelativePath = (userPathMatch ? userPathMatch[2] : cleanPublicUrl.replace(/^\/generated\//, "")).replace(/\.[^.\/\\]+$/, ".jpg");
+  const thumbnailPublicUrl = userPathMatch ? `/generated/users/${userPathMatch[1]}/image-thumbnails/${generatedRelativePath.replace(/\\/g, "/")}` : `/generated/image-thumbnails/${generatedRelativePath.replace(/\\/g, "/")}`;
+  const thumbnailPath = join(process.cwd(), "public", thumbnailPublicUrl.replace(/^\//, ""));
+
+  if (existsSync(thumbnailPath)) return thumbnailPublicUrl;
+  await mkdir(dirname(thumbnailPath), { recursive: true });
+  await execFileAsync(ffmpegPath, [
+    "-y",
+    "-hide_banner",
+    "-loglevel",
+    "error",
+    "-i",
+    sourcePath,
+    "-vf",
+    "scale=256:256:force_original_aspect_ratio=decrease",
+    "-frames:v",
+    "1",
+    "-q:v",
+    "5",
+    thumbnailPath,
+  ], { timeout: 60_000, maxBuffer: 1024 * 1024 });
+
+  return thumbnailPublicUrl;
 }
 
 export async function deleteLocalGeneratedAsset(publicUrl: string) {

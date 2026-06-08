@@ -6,8 +6,9 @@ import { extname, join } from "node:path";
 import { promisify } from "node:util";
 import type { ConversationModel, ModelName } from "@/lib/models";
 import { ADVANCED_CHAT_MODEL, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, getExpectedImageDimensions, getImageModelRule, models, resolveImageSettingsForModel } from "@/lib/models";
-import { getLocalImageDimensions, saveGeneratedAsset, type ImageDimensions } from "@/lib/local-assets";
+import { createGeneratedImageThumbnail, getLocalImageDimensions, saveGeneratedAsset, type ImageDimensions } from "@/lib/local-assets";
 import { enqueueRemoteAssetSave } from "@/lib/media-save-queue";
+import { syncGeneratedFilesToAli } from "@/lib/ali-sync";
 import { toUserErrorMessage } from "@/lib/error-message";
 import { getBytePlusBaseUrl, getBytePlusModelForRequest, getConfiguredBytePlusApiKey, getConfiguredOpenRouterApiKey, getModelProviderPreference, isTextModelEnabled } from "@/lib/system-settings";
 
@@ -84,14 +85,19 @@ const CHINA_MODEL_PREFIXES = [
 ];
 const MODELS_PER_PROVIDER = 3;
 
-async function saveImageForDisplay(source: string, meta: { requestId?: string; model?: string } = {}) {
+async function saveImageForDisplay(source: string, meta: { requestId?: string; model?: string; userId?: string } = {}) {
   if (/^https?:\/\//i.test(source)) {
-    void enqueueRemoteAssetSave({ remoteUrl: source, type: "image", requestId: meta.requestId, model: meta.model });
+    void enqueueRemoteAssetSave({ remoteUrl: source, type: "image", requestId: meta.requestId, model: meta.model, userId: meta.userId });
     return source;
   }
 
   const startedAt = Date.now();
-  const localUrl = await saveGeneratedAsset(source, "image");
+  const localUrl = await saveGeneratedAsset(source, "image", undefined, { userId: meta.userId });
+  const thumbnailUrl = await createGeneratedImageThumbnail(localUrl).catch((error) => {
+    console.warn("[media-save] inline image thumbnail create failed", { requestId: meta.requestId, model: meta.model, localUrl, error: error instanceof Error ? error.message : String(error) });
+    return undefined;
+  });
+  const aliSync = await syncGeneratedFilesToAli([localUrl, thumbnailUrl]);
   if (source.startsWith("data:")) {
     console.log("[media-save] saved inline asset", {
       type: "image",
@@ -99,6 +105,9 @@ async function saveImageForDisplay(source: string, meta: { requestId?: string; m
       model: meta.model,
       saveMs: Date.now() - startedAt,
       localUrl,
+      thumbnailUrl,
+      aliSynced: aliSync.ok,
+      aliSyncError: aliSync.error,
       dimensions: getLocalImageDimensions(localUrl),
     });
   }
@@ -774,6 +783,7 @@ type ImageGenerationOptions = {
   count?: number;
   candidateMode?: "all" | "best";
   requestId?: string;
+  userId?: string;
 };
 
 function getImageRequestConfig(model: string, settings?: ImageGenerationOptions["settings"]) {
@@ -955,7 +965,7 @@ async function generateBytePlusImage(prompt: string, referenceImages: string[] =
 
     const images = getBytePlusImageUrls(data);
     const failureReasons = getBytePlusImageFailureReasons(data);
-    const displayImages = await Promise.all(images.map((image) => saveImageForDisplay(image, { requestId: options.requestId, model } )));
+    const displayImages = await Promise.all(images.map((image) => saveImageForDisplay(image, { requestId: options.requestId, model, userId: options.userId } )));
     const saveDoneAt = Date.now();
     if (displayImages.length === 0) {
       const reason = cleanNoImageReason(data.error?.message) || "empty image result";
@@ -1098,7 +1108,7 @@ export async function generateOpenRouterImage(prompt: string, referenceImages: s
 
     try {
       displayImages = await Promise.all(images.map(async (image) => {
-        return saveImageForDisplay(image, { requestId: options.requestId, model });
+        return saveImageForDisplay(image, { requestId: options.requestId, model, userId: options.userId });
       }));
     } catch (saveError) {
       if (saveError instanceof Error) throw saveError;

@@ -6,14 +6,21 @@ import { useRouter } from "next/navigation";
 import { RiAccountCircleLine, RiArrowUpLine, RiCornerDownLeftLine, RiLogoutBoxRLine, RiSettingsLine, RiShieldUserLine, RiVipDiamondLine } from "react-icons/ri";
 import { useBodyScrollLock } from "@/components/use-body-scroll-lock";
 
-const homeAssetVersion = "color-fluid-carousel-20260515";
-const heroVideos = [
-  "/home-assets/hero-background.mp4",
-  "/home-assets/hero-dragon.mp4",
-  "/home-assets/hero-great-wall.mp4",
-  "/home-assets/hero-global-human.mp4",
-  "/home-assets/hero-mecha-robot.mp4",
+const homeAssetVersion = "home-lite-carousel-20260605";
+const HOME_VIDEO_CACHE_KEY = `flashmuse-home-videos-ready-${homeAssetVersion}`;
+const heroSlides = [
+  { image: "/home-assets/hero-poster-lite.jpg", video: "/home-assets/hero-background-lite.mp4" },
+  { image: "/home-assets/hero-dragon-reference-lite.jpg", video: "/home-assets/hero-dragon-lite.mp4" },
+  { image: "/home-assets/hero-great-wall-reference-lite.jpg", video: "/home-assets/hero-great-wall-lite.mp4" },
+  { image: "/home-assets/hero-global-human-reference-lite.jpg", video: "/home-assets/hero-global-human-lite.mp4" },
+  { image: "/home-assets/hero-mecha-robot-reference-lite.jpg", video: "/home-assets/hero-mecha-robot-lite.mp4" },
 ];
+const staticAssetBaseUrl = (process.env.NEXT_PUBLIC_STATIC_BASE_URL ?? "").replace(/\/$/, "");
+
+function staticAssetUrl(path: string) {
+  if (!staticAssetBaseUrl || /^https?:\/\//i.test(path)) return path;
+  return `${staticAssetBaseUrl}${path.startsWith("/") ? path : `/${path}`}`;
+}
 
 type LoginMode = "password" | "code";
 type LoginStep = "email" | "password" | "code";
@@ -70,7 +77,8 @@ function openWorkspaceFresh() {
 export default function Home() {
   const router = useRouter();
   const [isLoginOpen, setIsLoginOpen] = useState(false);
-  const [activeVideoIndex, setActiveVideoIndex] = useState(0);
+  const [activeHeroIndex, setActiveHeroIndex] = useState(0);
+  const [isHeroVideoReady, setIsHeroVideoReady] = useState(false);
   const [homePrompt, setHomePrompt] = useState("");
   const [loginMode, setLoginMode] = useState<LoginMode>("password");
   const [loginStep, setLoginStep] = useState<LoginStep>("email");
@@ -99,7 +107,7 @@ export default function Home() {
   const loginHistoryMenuRef = useRef<HTMLDivElement | null>(null);
   const userMenuRef = useRef<HTMLDivElement | null>(null);
 
-  const activeVideo = heroVideos[activeVideoIndex];
+  const activeHeroSlide = heroSlides[activeHeroIndex];
   const canSubmitEmail = loginEmail.trim().length > 0 && !isLoginSubmitting;
   const defaultUserAvatar = getDefaultUserAvatar(currentUser?.email ?? "");
 
@@ -197,6 +205,66 @@ export default function Home() {
   useEffect(() => {
     const timer = window.setTimeout(() => void refreshCurrentUser(), 0);
     return () => window.clearTimeout(timer);
+  }, []);
+
+  useEffect(() => {
+    if (isHeroVideoReady) return;
+    const timer = window.setInterval(() => {
+      setActiveHeroIndex((current) => (current + 1) % heroSlides.length);
+    }, 4200);
+    return () => window.clearInterval(timer);
+  }, [isHeroVideoReady]);
+
+  useEffect(() => {
+    if (window.localStorage.getItem(HOME_VIDEO_CACHE_KEY) === "1") {
+      setIsHeroVideoReady(true);
+      return;
+    }
+
+    let cancelled = false;
+    let hasSwitchedToVideo = false;
+    const readyIndexes = new Set<number>();
+    const preloadVideos: HTMLVideoElement[] = [];
+
+    const preloadTimer = window.setTimeout(() => {
+      heroSlides.forEach((slide, index) => {
+        const video = document.createElement("video");
+        preloadVideos.push(video);
+        video.muted = true;
+        video.playsInline = true;
+        video.preload = "auto";
+
+        const markReady = () => {
+          if (cancelled) return;
+          readyIndexes.add(index);
+
+          if (!hasSwitchedToVideo) {
+            hasSwitchedToVideo = true;
+            setActiveHeroIndex(index);
+            setIsHeroVideoReady(true);
+            window.localStorage.setItem(HOME_VIDEO_CACHE_KEY, "1");
+          }
+
+          if (readyIndexes.size === heroSlides.length) {
+            window.localStorage.setItem(HOME_VIDEO_CACHE_KEY, "1");
+          }
+        };
+
+        video.addEventListener("canplaythrough", markReady, { once: true });
+        video.addEventListener("loadeddata", markReady, { once: true });
+        video.src = `${staticAssetUrl(slide.video)}?v=${homeAssetVersion}`;
+        video.load();
+      });
+    }, 300);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(preloadTimer);
+      preloadVideos.forEach((video) => {
+        video.removeAttribute("src");
+        video.load();
+      });
+    };
   }, []);
 
   useEffect(() => {
@@ -332,31 +400,45 @@ export default function Home() {
   };
 
   return (
-    <main className="relative min-h-screen overflow-hidden bg-black text-white">
+    <main className="relative min-h-screen overflow-hidden bg-black text-white" style={{ minHeight: "100vh", backgroundColor: "#000000", color: "#ffffff" }}>
       <div
         className="absolute inset-0 transition-transform duration-300 ease-out"
         style={{ transform: isLoginOpen ? "translateX(-8vw)" : "translateX(0)", filter: isLoginOpen ? "blur(8px)" : undefined, transition: "transform 300ms ease-out, filter 300ms ease-out" }}
       >
-        <video
-          key={activeVideo}
-          className="absolute inset-0 h-full w-full object-cover"
-          src={`${activeVideo}?v=${homeAssetVersion}`}
-          autoPlay
-          muted
-          playsInline
-          preload="auto"
-          onEnded={() => setActiveVideoIndex((current) => (current + 1) % heroVideos.length)}
-        />
+        {isHeroVideoReady ? (
+          <video
+            key={activeHeroSlide.video}
+            className="absolute inset-0 h-full w-full object-cover"
+            src={`${staticAssetUrl(activeHeroSlide.video)}?v=${homeAssetVersion}`}
+            autoPlay
+            muted
+            playsInline
+            preload="auto"
+            onEnded={() => setActiveHeroIndex((current) => (current + 1) % heroSlides.length)}
+            onError={() => {
+              window.localStorage.removeItem(HOME_VIDEO_CACHE_KEY);
+              setIsHeroVideoReady(false);
+            }}
+          />
+        ) : (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            key={activeHeroSlide.image}
+            className="absolute inset-0 h-full w-full object-cover"
+            src={`${staticAssetUrl(activeHeroSlide.image)}?v=${homeAssetVersion}`}
+            alt="闪念首页轮播背景"
+          />
+        )}
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_18%_22%,rgba(88,130,255,0.28),transparent_26%),radial-gradient(circle_at_78%_20%,rgba(62,211,218,0.2),transparent_28%),linear-gradient(90deg,rgba(0,0,0,0.78),rgba(0,0,0,0.42)_46%,rgba(0,0,0,0.72))]" />
         <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(0,0,0,0.34),transparent_34%,rgba(0,0,0,0.78))]" />
         <div className="absolute bottom-8 left-1/2 z-10 flex -translate-x-1/2 gap-2">
-          {heroVideos.map((video, index) => (
+          {heroSlides.map((slide, index) => (
             <button
-              key={video}
+              key={slide.video}
               type="button"
-              onClick={() => setActiveVideoIndex(index)}
-              className={`h-1 rounded-full transition-all ${index === activeVideoIndex ? "w-8 bg-white/82" : "w-3 bg-white/28 hover:bg-white/46"}`}
-              aria-label={`切换首页视频 ${index + 1}`}
+              onClick={() => setActiveHeroIndex(index)}
+              className={`h-1 rounded-full transition-all ${index === activeHeroIndex ? "w-8 bg-white/82" : "w-3 bg-white/28 hover:bg-white/46"}`}
+              aria-label={`切换首页背景 ${index + 1}`}
             />
           ))}
         </div>
@@ -369,9 +451,9 @@ export default function Home() {
       <header className="flex items-center justify-between px-6 py-5 sm:px-10 lg:px-14">
         <div className="flex items-center gap-2.5">
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src="/home-assets/logo.png" alt="闪念 FlashMuse" className="h-[50px] w-[50px] object-contain drop-shadow-[0_0_18px_rgba(116,166,255,0.38)]" />
+          <img src={staticAssetUrl("/home-assets/logo.png")} alt="闪念 FlashMuse" className="h-[50px] w-[50px] object-contain drop-shadow-[0_0_18px_rgba(116,166,255,0.38)]" />
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src="/home-assets/logo-text.png" alt="闪念" className="w-auto object-contain drop-shadow-[0_0_18px_rgba(255,255,255,0.2)]" style={{ height: 30, filter: "brightness(0) invert(1)" }} />
+          <img src={staticAssetUrl("/home-assets/logo-text.png")} alt="闪念" className="w-auto object-contain drop-shadow-[0_0_18px_rgba(255,255,255,0.2)]" style={{ height: 30, filter: "brightness(0) invert(1)" }} />
         </div>
         <div className="flex items-center gap-3">
           {isAuthLoaded && currentUser ? (
@@ -539,9 +621,9 @@ export default function Home() {
             <div className="flex h-full flex-col items-center justify-center px-12" style={{ transform: "translateY(-14%)" }}>
               <div className="flex items-center justify-center gap-3">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src="/home-assets/logo.png" alt="闪念 FlashMuse" className="h-[72px] w-[72px] object-contain" />
+                <img src={staticAssetUrl("/home-assets/logo.png")} alt="闪念 FlashMuse" className="h-[72px] w-[72px] object-contain" />
                 {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img src="/home-assets/logo-text.png" alt="闪念" className="w-auto object-contain" style={{ height: 34 }} />
+                <img src={staticAssetUrl("/home-assets/logo-text.png")} alt="闪念" className="w-auto object-contain" style={{ height: 34 }} />
               </div>
 
               <form

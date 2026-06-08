@@ -11,6 +11,8 @@ function getMediaThumbnailUrl(url: string) {
 }
 
 function getLocalVideoPosterUrl(url: string) {
+  const userVideoMatch = url.match(/^\/generated\/users\/([^/]+)\/videos\//);
+  if (userVideoMatch) return url.replace(`/generated/users/${userVideoMatch[1]}/videos/`, `/generated/users/${userVideoMatch[1]}/video-posters/`).replace(/\.[^.]+$/, ".jpg");
   if (!url.startsWith("/generated/videos/")) return undefined;
   return url.replace("/generated/videos/", "/generated/video-posters/").replace(/\.[^.]+$/, ".jpg");
 }

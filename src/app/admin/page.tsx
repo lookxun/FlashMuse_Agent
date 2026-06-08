@@ -652,7 +652,7 @@ function getWorkspaceConversationUploadItems(state: unknown) {
       const createdAtTs = finiteNumber(message.createdAt);
       const imageReferences = Array.isArray(message.imageReferences) ? message.imageReferences.filter(isRecord) : [];
       const imageNames = new Map(imageReferences.map((reference) => [getString(reference.url), getString(reference.name)]));
-      const uploadedImages = getStringArray(message.images).filter((url) => normalizeMediaUrlForAdmin(url).startsWith("/generated/upload_image/"));
+      const uploadedImages = getStringArray(message.images).filter((url) => /\/generated\/(?:users\/[^/]+\/)?upload_image\//.test(normalizeMediaUrlForAdmin(url)));
 
       uploadedImages.forEach((url, index) => {
         items.push({

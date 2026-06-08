@@ -213,6 +213,7 @@ export async function POST(request: Request) {
       const videoUrl = getVideoUrl(task);
 
       if ((status === "succeeded" || status === "success" || status === "completed" || status === "complete") && videoUrl) {
+        const user = await getCurrentUser();
         const needsOpenRouterAuth = videoUrl.startsWith("https://openrouter.ai/api/v1/videos/");
         const saveJob = await enqueueRemoteAssetSave({
           remoteUrl: videoUrl,
@@ -222,6 +223,7 @@ export async function POST(request: Request) {
           requestId: body.requestId ?? taskId,
           model: body.model,
           prompt: body.prompt ?? "",
+          userId: user?.id,
         });
         const saveQueuedAt = Date.now();
 
@@ -241,7 +243,6 @@ export async function POST(request: Request) {
 
         await upsertVideoManifestEntry({ taskId, prompt: body.prompt ?? "", localVideoUrl: saveJob?.localUrl ?? videoUrl, remoteVideoUrl: videoUrl, posterUrl: saveJob?.posterUrl });
 
-        const user = await getCurrentUser();
         const usage = withBytePlusVideoUsd(getUsageMeta(task) ?? body.usage, body.model, body.settings);
         const credit = user ? await chargeCredits(user.id, "video", usage, { conversationId: body.conversationId, conversationTitle: body.conversationTitle, requestId: body.requestId ?? taskId, label: "视频生成", model: body.model, videoCount: 1, metadata: { ...body.metadata, mediaUrls: [saveJob?.localUrl ?? videoUrl], remoteMediaUrls: [videoUrl], posterUrl: saveJob?.posterUrl, delivered: true, savedLocal: saveJob?.status === "saved", localSaveStatus: saveJob?.status ?? "pending", mediaSaveJobId: saveJob?.id } }) : undefined;
 

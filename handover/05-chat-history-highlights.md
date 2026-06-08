@@ -2,6 +2,41 @@
 
 这个文件用于保留和用户对话中的重要结论，帮助下一个 AI 接手时不丢上下文。
 
+## 2026-06-08 本轮关键交接
+
+### 正式域名、HTTPS 和 DNS-01 证书
+
+- 本轮后续已把应用环境变量正式切到域名。马来 `.env.local` 关键项现在是：`NEXT_PUBLIC_UPLOAD_BASE_URL=https://api.venusface.com`、`NEXT_PUBLIC_STATIC_BASE_URL=https://static.venusface.com`、`NEXT_PUBLIC_PRIMARY_BASE_URL=https://main.venusface.com`、`UPLOAD_CORS_ORIGINS=https://main.venusface.com,https://ali.venusface.com,https://static.venusface.com`、`FORCE_INSECURE_AUTH_COOKIE=false`。已重新 build、重启 PM2、同步阿里 `_next/static`，并清阿里 Nginx 缓存。
+- 为保证马来主站原则，`chat-workbench.tsx` 已补 `NEXT_PUBLIC_PRIMARY_BASE_URL` 判断：访问 `main.venusface.com` 或 `api.venusface.com` 时不强制把 `/generated` 转阿里静态；访问 `ali.venusface.com` 时才走 `https://static.venusface.com`。`toLocalGeneratedUrl()` 也已兼容 4 个正式域名的 generated 绝对 URL。
+- 用户提供正式 DNS：`main.venusface.com`、`api.venusface.com` 指向马来 `101.47.19.109`；`ali.venusface.com`、`static.venusface.com` 指向阿里 `101.37.129.164`。
+- 马来 `main/api` 已用 certbot 成功配置 HTTPS，证书在 `/etc/letsencrypt/live/main.venusface.com/`，`https://main.venusface.com/` 与 `https://api.venusface.com/api/model-availability` 已返回 200。certbot 改配置后曾让旧 IP HTTP 404，已新增 `flashmuse-ip.conf` 并让 FlashMuse IP 站点成为 80 默认站，恢复 `http://101.47.19.109/`，避免阿里回源坏掉。
+- 阿里 `ali/static` 的 HTTP-01 证书验证被公网 `Server: Beaver` 403 拦截，和 dvideo 当前 HTTP 表现类似；因此改用 DNS-01 手动 TXT 验证。用户添加过两条 TXT：`_acme-challenge.ali` 和 `_acme-challenge.static`，签发成功后可删除。证书名 `flashmuse-ali-static`，路径 `/etc/letsencrypt/live/flashmuse-ali-static/`，有效期到 `2026-09-06`。
+- 阿里 Nginx 已给 `ali/static` 配 443，服务器本机测试 `https://ali.venusface.com/`、`https://static.venusface.com/flashmuse-cache-health`、`https://dvideo.venusface.com/` 均 200。本机外网直连阿里 443 会 reset，dvideo 也一样，后续以用户浏览器/国内网络实际打开为准。
+- 后续提醒：`flashmuse-ali-static` 是手动 DNS-01 证书，不会自动续期。DNS API 自动续期以后再做，方案是创建阿里云 RAM 最小权限 AccessKey，只允许管理 `venusface.com` DNS；服务器安装 Aliyun DNS certbot 插件；凭据放 `/root/.secrets/certbot/aliyun.ini` 且 `chmod 600`；用 DNS 插件重签并 `certbot renew --dry-run`。不要把 AccessKey 发到聊天、写入文档或提交 Git。
+
+### 架构原则：马来主站，阿里副站
+
+- 用户最终确认：马来服务器是主站，阿里只是国内加速副站。以后所有方案先保证马来正确、稳定、速度快，再保证阿里同步和国内访问速度。马来直连不能因为阿里未同步而卡住。
+- 阿里存在的目的：国内用户访问快、静态资源本地读取、入口反代。阿里不是主数据源，不能让马来主站依赖阿里状态才能正常显示。
+- 域名建议：主域名或 `app.xxx.com` 指向阿里 `101.37.129.164`，`static.xxx.com` 指向阿里，`api.xxx.com` 指向马来 `101.47.19.109`。简单版可以主域名指阿里、`api` 指马来。`.cn` 可用，不必须 `.com`；主站解析到大陆阿里通常需要 ICP 备案。
+- `http://101.47.19.109/admin?tab=records` 是直连马来后台；`http://101.37.129.164/admin` 是阿里入口反代后台。
+
+### 媒体保存和同步新规则
+
+- 图片远程 URL 流程：供应商临时 URL 先显示 -> 马来下载 -> 保存为 JPG -> 马来生成 256px JPG 缩略图 -> 马来主动 rsync 原图和缩略图到阿里 -> `/api/media-save-status` 返回 `localUrl / thumbnailUrl / aliSynced / aliSyncError` -> 阿里入口等同步确认和预加载成功后替换。马来直连优先用马来 `/generated`，不等阿里。
+- 视频远程 URL 流程：供应商临时 URL 先显示 -> 马来下载视频 -> 马来抽 640px 封面 -> 马来生成封面 256px 缩略图 -> 马来主动同步视频、封面、封面缩略图到阿里 -> 状态接口返回 `localUrl / posterUrl / posterThumbnailUrl / aliSynced`。
+- GPT-5.4 Image 2、Gemini 等可能返回 `data/base64` inline 图片，不走远程临时 URL 队列。此前保存 JPG 后直接返回，缺缩略图和主动同步阿里；本轮已补为保存 JPG 后生成缩略图并主动同步阿里。
+- 新增 `src/lib/ali-sync.ts`。马来已生成 `/root/.ssh/flashmuse_to_ali_ed25519`，阿里已加公钥。马来 `.env.local` 已设置 `ALI_SYNC_GENERATED_ENABLED=true`、`ALI_SYNC_HOST=101.37.129.164`、`ALI_SYNC_DEST_ROOT=/var/www/flashmuse-static/generated`。
+- 阿里原每分钟 `/generated` cron 保留，但只是兜底。实时链路以后依赖马来主动推送。
+
+### 本轮问题修复
+
+- 资产库上传线上卡 `6%`：`6%` 是选择图片后初始进度，真实上传启动曾依赖同一回调内临时任务数组和线上旧 JS，导致 XHR 没启动。已改为槽位保存 `uploadFile`，effect 自动扫描 `uploading + uploadFile` 并启动上传；上传阶段会显示 `8% / 12% / 15%+`，并加 token 20 秒超时、XHR 10 分钟超时。
+- 专业图片/视频模式提示词参考图显示：如果用户文本里写了 `@文件名`，小图和 `@文件名` 在原文位置显示；如果没有 `@`，本次参考图小图显示在提示词最前面；同一图不重复。小图和悬停预览直接用原图静态地址，避免小缩略图裂图。
+- 马来预览页下载按钮变跳转：原因是下载链接被转成阿里跨域静态地址，浏览器忽略 `download`。已改为同源 `/generated/...` 下载，马来从马来下载，阿里从阿里下载。
+- Gemini/GPT 图片缩略图一直加载：原因是前端只读静态缩略图，旧图或缺缩略图会 404。已加 `onError` 回退原图，且主链路已改为马来保存时就生成缩略图。
+- 部署时注意：改前端后必须马来 `npm run build`、`pm2 restart flashmuse --update-env`、`pm2 save`，再同步阿里 `/_next/static`。本轮因阿里拉马来 rsync 曾卡住，改用马来主动推送 `_next/static` 到阿里也验证可行。
+
 ## 2026-06-05 本轮关键交接
 
 ### 本轮追加：服务器部署、HTTP 登录修复和工作台运行修复

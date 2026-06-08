@@ -42,9 +42,11 @@ export async function GET(request: Request) {
     return toFallbackRedirect(request, cleanPublicUrl);
   }
 
-  const generatedRelativePath = cleanPublicUrl.replace(/^\/generated\//, "").replace(/\.[^.\/\\]+$/, ".jpg");
-  const thumbnailPath = join(THUMBNAIL_ROOT, generatedRelativePath);
-  const thumbnailPublicUrl = `/generated/image-thumbnails/${generatedRelativePath.replace(/\\/g, "/")}`;
+  const userPathMatch = cleanPublicUrl.match(/^\/generated\/users\/([^/]+)\/(.+)$/);
+  const generatedRelativePath = (userPathMatch ? userPathMatch[2] : cleanPublicUrl.replace(/^\/generated\//, "")).replace(/\.[^.\/\\]+$/, ".jpg");
+  const thumbnailRoot = userPathMatch ? join(GENERATED_ROOT, "users", userPathMatch[1], "image-thumbnails") : THUMBNAIL_ROOT;
+  const thumbnailPath = join(thumbnailRoot, generatedRelativePath);
+  const thumbnailPublicUrl = userPathMatch ? `/generated/users/${userPathMatch[1]}/image-thumbnails/${generatedRelativePath.replace(/\\/g, "/")}` : `/generated/image-thumbnails/${generatedRelativePath.replace(/\\/g, "/")}`;
 
   try {
     if (!existsSync(thumbnailPath)) {
@@ -57,7 +59,7 @@ export async function GET(request: Request) {
         "-i",
         sourcePath,
         "-vf",
-        "scale=512:512:force_original_aspect_ratio=decrease",
+        "scale=256:256:force_original_aspect_ratio=decrease",
         "-frames:v",
         "1",
         "-q:v",

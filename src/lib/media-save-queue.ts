@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { getLocalImageDimensions, saveRemoteAsset, type ImageDimensions } from "@/lib/local-assets";
+import { syncGeneratedFilesToAli } from "@/lib/ali-sync";
+import { createGeneratedImageThumbnail, getLocalImageDimensions, saveRemoteAsset, type ImageDimensions } from "@/lib/local-assets";
 import { createVideoPosterFromLocalVideo } from "@/lib/video-poster";
 import { getOpenRouterHeaders, getRequiredOpenRouterApiKey } from "@/lib/openrouter-video";
 import { upsertVideoManifestEntry } from "@/lib/video-manifest";
@@ -16,8 +17,13 @@ export type MediaSaveJob = {
   type: MediaSaveType;
   status: MediaSaveStatus;
   localUrl?: string;
+  thumbnailUrl?: string;
   posterUrl?: string;
+  posterThumbnailUrl?: string;
   dimensions?: ImageDimensions;
+  aliSynced?: boolean;
+  aliSyncedAt?: number;
+  aliSyncError?: string;
   attempts: number;
   error?: string;
   createdAt: number;
@@ -29,6 +35,7 @@ export type MediaSaveJob = {
   requestId?: string;
   model?: string;
   prompt?: string;
+  userId?: string;
 };
 
 const RUNTIME_DIR = join(process.cwd(), ".runtime");
@@ -41,8 +48,8 @@ function isRemoteUrl(url: string) {
   return /^https?:\/\//i.test(url);
 }
 
-function getJobId(remoteUrl: string) {
-  return createHash("sha256").update(remoteUrl).digest("hex").slice(0, 24);
+function getJobId(remoteUrl: string, userId?: string) {
+  return createHash("sha256").update(`${userId ?? "legacy"}:${remoteUrl}`).digest("hex").slice(0, 24);
 }
 
 function parseTosDate(value: string | null) {
@@ -167,13 +174,22 @@ async function processMediaSaveJob(id: string) {
         queuedMs: downloadStartedAt - job.createdAt,
         ...getRemoteUrlDebugInfo(job.remoteUrl),
       });
-      const localUrl = await saveRemoteAsset(job.remoteUrl, job.type, getRequestInit(job));
+      const localUrl = await saveRemoteAsset(job.remoteUrl, job.type, getRequestInit(job), { userId: job.userId });
       const dimensions = job.type === "image" ? getLocalImageDimensions(localUrl) : undefined;
+      const thumbnailUrl = job.type === "image" ? await createGeneratedImageThumbnail(localUrl).catch((error) => {
+        console.warn("[media-save] image thumbnail create failed", { id: job.id, requestId: job.requestId, model: job.model, localUrl, error: error instanceof Error ? error.message : String(error) });
+        return undefined;
+      }) : undefined;
       const posterUrl = job.type === "video" ? await createVideoPosterFromLocalVideo(localUrl).catch((error) => {
         console.warn("[media-save] video poster create failed", { id: job.id, requestId: job.requestId, model: job.model, localUrl, error: error instanceof Error ? error.message : String(error) });
         return undefined;
       }) : undefined;
-      const savedJob = await markJob(job.id, { status: "saved", localUrl, posterUrl, dimensions, error: undefined, nextRetryAt: undefined });
+      const posterThumbnailUrl = posterUrl ? await createGeneratedImageThumbnail(posterUrl).catch((error) => {
+        console.warn("[media-save] video poster thumbnail create failed", { id: job.id, requestId: job.requestId, model: job.model, posterUrl, error: error instanceof Error ? error.message : String(error) });
+        return undefined;
+      }) : undefined;
+      const aliSync = await syncGeneratedFilesToAli(job.type === "image" ? [localUrl, thumbnailUrl] : [localUrl, posterUrl, posterThumbnailUrl]);
+      const savedJob = await markJob(job.id, { status: "saved", localUrl, thumbnailUrl, posterUrl, posterThumbnailUrl, dimensions, aliSynced: aliSync.ok, aliSyncedAt: aliSync.ok ? Date.now() : undefined, aliSyncError: aliSync.error, error: undefined, nextRetryAt: undefined });
       const savedAt = Date.now();
 
       if (savedJob?.type === "video" && savedJob.videoTaskId) {
@@ -195,7 +211,11 @@ async function processMediaSaveJob(id: string) {
         queuedMs: savedAt - job.createdAt,
         downloadMs: savedAt - downloadStartedAt,
         localUrl,
+        thumbnailUrl,
         posterUrl,
+        posterThumbnailUrl,
+        aliSynced: aliSync.ok,
+        aliSyncError: aliSync.error,
         dimensions,
         ...getRemoteUrlDebugInfo(job.remoteUrl),
       });
@@ -226,12 +246,13 @@ export async function enqueueRemoteAssetSave(input: {
   requestId?: string;
   model?: string;
   prompt?: string;
+  userId?: string;
 }) {
   if (!isRemoteUrl(input.remoteUrl)) return undefined;
-  const id = getJobId(input.remoteUrl);
+  const id = getJobId(input.remoteUrl, input.userId);
   const now = Date.now();
   const job = await updateJobs((jobs) => {
-    const existing = jobs.find((item) => item.id === id || item.remoteUrl === input.remoteUrl);
+    const existing = jobs.find((item) => item.id === id || (item.remoteUrl === input.remoteUrl && item.userId === input.userId));
     if (existing) {
       existing.type = input.type;
       existing.authProvider = input.authProvider ?? existing.authProvider;
@@ -239,6 +260,7 @@ export async function enqueueRemoteAssetSave(input: {
       existing.requestId = input.requestId ?? existing.requestId;
       existing.model = input.model ?? existing.model;
       existing.prompt = input.prompt ?? existing.prompt;
+      existing.userId = input.userId ?? existing.userId;
       existing.updatedAt = now;
       return { ...existing };
     }
@@ -257,6 +279,7 @@ export async function enqueueRemoteAssetSave(input: {
       requestId: input.requestId,
       model: input.model,
       prompt: input.prompt,
+      userId: input.userId,
     };
     jobs.push(next);
     console.log("[media-save] queued remote asset", {
@@ -283,19 +306,50 @@ export async function enqueueRemoteAssetSave(input: {
   return job;
 }
 
-export async function getMediaSaveStatuses(remoteUrls: string[]) {
+export async function getMediaSaveStatuses(remoteUrls: string[], userId?: string) {
   const uniqueUrls = Array.from(new Set(remoteUrls.filter(isRemoteUrl)));
   const jobs = await readJobsUnsafe();
-  const byUrl = new Map(jobs.map((job) => [job.remoteUrl, job]));
+  const byUrl = new Map(jobs.map((job) => [`${job.userId ?? "legacy"}:${job.remoteUrl}`, job]));
+  const legacyByUrl = new Map(jobs.filter((job) => !job.userId).map((job) => [job.remoteUrl, job]));
   const statuses = [] as MediaSaveJob[];
 
   for (const remoteUrl of uniqueUrls) {
-    let job = byUrl.get(remoteUrl);
+    let job = byUrl.get(`${userId ?? "legacy"}:${remoteUrl}`) ?? legacyByUrl.get(remoteUrl);
     if (!job) {
       const type: MediaSaveType = /\.(mp4|mov|webm)(\?|$)/i.test(remoteUrl) ? "video" : "image";
-      job = await enqueueRemoteAssetSave({ remoteUrl, type });
+      job = await enqueueRemoteAssetSave({ remoteUrl, type, userId });
     } else if ((job.status === "pending" || job.status === "failed") && (!job.nextRetryAt || Date.now() >= job.nextRetryAt)) {
       scheduleJob(job);
+    }
+    if (job && job.status === "saved" && job.type === "image" && !job.thumbnailUrl) {
+      const currentJob = job;
+      const localUrl = currentJob.localUrl;
+      if (!localUrl) {
+        statuses.push(currentJob);
+        continue;
+      }
+      const thumbnailUrl = await createGeneratedImageThumbnail(localUrl).catch((error) => {
+        console.warn("[media-save] image thumbnail backfill failed", { id: currentJob.id, requestId: currentJob.requestId, model: currentJob.model, localUrl, error: error instanceof Error ? error.message : String(error) });
+        return undefined;
+      });
+      if (thumbnailUrl) job = await markJob(currentJob.id, { thumbnailUrl }) ?? { ...currentJob, thumbnailUrl };
+    }
+    if (job && job.status === "saved" && job.type === "video" && job.posterUrl && !job.posterThumbnailUrl) {
+      const currentJob = job;
+      const posterUrl = currentJob.posterUrl;
+      if (!posterUrl) {
+        statuses.push(currentJob);
+        continue;
+      }
+      const posterThumbnailUrl = await createGeneratedImageThumbnail(posterUrl).catch((error) => {
+        console.warn("[media-save] video poster thumbnail backfill failed", { id: currentJob.id, requestId: currentJob.requestId, model: currentJob.model, posterUrl, error: error instanceof Error ? error.message : String(error) });
+        return undefined;
+      });
+      if (posterThumbnailUrl) job = await markJob(currentJob.id, { posterThumbnailUrl }) ?? { ...currentJob, posterThumbnailUrl };
+    }
+    if (job && job.status === "saved" && job.aliSynced !== true) {
+      const aliSync = await syncGeneratedFilesToAli(job.type === "image" ? [job.localUrl, job.thumbnailUrl] : [job.localUrl, job.posterUrl, job.posterThumbnailUrl]);
+      job = await markJob(job.id, { aliSynced: aliSync.ok, aliSyncedAt: aliSync.ok ? Date.now() : job.aliSyncedAt, aliSyncError: aliSync.error }) ?? { ...job, aliSynced: aliSync.ok, aliSyncError: aliSync.error };
     }
     if (job) statuses.push(job);
   }

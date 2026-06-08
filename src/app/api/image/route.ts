@@ -94,6 +94,7 @@ export async function POST(request: Request) {
       count: body.count,
       candidateMode: body.candidateMode,
       requestId: body.requestId,
+      userId: user?.id,
     });
     const providerReturnedImageCount = result.images.length;
     const deliveredImages = pickRequestedImages(result.images, result.imageDimensions, requestedImageCount, body.model, body.settings);

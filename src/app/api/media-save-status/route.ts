@@ -1,18 +1,25 @@
 import { NextResponse } from "next/server";
 import { getMediaSaveStatuses } from "@/lib/media-save-queue";
+import { getCurrentUser } from "@/lib/auth";
 
 export async function POST(request: Request) {
   try {
     const body = (await request.json()) as { urls?: unknown };
     const urls = Array.isArray(body.urls) ? body.urls.filter((url): url is string => typeof url === "string") : [];
-    const jobs = await getMediaSaveStatuses(urls);
+    const user = await getCurrentUser();
+    const jobs = await getMediaSaveStatuses(urls, user?.id);
 
     return NextResponse.json({
       jobs: jobs.map((job) => ({
         id: job.id,
         remoteUrl: job.remoteUrl,
         localUrl: job.localUrl,
+        thumbnailUrl: job.thumbnailUrl,
         posterUrl: job.posterUrl,
+        posterThumbnailUrl: job.posterThumbnailUrl,
+        aliSynced: job.aliSynced,
+        aliSyncedAt: job.aliSyncedAt,
+        aliSyncError: job.aliSyncError,
         type: job.type,
         status: job.status,
         attempts: job.attempts,

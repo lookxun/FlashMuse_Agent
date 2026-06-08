@@ -46,6 +46,14 @@ const bytePlusVideoModels = [
   { label: "Seedance 2.0", endpointId: "ep-20260521133841-nn8bg" },
 ];
 
+const agentBackupImageModelIds = imageGenerationModels
+  .map((model) => model.id)
+  .filter((modelId) => modelId !== DEFAULT_IMAGE_MODEL && modelId !== "openai/gpt-5.4-image-2");
+
+const agentBackupVideoModelIds = videoGenerationModels
+  .map((model) => model.id)
+  .filter((modelId) => modelId !== DEFAULT_VIDEO_MODEL && modelId !== "bytedance/seedance-2.0");
+
 function uniqueModelItems(items: ModelUsageItem[]) {
   const seen = new Set<string>();
   return items.filter((item) => {
@@ -80,7 +88,7 @@ const modelUsageGroups = [
   },
   {
     title: "对话流图片生成",
-    note: "图片生成模式和 Agent 自动生图都会用到。",
+    note: "图片生成专业模式使用。Agent 自动生图有单独策略。",
     models: [
       ...imageGenerationModels.map((model) => ({ badge: "", modelId: model.id, ...(model.id === "bytedance-seed/seedream-4.5" ? { providerKey: "conversation-image.seedream-4-5", bytePlusStatic: bytePlusImageModels[1] } : {}) })),
       { badge: "", modelId: "", providerKey: "conversation-image.seedream-5-0", bytePlusStatic: bytePlusImageModels[2] },
@@ -96,19 +104,19 @@ const modelUsageGroups = [
   },
   {
     title: "对话流视频生成",
-    note: "视频生成模式和 Agent 自动生视频都会用到。",
+    note: "视频生成专业模式使用。Agent 自动生视频有单独策略。",
     models: videoGenerationModels.map((model) => ({ badge: "", modelId: model.id, ...(model.id === "bytedance/seedance-2.0-fast" ? { providerKey: "video.seedance-2-0-fast", bytePlusStatic: bytePlusVideoModels[0] } : model.id === "bytedance/seedance-2.0" ? { providerKey: "video.seedance-2-0", bytePlusStatic: bytePlusVideoModels[1] } : {}) })),
   },
   {
     title: "Agent 自动生成策略",
-    note: "普通默认低成本；多次不满意或明确 4K 时会切换到更高规格模型。",
+    note: "普通/高级 Agent 优先使用对应首选模型；首选不可用时，才使用下方已开启的备选图片或备选视频。",
     models: uniqueModelItems([
-      { badge: "默认图片", modelId: DEFAULT_IMAGE_MODEL, providerKey: "agent-image.seedream-4-5", bytePlusStatic: bytePlusImageModels[1] },
-      { badge: "高质图片", modelId: "openai/gpt-5.4-image-2" },
-      { badge: "快速图片", modelId: "google/gemini-3.1-flash-image-preview" },
-      { badge: "默认视频", modelId: DEFAULT_VIDEO_MODEL, providerKey: "agent-video.seedance-2-0-fast", bytePlusStatic: bytePlusVideoModels[0] },
-      { badge: "高质视频", modelId: "bytedance/seedance-2.0", providerKey: "agent-video.seedance-2-0", bytePlusStatic: bytePlusVideoModels[1] },
-      { badge: "4K视频", modelId: "google/veo-3.1" },
+      { badge: "普通图片", modelId: DEFAULT_IMAGE_MODEL, providerKey: "agent-image.seedream-4-5", bytePlusStatic: bytePlusImageModels[1] },
+      { badge: "高级图片", modelId: "openai/gpt-5.4-image-2" },
+      { badge: "普通视频", modelId: DEFAULT_VIDEO_MODEL, providerKey: "agent-video.seedance-2-0-fast", bytePlusStatic: bytePlusVideoModels[0] },
+      { badge: "高级视频", modelId: "bytedance/seedance-2.0", providerKey: "agent-video.seedance-2-0", bytePlusStatic: bytePlusVideoModels[1] },
+      ...agentBackupImageModelIds.map((modelId) => ({ badge: "备选图片", modelId })),
+      ...agentBackupVideoModelIds.map((modelId) => ({ badge: "备选视频", modelId })),
     ]),
   },
 ];

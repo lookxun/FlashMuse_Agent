@@ -84,12 +84,15 @@ export async function createUserSession(userId: string) {
   const token = randomBytes(32).toString("base64url");
   const expiresAt = new Date(Date.now() + sessionMaxAgeSeconds * 1000);
 
-  await prisma.session.create({
-    data: {
-      userId,
-      tokenHash: hashSessionToken(token),
-      expiresAt,
-    },
+  await prisma.$transaction(async (tx) => {
+    await tx.session.deleteMany({ where: { userId } });
+    await tx.session.create({
+      data: {
+        userId,
+        tokenHash: hashSessionToken(token),
+        expiresAt,
+      },
+    });
   });
 
   const cookieStore = await cookies();
