@@ -469,7 +469,7 @@ export default function Home() {
           <span className="flex items-end gap-2">
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src={staticAssetUrl("/home-assets/logo-text.png")} alt="闪念" className="w-auto object-contain drop-shadow-[0_0_18px_rgba(255,255,255,0.2)]" style={{ height: 30, filter: "brightness(0) invert(1)" }} />
-            {showInternationalBadge ? <span className="pb-[1px] text-[11px] font-medium leading-none tracking-[0.02em] text-white/68">International</span> : null}
+            {showInternationalBadge ? <span className="pb-[1px] text-[13px] font-medium leading-none tracking-[0.02em] text-white/68">Intl.</span> : null}
           </span>
         </button>
         <div className="flex items-center gap-3">
