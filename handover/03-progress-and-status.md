@@ -2,6 +2,36 @@
 
 ## 当前已完成内容
 
+### 2026-06-15 本轮追加：工作台不误退首页、通用文本计费累计、@ 资产弹窗修复和线上部署
+
+- 本轮用户先要求只改本地排查两个问题：阿里入口偶发进入工作台后退回首页但未退出登录，以及通用模式只对话时右上角只有 Tk 变化、人民币/积分一直为 0。随后用户要求部署这两项到服务器；后续又要求修复输入框底部 `@` 按钮在复制提示词后点不开引用资产弹窗，并要求直接部署。
+- 工作台退首页已定位：`src/components/chat-workbench.tsx` 初始加载中 `/api/workspace-state?summary=1` 失败会进入总 catch 并 `window.location.replace("/")`；另外工作台实例锁 `/api/auth/workspace-instance` 如果首次 `claim=true` 因阿里动态反代/网络抖动失败，下一次 `claim=false` 检查拿到 `active:false` 会误判旧工作台失效并退首页。现在只有明确 `401` 或当前页面已成功 claim 后再检测到 `active:false` 才退首页；工作区加载失败只 `console.warn` 并保留当前页面，实例还没成功 claim 时会重新 claim。
+- 通用文本计费已修。原链路 `/api/agent-plan` 和 `/api/chat` 已经返回 `usage/credit` 并由前端 `addSessionUsage/applyCreditResult` 接收，但如果 OpenRouter 通用文本模型只返回 token 或返回 `cost=0`，项目拿不到美元成本，导致只累计 Tk。现在 `src/lib/openrouter.ts` 中 `getUsageMeta()` 对 `cost=0` 不再视作真实免费；若有 token 但无有效美元，按模型价格表兜底反推美元。
+- 新增 OpenRouter 文本价格兜底：`bytedance-seed/seed-2.0-lite` 输入 `$0.25/M` 输出 `$2/M`；`deepseek/deepseek-v4-pro` 输入 `$0.435/M` 输出 `$0.87/M`；`deepseek/deepseek-r1-0528` 输入 `$0.5/M` 输出 `$2.15/M`；`google/gemini-3-flash-preview` 输入 `$0.5/M` 输出 `$3/M`；`google/gemini-3.1-pro-preview` 输入 `$2/M` 输出 `$12/M`；`openai/gpt-4o` 输入 `$2.5/M` 输出 `$10/M`；`openai/gpt-5.4` 输入 `$2.5/M` 输出 `$15/M`；`openai/gpt-5.5` 输入 `$5/M` 输出 `$30/M`。这些单价来自 OpenRouter `/api/v1/models` 当时返回值。
+- 文本扣积分规则已按用户要求改为更接近真实：文本类不再每次按 `Math.round` 扣，也不再最低扣 1 分。新增 `User.textCreditRemainder Float @default(0)` 和迁移 `20260612000000_user_text_credit_remainder`；`src/lib/credits.ts` 将文本本次美元折算成小数积分后累加到该字段，累计满 `1` 才扣整数积分，扣完保留余数。图片/视频仍按次扣费，只在人民币转积分时四舍五入，因为这类单次金额较大且积分不能有小数。
+- 第一批部署已完成：本地执行 `npx prisma generate`、`npx prisma migrate deploy`、`npx tsc --noEmit` 和 `npm run build` 均通过；线上备份在 `/var/www/flashmuse/.deploy-backups/20260612000139/`；上传了 `src/components/chat-workbench.tsx`、`src/lib/openrouter.ts`、`src/lib/credits.ts`、`src/lib/text-cleanup.ts`、`prisma/schema.prisma` 和迁移 SQL；线上用临时 Node 脚本读取 `.env.local` 第一条 `DATABASE_URL` 执行 `npx prisma migrate deploy` 和 `npx prisma generate`；随后运行 `/usr/local/bin/deploy-flashmuse-production.sh`，构建通过，PM2 online，阿里 `/_next/static` 已同步清缓存。
+- 本地打不开已排查：`start-project.log` 只停在 `> docker compose up -d`，本地 3000 无监听，Docker Desktop Service 为 `Stopped` 且 Docker CLI 卡住；但 WSL `docker-desktop` running，PostgreSQL `127.0.0.1:5432` 可连接，`npx prisma migrate deploy` 无待迁移。已停止卡住的 `docker compose up -d` 进程，绕过 Docker CLI 用独立 PowerShell 窗口直接 `npm run dev` 启动，验证 `http://localhost:3000/` 和 `/workspace` 均 200。此处未改代码。
+- 输入框 `@` 按钮点不开已修。根因是资产引用弹窗列表以前依赖 `activeAtQuery`，也就是当前光标处必须存在 `@` 查询；底部按钮和 placeholder 蓝色 `@` 原本先 `openMentionAssetMenu()` 再 `insertTextAtDraftCursor("@")`，复制长提示词后可能因光标/选区状态或 2000 字限制导致裸 `@` 没插入成功，弹窗没有可显示列表。现在 `atAssetGroups` 在 `isAtAssetMenuOpen` 时也生成；底部 `@` 和 placeholder 蓝色 `@` 只直接打开弹窗，不再先插入裸 `@`。选择资产时仍按当前光标插入完整 `@资产名`；用户手动输入 `@` 的筛选逻辑不变。
+- 第二批部署已完成：本地 `npx tsc --noEmit` 和 `npm run build` 通过；线上备份在 `/var/www/flashmuse/.deploy-backups/20260615034553/`；只上传 `src/components/chat-workbench.tsx` 并运行 `/usr/local/bin/deploy-flashmuse-production.sh`；构建通过，仅剩既有 `next.config.ts`/`video-poster` tracing warning；PM2 `flashmuse` online，阿里静态同步清缓存完成。`https://main.venusface.com/workspace` 用 `curl -k` 返回 200；本机直连阿里 HTTPS 仍有此前记录过的 TLS/网络握手异常，但部署脚本同步成功。
+- Git 状态：本轮仍未提交、未推送。当前本地工作区包含本轮代码、迁移和交接文档更新，也包含此前未提交的 `src/lib/text-cleanup.ts` 和规划目录未跟踪项。接手后先看 `git status`，若用户要求提交，需要一起审查这些变更，避免漏提交线上已部署内容。
+
+### 2026-06-11 本轮追加：通用模式正式化、权限开关、长期记忆、日志、乱码修复和线上部署
+
+- 本轮围绕 `通用模式` 做了完整升级，并按用户要求部署线上；本地验证 `npm run build` 通过，线上 `/usr/local/bin/deploy-flashmuse-production.sh` 构建通过，PM2 `flashmuse` online，阿里 `/_next/static` 已同步并清缓存。`https://main.venusface.com/`、`https://api.venusface.com/api/model-availability`、`https://main.venusface.com/admin` 均返回 200。
+- 通用模式统一身份已改为 `闪念通用 Agent`。当前对话模型只负责对话、理解、追问、规划和组织结果；闪念系统整体可以调用用户选择的图片/视频模型完成生图、生视频。用户问“你是谁”答闪念通用 Agent；问“你是什么模型/当前模型”答产品身份 + 当前对话模型；问“你能生图/生视频吗”按闪念整体能力回答，不再说 DeepSeek/Gemini/GPT 裸模型不支持。
+- 通用模式执行链路改为先规划再执行。所有通用模式发送都会走 `/api/agent-plan` 且 `mode=general`，使用当前选择的对话模型做规划。信息不足时返回 `clarify` 并一次性列出选项，例如图片比例 `智能比例/16:9/4:3/1:1/3:4/9:16/21:9`、图片分辨率 `1K/2K/4K`、视频分辨率和时长。用户明确“你自己定/随便/以后不要问我/默认就行”后才自动补默认参数并执行。
+- 修复 B_158 规划失败根因：`planAgentTask()` 之前无论通用/Agent 都用 `getTextProviderConfig(..., "agent")`，导致通用模式选 Gemini/DeepSeek/Seed 时没有走 `general.*` 后台开关。现在通用模式规划走 `getTextProviderConfig(model, "general")`，并增强 `/api/agent-plan` 错误日志，带 `mode/model/requestId`。
+- 通用对话模型顺序和图标已调整。`Seed 2.0 Lite` 后面紧跟 BytePlus `Seed 2.0 Pro`，Seed 系列排在其它厂商上面。`/api/model-availability` 新增 `generalModelProviders`，后台把 `Seed 2.0 Lite` 切到 BytePlus 后，前端通用模型按钮和回复前图标显示 BytePlus 图标；OpenRouter 时显示原模型厂商图标。
+- 后台用户管理新增 `通用模式` 权限列。`User.generalModeEnabled` 默认 `false`，迁移 `20260611000000_user_general_mode_enabled`；后台接口 `/admin/api/users/general-mode` 控制开关；前台 `/api/auth/me` 返回 `generalModeEnabled`，未开启用户不显示通用模式，服务端对绕过前端的 `mode=general` 请求返回 403。
+- 每个历史对话新增 `memorySummary` 长期工作记忆。超过约 `20k tokens` 首次摘要，已有摘要后每新增约 `12k tokens` 更新。请求模型时使用 `长期工作记忆摘要 + 最近 12 轮原文 + 当前输入`。新增 `/api/conversation-memory`，摘要保留用户偏好、任务目标、确认设定、已生成内容、纠错点、未完成事项、资产引用和“你自己定”授权。
+- 通用模式和 Agent 模式的回复风格已调整：允许轻松场景适当多用自然表情和语气词；清单、能力列表、步骤、注意事项和长段说明可用 `✅/🎯/📝/💡/⚠️/📌` 等符号类图标提升可读性；严肃法律/医疗/财务/政治结论少用或不用。通用模式新增任务类型格式协议，问答先结论、交付物先结果、方案给步骤、创作走创作结构、信息不足追问。
+- 新增日志：`.runtime/general-task-log.jsonl` 记录通用模式用户任务摘要、模型、intent、是否追问、是否带图；`.runtime/upload-rule-feedback-log.jsonl` 记录模型端真实上传/参考图失败，用于以后校准“单个文件多大、能传几张图”等规则。日志不写图片 URL、文档正文或完整用户内容。
+- 后台系统设置的 `上传规则` 表第一行新增 `通用模式`：图片最多 5 张、单张 ≤5MB、格式 `jpg/jpeg/png/webp`；文件最多 5 个、单个 ≤10MB、格式 `pdf/txt/csv/docx/doc/xlsx/xls/pptx/ppt/md`；当前不支持视频/音频上传。
+- 修复历史对话文字重复打字：新增 `activeTypingMessageIds`，只有本次新生成的 assistant 文本会走打字机；切换历史对话或刷新后旧文本直接完整显示。打字机改用 `Intl.Segmenter` grapheme 切分，避免 emoji/符号被拆开显示异常。
+- 新增 `src/lib/text-cleanup.ts`，后端新回复保存前和前端历史显示时都会尝试修复 UTF-8/Latin-1 mojibake（例如 `è¶³å½©...`）并删除 `<system-reminder>...</system-reminder>`。旧消息如果原始字节已不可逆只能部分恢复，必要时重新生成或手动修。
+- 用户消息气泡新增 hover 操作区：显示灰色发送时间和复制图标，点击复制用户发送文字，成功后图标变勾选。
+- GitHub 状态：本轮大部分功能已提交并推送 `eee77a5 Add general mode controls and memory handling`。之后又直接线上部署了 `text-cleanup.ts`、`openrouter.ts`、`chat-workbench.tsx` 的乱码清洗修复，以及本交接文档更新尚未提交；接手后如需同步 GitHub，先检查 `git status`。
+
 ### 2026-06-10 本轮追加：本地登录迁移兜底、通用模式和通用对话模型后台开关
 
 - 本轮按用户要求只做本地开发，未部署服务器，未提交或推送 GitHub。

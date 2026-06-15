@@ -95,6 +95,7 @@ import { toUserErrorMessage } from "@/lib/error-message";
 import { useBodyScrollLock } from "@/components/use-body-scroll-lock";
 import { BytePlusIcon } from "@/components/byteplus-icon";
 import { getSupportedUploadTypeLabel, getUploadAcceptValue, getUploadKindFromFileName, getUploadRule } from "@/lib/upload-rules";
+import { sanitizeModelOutputText } from "@/lib/text-cleanup";
 
 type Message = {
   id: string;
@@ -2649,10 +2650,19 @@ function ActiveAngryIcon() {
 }
 
 function getTypingDuration(content: string) {
-  const length = Array.from(content).length;
+  const length = splitGraphemes(content).length;
   if (length === 0) return 0;
 
   return Math.min(MAX_TYPING_DURATION_MS, Math.max(MIN_TYPING_DURATION_MS, length * 28));
+}
+
+function splitGraphemes(text: string) {
+  if (typeof Intl !== "undefined" && "Segmenter" in Intl) {
+    const Segmenter = Intl.Segmenter as typeof Intl.Segmenter | undefined;
+    if (Segmenter) return Array.from(new Segmenter("zh-CN", { granularity: "grapheme" }).segment(text), (item) => item.segment);
+  }
+
+  return Array.from(text);
 }
 
 function getAssistantMessageIds(sessions: WorkSession[]) {
@@ -2675,12 +2685,12 @@ function TypewriterFormattedMessage({
   leadingIcon?: ReactNode;
 }) {
   const displayContent = sanitizeMessageContentForDisplay(content);
-  const characters = Array.from(displayContent);
+  const characters = splitGraphemes(displayContent);
   const [visibleCount, setVisibleCount] = useState(isComplete ? characters.length : 0);
   const visibleContent = isComplete ? displayContent : characters.slice(0, visibleCount).join("");
 
   useEffect(() => {
-    const contentCharacters = Array.from(displayContent);
+    const contentCharacters = splitGraphemes(displayContent);
 
     if (isComplete) {
       return;
@@ -4224,7 +4234,7 @@ function renderInlineFormatting(text: string) {
 }
 
 function sanitizeMessageContentForDisplay(content: string) {
-  return content
+  return sanitizeModelOutputText(content)
     .replace(/\\r\\n|\\n|\\r/g, "\n")
     .replace(/\\t/g, " ")
     .replace(/^```[\w-]*\s*$/gm, "")
@@ -6044,6 +6054,7 @@ function getDownloadName(asset: AssetItem) {
 
 export function ChatWorkbench() {
   const workspaceInstanceIdRef = useRef(createClientId());
+  const workspaceInstanceClaimedRef = useRef(false);
   const [mode, setMode] = useState<WorkMode>("agent");
   const [agentModelTier, setAgentModelTier] = useState<AgentModelTier>("normal");
   const selectedModel: ModelName = agentModelTier === "advanced" ? ADVANCED_CHAT_MODEL : DEFAULT_CHAT_MODEL;
@@ -6687,6 +6698,7 @@ export function ChatWorkbench() {
   const previewAssetId = previewAsset?.id;
   const previewDisplayMeta = previewAsset ? enrichAssetPreviewMeta(previewAsset).previewMeta : undefined;
   const previewIsUploadedAsset = previewAsset ? isUploadedAsset(previewAsset) : false;
+  const isPreviewDownloadReady = Boolean(previewAsset && !isRemoteMediaUrl(previewAsset.url));
   const previewSourceLabel = previewAsset && !previewDisplayMeta ? previewAsset.sourcePrompt === "资产库上传" || previewAsset.librarySource === "asset_generation" ? "资产库上传" : isConversationAsset(previewAsset) ? "对话流上传" : "" : "";
   const previewHasReversedUploadPrompt = Boolean(previewAsset?.sourcePrompt.trim()) && previewAsset?.promptSource === "reverse" && previewIsUploadedAsset;
   const previewHasUsablePrompt = Boolean(previewAsset?.sourcePrompt.trim()) && previewAsset?.sourcePrompt !== "资产库上传" && (!previewIsUploadedAsset || previewHasReversedUploadPrompt);
@@ -6751,17 +6763,17 @@ export function ChatWorkbench() {
   }, [previewAsset]);
 
   useEffect(() => {
-    if (!previewAsset || isVideoAsset(previewAsset)) return;
+    if (!previewAsset) return;
     const latest = previewMediaOptions.find((item) => item.id === previewAsset.id || normalizeMediaUrlForMatch(item.url) === normalizeMediaUrlForMatch(previewAsset.url));
     const latestPreviewMetaKey = latest?.previewMeta ? JSON.stringify(latest.previewMeta) : "";
     const currentPreviewMetaKey = previewAsset.previewMeta ? JSON.stringify(previewAsset.previewMeta) : "";
-    if (!latest || (latest.name === previewAsset.name && latest.sourcePrompt === previewAsset.sourcePrompt && latestPreviewMetaKey === currentPreviewMetaKey)) return;
+    if (!latest || (latest.name === previewAsset.name && latest.url === previewAsset.url && latest.posterUrl === previewAsset.posterUrl && latest.sourcePrompt === previewAsset.sourcePrompt && latestPreviewMetaKey === currentPreviewMetaKey)) return;
     const timer = window.setTimeout(() => {
       setPreviewAsset((current) => {
         if (!current || (current.id !== previewAsset.id && normalizeMediaUrlForMatch(current.url) !== normalizeMediaUrlForMatch(previewAsset.url))) return current;
         const currentMetaKey = current.previewMeta ? JSON.stringify(current.previewMeta) : "";
-        if (current.name === latest.name && current.sourcePrompt === latest.sourcePrompt && currentMetaKey === latestPreviewMetaKey && current.sessionId === latest.sessionId && current.messageId === latest.messageId) return current;
-        return { ...current, name: latest.name, sourcePrompt: latest.sourcePrompt, previewMeta: latest.previewMeta, sessionId: latest.sessionId, messageId: latest.messageId };
+        if (current.name === latest.name && current.url === latest.url && current.posterUrl === latest.posterUrl && current.sourcePrompt === latest.sourcePrompt && currentMetaKey === latestPreviewMetaKey && current.sessionId === latest.sessionId && current.messageId === latest.messageId) return current;
+        return { ...current, name: latest.name, url: latest.url, posterUrl: latest.posterUrl, sourcePrompt: latest.sourcePrompt, previewMeta: latest.previewMeta, sessionId: latest.sessionId, messageId: latest.messageId };
       });
     }, 0);
     return () => window.clearTimeout(timer);
@@ -7738,17 +7750,24 @@ export function ChatWorkbench() {
         };
 
         try {
-          const { data: meData } = await fetchJsonWithRetry<{ user?: CurrentUserProfile | null }>("/api/auth/me", { cache: "no-store" });
+          const { response: meResponse, data: meData } = await fetchJsonWithRetry<{ user?: CurrentUserProfile | null }>("/api/auth/me", { cache: "no-store" });
 
-          if (typeof meData.user?.email === "string") {
-            applyCurrentUserProfile(meData.user);
+          if (meResponse.status === 401 || (meResponse.ok && typeof meData.user?.email !== "string")) {
+            window.location.replace("/");
+            return;
+          }
+
+          if (typeof meData.user?.email !== "string") return;
+
+          applyCurrentUserProfile(meData.user);
+          try {
             const { data: workspaceData } = await fetchJsonWithRetry<{ state?: WorkspaceStatePayload | null }>("/api/workspace-state?summary=1", { cache: "no-store" });
             applyWorkspaceState(workspaceData.state ?? {}, "user");
-          } else {
-            window.location.replace("/");
+          } catch (error) {
+            console.warn("用户工作区加载失败，保留当前页面等待刷新", error);
           }
-        } catch {
-          window.location.replace("/");
+        } catch (error) {
+          console.warn("登录状态检查失败，保留当前页面等待重试", error);
         } finally {
           setIsLoaded(true);
         }
@@ -7820,12 +7839,25 @@ export function ChatWorkbench() {
         });
         const data = (await response.json().catch(() => ({}))) as { active?: boolean };
         if (cancelled) return;
-        if (response.status === 401 || (response.ok && data.active !== true)) {
+        if (response.status === 401) {
           window.location.replace("/");
           return;
         }
         if (!response.ok) {
           workspaceInstanceCheckFailuresRef.current += 1;
+          return;
+        }
+        if (data.active === true) {
+          if (claim) workspaceInstanceClaimedRef.current = true;
+          workspaceInstanceCheckFailuresRef.current = 0;
+          return;
+        }
+        if (!claim && workspaceInstanceClaimedRef.current) {
+          window.location.replace("/");
+          return;
+        }
+        if (!claim && !workspaceInstanceClaimedRef.current) {
+          void checkWorkspaceInstance(true);
           return;
         }
         workspaceInstanceCheckFailuresRef.current = 0;
@@ -11043,7 +11075,7 @@ export function ChatWorkbench() {
   }, [assetGenerateReferenceImages.length, isCharacterGenerateOpen, updateAssetGenerateReferenceScrollState]);
   const hasMentionAssetImages = assets.some((asset) => mentionAssetTypes.some((type) => isMentionGroupAsset(asset, type)));
   const atAssetSearch = activeAtQuery?.query ?? "";
-  const atAssetGroups = activeAtQuery
+  const atAssetGroups = activeAtQuery || isAtAssetMenuOpen
     ? mentionAssetTypes.map((type) => ({
         type,
         assets: assets.filter((asset) => isMentionGroupAsset(asset, type) && asset.name.includes(atAssetSearch)),
@@ -12453,7 +12485,6 @@ export function ChatWorkbench() {
                         }
 
                         openMentionAssetMenu();
-                        insertTextAtDraftCursor("@");
                     }}
                     >
                       <RiAtLine className="h-4 w-4" aria-hidden="true" />
@@ -12617,7 +12648,6 @@ export function ChatWorkbench() {
                     }
 
                     openMentionAssetMenu();
-                    insertTextAtDraftCursor("@");
                   }}
                   className={`yinzao-tool-button inline-flex h-9 shrink-0 items-center rounded-[8px] px-3.5 text-[#777777] outline-none transition ${isAtAssetMenuOpen ? toolButtonActiveClassName : ""}`}
                   aria-label="引用资产"
@@ -13436,10 +13466,17 @@ export function ChatWorkbench() {
                     )}
                   </div>
                   <div className="flex items-center gap-3">
-                    <a href={getDownloadUrl(previewAsset.url)} download={getDownloadName(previewAsset)} className="inline-flex h-9 min-w-[112px] items-center justify-center gap-2 rounded-[8px] bg-[#111111] px-6 text-[13px] font-medium text-white transition hover:bg-[#252525]" aria-label={isVideoAsset(previewAsset) ? "下载视频" : "下载图片"}>
-                      <RiDownloadLine className="h-4 w-4" aria-hidden="true" />
-                      <span>下载</span>
-                    </a>
+                    {isPreviewDownloadReady ? (
+                      <a href={getDownloadUrl(previewAsset.url)} download={getDownloadName(previewAsset)} className="inline-flex h-9 min-w-[112px] items-center justify-center gap-2 rounded-[8px] bg-[#111111] px-6 text-[13px] font-medium text-white transition hover:bg-[#252525]" aria-label={isVideoAsset(previewAsset) ? "下载视频" : "下载图片"}>
+                        <RiDownloadLine className="h-4 w-4" aria-hidden="true" />
+                        <span>下载</span>
+                      </a>
+                    ) : (
+                      <button type="button" disabled className="inline-flex h-9 min-w-[132px] cursor-not-allowed items-center justify-center gap-2 rounded-[8px] bg-[#b8b8b8] px-5 text-[13px] font-medium text-white opacity-80" aria-label="下载准备中">
+                        <RiDownloadLine className="h-4 w-4" aria-hidden="true" />
+                        <span>下载准备中...</span>
+                      </button>
+                    )}
                     <button type="button" onClick={() => setPreviewAsset(null)} className="yinzao-tool-button flex h-9 w-9 translate-x-2 items-center justify-center text-[#777777] transition" style={previewLightToolButtonStyle} aria-label="关闭预览">
                       <RiCloseLine className="h-5 w-5" aria-hidden="true" />
                     </button>
@@ -13511,7 +13548,7 @@ export function ChatWorkbench() {
                 }} onMouseUp={() => setIsPreviewDragging(false)} onMouseLeave={() => setIsPreviewDragging(false)}>
                   <div className="flex h-full w-full items-center justify-center bg-transparent">
                     {isVideoAsset(previewAsset) ? (
-                      <video src={getStaticMediaUrl(previewAsset.url)} poster={getStaticMediaUrl(previewAsset.posterUrl, videoPosterVersion)} preload="metadata" className="h-full w-full max-h-full max-w-full object-contain shadow-[0_8px_30px_rgba(0,0,0,0.08)]" controls playsInline onLoadedMetadata={(event) => {
+                      <video key={`${previewAsset.id}-${previewAsset.url}`} src={getStaticMediaUrl(previewAsset.url)} poster={getStaticMediaUrl(previewAsset.posterUrl, videoPosterVersion)} preload="metadata" className="h-full w-full max-h-full max-w-full object-contain shadow-[0_8px_30px_rgba(0,0,0,0.08)]" controls playsInline onLoadedMetadata={(event) => {
                         const video = event.currentTarget;
                         if (!video.videoWidth || !video.videoHeight) return;
                         const dimensions = { width: video.videoWidth, height: video.videoHeight };

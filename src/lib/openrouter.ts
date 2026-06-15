@@ -11,6 +11,7 @@ import { enqueueRemoteAssetSave } from "@/lib/media-save-queue";
 import { syncGeneratedFilesToAli } from "@/lib/ali-sync";
 import { toUserErrorMessage } from "@/lib/error-message";
 import { getBytePlusBaseUrl, getBytePlusModelForRequest, getConfiguredBytePlusApiKey, getConfiguredOpenRouterApiKey, getModelProviderPreference, isGeneralTextModelEnabled, isTextModelEnabled } from "@/lib/system-settings";
+import { sanitizeModelOutputText } from "@/lib/text-cleanup";
 
 export type ChatRequest = {
   model: ModelName;
@@ -200,6 +201,17 @@ const agentReplyIntents: AgentReplyIntent[] = ["chat", "film_knowledge", "creati
 const assetTargetTypes: AssetTargetType[] = ["character_image", "scene_image", "shot_image", "shot_video", "other"];
 const fallbackAgentSuggestions: SuggestionInput[] = ["让我写一个短剧故事", "讲讲电影是怎么做出来的", { label: "帮我拆一版分镜", assetTargetType: "shot_image" }];
 let modelPricingCache: { expiresAt: number; prices: Record<string, { prompt: number; completion: number }> } | null = null;
+
+const openRouterTextPricingFallback: Record<string, { prompt: number; completion: number }> = {
+  "bytedance-seed/seed-2.0-lite": { prompt: 0.00000025, completion: 0.000002 },
+  "deepseek/deepseek-v4-pro": { prompt: 0.000000435, completion: 0.00000087 },
+  "deepseek/deepseek-r1-0528": { prompt: 0.0000005, completion: 0.00000215 },
+  "google/gemini-3-flash-preview": { prompt: 0.0000005, completion: 0.000003 },
+  "google/gemini-3.1-pro-preview": { prompt: 0.000002, completion: 0.000012 },
+  "openai/gpt-4o": { prompt: 0.0000025, completion: 0.00001 },
+  "openai/gpt-5.4": { prompt: 0.0000025, completion: 0.000015 },
+  "openai/gpt-5.5": { prompt: 0.000005, completion: 0.00003 },
+};
 
 const bytePlusTextPricing: Record<string, { prompt: number; completion: number; tiered?: boolean }> = {
   "seed-2-0-lite-260428": { prompt: 0.25, completion: 2, tiered: true },
@@ -415,7 +427,7 @@ function toOpenRouterContent(text: string, images?: string[]): OpenRouterMessage
 }
 
 function cleanModelText(value: string) {
-  return value
+  return sanitizeModelOutputText(value)
     .replace(/\\r\\n|\\n|\\r/g, "\n")
     .replace(/\\t/g, " ")
     .replace(/\\"/g, '"')
@@ -517,13 +529,13 @@ async function getUsageMeta(data: Pick<OpenRouterChatCompletionResponse, "model"
   const promptTokens = Math.max(0, Math.floor(usage.prompt_tokens ?? 0));
   const completionTokens = Math.max(0, Math.floor(usage.completion_tokens ?? 0));
   const totalTokens = Math.max(0, Math.floor(usage?.total_tokens ?? promptTokens + completionTokens));
-  const cost = typeof usage.cost === "number" && Number.isFinite(usage.cost) ? usage.cost : undefined;
+  const cost = typeof usage.cost === "number" && Number.isFinite(usage.cost) && usage.cost > 0 ? usage.cost : undefined;
   if (totalTokens === 0 && cost === undefined) return undefined;
   if (cost !== undefined) return { promptTokens, completionTokens, totalTokens, usd: cost };
   if (!estimatePricing) return { promptTokens, completionTokens, totalTokens, usd: getBytePlusTextUsageUsd(data.model ?? fallbackModel, promptTokens, completionTokens) };
 
   const prices = await getModelPrices();
-  const price = prices[data.model ?? fallbackModel] ?? prices[fallbackModel];
+  const price = prices[data.model ?? fallbackModel] ?? prices[fallbackModel] ?? openRouterTextPricingFallback[data.model ?? fallbackModel] ?? openRouterTextPricingFallback[fallbackModel];
   const usd = price ? promptTokens * price.prompt + completionTokens * price.completion : undefined;
 
   return { promptTokens, completionTokens, totalTokens, usd };
@@ -617,7 +629,7 @@ export async function sendToOpenRouter(request: ChatRequest): Promise<ChatRespon
   };
   const data = await postChatCompletion(providerConfig.url, providerConfig.headers, body, "请求失败");
 
-  const rawContent = data.choices?.[0]?.message?.content ?? "";
+  const rawContent = cleanModelText(data.choices?.[0]?.message?.content ?? "");
   const usage = await getUsageMeta(data, providerConfig.provider === "openrouter" ? request.model : providerConfig.model, providerConfig.provider === "openrouter");
 
   if (request.mode === "agent") {

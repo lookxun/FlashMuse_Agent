@@ -108,12 +108,18 @@ function cleanNumber(value: unknown) {
   return Number.isFinite(numberValue) ? numberValue : 0;
 }
 
+function getExpectedCredits(kind: CreditKind, shouldCharge: boolean, rawCredits: number) {
+  if (!shouldCharge || rawCredits <= 0) return 0;
+  return kind === "text" ? Math.floor(rawCredits) : Math.max(1, Math.round(rawCredits));
+}
+
 export async function chargeCredits(userId: string, kind: CreditKind, usage?: UsageLike, context: CreditContext = {}) {
   const settings = await getCreditSettings();
   const usd = Math.max(0, cleanNumber(usage?.usd));
   const cny = usd * settings.usdToCnyRate;
   const shouldCharge = getChargeEnabled(settings, kind, context.metadata);
-  const expectedCredits = shouldCharge ? Math.max(0, Math.round(cny * settings.creditsPerCny)) : 0;
+  const rawCredits = cny * settings.creditsPerCny;
+  const immediateExpectedCredits = getExpectedCredits(kind, shouldCharge, rawCredits);
   const promptTokens = Math.max(0, Math.floor(cleanNumber(usage?.promptTokens)));
   const completionTokens = Math.max(0, Math.floor(cleanNumber(usage?.completionTokens)));
   const totalTokens = Math.max(0, Math.floor(cleanNumber(usage?.totalTokens) || promptTokens + completionTokens));
@@ -124,16 +130,27 @@ export async function chargeCredits(userId: string, kind: CreditKind, usage?: Us
   }
 
   return prisma.$transaction(async (tx) => {
-    const user = await tx.user.findUnique({ where: { id: userId }, select: { credits: true } });
+    const user = await tx.user.findUnique({ where: { id: userId }, select: { credits: true, textCreditRemainder: true } });
     if (!user) return { chargedCredits: 0, expectedCredits: 0, chargedCny: 0, chargedUsd: 0, balance: undefined, skipped: true } satisfies CreditChargeResult;
 
+    const previousTextCreditRemainder = Math.max(0, cleanNumber(user.textCreditRemainder));
+    const nextTextCreditRemainderRaw = kind === "text" && shouldCharge && rawCredits > 0 ? previousTextCreditRemainder + rawCredits : previousTextCreditRemainder;
+    const textExpectedCredits = kind === "text" && shouldCharge ? Math.floor(nextTextCreditRemainderRaw + 1e-9) : 0;
+    const nextTextCreditRemainder = kind === "text" && shouldCharge && rawCredits > 0 ? Math.max(0, nextTextCreditRemainderRaw - textExpectedCredits) : previousTextCreditRemainder;
+    const expectedCredits = kind === "text" ? textExpectedCredits : immediateExpectedCredits;
     const chargedCredits = Math.min(user.credits, expectedCredits);
     const nextCredits = Math.max(0, user.credits - chargedCredits);
     const chargedCny = settings.creditsPerCny > 0 ? chargedCredits / settings.creditsPerCny : 0;
     const chargedUsd = settings.usdToCnyRate > 0 ? chargedCny / settings.usdToCnyRate : 0;
 
-    if (chargedCredits > 0) {
-      await tx.user.update({ where: { id: userId }, data: { credits: nextCredits } });
+    if (chargedCredits > 0 || (kind === "text" && shouldCharge && rawCredits > 0)) {
+      await tx.user.update({
+        where: { id: userId },
+        data: {
+          credits: nextCredits,
+          ...(kind === "text" && shouldCharge && rawCredits > 0 ? { textCreditRemainder: nextTextCreditRemainder } : {}),
+        },
+      });
     }
 
     await tx.creditLedger.create({
@@ -159,6 +176,11 @@ export async function chargeCredits(userId: string, kind: CreditKind, usage?: Us
           chargedCredits,
           chargedCny,
           chargedUsd,
+          rawCredits,
+          ...(kind === "text" ? {
+            textCreditRemainderBefore: previousTextCreditRemainder,
+            textCreditRemainderAfter: nextTextCreditRemainder,
+          } : {}),
           usdToCnyRate: settings.usdToCnyRate,
           creditsPerCny: settings.creditsPerCny,
         }),

@@ -38,6 +38,7 @@ yarn-error.log*
 /public/generated/
 /start-project.log
 /.runtime/
+/AI-Video-Assistant_Project Planning/
 
 # vercel
 .vercel

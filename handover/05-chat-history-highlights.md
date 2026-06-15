@@ -2,6 +2,37 @@
 
 这个文件用于保留和用户对话中的重要结论，帮助下一个 AI 接手时不丢上下文。
 
+## 2026-06-15 本轮关键交接：线上退首页、通用文本计费和 @ 引用资产按钮
+
+- 用户反馈阿里入口多次出现“登录进工作台后被退回首页，但没有退出登录”。排查发现不是 Cookie 失效，而是前端逻辑误退：初始 `/api/workspace-state?summary=1` 失败会总 catch 退首页；工作台实例锁首次 claim 失败后，下一次检查 `active:false` 也会退首页。已改为只在明确 `401` 或页面已成功 claim 后确认被其它工作台抢占时退首页；网络/5xx/JSON 失败只记录 warning 并保留页面。
+- 用户反馈通用模式文本对话只看到 Tk 变化，美元/人民币/积分为 0。结论：前端并不是没接 `usage/credit`，而是部分通用文本模型只返回 token 或返回 `cost=0`，旧代码拿不到美元成本；即使有 token，短文本成本很小，单次四舍五入也容易归 0。
+- 用户明确要求“尽量接近真实”，不要为了显示好看强制 `<0.0001`，也不要文本每次最低扣 1 分。最终规则：平台返回 `cost/usd > 0` 就用美元；没美元但有 token 就用模型价格表反推美元；图片/视频这种单次较大的请求按次扣费，只在人民币转积分时四舍五入；文本/通用对话/Agent 规划按小数积分后台累计，累计满 1 分才扣 1 分，余数继续保留，用户右上角仍显示累计 token/美元/人民币。
+- 已新增 `User.textCreditRemainder` 和迁移 `20260612000000_user_text_credit_remainder`。`chargeCredits()` 现在对 `kind === "text"` 使用该字段累计小数积分；每条文本流水 metadata 会写 `rawCredits`、`textCreditRemainderBefore`、`textCreditRemainderAfter`、`expectedCredits`、`chargedCredits` 等审计字段。图片/视频不走累计池。
+- 已为通用 OpenRouter 文本模型补价格兜底，单价来自当时 OpenRouter `/api/v1/models`：Seed 2.0 Lite、DeepSeek V4 Pro、DeepSeek R1 0528、Gemini 3 Flash、Gemini 3.1 Pro、GPT-4o、GPT-5.4、GPT-5.5。`cost=0` 且有 token 时不再当免费，会按 fallback 价格估算。
+- 第一批线上部署细节：备份目录 `/var/www/flashmuse/.deploy-backups/20260612000139/`；上传 `chat-workbench.tsx/openrouter.ts/credits.ts/text-cleanup.ts/schema.prisma` 和迁移 SQL；线上应用迁移和 `prisma generate` 后运行 `/usr/local/bin/deploy-flashmuse-production.sh`，构建通过、PM2 online、阿里静态同步完成。注意线上 `.env.local` 仍有重复 `DATABASE_URL` 坑，迁移时用临时 Node 脚本读取第一条，未暴露密码。
+- 本地打不开的问题也排查过：`start-project.log` 卡在 `docker compose up -d`，Docker Desktop Service stopped，Docker CLI 卡住；但 PostgreSQL 5432 通。停止卡住的 `docker compose` 后，直接独立窗口 `npm run dev` 可启动，本地 `/` 和 `/workspace` 均 200。以后本地打不开先看是否又卡在 Docker CLI。
+- 用户随后反馈输入框下面 `@` 按钮有时点不开引用资产弹窗，尤其复制提示词到输入框后。根因是弹窗列表依赖 `activeAtQuery`，底部按钮原先通过插入裸 `@` 触发；复制长提示词后光标/选区/字数限制可能让裸 `@` 没成功形成查询。已改成底部 `@` 按钮和 placeholder 蓝色 `@` 直接打开资产列表，不再先插裸 `@`；点资产时再在当前光标插入完整 `@资产名`。手动输入 `@` 搜索仍保留。
+- 第二批线上部署细节：备份目录 `/var/www/flashmuse/.deploy-backups/20260615034553/`；只上传 `src/components/chat-workbench.tsx`；运行标准部署脚本后 PM2 online、阿里静态同步完成。`https://main.venusface.com/workspace` 返回 200；阿里域名本机 curl 仍可能 TLS 握手失败，这是此前已记录的阿里外网 TLS/网络问题，不代表本次部署脚本失败。
+- 本轮没有提交或推送 GitHub。当前本地还有未提交代码、迁移、交接文档、`src/lib/text-cleanup.ts` 未跟踪和 `AI-Video-Assistant_Project Planning/` 未跟踪。下一个 AI 接手如果要提交，必须先完整审查 `git status` 和 diff。
+
+## 2026-06-11 本轮关键交接：通用模式升级和线上修复
+
+- 用户确认通用模式应类似 OpenCode：底层可切换 DeepSeek/Gemini/GPT/Seed，但产品身份统一为 `闪念通用 Agent`。回答能力问题时按闪念系统整体能力回答，而不是按当前对话模型裸能力回答。即 DeepSeek 负责规划/对话，但通用 Agent 可以调用图片模型生图、视频模型生视频。
+- 通用模式身份规则：问“你是谁”答“我是闪念通用 Agent”；问“你是什么模型/当前模型”答“我是闪念通用 Agent，当前对话模型是 XXX”；问“你能做什么/能不能生图生视频”答“可以问答、写作、规划任务，并可调用当前选择的图片/视频模型生成”。不要再出现“DeepSeek 不支持生成视频”这种回答。
+- d49 对话排查：用户选 DeepSeek，问“能不能生图”时 DeepSeek 正确追问并最终调用图片模型；后续问“那你能做视频吗？”却回复“不支持生成视频”。根因是这类能力问题被当普通问答，模型按裸能力回答。已在通用规划器和普通回复规则里把“你能生图吗/你能做视频吗/支持视频吗”视为潜在生成需求，返回 clarify 追问要生成什么，并禁止说当前对话模型不支持。
+- B_158 排查：通用模式规划失败，是因为 `/api/agent-plan` 传了通用对话模型但后端 `planAgentTask()` 仍走 `agent` provider 配置，没走 `general.*` 开关。已改为通用模式规划用 `getTextProviderConfig(model, "general")`，并给 agent-plan 错误日志加 `mode/model/requestId`。
+- 通用模式不再硬规则直调生成。用户每次通用对话都先由当前对话模型规划；信息不够时追问并列出选项；用户说“随便/你自己定/以后不要问我/默认就行”才自动决定参数并调用当前通用图片/视频模型。
+- 后台已为通用模式加用户级开关：`User.generalModeEnabled` 默认 false，后台用户管理大表格“状态”前新增“通用模式”开关；未开启的账号前台看不到通用模式，服务端也会拒绝 `mode=general`。
+- 通用模式 Seed 模型显示规则：`Seed 2.0 Lite` 下方显示 `Seed 2.0 Pro`，Seed 系列在其它厂商上面。`Seed 2.0 Lite` 如果后台切 BytePlus，前端按钮和回复前图标显示 BytePlus 图标；实际请求也走 BytePlus 的 `general.seed-2-0-lite`。
+- 用户要求通用/Agent 回复不要太死。已允许轻松场景多用表情和语气词；清单/能力列表/步骤中可以多用 `✅/🎯/📝/💡/⚠️/📌` 等符号类图标增强可读性。但严肃法律/医疗/财务/政治结论少用或不用。
+- 通用模式输出格式协议：问答先结论；写作/翻译/润色/总结/代码/邮件/文案先给 `# 结果`；方案/计划先给 `# 推荐方案`、`## 执行步骤`、`## 注意事项`；创作任务用创作结构；信息不足一次性追问并给选项。
+- 每个历史对话新增长期记忆摘要：首次约 20k tokens 生成，后续新增约 12k tokens 更新；请求带摘要 + 最近 12 轮原文。摘要要保留用户偏好、任务目标、设定、生成内容、纠错、未完成事项、资产引用和“以后不要问我/你自己定”的授权。
+- 通用模式和上传规则新增日志：`.runtime/general-task-log.jsonl` 记录通用任务类型；`.runtime/upload-rule-feedback-log.jsonl` 记录带图/文档/参考图时模型端真实错误，后续用于校准上传大小和数量。不要把日志提交 Git。
+- 修复历史 AI 文本切换/刷新还打字：只有本轮新生成文本进入 `activeTypingMessageIds` 才打字；旧历史直接完整显示。
+- 用户发现 DeepSeek 输出 `è¶³å½©...` 乱码和 `<system-reminder>`。已新增 `src/lib/text-cleanup.ts`，后端保存前、前端显示时清洗：尝试修复 mojibake 并删除 `<system-reminder>`。已直接部署线上。旧内容如字节已损坏只能部分恢复。
+- 用户消息气泡下方新增 hover 时间和复制图标，复制成功显示勾，不显示“复制”文字。
+- 本轮完整功能已部署线上并提交 GitHub `eee77a5`；但最后的文本清洗/乱码修复和本交接文档更新是在 `eee77a5` 之后直接部署的，尚未再次提交。接手后先 `git status`，避免漏提交。
+
 ## 2026-06-10 本轮本地通用模式关键交接
 
 - 本轮用户再次强调只做本地，不部署。本轮没有部署服务器，没有提交或推送 GitHub。

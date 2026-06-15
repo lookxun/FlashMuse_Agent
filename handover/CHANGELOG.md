@@ -2,6 +2,33 @@
 
 ## Current Snapshot
 
+### 2026-06-15 本轮追加：退首页修复、通用文本累计扣费、@ 弹窗修复和线上部署
+
+- 修复阿里入口工作台偶发退回首页但未退出登录的问题。`src/components/chat-workbench.tsx` 初始登录检查只在明确 `401` 或确认无用户时退首页；`/api/workspace-state?summary=1` 临时失败不再退，只保留页面并 warning。工作台实例锁只有当前页面已经成功 `claim` 后再检测到 `active:false` 才认为被新工作台抢占；未成功 claim 时会重试 claim，不再误踢。
+- 修复通用模式文本对话只累计 Tk、不扣人民币/积分的问题。`src/lib/openrouter.ts` 的 `getUsageMeta()` 现在只把 `usage.cost > 0` 当作真实美元成本；如果 `cost=0` 或缺失但有 token，会按 OpenRouter 文本价格表反推美元。新增兜底模型：`Seed 2.0 Lite`、`DeepSeek V4 Pro`、`DeepSeek R1 0528`、`Gemini 3 Flash Preview`、`Gemini 3.1 Pro Preview`、`GPT-4o`、`GPT-5.4`、`GPT-5.5`。
+- 调整文本扣积分规则为后台小数累计。`prisma/schema.prisma` 给 `User` 新增 `textCreditRemainder Float @default(0)`，新增迁移 `20260612000000_user_text_credit_remainder`。`src/lib/credits.ts` 中图片/视频仍按次 `美元 -> 人民币 -> 积分` 并在人民币转积分时四舍五入；文本类则把每次成本折算为小数积分累计到 `textCreditRemainder`，累计满 1 分才扣整数积分并保留余数。
+- 修复输入框下方 `@` 按钮在复制长提示词后点不开资产引用弹窗。此前底部按钮/placeholder 蓝色 `@` 先插入裸 `@` 再依赖 `activeAtQuery` 展示列表，复制长文本后光标或长度限制会导致裸 `@` 没形成查询。现在 `isAtAssetMenuOpen` 时也会生成资产分组；底部和 placeholder 的 `@` 只打开弹窗，不再先插入裸 `@`；选择资产时再插入完整 `@资产名`。手动输入 `@` 的筛选逻辑不变。
+- 本地打不开排查结论：一键启动脚本卡在 `docker compose up -d`，Docker Desktop Service 为 `Stopped` 且 Docker CLI 卡住；PostgreSQL 5432 实际可用。停止卡住进程后直接独立 PowerShell 窗口 `npm run dev` 可启动，本地 `http://localhost:3000/` 和 `/workspace` 均 200。该排查未改代码。
+- 第一批线上部署：备份 `/var/www/flashmuse/.deploy-backups/20260612000139/`，上传 `chat-workbench.tsx/openrouter.ts/credits.ts/text-cleanup.ts/schema.prisma` 和迁移 SQL，线上应用 `20260612000000_user_text_credit_remainder` 并 `prisma generate`，随后执行 `/usr/local/bin/deploy-flashmuse-production.sh`。构建通过、PM2 online、阿里 `/_next/static` 同步清缓存。
+- 第二批线上部署：备份 `/var/www/flashmuse/.deploy-backups/20260615034553/`，只上传 `src/components/chat-workbench.tsx`，执行 `/usr/local/bin/deploy-flashmuse-production.sh`。构建通过，仅剩既有 `next.config.ts`/`video-poster` tracing warning；PM2 online，阿里静态同步清缓存。`https://main.venusface.com/workspace` 返回 200。
+- Git 状态：本轮没有提交或推送。当前本地仍有未提交/未跟踪内容，包括本轮代码和迁移、交接文档更新、`src/lib/text-cleanup.ts`、`AI-Video-Assistant_Project Planning/` 等。后续提交前必须先检查 `git status` 和完整 diff。
+
+### 2026-06-11 本轮追加：通用模式正式升级、长期记忆、权限开关、日志和线上修复
+
+- 通用模式产品身份统一为 `闪念通用 Agent`。底层对话模型可切换，但回答能力按闪念系统整体能力，不按 DeepSeek/Gemini/GPT 裸模型能力。身份问题分层回答：问“你是谁”答闪念通用 Agent；问“你是什么模型”答闪念通用 Agent + 当前对话模型。
+- 通用模式所有发送先走当前对话模型规划，不再用硬规则直接调用图片/视频模型。规划不足时追问并列出比例、分辨率、时长等选项；用户授权“随便/你自己定/以后不要问我”后自动补参数。实际生成调用通用模式里用户选的图片/视频模型。
+- 修复 B_158 规划失败：`planAgentTask()` 现在在 `mode=general` 时走 `getTextProviderConfig(model, "general")`，不再误用 Agent 模型开关；`/api/agent-plan` 错误日志增加 `mode/model/requestId`。
+- 修复 d49 类能力误答：用户问“能不能生图/做视频/支持视频吗”时，通用规划器将其视为潜在生成需求，返回 clarify 追问要生成什么；普通回复也禁止回答“不支持生图/生视频”。
+- 通用对话模型顺序调整为 `Seed 2.0 Lite`、`Seed 2.0 Pro`、其它厂商；`/api/model-availability` 新增 `generalModelProviders`，前端按实际 provider 显示 BytePlus/OpenRouter/DeepSeek/Google/OpenAI 图标，通用回复前图标也跟随实际 provider。
+- 后台用户管理新增通用模式权限开关。迁移 `20260611000000_user_general_mode_enabled` 给 `User` 增加 `generalModeEnabled` 默认 false；新增 `/admin/api/users/general-mode`；前台 `/api/auth/me` 返回该字段，未开启用户不显示通用模式，服务端绕过请求也 403。
+- 新增每会话长期记忆摘要。超过约 20k tokens 首次生成摘要，之后每新增约 12k tokens 更新；请求上下文为摘要 + 最近 12 轮原文。新增接口 `/api/conversation-memory`，流水标签 `长期记忆摘要`。
+- 通用/Agent 回复风格放松：轻松场景可多用表情和语气词；清单/步骤/能力列表可用 `✅/🎯/📝/💡/⚠️/📌` 等符号图标。通用模式回复按任务类型选格式：问答、交付物、方案、创作、追问。
+- 后台系统设置上传规则表新增第一行 `通用模式`：图片最多 5 张、单张 ≤5MB、格式 `jpg/jpeg/png/webp`；文件最多 5 个、单个 ≤10MB、格式 `pdf/txt/csv/docx/doc/xlsx/xls/pptx/ppt/md`；视频/音频当前不支持。
+- 新增 `.runtime/general-task-log.jsonl` 和 `.runtime/upload-rule-feedback-log.jsonl`。前者记录通用模式任务 intent，后者记录带上传/参考图时模型端真实错误，用于后续校准上传限制。日志不记录图片 URL、文档正文或完整用户内容。
+- 用户消息下方新增 hover 时间和复制图标；历史 AI 文字切换/刷新后不再重复打字，只有本轮新生成文本打字。打字机按 grapheme 切分，避免 emoji/符号被拆开显示。
+- 新增 `src/lib/text-cleanup.ts`，后端保存前和前端显示时尝试修复 UTF-8/Latin-1 mojibake，并删除 `<system-reminder>...</system-reminder>`。该修复已直接部署线上；旧历史若不可逆只能部分恢复。
+- 本轮已完整部署线上并同步阿里静态，PM2 online。已提交并推送 GitHub `eee77a5 Add general mode controls and memory handling`；之后的文本清洗修复和本交接文档更新尚未提交。
+
 ### 2026-06-10 本轮追加：本地通用模式、通用对话模型后台开关和 DeepSeek 历史图片处理
 
 - 本轮只做本地，未部署、未提交、未推送。先修本地登录失败：本地数据库缺 `User.lastLoginIp`，应用迁移 `20260610000000_user_login_audit` 后恢复；`scripts/start-project.ps1` 已新增启动前 `docker compose up -d` 和 `npx prisma migrate deploy`，避免本地迁移落后导致登录接口 500。

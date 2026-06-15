@@ -20,6 +20,7 @@ model User {
   previewWheelZoom           Boolean   @default(true)
   previewWheelFlip           Boolean   @default(true)
   credits                    Int       @default(1500)
+  textCreditRemainder        Float     @default(0)
   disabled                   Boolean   @default(false)
   generalModeEnabled         Boolean   @default(false)
   generatedImageCount        Int       @default(0)
