@@ -2,6 +2,16 @@
 
 ## Current Snapshot
 
+### 2026-06-15 本轮追加：预览下载等待、本地清理、线上部署和 GitHub 推送
+
+- 修复预览页右上角下载按钮对远程临时 URL 的不稳定行为。`src/components/chat-workbench.tsx` 现在会判断当前预览媒体是否仍是 `http/https` 远程 URL；如果是，下载按钮禁用并显示 `下载准备中...`；只有媒体替换为本地 `/generated/...` 后才启用下载。该规则同时覆盖图片和视频。
+- 修复视频预览对象不跟随后台保存结果更新的问题。预览同步 effect 不再跳过视频，会同步最新 `url/posterUrl/sourcePrompt/previewMeta/sessionId/messageId`；视频标签增加基于 `id-url` 的 `key`，URL 更新后自动重新加载，避免下载按钮继续使用旧临时 URL。
+- 线上只读核查 `12424740@qq.com / ID_636611` 的 d19 对话：共 6 个视频，全部已保存到马来 `/generated/users/ID_636611/videos/...mp4`，封面也存在。`video_1_d19`、`video_2_d19`、`video_5_d19` 的 `aliSynced=true`，其余 3 个当时为 `false`，但马来文件已存在。
+- 本地磁盘清理：删除 `.next`、`tsconfig.tsbuildinfo`、依赖缓存、旧部署包/HTML 快照、旧 `restore-chat` 备份；按本地数据库引用关系删除 `public/generated` 未引用媒体 737 个，释放约 1.65GB。清理后项目约 2.47GB，`public/generated` 约 1.39GB，复扫未引用媒体为 0。该清理只影响本地，不影响线上。
+- 新增工作规则并写入交接：以后所有临时生成文件、调试快照、部署中间包都必须放在项目目录内，例如 `E:\project\AI-Video-Assistant\tmp\...`；不要放到 `E:\project` 或项目文件夹外。
+- 已部署线上：上传运行相关文件到马来 `/var/www/flashmuse`，执行 `npx prisma migrate deploy`、`npx prisma generate`、`/usr/local/bin/deploy-flashmuse-production.sh`；构建通过，仅有既有 Turbopack tracing warning；PM2 `flashmuse` online；阿里 `/_next/static` 已同步并清缓存。验证 `https://main.venusface.com/workspace`、`https://api.venusface.com/api/model-availability`、`https://main.venusface.com/admin` 均 200。
+- 已提交并推送 GitHub：`5629ac2 Fix text billing and preview downloads`。提交包含 6 月 15 已部署但未提交的文本计费累计、工作台误退首页、`@` 弹窗、`text-cleanup.ts`，以及本轮预览下载修复、迁移和交接文档更新。`.gitignore` 已新增 `/AI-Video-Assistant_Project Planning/`，避免敏感规划资料误传。
+
 ### 2026-06-15 本轮追加：退首页修复、通用文本累计扣费、@ 弹窗修复和线上部署
 
 - 修复阿里入口工作台偶发退回首页但未退出登录的问题。`src/components/chat-workbench.tsx` 初始登录检查只在明确 `401` 或确认无用户时退首页；`/api/workspace-state?summary=1` 临时失败不再退，只保留页面并 warning。工作台实例锁只有当前页面已经成功 `claim` 后再检测到 `active:false` 才认为被新工作台抢占；未成功 claim 时会重试 claim，不再误踢。

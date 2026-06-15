@@ -2,6 +2,17 @@
 
 ## 当前已完成内容
 
+### 2026-06-15 本轮追加：预览下载修复、本地清理、部署和 GitHub 同步
+
+- 本轮用户追问预览页右上角下载按钮有些视频“下载来会直接删除掉”。排查结论：下载按钮本身没有调用删除接口；真正删除本地文件的 `/api/asset-delete` 只在资产回收站过期清理时调用。问题根因是部分预览媒体仍拿供应商远程临时 URL，浏览器跨域下载行为不稳定；并且旧逻辑中预览对象只对图片同步最新信息，视频没有跟随后台保存后的本地 URL 更新，导致按钮可能继续拿旧远程链接。
+- 已修复 `src/components/chat-workbench.tsx`：预览对象现在图片和视频都会跟随 `previewMediaOptions` 更新 `url/posterUrl/sourcePrompt/previewMeta`；视频元素增加 `key={id-url}`，URL 变化后会重新加载。预览页下载按钮新增 `isPreviewDownloadReady` 判断，只要当前媒体 URL 仍是 `http/https` 远程临时 URL，就禁用按钮并显示 `下载准备中...`；只有替换为本地 `/generated/...` 后才显示正常 `下载`。该逻辑同时覆盖图片和视频。
+- 已只读查询线上 `12424740@qq.com / ID_636611` 的 d19 对话。d19 共 6 个视频，全部已在马来服务器保存为 `/generated/users/ID_636611/videos/...mp4`，对应封面 `/generated/users/ID_636611/video-posters/...jpg` 也都存在；当时队列里 `video_1_d19 / video_2_d19 / video_5_d19` 的 `aliSynced=true`，`video_3_d19 / video_4_d19 / video_6_d19` 为 `false`，但这不影响马来主站本地文件存在。
+- 本地磁盘清理：先删除 `.next`、`tsconfig.tsbuildinfo`、`node_modules` 下缓存/临时 Prisma 文件、旧部署包和旧 HTML 快照；随后按本地数据库所有用户 `UserWorkspaceState.state`、资产库、头像引用关系清理 `public/generated`，删除不再被本地工作台历史/资产库/头像引用的媒体文件 737 个，释放约 1.65GB。清理后 `public/generated` 剩余 699 个文件，复扫未引用媒体为 0。`public/home-assets` 未动。该清理仅影响本地，不影响线上。
+- 本轮发现 `E:\project` 根目录散落旧文件：`flashmuse-deploy.tar.gz`、`flashmuse-deploy-lite.tar.gz`、`workspace-fresh.html`、`workspace-response.html`、`restore-chat/`。这些是 2026-06-05 部署/排查遗留，先移入项目内 `tmp/legacy-root-files/` 后因无运行价值已删除。新工作规则：以后所有临时生成文件、调试快照、中间包必须放在项目目录内的 `tmp/` 或明确子目录，不允许放到项目文件夹外。
+- 本轮部署：本地 `npm run build` 通过，仅有既有 Turbopack tracing warning。上传 `chat-workbench.tsx`、`openrouter.ts`、`credits.ts`、`text-cleanup.ts`、`schema.prisma`、迁移 SQL 到马来 `/var/www/flashmuse`；线上执行 `npx prisma migrate deploy` 显示无待迁移、`npx prisma generate` 成功；随后运行 `/usr/local/bin/deploy-flashmuse-production.sh`，线上 build 通过、PM2 `flashmuse` online、阿里 `/_next/static` 同步并清缓存。
+- 线上验证：`https://main.venusface.com/workspace`、`https://api.venusface.com/api/model-availability`、`https://main.venusface.com/admin` 均返回 200。
+- GitHub 同步：已提交并推送 `5629ac2 Fix text billing and preview downloads` 到 `origin/main`。提交内容包括此前未提交但已部署的文本计费/工作台/`@` 弹窗/`text-cleanup.ts` 修复，本轮预览下载按钮修复，迁移 `20260612000000_user_text_credit_remainder`，交接文档更新，以及 `.gitignore` 增加 `/AI-Video-Assistant_Project Planning/`。规划目录含 `闪念官方邮箱.txt` 等敏感资料，不能直接提交。
+
 ### 2026-06-15 本轮追加：工作台不误退首页、通用文本计费累计、@ 资产弹窗修复和线上部署
 
 - 本轮用户先要求只改本地排查两个问题：阿里入口偶发进入工作台后退回首页但未退出登录，以及通用模式只对话时右上角只有 Tk 变化、人民币/积分一直为 0。随后用户要求部署这两项到服务器；后续又要求修复输入框底部 `@` 按钮在复制提示词后点不开引用资产弹窗，并要求直接部署。

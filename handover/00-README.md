@@ -31,6 +31,11 @@
 
 最新接手重点：
 
+- 2026-06-15 最新接手重点：本轮已完成并上线“预览页下载按钮”修复。预览页图片/视频如果当前仍是供应商远程临时 URL，下载按钮禁用并显示 `下载准备中...`；等后台保存并替换成 `/generated/...` 后才恢复 `下载`。同时修复视频预览对象不跟随最新本地 URL 更新的问题，避免按钮继续拿旧临时链接。已部署线上，GitHub 已提交推送 `5629ac2 Fix text billing and preview downloads`。
+- 2026-06-15 最新接手重点：已检查线上 `12424740@qq.com / ID_636611` 的 d19 对话，6 个视频全部已保存到马来 `/generated/users/ID_636611/videos/...mp4`，本地文件和封面均存在；其中 `video_1_d19`、`video_2_d19`、`video_5_d19` 的 `aliSynced=true`，`video_3_d19`、`video_4_d19`、`video_6_d19` 当时队列标记仍为 `false`，但马来文件已存在。
+- 2026-06-15 最新接手重点：本轮清理了本地项目磁盘空间。删除 `.next`、`tsconfig.tsbuildinfo`、依赖缓存、旧部署包/HTML 快照，以及本地 `public/generated` 中不被本地数据库工作台历史/资产库/头像引用的媒体 737 个，释放约 1.65GB。`public/generated` 从约 3.17GB 降至约 1.39GB；项目总体约 2.47GB。此清理只影响本地，不影响线上。
+- 2026-06-15 最新接手重点：以后任何临时生成文件/调试脚本/下载快照/中间包都必须放在项目目录内的临时目录，例如 `E:\project\AI-Video-Assistant\tmp\...`，不要再放到 `E:\project` 或项目文件夹外面。清理时发现旧的 `flashmuse-deploy*.tar.gz`、`workspace-*.html`、`restore-chat/` 都是 6 月 5 日部署/排查遗留，已删除。
+- 2026-06-15 最新接手重点：本轮已把此前未提交的 6 月 15 线上修复一起提交并推送 GitHub：文本计费累计、`text-cleanup.ts`、工作台误退首页、`@` 弹窗、预览下载修复、迁移 `20260612000000_user_text_credit_remainder`、交接文档更新和 `.gitignore`。当前本地 Git 工作区在提交后是干净的；`AI-Video-Assistant_Project Planning/` 因含 `闪念官方邮箱.txt` 等敏感/私有资料，已加入 `.gitignore`，不要直接提交。
 - 2026-06-15 最新接手重点：本轮继续本地排查并按用户要求部署了两批线上修复，仍未提交/推送 GitHub。第一批修复阿里入口工作台偶发“没退出登录但被退回首页”和通用模式文本计费；第二批修复输入框下方 `@` 按钮在用户复制长提示词后点不开资产引用弹窗。线上均已用 `/usr/local/bin/deploy-flashmuse-production.sh` 构建、重启 PM2 并同步阿里 `/_next/static`。
 - 2026-06-15 最新接手重点：工作台退首页根因有两个：初始 `/api/workspace-state?summary=1` 失败会被总 catch 直接 `window.location.replace("/")`；工作台实例锁首次 `claim` 失败后下一次检查拿到 `active:false` 也会退首页。已改为只有明确 `401` 或已成功 claim 后确认被新工作台抢占才退首页；工作区加载失败只保留当前页面并 `console.warn`。核心在 `src/components/chat-workbench.tsx`。
 - 2026-06-15 最新接手重点：通用/文本计费规则已改。OpenRouter 文本模型若返回 `usage.cost/usd > 0` 直接按美元扣；若只返回 token 或 `cost=0` 但有 token，则用模型价格表兜底反推美元。已为 `Seed 2.0 Lite`、`DeepSeek V4 Pro`、`DeepSeek R1 0528`、`Gemini 3 Flash`、`Gemini 3.1 Pro`、`GPT-4o`、`GPT-5.4`、`GPT-5.5` 补价格兜底，位置在 `src/lib/openrouter.ts`。
