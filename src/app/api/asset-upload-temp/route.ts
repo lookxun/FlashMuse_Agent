@@ -41,8 +41,9 @@ export async function POST(request: Request) {
     if (!userId) return NextResponse.json({ error: "请先登录" }, { status: 401, headers });
     const formData = await request.formData();
     const file = formData.get("image");
+    const forceReencode = formData.get("forceReencode") === "1";
     if (!(file instanceof File)) return NextResponse.json({ error: "缺少图片" }, { status: 400, headers });
-    const result = await saveTemporaryUploadedImageBuffer(Buffer.from(await file.arrayBuffer()), file.type || "image/jpeg", { userId });
+    const result = await saveTemporaryUploadedImageBuffer(Buffer.from(await file.arrayBuffer()), file.type || "image/jpeg", { userId, forceReencode });
     return NextResponse.json(result, { headers });
   } catch (error) {
     return NextResponse.json({ error: toUserErrorMessage(error, "图片上传失败，请稍后再试。") }, { status: 500, headers });

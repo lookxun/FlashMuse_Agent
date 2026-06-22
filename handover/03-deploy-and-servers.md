@@ -1,0 +1,84 @@
+# Deploy And Servers
+
+## Malaysia Main Server
+
+- Role: main Next.js app, API, PostgreSQL, generated media source.
+- IP: `101.47.19.109`.
+- Project path: `/var/www/flashmuse`.
+- PM2 process: `flashmuse`.
+- Standard deploy script: `/usr/local/bin/deploy-flashmuse-production.sh`.
+- Login key path on local machine: `E:\project\【2】server\马来西亚服务器\ByteplusVPS.pem`.
+- Safe login command: `ssh -i "E:\project\【2】server\马来西亚服务器\ByteplusVPS.pem" root@101.47.19.109`.
+
+Current notes:
+
+- `/var/www/flashmuse` did not show a usable Git worktree during rebuild, so Git status on the server is not reliable.
+- Source file hashes for key local files matched the Malaysia server deployment during rebuild.
+- PM2 was online during rebuild.
+- Recent deployment backup names included `20260620202220-asset-dedupe-ui-fix`.
+- Latest deployment backups from 2026-06-21 Seedance reference media work include `20260621053806-seedance-av-upload`, `20260621055453-media-mention-preview-fix`, `20260621060108-media-duration-epsilon`, `20260621061058-media-input-mention-click`, `20260621061807-media-prompt-inline-render`, `20260621062457-assistant-uploaded-files-fix`, `20260621063426-byteplus-review-notice-once`, `20260621064500-review-notice-per-request`, `20260621065215-replay-media-references`, `20260621065646-admin-upload-rules-text`, and `20260621065952-admin-upload-rules-columns`.
+- Later 2026-06-21 deploy backups include `20260621-admin-credit-last-change-sort`, `20260621-admin-upload-rules-image-reference`, `20260621-asset-category-preserve`, `20260621-asset-sidebar-group-counts`, `20260621-asset-page-size-loading`, `20260621-asset-pagination-loop-fix`, `20260621-upload-image-fallback`, `20260621-upload-image-conversion-timeout`, `20260621-upload-diagnostics`, and `20260621-same-origin-image-upload`.
+- BytePlus video diagnostics are under `/var/www/flashmuse/.runtime/video-diagnostics-log.jsonl`. Use this to verify whether requests include only `reference_image` or also `reference_video` / `reference_audio`.
+- Latest 2026-06-23 deployment uploaded the full local source snapshot, backed up production source to `.deploy-backups/20260623-full-local-deploy/source-before-deploy.tgz`, then ran `/usr/local/bin/deploy-flashmuse-production.sh`. Build passed with only existing Turbopack/NFT warnings; PM2 stayed online; Ali `_next/static` synced and cache cleared. `NEXT_PUBLIC_WORKFLOW_MODE_ENABLED` was confirmed disabled/unset.
+- On 2026-06-21, upload failures around 1MB were traced to `/etc/nginx/conf.d/flashmuse.conf`: missing semicolons after `server_name main.venusface.com api.venusface.com` caused `client_max_body_size` to be parsed incorrectly. Fixed config backup: `/etc/nginx/conf.d/flashmuse.conf.bak.20260621025418-upload-size-fix`.
+- Current intended upload limit for `main/api` HTTPS server block is `client_max_body_size 20m;`. Verify with `nginx -T | grep -n 'server_name main.venusface.com api.venusface.com\|client_max_body_size'` if upload 413 returns.
+- Client-side upload diagnostics are logged through `/api/client-error` with `source="client-diagnostic"`. Use PM2 logs and Nginx access logs together when diagnosing upload failures. If users see only generic `上传失败`, check for nearby `client-diagnostic` entries first.
+
+## Ali Static Server
+
+- Role: static mirror for `_next/static`, generated files, and home assets.
+- IP: `101.37.129.164`.
+- Static root: `/var/www/flashmuse-static`.
+- Local server info file exists outside the repo under `E:\project\【2】server\阿里服务器\阿里服务器.txt`. Do not copy passwords into Git or handover docs.
+- Malaysia deploy script uses `/root/.ssh/flashmuse_to_ali_ed25519` internally to sync Ali static assets.
+
+Observed during rebuild:
+
+- Nginx service on Ali was active.
+- `/var/www/flashmuse-static/_next/static` had timestamp `2026-06-20 20:22`, matching the latest deploy window.
+- Ali local SNI checks returned 200 for one real `_next/static` file.
+- Public access from local/Malaysia to static domains returned `403` over HTTP or curl `000` over HTTPS. If the app depends on direct `static.venusface.com` or `ali.venusface.com` access, investigate DNS/proxy/firewall/certificate path before assuming static CDN is healthy.
+
+## Public Domains
+
+- Main app: `https://main.venusface.com`.
+- API: `https://api.venusface.com`.
+- Static domains configured historically: `https://static.venusface.com`, `https://ali.venusface.com`.
+
+Verified during rebuild:
+
+- `https://main.venusface.com/workspace` -> 200.
+- `https://api.venusface.com/api/model-availability` -> 200.
+- `https://main.venusface.com/admin` -> 200.
+
+## Deployment Rules
+
+- Before deploying, inspect local `git status` and `git diff`.
+- Do not overwrite unrelated local changes.
+- For database changes, run Prisma migration deploy and generate on the server before app build when needed.
+- Use the standard Malaysia deploy script unless there is a specific reason not to.
+- The deploy script builds, restarts PM2, saves PM2 state, and syncs `_next/static` to Ali.
+- Keep `.env`, `.env.local`, keys, SMTP credentials, and server passwords out of Git and handover docs.
+- Deployment decision rule: if the change is low-risk and should not meaningfully affect current frontend users, the AI may deploy directly after local verification and then report the result.
+- If deployment may interrupt active users, running generation tasks, database migrations, auth/session behavior, payment/credits, media persistence, or server availability, do not deploy first. Explain the risk to the user and ask for approval before deploying.
+- Do not keep old blanket rules that say every deployment must be approved first. The current rule is risk-based: low-impact deploys can proceed; risky deploys require user confirmation.
+- Nginx config changes are allowed when they fix a clear production issue, but always back up the config, run `nginx -t`, and reload rather than restart the server.
+
+## Useful Production Checks
+
+Run from local:
+
+```powershell
+ssh -i "E:\project\【2】server\马来西亚服务器\ByteplusVPS.pem" root@101.47.19.109
+```
+
+Run on Malaysia:
+
+```bash
+cd /var/www/flashmuse
+pm2 status
+curl -I https://main.venusface.com/workspace
+curl -I https://api.venusface.com/api/model-availability
+ls -1 .deploy-backups | tail
+ls -1 .runtime/media-migration-logs | tail
+```

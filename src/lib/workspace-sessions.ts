@@ -1,6 +1,9 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { isRecord } from "@/lib/workspace-state-cleanup";
+import { canonicalizeSavedMediaUrl, normalizeMediaAssetUrl, resolvePersistableMediaAssetUrl } from "@/lib/media-assets";
+
+const UPLOAD_IMAGE_PROMPT_PLACEHOLDER = "上传图片";
 
 type WorkspaceSessionRow = {
   sessionId: string;
@@ -50,6 +53,105 @@ function getMessageRole(message: Record<string, unknown>) {
 
 function getMessageContent(message: Record<string, unknown>) {
   return typeof message.content === "string" ? message.content : "";
+}
+
+function getString(value: unknown, fallback = "") {
+  return typeof value === "string" ? value : fallback;
+}
+
+function normalizeMediaUrl(value: string) {
+  return normalizeMediaAssetUrl(value);
+}
+
+function mediaTypeFromUrl(url: string) {
+  return /\.(mp4|webm|mov|m4v)(\?|#|$)/i.test(url) ? "video" : "image";
+}
+
+function getDimension(value: unknown) {
+  if (!isRecord(value)) return undefined;
+  const width = Number(value.width);
+  const height = Number(value.height);
+  return Number.isFinite(width) && Number.isFinite(height) ? { width: Math.floor(width), height: Math.floor(height) } : undefined;
+}
+
+function getMessageImageUrls(message: Record<string, unknown>) {
+  if (Array.isArray(message.imageResultSlots)) {
+    const slots = message.imageResultSlots.filter(isRecord).filter((slot) => slot.type === "image").map((slot) => getString(slot.url)).filter(Boolean);
+    if (slots.length > 0) return slots;
+  }
+  return Array.isArray(message.images) ? message.images.filter((url): url is string => typeof url === "string" && Boolean(url)) : [];
+}
+
+function getMessageVideoUrls(message: Record<string, unknown>) {
+  const urls = new Set<string>();
+  if (Array.isArray(message.videos)) message.videos.forEach((url) => { if (typeof url === "string" && url) urls.add(url); });
+  if (typeof message.videoUrl === "string" && message.videoUrl) urls.add(message.videoUrl);
+  return Array.from(urls);
+}
+
+async function syncWorkspaceMessageMediaAssets(userId: string, sessionId: string, messages: Record<string, unknown>[]) {
+  for (const message of messages) {
+    const role = getMessageRole(message);
+    const messageId = getMessageId(message);
+    const createdAt = toDate(message.createdAt);
+    const meta = isRecord(message.generationMeta) ? message.generationMeta : undefined;
+    const settings = isRecord(meta?.settings) ? meta.settings : undefined;
+    const mediaSystemNames = isRecord(message.mediaSystemNames) ? message.mediaSystemNames : undefined;
+    const items: Array<{ url: string; mediaType: "image" | "video"; category: string; sourceKind: string; sourcePrompt?: string; promptSource: string; name?: string; posterUrl?: string; width?: number; height?: number; videoDuration?: string }> = [];
+
+    if (role === "user") {
+      for (const url of getMessageImageUrls(message).filter((item) => /\/generated\/(?:users\/[^/]+\/)?upload_image\//.test(normalizeMediaUrl(item)))) {
+        items.push({ url, mediaType: "image", category: "conversation_uploads", sourceKind: "conversation_upload_image", sourcePrompt: UPLOAD_IMAGE_PROMPT_PLACEHOLDER, promptSource: "upload" });
+      }
+    }
+
+    if (role === "assistant") {
+      const imagePrompts = isRecord(message.imagePrompts) ? message.imagePrompts : undefined;
+      const videoPrompts = isRecord(message.videoPrompts) ? message.videoPrompts : undefined;
+      const imageDimensions = isRecord(message.imageDimensions) ? message.imageDimensions : undefined;
+      const videoDimensionsMap = isRecord(message.videoDimensionsMap) ? message.videoDimensionsMap : undefined;
+      const videoPosters = isRecord(message.videoPosters) ? message.videoPosters : undefined;
+      const originalPrompt = getString(meta?.originalPrompt) || getMessageContent(message);
+
+      if (Array.isArray(message.imageReferences)) {
+        for (const reference of message.imageReferences.filter(isRecord)) {
+          const url = getString(reference.url);
+          if (!url || !/\/generated\/(?:users\/[^/]+\/)?upload_image\//.test(normalizeMediaUrl(url))) continue;
+          items.push({ url, mediaType: "image", category: "conversation_uploads", sourceKind: "conversation_upload_image", sourcePrompt: UPLOAD_IMAGE_PROMPT_PLACEHOLDER, promptSource: "upload", name: getString(reference.name) });
+        }
+      }
+
+      for (const url of getMessageImageUrls(message)) {
+        const dim = getDimension(imageDimensions?.[url]);
+        items.push({ url, mediaType: "image", category: "conversation_images", sourceKind: "conversation_generation_image", sourcePrompt: getString(imagePrompts?.[url], originalPrompt), promptSource: "generated", width: dim?.width, height: dim?.height });
+      }
+
+      for (const url of getMessageVideoUrls(message)) {
+        const dim = getDimension(videoDimensionsMap?.[url]) || getDimension(message.videoDimensions);
+        items.push({ url, mediaType: "video", category: "conversation_videos", sourceKind: "conversation_generation_video", sourcePrompt: getString(videoPrompts?.[url], originalPrompt), promptSource: "generated", posterUrl: getString(videoPosters?.[url]), width: dim?.width, height: dim?.height, videoDuration: getString(settings?.duration) });
+      }
+    }
+
+    for (const item of items) {
+      const resolved = resolvePersistableMediaAssetUrl(userId, item.url, { posterUrl: item.posterUrl });
+      if (!resolved) continue;
+      const normalizedUrl = resolved.normalizedUrl;
+      const systemName = getString(mediaSystemNames?.[item.url]) || item.name;
+      const media = await prisma.mediaAsset.upsert({
+        where: { userId_normalizedUrl: { userId, normalizedUrl } },
+        create: { userId, mediaType: item.mediaType || mediaTypeFromUrl(normalizedUrl), url: resolved.url, normalizedUrl, originalUrl: resolved.originalUrl, posterUrl: resolved.posterUrl || undefined, thumbnailUrl: resolved.thumbnailUrl || undefined, sourceKind: item.sourceKind, sourcePrompt: item.sourcePrompt, promptSource: item.promptSource, model: getString(meta?.model) || undefined, ratio: getString(settings?.ratio) || undefined, resolution: getString(settings?.resolution) || undefined, imageSize: getString(settings?.imageSize || settings?.size) || undefined, videoDuration: item.videoDuration || undefined, generationSettings: settings as Prisma.InputJsonValue | undefined, width: item.width, height: item.height, systemName: systemName || undefined, initialName: systemName || undefined, initialCategory: item.category, conversationId: sessionId, messageId, requestId: getString(message.requestId) || undefined, firstSeenAt: createdAt },
+        update: { mediaType: item.mediaType || mediaTypeFromUrl(normalizedUrl), url: resolved.url, originalUrl: resolved.originalUrl, posterUrl: resolved.posterUrl || undefined, thumbnailUrl: resolved.thumbnailUrl || undefined, sourcePrompt: item.sourcePrompt, promptSource: item.promptSource, model: getString(meta?.model) || undefined, ratio: getString(settings?.ratio) || undefined, resolution: getString(settings?.resolution) || undefined, imageSize: getString(settings?.imageSize || settings?.size) || undefined, videoDuration: item.videoDuration || undefined, generationSettings: settings as Prisma.InputJsonValue | undefined, width: item.width, height: item.height, systemName: systemName || undefined, initialName: systemName || undefined, conversationId: sessionId, messageId, requestId: getString(message.requestId) || undefined },
+        select: { id: true },
+      });
+
+      await prisma.userAssetState.upsert({
+        where: { userId_mediaAssetId: { userId, mediaAssetId: media.id } },
+        create: { userId, mediaAssetId: media.id, currentName: systemName || undefined, currentCategory: item.category, originalCategory: item.category },
+        update: { hiddenAt: null, hiddenReason: null },
+      });
+      await canonicalizeSavedMediaUrl(userId, resolved.url);
+    }
+  }
 }
 
 function getSessionSummary(session: Record<string, unknown>): Prisma.InputJsonValue {
@@ -124,6 +226,10 @@ export async function upsertWorkspaceMessages(userId: string, sessionId: string,
       }),
     );
   }
+
+  await syncWorkspaceMessageMediaAssets(userId, sessionId, validMessages).catch((error) => {
+    console.warn("[workspace-sessions] media asset sync failed", { userId, sessionId, error: error instanceof Error ? error.message : String(error) });
+  });
 }
 
 export async function migrateWorkspaceSessionsFromState(userId: string, state: unknown) {

@@ -14,6 +14,37 @@ const GENERATED_ROOT = join(process.cwd(), "public", "generated");
 const ASSET_UPLOAD_TEMP_ROOT = join(process.cwd(), ".runtime", "asset-upload-temp");
 const execFileAsync = promisify(execFile);
 
+function isJpegMime(mimeType?: string | null) {
+  return /^image\/jpe?g(?:;|$)/i.test(mimeType ?? "");
+}
+
+function jpegNeedsReencode(buffer: Buffer) {
+  if (buffer.length < 4 || buffer[0] !== 0xff || buffer[1] !== 0xd8) return true;
+
+  let offset = 2;
+  while (offset + 3 < buffer.length) {
+    while (offset < buffer.length && buffer[offset] === 0xff) offset += 1;
+    const marker = buffer[offset];
+    offset += 1;
+    if (marker === 0xd9 || marker === 0xda) break;
+    if (offset + 1 >= buffer.length) return true;
+    const length = buffer.readUInt16BE(offset);
+    if (length < 2 || offset + length > buffer.length) return true;
+
+    if ((marker >= 0xc0 && marker <= 0xc3) || (marker >= 0xc5 && marker <= 0xc7) || (marker >= 0xc9 && marker <= 0xcb) || (marker >= 0xcd && marker <= 0xcf)) {
+      if (length < 8) return true;
+      const componentCount = buffer[offset + 7];
+      if (componentCount !== 3) return true;
+      const factors = [0, 1, 2].map((index) => buffer[offset + 8 + index * 3 + 1]);
+      return !(factors[0] === 0x22 && factors[1] === 0x11 && factors[2] === 0x11);
+    }
+
+    offset += length;
+  }
+
+  return true;
+}
+
 export type ImageDimensions = {
   width: number;
   height: number;
@@ -181,27 +212,22 @@ export async function saveUploadedImageBufferAsset(buffer: Buffer, mimeType = "i
 
   await mkdir(directory, { recursive: true });
 
-  if (!existsSync(filePath)) {
-    if (getExtensionFromMime(mimeType) === "jpg") {
-      await writeFile(filePath, buffer);
-    } else {
-      await writeGeneratedImageAsJpeg(buffer, filePath);
-    }
-  }
+  if (!existsSync(filePath)) await writeGeneratedImageAsJpeg(buffer, filePath);
 
   return `/generated/${publicFolder}/${hash}.${extension}`;
 }
 
-export async function saveTemporaryUploadedImageBuffer(buffer: Buffer, mimeType = "image/jpeg", options: SaveAssetOptions = {}) {
+export async function saveTemporaryUploadedImageBuffer(buffer: Buffer, mimeType = "image/jpeg", options: SaveAssetOptions & { forceReencode?: boolean } = {}) {
   const userSegment = getSafeUserSegment(options.userId) || "anonymous";
   const token = `${Date.now()}-${randomUUID()}`;
   const directory = join(ASSET_UPLOAD_TEMP_ROOT, userSegment);
   const filePath = join(directory, `${token}.jpg`);
   await mkdir(directory, { recursive: true });
-  if (getExtensionFromMime(mimeType) === "jpg") {
-    await writeFile(filePath, buffer);
-  } else {
+  if (options.forceReencode || !isJpegMime(mimeType)) {
     await writeGeneratedImageAsJpeg(buffer, filePath);
+  } else {
+    if (jpegNeedsReencode(buffer)) throw new Error("图片编码需要转码，请点击重试。");
+    await writeFile(filePath, buffer);
   }
   return { token };
 }

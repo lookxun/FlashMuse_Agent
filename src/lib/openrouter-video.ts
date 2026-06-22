@@ -18,6 +18,18 @@ type OpenRouterVideoImage = {
   image_url: { url: string };
 };
 
+type BytePlusVideoReference = {
+  type: "video_url";
+  video_url: { url: string };
+  role: "reference_video";
+};
+
+type BytePlusAudioReference = {
+  type: "audio_url";
+  audio_url: { url: string };
+  role: "reference_audio";
+};
+
 export type OpenRouterVideoTask = {
   id?: string;
   generation_id?: string;
@@ -100,6 +112,17 @@ function toDataUrlIfLocalPublicAsset(url: string) {
   return `data:${getMimeType(filePath)};base64,${data.toString("base64")}`;
 }
 
+function toPublicGeneratedAssetUrl(value: string) {
+  const url = value.trim();
+  if (!url) return url;
+  if (/^https?:\/\//i.test(url) || url.startsWith("asset://") || url.startsWith("data:")) return url;
+  if (url.startsWith("/generated/")) {
+    const base = (process.env.NEXT_PUBLIC_PRIMARY_BASE_URL || process.env.NEXT_PUBLIC_UPLOAD_BASE_URL || "https://main.venusface.com").replace(/\/$/, "");
+    return `${base}${url}`;
+  }
+  return url;
+}
+
 function getClosestDuration(seconds: number, supported: number[]) {
   return supported.reduce((best, item) => (Math.abs(item - seconds) < Math.abs(best - seconds) ? item : best), supported[0]);
 }
@@ -176,8 +199,8 @@ async function postOpenRouterVideoTask(prompt: string, referenceImages: string[]
   return (await response.json()) as OpenRouterVideoTask;
 }
 
-export async function createOpenRouterVideoTask(prompt: string, referenceImages: string[] = [], settings?: VideoSettings, model = DEFAULT_VIDEO_MODEL, options?: { bytePlusProviderKey?: string; referenceMode?: VideoReferenceMode }) {
-  if (getBytePlusVideoModelName(model, options?.bytePlusProviderKey)) return createBytePlusVideoTask(prompt, referenceImages, settings, model, options?.bytePlusProviderKey, options?.referenceMode);
+export async function createOpenRouterVideoTask(prompt: string, referenceImages: string[] = [], settings?: VideoSettings, model = DEFAULT_VIDEO_MODEL, options?: { bytePlusProviderKey?: string; referenceMode?: VideoReferenceMode; referenceVideos?: string[]; referenceAudios?: string[] }) {
+  if (getBytePlusVideoModelName(model, options?.bytePlusProviderKey)) return createBytePlusVideoTask(prompt, referenceImages, settings, model, options?.bytePlusProviderKey, options?.referenceMode, options?.referenceVideos, options?.referenceAudios);
 
   try {
     return await postOpenRouterVideoTask(prompt, referenceImages, settings, model, { generateAudio: true });
@@ -191,7 +214,7 @@ export async function createOpenRouterVideoTask(prompt: string, referenceImages:
   }
 }
 
-async function createBytePlusVideoTask(prompt: string, referenceImages: string[] = [], settings?: VideoSettings, model = DEFAULT_VIDEO_MODEL, bytePlusProviderKey?: string, referenceMode?: VideoReferenceMode) {
+async function createBytePlusVideoTask(prompt: string, referenceImages: string[] = [], settings?: VideoSettings, model = DEFAULT_VIDEO_MODEL, bytePlusProviderKey?: string, referenceMode?: VideoReferenceMode, referenceVideos: string[] = [], referenceAudios: string[] = []) {
   const apiKey = getConfiguredBytePlusApiKey();
   if (!apiKey) throw new Error("缺少 BytePlus API Key");
 
@@ -204,11 +227,23 @@ async function createBytePlusVideoTask(prompt: string, referenceImages: string[]
     image_url: { url: toDataUrlIfLocalPublicAsset(url) },
     role: getBytePlusReferenceRole(index, referenceMode),
   }));
+  const videos: BytePlusVideoReference[] = referenceVideos.filter(Boolean).slice(0, 3).map((url) => ({
+    type: "video_url",
+    video_url: { url: toPublicGeneratedAssetUrl(url) },
+    role: "reference_video",
+  }));
+  const audios: BytePlusAudioReference[] = referenceAudios.filter(Boolean).slice(0, 3).map((url) => ({
+    type: "audio_url",
+    audio_url: { url: toPublicGeneratedAssetUrl(url) },
+    role: "reference_audio",
+  }));
   const body = {
     model: bytePlusModel,
     content: [
       { type: "text", text: prompt },
       ...images,
+      ...videos,
+      ...audios,
     ],
     resolution: videoSettings.resolution,
     ratio: videoSettings.ratio,

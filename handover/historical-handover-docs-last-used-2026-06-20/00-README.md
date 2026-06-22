@@ -1,0 +1,624 @@
+# 闪念 Handover
+
+这个文件夹用于给下一个接手的 AI 或开发者快速接手项目。
+
+建议阅读顺序：
+
+1. `01-project-summary.md`
+2. `02-product-decisions.md`
+3. `03-progress-and-status.md`
+4. `04-keys-and-integrations.md`
+5. `05-chat-history-highlights.md`
+6. `CHANGELOG.md`
+
+当前项目目录：`E:\project\AI-Video-Assistant`
+
+当前项目名：`闪念 / FlashMuse`
+
+网页侧当前展示名：`闪念`
+
+当前英文名 / OpenRouter `X-Title`：`FlashMuse`
+
+浏览器标题：`闪念 FlashMuse`
+
+定位：
+
+- 内部使用的简化版即梦
+- 聊天式生图、生视频
+- 能理解上下文
+- 帮用户优化提示词
+- 当前优先做 MVP，不做支付、不做登录
+
+最新接手重点：
+
+- 2026-06-20 最新接手重点：本轮修复媒体新表上线后的两个新问题并已多次部署线上，仍未提交/推送 GitHub。已修对话流图片/视频“远程临时 URL + 本地 `/generated/...`”重复可见、资产库移动分类不写新表、重命名/删除/恢复不写新表、分类切换导致前端内存重复显示、资产库整体顺序被旧 `sortOrder` 干扰等问题。最终线上 `ID_636611` 审计：`visibleDuplicateGroups=0`、`visibleDuplicateItemsExtra=0`、`unmatchedLedgers=0`。涉及新增 `src/lib/media-assets.ts`，修改 `src/app/api/media-assets/route.ts`、`src/app/api/media-save-status/route.ts`、`src/lib/workspace-sessions.ts`、`src/app/api/workspace-state/route.ts`、`src/components/chat-workbench.tsx`。
+- 2026-06-20 最新接手重点：服务器登录方式已补充到 `handover/04-keys-and-integrations.md`。马来服务器资料目录是 `E:\project\【2】server\马来西亚服务器`，SSH 私钥是 `E:\project\【2】server\马来西亚服务器\ByteplusVPS.pem`，登录命令：`ssh -i "E:\project\【2】server\马来西亚服务器\ByteplusVPS.pem" root@101.47.19.109`。线上项目目录 `/var/www/flashmuse`，标准部署脚本 `/usr/local/bin/deploy-flashmuse-production.sh`。阿里服务器资料目录是 `E:\project\【2】server\阿里服务器`，连接信息在 `阿里服务器.txt`。
+- 2026-06-20 最新接手重点：本轮后续围绕新媒体表上线后的连锁问题做了多次线上修复，均已部署但未提交。后台生成记录/用户详情/概览已改为以 `MediaAsset + UserAssetState` 为媒体事实来源，`WorkspaceSession + WorkspaceMessage` 只负责对话结构，`CreditLedger` 负责扣费。涉及 `src/app/admin/page.tsx`、`src/app/admin/api/records/user-detail/route.ts`、`src/app/admin/admin-users-panel.tsx`。
+- 2026-06-20 最新接手重点：已修“新生成图片/视频刷新后消失”。新增 `/api/media-assets`，资产库生成/上传成功后直接写 `MediaAsset + UserAssetState`；同时 `src/lib/workspace-sessions.ts` 在保存 `WorkspaceMessage` 时会把对话流图片、视频、上传图同步写入新表。已用 `node scripts/migrate-user-media-assets.mjs --user=ID_636611 --apply` 补回用户刚才丢的媒体，当前 `ID_636611` 可见媒体 `271`，可见分类：`character_image=27`、`scene_image=10`、`shot_image=19`、`conversation_images=150`、`conversation_videos=65`，可见重复 `0`。
+- 2026-06-20 最新接手重点：已修历史排序。用户侧历史列表不再只按 `WorkspaceSession.updatedAt`，而是优先按该会话最新 `WorkspaceMessage.createdAt` 排序；没有消息才回退 `WorkspaceSession.updatedAt`。原因是“在吗”等旧对话被保存/迁移刷新 `updatedAt` 后错误排前。涉及 `src/app/api/workspace-state/route.ts`。
+- 2026-06-20 最新接手重点：已修资产库和 `@` 引用体验。资产库入口和分类切换不再强制重拉已加载分类，按 `loadedAssetFilters` 缓存；滚动分页仍保留。打开 `@` 资产弹窗时会自动补拉 `character_image / scene_image / shot_image / conversation_uploads` 四类，避免只加载过分镜时弹窗只显示分镜。`@` 弹窗加载态改为居中蓝色转圈 + `加载中...`。
+- 2026-06-20 最新接手重点：已修 BytePlus 真人参考图自动审核。审核失败也会写回 `UserAssetState.bytePlusAssetStatus=Failed`，后续同一参考图不再无限重复审核；现在允许最多自动审核 `3` 次，次数写在 `bytePlusAssetError` 内部前缀 `__byteplus_review_attempts=N__`，通过 `/api/workspace-state` 返回前会隐藏该前缀。参考图素材审核版权拒绝新文案为 `审核图片可能涉及版权限制，平台已拒绝，请换其它图片重试。`；输出视频版权风控仍是 `输出视频可能涉及版权限制，平台拒绝生成。重新生成有可能会成功。`。同一视频消息的自动审核系统提示 `系统检测到真人图片...` 只显示一次，后续重新生成不再追加。
+- 2026-06-20 最新接手重点：本轮已整理并验证资产新表迁移流程，新增正式脚本 `scripts/migrate-user-media-assets.mjs`、`scripts/migrate-selected-media-users.mjs`、`scripts/audit-visible-duplicate-media.mjs`、`scripts/audit-user-media-cost-gaps.mjs` 和说明 `scripts/README-media-assets.md`。本地 `npx tsc --noEmit` 通过；本地两个有媒体账号 `ID_113219`、`ID_779117` 已按流程迁移并验证。
+- 2026-06-20 最新接手重点：线上已迁移除试点 `ID_636611` 外的全部 20 个有媒体账号：`ID_973447 / ID_294338 / ID_316782 / ID_911584 / ID_415958 / ID_963115 / ID_868181 / ID_315163 / ID_947011 / ID_193006 / ID_554897 / ID_332396 / ID_262993 / ID_379461 / ID_955937 / ID_847338 / ID_673536 / ID_686996 / ID_852101 / ID_953031`。每个账号完整日志在马来服务器 `/var/www/flashmuse/.runtime/media-migration-logs/`；最终校验结果均为 `visibleDuplicateGroups=0` 且 `unmatchedLedgers=0`。3 个无媒体账号 `ID_778841 / ID_476875 / ID_164561` 未迁移；`ID_636611` 保持此前试点结果。
+- 2026-06-20 最新接手重点：本轮围绕 `ID_636611 / 12424740@qq.com` 完成资产库新表迁移试点、性能优化和大量线上部署，仍未提交/推送 GitHub。重要结论：资产库现在读取新表 `UserAssetState + MediaAsset`，你的账号不会再走旧 `UserWorkspaceState.state.assets` 回退；但迁移其它账号前必须严格按本轮顺序执行，不能直接全量跑旧脚本。
+- 2026-06-20 最新接手重点：性能问题已定位并优化。真实数据库查询很快，慢点是响应包太大。`ID_636611` 原 `summary=1&panel=chat` 返回约 `306KB`，原因是每条消息重复带整会话 `imageDimensions/videoPosters` 映射；已在 `src/lib/workspace-sessions.ts` 裁剪消息返回，仅保留当前消息媒体字段，首屏降到约 `21KB`。资产库改成分类分页读取：`/api/workspace-state?assetsOnly=1&assetFilter=...&assetOffset=...&assetLimit=60`，左侧返回 `assetCounts`，右侧只读当前分类，滚动再拉下一页。
+- 2026-06-20 最新接手重点：资产库 UI 闪跳和分页问题已修。刷新资产库曾先跳到对话模式，是 `activePanel` 初始硬编码为 `chat`；已改为首屏读取 `localStorage` 的 `flashmuse-workspace-ui-state-v1`。视频分类不出滚动条是前端仍只渲染 24 个，已改为加载 60 条时同步 `assetRenderLimit`，并在内容不足一屏且还有下一页时自动继续拉。前端不再全局按 `createdAt` 重排已加载资产，顺序由服务端控制。
+- 2026-06-20 最新接手重点：当前资产分类口径已重新确定。用户资产库大类目前只保留 `角色图片 / 场景图片 / 分镜图片`，对应 `character_image / scene_image / shot_image`。旧内部 `shot_video / other` 不能再作为 `UserAssetState.currentCategory` 的用户资产分类。对话流资产分 `conversation_uploads / conversation_images / conversation_videos`；未来工作流资产预留 `workflow_uploads / workflow_images / workflow_videos`。同一分类排序按最新生成/上传在前，服务端按 `MediaAsset.firstSeenAt desc, MediaAsset.createdAt desc, id desc`。
+- 2026-06-20 最新接手重点：本轮给 `MediaAsset` 增加成本字段和归档字段。新增迁移 `202606200100_media_asset_cost_fields`：`costSource / chargedUsd / chargedCny / chargedCredits / promptTokens / completionTokens / totalTokens / costShareCount / costShareIndex`。新增迁移 `202606200200_media_asset_archive_fields`：`MediaAsset.archivedAt/archiveReason/duplicateOfMediaAssetId` 和 `UserAssetState.hiddenAt/hiddenReason`。媒体成本规则：图片/视频成本平摊到每个媒体；普通对话 token、优化提示词 token、反推提示词 token 独立在 `CreditLedger`，不摊到媒体。
+- 2026-06-20 最新接手重点：`ID_636611` 已按新规则试点迁移和修复。当前可见媒体为 `263` 个，归档远程/本地重复项 `156` 个。可见分类：`character_image=26`、`scene_image=9`、`shot_image=18`、`conversation_images=140`、`conversation_uploads=6`、`conversation_videos=64`。可见媒体成本总和与媒体扣费流水总和一致：`usd=133.152183`、`cny=937.906716`、`credits=8779`、`promptTokens=244638`、`completionTokens=14212458`、`totalTokens=14457096`。
+- 2026-06-20 最新接手重点：已写并在线上使用多个临时脚本，均在 `tmp/`，其中迁移其它账号必须复用/参考：`merge-duplicate-media.js` 用于合并远程临时 URL 与本地 `/generated/...` 重复媒体；`enrich-media-assets-from-sources.js` 用于按 `WorkspaceMessage` 优先、`CreditLedger` 其次、旧 `state.assets` 最后补齐提示词/模型/比例/分辨率/尺寸/时长/messageId；`enrich-media-thumbnails.js` 用于补 `thumbnailUrl/posterUrl`；`verify-visible-media-after-merge.js` 和 `verify-media-costs.js` 用于核对数量和成本。后续可整理进 `scripts/`，但不要先删。
+- 2026-06-20 最新接手重点：迁移其它账号的顺序必须是：1）先应用所有迁移和 `prisma generate`；2）`node scripts/rebuild-media-asset-registry.mjs --dry-run --user=USER_ID` 看发现数量；3）真实跑 `rebuild-media-asset-registry.mjs --user=USER_ID`；4）跑 `tmp/merge-duplicate-media.js --dry-run --user=USER_ID`，确认保留本地 URL、归档远程 URL，再真实执行；5）跑 `tmp/enrich-media-assets-from-sources.js --dry-run --user=USER_ID`，确认不写 `-` 这类垃圾参数，再真实执行；6）跑 `tmp/enrich-media-thumbnails.js --dry-run --user=USER_ID`，确认缩略图/封面路径，再真实执行；7）用 `tmp/verify-visible-media-after-merge.js USER_ID`、`tmp/verify-media-costs.js USER_ID` 和 `tmp/count-user-media-breakdown.js USER_ID` 核对。每个账号先 dry-run，再真实跑，不要直接全量。
+- 2026-06-20 最新接手重点：重复媒体的正确处理规则已确定。`media-save-jobs.json` 里远程 URL 已保存成本地 URL 时，必须统一 canonical URL。遇到“远程临时 URL + 本地 /generated URL”两条媒体时，保留本地记录作为正式媒体，合并远程记录的 `creditLedgerId/chargedUsd/chargedCny/chargedCredits/tokens/requestId/model/settings/prompt` 到本地记录；远程记录只归档隐藏，不真删，设置 `archivedAt/archiveReason=duplicate_remote_url/duplicateOfMediaAssetId`，对应 `UserAssetState.hiddenAt/hiddenReason=duplicate_remote_url`。
+- 2026-06-20 最新接手重点：资产详情补全规则已确定。前端曾出现“到对话流打开同一媒体后，回资产库参数就对了”，说明对话消息是最高可信来源。后续迁移其它账号必须优先用 `WorkspaceMessage` 的 `generationMeta / imageDimensions / videoDimensions / imagePrompts / videoPrompts / videoPosters` 补媒体；再用 `CreditLedger.metadata`；最后才用旧 `state.assets.previewMeta/sourcePrompt`。禁止把 `-`、空字符串、内部强制规则这种垃圾字段写入新表。
+- 2026-06-20 最新接手重点：缩略图/封面字段已补齐试点并接入接口。`MediaAsset.thumbnailUrl` 和 `posterUrl` 已用于资产卡片，前端 `getAssetCardImageUrl()` 优先读 `thumbnailUrl`。`ID_636611` 本轮补了 `177` 个图片缩略图和 `13` 个视频封面。补全来源优先 `.runtime/media-save-jobs.json`，其次按本地 `/generated/users/{userId}/image-thumbnails/...` 和 `/video-posters/...` 推导并确认文件存在。
+
+- 2026-06-19 最新接手重点：本轮围绕资产库和历史加载做了大量线上直接修复和部署，仍未提交/推送 GitHub。用户要求以后按“媒体唯一编号 + 固定事实数据 + 可变用户资产状态”重构资产系统。本轮已新增 Prisma 表 `MediaAsset` 和 `UserAssetState`，迁移 `prisma/migrations/20260619223000_media_asset_registry/`，字段覆盖媒体 URL、类型、来源、提示词、参数、模型、尺寸、会话/消息/流水、未来 `workflowId/workflowNodeId`，以及用户当前名称/分类/删除/排序/火山审核状态。来源字段已按用户要求预留 `workflow_generation / workflow_upload`。
+- 2026-06-19 最新接手重点：已新增脚本 `scripts/rebuild-media-asset-registry.mjs`，线上已执行迁移、`prisma generate`、dry-run 和真实全量盘查写入新表。线上 dry-run/真实写入显示 24 个账号有媒体数据；用户 `ID_636611 / 12424740@qq.com` 旧 assets 当时 106，新表发现 408 个媒体：`character_image=36`、`scene_image=11`、`shot_image=18`、`shot_video=104`、`other=239`。注意这只是“尽量全面”的第一版盘查，不代表分类已完全正确；大量 `other` 是故意不硬猜。
+- 2026-06-19 最新接手重点：资产库读取已改为 `/api/workspace-state?assetsOnly=1` 优先读 `UserAssetState + MediaAsset`，无新表数据才回退旧 `UserWorkspaceState.state.assets`。为兼容旧前端返回了 legacy `AssetItem`，并修过两个显示问题：返回 `lockedType: true` 防止前端 `normalizeStoredAssets()` 按提示词重猜分类；当前分类是 `character_image / scene_image / shot_image / shot_video` 时强制 `librarySource="asset_generation"`，否则左侧分类计数会显示 0。
+- 2026-06-19 最新接手重点：本轮拆分工作台加载：刷新对话页改请求 `/api/workspace-state?summary=1&panel=chat`，不再带资产库整包；历史“加载更多”改成真正轻量分页，`historyOnly=1` 不再返回 workspace assets。资产库改为进入/点击时单独拉 `assetsOnly=1`；输入框 `@` 引用也会懒加载资产，加载中显示 `加载中...`。服务端 PUT 已修复：当前端没有带 `assets / assetGenerateJobs` 时保留旧值，避免再次把资产库覆盖成空。
+- 2026-06-19 最新接手重点：本轮曾因拆分加载引入事故：对话页保存 payload 不带 assets，而服务端旧 PUT 没保留缺失字段，导致用户 `ID_636611` 的 `state.assets` 从 106/更多缩水到 13；已紧急上线保留旧 assets 的补丁，并用可靠来源恢复到 106 后，又用新媒体注册表盘查写入 408 个媒体。恢复前状态备份为 `.runtime/migration-backups/2026-06-19T14-19-29-710Z-ID_636611-before-reliable-asset-restore.json`。相关线上备份目录包括 `/var/www/flashmuse/.deploy-backups/20260619215614-split-panel-loading`、`20260619221531-preserve-assets-on-shell-save`、`20260619230959-media-registry`、`20260619233125-asset-library-source-fix`、`20260619233936-force-load-assets-button`。
+- 2026-06-19 最新接手重点：当前最后状态仍未完全稳定。用户反馈“终于加载出来了”，但仍有很多封面/缩略图显示不出来，一次加载整个资产库很慢；用户看到“工作流生成视频”数量一开始只有 6 个，打字时变 7 个，怀疑仍未加载全；再次点击资产库按钮又会重新开始加载。下个 AI 接手第一件事：不要再盲改，先看浏览器实际请求、Nginx access log、PM2/client-error，确认 `assetsOnly=1` 是否被触发、返回大小、前端是否跑新包、是否有 JS 错误。继续优化时应做资产库分类级分页/按需加载，而不是一次拉 408+ 全量。
+- 2026-06-19 最新接手重点：用户明确的产品原则：视频来源目前相对清晰，多数来自对话流；图片来源至少包括对话流生成、资产库生成、资产库/对话流上传，未来还会有工作流生成和工作流上传。数据库中媒体事实（唯一编号、图片/视频 URL、参数、提示词、出现方式/来源）应固定不变；用户可变数据（名称、分类、删除、排序）单独记录并保留最后状态，最好同时保留原始状态。后续所有新生成/上传都应直接写 `MediaAsset` 和 `UserAssetState`，不能再只写旧 JSON。
+- 2026-06-19 最新接手重点：本轮做了大量线上直接修复和部署，仍未提交/推送 GitHub。最重要未完成事项：前端资产库分类/数量/顺序/提示词仍有错误，用户明确要求下个 AI 继续查根因，不要只做单账号恢复。已确认根因方向是 `UserWorkspaceState.state.assets` 曾被前端异常 `PUT /api/workspace-state` 保存成缩水/错分类版本；历史消息、`CreditLedger.metadata.creditSource`、`WorkspaceMessage.imageReferences`、旧备份 `.runtime/migration-backups/2026-06-06T18-48-45-483Z-user-workspaces.json` 中仍有部分可靠恢复线索，但当前恢复结果用户仍认为不对。
+- 2026-06-19 最新接手重点：为防止资产库继续被缩水覆盖，已在线上部署 `/api/workspace-state` 服务端保护：若前端传来的 `assets` 比数据库少，会合并保留旧资产；若数据库已有 `asset_generation` 或明确 `character_image / scene_image / shot_image`，前端传回 `conversation / other` 时会保留原分类、名称和来源；用户主动删除到 `trash` 仍允许。涉及 `src/app/api/workspace-state/route.ts`，线上 build 通过，PM2 online，阿里静态已同步。注意：这只是防复发保护，资产库历史数据是否完全恢复仍未确认。
+- 2026-06-19 最新接手重点：资产库排查过程记录：用户账号 `ID_636611 / 12424740@qq.com` 一度只剩约 20 个资产，历史消息里仍有大量图片。曾从 `WorkspaceMessage` 恢复图片、从旧备份恢复旧资产、从 `imageReferences` 恢复 `场景3/4/5/6/8`，又按 `CreditLedger.metadata.creditSource` 批量修正 8 个账号的可靠资产缺失/错分类。最后一次可靠来源一致性检查返回 `problemUsers: 0`，但用户仍反馈“数量、顺序、提示词、对话流图片混入资产库”不对。因此下次应继续精确对比旧真实资产库状态，不要再靠提示词推断分类。
+- 2026-06-19 最新接手重点：本轮后台做了多次优化并已部署。概览新增 `当前在线人数`，口径为最近 60 秒 `Session.activeWorkspaceSeenAt` 去重用户；灰字显示 30 分钟活跃，口径为最近 30 分钟 `Session.lastSeenAt` 去重用户。`今日活跃 DAU / WAU / MAU` 已从原来混用 `workspace.updatedAt` 改为只按 `Session.lastSeenAt`，因为线上曾出现 `workspaceUpdatedToday=23` 导致 DAU 虚高。后台 `当前总积分余额` 卡片已移到第二行第一个。
+- 2026-06-19 最新接手重点：生成记录大表已多次修复并部署。先修总数/删除数口径，避免删除数大于总数；删除数括号改为英文半角 `()`，删除数为 0 不显示括号。后来按用户要求做后台按需加载：`/admin?tab=records` 首屏传摘要，展开用户时请求 `/admin/api/records/user-detail?userId=...`；用户管理和积分管理也改为首屏摘要、展开时复用该详情接口加载详情。设置页已早返回，不再跑大查询。注意：`/admin/api/records/user-detail` 是后台 Cookie 权限接口，无 Cookie 返回 403 正常。
+- 2026-06-19 最新接手重点：工作台历史问题已排查和修复并部署。线上 `WorkspaceSession` 历史未丢；问题是历史加载失败/旧页面状态下仍允许自动 `PUT /api/workspace-state`，把默认“新对话”保存为 `activeSessionId`。已将用户 `ID_636611` 误创建的 `新对话` 软删除，并恢复 `activeSessionId` 到 `3f8f3022-3ca9-4aa2-a291-64f7751ab6b9`；前端保存 effect 增加 `workspaceLoadStatus === "loaded"` 保护；初始化 `/api/workspace-state?summary=1` 超时从 8 秒放宽到 30 秒。线上 build 通过。
+- 2026-06-19 最新接手重点：本轮按用户要求部署了除工作流开放外的改动。工作流模式仍必须保持线上禁用，除非用户明确说“解开/开放工作流”。线上环境未设置 `NEXT_PUBLIC_WORKFLOW_MODE_ENABLED=true`，检查结果为 disabled。不要擅自开放。
+- 2026-06-19 最新接手重点：本轮继续只改本地，未部署、未提交、未推送。用户反馈开机恢复浏览器后工作台历史很久不出来；已在 `src/components/chat-workbench.tsx` 给 `fetchJsonWithRetry()` 加默认 10 秒超时，工作区初始化 `/api/workspace-state?summary=1` 单次 8 秒超时并最多自动重试 5 次；左侧历史区域增加 `历史加载中...` 灰色提示和失败后的蓝色 `重新加载历史` 按钮。`npx tsc --noEmit` 通过。
+- 2026-06-19 最新接手重点：本轮排查线上 `B_107`。线上 PM2 日志显示 `[B_107] video task polling failed Error: Video generation completed with no output (content may have been filtered)`，对应 BytePlus `Seedance 2.0` 任务 `cgt-20260619032158-hjgsh`，轮询长期 `running / hasVideoUrl:false` 后平台完成但未返回视频，属于输出被平台过滤/无输出，不是首尾帧参数，也不是真人审核。已在 `src/lib/error-message.ts` 本地新增映射：`输出视频被平台过滤，未返回视频。重新生成有可能会成功。`，有错误号时保留 `(B_xxx)` 前缀。未部署。
+- 2026-06-19 最新接手重点：本轮按用户最终确认，平台所有“删除”均为软删除。用户侧看起来可删除/回收站 30 天后删除，但后端不能真删任何服务器文件；客服以后可在后台找回误删内容给用户。已把 `/api/asset-delete` 改为 no-op，不调用 `deleteLocalGeneratedAsset()`；资产回收站到期只让前端隐藏，不从 workspace 移除，不删 `public/generated`。前端回收站文案仍保持“删除 / 30 天后删除”给用户看。
+- 2026-06-19 最新接手重点：本轮把对话删除正式改为数据库软删除。新增迁移 `prisma/migrations/20260619002000_workspace_session_deleted_at/`，`WorkspaceSession.deletedAt DateTime?` 和索引 `@@index([userId, deletedAt, updatedAt])`；用户侧 `/api/workspace-state` 和 `/api/workspace-session` 只查 `deletedAt: null`，所以删除对话不拖慢正常历史读取；后台读取全部并用红字 `用户已删除` 标识。已本地 `npx prisma generate`、`npx prisma migrate deploy`、`npx tsc --noEmit` 通过。注意：为解除 Windows Prisma DLL 文件锁，曾停止本项目本地 `next dev` Node 进程，若页面打不开需重新启动。
+- 2026-06-19 最新接手重点：本轮修后台大表统计口径。线上后台 `src/app/admin/page.tsx` 仍读旧 `user.workspace.state.sessions`，而线上已拆表，所以生成记录大表出现历史对话全 0、视频生成全 0。已本地改为后台合并 `UserWorkspaceState.state` 的资产/设置 + `WorkspaceSession` + `WorkspaceMessage` 的真实对话/消息；用户管理、生成记录、积分管理共用这套后台工作区状态。生成记录大表五列 `历史对话 / 图片生成 / 视频生成 / 上传图片 / 上传文件` 现在显示 `总数（删除数）`，括号红色；图片生成不再把上传图片重复算入对话流图片；概览图片/视频总数用拆表工作区统计兜底。未部署。
+- 2026-06-19 最新接手重点：本轮按用户要求修正 Seedance “尾帧”语义并已部署线上。最终规则：明确说 `首帧 / 第一帧 / 从这张图开始` 才触发 `first_frame`，只用第 1 张图；明确说 `首尾帧 / 首帧和尾帧 / 第一帧和最后一帧` 才触发首尾帧，第 1 张 `first_frame`、第 2 张 `last_frame`，不足 2 张前端提示 `首尾帧生视频需要至少两张参考图` 且不清空输入框；单独说 `尾帧 / 最后一帧 / 以这张图结束` 不再触发 `last_frame`，不管有几张图都按普通参考图 `reference_image` 发；其它情况也按普通参考图，最多前 9 张。
+- 2026-06-19 最新接手重点：本轮排查线上 `B_106`。失败原因是当时请求 `referenceMode=last_frame`、1 张参考图 role=`last_frame`，火山创建阶段报 `last frame image content cannot be mixed with first frame or reference image content`。用户随后点击重新生成成功，诊断日志显示重生成实际按普通 `reference_image` 发。因此最终决定禁用单独尾帧模式，尾帧词单独出现一律普通参考图。涉及 `src/components/chat-workbench.tsx`、`src/app/api/video/route.ts`、`src/lib/openrouter-video.ts`，已多次 `npx tsc --noEmit` 通过并用 `/usr/local/bin/deploy-flashmuse-production.sh` 部署，PM2 online，阿里 `_next/static` 已同步；未提交 GitHub。
+- 2026-06-19 最新接手重点：本轮用户要求“把本对话框内所有做的内容更新到交接文档和更新日志”。本轮实际只做交接文档同步，没有改业务代码、没有部署、没有提交/推送、没有跑构建或测试。已在 `handover/00-README.md`、`handover/03-progress-and-status.md`、`handover/05-chat-history-highlights.md`、`handover/CHANGELOG.md` 增加本轮记录。下一个 AI 接手时应先 `git status` 和完整 diff，注意本地工作区在本轮文档更新前已包含大量既有未提交改动。
+- 2026-06-19 最新接手重点：本轮已按用户要求把除工作流画布开放外的大部分改动部署线上，并且改为“完整代码上线、线上禁用工作流入口、本地继续可用工作流”。`WORKFLOW_MODE_ENABLED` 现在默认本地 dev 开启、production 关闭；线上用户看到 `工作流模式 / 未开放` 且按钮不可点，旧状态若保存 `activePanel=workflow` 会回到对话。以后线上开放工作流只需设置 `NEXT_PUBLIC_WORKFLOW_MODE_ENABLED=true` 并重新 build。
+- 2026-06-19 最新接手重点：线上已应用并迁移 `WorkspaceSession`/`WorkspaceMessage` 拆表。线上执行结果：23 个用户、60 条会话迁移到 `WorkspaceSession`；57 个会话、650 条消息迁移到 `WorkspaceMessage`；二次 dry-run 为 0。接口现在按历史列表分页、消息最近 50 条加载、更早消息分页。不要再回退为用户请求时迁移。
+- 2026-06-19 最新接手重点：后台用户管理排序已改成按最近登录/会话访问排序，而不是 workspace 活跃时间；右上角使用量浮层隐藏美元/人民币，只显示 Tk、积分、分隔线、图片数、视频数；版权风控文案追加 `重新生成有可能会成功。`。这些均已部署线上。
+- 2026-06-19 最新接手重点：已新增视频诊断日志 `src/lib/video-diagnostics-log.ts`，线上写 `.runtime/video-diagnostics-log.jsonl`。它用于记录 Seedance 首帧/尾帧/首尾帧、普通参考图、自动火山审核和轮询错误。不要记录完整 prompt/完整图片 URL，当前只记摘要、role、requestId、模型、参数和错误。
+- 2026-06-19 最新接手重点：根据 BytePlus 官网确认，Seedance `first_frame`、`first_frame+last_frame`、普通多参考图是互斥场景，不能混用。代码已改：普通参考图最多 9 张；首帧只传第 1 张；首尾帧只传前 2 张；单独尾帧不再传 `last_frame`，一律普通参考图；多余图前端提醒但后端也强制裁剪。`video_4_d20` 已确认是 `first_frame` 模式生成成功。
+- 2026-06-19 最新接手重点：B_103/B_104 均为火山轮询阶段输出视频版权风控，不是创建阶段能立即判断。B_103 等约 8 分钟，B_104 等约 4 分钟才返回 `output video may be related to copyright restrictions`。B_104 同 prompt 重生成成功，说明该风控有随机性，提示词不一定必然违规。
+
+- 2026-06-19 最新接手重点：本轮继续只改本地，未部署、未提交、未推送。用户要求参考另一个项目 `E:\project\clean_project_code\docs` 的工作流能力，但明确“导演台先不要”、颜色必须用本项目自己的浅灰/白/蓝体系、不能影响其它功能、积分扣除必须走本项目现有链路。本轮新增轻量工作流画布第一版：`src/components/workflow-canvas.tsx`，不引入 ReactFlow/three/slate 等新依赖，只在 `activePanel === "workflow"` 时挂载。
+- 2026-06-19 最新接手重点：工作流第一版能力：可新建/切换工作流，画布数据保存在现有 `workflowItems[].canvas` 里并随 `/api/workspace-state` 保存；支持文本节点、图片生成节点、视频占位节点；支持节点拖动、节点连接；图片节点会合并上游文本节点和自身提示词，调用本项目 `/api/image`，所以扣积分仍走 `chargeCredits()`。工作流生成后的余额只刷新左下积分数字，不写入任何聊天会话用量，避免污染对话历史。
+- 2026-06-19 最新接手重点：工作流画布交互已补：左下角工具栏有鼠标选择、手型移动、缩小、百分比、放大、定位全部节点。`V` 切回鼠标选择；按住 `空格` 临时手型移动画布；鼠标滚轮直接缩放并按鼠标位置缩放；缩放接近 `100%` 会吸附到 `100%`；“定位全部节点”快捷键 `F`，最多放大到 `100%`，节点太分散则自动缩小。画布视口 `x/y/zoom` 会按工作流单独保存，切到对话/资产再回来会恢复最后定位。节点坐标允许负值，避免无限画布上边界问题。
+- 2026-06-19 最新接手重点：本轮还做了小 UI：左侧“工作流模式”去掉 `未开放` 标签并改为正常入口颜色；全局去除 `button` 和 `[role="button"]` 的默认黑色 focus outline，解决按空格时出现粗黑描边；后台用户详情里移除了 `登录设备` 展示项，仅删除 UI 展示，登录审计字段仍保留。验证：多次 `npx tsc --noEmit` 通过；`npm run build` 之前仍因本机无法拉 Google Fonts `Geist Mono` 失败，非本轮代码错误。
+- 2026-06-18 最新接手重点：本轮继续只改本地，未部署、未提交、未推送。用户先要求不测试火山自动审核，火山审核完整链路仍作为部署后重点测试项。本轮完成一批基础功能和 UI：工作台左侧栏折叠后不再完全隐藏，而是保留 `80px` 图标栏；工作台 Logo 功能从“切换线路”改为“收起/展开侧边栏”，首页 Logo 切换线路功能保留；工作流模式右侧隐藏标题栏，整个右侧变成网格工作区；Seedance 图生视频新增“首帧 / 尾帧 / 首尾帧”明确语义接线。
+- 2026-06-18 最新接手重点：左侧栏折叠态 UI 细节已本地实现：Logo 只显示图形；三个模式只显示图标；模式区下方有同宽分隔线；新建对话/工作流只显示正方形虚线框和居中 `+`；历史对话变成图标按钮，点击右侧弹出历史菜单，保留加载更多和三点菜单；三点二级菜单改成独立 `portal` 浮层，避免被历史滚动容器裁切；资产库折叠态只显示分类图标；积分只显示积分图标和数量并可点开用户中心“我的积分”；头像只显示头像，点击菜单功能保留且菜单左侧与头像按钮左对齐。
+- 2026-06-18 最新接手重点：Seedance 图生视频模式规则当时接入本地代码：首帧、尾帧、首尾帧均按明确语义处理。注意此条已被 2026-06-19 最新规则覆盖：单独尾帧不再传 `last_frame`，一律普通参考图；只有明确首帧传 `first_frame`，明确首尾帧才传 `first_frame + last_frame`。
+- 2026-06-18 最新接手重点：本轮每次改动后均跑过 `npx tsc --noEmit` 且通过。核心新增/修改文件：`src/components/chat-workbench.tsx`、`src/app/api/video/route.ts`、`src/lib/openrouter-video.ts`，以及本次交接文档更新。当前本地仍叠加 2026-06-17 历史拆表、2026-06-18 火山自动审核等未提交改动，接手后必须先看 `git status` 和完整 diff。
+- 2026-06-18 最新接手重点：本轮只改本地，未部署、未提交、未推送。已把火山/BytePlus `Seedance 2.0 Fast` 和 `Seedance 2.0` 视频参考图真人审核改成自动兜底流程：界面不再显示“火山素材审核”按钮；用户正常生成视频，若火山创建任务明确返回真人/隐私参考图错误，前端先显示蓝色无横线系统提示 `系统检测到真人图片，需要审核才能生成视频，此次视频生成任务会延长时间，请稍候....`，随后后端自动提交本次参考图到 BytePlus 一方素材库，审核 `Active` 后用 `asset://{id}` 自动重试创建视频任务。
+- 2026-06-18 最新接手重点：自动审核完整链路必须部署到公网后重点测试。本地不容易测通，因为 BytePlus 素材审核必须能下载公网 HTTPS 图片；本地 `/generated/...`、`localhost` 和已经过期的供应商临时 TOS URL 都可能失败。本地只能验证进入 `reviewing`、提示显示、手动审核 UI 隐藏、类型检查通过。线上测试时优先使用已经保存在马来并能通过 `https://main.venusface.com/generated/...` 访问的参考图。
+- 2026-06-18 最新接手重点：本地测试出现 `B_159/B_160/B_161`，根因是自动审核拿到远程临时参考图 URL 后，BytePlus 素材库下载时报 `Failed to download media / fetch object not found`。当前代码已改为：远程参考图若保存队列已有本地 `/generated/...` 副本，就用本地公网地址提交审核；若没有本地副本，则停止自动审核并给用户通用 `服务器繁忙，请稍候再试.....`，不暴露“临时地址失效”等技术原因。
+- 2026-06-17 最新接手重点：本轮全部只改本地，未部署、未提交、未推送。当前本地有未提交改动：启动脚本优化、历史列表分页 UI、`WorkspaceSession`/`WorkspaceMessage` 两个拆表迁移、两个手动迁移脚本、接口/前端读取逻辑、交接文档更新。接手后先 `git status` 和 `git diff`，不要直接覆盖。
+- 2026-06-17 最新接手重点：本地启动慢根因是 Docker Desktop/Engine 异常，不是 Next 慢。曾出现 `docker compose up -d` 对 `postgres:16-alpine` 返回 Docker API 500，`Docker Desktop Service` 和 WSL `docker-desktop` 为 `Stopped`，`5432/3000` 均未监听。已优化 `scripts/start-project.ps1`：先检测 `3000`，再检测 `5432`；若 `5432` 已有 PostgreSQL 就跳过 Docker；Docker 未 ready 时尝试打开 Docker Desktop 但只等 5 秒；健康检查超时改 1 秒；Prisma 迁移优先用 `node_modules\.bin\prisma.cmd migrate deploy`，避免 `npx` 额外开销。
+- 2026-06-17 最新接手重点：为执行 `npx prisma generate`，本轮两次停止本项目本地 `npm run dev / next dev` Node 进程以释放 Windows Prisma DLL 文件锁。当前如果本地页面打不开，先重新运行启动脚本或 `npm run dev`。
+- 2026-06-17 最新接手重点：本地继续完成历史优化第三步中的第一项：`WorkspaceMessage` 消息拆表。新增表 `WorkspaceMessage`、迁移 `20260617001000_workspace_messages`、脚本 `scripts/migrate-workspace-messages.mjs`；点击历史时 `/api/workspace-session` 只加载最近 50 条消息，消息区顶部可点 `加载更早消息` 继续按 50 条向前分页。线上部署时同样不要用户请求触发消息迁移；必须在 `migrate-workspace-sessions.mjs` 之后执行 `node scripts/migrate-workspace-messages.mjs --dry-run` 和 `node scripts/migrate-workspace-messages.mjs`。
+- 2026-06-17 最新接手重点：第三步剩余事项只记录，暂不做：媒体拆表、资产拆表、生成记录拆表、老历史归档、后台生成记录/积分流水直接关联真实表。这些后续要分批做，不要一次大改。
+- 2026-06-17 最新接手重点：本地已开始做历史对话读取性能优化第二步。新增 `WorkspaceSession` 表、迁移 `20260617000000_workspace_sessions`、脚本 `scripts/migrate-workspace-sessions.mjs`，把旧 `UserWorkspaceState.state.sessions` 拆成每个对话一行。重要：线上部署时不要让用户首次打开工作台触发迁移；必须先在服务器手动执行 `node scripts/migrate-workspace-sessions.mjs --dry-run` 确认数量，再执行 `node scripts/migrate-workspace-sessions.mjs`，迁移完成后再让用户使用新版工作台。
+- 2026-06-17 最新接手重点：本地接口已改为不在用户请求中自动迁移旧历史。`/api/workspace-state?summary=1` 只从 `WorkspaceSession` 分页读历史，初始 10 条，加载更多每次 5 条；`/api/workspace-session?id=...` 只按单条 `WorkspaceSession` 读取完整消息。若线上忘记先跑迁移脚本，旧历史不会自动拆表，用户可能只看到新会话或空历史；正确处理方式是补跑迁移脚本，不要改回请求时迁移。
+- 2026-06-15 最新接手重点：本轮已完成并上线“预览页下载按钮”修复。预览页图片/视频如果当前仍是供应商远程临时 URL，下载按钮禁用并显示 `下载准备中...`；等后台保存并替换成 `/generated/...` 后才恢复 `下载`。同时修复视频预览对象不跟随最新本地 URL 更新的问题，避免按钮继续拿旧临时链接。已部署线上，GitHub 已提交推送 `5629ac2 Fix text billing and preview downloads`。
+- 2026-06-15 最新接手重点：已检查线上 `12424740@qq.com / ID_636611` 的 d19 对话，6 个视频全部已保存到马来 `/generated/users/ID_636611/videos/...mp4`，本地文件和封面均存在；其中 `video_1_d19`、`video_2_d19`、`video_5_d19` 的 `aliSynced=true`，`video_3_d19`、`video_4_d19`、`video_6_d19` 当时队列标记仍为 `false`，但马来文件已存在。
+- 2026-06-15 最新接手重点：本轮清理了本地项目磁盘空间。删除 `.next`、`tsconfig.tsbuildinfo`、依赖缓存、旧部署包/HTML 快照，以及本地 `public/generated` 中不被本地数据库工作台历史/资产库/头像引用的媒体 737 个，释放约 1.65GB。`public/generated` 从约 3.17GB 降至约 1.39GB；项目总体约 2.47GB。此清理只影响本地，不影响线上。
+- 2026-06-15 最新接手重点：以后任何临时生成文件/调试脚本/下载快照/中间包都必须放在项目目录内的临时目录，例如 `E:\project\AI-Video-Assistant\tmp\...`，不要再放到 `E:\project` 或项目文件夹外面。清理时发现旧的 `flashmuse-deploy*.tar.gz`、`workspace-*.html`、`restore-chat/` 都是 6 月 5 日部署/排查遗留，已删除。
+- 2026-06-15 最新接手重点：本轮已把此前未提交的 6 月 15 线上修复一起提交并推送 GitHub：文本计费累计、`text-cleanup.ts`、工作台误退首页、`@` 弹窗、预览下载修复、迁移 `20260612000000_user_text_credit_remainder`、交接文档更新和 `.gitignore`。当前本地 Git 工作区在提交后是干净的；`AI-Video-Assistant_Project Planning/` 因含 `闪念官方邮箱.txt` 等敏感/私有资料，已加入 `.gitignore`，不要直接提交。
+- 2026-06-15 最新接手重点：本轮继续本地排查并按用户要求部署了两批线上修复，仍未提交/推送 GitHub。第一批修复阿里入口工作台偶发“没退出登录但被退回首页”和通用模式文本计费；第二批修复输入框下方 `@` 按钮在用户复制长提示词后点不开资产引用弹窗。线上均已用 `/usr/local/bin/deploy-flashmuse-production.sh` 构建、重启 PM2 并同步阿里 `/_next/static`。
+- 2026-06-15 最新接手重点：工作台退首页根因有两个：初始 `/api/workspace-state?summary=1` 失败会被总 catch 直接 `window.location.replace("/")`；工作台实例锁首次 `claim` 失败后下一次检查拿到 `active:false` 也会退首页。已改为只有明确 `401` 或已成功 claim 后确认被新工作台抢占才退首页；工作区加载失败只保留当前页面并 `console.warn`。核心在 `src/components/chat-workbench.tsx`。
+- 2026-06-15 最新接手重点：通用/文本计费规则已改。OpenRouter 文本模型若返回 `usage.cost/usd > 0` 直接按美元扣；若只返回 token 或 `cost=0` 但有 token，则用模型价格表兜底反推美元。已为 `Seed 2.0 Lite`、`DeepSeek V4 Pro`、`DeepSeek R1 0528`、`Gemini 3 Flash`、`Gemini 3.1 Pro`、`GPT-4o`、`GPT-5.4`、`GPT-5.5` 补价格兜底，位置在 `src/lib/openrouter.ts`。
+- 2026-06-15 最新接手重点：文本类不再单次四舍五入扣积分，也不再“最低扣 1 分”。新增 `User.textCreditRemainder` 和迁移 `20260612000000_user_text_credit_remainder`；文本成本折算成小数积分后在后台累计，累计满 `1` 分才扣整数积分并保留余数。图片/视频仍按次 `美元 -> 人民币 -> 积分`，仅人民币转积分时四舍五入。核心在 `src/lib/credits.ts`。
+- 2026-06-15 最新接手重点：输入框 `@` 按钮点不开的根因是资产弹窗列表依赖当前光标处存在 `@` 查询；底部按钮原先先插入裸 `@` 再触发展开，复制长提示词后光标/长度限制可能导致裸 `@` 没形成查询。已改为底部 `@` 和 placeholder 蓝色 `@` 直接打开资产弹窗，不再先插入裸 `@`；选择资产时再按当前光标插入完整 `@资产名`。用户手动输入 `@` 的筛选逻辑不变。
+- 2026-06-15 最新接手重点：本地曾打不开是因为一键启动脚本卡在 `docker compose up -d`，Docker Desktop Service 为 `Stopped`，但 PostgreSQL `5432` 实际可用。已停止卡住的 `docker compose` 进程并绕过 Docker CLI 用独立 PowerShell 窗口直接 `npm run dev`，本地 `http://localhost:3000/` 和 `/workspace` 返回 200。若再遇到，先查 `start-project.log` 是否停在 `docker compose up -d`。
+- 2026-06-15 部署/Git 状态：第一批线上备份在 `/var/www/flashmuse/.deploy-backups/20260612000139/`，覆盖了 `chat-workbench.tsx`、`openrouter.ts`、`credits.ts`、`text-cleanup.ts`、`schema.prisma` 并应用线上迁移；第二批线上备份在 `/var/www/flashmuse/.deploy-backups/20260615034553/`，只覆盖 `chat-workbench.tsx`。当前本地仍有未提交改动和未跟踪文件：`src/lib/text-cleanup.ts`、`prisma/migrations/20260612000000_user_text_credit_remainder/`、`AI-Video-Assistant_Project Planning/`、本次交接文档更新等。接手后先 `git status`，不要误删。
+- 2026-06-11 最新接手重点：本轮通用模式已正式改成“闪念通用 Agent”身份，不再让 DeepSeek/Gemini/GPT 按裸模型能力回答。用户问“你是谁”答闪念通用 Agent；问“你是什么模型”答闪念通用 Agent + 当前对话模型；问“能不能生图/生视频”按闪念整体能力回答，可以通过当前选择的图片/视频模型生成。相关规则在 `src/lib/openrouter.ts` 和 `toGeneralPayloadMessages()`。
+- 2026-06-11 最新接手重点：通用模式不再硬规则直调图片/视频模型。所有通用模式发送先走 `/api/agent-plan mode=general` 由当前对话模型规划；信息不足时追问并列出比例/分辨率/时长选项；用户说“你自己定/随便/以后不要问我/默认就行”时才自动补参数并执行。真正生成时调用用户在通用模式里选择的图片/视频模型。
+- 2026-06-11 最新接手重点：通用模式后台增加按用户开关。`User.generalModeEnabled` 默认 `false`，迁移 `20260611000000_user_general_mode_enabled`；后台用户管理表格在“状态”前新增“通用模式”开关，接口 `/admin/api/users/general-mode`；前台 `/api/auth/me` 返回 `generalModeEnabled`，未开启的用户看不到通用模式，绕前端请求 `mode=general` 也会 403。
+- 2026-06-11 最新接手重点：通用模式对话模型排序为 `Seed 2.0 Lite`、`Seed 2.0 Pro`、其它厂商。`Seed 2.0 Lite` 后台切 BytePlus 时，`/api/model-availability` 返回 `generalModelProviders`，前端模型按钮和通用回复前图标会显示 BytePlus 图标；OpenRouter 时显示原厂商图标。回复前图标按 `message.textModel` 和 provider 显示，避免用户误以为是其它模型回复。
+- 2026-06-11 最新接手重点：每个历史对话新增独立长期记忆摘要 `memorySummary`。约 `20k tokens` 首次生成摘要，之后每新增约 `12k tokens` 更新；请求时使用“长期工作记忆摘要 + 最近 12 轮原文 + 当前输入”。新增接口 `/api/conversation-memory`，摘要标签为 `长期记忆摘要`，规划器会保留摘要再取最近 10 条。
+- 2026-06-11 最新接手重点：新增线上日志文件：`.runtime/general-task-log.jsonl` 记录通用模式任务类型；`.runtime/upload-rule-feedback-log.jsonl` 记录模型端真实上传/参考图失败，用于以后校准上传规则。日志不记录图片 URL、文档正文或完整用户内容。
+- 2026-06-11 最新接手重点：通用/Agent 回复风格已放松，允许轻松场景多用自然表情和语气词；清单、步骤、能力列表中可使用 `✅/🎯/📝/💡/⚠️/📌` 等符号类图标提升可读性；严肃法律/医疗/财务/政治结论少用或不用。通用模式按任务类型选择格式：问答先结论，交付物先结果，方案给步骤，创作走创作结构，信息不足一次性追问。
+- 2026-06-11 最新接手重点：修复历史消息切换/刷新后重复打字问题。只有本次新生成的 assistant 文本会进入 `activeTypingMessageIds` 走打字机；历史消息直接完整显示。打字机按 `Intl.Segmenter` 的 grapheme 切分，避免 `✅/⚠️/emoji` 被拆开成乱码。
+- 2026-06-11 最新接手重点：新增 `src/lib/text-cleanup.ts`，后端保存前和前端显示时都会尝试修复 UTF-8/Latin-1 mojibake（如 `è¶³å½©...`），并清除 `<system-reminder>...</system-reminder>`。已部署线上；旧历史若字节已不可逆只能部分恢复，必要时重新生成或手修该条消息。
+- 2026-06-11 最新接手重点：用户消息气泡下方新增 hover 操作区，显示灰色发送时间和复制图标；复制成功显示勾选图标，不显示“复制”文字。
+- 2026-06-11 部署/Git 状态：本轮完整功能已部署线上并同步阿里静态，PM2 `flashmuse` online；已提交并推送 GitHub `eee77a5 Add general mode controls and memory handling`。随后又直接线上部署了 `text-cleanup.ts`/`openrouter.ts`/`chat-workbench.tsx` 的乱码和 system-reminder 清洗修复，当前这部分尚未再次提交 GitHub，接手后若继续提交需包含这些文件和本次交接文档更新。
+- 2026-06-10 最新接手重点：本轮全部只做本地，未部署、未提交、未推送。先修本地登录“请求失败”：`start-project.log` 报 `User.lastLoginIp` 列不存在，原因是本地 PostgreSQL 缺迁移 `20260610000000_user_login_audit`。已执行 `npx prisma migrate deploy` 补齐；并修改 `scripts/start-project.ps1`，以后启动前自动 `docker compose up -d` 和 `npx prisma migrate deploy`，避免本地库落后导致登录 500。
+- 2026-06-10 最新接手重点：工作台输入框新增 `通用模式`，位于 `Agent 模式` 上方。通用模式不是剧作 Agent，普通对话走 `/api/chat mode=general`，尽量直连所选对话模型；明确要求生图/生视频时，调用通用模式里选择的图片/视频模型。通用模式工具栏不显示 Agent 的 `普通/高级`，改为三个等宽模型选择框：对话模型、图片模型、视频模型；按钮文字会截断省略，输入框变宽后自然显示更多。通用模式入口和回复前图标使用用户给的 `ai-agent-line` SVG；DeepSeek 用用户给的 DeepSeek SVG；对话模型按钮按厂商显示图标。
+- 2026-06-10 最新接手重点：通用对话模型当前列表顺序为 `Seed 2.0 Lite`、`DeepSeek V4 Pro`、`DeepSeek R1 0528`、`Gemini 3 Flash Preview`、`Gemini 3.1 Pro Preview`、`GPT-4o`、`GPT-5.4`、`GPT-5.5`，其中 `GPT-5.5` 金色显示。另有后台独立开关开启后可出现 `BytePlus Seed 2.0 Pro`。用户要求后台也接通，已在系统设置新增分组 `通用模式 / Agent 规划 / 意图识别`：OpenRouter 列显示所有通用对话模型；`Seed 2.0 Lite` 右侧有 BytePlus `Seed 2.0 Lite` 互斥开关；BytePlus `Seed 2.0 Pro` 独立一行独立开关。
+- 2026-06-10 最新接手重点：通用模式链路曾有两个坑。第一，旧 `.env.local` 里 `chat.seed-2-0-lite=byteplus`，导致 GPT/Seed 等旧文本模型被后台 provider 映射到火山 Seed，模型自称 Seed；已改为 `mode=general` 下使用新的 `general.*` key，不走旧 `chat.*` 映射。第二，通用模式换模型后完整历史里有旧 assistant 自称 Seed，会污染新模型身份；最终方案是不隔离历史，只在用户问“你是谁/什么模型/谁开发/当前模型”等身份问题时，给模型追加隐藏约束：按当前实际选择模型身份回答，不沿用历史中其它 assistant 身份。普通对话仍传完整历史。
+- 2026-06-10 最新接手重点：B_145/B_146/B_147/B_151/B_152 排查：这些都是通用模式 DeepSeek 相关 `no endpoints found`。直连 OpenRouter 多次测试 `deepseek/deepseek-v4-pro` 和 `deepseek/deepseek-r1-0528` 纯文本可用；报错主要是因为通用模式历史里带了图片字段，而这两个 DeepSeek 是纯文本模型。已特殊处理：只有 `DeepSeek V4 Pro` 和 `DeepSeek R1 0528` 的通用模式请求会把历史图片字段去掉，只传文字历史；当前这次用户若带图/@资产仍提示切换支持图片的模型。Google/OpenAI 对话模型直连本地测试当前返回 403 地区不可用，属于真实 OpenRouter 地区限制。
+- 2026-06-10 最新接手重点：已在桌面生成 `C:\Users\ASUS\Desktop\OpenRouter对话模型清单.md`，从 `https://openrouter.ai/api/v1/models` 拉取并筛选 339 个输入/输出支持 text 的对话模型，按 53 个厂商分类，含模型 ID、类型、上下文、最大输出和价格。该文件在桌面，不在项目内。
+- 2026-06-10 最新接手重点：本轮修后台生成记录图片裂图和扣分异常，并已按用户要求直接部署线上，未提交/推送 GitHub。后台对话流图片、积分明细、生成列表现在统一通过 `src/app/admin/admin-media-url.ts` 处理媒体 URL：`main/api/ali/static` 下的 `/generated/...` 绝对地址会转相对 `/generated/...`；远程签名 URL 走 `/admin/api/media-url`，该接口会查 `.runtime/media-save-jobs.json`，有本地副本时跳本地 `/generated/...`。注意后台 admin Cookie 路径是 `/admin`，所以接口必须放在 `/admin/api/media-url`，不能放 `/api/admin/media-url`，否则图片请求不带后台 Cookie 会 401。
+- 2026-06-10 最新接手重点：`/admin/api/media-url` 支持 `variant=original|thumb`。左侧主图和悬停大图用 `variant=original` 返回 `localUrl` 原图；右侧列表/小缩略图用 `variant=thumb` 返回 `thumbnailUrl/posterUrl`。曾出现 `37376543` 用户右侧能显示但左侧主图显示小图，原因是接口默认返回缩略图；已修为主图返回原图。该用户为 `373765430@qq.com / ID_868181`，测试图本地原图 `/generated/users/ID_868181/images/1780890311109-e52c9ea3-bfd9-4e5e-8cfd-8201adc5df64.jpg`，缩略图 `/generated/users/ID_868181/image-thumbnails/images/1780890311109-e52c9ea3-bfd9-4e5e-8cfd-8201adc5df64.jpg`。
+- 2026-06-10 最新接手重点：BytePlus 图片费用不再完全依赖接口 usage。线上历史统计发现 BytePlus 图片流水 147 条中 84 条有费用、63 条为 0；有费用样本为 Seedream 4.5 `$0.04/张`、Seedream 5.0 `$0.035/张`。已在 `src/lib/openrouter.ts` 的 BytePlus 图片 usage 兜底里固定这两个单价：4.5 每张 0.04 美元，5.0 每张 0.035 美元；若 BytePlus 返回 `usage.usd/cost > 0` 仍优先用返回值。`src/app/api/image/route.ts` 新流水 metadata 会写 `settings / ratio / resolution / size / sizes`，以后可按 2K/4K 重新核算。
+- 2026-06-10 最新接手重点：后台扣分文案已拆分。生成记录/积分明细里：有流水但成本为 0 且不是扣费关闭，显示 `0（未返回成本）`；完全找不到流水的 workspace 补媒体，显示 `0（扣分异常）`；扣费关闭仍显示 `0（扣分关闭）`；余额不足仍显示 `-实扣 / 应扣xxx`。相关类型在 `AdminCreditFlowItem` 增加 `isCreditMissing / isCostUnavailable / expectedCredits`。
+- 2026-06-10 最新接手重点：本轮用户明确要求火山素材审核必须在公网测试，后续相关修复可直接改完部署。线上已打开 `NEXT_PUBLIC_ENABLE_BYTEPLUS_ASSET_REVIEW=true`。火山审核入口现在只在当前分类为 `角色图片`、`分镜图片`、`上传图片` 时显示；上传图如果被用户移动到 `场景图片`，不显示审核入口。入口定位是“真人素材审核”，场景图不需要审核。
+- 2026-06-10 最新接手重点：角色22 已确认线上审核通过，资产 ID 为 `asset-20260609180613-qc9g5`，状态 `Active`。此前 B_31 是因为视频生成时仍传普通图片 URL；已在服务端 `/api/video` 加 BytePlus 视频兜底：按用户 workspace 资产 URL 匹配 `bytePlusAssetStatus=Active` 后强制替换为 `asset://{bytePlusAssetId}`，日志会输出 `BytePlus asset references applied` 和 `assetReferenceCount`。这样重试/重新生成/前端状态未同步也会走素材 ID。
+- 2026-06-10 最新接手重点：B_33/B_35/B_36 不是素材 ID 问题，而是火山轮询阶段返回 `output video may be related to copyright restrictions`，即输出视频版权风控。错误红字现在会显示真实原因：`输出视频可能涉及版权限制，平台拒绝生成。`，不要再改回“平台服务临时异常”。视频提示词发给模型前会把 `@角色22` 这类资产名清洗为 `参考图中的主体`，参考图提示也不再带 `@资产名`。
+- 2026-06-10 最新接手重点：阿里动态反代不稳定会导致工作台被踢的问题已缓解。`/api/auth/me`、`/api/auth/workspace-instance` 只有明确未登录/实例失效才跳首页；5xx、网络抖动、JSON 解析失败不再一次失败就踢。Logo 切阿里若仍异常，优先看阿里 443/动态反代，不要误判为退出登录。
+- 2026-06-10 最新接手重点：输入框 `@资产名` 已改成原子 mention。只有完整 `@图片名称` 蓝色，后续用户输入保持黑色；光标在 mention 后按 Backspace 或在 mention 前按 Delete 会一次删除整个 `@图片名称`，普通黑字仍逐字删除。核心在 `PlainMentionEditor` 的 `getEditorMentionRanges()` 和 Backspace/Delete 拦截。
+- 2026-06-10 最新接手重点：后台 `/admin` 曾打不开，原因是 Server Component 调 `getCurrentAdminEmail()` 时补写 Cookie，Next 16 报 `Cookies can only be modified in a Server Action or Route Handler`。已改为后台页面只读 Cookie；登录/登出 API 继续写 Cookie。不要在 Server Component 渲染阶段调用 `cookieStore.set()`。
+- 2026-06-10 最新接手重点：工作台左下用户菜单对白名单管理员显示 `后台管理`，位置在“设置”下面，点击 `window.open('/admin', '_blank', 'noopener,noreferrer')` 新开页面，不替换当前工作台。`/api/auth/me` 返回 `isAdmin`，按 `ADMIN_EMAILS` 判断；普通用户不显示。
+- 2026-06-10 最新接手重点：后台用户管理已接最近登录 IP/归属地。新增迁移 `20260610000000_user_login_audit`，`User` 表加 `lastLoginIp / lastLoginLocation / lastLoginUserAgent`；前台/后台密码登录和验证码登录都会记录。IP 从 `x-forwarded-for` 第一个公网 IP 优先读取，归属地查 `ipwho.is`，失败兜底 `ip-api.com`。中国只显示省市，如 `浙江 杭州`；国外显示国家城市。老用户未重新登录显示 `未记录`。
+- 2026-06-10 最新接手重点：后台用户管理、积分管理、生成记录表格 UI 已调整。用户管理里用户列固定约 `290px`，积分列左移；积分管理用户列已加头像；积分管理和生成记录中用户后面的列全部左对齐，左边距统一为 `px-4`。如用户说布局没变，优先强刷并确认阿里 `/_next/static` 已同步。
+- 2026-06-10 部署注意：线上 `.env.local` 当前有两条 `DATABASE_URL`，第 1 条是可用 `postgresql://...localhost...`，第 2 条带前导空格且密码无效。执行 Prisma CLI 时不要直接 `source`，本轮用 Node/脚本读取第 1 条并注入 `DATABASE_URL`。后续最好单独清理 `.env.local` 重复行，但不要暴露密码。曾误用 `scp 多文件 root@...:/var/www/flashmuse/src/app/api/auth/` 导致生成父级 `route.ts`，构建多出 `/api/auth` `/api/admin`，已删除；以后上传 route 文件必须传到具体子目录 `.../login-password/route.ts`。
+
+- 2026-06-09 最新接手重点：本轮开始接 BytePlus/火山一方私有素材库审核 API。官方 `CreateAsset` 文档隐藏在 `https://docs.byteplus.com/en/docs/ModelArk/1520757` 页面路由数据里的 Private asset library API reference，直接文档编号包括 `2318270 CreateAssetGroup`、`2318271 CreateAsset`、`2318273 ListAssets`、`2318274 GetAsset`。接口地址为 `https://ark.ap-southeast-1.byteplusapi.com/?Action=CreateAsset&Version=2024-01-01`，只支持 AK/SK 签名，不是 `ARK_API_KEY`。`CreateAsset` 参数：`GroupId`、`URL`、`Name`、`AssetType: Image`、`Moderation.Strategy`、`ProjectName`；返回 `Result.Id`。创建后必须轮询 `GetAsset`，状态 `Active` 才能在视频生成里传 `asset://Asset-...`。
+- 2026-06-09 最新接手重点：本地已新增 `src/lib/byteplus-assets.ts` 和 `src/app/api/byteplus-assets/route.ts`，资产对象新增 `bytePlusAssetId / bytePlusAssetGroupId / bytePlusAssetStatus / bytePlusAssetError / bytePlusAssetUpdatedAt` 字段；资产预览里有“火山素材审核”的提交/刷新入口；BytePlus 视频生成时，如果参考资产已 `Active`，会把给模型的参考图替换为 `asset://{bytePlusAssetId}`，但展示区仍保留原图 URL。`npx tsc --noEmit` 已通过。
+- 2026-06-09 最新接手重点：线上曾短暂部署过火山素材审核入口，用户随后要求线上先隐藏、本地保留。现在本地默认显示；线上通过 `NEXT_PUBLIC_ENABLE_BYTEPLUS_ASSET_REVIEW=false` 隐藏入口，线上功能代码仍在但 UI 不显示。以后继续开发先只做本地，除非用户明确说部署。
+- 2026-06-09 最新接手重点：本地登录“请求失败”已排查，原因是本地 PostgreSQL 没应用 `20260609000000_session_workspace_instance` 迁移，缺 `Session.activeWorkspaceInstanceId` 列；已在本地执行 `npx prisma migrate deploy`，登录接口恢复。不要把这个误判成登录代码坏。
+- 2026-06-09 当前待办：本地点击“提交审核”仍显示通用 `请求失败，请稍后再试。`。已在 `src/app/api/byteplus-assets/route.ts` 本地加 `console.error("[byteplus-assets] create failed", error)` 日志，下一步让用户再点一次，查看 `start-project.log` 中真实错误。可能原因：本地图片 URL 不是公网 HTTPS 可访问，或 BytePlus 私有素材库首次需要在控制台签授权/启用模型，或 AK/SK 签名/权限仍需调整。不要直接部署修复。
+- 2026-06-09 重要工作规则：以后任何开发任务默认只在本地代码里完成和验证，禁止自动部署服务器，禁止自动提交/推送 GitHub。只有用户明确说“部署”“上线”“提交”“推送”等要求时，才允许操作线上服务器或 GitHub。做完本地改动后先汇报，等待用户决定是否部署。
+- 2026-06-09 最新接手重点：本轮完成首页和工作台 Logo 切换马来/阿里入口。首页左上角图形 Logo 和文字 Logo 都可点：马来 `main.venusface.com` 点击跳 `https://ali.venusface.com/`，阿里点击跳 `https://main.venusface.com/`；工作台同理跳 `/workspace`。马来入口 Logo 文字右侧显示 `Intl.`，阿里入口不显示。工作台副标题已统一为 `AI视频助手`，修复切换瞬间闪成 `AI影片助手` 的问题。
+- 2026-06-09 最新接手重点：本轮已修“右上角使用量里积分和人民币对不上”。根因是右上角以前读 workspace 的 `session.usageSummary`，人民币还用前端写死汇率 `7.2`，而真实扣费按后台 `CreditSetting`。现在 `/api/workspace-state` GET/PUT 会用真实 `CreditLedger` 重写每个会话 `usageSummary`；前台右上角只显示用户实际扣分和实际折算人民币，确保按当前 `creditsPerCny` 对齐。`/api/credits/me` 不再用 workspace 旧汇总覆盖真实积分流水。
+- 2026-06-09 最新接手重点：本轮已补“应扣积分”记录。`chargeCredits()` 新增返回/写入 `expectedCredits`、`chargedCredits`、`chargedCny`、`chargedUsd` 到流水 metadata；如果用户余额不足，前台仍只显示实际扣分，后台积分明细显示类似 `-100 / 应扣127`。旧流水没有 metadata 时，后台用 `cny * creditsPerCny` 反推应扣。
+- 2026-06-09 最新接手重点：本轮已启用工作台单页面实例锁。原因是同一浏览器多个标签共享最新 Cookie，单 session 不能踢掉旧标签。新增 `Session.activeWorkspaceInstanceId / activeWorkspaceSeenAt` 和 `/api/auth/workspace-instance`；每个工作台页面生成实例 ID，最新进入工作台的页面成为唯一有效实例，其它工作台最多约 2 秒回首页。回首页不等于退出登录，首页登录状态仍在；再次进入工作台会抢占唯一实例。
+- 2026-06-09 最新接手重点：上述修复已部署线上。已同步代码到马来 `/var/www/flashmuse`，执行 migration `20260609000000_session_workspace_instance`，`npx prisma generate`、`npm run build` 通过，PM2 `flashmuse` 已重启并保存，阿里 `/_next/static` 已同步并清缓存。部署中发现线上 `.env.local` 的 `DATABASE_URL` 带双引号且 PostgreSQL `flashmuse` 用户密码曾不匹配，已把数据库用户密码重置为 `.env.local` 中的值；不要在文档或提交里暴露密码。
+- 2026-06-09 最新接手重点：对话流上传图片规则已改为“永远无提示词”。无论 Agent / 图片 / 视频模式，用户输入文字都不能作为上传图提示词。上传图资产 `sourcePrompt` 固定为 `资产库上传`，新增/使用 `promptSource: "upload"`；反推成功后才改为 `promptSource: "reverse"` 并写入反推提示词；生成图为 `promptSource: "generated"`。预览上传图默认显示 `反推提示词` 按钮。后台上传图也不再用用户输入原文兜底为 prompt。
+- 2026-06-09 最新接手重点：马来入口很多资产库缩略图不显示的问题已修。原因是马来入口直接拼静态缩略图文件路径，旧资产缺 `image-thumbnails` 时 404。现在 `getMediaThumbnailUrl()` 在马来主站/上传 API host 下走 `/api/media-thumbnail?url=...` 按需生成和兜底；阿里入口仍走 `https://static.venusface.com/generated/.../image-thumbnails/...jpg`，保持本地静态速度。已验证 `https://main.venusface.com/api/media-thumbnail?...` 返回 `200 image/jpeg`。
+- 2026-06-08 最新接手重点：工作台马来/阿里 Logo 切换曾导致看似退出账号，原因不是同账号单会话，而是登录 Cookie 原来是 host-only，`main.venusface.com` 和 `ali.venusface.com` 不能共享。已新增线上环境变量 `AUTH_COOKIE_DOMAIN=.venusface.com`，并修改 `src/lib/auth.ts`、`src/lib/admin-auth.ts`，用户/后台 Cookie 统一写入 `.venusface.com` 域；`/api/auth/me` 在旧 host-only Cookie 有效时会自动补写新的域名 Cookie。切换工作台不触发新登录，不会触发 `createUserSession()` 的单会话删除。用户如果仍被跳回首页，先刷新一次原工作台或重新登录一次获取新域名 Cookie。
+- 2026-06-08 最新接手重点：已补阿里 `/_next/static` 自动同步脚本。仓库新增 `scripts/sync-flashmuse-next-static.sh` 和 `scripts/deploy-flashmuse-production.sh`，并已部署到马来 `/usr/local/bin/`。以后线上改前端不要再手动 rsync，直接在马来执行 `/usr/local/bin/deploy-flashmuse-production.sh`，流程为 `npm run build` -> `pm2 restart flashmuse --update-env` -> `pm2 save` -> 同步 `.next/static/` 到阿里 `/var/www/flashmuse-static/_next/static/` -> 清阿里 `/var/cache/nginx/flashmuse_static/*` 并 reload Nginx。单独同步可跑 `/usr/local/bin/sync-flashmuse-next-static.sh --clear-cache`。
+- 2026-06-08 最新接手重点：线上应用环境变量已正式切域名并重新构建部署。马来 `/var/www/flashmuse/.env.local` 当前关键项：`NEXT_PUBLIC_UPLOAD_BASE_URL=https://api.venusface.com`、`NEXT_PUBLIC_STATIC_BASE_URL=https://static.venusface.com`、`NEXT_PUBLIC_PRIMARY_BASE_URL=https://main.venusface.com`、`UPLOAD_CORS_ORIGINS=https://main.venusface.com,https://ali.venusface.com,https://static.venusface.com`、`FORCE_INSECURE_AUTH_COOKIE=false`。已在马来 `npm run build`、`pm2 restart flashmuse --update-env`、`pm2 save`，并同步 `.next/static/` 到阿里。上传直传已改走 `https://api.venusface.com`，静态资源已改走 `https://static.venusface.com`。
+- 2026-06-08 最新接手重点：正式域名已开始接入。DNS 当前为 `main.venusface.com -> 101.47.19.109`、`api.venusface.com -> 101.47.19.109`、`ali.venusface.com -> 101.37.129.164`、`static.venusface.com -> 101.37.129.164`。马来 `main/api` 已用 certbot HTTP 验证签发 HTTPS，证书路径 `/etc/letsencrypt/live/main.venusface.com/`，外网测试 `https://main.venusface.com/` 和 `https://api.venusface.com/api/model-availability` 返回 200。马来旧 IP HTTP 已恢复为 FlashMuse 默认站点，避免阿里回源被 certbot 改坏。
+- 2026-06-08 最新接手重点：阿里 `ali/static` 因公网 HTTP 被 `Server: Beaver` 返回 403，不能走 HTTP-01 验证，已改用 DNS-01 TXT 手动验证签发证书。证书名 `flashmuse-ali-static`，域名 `ali.venusface.com static.venusface.com`，路径 `/etc/letsencrypt/live/flashmuse-ali-static/`，到期 `2026-09-06`。阿里 Nginx 443 已配置，服务器本机验证 `https://ali.venusface.com/`、`https://static.venusface.com/flashmuse-cache-health`、`https://dvideo.venusface.com/` 均返回 200。本机外网直连阿里 443 出现 reset，和 dvideo 表现一致，需用实际浏览器/国内网络继续确认。
+- 2026-06-08 最新接手重点：后续提醒，`flashmuse-ali-static` 是手动 DNS-01 证书，不会自动续期。以后再做 DNS API 自动续期：在阿里云 RAM 创建最小权限 AccessKey，仅允许管理 `venusface.com` DNS 解析；在阿里服务器安装兼容的 Aliyun DNS certbot 插件；凭据放 `/root/.secrets/certbot/aliyun.ini` 并 `chmod 600`；重新用 DNS 插件签 `ali/static` 证书并测试 `certbot renew --dry-run`。不要使用全局管理员 AccessKey，不要把 Key 写入交接文档或提交 Git。
+- 2026-06-08 最新接手重点：用户明确确认架构原则：马来是主站，阿里是副站/国内加速节点。后续所有媒体流程必须先保证马来正确和速度，再保证阿里同步与速度。马来直连访问时不应被阿里静态同步状态卡住；阿里入口访问时才使用阿里静态资源并等待阿里同步确认。
+- 2026-06-08 最新接手重点：媒体保存链路已改为“马来处理完成后主动推送阿里”。新增 `src/lib/ali-sync.ts`，马来 `.env.local` 已配置 `ALI_SYNC_GENERATED_ENABLED=true`、`ALI_SYNC_HOST=101.37.129.164`、`ALI_SYNC_SSH_KEY=/root/.ssh/flashmuse_to_ali_ed25519`、`ALI_SYNC_DEST_ROOT=/var/www/flashmuse-static/generated`。阿里已加入马来公钥，马来主动 rsync 单文件到阿里验证成功 `active-sync-ok`。阿里原每分钟 cron 保留为兜底。
+- 2026-06-08 最新接手重点：图片远程 URL 保存现在是：供应商临时 URL 先显示 -> 马来下载 -> 保存 JPG -> 马来生成 256px JPG 缩略图 -> 马来主动同步原图和缩略图到阿里 -> `/api/media-save-status` 返回 `localUrl / thumbnailUrl / aliSynced` -> 前端按当前入口决定替换。GPT-5.4 等返回 `data/base64` 的 inline 图片也已补：保存 JPG 后立即生成缩略图并主动同步阿里，再返回本地 URL。
+- 2026-06-08 最新接手重点：视频远程 URL 保存现在是：供应商临时视频先显示 -> 马来下载视频 -> 马来抽 640px 封面 -> 马来生成封面 256px 缩略图 -> 马来主动同步视频、封面、封面缩略图到阿里 -> `/api/media-save-status` 返回 `localUrl / posterUrl / posterThumbnailUrl / aliSynced`。前端在阿里入口等待 `aliSynced===true` 和静态资源预加载成功后替换；马来直连入口优先使用马来 `/generated`。
+- 2026-06-08 最新接手重点：资产库上传曾线上卡在 `6%`。原因不是接口慢，而是资产库上传弹窗只把槽位置为 `uploading + 6%`，真实上传启动依赖同一回调里的任务数组/旧 JS，线上未部署时一直停初始值。已改为槽位保存 `uploadFile`，新增 effect 扫描 `uploading + uploadFile` 自动启动 XHR；上传 token 阶段显示 `8%/12%`，XHR 从 `15%` 起，并加 token 20 秒超时、XHR 10 分钟超时。本地 CORS 增加 localhost。已部署马来并同步阿里静态。
+- 2026-06-08 最新接手重点：专业图片/视频模式提示词里的参考图显示规则已改。若用户文本里有 `@文件名`，小缩略图和 `@文件名` 显示在原文位置，且悬停看原图；若没有 `@`，本次参考图小缩略图显示在提示词最前面；同一张图不会重复显示。小图不再依赖缩略图文件，直接用原图静态地址避免裂图。
+- 2026-06-08 最新接手重点：预览页右上角下载按钮曾在马来地址变成跳转，原因是按钮 href 用了阿里静态跨域地址，浏览器忽略 `download`。已改为下载使用当前域名同源 `/generated/...`，并把 `101.47.19.109`、`101.37.129.164` 的绝对 generated URL 归一为相对路径。马来入口从马来下载，阿里入口从阿里下载。
+- 2026-06-08 最新接手重点：域名建议：主站/应用入口 `app.xxx.com` 或主域名指向阿里 `101.37.129.164`，`static.xxx.com` 指向阿里，`api.xxx.com` 指向马来 `101.47.19.109`。如果只先简化：主域名指阿里，`api` 指马来。`.cn` 域名可以用，不必须 `.com`；只要解析到中国大陆阿里服务器，一般需要 ICP 备案。
+- 2026-06-08 最新接手重点：本轮已把对话流和资产库图片上传改为“前端高质量 JPG 转换 + 直传马来 + 临时文件确认提交”。前端会用 `NEXT_PUBLIC_UPLOAD_BASE_URL=http://101.47.19.109` 直传马来，先通过阿里同源 `/api/upload-token` 拿 5 分钟 HMAC token，再带 `Authorization: Bearer ...` 上传到马来 `/api/asset-upload-temp`。选择图片后先进入马来 `.runtime/asset-upload-temp/...` 临时区，输入框/上传弹窗显示百分比；用户移除、清空或取消会删除临时文件；只有点击发送或确定上传时才 `PATCH /api/asset-upload-temp` 提交到正式 `/generated/users/{userId}/upload_image/*.jpg`。
+- 2026-06-08 最新接手重点：`/api/upload-image` 已改为支持 `multipart/form-data` 二进制上传、CORS、Bearer 上传 token，并仍兼容旧 base64 JSON。未登录且没有有效 token 会 401。新增关键文件：`src/lib/upload-token.ts`、`src/app/api/upload-token/route.ts`、`src/app/api/asset-upload-temp/route.ts`；核心改动还包括 `src/components/chat-workbench.tsx`、`src/app/api/upload-image/route.ts`、`src/lib/local-assets.ts`。
+- 2026-06-08 最新接手重点：上传图片和生成图片现在都尽量统一落盘为 JPG。生成图保存层 `saveGeneratedAsset(..., "image")` 会用 `ffmpeg-static` 转 JPG；上传图前端先用 canvas 以 `image/jpeg` 质量 `0.95` 转 JPG，服务端 `saveUploadedImageBufferAsset()` 也统一保存 `.jpg`。旧 PNG 尚未批量转换，线上阿里曾统计 `/generated/**/images` 约 `314 jpg / 50 png`，这些旧 PNG 主要来自 `openai/gpt-5.4-image-2`、Gemini 旧记录。
+- 2026-06-08 最新接手重点：资产库/对话流缩略图已从 `/api/media-thumbnail?url=...` 改为直接读阿里本地静态 `/generated/.../image-thumbnails/...jpg`，避免首次 MISS 回源马来。阿里新增 `/usr/local/bin/generate-flashmuse-thumbnails.sh`，并已追加到 `/usr/local/bin/sync-flashmuse-generated.sh`，每分钟 rsync 后会补生成本地 256px JPG 缩略图；日志 `/var/log/flashmuse-generated-thumbnails.log`。
+- 2026-06-08 最新接手重点：实测上传优化前，走阿里反代 `/api/upload-image`：1MB 约 `90s`，2MB `145s`，3MB `174s`，4MB `463s`，5MB 超过 `600s`。改直传马来 + token 后：1MB `1.79s`，2MB `5.60s`，3MB `5.21s`，4MB `3.70s`，5MB `5.34s`。阿里下载侧已升配后正常，JPG 943KB 约 `0.10s`，7.9MB PNG 约 `2.24s`，13.6MB 视频约 `2.51s`。
+- 2026-06-08 最新接手重点：部署注意，马来 `.env.local` 现在包含 `NEXT_PUBLIC_UPLOAD_BASE_URL=http://101.47.19.109`，用于构建前端直传地址。每次改前端仍必须马来 `npm run build`、`pm2 restart flashmuse && pm2 save`，再把马来 `.next/static/` rsync 到阿里 `/var/www/flashmuse-static/_next/static/`。
+- 2026-06-08 最新接手重点：当前“方案 B：阿里同源拿上传 token -> 浏览器直传马来 IP”只是 HTTP/IP 阶段临时方案。以后有正式域名和 HTTPS 后迁到“方案 D”很简单：把 `NEXT_PUBLIC_UPLOAD_BASE_URL` 改为正式 `https://api.xxx.com`，把 `NEXT_PUBLIC_STATIC_BASE_URL` 改为正式 `https://static.xxx.com` 或静态域名，`UPLOAD_CORS_ORIGINS` 收敛为正式 `https://app.xxx.com`，关闭 `FORCE_INSECURE_AUTH_COOKIE`。上传 token 机制建议保留，不必改回跨域 Cookie。
+- 2026-06-07 最新接手重点：阿里入口已从“全站反代缓存马来”升级为“阿里本地静态镜像 + 动态同源反代马来”。阿里本地目录为 `/var/www/flashmuse-static`，`/_next/static/` 和 `/home-assets/` 由阿里 Nginx `alias` 本地读取；`/generated/` 阿里本地优先，缺失才回源马来。响应头可看 `X-FlashMuse-Local-Static: next-static|home-assets` 和 `X-FlashMuse-Generated-Source: local|malaysia-proxy`。
+- 2026-06-07 最新接手重点：阿里已配置 `/generated` 每分钟从马来增量同步。脚本为 `/usr/local/bin/sync-flashmuse-generated.sh`，cron 为 `* * * * * flock -n /tmp/flashmuse-generated-sync.lock ...`，日志在 `/var/log/flashmuse-generated-sync.log`。阿里用专用 SSH key `/root/.ssh/flashmuse_malaysia_sync_ed25519` 拉取马来 `/var/www/flashmuse/public/generated/`。首次已同步约 `511MB`。
+- 2026-06-07 最新接手重点：阿里 Nginx 已加慢请求日志格式 `flashmuse_timing`，日志 `/var/log/nginx/flashmuse-static-access.log` 现在包含 `rt / urt / uct / uht / cache / gzip`。相关备份包括 `/etc/nginx/sites-available/flashmuse-static-ip.local-static.bak.20260607201518`、`.gzip.bak.20260607191419`、`.bak.20260607184458`。
+- 2026-06-07 最新接手重点：工作台历史加载已优化两阶段。`/api/workspace-state?summary=1` 初始只返回会话列表和当前会话完整内容；新增 `/api/workspace-session?id=xxx` 点击历史时再加载单条会话。服务端会用 `messagesLoaded:false` 安全合并未加载会话，避免自动保存覆盖旧历史。核心文件：`src/lib/workspace-state-cleanup.ts`、`src/app/api/workspace-state/route.ts`、`src/app/api/workspace-session/route.ts`、`src/components/chat-workbench.tsx`。
+- 2026-06-07 最新接手重点：`12424740@qq.com` 的线上工作区已清理重复媒体映射，历史包从约 `503KB / 515413 bytes` 降到约 `151KB / 154571 bytes`。后续保存/读取会继续自动瘦身，主要清理消息里重复的 `videoPosters / imageDimensions / mediaSystemNames / imagePrompts / videoPrompts / videoDimensionsMap`。
+- 2026-06-07 最新接手重点：历史会话点击未加载对话时，右侧不再显示新对话首页，改为白底居中加载态：`加载中...0%` 起步，100px 宽、4px 高、直角蓝色进度条。视频本地替换预加载已从完整下载 mp4 改为 `Range: bytes=0-0`，避免打开工作台时整段视频下载拖慢页面。
+- 2026-06-07 最新接手重点：当前阿里静态同步不是自动同步 `/_next/static`，每次马来重新 `npm run build` 后必须执行阿里 rsync，把马来 `/var/www/flashmuse/.next/static/` 同步到阿里 `/var/www/flashmuse-static/_next/static/`。`/generated` 已有每分钟 cron 自动同步。
+- 2026-06-07 最新接手重点：当前国内快速入口为阿里服务器 `http://101.37.129.164`，马来源站仍为 `http://101.47.19.109`。阿里服务器同时保留旧项目 `dvideo.venusface.com`，Nginx 按 Host/默认 IP 分流。阿里缓存首页 `/` 30 分钟，缓存 `/home-assets/`、`/generated/`、`/_next/static/`、`/api/media-thumbnail`；动态 API/工作台/后台不缓存。
+- 2026-06-07 最新接手重点：马来 `.env.local` 已配置 `NEXT_PUBLIC_STATIC_BASE_URL=http://101.37.129.164`。有正式域名/HTTPS 后应改为正式静态域名，例如 `https://static.xxx.com`；同时关闭 `FORCE_INSECURE_AUTH_COOKIE`。
+- 2026-06-07 最新接手重点：媒体文件已按用户目录隔离，新结构为 `/generated/users/{userId}/images|videos|upload_image|files|video-posters|image-thumbnails/`。旧媒体已复制迁移到用户目录并更新 workspace/ledger；旧公共目录文件没有删除，保留兜底。
+- 2026-06-07 最新接手重点：图片缩略图最长边 256，视频封面最长边 640。媒体保存成功后，前端会等阿里原图/缩略图/原视频/封面全部预加载成功才把供应商 URL 替换为 `/generated/...`。浏览器控制台可看 `[media-preload]` 日志用于调超时时间。
+- 2026-06-07 最新接手重点：Agent 自动生成首选策略已改。普通图片 Seedream 4.5，普通视频 Seedance 2.0 Fast，高级图片 GPT-5.4 Image 2，高级视频 Seedance 2.0；后台 `Agent 自动生成策略` 顶部显示这四项，下面是备选图片/备选视频。
+- 2026-06-07 最新接手重点：同账号单会话已启用。新登录会删除旧 session，旧电脑最多 5 秒检测到失效并回首页非登录状态。
+- 2026-06-07 最新接手重点：本轮改动很多，已部署线上并构建通过，但尚未提交/推送 GitHub。下一个 AI 接手前建议先 `git status`，不要误删 `public/home-assets/*-lite.*` 和 `scripts/migrate-generated-media-to-user-dirs.mjs`。
+- 项目已同步到 GitHub：`https://github.com/lookxun/AI-Video-Assistant.git`，主分支 `main`
+- 换电脑开发步骤：`git clone https://github.com/lookxun/AI-Video-Assistant.git` -> `cd AI-Video-Assistant` -> `npm install` -> 复制 `.env.example` 为 `.env.local` -> 填写 `OPENROUTER_API_KEY` -> `npm run dev`
+- Windows 本机也可以继续使用项目里的启动脚本；若只用命令行，开发地址通常是 `http://localhost:3000`
+- `.env.local`、`node_modules`、`.next`、`public/generated`、`start-project.log` 不上传 GitHub
+- 本地浏览器历史对话、反馈日志和当前会话保存在 `localStorage`，不会随 GitHub 同步
+- 因此从 GitHub 下载后，代码和功能会和当前一致，但旧历史对话、本机生成过的图片 / 视频、本地资产库和环境变量不会自动一致
+- 最近一次代码已提交并推送到 `origin/main`，提交为 `a538b32 Update admin dashboard and BytePlus integrations`
+- 2026-06-05 最新接手重点：项目已完成第一版马来西亚服务器裸机部署，服务器资料在 `E:\project\【2】server\马来西亚服务器`，IP 为 `101.47.19.109`，线上路径 `/var/www/flashmuse`。当前访问地址：前台 `http://101.47.19.109`，工作台 `http://101.47.19.109/workspace`，后台 `http://101.47.19.109/admin`，`/generated/...` 已由 Nginx 直接映射到 `/var/www/flashmuse/public/generated/...` 并可公网 HTTP 访问。
+- 2026-06-05 最新接手重点：线上当前仍是 HTTP，不是 HTTPS。为了临时测试，`.env.local` 开了 `FORCE_INSECURE_AUTH_COOKIE=true`，并且 `src/lib/auth.ts` / `src/lib/admin-auth.ts` 在该开关下不写 `Secure Cookie`。拿到域名并配置 HTTPS 后必须关闭该开关，恢复生产安全 Cookie。
+- 2026-06-05 最新接手重点：下一步仍是绑定域名和配置 HTTPS。BytePlus 第一方素材审核需要公网 HTTPS 图片 URL，当前 HTTP 只能用于功能测试，不能作为最终 `originalUrl`。
+- 2026-06-05 本轮部署修复：线上 SMTP 配置最初只上传 `.env.local`，验证码只打印日志不发邮件；已把本地 `.env` 中 SMTP/管理员配置合并到线上 `.env.local`，保留线上 PostgreSQL `DATABASE_URL`。前台登录和后台登录均可发验证码。
+- 2026-06-05 本轮线上修复：HTTP/IP 环境下浏览器没有 `crypto.randomUUID()`，导致工作台进入后 `This page couldn't load`；`chat-workbench.tsx` 已新增 `createClientId()` fallback，并替换所有前端 `crypto.randomUUID()` 调用。
+- 2026-06-05 本轮线上修复：登录成功和首页进入工作台改为整页跳转并带 `fresh` 参数，避免 Next RSC 软跳转状态问题；Nginx 临时对 `/_next/static/` 返回 `Cache-Control: no-store`，方便测试阶段避免旧 chunk 缓存。
+- 2026-06-05 本轮产品修复：Agent 引导按钮点击发送后必须消失。现在只在最后一条消息本身是 assistant 时显示引导，发送任意消息时会清掉旧消息的 `suggestions`。
+- 2026-06-05 本轮 UI 修复：视频时长弹窗只有 BytePlus `Seedance 2.0 Fast / Seedance 2.0` 因可选秒数多保持两列，其它视频模型恢复一列。资产库空状态文案已按 `上传图片 / 生成图片 / 生成视频 / 回收站` 分别改为对应说明。
+- 2026-06-05 本轮排查：`B_8` 生图失败原因是 `google/gemini-3-pro-image-preview` 没返回图片，只返回了一大段中文场景描述文本。不是保存失败，也不是服务器坏；建议暂时用 `Seedream 4.5 / Seedream 5.0 Lite`，或后台关闭不稳定 Gemini 图片模型。
+- 2026-06-05 最新接手重点：本轮做完一批前台资产库、后台弹窗、首页输入框和模型开关控制修复后，下一个 AI 要优先开始公网部署。部署目的不是单纯上线预览，而是为了让 `/generated/...`、上传图、资产图、生成图获得 BytePlus 可访问的公网 HTTPS URL。
+- 2026-06-05 最新接手重点：部署完成后马上继续接 BytePlus 第一方 `素材&虚拟人像库` 审核机制。流程仍是：图片保存到服务器公网 HTTPS URL -> 调 BytePlus 第一方素材创建/审核接口 -> 轮询状态 -> 保存 `assetId/materialId` -> Seedance 2.0 视频生成使用 `asset://assetId` 作为参考图。该机制用于解决写实真人/数字人角色图直接传 URL/base64 时触发 `InputImageSensitiveContentDetected.PrivacyInformation` 的问题。
+- 2026-06-05 本轮重要修复：后台模型开关已重新梳理。`/api/model-availability` 现在返回 `imageModels / assetImageModels / videoModels / agentImageModels / agentVideoModels` 五组列表；前端和服务端都按入口分别校验：专业图片、资产库图片、专业视频、Agent 自动生图、Agent 自动生视频。Agent 自动生成不再误用被后台互斥关闭的 OpenRouter 模型。
+- 2026-06-05 本轮前台资产库调整：`对话流资产` 下新增 `上传图片` 分类，只展示 `/generated/upload_image/...` 用户上传图；`生成图片` 只展示对话流生成图；`生成视频` 只展示对话流视频。`@引用资产` 弹窗去掉旧 `对话流图片` 分类，改为 `上传图片` 分类，仅展示上传图。上传图片图标使用用户提供的 SVG。
+- 2026-06-05 本轮后台调整：历史对话弹窗排序和左侧时间不再使用会被 workspace 保存污染的 `session.updatedAt`，改为按该对话内最后一条消息 `createdAt` 排序和显示。后台媒体弹窗左侧主图使用原图，右侧列表用缩略图；文件名从图片左上角移到参数行前面，文件名为黑色，后续参数用竖线分隔；资产库图片参数最后显示风格。
+- 2026-06-05 本轮首页 UI：首页简化输入框保持原尺寸，恢复深色玻璃风格，但底色和边框改为纯平无渐变；发送按钮常态/hover 与右上角 `进入工作台 / 登录` 一致，`进入工作台 / 登录` 按钮去掉描边。
+- 2026-06-04 最新接手重点：下一个 AI 优先开始做公网部署。原因是 BytePlus 第一方 `素材&虚拟人像库 / CreateAsset` 审核机制要求提交 `originalUrl` 为 BytePlus 可访问的公网图片 URL；本地 `localhost` 或本地 `/generated/...` 无法被 BytePlus 下载。部署完成后，必须让服务器上的 `/generated/...` 或上传图片能通过公网 HTTPS URL 访问，且如 BytePlus 要求白名单，需要把服务器公网出口 IP 提交给 BytePlus。
+- 2026-06-04 最新接手重点：部署后继续接 BytePlus `素材&虚拟人像库` 审核机制。流程是：用户图片先保存到服务器公网 URL -> 调 BytePlus 第一方素材创建/审核接口（底层疑似 `Action=CreateAsset`，第三方文档已暴露此 Action）-> 轮询素材状态 -> 审核完成拿到 `asset-xxxx` -> Seedance 2.0 视频生成时不要再传普通图片 URL/base64，而传 `asset://asset-xxxx` 作为 `reference_image`。该机制用于 AI 生成的写实真人/数字人角色图，审核通过后可降低直接传真人脸参考图时的 `InputImageSensitiveContentDetected.PrivacyInformation` 拦截。
+- 2026-06-04 最新接手重点：已确认第三方 SeeDance 素材接口文档在 `E:\project\【1】Api key\三方提供：seedance 2.0\SeeDance接入说明\AI聚合三方素材接口接入文档.pdf`，其中 `/openApi/material/create` 返回 `materialId: asset-xxxx` 和 `status=1`，`/openApi/material/pageList` 查询 `status 1/2/3`。用户明确说不接第三方，只用 BytePlus 第一方；但该文档证明 BytePlus 底层存在素材审核/入库能力。下一个 AI 需要从 BytePlus 控制台或客服拿第一方 `CreateAsset / 查询素材状态` 文档和开通方式。
+- 2026-06-04 本轮代码修复：BytePlus 图片 API 实际可用，`Seedream 4.5` 和 `Seedream 5.0 Lite` 直连测试均成功。此前前台像“连不上”的原因是 BytePlus 返回远程 URL，异步落盘时暂时没有本地尺寸，`/api/image` 的尺寸过滤把已返回图片过滤成空并报 `empty delivery`；现在 `pickRequestedImages()` 在没有匹配尺寸时回退交付原图，不再误判失败。
+- 2026-06-04 本轮代码修复：视频轮询阶段平台返回失败时以前漏 `B_数字` 编号，已让 `/api/video` 的轮询失败分支也走 `createCodedApiError()`；随后又修 `src/lib/error-message.ts`，避免 `toUserErrorMessage()` 把带 `(B_数字)` 的隐私/敏感错误重新映射成固定中文文案时丢掉编号。
+- 2026-06-04 本轮最新补充：资产库性能已优化。新增 `/api/media-thumbnail`，本地 `/generated/...` 图片首次访问会用 `ffmpeg-static` 生成 512px 缩略图到 `public/generated/image-thumbnails/...`，资产库图片卡改为加载缩略图并 `loading="lazy"`；资产库分类过滤改为 `useMemo`；初始分批渲染从 30 调为 24；视频卡不再批量挂载 `<video preload="metadata">`，优先用封面，没封面显示轻量占位。
+- 2026-06-04 本轮最新补充：本地所有旧视频已批量抽帧封面。`public/generated/videos` 下 22 个视频现在都有同名 `/generated/video-posters/*.jpg`，其中本轮新建 20 个、原有 2 个；`public/generated/videos/manifest.json` 已补 `posterUrl`。对话流和资产库视频封面都只保留中央 `play-large-fill` 播放按钮，左上角视频图标已去掉。
+- 2026-06-04 本轮最新补充：预览页右侧缩略图上下按钮闪烁已修。`previewThumbsNeedScroll` 不再依赖当前页实际缩略图数量或滚轮后的测量，改为由 `previewMediaOptions.length > previewThumbPageSize` 直接判断；缩略图列表高度固定为一页容量，最后一页不会让按钮一会显示一会消失。
+- 2026-06-04 本轮最新补充：后台“用户已删除”规则已重新统一。用户删除对后台只是用户操作，不是真删除；后台历史对话、对话流图片/视频、资产库图片、积分明细和生成记录都应保留原内容、原提示词、原参数、原扣费，只追加红色 `用户已删除` 标识。删除不再把媒体 `status` 改成 `failed`，否则会误伤生成数量和积分统计。
+- 2026-06-04 本轮最新补充：后台删除对话恢复规则已改。用户删除整条对话后，后台历史对话仍保留该对话，标题后追加红色 `用户已删除`，按删除/最后操作时间排序到前面；对话内能从流水恢复出的图片/视频/提示词继续显示，删除对话里的媒体会补回 `对话流图片 / 对话流视频` 并按 URL 去重，不再因为 workspace 当前 sessions 缺失而消失。
+- 2026-06-04 本轮最新补充：后台积分/生成记录显示已修。生成记录的生成列表以前从 workspace 媒体转记录时把 `credits` 固定为 0，导致很多图片显示 `-0`；现在按媒体 URL 回填 `CreditLedger` 真实扣分。上传类仍显示 `--`；扣费关闭显示 `0（扣分关闭）`；确实找不到绑定流水的旧媒体显示 `0（扣分异常）`，只表示旧数据无法匹配流水，不代表当前新链路没扣分。
+- 2026-06-04 本轮最新补充：生成错误编号兜底已补。此前前端在“接口成功但 images 为空”时自己抛 `服务器繁忙，请稍候再试.....`，没有 `B_数字`。现在 `/api/image` 在无可交付图片时直接返回 `createCodedApiError()`，`/api/video` 在任务完成但无视频 URL 时也返回带编号错误。最新排查 BytePlus `Seedream 4.5` 生不出图的原因是 `image-generation empty delivery`：模型响应流程完成但没有返回可用图片和真实原因，日志里已有 `[B_124]` 等编号。
+- 2026-06-04 本轮最新补充：对话流和资产库缩略图链路继续做稳。对话流图片卡、预览右侧缩略图、输入参考图、用户消息参考图、`@资产` 菜单、文本内联小图、资产生成引用图、后台缩略图都走 `/api/media-thumbnail`；主预览图、资产生成页左侧主图、后台悬停大图保留原图。修复了缩略图 `512x288` 写入 `imageDimensions` 后导致成功图显示失败卡的问题，前端不再因为尺寸过滤合成失败卡。
+- 2026-06-04 本轮最新补充：图片生成固定槽位再次稳定。请求几张就固定几个位置，位置永远显示 `pending / image / failed` 之一；单张成功后其它未完成位置继续显示等待卡，不能空白。等待卡百分比按槽位编号加稳定偏移，不再完全同步。
+- 2026-06-04 本轮最新补充：资产命名改为 `systemName + userName` 双字段规则。`systemName` 是不可变系统名，`userName` 是用户改名，`name` 仅作为兼容显示字段等于 `userName || systemName`。前端显示用户名优先；后台显示 `系统名 / 用户改名`。系统同步逻辑不能再覆盖用户改名。
+- 2026-06-04 本轮最新补充：资产库刷新定位已修。新增本地 UI 状态 `flashmuse-workspace-ui-state-v1`，保存当前面板、资产库标签和各标签滚动位置；刷新优先恢复本地 UI 状态。点击一级资产库不再重置到角色图片，滚动恢复不再造成右侧滚动条抖动。点击资产库/分类/资产卡会关闭右侧文档预览面板。
+- 2026-06-04 本轮最新补充：右上角使用量浮窗新增当前对话流成功图片数和视频数，位于 `Tk` 和积分之间；上传参考图不计数。前台小图悬停原图预览已加，并通过 portal 和边界计算避免被菜单裁切。
+- 2026-06-04 本轮验证：多次 `npm run lint` 通过，仅剩 `chat-workbench.tsx` 原有两个 warning；多次 `npm run build` 通过，仅剩既有 `ffmpeg-static` Turbopack tracing warning。
+- 2026-06-03 本轮最新补充：远程媒体保存链路已改为“远程 URL 先展示、后台异步下载落盘”。新增 `src/lib/media-save-queue.ts` 和 `/api/media-save-status`，队列状态保存在 `.runtime/media-save-jobs.json`。所有供应商/模型返回的远程图片或视频 URL 都先给前端显示，再后台下载；base64 仍同步保存。
+- 2026-06-03 本轮最新补充：前端会轮询媒体保存状态，保存成功后自动把对话流、资产库、生成任务中的远程 URL 替换为本地 `/generated/...`。队列按远程 URL 去重，下载失败退避重试，`downloading` 中任务不重复启动，超过 30 分钟才视为僵尸任务。
+- 2026-06-03 本轮最新补充：生成错误红字规则已统一。优先显示模型/供应商真实中文原因；没有真实原因显示 `服务器繁忙，请稍候再试.....`；所有生成错误都有 `B_数字` 编号；用户端不显示供应商名、内部英文、`system-reminder`、`finish_reason`、`native_finish_reason`、HTML 或堆栈。
+- 2026-06-03 本轮最新补充：对话流多张图片/多个视频失败时，错误原因分页显示 `<1/4>`，默认定位第一条真实原因；资产库外部失败卡不显示原因，只在全屏生成页显示。整批失败原因会写入 `[media-generation] image failure reasons / video failure reasons` 日志。
+- 2026-06-03 本轮最新补充：排查并处理 `video_2_d28` 重复下载孤儿文件，确认 `video_1_d29` 已保存到本地；排查 `image_1_d29` 到 `image_4_d29` 为 OpenRouter `GPT-5.4 Image 2` 同步保存结果；图片供应商请求已加 5 分钟超时，避免无限 pending。
+- 2026-06-03 本轮继续补充：对话流图片生成规则已重新对齐为“固定槽位”。用户请求几张就固定显示几个槽位，最多 4 个；每个槽位只会是 `pending / image / failed` 之一。成功、失败、失败卡重试都只替换对应槽位，不再在后面追加第 5、第 6 个等待卡或失败卡。
+- 2026-06-03 本轮继续补充：对话流图片如果模型多返回额外图片，不再显示额外图，也不再分页显示额外图。服务端 `/api/image` 会优先按用户请求尺寸筛选结果，例如请求 4K 只返回真实 4K 图；非请求尺寸如 1K 不展示、不入本次扣费媒体绑定。旧对话流前端也按同样规则过滤展示。
+- 2026-06-03 本轮继续补充：失败红字分页仍保留，但失败卡数量不能按 `mediaErrorReasons.length` 推断。失败卡只能来自固定槽位的 `failed` 状态；红字页只对应当前仍失败的槽位。全失败请求 4 张显示 4 个失败卡，3 成功 1 失败显示 3 图 + 1 失败卡，不能出现 5 张失败卡。
+- 2026-06-03 本轮继续补充：绿色成功提醒规则已对齐。图片同一批里任意单个槽位成功即可弹一次 `图片生成已完成`；全失败不能弹绿色成功。视频成功仍在拿到视频 URL 后弹。资产库生成单图成功仍按原规则弹。
+- 2026-06-03 本轮继续补充：再次修复 `video_2_d28`。本地用户 `ID_779117` 的工作区曾被浏览器旧状态覆盖回已删除 URL `/generated/videos/1780454968504-21fb484e-7894-45cb-b730-63c475ee71f2.mp4`，已替换为有效文件 `/generated/videos/1780454887939-f010e856-7f46-4fdc-9290-8dd58bd22d85.mp4`。`/api/workspace-state` 和工作台加载端都加了旧 URL 替换兜底，避免浏览器旧状态再次覆盖数据库。
+- 2026-06-03 本轮继续补充：修复预览页 `Maximum update depth exceeded`。原因是预览尺寸、缩略图分页和预览资产同步重复 setState；已加相同值不更新保护。生成图片缩略图改为 Next `Image fill + object-contain`，减少宽高比例 warning。
+- 2026-06-03 本轮继续补充：错误清洗补漏。`图片平台没有返回图片，且没有返回可用原因。` 这类“无真实原因”错误现在会显示通用 `服务器繁忙，请稍候再试.....`，但模型真实中文拒绝原因仍会展示。注意用户端仍带 `B_数字` 编号方便查日志。
+- 2026-06-03 本轮继续补充：对话流媒体性能优化已做。图片卡改为懒加载；对话流图片/视频区域加 `LazyMediaMount`，滚动到视口附近才挂载媒体。视频本地落盘后会通过 `ffmpeg-static` 抽第一帧封面，保存到 `/generated/video-posters/...jpg`，并通过 `/api/media-save-status` 返回 `posterUrl` 写回对话流、资产库和预览缩略图。远程 URL 阶段仍保持原来直接显示视频、悬停播放、点击预览。
+- 2026-06-03 本轮继续补充：已为 `video_1_d28` 和 `video_2_d28` 手动抽帧封面并写回 manifest。对应封面为 `/generated/video-posters/1780404101729-1970df97-a38f-44bd-9094-82da87ba04a2.jpg` 和 `/generated/video-posters/1780454887939-f010e856-7f46-4fdc-9290-8dd58bd22d85.jpg`。旧本地视频有同名封面时前端会通过 `/generated/videos/xxx.mp4 -> /generated/video-posters/xxx.jpg` 兜底显示。
+- 2026-06-03 本轮继续补充：前端工作台新增主题菜单。用户菜单里有二级菜单，可选 `浅色模式 / 深色模式 / 跟随系统`，配置保存在 `localStorage` 的 `flashmuse-workspace-theme-v1`，选择后会同时关闭一级和二级菜单。深色模式颜色已 token 化，核心变量在 `src/app/globals.css`：`--fm-bg / --fm-sidebar / --fm-panel / --fm-control / --fm-hover / --fm-selected / --fm-border* / --fm-text* / --fm-brand`。
+- 2026-06-03 本轮继续补充：深色模式做了大量细节修正。左侧未选中菜单透明、选中才有底；Logo 文字图在深色反白；对话流成功/失败图片和视频卡、资产库失败卡统一使用 `--flashmuse-media-surface`；反馈按钮常态透明、hover 才有底；预览页和资产生成页左侧舞台保持浅色毛玻璃视觉，右侧信息栏为较浅黑 `#2a303c`；预览页缩略图边框恢复浅色模式颜色，缩略图下翻按钮间距已按当前页内容高度收缩。
+- 2026-06-03 本轮继续补充：主题入口已按用户要求临时灰掉禁用。用户菜单仍显示当前主题文案和图标，但按钮不可点击，鼠标移入不再弹二级菜单。主题功能、二级菜单代码、深色模式 token 全部保留，后续再继续调整深色模式时可恢复入口。
+- 2026-06-03 本轮继续补充：上传规则已开始做实。新增 `src/lib/upload-rules.ts`，按 `mode + modelId + transportMode` 管理上传规则；对话流上传、粘贴图片、拖拽文件、`@资产`、资产库“使用资产”、历史缩略图再次引用、资产库角色/场景/分镜生成页 `@引用资产` 都会按当前模型限制图片/文件数量、格式和大小。`/api/image`、`/api/video` 也加了参考图数量兜底。
+- 2026-06-03 本轮继续补充：后台 `系统设置` 底部新增 `上传规则` 表格，直接读取 `upload-rules.ts` 展示真实规则，说明文案显示在“使用场景”下方灰字。未做实的能力用红字标出，包括 GPT 真实文件输入、BytePlus 特殊图片格式完整预览、服务器 URL 传模型链路、BytePlus 参考视频和参考音频上传。
+- 2026-06-03 重要后续提醒：下一个 AI 继续做上传功能做实。用户明确说未来不会接对象存储，方案是用户文件上传到服务器本地后生成服务器 URL 再传给模型；当前本地开发继续用原来的 base64 打包方案测试。下一步优先接服务器 URL 传参、`referenceVideos/referenceAudios` 前后端状态、BytePlus Seedance 2.0 视频/音频参考真实上传和校验、特殊图片格式处理、OpenRouter GPT-5.4 Image 2 真实 file 输入。
+- 2026-06-02 本轮最新补充：后台 `概览` 已升级为运营看板，包含核心卡、活跃/新增趋势、积分/美元消耗趋势、生成趋势、1/3/7 日留存、系统状态、模型/供应商占比、失败原因 Top 10、最近活跃用户和消耗积分排行。图表为轻量 SVG/CSS，不新增依赖。
+- 2026-06-02 本轮最新补充：后台 `积分管理` 展开区 `当前积分` 已可点击，打开 `当前积分变动明细` 弹窗，按时间最新排序显示每条积分流水的 `变动原因 / 积分变动 / 变动后剩余积分`。余额通过当前余额倒推每条流水后的余额。
+- 2026-06-02 本轮最新补充：BytePlus `Seedream 5.0 Lite` 已用 `output_format=jpeg + size=具体 px` 复测 12 个 `2K/4K` 尺寸组合，全部成功并输出 `.jpg`；测试脚本为 `scripts/test-byteplus-seedream-5-lite-px-matrix.mjs`，结果和图片在 `AI-Video-Assistant_Project Planning/test` 下。该规划目录仍不提交 GitHub。
+- 2026-06-02 本轮最新补充：BytePlus 视频文档确认尺寸由 `resolution + ratio` 控制，不传 px `size`。BytePlus `Seedance 2.0 Fast / Seedance 2.0` 时长已按文档改为 `4-15秒` 每秒可选；服务端会把异常时长兜底到 `4-15`。时长菜单两列显示，左列 `10-15`、右列 `4-9`，每列从下往上递增。
+- 2026-06-02 本轮最新补充：`/api/video` 已增加 BytePlus 视频 timing 日志：创建、轮询、完成保存都会记录耗时；完成日志包含 `queryMs / saveMs / totalMs / savedLocal / saveFailed`，不打印远程签名 URL。d28 最后一个慢视频基本确认是 BytePlus 生成后远程 mp4 下载保存卡住，不是模型生成慢。
+- 2026-06-02 最新补充：BytePlus 前台模型显示和真实生成接口已继续接入。前台模型下拉现在会显示后台启用的 BytePlus 图片/视频模型，并用新增 `BytePlusIcon` 区分供应商。BytePlus 图片已接真实 `/api/v3/images/generations`，支持文生图、单图图生图、多图融合和多图批量生成；BytePlus 视频已接创建和查询任务，创建为 `/api/v3/contents/generations/tasks`，查询为 `/api/v3/contents/generations/tasks/{id}`，成功读取 `content.video_url`。
+- 2026-06-02 最新补充：后台 `BytePlus API` 行右侧新增 `解除限制` 开关，配置为 `BYTEPLUS_UNLOCK_LIMITS`。关闭时 BytePlus 实际请求使用模型名，打开时使用 `ep-...` Endpoint ID；前台和后台显示模型名称不变。OpenRouter 不受影响。
+- 2026-06-02 最新补充：BytePlus 图片已改为独立尺寸方案。BytePlus 没有独立 `aspect_ratio` 字段，已知成功比例和 K 数会转换成具体 px 写入 `size`，例如 `21:9 / 2K -> 3136x1344`；未知组合显示 `未知` 并回退传 `2K/4K`。OpenRouter 仍走 `image_config.aspect_ratio + image_config.image_size`。
+- 2026-06-02 最新补充：BytePlus 普通多图生成最终恢复为按张数并发多个单图请求。官方 `sequential_image_generation: auto + max_images` 只表示最多返回几张，不保证用户选几张就返回几张，因此不用于普通 `2/3/4张` 需求。BytePlus 耗时日志 `[image-generation] BytePlus timing` 已保留，近期慢主要卡在远程图片 URL 下载保存 `saveMs`，不一定是模型生成 `providerMs`。
+- 2026-06-02 最新补充：BytePlus 图片尺寸已实测并写入 `AI-Video-Assistant_Project Planning/test/byteplus-image-size-test-results.md` 和 `byteplus-image-size-test-raw.json`。结论：`Seedream 4.5 / 5.0` 都不支持 `1K`，都支持 `2K / 4K`；`Seedream 4.5` 不支持 `output_format`，正式代码已改为只有 `Seedream 5.0` 传 `output_format=png`。前台 BytePlus 图片分辨率应保持只显示 `2K / 4K`。
+- 2026-06-02 最新补充：BytePlus 图片 `2K` 稳定尺寸为 `16:9 2848x1600 / 9:16 1600x2848 / 1:1 2048x2048 / 4:3 2304x1728 / 3:4 1728x2304 / 21:9 3136x1344`；`4K` 稳定尺寸为 `16:9 5504x3040 / 9:16 3040x5504 / 1:1 4096x4096 / 4:3 4704x3520 / 3:4 3520x4704 / 21:9 6240x2656`，但 `Seedream 5.0` 部分 4K 非宽高比请求本轮超时。后续继续测试 BytePlus `Seedance 2.0 Fast / Seedance 2.0` 的比例、分辨率和秒数。
+- 2026-06-02 本轮继续补充：BytePlus `Seedream 5.0` 前后台显示名已改为 `Seedream 5.0 Lite`；当前按用户测试要求对 5.0 Lite 传 `output_format=jpeg`，若继续报参数不支持应回退 `png` 或不传；5.0 Lite 尺寸表已和 4.5 对齐，所有 `2K/4K` 比例传具体 px。资产库图片生成开关已接到前端和服务端，资产生成页会按后台 `资产库图片生成` 显示模型；BytePlus 文本模型启用时下拉灰掉不可点；`Agent 自动生成策略` 的 `高质图片` 右侧 `Seedream 5.0 Lite` 已移除。所有图片模型下拉排序固定为 `Seedream 4.5` 第一、`Seedream 5.0 Lite` 第二。模型信息查询不再由前端拼接假 AI 回答，改回普通 Agent 回答。
+- 2026-06-02 本轮继续补充：BytePlus 费用计算已接入。文本按 token 单价，图片按成功输出张数，视频按 `completion_tokens`；价格来源 `E:\project\【1】Api key\Byteplus\pricing.md`。OpenRouter 计费路径不变。视频等待卡恢复专业模式固定 `640x360`，Agent 视频仍两列；对话流主视频移除 `muted`，有音轨时可播放声音。后台模型明细已识别 BytePlus 模型名。仍需后续注意：后台 `Agent 自动生成策略` 的媒体模型开关尚未完整接入执行策略。
+- 2026-06-01 本轮最新补充：后台积分管理 `选择积分消耗项` 新增 `反推/优化提示词` 开关，并已做实。四个扣费开关规则为：`对话/规划` 控制 Agent/对话模型扣分，`图片` 控制平台所有图片生成扣分，`视频` 控制平台所有视频生成扣分，`反推/优化提示词` 控制平台所有反推和优化扣分。关闭后不扣对应积分，但仍写后台流水；明细积分列显示 `0（扣分关闭）`。新增数据库字段 `CreditSetting.chargePromptTool`，迁移为 `20260601120000_credit_prompt_tool_switch`。
+- 2026-06-01 本轮最新补充：后台 `生成记录` 页面已从占位做实。顶部卡片显示 `历史对话总数 / 图片生成总数 / 视频生成总数 / 上传图片总数 / 上传文件总数`；主表显示 `ID号 / 用户 / 历史对话 / 图片生成 / 视频生成 / 上传图片 / 上传文件`，按这五类记录的最新时间排序，任一有新记录就靠前。
+- 2026-06-01 本轮最新补充：生成记录展开区分四列。第一列为 `对话流图片 / 对话流视频 / 资产库图片 / 历史对话 / 工作区保存`，其中 `对话流图片` 和 `资产库图片` 都包含生成图和上传图；第二列为 `对话流生成图片列表 / 对话流生成视频列表 / 资产库生成图片列表`；第三列为 `对话流上传图片列表 / 对话流上传文件列表 / 资产库上传图片列表`；第四列复用积分管理明细入口。
+- 2026-06-01 本轮最新补充：生成记录中间两列的列表弹窗已合并。生成列表弹窗左侧为三类生成列表，上传记录弹窗左侧为三类上传列表，点击哪个按钮打开就默认定位哪个分类。列表记录来源以 workspace 真实媒体/上传/资产为准，不依赖扣费流水；扣费只作为附加信息，后续若扣分异常应只影响扣分数据显示，例如 `0（扣分异常）`，不能导致记录缺失。
+- 2026-06-01 本轮最新补充：生成记录中间两列列表弹窗右侧表格去掉 `消耗美元 / 折算人民币`，改为 `复制提示词` 列。有提示词时显示 `复制提示词` 按钮，反推提示词也算可复制提示词。生成图片/视频显示普通 `提示词`，上传图若已反推则显示蓝色 `反推提示词` 标识和内容。用户删除标识继续保留。
+- 2026-06-01 本轮最新补充：用户管理和生成记录里的文案已统一。普通大图弹窗入口为 `对话流图片 / 对话流视频 / 资产库图片`；生成列表入口保留 `生成` 二字：`对话流生成图片列表 / 对话流生成视频列表 / 资产库生成图片列表`。`对话流图片` 和 `资产库图片` 打开的是大图预览弹窗，右侧已有大图，不再给右侧缩略图加悬停大图预览。
+- 2026-06-01 本轮最新补充：后台积分明细规则已进一步收敛。`对话流消耗积分详细` 顶部显示 `生成图片 / 生成视频 / 上传图片 / 上传文件`；`资产库消耗积分详细` 顶部显示 `生成图片 / 生成视频 / 上传图片`；`反推提示词` 顶部显示 `反推图片`；`优化提示词` 顶部显示 `优化次数 / 消耗Token`。
+- 2026-06-01 本轮最新补充：对话流和资产库上传记录已加入后台明细，上传类记录显示图片/文件名和参数，但积分、美元、人民币列显示 `--`。上传图片参数为 `对话流上传 / 资产库上传`，上传文件参数为 `对话流上传文件`。
+- 2026-06-01 本轮最新补充：反推提示词规则已定。只有上传图显示 `反推提示词` 按钮，成功后不再显示按钮，改为正常提示词、复制和使用提示词。每张上传图只能成功反推一次。反推失败三轮都失败才写一条 0 分失败流水。
+- 2026-06-01 本轮最新补充：优化提示词规则已定。优化可多次成功，每次成功扣分并写 `outputPrompt`；每次模型尝试失败写 0 分失败流水。前端优化失败不提示，后台显示失败原因。
+- 2026-06-01 本轮最新补充：用户删除图片、资产或对话后不删除后台流水。后台对应记录保留，文件名/图片名照常显示，后面红字显示 `用户已删除 删除时间`，参数行照常显示。用户管理和积分管理弹窗都同步该规则。
+- 2026-06-01 本轮最新补充：后台所有图片缩略图已支持悬停大图预览，自动避让浏览器边界。组件为 `src/app/admin/admin-hover-image-preview.tsx`。
+- 2026-06-01 本轮最新补充：资产恢复逻辑已修。删除时写 `previousType`，恢复时回原分类；旧数据按 `systemName` 兜底。`assetGenerateJobs` 已持久化，刷新后失败卡恢复；删除生成资产时清同 URL 成功任务卡。
+- 2026-06-01 本轮最新补充：图片生成多返图规则已按入口拆分。对话流里模型额外返回图要全部显示并分页；资产库生成里每个子请求只返回一张最匹配参数的图，额外图不显示。OpenRouter 成功但无图时会记录真实无图原因，生成页显示真实原因。
+- 2026-06-01 最新补充：后台积分管理三类明细弹窗继续做实。`对话流消耗积分详细` 左侧显示 `【d编号】`，右侧表格显示生成内容、积分扣除、美元、人民币，并在顶部显示图片/视频数量和积分扣除汇总。
+- 2026-06-01 最新补充：`资产库消耗积分详细` 已接真实弹窗，左侧分类固定为 `角色 / 场景 / 分镜`。新流水按 `metadata.mediaUrls` 精确显示图片；旧流水没有 URL 时按同分类、时间就近兜底。
+- 2026-06-01 最新补充：`反推/优化提示词消耗积分详细` 已接真实弹窗，左侧分类为 `反推提示词 / 优化提示词`。反推提示词显示图片；优化/反推主标题优先显示模型输出提示词，长文本自动换行。
+- 2026-06-01 最新补充：图片模型额外返回图规则已统一。对话流图片生成如果模型一次返回多张候选图，要全部给用户显示，并按图片区域分页；扣费 metadata 写 `mediaUrls / allMediaUrls / extraMediaUrls / requestedImageCount / returnedImageCount / billableImageCount / delivered`，额外图不计费。资产库生成遇到同类情况时，只保留最匹配当前比例/尺寸的一张，额外图不进入资产库也不显示。
+- 2026-06-01 最新补充：后台 `系统设置` 已开始做实，顶部新增 `OpenRouter API` 输入框和开关。关闭开关时输入框可编辑，打开开关时保存并启用当前 Key。配置写入 `.env.local` 的 `OPENROUTER_API_KEY` 和 `OPENROUTER_API_KEY_ENABLED`；OpenRouter 文本、图片、视频调用都会读取该启用状态。
+- 2026-06-01 最新补充：后台 `系统设置` 已继续接入 `BytePlus API`。界面顶部为左右并排的 `OpenRouter API / BytePlus API` 输入框和开关，BytePlus Region 固定为 `ap-southeast-1`，不展示下拉。配置写入 `.env.local`：`BYTEPLUS_API_KEY / BYTEPLUS_API_KEY_ENABLED / BYTEPLUS_REGION / MODEL_PROVIDER_PREFERENCES / BYTEPLUS_MODEL_SELECTIONS`。BytePlus Key 来自 `E:\project\【1】Api key\Byteplus\Byteplus.md` 的 `ark-...`，Endpoint ID 也来自该文件。
+- 2026-06-01 最新补充：后台系统设置的模型表已改为四列：`使用位置 / OpenRouter / 说明 / BytePlus`。OpenRouter 和 BytePlus 每一行都有灰底模型框，模型名前有和前端一致的厂商图标；左右没有对应模型时显示空灰底占位，保持行高对齐。`普通 / 高级 / 优先 / 第二 / 第三 / 默认图片 / 高质图片 / 快速图片 / 默认视频 / 高质视频 / 4K视频` 等说明放在中间说明列。
+- 2026-06-01 最新补充：模型开关规则已做实。OpenRouter 左列所有模型都有开关；BytePlus 右列所有模型也有开关和图标。左右两边有对应关系时互斥：打开 OpenRouter 会关闭同一行 BytePlus，打开 BytePlus 会关闭同一行 OpenRouter。`Seedream 5.0` 在 BytePlus 侧是单独新增模型，左侧 OpenRouter 为空灰底，打开它表示额外启用。
+- 2026-06-01 最新补充：BytePlus 对话模型下拉只保留 `Seed 2.0 Lite / Seed 2.0 Pro / GLM-4.7`。`对话 / Agent 规划 / 意图识别` 里的 `普通 / 高级`，以及 `反推提示词 / 优化提示词` 里的 `优先 / 第二 / 第三` 都有 BytePlus 对话模型下拉。图片/视频 BytePlus 不使用下拉：`Seedream 4.5` 对应 OpenRouter `Seedream 4.5`，`Seedream 5.0` 单独显示；`Seedance 2.0 Fast / Seedance 2.0` 分别对应 OpenRouter 同名视频模型；`Agent 自动生成策略` 里 `高质图片` 左侧 `GPT-5.4 Image 2` 和右侧 `Seedream 5.0` 互斥。
+- 2026-06-01 最新补充：文本类 BytePlus 路由已接入。`/api/chat`、Agent 规划、意图识别、提示词优化/反推里，当对应模型选择 BytePlus 时，会调用 `https://ark.ap-southeast.bytepluses.com/api/v3/chat/completions`，`model` 使用后台选择的 BytePlus Endpoint ID。图片/视频 BytePlus 目前已完成后台开关和模型配置，实际生成接口还没切到 BytePlus 专用图片/视频 API，后续继续接。
+- 2026-06-01 最新补充：前端对话流图片/视频模型下拉会读取 `/api/model-availability`，关闭的 OpenRouter 模型不显示。若某类图片/视频模型全关，下拉打开显示 `暂无可用模型`；用户强行发送会在对话流红字提示 `连接不到模型，请联系管理员！`。`/api/image` 和 `/api/video` 服务端也有同样兜底校验，不能绕过前端调用关闭模型。
+- 2026-06-01 最新补充：`/api/chat` 会把输出提示词写入 `CreditLedger.metadata.outputPrompt`。反推提示词请求会写 `mediaUrls`，优化提示词请求会写 `originalPrompt`。后续新增扣费工具必须继续写可回查 metadata。
+- 2026-05-26 最新补充：首页已彻底去掉 `游客模式` 入口。`/workspace?guest=1` 不再触发游客模式，工作台组件已移除 `forceGuestMode`，未登录或认证失败会回首页，不再读取浏览器本地游客工作区。`src/app/workspace/page.tsx` 已改为动态渲染，避免构建时预渲染触发 `window`。
+- 2026-05-26 最新补充：首页右上角规则已改：未登录只显示 `登录`；已登录显示 `进入工作台` + 用户头像，`进入工作台` 按钮样式大小颜色与登录按钮一致。
+- 2026-05-26 最新补充：左侧主菜单 `资产管理` 已改名为 `资产库`，点击 `资产库` 会直接定位到 `资产生成 > 角色图片`，不再有 `全部资产` 页面。
+- 2026-05-26 最新补充：资产库左侧二级结构已改为三组：`资产生成`（角色图片 / 场景图片 / 分镜图片）、`对话流资产`（对话流图片 / 对话流视频）、`回收资产30天删除`（回收站）。小标题前有圆点，所有数量列右对齐。
+- 2026-05-26 最新补充：资产来源新增前端字段 `librarySource`。旧资产和后续对话流产出的图片/视频默认归入 `对话流资产`；资产库内上传/后续资产生成产生的图片归入 `资产生成`。回收站仍共用，规则不变。
+- 2026-05-26 最新补充：对话流资产命名规则已改。后续对话流图片命名为 `image_随机5-10位数字`，对话流视频命名为 `video_随机5-10位数字`。旧资产不批量改名，避免影响已有引用。
+- 2026-05-26 最新补充：对话流视频卡片右上角分类按钮已去除；对话流图片右上角分类按钮已做实，可在 `角色图片 / 场景图片 / 分镜图片 / 对话流图片` 之间切换，切到前三项会移动到 `资产生成` 对应分类，切回 `对话流图片` 会回到 `对话流资产`。
+- 2026-05-26 最新补充：`对话流视频` 页面卡片改为横向矩形，默认 `16:9`，大屏一行显示 `4` 个；其它图片/资产分类仍保持原图片网格。
+- 2026-05-26 最新补充：所有媒体预览页的 `使用提示词` 按钮现在会填入输入框、关闭预览页，并自动切回 `对话模式` 工作台。
+- 2026-05-26 最新补充：`资产生成 > 角色图片` 右侧网格第一个固定显示虚线 `生成角色` 按钮，图标使用 Remix `add-large-line`，按钮永远在第一位；生成出的角色图后续应显示在按钮后面。
+- 2026-05-26 最新补充：点击 `生成角色` 打开角色图片生成界面。当前是预览页同款全屏底和布局：左侧生成区、右侧竖版输入框式生成设置区；左上缩放/尺寸按钮和右上下载按钮在未生成前禁用。该界面当前只做 UI 占位，生成按钮禁用，尚未接真实生图流程。
+- 2026-05-26 最新补充：角色图片生成界面右侧布局已改为：比例下拉 + 风格下拉、模型下拉 + K 数下拉、无底框参数显示、提示词输入框、生成按钮。默认模型和 K 数独立为 `GPT-5.4 Image 2` + `2K`，不跟随对话流图片模型设置。右侧左右边距 `10px`，输入框默认 1px 灰描边、聚焦淡蓝、无阴影。
+- 2026-05-26 最新补充：资产库预览图片时已增加参数回填逻辑，会通过历史消息反查 `previewMeta` 并用标准化 URL 匹配；旧资产若找不到对应历史消息，参数仍可能无法恢复。视频参数弹窗 `非标` 仍只在 `尺寸（非标）` 标题处显示。
+- 2026-05-26 本轮后续：`资产生成 > 角色图片` 入口按钮文案已改为 `角色图片生成`。角色生成界面已从占位做实，点击后打开真正全屏界面，右侧栏固定 `360px` 且不随浏览器变窄消失，顶部有 `RiAccountBoxLine + 角色图片生成` 标题。
+- 2026-05-26 本轮后续：角色生成界面每次重新打开会清空输入框、生成结果、缩放/下载和 `@` 菜单状态，但保留四个菜单上一次选择（比例、风格、模型、K 数）。
+- 2026-05-26 本轮后续：角色生成输入框复用 `PlainMentionEditor`，支持 `@资产名` 蓝色显示；顶部按钮为 `@ 引用资产 / 优化提示词 / 清空输入框`。`@` 菜单向左展开，宽 `380px`，并按新资产库结构显示 `角色图片 / 场景图片 / 分镜图片 / 对话流图片`，不再显示待分类、回收站或视频。
+- 2026-05-26 本轮后续：角色生成已接真实 `/api/image` 和真实 `/api/chat` 优化提示词。生成中左侧显示等待卡；成功后留在生成页显示，不可点击进入预览；失败显示同尺寸失败卡并可重试。生成成功会写入 `资产生成 > 角色图片`。
+- 2026-05-26 本轮后续：生成成功后顶部缩放、实际尺寸、适合尺寸和下载按钮生效；生成中右侧全部禁用，包括四个菜单、`@`、优化、清空、输入框、生成按钮、关闭按钮和遮罩关闭。
+- 2026-05-26 本轮后续：角色生成内部强规则已接入且不显示到输入框。`单人9:16` 强制纯白背景、单人全身站立、头到脚完整；`三视图16:9` 强制纯白背景和四视图角色参考。风格强绑定：写实/2D/3D 三种互斥，用户提示词冲突时以菜单选择为准。
+- 2026-05-26 本轮后续：三视图规则按模型拆分。`GPT-5.4 Image 2` 和 `Gemini 3.1 Flash` 当前相对稳定；`Gemini 3 Pro` 和 `Seedream 4.5` 对三视图仍不稳定。`Seedream 4.5` 已改为纯正向描述，避免提到 `分隔线/边框/网格/四宫格` 等会反向触发的词。
+- 2026-05-26 本轮后续：资产卡片右上角文件夹移动菜单已移除；图片资产的移动分类合并到右下角三点菜单，顺序为 `重命名 / 移动到 > / 删除`。鼠标悬停 `移动到` 才显示二级菜单。对话流视频和回收站资产不显示 `移动到`。
+- 2026-05-26 本轮后续：删除资产后普通分类会立刻隐藏，只有 `回收站` 显示带 `30 天后删除` 倒计时的资产。
+- 2026-05-26 本轮后续验证：多次 `npm run lint` 通过，仅剩项目原有 `Unused eslint-disable directive` warning；角色生成做实后曾跑过 `npm run build` 通过，后续 UI 小改动未重新 build。
+- 2026-05-27 最新补充：`资产生成 > 场景图片` 已做实，入口为 `场景生成`，复用角色生成同款全屏页。场景生成强规则为纯场景、绝不出现人物/人形/剪影/人群/脸/手脚，不能出现文字、Logo、水印、UI、二维码、边框、分割线、海报排版等。场景比例为 `单场景9:16 / 单场景16:9 / 四宫格16:9`，四宫格必须是同一场景的正面、45度侧面、俯视、仰视四个角度。
+- 2026-05-27 最新补充：资产生成页改为角色/场景共用。角色入口和标题为 `角色生成`；关闭再打开保留对应生成类型的提示词草稿和参数选择，清空生成结果/缩放/下载/菜单状态。`@资产` 缩略图显示在提示词上方，单行、左右按钮、两端渐隐。
+- 2026-05-27 最新补充：资产生成参数行规则已改。生成页不显示模型，只显示 `类型+比例 | 尺寸 + K数 | 风格`；资产库预览页显示 `模型 | 类型+比例 | 尺寸 + K数 | 风格`。对话流参数显示保持不变。
+- 2026-05-27 最新补充：资产生成风格强绑定已加强。优化提示词返回后和最终生图前都会删除与菜单风格冲突的风格词，并加菜单风格前缀。`优化提示词` 模型兜底顺序为 `openai/gpt-5.5` -> `openai/gpt-5.4` -> `bytedance-seed/seed-2.0-lite`，`/api/chat` 已允许 `openai/gpt-5.5`。
+- 2026-05-27 最新补充：无生成参数的上传图预览页显示 `资产库上传` 或 `对话流上传`，提示词区显示 `暂无提示词`，按钮为蓝底 `反推提示词`，图标 `RiQuillPenAiLine`。反推模型顺序同优化提示词，成功后写回资产 `sourcePrompt`；提示词标题栏新增无底复制图标，复制成功显示灰色大对勾。
+- 2026-05-27 最新补充：我的积分表按 `积分消耗来源` 聚合。新增来源包括 `角色图片生成 / 场景图片生成 / 分镜图片生成 / 图片反推提示词`，写入 `CreditLedger.metadata.creditSource`；旧数据没有来源标记无法可靠拆分。新增 `对话Token` 列，普通对话优先读取工作区 `usageSummary.totalTokens` 和 `usageSummary.credits` 兜底。
+- 2026-05-27 最新补充：我的积分表将 `图片` 和 `视频` 合并为 `图片/视频`，如 `22/0`、`9/--`、`--/--`。`最后活跃` 24小时内显示时分、超过24小时显示月日、超过一年只显示年份；当前列间临时显示浅灰竖线方便继续调列宽。
+- 2026-05-27 最新验证：本轮多次 `npm run lint` 通过，仅剩项目原有 warning；多次 `npm run build` 通过。
+- 2026-05-27 本轮后续：`资产生成 > 分镜图片` 已做实，入口为 `分镜生成`，复用角色/场景同款全屏生成页。分镜强规则为生成结果必须像电影或电视剧单帧截图，不是角色设定图、场景设定图、海报、漫画格、分镜表或拼贴图；不能出现字幕、文字、Logo、水印、UI、二维码、边框、分割线、网格、多宫格、画中画、海报标题或说明标签。
+- 2026-05-27 本轮后续：分镜比例菜单为 `竖屏分镜9:16 / 横屏分镜16:9`，默认 `竖屏分镜9:16`。分镜图片新命名规则已简化为 `分镜1 / 分镜2 / 分镜3...`，不再用 `无名剧01_分镜xx_1`。
+- 2026-05-27 本轮后续：资产生成页顶部 `角色生成 / 场景生成 / 分镜生成` 按钮已做实，图标跟左侧分类一致，点击等同虚线入口；按钮颜色加深避免像禁用。资产卡右下角三点菜单新增边缘判断，靠右时主菜单和 `移动到` 二级菜单会向左展开，避免被浏览器裁切。
+- 2026-05-27 本轮后续：资产生成支持同分类并发任务。点击虚线框或顶部生成按钮永远打开新生成界面并保留对应类型参数/提示词草稿；点击某个等待卡才回到该任务自己的生成页。关闭生成页不会停止任务。等待卡用通用蓝色动态等待卡样式，左上显示百分比，左下显示已等待时间。
+- 2026-05-27 本轮后续：资产生成任务卡会原位更新：生成中占住位置，成功后原地变图片卡，失败后原地变失败卡；失败卡右上角有关闭按钮可手动清除，点击失败卡中间可回到失败页重试。重试失败任务会让失败卡原地变回等待卡；成功后会清同类型旧失败卡。成功图在原任务卡位置显示，并补齐右下角三点菜单。
+- 2026-05-27 本轮后续：资产生成页生成中也允许点右上关闭和遮罩关闭；绿色 `图片生成已完成` 提醒层级已提升到 `z-[9999]`，不会被全屏生成页挡住。
+- 2026-05-27 本轮后续：对话流图片/视频专业模式输入框上方新增 `优化提示词` 按钮，位于 `清空输入框` 前，同规格且两者都为通用蓝色。仅在图片/视频模式且输入框有文字时显示。优化模型兜底顺序为 `openai/gpt-5.5` -> `openai/gpt-5.4` -> `bytedance-seed/seed-2.0-lite`，成功后直接替换输入框内容并聚焦。
+- 2026-05-27 本轮后续：对话流右上角使用量浮窗 UI 已调整：`Token` 改为 `Tk`；美元和人民币不再显示 `$ / ¥` 字符，改用 Remix `money-dollar-circle-line` 和 `money-cny-circle-line` 图标；顶部使用量按钮图标改为 `copper-diamond-line`，尺寸调到 `22px`，和左侧收起按钮一致。
+- 2026-05-27 本轮验证：本轮多次 `npm run lint` 通过，仅剩项目原有 warning；多次 `npm run build` 通过。
+- 2026-05-28 最新补充：我的积分新增统一来源 `优化提示词`，对应 `CreditLedger.metadata.creditSource = "prompt_optimization"`。资产生成优化提示词、对话流图片/视频专业模式优化提示词都聚合到这一条，图片/视频列显示 `--/--`。
+- 2026-05-28 最新补充：对话流优化提示词时主输入框整体禁用并显示通用 Loading；资产生成优化提示词时右侧整体禁用并显示通用 Loading。资产生成没输入文字时 `清空输入框` 也禁用。
+- 2026-05-28 最新补充：新增通用 `LoadingSpinner`，采用用户给的 `radial-gradient + conic-gradient + mask` 风格，项目蓝 `#367cee`，头部圆点 + 长渐变尾巴。后续通用 loading 优先复用该组件。
+- 2026-05-28 最新补充：反推提示词时预览页右侧整体禁用、变淡并显示通用 Loading；外部资产库缩略图反推 loading/禁用曾尝试但已撤回，目前不显示。
+- 2026-05-28 最新补充：预览页缩略图来源已分流。资产库打开预览只显示当前资产库分类缩略图；对话流打开预览只显示当前对话流媒体。判断资产库预览只能按资产 `id`，不要用 URL。
+- 2026-05-28 最新补充：预览页缩略图已改为分页，不再自由滚动。滚轮只移动蓝框，越过当前页才整页切换；上下按钮也整页翻；第一张/最后一张不再循环。缩略图整列区域都接管滚轮，不会触发主图缩放。
+- 2026-05-28 最新补充：预览缩略图加分布式预加载。DOM 只渲染当前页；打开时预加载前两页，翻页后继续预加载后两页；已预加载 URL 不重复加载。
+- 2026-05-28 最新补充：预览主图尺寸问题已多轮修复。滚轮切图会重置预览状态；主图按 `id-url` 强制重新挂载；`onLoad` 校验当前图；缓存图片切换后主动读真实尺寸并重算适合比例。`适合尺寸` 按真实尺寸乘以 `previewFitScale` 渲染，支持小图放大到适合窗口。
+- 2026-05-28 最新补充：点击已选中的缩略图不再做任何事，避免第二次点击触发异常放大。`实际尺寸` / `适合尺寸` 按钮已加 tooltip。
+- 2026-05-28 本轮追加：资产库角色生成 `单人9:16` 已强化为纯白背景、单人站立正面全身角色设定图；资产库生成对 `Seedream 4.5` 增加专用规则，覆盖角色、场景和分镜，且只影响资产库生成，不影响对话流。
+- 2026-05-28 本轮追加：资产库生成命名固定为 `角色1 / 场景1 / 分镜1` 递增，不再从提示词提取名称；等待卡百分比改为 0-3 分钟分段，3 分钟后停在 `95%-99%`。
+- 2026-05-28 本轮追加：用户中心我的积分来源文案改为 `资产库_角色图片 / 资产库_场景图片 / 资产库_分镜图片`，三者图标统一资产库第一态；普通对话图标改为对话第一态。
+- 2026-05-28 本轮追加：后台用户管理每页 15 条并按最近活跃排序；展开区新增 `资产库生成图片`，弹窗可按 `角色 / 场景 / 分镜` 切换资产库生成图片。
+- 2026-05-28 本轮追加：后台 `禁用 / 启用` 已做实。禁用会删除用户 Session；禁用用户登录返回 `用户名错误！请联系管理员！`；工作台每 5 秒和窗口聚焦检查登录态，被禁用后退回首页。
+- 2026-05-28 本轮追加：后台积分管理改为按用户聚合，每页 15 条；调积分计算器已做实。后台调积分只影响赠送积分，正负都写 `direction: increase`，不计入消耗；前端模型扣费才计入消耗积分。
+- 2026-05-28 本轮追加：后台积分设置区去掉保存按钮和白底，四段竖线分隔。前三项开关控制输入框编辑/锁定并保存，三项扣费开关点击即保存，`选择积分消耗项` 带信息 tooltip。
+- 2026-05-28 本轮继续：后台积分管理设置区继续细调。`美元汇率 / 1人民币兑换积分 / 注册送积分` 的开关已移动到输入框同一行，输入框变窄，整条设置栏保持同一行；`选择积分消耗项` 下方三项改为 `对话/规划 / 图片 / 视频`，开关紧跟文字后面并与小标题左对齐。
+- 2026-05-28 本轮继续：后台积分设置新增有效值保护。`美元汇率` 只接受 `1.00-20.00`；`1人民币兑换积分` 只接受 `10 / 100 / 1000 / 10000`；`注册送积分` 按当前兑换比例折算价值不能超过 `200人民币`。三项只有点启用且输入有效才保存为新有效值；无效值点启用会恢复上一次启用过的有效值。后端 `updateCreditSettings()` 也做同样保护，绕过前端提交无效值不会写入数据库。
+- 2026-05-28 本轮继续：前台 tooltip 统一处理。新增/调整通用黑色悬停说明框，支持浏览器左右边缘检测；靠顶部时可向下弹。文档预览复制/下载、AI 反馈按钮、预览页 `实际尺寸 / 适合尺寸`、后台积分说明图标等使用黑框。已按用户要求去除模型按钮、参考图缩略图、输入框上传图缩略图、资产生成引用图缩略图上的悬停说明。
+- 2026-05-28 本轮继续：用户中心 `我的积分` 表改为同时显示增加和扣除。表头 `积分消耗来源` 改为 `积分来源`，`扣除` 改为 `积分变动`。注册送积分和后台加分会逐条显示，绿色 `+数字`，不合并；后台调积分前端显示为 `赠送积分`。后台减分会记录进数据库并计入上方 `已赠送积分` 的净值，但不在明细表显示。上方 `已赠送积分` 为净赠送积分：注册送分 + 后台加分 - 后台减分。
+- 2026-05-28 本轮继续：后台积分管理统计卡文案 `消耗积分` 已改为 `消耗积分总数`。本轮多次 `npm run lint` 通过，仅剩项目原有 warning；涉及积分表/tooltip 的中间版本跑过 `npm run build` 通过，最后小文案改动只跑了 lint。
+- 2026-05-29 最新补充：后台用户管理媒体弹窗已统一为参数在上、完整提示词在下；资产库上传图参数位置显示 `资产库上传`，反推提示词前有蓝色描边 `反推提示词` 标识。新增通用 `useBodyScrollLock`，弹窗打开时锁住页面滚动，避免滚轮穿透到底层页面。
+- 2026-05-29 最新补充：后台用户管理 `最后登录时间` 显示和排序已修正，取 `lastLoginAt / 最新 Session.lastSeenAt / workspace.updatedAt / createdAt` 中最新时间；用户管理和积分管理的展开三角统一移到列表最前面。
+- 2026-05-29 最新补充：后台积分管理展开区支持多项同时展开。展开区三列为当前/赠送积分、消耗积分分类、Token/美元/人民币；注册送积分和后台调整赠送积分已拆分显示，三类消耗来源也分别聚合显示。`最后活跃时间` 已改名为 `最后积分变动时间`，按最新 `CreditLedger` 流水计算。
+- 2026-05-29 最新补充：`对话流消耗积分详细` 已做实。弹窗复用历史对话弹窗尺寸和左侧结构，左侧按当前工作区历史会话标题/顺序显示有积分流水的会话；右侧第一条为对话积分、第二条为规划积分，下面列图片/视频积分。图片/视频项会尝试显示缩略图，部分失败图片会显示 `生成失败` 灰框且扣分为 `0`。旧历史或早期未接 `CreditLedger` 的对话不会显示，这是正常现象。
+- 2026-05-29 最新追加：工作台历史会话新增稳定编号 `conversationCode`，格式 `d1 / d2 / d3...`；旧会话按 `updatedAt` 从早到晚补编号，删除后不复用。对话流模型生成媒体系统名保存在 `mediaSystemNames`，图片为 `image_序号_d编号`，视频为 `video_序号_d编号`。重试生成时必须扫描当前对话已有系统名并跳过已占用编号，避免重名。
+- 2026-05-29 最新追加：资产新增 `systemName`。模型生成资产初始 `name = systemName`，用户改名只改 `name`；资产库生成继续用 `角色1 / 场景1 / 分镜1` 作为系统名。上传图不使用 `image_... / video_...` 编号，保留上传时名字。
+- 2026-05-29 最新追加：同一张图片/视频在对话流和资产库预览必须一致。名称优先读资产当前 `name`，没有资产时读消息 `mediaSystemNames`；提示词和参数统一通过 URL 回查对话流 assistant 消息。不要再让资产库预览优先读过期的资产 `sourcePrompt / previewMeta`。
+- 2026-05-29 最新追加：图片额外返回分页现在对 `Gemini 3.1 Flash Image Preview` 和 `Gemini 3 Pro Image Preview` 生效。用户选 4 张时第一页只显示用户请求数量内的前 4 张，模型额外多出的图片进入后续页；参数行分页和图片页必须对应，预览缩略图列表按 `imageResultSlots` 顺序构建。其它图片模型不保留额外返回图，每个单图子请求只取第一张。
+- 2026-05-29 最新追加：本轮临时修复了本地用户 `ID_779117` 的 d22 会话，把 `public/generated/images` 中同批最后 4 张图补回工作区和资产库，命名为 `image_1_d22` 到 `image_4_d22`。这是本机数据修复，不是通用脚本。
+- 2026-05-29 最新追加：生成扣费安全规则已确认并写入代码方向。重要信息和扣费必须在服务端处理，前端只负责展示。`/api/image` 恢复为服务端生成成功、拿到可交付媒体 URL 后再扣分，并在 `CreditLedger.metadata.mediaUrls` 里绑定媒体 URL、`requestedImageCount / returnedImageCount / billableImageCount / delivered`。`/api/video` 成功轮询到视频后也会把本地/远程视频 URL 写入扣费 metadata。后续所有生成能力都必须遵守：供应商返回 usage/cost 才扣积分；扣分流水必须和媒体结果绑定；后台明细优先读流水绑定媒体，不再只靠工作区反推。
+- 2026-05-29 最新追加：安全开发总规则已确认。凡是涉及数据库写入、积分/扣费、用户状态、权限、禁用、资产归属、生成记录、后台管理、供应商返回结果等重要信息，必须由服务端验证、计算和写入；前端不能作为可信来源，不能决定关键业务结果，只负责展示服务端返回和发起用户操作。后续新增功能必须优先设计服务端接口和服务端校验，不允许只在前端改 local state 后再同步关键数据。
+- 2026-05-29 本轮补充：修复 d22 失败重试残留等待卡。失败槽位里的 `retryingStartedAt` 以前可能在任务结束后残留，导致没有 pendingRequest 也一直显示等待卡；现在只有对应任务仍在运行时才显示重试等待卡，任务归档会清理 `retryingStartedAt`。本机已清理用户 `ID_779117` 的 d22 残留数据。
+- 2026-05-29 本轮补充：红字失败规则已统一。只要单张图片/单个视频失败，红字立刻出现，不再等整批结束；优先显示服务端返回的中文真实原因；无真实原因时显示 `图片生成失败，请稍后再试。` 或 `视频生成失败，请稍后再试。`；内部技术错误统一显示 `任务失败，请联系管理员！`。若一条消息里所有失败项都进入重新生成，红字隐藏；只重试部分失败项时旧红字保留；重试再次失败时红字更新为最新原因。资产库生成页和资产库失败任务卡也同步该规则。
+- 2026-05-29 本轮补充：新增错误编码规则。主生成接口失败会给红字增加 `（B_数字）` 前缀，后端日志使用同一个 `[B_数字]` 并脱敏 API Key。用户反馈编码即可定位后端日志。计数器在 `.runtime/error-code-counter.txt`，已加入 `.gitignore`；同进程内通过队列递增，避免并发撞码。
+- 2026-05-29 本轮补充：左侧运行中动画位置已改。对话生成中时，历史对话行右侧三点按钮临时隐藏，三点位置显示蓝色九宫格动画；任务结束后恢复三点。资产库生成中时，资产生成分类右侧数量临时隐藏并显示同款动画；切到其它一级面板导致二级列表不可见时，动画显示到一级菜单 `对话模式` 或 `资产库` 右侧。
+- 2026-05-29 本轮补充：用户中心我的积分和后台明细统计修正。普通对话的图片/视频数量优先按工作区真实成功媒体 URL 去重统计，不再直接累加 `CreditLedger.imageCount`，避免失败/重试/额外返回图导致数量偏高。资产库三类生成图片数量也优先按工作区资产库真实资产统计。
+- 2026-05-29 本轮补充：d23 排查结论。`Gemini 3.1 Flash` 那批用户选 4 张，实际只发 4 个子请求，数据库对应 4 条流水，但模型额外返回图片导致旧界面显示 7 张；额外 3 张没有单独扣费证据。d23 另有 3 笔 `GPT-5.4 Image 2` 孤儿扣费流水，`requestId` 前缀为 `7c8517bb...`，合计 54 分，数据库有 usage/usd/token，说明我们按供应商返回费用扣过分，但当前工作区没有对应媒体消息。后台明细已过滤没有媒体绑定且无法匹配工作区媒体的孤儿流水；全局消耗总数仍保留真实流水，不自动退款。
+- 2026-05-29 本轮补充：修复 data URL 保存栈溢出。`saveDataUrlAsset()` 和 `saveUploadedImageAsset()` 不再用正则匹配整段超长 base64，改为按逗号切分，避免 `Maximum call stack size exceeded`。这类内部错误用户端统一显示 `任务失败，请联系管理员！`，后端日志保留真实错误。
+- 2026-05-20 最新补充：已新增 `/admin` 独立后台第一版。根目录有 `start-admin.bat`，打开 `http://localhost:3000/admin`。后台浏览器标题为 `闪念后台 Management`，登录页为白底中间卡片，支持密码登录和验证码登录。
+- 2026-05-20 最新补充：后台使用 `ADMIN_EMAILS` 白名单和独立后台 Cookie `flashmuse-admin-session`，不再共用前台 `flashmuse-session`。后台登录/退出不影响前台工作台登录态；后台 Cookie 只作用 `/admin`，8 小时有效。
+- 2026-05-20 最新补充：新增后台专用接口 `/api/admin/send-code`、`/api/admin/verify-code`、`/api/admin/login-password`、`/api/admin/logout`，新增 `src/lib/admin.ts` 和 `src/lib/admin-auth.ts`。后台第一版可看真实用户数据，积分管理/生成记录/系统设置仍是占位。
+- 2026-05-20 最新补充：`User` 表新增 `credits` 和 `disabled` 字段，迁移为 `20260520120000_admin_credits_fields`。当前积分默认 `1500`，仅展示和后台雏形使用，尚未接扣费、流水或生成统计自动累计。
+- 2026-05-21 最新补充：后台左侧菜单已改为真正的分类页切换，`/admin` 默认只显示概览，`/admin?tab=users` 显示用户管理，`积分管理 / 生成记录 / 系统设置` 为同规格占位页。概览恢复为四个统计卡 + 三个占位卡。
+- 2026-05-21 最新补充：后台用户管理页已重做 UI。顶部是标题，右侧短搜索框和状态筛选；统计卡压缩高度；用户列表固定最小宽度 `1180px`，后台整体最小宽度 `1464px`，避免浏览器变窄时表格继续压缩；每页显示 `10` 条，底部分页无外层底框。
+- 2026-05-21 最新补充：用户列表主行现在依次显示用户 ID、用户头像/账号/昵称、积分 + 调积分按钮、最近登录 IP / 归属地占位、最近登录时间、状态 + 禁用/启用按钮、三角展开按钮。三角展开后显示账号信息、使用数据、登录和工作区详情；IP 和归属地目前仅占位 `待接入`。
+- 2026-05-21 最新补充：本地数据库已插入 `100` 个测试用户，邮箱为 `testuser001@flashmuse.test` 到 `testuser100@flashmuse.test`，用于后台分页、搜索、筛选测试；假用户无头像时后台统一显示 `?`。
+- 2026-05-21 最新补充：用户 ID 规则已改为 `ID_六位随机数字`，例如 `ID_178523`。`User.id` 已从 Prisma 默认 `cuid()` 改为创建用户时手动生成；注册/验证码创建用户都会调用 `generateUserId()`。当前已有 `102` 个本地用户已迁移为 `ID_` 格式，用户管理搜索支持按 ID 搜索。
+- 2026-05-21 最新补充：用户中心头像下方显示用户 ID，接口 `/api/auth/me` 和 `/api/user-profile` 会返回 `id`；昵称上限已统一为 `8` 个字，前端输入和后端保存都会截断。
+- 2026-05-21 注意：本轮运行 `npx prisma generate` 时再次遇到 Windows DLL 被 dev server 占用，已停止端口 `3000` 的 Node 进程后重新生成成功。因此当前 dev server 可能已被停掉，如需预览请重新启动。
+- 2026-05-21 最新补充：后台登录页已加管理员邮箱历史下拉，使用 `localStorage` key `flashmuse-admin-login-history-v1`，最多保存 `5` 个后台登录成功邮箱；点击后台邮箱输入框可选择历史账号，和前台登录历史相互独立。
+- 2026-05-21 最新补充：后台用户详情展开区已重做为四列灰底直角横条，无小标题、无白色圆角卡片；名称居左、值居右，列间距 `5px`。展开区包含登录帐号、昵称、手机号、密码、语言、注册/资料更新时间、最近登录 IP/归属地、Session 数、Session 活跃、提醒/自动入库/预览滚轮、历史对话、生成图片/视频、工作区保存、积分和消耗统计。
+- 2026-05-21 最新补充：后台假用户会显示模拟 `最近登录 IP / 归属地` 方便调列宽，真实用户仍显示 `待接入`；`最后登录` 表头改为 `最后登录时间`，`已禁用` 文案改为 `禁用`。
+- 2026-05-21 最新补充：后台 `历史对话` 可点击打开只读弹窗。弹窗左侧显示 `XXX历史对话` 和历史会话列表，右侧显示对话内容，没有输入框；AI 文案会渲染标题、加粗、分隔线、列表，不暴露 Markdown 符号；左侧未选中项不显示时间，选中项灰底 `#ececec`。
+- 2026-05-21 最新补充：后台 `生成图片 / 生成视频` 可点击打开媒体预览弹窗。弹窗左侧大图/视频，右侧缩略图列表，底部参数按工作台格式显示：提示词 + `模型 | 比例 | 尺寸 + 分辨率图标 | 时长`。媒体、历史对话、Token 和金额统计均从 `UserWorkspaceState.state` 读取，没有新增数据库表。
+- 2026-05-22 最新补充：积分系统第一版已做实。新增 `CreditSetting` 和 `CreditLedger` 表，迁移为 `20260522120000_credit_system`。后台积分管理可改美元汇率、`1人民币=多少积分`、注册送积分和文本/图片/视频扣分开关；前台成功调用模型后按返回美元费用换算人民币再换算积分扣除，积分四舍五入取整数，不允许负分。
+- 2026-05-22 最新补充：扣分节点为 `/api/agent-plan`、`/api/chat`、`/api/image`、`/api/video` 成功后。失败不扣；积分为 `0` 禁止继续调用模型；积分大于 `0` 可做最后一次任务，余额扣到 `0`。游客模式当前没有登录用户，不扣数据库积分。
+- 2026-05-22 最新补充：前台左下角积分余额会实时刷新；右上角会话用量浮窗增加积分图标和扣除数；用户菜单新增 `我的积分`，按历史对话聚合显示扣分、图片数、视频数和最后活跃时间。
+- 2026-05-22 最新补充：后台 `积分管理` 页面已从占位变成可用页面，新增 `src/app/admin/admin-credits-panel.tsx`。列表按对话流聚合，默认不展开，末尾三角和整行都可展开，明细里文本规划/回复、图片批次、视频任务分开显示。
+- 2026-05-22 最新补充：后台积分设置保存接口因后台 Cookie 只作用 `/admin`，已新增 `/admin/api/credits`；不要再只依赖 `/api/admin/credits` 做浏览器后台保存。美元汇率输入支持小数点后两位，失焦后显示如 `7.00`。
+- 2026-05-22 最新补充：Agent 结构化 JSON 回复已清洗字面量 `\n / \t / \"` 和 JSON 代码块残留；短开场句会合并成一段，避免“在，我在。”后无意义换行。前台和后台历史显示层也加了旧消息兜底。
+- 2026-05-22 最新补充：后台 UI 细节更新。用户管理和积分管理搜索框图标统一放右侧；后台左侧管理员块固定在浏览器底部；用户管理整行可展开；历史对话/媒体弹窗标题栏跨整个弹窗宽度；用户详情中可点击字段名用下划线标识。
+- 2026-05-22 上线前提醒：后台登录 Cookie 当前 `flashmuse-admin-session` 有效期为 `8` 小时，浏览器关闭后可能仍保持后台登录。上线前必须提醒用户确认是否改成“关闭浏览器即失效”的会话 Cookie。
+- 2026-05-25 最新补充：后台左侧五个菜单已加 Remix 图标；`积分管理` 图标已和前台统一为 `RiVipDiamondLine`。后台积分管理统计卡已改为六个：总积分、增加积分总数、消耗积分、消耗 Token、消耗美元、消耗人民币；消耗类数值红色，不显示负号；增加积分绿色。
+- 2026-05-25 最新补充：`CreditLedger` 新增 `direction` 字段，迁移为 `20260522143000_credit_ledger_direction`。现有用户已回填 `signup + increase` 增加流水，注册赠送积分现在会写 `direction: increase` 流水；模型扣费继续写 `direction: consume`。后台统计和用户详情消耗数据已改为按真实流水统计。
+- 2026-05-25 最新补充：首页已读取前台登录态。已登录时右上角显示头像，头像菜单包含用户信息、我的积分、帐号安全、设置、退出登录；点前四项会跳到 `/workspace` 并打开对应用户中心页。首页输入框空内容发送：已登录直接进工作台，未登录弹登录框；有内容且已登录会传入工作台新对话并进入 Agent 思考。
+- 2026-05-25 最新补充：工作台已支持拖拽上传。拖拽文件到右侧对话流时显示白色半透明遮罩、底层模糊、虚线边框、中间“在此处拖放文件”和绿色圆形 `arrow-down-fill` 图标。支持图片和 `pdf, txt, csv, docx, doc, xlsx, xls, pptx, ppt, md`；图片上限 `10`，文件上限 `8`。
+- 2026-05-25 最新补充：输入框附件显示已重做。文档单独一行在上，图片单独一行在下；二者可同时存在。输入框内文档/图片行超出时显示左右按钮，滚动条隐藏，左右边缘有渐隐。文档卡片右上角可删除，类型小图标为淡色底、2px 描边、3px 圆角的字母卡。输入框图片缩略图统一 `80x80px`。
+- 2026-05-25 最新补充：发送后的用户消息附件显示已调整。用户没输入文字只传附件时，不再显示内部默认句子“请分析这张图片，并告诉我可以怎么继续创作。”；该句只作为内部 Agent 输入。发送后文档显示在文字下方、图片显示在文档下方，图片为 `80x80px`，附件区域右对齐。
+- 2026-05-25 `@` 引用排查：本轮确认 `@` 没有失效。`/api/image` 日志显示 `reference_count` 正常，`/generated/...` 本地参考图文件存在。跑偏主要是 Seedream 4.5 对多参考图、人物四视图拼图 + 场景图组合理解不稳。`src/lib/openrouter.ts` 已加非敏感调试日志，只打印参考图数量、类型和本地文件是否存在，不打印 base64。
+- 2026-05-25 最新补充：文档读取解析 + Agent 激活第一版已完成。`.md / .txt / .csv` 上传后前端读取文本，读取中有底部细进度条；发送时把已读取文本带给 `/api/agent-plan` 和 `/api/chat`。如果 `.md/.txt/.csv` 像智能体规则或工作流说明，用户说“激活这个智能体”时，Agent 会回复类似“XXX已激活”并按文档规则继续对话。`pdf/docx/xlsx/pptx` 暂不解析，只展示附件，后续接服务端解析。
+- 2026-05-25 最新补充：文档卡片和文档预览已做实。输入框文档卡片、发送后用户消息里的文档卡片均可点击预览；右侧文档预览与对话流并列显示，默认对话流 : 文档预览为 `5:4`，中间分隔线可拖动。`.md` 用轻量 Markdown 渲染，`.txt/.csv` 保留换行；未解析格式显示暂不支持预览。预览标题栏有复制全文、下载文档、关闭图标，复制成功显示对勾。
+- 2026-05-25 最新补充：全局滚动条改为默认透明隐藏，滚动时显示原灰色滚动条，停止 `2秒` 后隐藏；原本隐藏滚动条的横向附件条、缩略图区仍永不显示。左侧历史/工作流列表鼠标移入时也会显示滚动条。
+- 2026-05-25 最新补充：用户中心 UI 继续细调。右侧标题和关闭按钮同一行，关闭按钮为圆角矩形底；左下角 `个人免费版` 可打开 `我的积分`。我的积分页新增免费套餐概览卡，显示真实总积分和 `已赠送积分`；表格圆角 `5px`，分页按钮无边框、带左右箭头。
+- 2026-05-25 最新补充：`/api/credits/me` 新增 `giftedCredits`，统计 `CreditLedger.direction = "increase"`；新增 `/api/credits/conversation-title`，对话重命名时同步更新当前用户积分流水里的 `conversationTitle`。删除对话不删除积分流水。
+- 2026-05-25 部署提醒：文档原件以后也要走对象存储 + CDN，但 Agent 不应每次直接读 CDN 原件。正确链路是原文件进对象存储，服务端解析文本，文本/分块内容入库，Agent 读取解析后的文本片段。
+- 2026-05-22 注意：本轮 `npx prisma generate` 仍遇到 Windows DLL 被 dev server 占用，已停止端口 `3000` 的 Node 进程后成功。因此当前 dev server 可能已停止，需要预览时重新启动。
+- Seedance 独立聚合接口因白名单 / 部署问题先暂停，后续部署服务器时再接
+- 当前视频生成已切到 OpenRouter 视频接口 `/api/v1/videos`
+- 当前默认图片模型为 `bytedance-seed/seedream-4.5`，当前本机实测只有该图片模型可用；Google / GPT 图片模型会返回地区不可用 `403`
+- 当前默认视频模型为 `bytedance/seedance-2.0-fast`，视频模型选择保留 Seedance、Kling、Veo；`Sora 2 Pro` 已因尺寸 / 比例支持不符合当前需求从项目移除
+- OpenRouter 视频查询在 Node `fetch` 下会偶发假 404，已在 `src/lib/openrouter-video.ts` 加 `curl` 兜底；视频下载保存也已加 `curl` 兜底
+- 图片生成已修复：`bytedance-seed/seedream-4.5` 只请求 `modalities: ["image"]`，不要请求 `image + text`
+- 图片生成再次修复：OpenRouter 图片接口直连正常，但 Node `fetch` 偶发假 `500 Internal Server Error`；当前 `src/lib/openrouter.ts` 已加图片生成 `curlPostJson` 兜底，同请求体用 `curl` 重试后可成功
+- OpenRouter 图片返回可能是 `data:image/jpeg;base64,...`，当前已兼容多种图片字段结构，并在 `src/lib/local-assets.ts` 中补了 data URL MIME 扩展名识别
+- 图片 / 视频生成中都会立即显示动画状态卡，不再额外显示“正在认真思考”；图片等待卡现在为 `250x250`，四张并排显示
+- 视频生成完成后会直接以内嵌视频卡片显示在对话流中，按比例缩小，鼠标悬停自动播放，移开暂停
+- 当前会话 ID 会保存到 `yinzao-active-session-v1`，刷新浏览器后保持在原历史对话，不再跳到第一条
+- Agent 模式意图识别期间会立即显示“正在认真思考”，避免用户发送后长时间无反馈
+- Agent 文本回复现已改为结构化 JSON：`content + suggestions`；`suggestions` 已升级为对象 `{ label, action, assetTargetType }`，生成类按钮会携带目标资产类型
+- 引导系统目标是把问答逐步引导到影片 / 短剧创作：问答阶段给 2-3 个延展问题 + 1-2 个转创作按钮；创作阶段给 2-3 个当前内容修改 + 1-2 个下一步创作按钮
+- 引导系统只显示在最后一条 AI 回复下方；用户点击引导按钮或自己发送新消息后，旧引导会消失；用户只是在输入框打字时不消失
+- 资产管理已开放，资产保存在本地 `localStorage` 的 `yinzao-assets-v1`，会扫描旧历史对话图片 / 视频并自动入库
+- 资产分类当前为：全部资产、角色图片、场景图片、分镜图片、分镜视频、其它；无法明确分类的一律进入“其它”
+- 资产卡片为正方形直角小图，底部渐变条显示名称；右上文件夹图标改分类；右下三点菜单有重命名、删除；图片资产左下显示 `@资产名` 并可引用，视频资产不显示 `@` 也不能引用
+- 资产入库命名规则已更新：角色 / 场景优先取剧本或提示词中的名字，否则 `角色1`、`场景1`；分镜用 `剧名_分镜01_1`，无剧名用 `无名剧01_分镜01_1`；普通图片用 `image01`，普通视频用 `video01`；多版本追加 `_2`、`_3`
+- 输入框支持上传图和 `@` 资产统一作为参考图：输入或点击 `@` 弹出资产选择，只展示角色图片、场景图片、分镜图片；`@` 按钮在 Agent / 图片 / 视频三种模式都显示
+- 输入框上方参考图缩略图统一为 `100x100` 圆角灰边框，底部黑色渐变内显示 `@名称`；普通上传图不会自动插入 `@文件名`，`@资产` 会同时插入文字 `@资产名` 并显示缩略图
+- 输入框内只有真实有效的 `@名称` 才显示蓝色；无效 `@xxx` 不高亮；`@` 资产弹窗支持点击空白区域关闭
+- 发送后的用户消息会在文字下方横排显示本次参考图缩略图，点击可继续引用；文字里的有效 `@名称` 后会显示一个小图标确认引用对象
+- 输入框最多 5 张参考图，上传或继续 `@资产` 超过 5 张时统一提示“最多上传五张图片”
+- “正在认真思考”和左侧历史对话运行中使用同一个 3x3 点阵动画：淡蓝底常驻，深蓝层随机闪烁，周期 `3.14s`
+- AI 正文排版已增强：`- 标题：内容` 和 `1. 标题：内容` 这类小段标题会改成圆点列表，并把冒号前文字加粗
+- 上传图片原图保存到 `public/generated/upload_image`，用内容 hash 去重；上传图会自动入资产库，重名按文件名版本化，分类根据文件名 + 本次文本判断
+- 参考图生成请求按用户 `@` 顺序传图，明确 `@` 时只传被 `@` 的图；提示词优化阶段会带 `512px / 0.72` 低清预览图理解人物 / 场景，最终生图先传原图，只有 OpenRouter 返回 413 时才用压缩副本重试
+- 后续公网部署后应改为传 HTTPS 图片 URL 给 OpenRouter，避免本地图片转 base64 导致请求体过大，并保留原图质量
+- 图片 / 视频专业模式已做实：不再优化提示词，不再以右侧用户气泡显示输入，而是把用户输入作为左侧生成结果上方的提示词；上传图和 `@资产` 原样传给模型
+- 图片 / 视频专业模式最新原则：除 `Agent 模式` 外，用户手动选择的模式最高优先级；`图片生成` 一定出图片，`视频生成` 一定出视频，提示词内容只能按当前模式解释，不能反向切模式
+- 图片 / 视频结果的“重新生成”必须只重跑当前这一批结果自己的提示词和参数，优先用该 assistant 消息的 `generationMeta.originalPrompt`，没有再用 `message.content`；不能依赖上一条用户消息、不能插入用户气泡、不能串 Agent
+- 图片 / 视频结果不显示引导按钮；引导系统只属于 `Agent 模式` 的最后一条 AI 回复
+- 视频参考图不再默认首帧 / 尾帧，不传 `frame_images`；默认按普通参考图处理。2026-06-19 最终规则：明确首帧传 `first_frame`，明确首尾帧传 `first_frame + last_frame`，单独尾帧不传 `last_frame`、按普通 `reference_image`。
+- 视频默认尝试有声音，音频参数失败才自动退回无声音；当前所有保留视频模型都会先传 `generate_audio: true`
+- 视频时长按模型动态显示并传参：Seedance / Kling Standard / Kling Pro 为 `5/10/15秒`，Kling Video O1 为 `5/10秒`，Veo 为 `4/6/8秒`
+- 输入框模式、模型、比例、分辨率、时长和图片数量会保存到 `localStorage` 的 `yinzao-input-settings-v1`，刷新后保持用户当前选择
+- 媒体结果区最大宽度为 `1006px`；图片缩略图和图片等待卡为 `250x250px`，四张横排间隔 `2px`，图片完整显示不裁切
+- 图片 / 视频结果上方提示词区已继续细调：默认最多显示 `2` 行，右侧渐隐；悬停后会显示白色毛玻璃浮层查看完整提示词；浮层里的“复制提示词”按钮为黑色毛玻璃，普通状态下为灰色按钮
+- 提示词区按钮已改为“使用提示词”：图标 `t-box-line`，点击后把该提示词填入输入框并聚焦；完整提示词浮层里的按钮单独成行右对齐。提示词区只在真实 DOM 超过两行时才渐隐和 hover 展开
+- 提示词下方会显示本次生成参数：模型、比例、尺寸，图片分辨率图标显示在尺寸后，视频 `HD / FHD` 图标也跟随放在尺寸后且颜色改为和参数文字一致的灰色
+- 反馈区最左侧“复制”按钮只保留给 `Agent 模式` 的纯文字回复；只要该条消息带图片或视频结果，就不再显示这个复制按钮
+- 当前输入框与对话内容已拆成两层：聊天内容是滚动层，输入框是真正悬浮在底部上方的独立层；输入框本体保留原有圆角、边框和阴影，外层承托白底已去掉
+- 输入框本体当前已改为白色毛玻璃效果；右侧页面底色仍保持白色，不再显示“AI 可能会出错”与当前对话 / 图片 / 视频模型测试字样
+- 聊天区底部安全区已继续增大到约 `360px`，滚到底时最后一条内容会停在输入框上方；“回到底端”按钮层级已提到媒体结果上层，重叠时优先可点击
+- 输入框内 `@资产名` 蓝色当前仍是 `textarea + DraftInputOverlay` 双层模拟；原生 textarea 不能局部上色或加胶囊底，选中长文本时容易出现双层字问题。用户已看过即梦截图，下一任 AI 接手时必须优先把“即梦疑似 Slate/contenteditable 富文本 mention 方案”重新给用户确认
+- 即梦参考：`https://jimeng.jianying.com/ai-tool/home`；抓取资源有 `slate` 迹象。建议方案是把输入框重构为 `Slate.js / contenteditable`，普通文本为 text node，`@资产名` 为 inline mention node，可真正一层显示蓝色 / 图标 / 胶囊；但工程量较大，需重做输入法、Enter、粘贴、撤销、光标、草稿和发送解析
+- 最新更新：输入框已先从 `textarea + overlay` 重构为单层 `contenteditable`，有效 `@资产名` 在同一层文字中变蓝；已保留输入 `@`、底部 `@` 按钮、资产选择、粘贴图片、Enter / Shift+Enter、发送解析等核心交互
+- `@` 插入逻辑已修复为按当前光标位置生效：无论文本前后是否已有文字，输入 `@`、点击底部 `@`、点击缩略图或选择资产都会插入到光标处；选择资产会替换光标前正在输入的 `@xxx`
+- 输入框文字上限当前为 `2000字`，超过后用黑色自动消失提示显示“最多输入2000字”；复制 / 粘贴大段文字后输入框内部滚动条会自动跟到最后一行
+- 输入框宽度策略：默认优先 `800px`，如果底部按钮组合、模型名或长文本需要更多空间才加宽，最高约 `1006px`；底部按钮必须保持一排、文字一排，不允许重叠。不要给工具栏外层加会裁剪上弹菜单的 `overflow-x-auto`
+- 新对话默认第一句已删除；切换模式会在对话流里插入 `role: "system"` 的灰色系统提示消息，使用对应模式图标。只有系统提示、没有用户输入的会话仍算空会话，不应在历史里产生多个“新对话”
+- 图片失败卡：灰底、`250x250`、按选择数量显示多张，左上 `emotion-sad-line + 图片生成失败`，红色真实错误文案显示在卡片下方
+- 视频等待 / 成功 / 失败显示已对齐图片结果样式：单个 `640x360` 灰底区域；等待卡只显示进度和已等待时间；失败卡左上 `emotion-sad-line + 视频生成失败`，红色真实错误文案显示在下方
+- 最近一次视频失败真实原因不是参数组合，而是 OpenRouter 返回 `InputImageSensitiveContentDetected.PrivacyInformation`：参考图可能包含真人隐私信息，平台拒绝创建视频任务
+- 本轮修正：此前文档写“约 5 分钟停止自动等待”不准确，代码实际普通视频模型约 2 分钟就停；现已移除自动停止上限，只要 OpenRouter / 模型没有返回 `failed / error / expired`，前端会一直轮询等待。前 2 分钟每 10 秒查一次，之后每 30 秒查一次
+- 本轮修正：同一会话不再只能挂一个任务；现在同一会话允许上一条图片 / 视频 / Agent 任务未完成时继续发送新任务，每个会话最多同时挂起 `10` 个任务，达到上限后发送按钮显示“任务已满”，任一任务完成 / 失败后恢复
+- 本轮实现细节：`src/components/chat-workbench.tsx` 已从单个 `pendingRequest` 扩展为 `pendingRequests` 队列，并兼容旧的 `pendingRequest` 历史数据；媒体等待卡按各自 `requestId` 更新，不再只认最后一个任务
+- 最新预览页：点击生成图片或视频会打开全屏预览页，顶部留空，左侧是毛玻璃底媒体预览区，右侧是固定提示词区；图片默认适合尺寸，可切实际尺寸、滚轮缩放 `10% - 250%`、拖拽平移；视频按适合尺寸显示，缩放按钮透明禁用
+- 预览页右侧文件名下显示媒体参数；提示词标题为“图片提示词”，同一行右侧黑色小按钮“使用提示词”会把提示词填入输入框并关闭预览页
+- 当前对话内媒体超过 `2` 个时，预览页左侧右边显示浮层缩略图列表：`50x50`、`5px` 圆角、`2px` 描边、选中蓝色 `#367cee`；视频缩略图左上显示视频图标，图片不显示图标；列表会自动定位到当前缩略图，需要滚动时才显示上下按钮
+- 最新协作规则：以后凡是涉及功能逻辑、接口参数、UI 显示、模型参数、错误提示、交互规则的改动，AI 必须先把要改什么说清楚并等用户确认，不能先自行修改；包括看起来很小的 UI 文案 / 参数显示 / 接口参数调整也一样。用户明确要求“先问我”。
+- 2026-05-11 最新接手重点：本地 `.env.local` 的 OpenRouter key 已从个人 key 切到 `E:\project\【1】Api\api key.txt` 里的公用 key；不要再把个人 key 接回项目。
+- 2026-05-11 最新接手重点：图片 / 视频并发规则已改为多批任务并发、单批多图也并发；同一会话最多 `10` 批任务；图片哪张先完成哪张先显示，单张失败只显示该位置失败卡，不拖累整批。
+- 2026-05-11 最新接手重点：专业模式“重新生成”已修复 `@资产` 引用丢失问题；assistant 媒体结果会保存 `imageReferences`，重生成优先用当前结果自己的引用，旧消息会从提示词 `@名称` 反查资产 / 对话引用。
+- 2026-05-11 最新接手重点：用户消息和图片 / 视频专业模式提示词中的有效 `@资产名` 前会显示文字大小的小缩略图；这一显示规则应在所有相关位置保持统一。
+- 2026-05-11 最新接手重点：当前模式再次点击不再插入重复系统提示；只有真正切换到其它模式才插入 `role: "system"` 的“当前已切换到...”消息。
+- 2026-05-11 最新接手重点：用户要求把项目规则整理到 `AI-Video-Assistant_Project Planning`；已新增 `00-rules-index.md` 到 `12-ui-style-rules.md`，并生成同名 `.docx` 方便用户用红字改规则。注意该文件夹 README 规定内容不准删，上传 GitHub 前必须整体加密压缩。
+- 2026-05-11 最新接手重点：图片 / 视频结果参数显示已改为“真实媒体参数优先”。图片生成完成后读取真实像素；图片 / 视频在对话流和预览页会按真实宽高显示比例、尺寸和 `1K / 2K / 4K` 或 `HD / FHD` 图标，不能再只显示按钮选择值。
+- 2026-05-11 最新接手重点：图片模型尺寸规则已按模型拆开。`Seedream 4.5` UI 只显示 `2K / 4K`；`GPT-5.4 Image 2` UI 只显示 `1K / 2K`；Gemini / GPT-5 Image 显示 `1K / 2K / 4K`。切换模型后不支持的分辨率会自动回落到该模型默认档位。
+- 2026-05-11 最新接手重点：图片请求参数已按模型分开。Seedream 继续 `modalities: ["image"]` 并传像素尺寸；Gemini / GPT 系列改为 `modalities: ["image", "text"]` 并传 `size: "1K" / "2K" / "4K"` + `aspect_ratio`。服务端会打印 `[image-generation] OpenRouter request params` 方便排查真实请求参数。
+- 2026-05-11 最新接手重点：“智能比例”规则已临时定义为当前模型最小可用分辨率的 `16:9`。选择智能比例时，分辨率按钮和尺寸区域会淡化且分辨率不可点；底部按钮显示也同步为该模型智能规则下的档位，如 Seedream 为 `智能比例 / 2K`，GPT-5.4 Image 2 为 `智能比例 / 1K`。
+- 2026-05-11 最新测试结论：已新增 `scripts/test-image-size-matrix.mjs` 并生成 `image-size-test-results.md`，实测 70 组图片模型 / 档位 / 比例。Seedream 4.5 的 `2K` 五个比例全部严格一致；Seedream 4.5 的 `4K` 全部退回 2K；Gemini 3.1 Flash 和 Gemini 3 Pro 比例基本生效但尺寸固定在偏大的 1K 档；GPT-5 Image 基本固定输出 `1024x1024`；GPT-5.4 Image 2 比例生效但 `1K / 2K` 档位都输出同一组约 1K 尺寸。
+- 2026-05-11 最新测试结论：首次矩阵测试大量 Node `fetch` 假 `500 Internal Server Error`，脚本加 `curl` 兜底后二次测试成功得到完整尺寸表。后续判断尺寸问题时必须先看 `image-size-test-results.md` 和服务端请求日志，不要再简单归因。
+- 2026-05-12 最新接手重点：用户要求把“只传比例、不传尺寸 / 几K”的 5 个图片模型实测结果认定为原生尺寸基准。最新原生表：Seedream 4.5 为 `1:1 2048x2048`、`16:9 2560x1440`、`9:16 1440x2560`、`21:9 3024x1296`、`4:3 2304x1728`；Gemini 3.1 Flash / Gemini 3 Pro 为 `1024x1024`、`1376x768`、`768x1376`、`1584x672`、`1200x896`；GPT-5.4 Image 2 为 `1024x1024`、`1280x720`、`720x1280`、`1568x672`、`1152x864`。`GPT-5 Image` 因比例不生效已从图片模型列表移除。
+- 2026-05-12 最新接手重点：图片模式分辨率规则已重做。Seedream 4.5 只显示 `高清2K / 增强4K`；Gemini 3.1 Flash、Gemini 3 Pro、GPT-5.4 Image 2 只显示 `高清1K / 增强2K`；`21:9` 不做超分，只显示原生档位，Seedream 显示 `高清2K`，其它模型显示 `高清1K`。
+- 2026-05-12 最新接手重点：图片比例新增 `21:9`，并放在 `智能比例` 后面；当分辨率区只有一个按钮时，该按钮横向占满整行。
+- 2026-05-12 最新接手重点：图片请求现在只把 `image_config.aspect_ratio` 传给 OpenRouter，不再传 `size / 1K / 2K / 4K`；前台按钮所见尺寸、后端最终处理和返回真实尺寸要保持一致。此规则只作用于图片生成，不同步到视频生成。
+- 2026-05-12 最新接手重点：已接入 `sharp` 做本地 2 倍超分。用户选择增强档位时，先按原生比例生成，再用 `sharp` 放大到原生尺寸 `x2`；前端只保留和展示增强后的图片，原生临时图会在超分后删除。
+- 2026-05-12 最新接手重点：增强档位显示规则：按钮上的 `增强2K / 增强4K` 用金色；对话流和预览页参数行中，尺寸后先显示普通 `1K / 2K / 4K` 图标，再在图标后显示金色 `增强2K / 增强4K`。原生档位不打增强标签。
+- 2026-05-12 服务器部署提醒：本地第一次 `npm run dev` 启动慢主要是开发模式冷启动、即时编译、`.next/dev` 缓存、Windows 文件扫描和当前 `chat-workbench.tsx` 体积较大导致；这不代表正式部署后网页也会这么慢。
+- 2026-05-12 服务器部署提醒：线上必须使用生产构建流程 `npm run build` + `npm run start` 或等价预构建部署，不要用 `npm run dev` 跑线上。生产模式会提前编译页面和路由，首屏通常明显快于本地开发模式。
+- 2026-05-12 后续部署优化待办：上线前应拆分过大的 `src/components/chat-workbench.tsx`，减少首页首包和开发编译压力；把图片 / 视频 / 资产 / 预览 / 输入框等重逻辑拆成独立组件或动态加载；服务器建议使用常驻 Node 进程或带预构建的平台，避免每次访问都冷启动。
+- 2026-05-12 后续部署优化待办：模型生成慢属于 OpenRouter / 模型排队，不是网页加载慢；正式部署时还应重点优化 API 冷启动、生成任务队列、超时 / 重试、静态资源缓存、`public/generated` 文件持久化和 CDN / 对象存储方案。
+- 2026-05-12 最新接手重点：此前关于图片模型“不能原生 2K / 4K”的结论已被推翻，原因是旧测试参数字段不对。当前实测生效字段是 `image_config.image_size`，不是旧的 `size`。图片生成现在传 `image_config: { aspect_ratio, image_size }`。
+- 2026-05-12 最新接手重点：本地 `sharp` 超分增强已全部移除，项目不再做任何本地超分 / resize 放大。`package.json` 已移除 `sharp`，`src/lib/local-assets.ts` 已删除 `upscaleGeneratedImageAsset`。
+- 2026-05-12 最新接手重点：最新图片档位按实测开放：`Seedream 4.5` 开放 `2K / 4K`；`Gemini 3.1 Flash` 开放 `1K / 2K / 4K`；`Gemini 3 Pro` 按用户要求也开放 `1K / 2K / 4K`，但模型端同参数可能返回不同尺寸；`GPT-5.4 Image 2` 只开放 `1K / 2K`，`4K` 会报不支持。
+- 2026-05-12 最新接手重点：按钮和菜单里 `4K` 显示为金色 `超清4K`；对话流和预览页参数行中，只有当前显示尺寸属于 `4K` 时，在普通 `4K` 图标后额外显示金色 `超清4K`，`1K / 2K` 不显示额外标签。
+- 2026-05-12 最新接手重点：OpenRouter / Gemini 3 Pro 可能一次返回多张候选图，甚至同一请求同时返回 `1K` 和 `2K`。项目现在会全部保存、全部入资产库，并在同一批结果里按尺寸分组显示，参数行用 `< 1/2 >` 形式切换尺寸组，默认第一页是最接近目标尺寸的组。
+- 2026-05-12 最新接手重点：同一尺寸组内图片永远最多显示 `4` 张；如果同组超过 `4` 张，用图片区域右下角的 `< 1/2 >` 分页切换，不再出现横向滚动条。
+- 2026-05-12 最新接手重点：长提示词的完整浮层触发区域已限制在提示词正文上，不再覆盖参数行；参数行里的尺寸组切换按钮可以正常点击。
+- 2026-05-12 最新接手重点：根目录启动脚本已修复。`scripts/start-project.ps1` 现在用 mutex 防重复 worker，健康检查改为 `127.0.0.1:3000`，打开网页用 `explorer.exe http://localhost:3000`，等待时间加到 5 分钟。遇到 `.next/dev` 缓存损坏时，先停旧进程并清 `.next` 再重启。
+- 2026-05-12 最新接手重点：已在桌面生成图片模型尺寸测试表：`C:\Users\ASUS\Desktop\图片模型尺寸测试表.docx`。项目规划文件夹内也有 `AI-Video-Assistant_Project Planning\图片模型尺寸测试表.md`。
+- 2026-05-13 最新接手重点：视频生成最终改为不传 `size`。当前 `src/lib/openrouter-video.ts` 创建任务只传 `resolution + aspect_ratio + duration + generate_audio` 和可选 `input_references`。不要再把实测输出尺寸作为请求 `size` 传给 OpenRouter，否则 `992x432 / 960x960` 这类非标尺寸会报 `Unsupported size`。
+- 2026-05-13 最新接手重点：已新增 `scripts/test-video-models-no-size.mjs`，验证其它 5 个视频模型所有当前 UI 支持组合在不传 `size` 时共 `33/33` 成功，输出尺寸全部与上一轮实测一致。结果在 `AI-Video-Assistant_Project Planning\test\video-model-no-size-test-results.md` 和 `video-model-no-size-test-raw.json`。
+- 2026-05-13 最新接手重点：视频模型 UI 现在按“用户最终看到的实际输出尺寸”显示，而不是官方请求尺寸。`src/lib/models.ts` 的 `videoModelRules.sizes` 保存实测输出尺寸；`nonStandardSizes` 标记非标准尺寸，用于在设置弹窗、结果流和预览页显示 `（非标）`。
+- 2026-05-13 最新接手重点：已从视频 UI 和类型配置中移除所有 `9:21`。Seedance 系列虽然 OpenRouter 元数据仍列出 `9:21`，但实测当前上游创建任务会报 `the parameter ratio specified in the request is not valid`，所以项目不开放。
+- 2026-05-13 最新接手重点：当前视频支持项按 UI 显示为：Seedance 2.0 Fast `480p / 720p` + `21:9 / 16:9 / 4:3 / 1:1 / 3:4 / 9:16`；Seedance 2.0 额外支持 `1080p`；Kling Standard / Pro 为 `720p` + `16:9 / 1:1 / 9:16`；Kling Video O1 UI 显示为 `1080p` + `16:9 / 1:1 / 9:16`；Veo 3.1 为 `720p / 1080p / 4K` + `16:9 / 9:16`。
+- 2026-05-13 最新接手重点：视频“智能比例”保留，规则固定为所有当前保留模型都支持的 `16:9 / 1280x720`；但请求也不传 `size`，只传 `resolution: "720p"` 和 `aspect_ratio: "16:9"`。选择智能比例时分辨率区淡化并禁用。
+- 2026-05-13 最新接手重点：视频画面设置弹窗比例区必须始终单行显示，使用 `grid-flow-col + auto-cols-fr`；比例顺序为 `智能比例 -> 21:9 -> 16:9 -> 4:3 -> 1:1 -> 3:4 -> 9:16`，实际只显示当前模型支持项。
+- 2026-05-12 最新接手重点：视频分辨率显示文案和图标已统一：`标清480p / 高清720p / 全高清1080p / 4K`；前置图标统一黑底白字 `SD / HD / FHD / 4K`，对话流和预览页视频参数图标也使用同规格黑底白字。
+- 2026-05-13 最新接手重点：视频对话流参数显示为“用户看到什么，尽量和最终输出一致”。读到 video metadata 后显示真实比例、真实尺寸和对应 `SD / HD / FHD / 4K`；未读到 metadata 时先显示 `models.ts` 中的实测输出尺寸。非标尺寸显示 `（非标）`。智能比例不再显示“智能比例”，而显示实际执行的 `16:9 / 1280 x 720 / HD`。
+- 2026-05-13 最新接手重点：图片和视频参数弹窗宽度已统一为 `420px`。图片模型菜单 `GPT-5.4 Image 2`、视频模型菜单 `Seedance 2.0` 为金色文字，选中后工具栏按钮模型名也同步金色。
+- 2026-05-13 最新接手重点：提示词区域 `使用提示词` 按钮逻辑已修复：按钮如果已经跟在正文后可见，就不再触发 hover 完整浮层；只有正文和按钮确实超过两行且按钮被截掉时才显示完整浮层。
+- 2026-05-13 最新接手重点：规划文件夹内已生成/更新三个 Word 文档：`视频模型测试结果表.docx`、`图片模型尺寸测试表.docx`、`openrouter 视频模型支持比例和分辨率.docx`。表格统一为只有横线分隔，参数文字用青绿色；视频测试结果表中失败/不一致项为红字。
+- 2026-05-13 最新接手重点：Agent `/api/chat` 和 `/api/intent` 已加 `curl` 兜底。OpenRouter `fetch` 偶发 `500 Internal Server Error` 时，会用同请求体调用 `curl.exe` 重试；这不是绕过地区限制，只是减少 Node `fetch` 偶发失败。
+- 2026-05-13 最新接手重点：Agent 请求失败现在显示为红色系统消息，不再作为 assistant 回复，不显示反馈按钮。错误图标使用 `error-warning-line`。
+- 2026-05-13 最新接手重点：Agent 模式 `@` 按钮后有 `普通 / 高级` 滑块。普通走 `bytedance-seed/seed-2.0-lite`，高级走 `openai/gpt-5.4`；切换时插入灰色系统消息 `当前已切换至普通/高级模式`，选择保存到 `yinzao-input-settings-v1`。
+- 2026-05-13 最新接手重点：`正在认真思考` 期间，当前输入框整体禁用，不能输入、粘贴、上传、切模式、切普通/高级或发送；思考结束后恢复。
+- 2026-05-13 最新接手重点：标题栏右侧新增当前会话用量图标，hover 显示黑底白字：Token、美元和人民币估算。汇率固定 `7.2`。当前会累计当前对话流里 `/api/chat`、`/api/intent`、`/api/image` 和 `/api/video` 返回的 `usage/cost`；视频通常只返回费用不返回 Token。
+- 2026-05-13 最新接手重点：预览页视频下载按钮已恢复；图片/视频都可下载，文件名会自动补后缀。预览页右侧缩略图定位已改成按 `id` 失败后按 URL 定位。
+- 2026-05-13 最新接手重点：图片预览缩放已改用原生 `<img>` 和真实 `naturalWidth / naturalHeight` 计算。目标规则是实际尺寸显示真实像素且固定 100%，适合尺寸随浏览器窗口重新适配；用户最后仍反馈“适合尺寸未按期望撑满”，后续需继续核对视觉预期。
+- 2026-05-13 最新接手重点：用户反馈输入框中正在打的中文突然变成英文。代码里没有自动翻译逻辑，最可能是浏览器翻译/翻译插件/输入法 AI 改写对 `contenteditable` 做了 DOM 替换。建议下一步给输入框加 `translate="no"`、`spellCheck={false}`、`autoCorrect="off"`、`autoCapitalize="off"` 和 Grammarly 禁用属性。
+- 2026-05-13 GitHub 状态：本轮中途已推送提交 `5855bc4 Update media workspace interactions`。该提交不包含之后继续做的预览缩略图定位、会话费用统计、思考中输入禁用和本文档更新；下一次同步 GitHub 需重新提交这些后续改动。
+- 2026-05-13 接手记录：品牌名曾做过阶段性调整；2026-05-18 已进一步改为 `闪念`。
+- 2026-05-13 最新接手重点：右上角用量浮窗已压缩黑色底框和行距，顶部新增灰色小标题 `使用量`，标题字号 `11px`；人民币显示改为 `¥0.00 约`，即“约”放在数字后。
+- 2026-05-13 最新接手重点：图片生成已确认返回 `usage`。本轮用 `/api/image` 实测 `Seedream 4.5 / 1:1 / 2K / 1张` 返回 `promptTokens: 4`、`completionTokens: 16384`、`totalTokens: 16388`、`usd: 0.04`，并保存测试图到 `public/generated/images/...jpg`。
+- 2026-05-13 最新接手重点：视频查询已确认返回费用。用已有 OpenRouter 视频任务 `P14NkUI1MIBIgF3op7KG` 查询返回 `usage.cost: 0.84`，无 Token；当前代码会把视频费用累计到右上角，但 Token 保持 `0`。
+- 2026-05-13 最新接手重点：`src/lib/openrouter.ts` 的图片生成结果现在会把每次 OpenRouter 响应里的 `usage` 透传并按多图结果累加；`src/app/api/video/route.ts` 会从视频创建/查询响应里提取 `usage.cost`；`src/components/chat-workbench.tsx` 会把图片和视频 usage 加到当前会话 `usageSummary`。
+- 2026-05-13 最新验证：本轮品牌更名、计费扩展和用量浮窗调整后，`npm run lint` 与 `npm run build` 均通过。
+- 2026-05-14 最新接手重点：用户新增长期规则文档 `AI-Video-Assistant_Project Planning\对话流三种模式基础规则.md`，以后用户让“先看规则文档”时，必须先读该文件并对照当前实现，列出新增/变化项让用户决定是否改。
+- 2026-05-14 最新接手重点：Agent 已新增结构化 Planner 接口 `/api/agent-plan`。Agent 模式发送后先进入 pending 队列并显示 `正在认真思考`，刷新后可恢复；Planner 输出 `intent / needsClarification / displayText / count / subject / quality / ratio / resolution / duration / prompt / constraints / suggestions`，执行器再决定对话、追问、生图或生视频。
+- 2026-05-14 最新接手重点：Agent 不再本地问候直回；所有 Agent 输入都先显示 `正在认真思考`，最少显示 `2000ms`。文字和三个点已有走光/跳动效果。思考状态写入 `pendingRequests`，刷新浏览器后不会丢。
+- 2026-05-14 最新接手重点：Agent 自动生图/生视频结果不显示专业模式参数行，只显示 Planner 给出的简短执行说明 + 媒体结果；不重复用户原话。图片一行 4 个，超过换行不分页；Agent 媒体等待卡/失败卡/结果底框为 `10px` 圆角，失败卡内有“重新生成”按钮。
+- 2026-05-14 最新接手重点：Agent 模型调用规则已改。普通 Agent 固定图片 `Seedream 4.5`、视频 `Seedance 2.0 Fast`。高级 Agent 默认先用当前专业模式选择的模型，不因用户说“高品质/高清/精细”立即换贵模型；多次不满意才升质量，多次抱怨慢才换快稳；`Veo 3.1` 只在用户明确要求“4K 视频/视频要 4K/输出 4K 分辨率视频”时调用，`4K画质/4K质感/高清/高品质` 不触发 Veo。
+- 2026-05-14 最新接手重点：红字错误显示已统一中文化，新增 `src/lib/error-message.ts`。前端和主要 API 会清洗 HTML、堆栈、平台代码，常见 413/401/403/429/500/敏感图/参数不支持等错误会转成中文可读提示。系统提示图标已改成和第一行文字顶部对齐。
+- 2026-05-14 最新接手重点：Agent Planner 阶段不再把参考图转 base64 发给 OpenRouter，只传文字和“本轮带了几张参考图”的提示，避免规划阶段 413；真正生图/生视频阶段仍按原参考图链路处理。
+- 2026-05-14 最新接手重点：`AI-Video-Assistant_Project Planning\对话流三种模式基础规则.md` 里已放入模型排序表。用户确认“价格/质量”按他给的顺序，且文档中要用定宽 Markdown 表格，避免编辑器里列不对齐。
+- 2026-05-14 公网部署重点提醒：上传图、资产图、历史参考图在本地开发阶段会转 base64 传给 OpenRouter，容易触发 `413 Request Entity Too Large`。正式部署前必须改为先上传到可公网访问的 HTTPS 地址（对象存储 / CDN / 静态资源服务），再把 HTTPS URL 传给 OpenRouter，不再传 base64，以减少请求体、保留原图质量并降低参考图生成失败率。
+- 2026-05-14 最新协作/产品规则：以后所有 Agent 对话逻辑都必须优先保证“像人一样自然对话”，这条规则高于其它执行细节。内部执行约束（如禁止拼图、单张独立、参数拆分）不要默认暴露给用户；只有用户明确提到不要拼图/合集或刚才结果不对时才自然回应相关说明。
+- 2026-05-14 最新接手重点：Agent 多图生成已支持 Planner `items[]`。每张图优先使用自己的 `items[index].prompt`，并按图片 URL 保存到 `message.imagePrompts[url]`；预览页和 Agent 媒体结果提示词条都应显示当前图片真实 prompt，不再显示总规则或 Agent 理解说明。
+- 2026-05-14 最新接手重点：Agent 文字回复阶段默认不再携带历史图片，避免历史生成图转 base64 导致 413。只有本轮明确上传图或引用资产时，才保留最新用户消息中的参考图；如 `/api/chat` 仍遇到 413，会自动用纯文本上下文重试。
+- 2026-05-14 最新接手重点：用户要求所有用户可见提示里不要出现 `OpenRouter` 字样。错误提示应使用“平台 / 请求 / 图片生成 / 视频任务”等通用表述；内部函数名、日志和技术文档可保留 OpenRouter。
+- 2026-05-14 最新接手重点：Agent 对“只要场景、不要人物、纯场景、空镜”等最新纠错必须覆盖旧上下文。最终 prompt 需要清理人物词，并加入无人物约束，如 `no people, no person, no human, no character, no figure, no silhouette`。
+- 2026-05-15 最新接手重点：Agent 多视频已做实。Planner 的 `items[]` 现在也用于视频，一镜一段并发生成；如果 Planner 只返回 `count > 1` 没有 items，前端会按 count 兜底生成多段视频，避免“10 个镜头只生成 1 个视频”。
+- 2026-05-15 最新接手重点：分镜视频时长不能默认最低时长。把文字分镜、图片分镜或多个镜头做成视频时，每段 `duration` 要按该镜头内容、动作复杂度或剧本时长判断；只有普通单段视频、无分镜/镜头上下文时才用最低时长。
+- 2026-05-15 最新接手重点：Agent 视频成功卡、等待卡、失败卡已合并到同一个两列 grid：一行 2 个，超过换行；统一高度 `360px`、圆角 `10px`、间距 `2px`。单个视频保持左半宽。
+- 2026-05-15 最新接手重点：Agent 视频失败卡点击“重新生成”现在必须原地重试，不得在下方追加新消息；失败格子先变等待卡，成功后填回同一条消息的同一组 grid。图片失败卡也使用同样居中灰色空心按钮，图标 `reset-left-line`。
+- 2026-05-15 最新接手重点：曾尝试自动扫描 `public/generated/videos` 恢复未归档视频，但用户重启后误恢复了早期测试视频，该功能已撤回。当前不应再自动把本地视频塞回对话流；`src/lib/video-manifest.ts` 只记录任务 manifest，不做自动恢复。
+- 2026-05-15 最新接手重点：输入框发送按钮改为正方形图标按钮。普通状态显示 `arrow-up-line`；Agent 思考时显示黑色可点击 `stop-fill` 停止按钮并带走光，点击后中断 Agent 请求并插入系统消息 `已中断思考`。
+- 2026-05-15 最新接手重点：非红字系统消息顶部有灰色横线；红字错误系统消息不加横线。`saveSessions()` 不再在保存失败时删除整个 `yinzao-sessions-v2`，只保留旧历史并输出 warning。
+- 2026-05-15 GitHub 状态：本轮中途已推送 `89723bf Update agent media generation flow` 到 `origin/main`。注意该提交之后继续做了停止按钮、视频 grid、失败原地重试和本文档更新；如需同步远端，需要再提交推送。
+- 2026-05-15 晚些时候 GitHub 状态：已推送 `cd89681 Fix Chinese IME input handling` 和 `5d9aae4 Update asset mention picker` 到 `origin/main`。这两个提交包含拼音输入法兼容和 `@` 资产弹窗待分类/全部显示/括号数量。`5d9aae4` 之后继续做的输入框上限 10 张、清空输入框、思考中淡化、Shift+Enter 换行修复、Agent `ri-ai` 图标和本文档更新仍是本地改动，尚未推送。
+- 2026-05-15 最新接手重点：输入框 `contenteditable` 已加中文拼音输入法 composition 保护。`compositionstart` 到 `compositionend` 期间不重绘 DOM；结束后再同步文本和 `@` 高亮。输入框同时加了 `translate="no"`、`spellCheck={false}`、`autoCorrect="off"`、`autoCapitalize="off"`、Grammarly 禁用属性，解决其它电脑拼音输入只能留下英文的问题。
+- 2026-05-15 最新接手重点：`@` 资产弹窗现在包含 `角色图片 / 场景图片 / 分镜图片 / 待分类`，其中 `待分类` 只显示图片，视频仍不能引用。每个分类全部显示，不再限制 8 张；分类按钮显示为 `角色图片(29)` 这种格式；弹窗宽度已调到 `380px` 并强制按钮不换行。
+- 2026-05-15 最新接手重点：如果资产库没有任何可引用图片，用户输入 `@`、点击 placeholder 里的 `@` 或底部 `@` 按钮时，不打开空弹窗，而是在输入框上方黑色提示显示 `当前资产库没有图片`。
+- 2026-05-15 最新接手重点：输入框参考图上限从 `5` 张改为 `10` 张，超限黑框文案统一为 `@或上传最多支持10张图片`。该上限作用于上传图、`@资产`、资产预览引用和历史缩略图再引用。公网 URL 传图能力后续再做，不在本轮改。
+- 2026-05-15 最新接手重点：输入框上方缩略图里，`@资产` 缩略图改为 `60x60`；普通上传图仍保持 `100x100`。
+- 2026-05-15 最新接手重点：输入框有内容、上传图或 `@资产` 时，输入框外右上方显示透明无底的 `清空输入框` 按钮，图标为 `format-clear`，点击后清空文字、上传图、`@资产` 参考图和已打开的输入弹窗。因全局 `button { font: inherit; }`，按钮字号必须写在内部 `span` 上。
+- 2026-05-15 最新接手重点：思考中输入框视觉已淡化。`正在认真思考` 时，输入框内容区和左侧工具按钮整体 `opacity-45` 且不可操作，停止按钮保持黑色不淡化并可点击。
+- 2026-05-15 最新接手重点：`Shift+Enter` 换行已修复。旧逻辑虽然拦截了快捷键，但 `contenteditable` 纯文本换行和 `<br>` 光标偏移不稳定，导致多行后输入总回到第二行。现在换行用 `<br>` 渲染，`getEditableText / getSelectionTextOffset / setSelectionTextOffset` 都识别 `<br>`，末尾空行用 `data-trailing-break` 视觉换行但不计入文本。
+- 2026-05-15 最新接手重点：Agent 回复前和输入框 Agent 模式按钮都改用 Remix `ri-ai` 图标。`react-icons/ri` 没有导出 `RiAi`，项目里用用户给的 SVG `https://cdn.jsdelivr.net/npm/remixicon@4.9.1/icons/Editor/ai.svg` 做了本地 `RiAiIcon`。Agent 回复图标插入首行文本流，不再用左侧 flex + margin 猜对齐，以适配普通段落、Markdown 标题、加粗标题、列表、提示块和 Agent 媒体说明。
+- 2026-05-15 最新费用备注：OpenRouter 当前页面显示 `Seedance 2.0` 价格为 `$7 / 100万 video tokens`，公式为 `宽 × 高 × 秒数 × 24 / 1024`。按项目汇率 `7.2`，100 分钟 1280x720 约 `$907.20`，即约 `¥6532`；`Seedance 2.0 Fast` 按 `$5.6 / 100万 video tokens` 估算同规格约 `¥5225`。
+- 2026-05-15 安全提醒：交接文档未发现 GitHub 密码、token 或 OpenRouter key 明文；但 `AI-Video-Assistant_Project Planning\README.md` 里有压缩包密码说明，该规划目录当前仍是未跟踪目录，不要直接提交上传，除非先按用户要求加密压缩或去掉敏感密码。
+- 2026-05-15 最新接手重点：资产管理页已新增“上传图片”能力。入口在资产管理内容标题右侧，蓝色无底按钮，图标使用 Remix `upload-2-line`，文字为“上传图片”。点击后打开上传弹窗，不通过聊天输入框也可把本地图片加入资产库。
+- 2026-05-15 最新接手重点：资产上传弹窗当前支持最多 `8` 张图片。只有一个 `80x80` 上传入口，选择图片后入口自动后移；支持一次多选。缩略图 `80x80` 直角、完整显示不裁切，右上角圆形删除按钮；底部黑色渐变显示真实图片尺寸。当前选中的图片下方显示文件名输入框和分类滑块。
+- 2026-05-15 最新接手重点：资产上传弹窗中文件名标签为 `文件名(支持改名)`，右侧灰底 `X` 可清空当前文件名。如果清空后不输入，失焦或切换到其它图片时恢复原文件名；上传时也会用原文件名兜底。分类滑块支持 `角色图片 / 场景图片 / 分镜图片`，上传后写入 `yinzao-assets-v1`，并设置 `lockedType: true`。
+- 2026-05-15 最新接手重点：资产上传重复图处理已做。服务端 `/api/upload-image` 按内容 hash 去重；前端按返回 URL 判断资产库是否已有。全部重复时弹窗不关闭，重复缩略图保留并红框，提醒 `图片已存在，无需要重复添加`。新图和重复图混合时，新图正常入库并从弹窗消失，只留下重复图红框。
+- 2026-05-15 最新接手重点：项目里把会自动消失的黑框/绿框统一命名为“提醒消息”。提醒消息统一高度 `40px`，普通为黑底，成功为绿底 `#75d06a` 并带 `checkbox-circle-line` 图标；出现动画 `0.1s` 从上往下，停留 `2s`，消失动画 `0.1s` 从下往上。同一提醒正在显示时，相同文案不重复入队；不同文案按顺序排队显示。
+- 2026-05-15 最新接手重点：资产管理列表已改为分批渲染，默认只渲染约 `30` 个资产，滚动接近底部再追加 `30` 个，减少大量资产一次性渲染造成卡顿。点击左侧“资产管理”或切换资产分类时，右侧滚动层会回到顶部并重置加载数量。
+- 2026-05-15 最新排查记录：本轮曾出现浏览器左下角 Next `N` 长时间停在 `Compiling...`。`npm run lint` 和 `npm run build` 均通过，确认代码无误；问题是 Next dev 进程卡住。已停止占用 `3000` 的旧 Node 进程、清理 `.next` 后重新启动 dev server，端口恢复监听。后续遇到同类问题可先清 `.next` 并重启开发服务器。
+- 2026-05-15 最新接手重点：首页已上线到 `/`，原聊天工作台迁移到 `/workspace`。首页为全屏视频背景、顶部极简导航、邮箱登录按钮和邮箱登录弹窗；登录目前是假登录，占位表单不校验邮箱 / 验证码，点“登录并进入”直接跳 `/workspace`。
+- 2026-05-15 最新接手重点：首页视频素材统一放在 `public/home-assets/`。当前首页轮播 5 个视频：`hero-background.mp4`、`hero-dragon.mp4`、`hero-great-wall.mp4`、`hero-global-human.mp4`、`hero-mecha-robot.mp4`；播放逻辑是当前视频 `onEnded` 后再切下一条，底部 5 个小点可手动切换。不要再用固定 7 秒切换，用户已要求“播放完再播下一段”。
+- 2026-05-15 最新接手重点：首页视频不再设置 `poster`，因为之前 `hero-poster.jpg` 会在切换时闪成静态图。`next/image` 本地图片也不能带 `?v=` 查询参数，否则 Next dev 报 `images.localPatterns` 错误。
+- 2026-05-15 最新接手重点：首页保留的对应参考图为：`hero-poster.jpg`、`hero-dragon-reference.jpg`、`hero-great-wall-reference.jpg`、`hero-global-human-reference.jpg`、`hero-mecha-robot-reference.jpg`。生成记录在 `manifest.json`、`reference-images-manifest.json`、`reference-videos-manifest.json`。用户删除过不要的旧素材，后续只以当前目录实际文件为准。
+- 2026-05-15 最新接手重点：首页龙参考图多次重生：用户要“龙头大、朝左、只看到头和少量脖子”，但强调“不要文字”会让模型更容易出角落文字，后续写提示词时不要反复提“文字”，应只描述纯画面、四角留黑。当前龙图已覆盖为最新版。
+- 2026-05-15 最新接手重点：图片 / 视频失败卡“重新生成”按钮改为纯文字蓝色按钮，无底无边框；文字 `14px`，图标保持 `h-3.5 w-3.5`。无论 Agent / 图片生成 / 视频生成，点击哪个失败格子就原地变等待卡，计时从点击时重新开始，成功后填回原失败位置，不再追加到最后。
+- 2026-05-15 最新音频模型调研：OpenRouter 当前可生成音频的主要模型是 `google/lyria-3-pro-preview`、`google/lyria-3-clip-preview`、`openai/gpt-audio`、`openai/gpt-audio-mini`，`openai/gpt-4o-audio-preview` 页面说明当前音频输出暂不支持，更适合音频输入理解。Lyria 可做歌曲 / MV 工作流，但不是音色克隆；角色固定音色仍建议后续接专门 voice cloning / TTS。
+- 2026-05-15 文档产物：`AI-Video-Assistant_Project Planning\OpenRouter 音频模型功能和价格.docx` 和 `AI-Video-Assistant_Project Planning\首页视频和参考图提示词记录.docx` 已生成。注意规划目录仍是未跟踪目录，含敏感压缩包密码说明，不能直接提交 GitHub。
+- 2026-05-15 GitHub 状态：已推送 `0c20e28 Update homepage media workspace` 到 `origin/main`，包含首页、`/workspace`、`public/home-assets` 当前视频素材、失败重试等代码。另一台机器 `git pull` 后可看到同样首页视频。注意：本次继续更新交接文档是在该提交之后，如需同步这些文档，还要再提交一次。
+- 2026-05-18 最新接手重点：平台中文名已改为 `闪念`，英文名为 `FlashMuse`。页面左侧品牌名使用 `闪念`；浏览器标题使用 `闪念 FlashMuse`；OpenRouter `X-Title` 使用 `FlashMuse`；Agent 自称、Planner 和意图分类器提示词使用 `闪念`；`localStorage` key 和 CSS class/keyframes 仍保留 `yinzao-*`，避免本地历史、资产、设置和样式受影响。
+- 2026-05-18 最新接手重点：Agent 正文仍允许内部排版标记，但前端会渲染成网页样式，不应让用户看到原始 `## / #### / **`；支持标题字号、加粗、分隔线和列表。`####` 会兜底按三级标题渲染。
+- 2026-05-18 最新接手重点：Agent 长文本打字时不再持续自动滚到底；消息出现后定位一次，后续用户停留在原位置，避免长回复把用户拉到底部。
+- 2026-05-18 最新接手重点：输入框 `contenteditable` 已继续修复。删除到空时浏览器自动插入的空 `<br>` 不再被当成换行；普通打字/删除不再每次 `replaceChildren()` 重建 DOM，减少光标乱跳；粘贴图片时已 `preventDefault()`，图片只进入上方缩略图，不再在输入文字区域出现破图图标；只有光标在末尾时输入框内部才自动滚到底，回到中间插字不会被拉到底部。
+- 2026-05-18 最新接手重点：Agent 图片 prompt 不再默认追加“只生成一张独立照片 / 禁止拼图、合集、九宫格...”这类内部禁令，避免污染模型和展示给用户。只有用户明确说不要拼图/合集或纠错时才加很短的“不要拼图或合集”。用户明确说“合并到一张 / 放在一张图上 / 同一画面 / 多款放一起”时，才强制 `1张`；模型自己写“展示图”不再误触发单张模式。
+- 2026-05-18 最新接手重点：Agent 自动生图计数已修复。部分图片模型一次请求会返回多张候选图，Agent 现在每次请求只取第 1 张，避免“说 6 张却显示 12 张”；专业图片模式仍保留多候选图展示能力。
+- 2026-05-18 最新接手重点：当前本地开发阶段参考图仍会转 base64，Agent Planner 阶段为避免 413 默认不看历史图片。正式部署服务器后，必须把上传图/资产图/历史参考图改为公网 HTTPS URL（对象存储/CDN），这样 Planner 才能更稳定理解“红框里的样子 / 参考这张”。
+- 2026-05-18 最新接手重点：Logo 相关文件在 `public/home-assets/`。当前页面直接用普通 `<img src="/home-assets/logo.png">`，避免 `next/image` 同名文件缓存；图形 logo 显示 `50x50`。中文文字图从 `AI-Video-Assistant_Project Planning\Brand&logo Design\生成图片2.jpg` 提取为 `public/home-assets/logo-text.png`，首页用 CSS 转白色显示，高度当前 `30px`；工作台黑色显示，高度当前 `26px`；副标题 `AI影片助手` 在其下方单独一行。
+- 2026-05-18 最新接手重点：曾尝试从白底原图抠透明 logo，生成 `public/home-assets/logo-original.png` 备份和多版透明测试图；也曾调用 4 个图片模型生成透明/绿幕 logo 候选，结果保存在 `public/home-assets/text/`，其中 `summary.json` 记录结果。模型不能可靠直接输出真实 alpha 透明 PNG，经常会生成棋盘格或绿幕，需要后处理抠图。
+- 2026-05-18 最新接手重点：首页继续重做：只保留左上 Logo、右上“进入工作台 / 登录”、居中广告语和简化输入框。广告语为 `方寸之间 · 大有可为` + `Small Space Big Ideas`；首页输入框 placeholder 为 `灵感一闪，创意即生...`，目前只做展示占位，不接生成逻辑。
+- 2026-05-18 最新接手重点：首页登录已从黑色居中弹窗改成右侧白色抽屉。打开时抽屉从右侧滑入，底层视频和页面内容向左推并变模糊；抽屉内横排 Logo，只有 `密码登录 / 验证码登录` 两个无底按钮、一个邮箱输入框和底部协议提示。关闭按钮是 CSS 画的细 X，hover 旋转。
+- 2026-05-18 最新接手重点：工作台左侧栏底部新增用户占位区和用户菜单。底部显示头像占位、`用户头像`、`user@example.com`，上方分隔线需要顶到侧栏两端；点击后弹出菜单 `用户信息 / 用户安全 / 设置 / 退出登录`，菜单可点空白关闭，退出登录是底部整块灰底。
+- 2026-05-18 最新接手重点：浏览器 favicon 已用 `public/home-assets/logo.png` 重新生成 `src/app/favicon.ico`，并新增 `src/app/icon.png`。Next dev 黑色 `N` 按钮通过 `next.config.ts` 的 `devIndicators.position = "bottom-right"` 移到右下角，改配置后要重启 dev server。
+- 2026-05-18 技术注意：本轮多次发现 Tailwind 任意值 class 或按钮字号不稳定。项目全局 `button { font: inherit; }` 会覆盖按钮上的字号，菜单 / 按钮文字如果要精确字号，应写在内部 `span` 或内联 style。Logo 高度、首页定位、圆角、玻璃效果等关键视觉值也优先用内联 style 确保生效。
+- 2026-05-19 最新接手重点：已接入正式登录底座。新增 `PostgreSQL + Prisma`、`docker-compose.yml`、`.env` 本地数据库配置、认证接口和 `HttpOnly Cookie + 数据库 Session`。本机 Docker Desktop 和 WSL2 已装好，`flashmuse-postgres` 容器可用；如果 Docker 未启动，登录接口会因数据库连不上而显示“请求失败”，先启动 Docker Desktop 后执行 `docker compose up -d`。
+- 2026-05-19 最新接手重点：登录流程按用户规则实现。首页右上 `登录` 进入邮箱登录抽屉；`密码登录 / 验证码登录` 可切换。默认 `密码登录` 下邮箱回车先查注册和密码状态；未注册或未设置密码时强制验证码登录；验证码通过即注册 / 登录；已设置密码的账号可走密码登录。用户主动切到 `验证码登录` 时，邮箱回车直接发送验证码，不再查是否有密码。首页 `进入工作台` 按钮不登录，继续进入游客/本机测试工作台。
+- 2026-05-19 最新接手重点：验证码已接网易个人邮箱 SMTP。`src/lib/mailer.ts` 使用 `nodemailer`；SMTP 配置在本地 `.env`，来源是 `AI-Video-Assistant_Project Planning\闪念官方邮箱.txt`，该文件和 `.env` 都含敏感信息，不能提交。若 SMTP 未配置会回退到终端打印验证码；当前 SMTP 测试已通过。
+- 2026-05-19 最新接手重点：数据库当前表为 `User`、`Session`、`EmailVerificationCode`、`UserWorkspaceState`。`UserWorkspaceState.state` 以 JSON 保存登录用户工作区：历史对话、当前会话、资产库、工作流、输入设置、反馈日志和意图纠错记忆。后续正式运营需要再把对话、资产、生成任务和积分流水拆成独立表。
+- 2026-05-19 最新接手重点：工作台存储已分为两套。游客/点击首页 `进入工作台` 时继续用原本浏览器 `localStorage`，保留用户当前测试内容；邮箱登录后读取/保存数据库中的 `UserWorkspaceState`，新账号初始为空，后续数据按登录账号保存。
+- 2026-05-19 最新接手重点：工作台左下角用户菜单已改为 `用户信息 / 帐号安全 / 设置 / 退出登录`。前三项打开同一个用户中心弹窗，左右结构，左侧选项卡，右侧内容；`用户信息` 显示邮箱、头像和积分/生成数量占位；`帐号安全` 支持设置密码和修改密码；`设置` 目前是语言、默认进入页面、生成完成提醒、自动保存历史、本地缓存、版本信息等占位。
+- 2026-05-19 最新接手重点：新增接口 `/api/auth/check-email`、`/api/auth/send-code`、`/api/auth/verify-code`、`/api/auth/login-password`、`/api/auth/me`、`/api/auth/logout`、`/api/auth/set-password`、`/api/auth/change-password`、`/api/workspace-state`。本轮最后 `npm run lint` 和 `npm run build` 均通过。
+- 2026-05-19 最新接手重点：用户中心 UI 已继续细化。默认头像按邮箱稳定生成淡色圆形头像，显示邮箱首字符；用户可上传头像，头像文件单独保存到 `public/generated/user_avatar/`，接口为 `/api/upload-avatar`，数据库只保存 URL。左下角用户区第一行显示昵称，第二行显示邮箱；昵称修改后左下角同步变化。
+- 2026-05-19 最新接手重点：用户中心 `用户信息` 页现在为头像居中、下方 490px 灰底信息行：昵称、邮箱（登录帐号）、手机、生成图片、生成视频。昵称和手机右侧有 `edit-box-line` 图标可编辑。`生成图片 / 生成视频` 字段已在数据库中建独立计数字段，但当前还没有接入生成成功自动累加。
+- 2026-05-19 最新接手重点：用户中心资料已从 `UserWorkspaceState.state` JSON 拆到 `User` 表独立字段：`nickname / phone / avatarUrl / language / notifyOnGenerationComplete / autoSaveHistory / generatedImageCount / generatedVideoCount`。新增 `/api/user-profile` 专门读写这些资料；`/api/auth/me` 也返回完整用户资料。`/api/workspace-state` 会兼容迁移旧 JSON 中的用户资料并清理旧字段。
+- 2026-05-19 最新接手重点：帐号安全页已改为上线风格。已设置密码时显示灰底行 `锁图标 + ***********`，右侧灰字 `密码已设置`；下方为无底蓝色文字按钮 `修改密码 / 忘记密码`。修改密码显示当前密码、新密码、确认密码三行；忘记密码会发登录邮箱验证码，显示 6 个 44x44 验证码框，满 6 位自动验证，验证后进入重设密码界面。
+- 2026-05-19 最新接手重点：新增认证接口 `/api/auth/check-code` 和 `/api/auth/reset-password`。`check-code` 只校验邮箱验证码不登录，供忘记密码流程使用；`reset-password` 用当前登录用户邮箱验证码重置密码。密码设置/修改成功显示用户中心窗口上方外侧的提醒消息，用户中心提醒停留 3 秒。
+- 2026-05-19 最新接手重点：设置页已做实部分项。`语言` 可选 `简体中文 / 繁體中文`，语言菜单里的名称永远使用语言自己的本地写法；选择后弹黑色提醒。当前通过前端 DOM 转换层做全工作台简繁切换，跳过输入框、textarea、script/style 和 `data-no-translate="true"` 区域；切回简体会反向转换。后续若要更稳定国际化，应替换为真正 key-based i18n。
+- 2026-05-19 最新接手重点：设置页 `生成完成提醒 / 自动保存历史` 已改为滑块按钮，开启状态使用通用蓝 `#367cee`；`默认进入页面` 已移除；版本信息显示 `v0.1.0 内测版`。语言切换和开关状态都保存到 `User` 独立字段。
+- 2026-05-19 最新接手重点：首页登录抽屉默认优先 `密码登录`；用户未主动切换时，邮箱回车后先查是否有密码，有密码进入密码输入，无密码或新账号自动切验证码登录。邮箱输入框有内容时右侧显示 `corner-down-left-line` 图标，点击等同回车；密码输入框不显示该图标。登录输入框 placeholder 已调内边距，避免未输入时显示不全。
+- 2026-05-19 技术注意：本轮执行 `npx prisma migrate dev --name user_profile_fields` 已成功，迁移目录为 `20260519132218_user_profile_fields`。Prisma Client 生成再次遇到 Windows `query_engine-windows.dll.node` 被 dev server 占用；已停止占用 3000 端口的 Node 进程后 `npx prisma generate` 成功。最后 `npm run lint` 和 `npm run build` 均通过。
+- 2026-05-19 最新接手重点：登录抽屉继续细调。用户主动选择 `验证码登录` 后，邮箱回车直接调用 `/api/auth/send-code`，不再先查是否有密码；默认 `密码登录` 状态下仍按“有密码进密码、无密码/新账号自动验证码”的规则。验证码发送中会在邮箱框下方显示蓝色 `正在发送验证码...`，三个点逐个出现/消失；验证码输入框圆角已改为 `12px`。
+- 2026-05-19 最新接手重点：登录邮箱 placeholder 已改为 `请输入邮箱，如 name@email.com`。邮箱、密码、验证码输入时会清空已有红字/灰字提示；用户把输入删空后错误提示也立即消失。`/api/auth/send-code` 已新增邮箱域名收信能力校验：先查 MX，失败再查 A/AAAA；明显不存在的邮箱域名不再发送验证码，用户提示为 `邮箱或域名不存在，请检查后重新输入`。
+- 2026-05-19 最新接手重点：默认头像继续微调。按邮箱生成的默认头像现在加 `1px` 比底色稍深的描边；上传头像不加该默认描边。用户中心弹窗遮罩保留黑色半透明底，并新增 `backdrop-blur-[6px]`，弹窗后面的工作台内容会模糊显示。
+- 2026-05-19 最新接手重点：新对话空白页已重做。标题为 `hi~把你的闪念跟我聊一聊！`；下方是三行快捷按钮，每次固定三行，每行 `3-5` 个，行上下对齐、列不强制对齐。按钮内容按会话 ID 打散，所以新对话的内容和行数分布会变化；按钮为淡彩色随机底、无描边，文字 `13px` 写在内部 `span`，避免全局 `button { font: inherit; }` 覆盖。
+- 2026-05-19 最新接手重点：空白页快捷按钮点击后不再填入输入框，而是先把底部模式切到 `Agent 模式`，再直接作为 Agent 消息发送。快捷按钮池包含生图、生视频、故事梗概、文字分镜、提示词扩写、角色小传、场景参考图等创作入口。
+- 2026-05-19 最新接手重点：`正在认真思考` 动画已放慢。文字走光从 `1.65s` 改为 `2.4s`，三个点动画从 `0.95s` 改为 `1.45s`。本轮这些 UI/登录改动后多次运行 `npm run lint` 通过；其中邮箱域名校验加入后也运行过 `npm run build` 通过。
+- 2026-05-20 最新接手重点：后续工作说明必须用中文，用户明确不想看英文工作描述；回答继续简单直接。
+- 2026-05-20 最新接手重点：首页测试入口已改为 `游客模式`，链接 `/workspace?guest=1`，强制游客 localStorage 工作区；邮箱登录仍进 `/workspace` 并读取数据库用户工作区。上线时只需隐藏/删除 `游客模式` 按钮。当前游客旧历史已被空会话覆盖，后续会继续保存新的游客测试数据。
+- 2026-05-20 最新接手重点：首页登录抽屉有最近登录邮箱下拉菜单，数据在 `localStorage` 的 `flashmuse-login-history-v1`，最多 5 条；点击邮箱输入框弹出，输入/点其它区域/选中邮箱都会收起。系统自动切验证码时蓝字为 `首次登录或未设置密码，正在发送验证码...`，用户手动验证码登录仍显示 `正在发送验证码...`。
+- 2026-05-20 最新接手重点：图片多图失败兜底已修，平台返回失败后不会再长期停在 `99%生成中`；批次收尾会清零剩余 pending 并补失败卡。
+- 2026-05-20 最新接手重点：`正在认真思考` 前置动画已换成 16px 轻量 GridLoader；文字和后三点为灰白慢动画，左侧历史运行中也复用 GridLoader。
+- 2026-05-20 最新接手重点：Agent 自动生图/生视频完成后会显示引导按钮；预览页缩略图导航只按当前对话图片+视频总数判断，超过 1 个就显示，不区分 Agent/专业模式。
+- 2026-05-20 最新接手重点：用户中心设置已做实：`图片/视频生成完成提醒`、`生成图片/视频自动收入资产管理库`、`预览页鼠标放在图片上滚轮有缩放功能`、`预览页鼠标放在缩略图区域滚轮有翻页功能`。生成完成提醒和自动收入资产库默认开启；两个预览滚轮开关默认都开启且不互斥。
+- 2026-05-20 最新接手重点：已删除设置里的 `本地缓存` 占位。不要把用户生成图片、视频、对话和资产当缓存自动清理，除非用户主动删除。
+- 2026-05-20 数据库更新：`User` 表新增 `previewWheelZoom`、`previewWheelFlip`，已执行迁移 `20260520074200_preview_wheel_settings` 和 `20260520081205_preview_wheel_zoom_default_on`。Prisma Client 生成如因 Windows DLL 被 dev server 占用失败，停掉端口 3000 的 Node 后重新 `npx prisma generate`。

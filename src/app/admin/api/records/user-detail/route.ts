@@ -110,7 +110,7 @@ function getLedgerExpectedCredits(item: { credits: number; cny: number; metadata
   return Math.max(0, Math.floor(getMetadataNumber(item.metadata, "expectedCredits") ?? Math.round(item.cny * creditsPerCny) ?? item.credits));
 }
 
-function buildAdminWorkspaceState(state: unknown, sessionRows: Array<{ sessionId: string; title: string; updatedAt: Date; deletedAt: Date | null; messagesJson: unknown; summaryJson: unknown; usageSummary: unknown; memorySummary: unknown }>, messageRows: Array<{ sessionId: string; messageJson: unknown; createdAt: Date }>) {
+function buildAdminWorkspaceState(state: unknown, sessionRows: Array<{ sessionId: string; title: string; updatedAt: Date; deletedAt: Date | null; messagesJson?: unknown; summaryJson: unknown; usageSummary: unknown; memorySummary: unknown }>, messageRows: Array<{ sessionId: string; messageJson: unknown; createdAt: Date }>) {
   if (sessionRows.length === 0) return state;
   const messagesBySession = new Map<string, unknown[]>();
   for (const row of [...messageRows].sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime())) {
@@ -244,7 +244,62 @@ function getWorkspaceAssetMediaItems(state: unknown): AdminMediaItem[] {
     const isUploadedAsset = !previewMeta;
     const systemName = getString(asset.systemName) || getString(asset.name);
     const userName = getString(asset.userName) || (getString(asset.name) && getString(asset.name) !== systemName ? getString(asset.name) : "");
-    return [{ id: getString(asset.id, `asset-image-${index}`), type: "image", assetType: effectiveAssetType, isDeleted: assetType === "trash" || Boolean(asset.deletedAt), deletedAtLabel: finiteNumber(asset.deletedAt) > 0 ? formatTimestamp(asset.deletedAt) : undefined, isUploadedAsset, isReversePrompt: isUploadedAsset && Boolean(prompt.trim()) && prompt !== "资产库上传", systemName, userName, name: formatAdminMediaName(systemName, userName, `资产${index + 1}`), url, prompt: prompt === "资产库上传" ? "" : prompt, model: getString(previewMeta?.modelLabel, "-"), ratio: getString(previewMeta?.ratio, "-"), resolution: getString(previewMeta?.resolution, "-"), duration: "-", size: getString(previewMeta?.sizeText, "-"), style: getString(previewMeta?.styleLabel, "-"), createdAtTs: finiteNumber(asset.createdAt) }];
+    return [{ id: getString(asset.id, `asset-image-${index}`), type: "image", assetType: effectiveAssetType, isDeleted: assetType === "trash" || Boolean(asset.deletedAt), deletedAtLabel: finiteNumber(asset.deletedAt) > 0 ? formatTimestamp(asset.deletedAt) : undefined, isUploadedAsset, isReversePrompt: isUploadedAsset && Boolean(prompt.trim()) && !isUploadPromptPlaceholder(prompt), systemName, userName, name: formatAdminMediaName(systemName, userName, `资产${index + 1}`), url, prompt: isUploadPromptPlaceholder(prompt) ? "" : prompt, model: getString(previewMeta?.modelLabel, "-"), ratio: getString(previewMeta?.ratio, "-"), resolution: getString(previewMeta?.resolution, "-"), duration: "-", size: getString(previewMeta?.sizeText, "-"), style: getString(previewMeta?.styleLabel, "-"), createdAtTs: finiteNumber(asset.createdAt) }];
+  });
+}
+
+function isAdminVideoUrl(url: string) {
+  return /\.(mp4|webm|mov|m4v)(\?|#|$)/i.test(url);
+}
+
+function isVideoPosterLikeMedia(url: string, name: string, mediaType: string) {
+  return mediaType !== "video" && (/\/video-posters\//.test(normalizeMediaUrlForAdmin(url)) || /^video_/i.test(name));
+}
+
+function getMediaAssetItems(assetStates: any[], scope: "conversation" | "asset"): AdminMediaItem[] {
+  const assetCategories = new Set(["character_image", "scene_image", "shot_image"]);
+  return assetStates.flatMap((state, index): AdminMediaItem[] => {
+    const media = state?.mediaAsset;
+    if (!media?.url || media.archivedAt || state.hiddenAt) return [];
+    const category = getString(state.currentCategory);
+    const isAssetCategory = assetCategories.has(category);
+    const isConversationCategory = category === "conversation_images" || category === "conversation_uploads" || category === "conversation_videos";
+    if (scope === "asset" && !isAssetCategory) return [];
+    if (scope === "conversation" && !isConversationCategory) return [];
+
+    const systemName = getString(media.systemName) || getString(media.initialName);
+    const currentName = getString(state.currentName);
+    const displayName = formatAdminMediaName(systemName, currentName && currentName !== systemName ? currentName : undefined, "媒体");
+    if (scope === "conversation" && isVideoPosterLikeMedia(media.url, displayName, getString(media.mediaType))) return [];
+
+    const type = media.mediaType === "video" || isAdminVideoUrl(media.url) ? "video" : "image";
+    const isUploadedAsset = category === "conversation_uploads" || getString(media.sourceKind).includes("upload");
+    const prompt = getString(media.reversePrompt) || getString(media.sourcePrompt);
+    const size = media.width && media.height ? `${media.width} × ${media.height}` : getString(media.imageSize, "-");
+    const deletedAt = state.deletedAt instanceof Date ? state.deletedAt : null;
+    return [{
+      id: getString(media.id, `media-asset-${index}`),
+      requestId: getString(media.requestId),
+      conversationId: getString(media.conversationId),
+      type,
+      assetType: isAssetCategory ? category as "character_image" | "scene_image" | "shot_image" : undefined,
+      isDeleted: Boolean(deletedAt),
+      deletedAtLabel: deletedAt ? formatDate(deletedAt) : undefined,
+      isUploadedAsset,
+      isReversePrompt: isUploadedAsset && Boolean(prompt.trim()) && !isUploadPromptPlaceholder(prompt),
+      systemName,
+      userName: currentName && currentName !== systemName ? currentName : undefined,
+      name: displayName === "媒体" ? type === "video" ? `视频${index + 1}` : `图片${index + 1}` : displayName,
+      url: media.url,
+      prompt: isUploadPromptPlaceholder(prompt) ? "" : prompt,
+      model: getString(media.model) ? getModelLabel(type, getString(media.model)) : "-",
+      ratio: getString(media.ratio, "-"),
+      resolution: getString(media.resolution, "-"),
+      duration: type === "video" ? getString(media.videoDuration, "-") : "-",
+      size,
+      style: "-",
+      createdAtTs: media.firstSeenAt instanceof Date ? media.firstSeenAt.getTime() : media.createdAt instanceof Date ? media.createdAt.getTime() : 0,
+    }];
   });
 }
 
@@ -279,34 +334,180 @@ function getPromptToolCategory(source: string) {
   return source === "image_prompt_reverse" ? { id: "reverse", title: "反推提示词" } : { id: "optimization", title: "优化提示词" };
 }
 
+function isUploadPromptPlaceholder(value: string) {
+  return value === "上传图片" || value === "资产库上传" || value === "对话流上传";
+}
+
+function getFastMediaSummary(assetStates: any[]) {
+  const summary = { conversationImageCount: 0, conversationVideoCount: 0, conversationUploadImageCount: 0, assetImageCount: 0, assetGeneratedImageCount: 0, assetUploadImageCount: 0 };
+  const assetCategories = new Set(["character_image", "scene_image", "shot_image"]);
+  for (const state of assetStates) {
+    const media = state?.mediaAsset;
+    if (!media?.url || media.archivedAt || state.hiddenAt) continue;
+    const category = getString(state.currentCategory);
+    const mediaType = media.mediaType === "video" || isAdminVideoUrl(media.url) ? "video" : "image";
+    const isUpload = category === "conversation_uploads" || getString(media.sourceKind).includes("upload");
+    const systemName = getString(media.systemName) || getString(media.initialName);
+    const currentName = getString(state.currentName);
+    const displayName = formatAdminMediaName(systemName, currentName && currentName !== systemName ? currentName : undefined, "媒体");
+    if (isVideoPosterLikeMedia(media.url, displayName, getString(media.mediaType))) continue;
+    if (assetCategories.has(category)) {
+      if (mediaType === "image") {
+        summary.assetImageCount += 1;
+        if (isUpload) summary.assetUploadImageCount += 1;
+        else summary.assetGeneratedImageCount += 1;
+      }
+    } else if (category === "conversation_videos" || mediaType === "video") {
+      summary.conversationVideoCount += 1;
+    } else if (isUpload) {
+      summary.conversationUploadImageCount += 1;
+    } else if (category === "conversation_images") {
+      summary.conversationImageCount += 1;
+    }
+  }
+  return summary;
+}
+
+function getFastCreditSummary(ledgers: any[], creditsPerCny: number) {
+  const summary = { giftedCredits: 0, signupGiftedCredits: 0, adminAdjustedGiftedCredits: 0, consumedCredits: 0, consumedTokens: 0, consumedUsd: 0, consumedCny: 0, conversationConsumedCredits: 0, assetGenerationConsumedCredits: 0, promptToolConsumedCredits: 0 };
+  for (const item of ledgers) {
+    if (item.direction === "increase") {
+      summary.giftedCredits += item.credits;
+      if (item.kind === "signup") summary.signupGiftedCredits += item.credits;
+      if (item.kind === "admin_adjust") summary.adminAdjustedGiftedCredits += item.credits;
+      continue;
+    }
+    summary.consumedCredits += item.credits;
+    summary.consumedTokens += item.totalTokens;
+    summary.consumedUsd += item.usd;
+    summary.consumedCny += item.cny;
+    const source = getCreditSource(item.metadata);
+    if (source === "character_image_generation" || source === "scene_image_generation" || source === "shot_image_generation") summary.assetGenerationConsumedCredits += item.credits;
+    else if (source === "image_prompt_reverse" || source === "prompt_optimization") summary.promptToolConsumedCredits += item.credits;
+    else summary.conversationConsumedCredits += item.credits;
+  }
+  return summary;
+}
+
 export async function GET(request: Request) {
   const email = await getCurrentAdminEmail();
   if (!email || !isAdminEmail(email)) return NextResponse.json({ error: "无权限" }, { status: 403 });
 
-  const userId = new URL(request.url).searchParams.get("userId")?.trim() ?? "";
+  const searchParams = new URL(request.url).searchParams;
+  const userId = searchParams.get("userId")?.trim() ?? "";
+  const mode = searchParams.get("mode");
+  const isRecordsMode = mode === "records";
   if (!userId) return NextResponse.json({ error: "缺少用户ID" }, { status: 400 });
 
-  const [user, creditSettings, ledgers] = await Promise.all([
-    prisma.user.findUnique({
+  const userQuery = isRecordsMode
+    ? prisma.user.findUnique({
+      where: { id: userId },
+      include: {
+        workspace: { select: { state: true, updatedAt: true } },
+        workspaceSessions: { orderBy: { updatedAt: "desc" }, select: { sessionId: true, title: true, updatedAt: true, deletedAt: true, summaryJson: true, usageSummary: true, memorySummary: true } },
+        userAssetStates: { where: { hiddenAt: null, mediaAsset: { archivedAt: null } }, include: { mediaAsset: true }, orderBy: { updatedAt: "desc" } },
+        sessions: { orderBy: { lastSeenAt: "desc" }, take: 1, select: { lastSeenAt: true } },
+        _count: { select: { sessions: true } },
+      },
+    })
+    : prisma.user.findUnique({
       where: { id: userId },
       include: {
         workspace: { select: { state: true, updatedAt: true } },
         workspaceSessions: { orderBy: { updatedAt: "desc" }, select: { sessionId: true, title: true, updatedAt: true, deletedAt: true, messagesJson: true, summaryJson: true, usageSummary: true, memorySummary: true } },
         workspaceMessages: { orderBy: { createdAt: "asc" }, select: { sessionId: true, messageJson: true, createdAt: true } },
+        userAssetStates: { where: { hiddenAt: null, mediaAsset: { archivedAt: null } }, include: { mediaAsset: true }, orderBy: { updatedAt: "desc" } },
         sessions: { orderBy: { lastSeenAt: "desc" }, take: 1, select: { lastSeenAt: true } },
         _count: { select: { sessions: true } },
       },
-    }),
+    });
+
+  const [user, creditSettings, ledgers] = await Promise.all([
+    userQuery,
     getCreditSettings(),
     prisma.creditLedger.findMany({ where: { userId }, orderBy: { createdAt: "desc" } }),
   ]);
 
   if (!user) return NextResponse.json({ error: "用户不存在" }, { status: 404 });
 
-  const workspaceState = buildAdminWorkspaceState(user.workspace?.state, user.workspaceSessions, user.workspaceMessages);
+  if (isRecordsMode) {
+    const mediaSummary = getFastMediaSummary(user.userAssetStates);
+    const creditSummary = getFastCreditSummary(ledgers, creditSettings.creditsPerCny);
+    const conversations: AdminConversation[] = user.workspaceSessions.map((session) => ({
+      id: session.sessionId,
+      title: session.title || "新对话",
+      isDeleted: Boolean(session.deletedAt),
+      deletedAtLabel: session.deletedAt ? formatDate(session.deletedAt) : undefined,
+      conversationCode: isRecord(session.summaryJson) ? getString(session.summaryJson.conversationCode) : undefined,
+      updatedAtLabel: formatDate(session.updatedAt),
+      updatedAtTs: session.updatedAt.getTime(),
+      messages: [],
+    }));
+    const adminUser: AdminUserRow = {
+      id: user.id,
+      email: user.email,
+      nickname: user.nickname,
+      phone: user.phone,
+      avatarUrl: user.avatarUrl,
+      language: user.language,
+      credits: user.credits,
+      disabled: user.disabled,
+      generalModeEnabled: user.generalModeEnabled,
+      generatedImageCount: Math.max(user.generatedImageCount, mediaSummary.conversationImageCount + mediaSummary.assetGeneratedImageCount),
+      generatedVideoCount: Math.max(user.generatedVideoCount, mediaSummary.conversationVideoCount),
+      conversationCount: conversations.filter((item) => !item.isDeleted).length,
+      consumedCredits: creditSummary.consumedCredits,
+      consumedTokens: creditSummary.consumedTokens,
+      consumedAmountLabel: `$${creditSummary.consumedUsd.toFixed(4)} / ¥${creditSummary.consumedCny.toFixed(2)}`,
+      notifyOnGenerationComplete: user.notifyOnGenerationComplete,
+      autoSaveHistory: user.autoSaveHistory,
+      previewWheelZoom: user.previewWheelZoom,
+      previewWheelFlip: user.previewWheelFlip,
+      hasPassword: Boolean(user.passwordHash),
+      createdAtLabel: formatDate(user.createdAt),
+      updatedAtLabel: formatDate(user.updatedAt),
+      lastLoginAtLabel: formatDate(user.lastLoginAt ?? user.sessions[0]?.lastSeenAt),
+      lastLoginIp: user.lastLoginIp,
+      lastLoginLocation: user.lastLoginLocation,
+      lastLoginUserAgent: user.lastLoginUserAgent,
+      workspaceSaved: Boolean(user.workspace),
+      workspaceUpdatedAtLabel: formatDate(user.workspace?.updatedAt),
+      sessionCount: user._count.sessions,
+      lastSessionSeenAtLabel: formatDate(user.sessions[0]?.lastSeenAt),
+      conversations,
+      mediaItems: [],
+      assetMediaItems: [],
+      ...mediaSummary,
+    };
+    const creditUser: AdminCreditUser = {
+      id: user.id,
+      userEmail: user.email,
+      nickname: user.nickname,
+      avatarUrl: user.avatarUrl,
+      currentCredits: user.credits,
+      giftedCredits: creditSummary.giftedCredits,
+      signupGiftedCredits: creditSummary.signupGiftedCredits,
+      adminAdjustedGiftedCredits: creditSummary.adminAdjustedGiftedCredits,
+      consumedCredits: creditSummary.consumedCredits,
+      consumedTokens: creditSummary.consumedTokens,
+      consumedUsd: creditSummary.consumedUsd,
+      consumedCny: creditSummary.consumedCny,
+      conversationConsumedCredits: creditSummary.conversationConsumedCredits,
+      assetGenerationConsumedCredits: creditSummary.assetGenerationConsumedCredits,
+      promptToolConsumedCredits: creditSummary.promptToolConsumedCredits,
+      conversationCreditDetails: [],
+      assetGenerationCreditDetails: [],
+      promptToolCreditDetails: [],
+      currentCreditDetails: [],
+      lastActiveLabel: ledgers[0] ? formatShortDate(ledgers[0].createdAt) : "-",
+    };
+    return NextResponse.json({ detail: { user: adminUser, creditUser } });
+  }
+
+  const workspaceState = buildAdminWorkspaceState(user.workspace?.state, user.workspaceSessions, isRecordsMode ? [] : (user as any).workspaceMessages);
   const conversations = getWorkspaceConversations(workspaceState);
-  const mediaItems = getWorkspaceMediaItems(workspaceState);
-  const assetMediaItems = getWorkspaceAssetMediaItems(workspaceState);
+  const mediaItems = getMediaAssetItems(user.userAssetStates, "conversation");
+  const assetMediaItems = getMediaAssetItems(user.userAssetStates, "asset");
   const mediaByUrl = new Map<string, AdminMediaItem>();
   for (const media of [...mediaItems, ...assetMediaItems]) {
     mediaByUrl.set(media.url, media);
@@ -352,7 +553,8 @@ export async function GET(request: Request) {
     const creditSource = getCreditSource(item.metadata);
     const ledgerUrl = getLedgerMediaUrls(item.metadata)[0] ?? "";
     const matchedMedia = ledgerUrl ? mediaByUrl.get(ledgerUrl) ?? mediaByUrl.get(normalizeMediaUrlForAdmin(ledgerUrl)) : item.requestId ? mediaByUrl.get(item.requestId) : undefined;
-    const flowItem: AdminCreditFlowItem = { id: item.id, requestId: item.requestId ?? item.id, kind: item.kind === "video" ? "video" : "image", systemName: matchedMedia?.systemName || "", displayName: matchedMedia?.name || item.label || (item.kind === "video" ? "视频" : "图片"), url: matchedMedia?.url || ledgerUrl, status: getMetadataString(item.metadata, "status") === "failed" ? "failed" : "success", errorText: getMetadataString(item.metadata, "failureReason") || (matchedMedia?.isDeleted ? "用户已删除" : undefined), deletedAtLabel: matchedMedia?.deletedAtLabel, credits: item.credits, expectedCredits: getLedgerExpectedCredits(item, creditSettings.creditsPerCny), totalTokens: item.totalTokens, usd: item.usd, cny: item.cny, count: item.kind === "video" ? item.videoCount : item.imageCount, model: item.model || "-", parameters: matchedMedia ? [matchedMedia.model, matchedMedia.ratio, [matchedMedia.size, matchedMedia.resolution].filter((value) => value && value !== "-").join(" "), matchedMedia.type === "video" ? matchedMedia.duration : ""].filter((value) => value && value !== "-").join(" | ") : getModelLabel(item.kind === "video" ? "video" : "image", item.model || "-"), isChargeDisabled: getMetadataBoolean(item.metadata, "creditChargeDisabled"), isCostUnavailable: !getMetadataBoolean(item.metadata, "creditChargeDisabled") && item.credits === 0 && item.usd === 0 && item.cny === 0, promptText: matchedMedia?.prompt || getMetadataString(item.metadata, "originalPrompt") || getMetadataString(item.metadata, "prompt"), createdAtLabel: formatShortDate(item.createdAt), createdAtTs: item.createdAt.getTime() };
+    const flowKind = matchedMedia?.type ?? (item.kind === "video" ? "video" : "image");
+    const flowItem: AdminCreditFlowItem = { id: item.id, requestId: item.requestId ?? item.id, kind: flowKind, systemName: matchedMedia?.systemName || "", displayName: matchedMedia?.name || item.label || (flowKind === "video" ? "视频" : "图片"), url: matchedMedia?.url || ledgerUrl, status: getMetadataString(item.metadata, "status") === "failed" ? "failed" : "success", errorText: getMetadataString(item.metadata, "failureReason") || (matchedMedia?.isDeleted ? "用户已删除" : undefined), deletedAtLabel: matchedMedia?.deletedAtLabel, credits: item.credits, expectedCredits: getLedgerExpectedCredits(item, creditSettings.creditsPerCny), totalTokens: item.totalTokens, usd: item.usd, cny: item.cny, count: flowKind === "video" ? Math.max(item.videoCount, 1) : Math.max(item.imageCount, 1), model: item.model || "-", parameters: matchedMedia ? [matchedMedia.model, matchedMedia.ratio, [matchedMedia.size, matchedMedia.resolution].filter((value) => value && value !== "-").join(" "), matchedMedia.type === "video" ? matchedMedia.duration : ""].filter((value) => value && value !== "-").join(" | ") : getModelLabel(flowKind, item.model || "-"), isChargeDisabled: getMetadataBoolean(item.metadata, "creditChargeDisabled"), isCostUnavailable: !getMetadataBoolean(item.metadata, "creditChargeDisabled") && item.credits === 0 && item.usd === 0 && item.cny === 0, promptText: matchedMedia?.prompt || getMetadataString(item.metadata, "originalPrompt") || getMetadataString(item.metadata, "prompt"), createdAtLabel: formatShortDate(item.createdAt), createdAtTs: item.createdAt.getTime() };
     if (item.requestId) creditLookup.set(item.requestId, flowItem);
     if (flowItem.url) {
       creditLookup.set(flowItem.url, flowItem);
@@ -395,7 +597,7 @@ export async function GET(request: Request) {
     detail.updatedAtLabel = conversation.updatedAtLabel;
     detail.updatedAtTs = conversation.updatedAtTs;
     const existingUrls = new Set(detail.mediaItems.map((media) => media.url).filter(Boolean).flatMap((url) => [url, normalizeMediaUrlForAdmin(url)]));
-    [...mediaItems].filter((media) => media.createdAtTs && media.createdAtTs <= (conversation.updatedAtTs ?? Number.MAX_SAFE_INTEGER)).forEach((media, index) => {
+    [...mediaItems].filter((media) => media.conversationId ? media.conversationId === conversation.id : media.createdAtTs && media.createdAtTs <= (conversation.updatedAtTs ?? Number.MAX_SAFE_INTEGER)).forEach((media, index) => {
       if (existingUrls.has(media.url) || existingUrls.has(normalizeMediaUrlForAdmin(media.url))) return;
       detail.mediaItems.push(makeMediaFlowItem(media, index, creditLookup));
       existingUrls.add(media.url);

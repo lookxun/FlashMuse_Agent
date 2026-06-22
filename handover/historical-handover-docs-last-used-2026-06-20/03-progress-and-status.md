@@ -2,6 +2,33 @@
 
 ## 当前已完成内容
 
+### 2026-06-20 线上追加：媒体新表重复、分类移动、排序和前端内存去重修复
+
+- 本轮用户反馈媒体新表上线后两个新问题：第一，对话流生成视频在资产库里仍出现两条相同视频，怀疑远程 URL 和本地 URL 同时存在；第二，资产库移动分类失效，从“生成图片”移动到“角色图片”后生成图片里没有了，角色图片里也没有。用户要求不要单点修，要查所有媒体新表相关链路并先修根因。
+- 排查结论 1：新表存在实时闭环缺口。视频/图片刚生成时可能先以供应商远程临时 URL 写入 `MediaAsset`；后台保存完成后前端将消息里的 URL 替换为本地 `/generated/...`，`upsertWorkspaceMessages()` 又会把本地 URL 当另一条媒体 upsert。旧迁移脚本能合并历史重复，但线上运行时缺少“远程保存成本地后立即合并新表”的通用逻辑。
+- 排查结论 2：资产库分类移动、重命名、删除、恢复仍主要改前端 `assets`/旧 workspace JSON，而资产库分页读取已切到 `UserAssetState + MediaAsset`。所以移动分类后，新表 `UserAssetState.currentCategory` 没变，刷新或分页后目标分类读不到。
+- 已新增 `src/lib/media-assets.ts` 作为媒体新表服务层，统一提供 `normalizeMediaAssetUrl()`、`canonicalizeSavedMediaUrl()`、`canonicalizeSavedMediaJobForUser()`。当 `.runtime/media-save-jobs.json` 显示远程 URL 已保存成本地 URL 时，会保留本地媒体、合并远程媒体成本/流水/参数/提示词，并把远程媒体 `archivedAt/archiveReason=duplicate_remote_url/duplicateOfMediaAssetId`、对应 `UserAssetState.hiddenAt/hiddenReason=duplicate_remote_url`。
+- 已接入实时去重闭环：`/api/media-save-status` 返回 saved job 时会调用 `canonicalizeSavedMediaJobForUser()`；`/api/media-assets` 写新表后会调用 `canonicalizeSavedMediaUrl()`；`src/lib/workspace-sessions.ts` 同步消息媒体后也会调用同一逻辑。这样后续新生成媒体不应再出现“远程 + 本地”可见双记录。
+- 已扩展 `/api/media-assets`：`POST` 继续负责资产库生成/上传写入 `MediaAsset + UserAssetState`；新增 `PATCH` 负责用户资产状态写回，支持移动分类、重命名、软删除和恢复。前端 `chat-workbench.tsx` 的移动分类、重命名、删除、恢复均已调用该接口。
+- 已修资产库排序。移动分类时给 `UserAssetState.sortOrder` 写时间戳级值，让新移动的资产在目标分类排到首位；但旧迁移数据里存在小 `sortOrder`，会干扰整体“最新优先”。最终规则改为：只有 `sortOrder > 1_000_000_000` 这种时间戳级新移动值才优先，否则按 `MediaAsset.firstSeenAt desc / createdAt desc / id desc` 最新优先。角色/场景/分镜的虚线生成卡仍固定第一，最新媒体显示在它右边。
+- 已修前端资产库内存重复。分类切换、分页加载、`@` 弹窗补拉分类时，前端现在按 `mediaId -> normalize(url) -> id` 做全局去重；加载分类第一页时按服务端返回顺序替换该分类旧内存项；分页加载更多才追加。移动分类时也会按同一 identity key 清理旧副本，避免“每切一次分类同一图片多一张”。用户反馈的 `1779127907564-da950827-0` 类现象判断为前端内存重复显示，线上新表按该片段未查到真实多条。
+- 线上部署和验证：多次用 `E:\project\【2】server\马来西亚服务器\ByteplusVPS.pem` 登录马来，上传压缩包到 `/var/www/flashmuse/tmp/`，备份到 `.deploy-backups/20260620194758-media-new-table-fix`、`20260620195515-media-move-sort-fix`、`20260620195952-media-move-front-ui-fix`、`20260620200330-asset-order-fix`、`20260620201200-asset-order-server-fix`、`20260620202220-asset-dedupe-ui-fix`，每次执行 `/usr/local/bin/deploy-flashmuse-production.sh`。线上 build 均通过，仅有既有 Turbopack/NFT tracing warning，PM2 `flashmuse` online，阿里 `_next/static` 已同步。
+- 线上账号 `ID_636611` 验证：部署前 `node scripts/audit-visible-duplicate-media.mjs --user=ID_636611` 显示 `visibleDuplicateGroups=6`，包含 4 组图片和 2 组视频的远程/本地重复；执行 `node scripts/migrate-user-media-assets.mjs --user=ID_636611 --apply` 后复审 `visibleDuplicateGroups=0`、`visibleDuplicateItemsExtra=0`，`node scripts/audit-user-media-cost-gaps.mjs --user=ID_636611` 显示 `unmatchedLedgers=0`、`partialLedgers=0`。
+- 分类移动线上验证：通过临时 session 调用线上 `/api/media-assets PATCH`，将一张 `conversation_images` 临时移动到 `character_image`，结果 `character_image 31 -> 32`、`conversation_images 154 -> 153`；恢复后计数回到原值。排序验证中移动后目标分类第一页第一条就是刚移动的资产；最终角色图片接口前 5 个为 `角色33 / 角色31 / 角色30 / 角色29 / image_9_d22`，时间递减，说明最新优先已恢复。
+- 当前本地/Git 状态提醒：这些修复已线上部署，但仍未提交/推送 GitHub。本地还有此前大量未提交改动和本轮新增 `src/lib/media-assets.ts`、`src/app/api/media-assets/` 等。接手后先 `git status`、`git diff`、`npx tsc --noEmit`，不要覆盖未提交内容。
+
+### 2026-06-20 线上追加：后台新表口径、新生成媒体补写、历史排序和审核提示修复
+
+- 本轮用户继续排查新媒体表上线后的实际问题，所有代码改动均已部署线上，当前未提交 GitHub。后台已改为新表口径：`MediaAsset` 保存媒体事实，`UserAssetState` 保存名称/分类/删除/审核状态，`WorkspaceSession + WorkspaceMessage` 只负责对话结构，`CreditLedger` 负责扣费。后台生成记录首屏统计、概览资产/图片/视频数、用户展开详情、媒体列表、资产库列表都优先读 `MediaAsset + UserAssetState`。涉及 `src/app/admin/page.tsx`、`src/app/admin/api/records/user-detail/route.ts`、`src/app/admin/admin-users-panel.tsx`。
+- 已修后台“视频封面同时出现在对话流图片里”。后台新表读取时，如果媒体 URL 是视频或匹配到的新表媒体类型是 `video`，即使旧流水 `kind=image` 也按视频显示；疑似 `/video-posters/` 或 `video_` 命名的封面图不再进入对话流图片。用户反馈的 `d0` 一批视频封面问题已按该逻辑处理。
+- 已修新生成媒体刷新后消失。新增 `src/app/api/media-assets/route.ts`，资产库生成/上传成功后前端调用该接口直接 upsert `MediaAsset + UserAssetState`。同时 `src/lib/workspace-sessions.ts` 的 `upsertWorkspaceMessages()` 保存消息后会从消息中抽取对话流生成图片、视频、用户上传图，同步写入 `MediaAsset + UserAssetState`。这保证以后新生成/上传不再只存在旧 workspace JSON。
+- 已把用户刚才消失的新媒体补回。对 `ID_636611` 执行 `node scripts/migrate-user-media-assets.mjs --user=ID_636611 --apply`，重新从旧 workspace/历史消息/流水补写新表、合并重复、补缩略图。当前 `ID_636611` 可见媒体 `271`，归档重复 `164`，可见分类为 `character_image=27`、`scene_image=10`、`shot_image=19`、`conversation_images=150`、`conversation_videos=65`，可见重复 `0`。注意成本审计总表里历史归档项成本会让全量 mediaCostSums 大于 ledger，总体看可见媒体和重复审计即可。
+- 已修历史排序。用户发现“在吗”没有新消息却排到前面，经查该会话 `lastMessageAt=2026-06-05`，但 `WorkspaceSession.updatedAt` 被保存/迁移刷新到 `2026-06-19`。现在用户侧历史分页接口优先按每个会话最新 `WorkspaceMessage.createdAt` 排序，没有消息才回退 `WorkspaceSession.updatedAt`，再按 `sessionId` 兜底。涉及 `/api/workspace-state?summary=1`、`historyOnly=1`、`panel=chat`。
+- 已修资产库重复加载。之前点击资产库入口固定 `loadWorkspaceAssets(true, ...)`，会绕过缓存；分类切换也强制重拉。现在前端维护 `loadedAssetFilters`，入口和分类切换默认 `force=false`，已加载过的分类直接使用内存，滚动到底仍按 `assetOffset/assetLimit=60` 拉下一页。
+- 已修 `@` 引用弹窗只显示已加载分类的问题。`@` 弹窗原来只过滤内存 `assets`，如果用户只加载过分镜分类，就只显示分镜。现在打开主输入框 `@` 和资产生成 `@` 时，会自动补拉 `character_image / scene_image / shot_image / conversation_uploads` 四类；加载态改为弹窗中间的蓝色转圈 + `加载中...`。
+- 已修 BytePlus 真人参考图自动审核体验。失败也会写回新表/旧 workspace 的 `bytePlusAssetStatus=Failed`，后续同图不再无限重复审核；但按用户要求允许最多自动审核 3 次，次数写在 `bytePlusAssetError` 内部前缀 `__byteplus_review_attempts=N__`，前端通过 workspace-state 读取时会隐藏前缀。同一视频消息的“系统检测到真人图片，需要审核...”系统提示只出现一次，重新生成不再追加。
+- 已拆分错误文案：参考图素材审核版权拒绝显示 `审核图片可能涉及版权限制，平台已拒绝，请换其它图片重试。`；输出视频轮询阶段版权风控仍显示 `输出视频可能涉及版权限制，平台拒绝生成。重新生成有可能会成功。`。B116 已确认是输出视频版权风控，`referenceCount=0`，不是审核图片被拒。B111 是参考图素材审核阶段被版权拒绝。
+
 ### 2026-06-20 线上追加：整理资产迁移脚本并迁移其它账号
 
 - 本轮按用户要求继续“整理并验证资产新表迁移流程，然后逐账号迁移资产库”。新增正式脚本 `scripts/migrate-user-media-assets.mjs`，用于单账号按顺序执行 rebuild、重复合并、字段补全、缩略图补全和校验；新增 `scripts/migrate-selected-media-users.mjs`，用于多个账号逐个调用单账号流程并把完整日志写入 `.runtime/media-migration-logs/`；新增 `scripts/audit-visible-duplicate-media.mjs` 只检查可见媒体重复；新增 `scripts/audit-user-media-cost-gaps.mjs` 检查媒体流水是否有无法匹配的成本；新增说明 `scripts/README-media-assets.md`。

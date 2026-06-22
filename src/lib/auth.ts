@@ -7,7 +7,7 @@ import { prisma } from "@/lib/prisma";
 const scrypt = promisify(scryptCallback);
 
 export const authCookieName = "flashmuse-session";
-const sessionMaxAgeSeconds = 60 * 60 * 24 * 30;
+const sessionMaxAgeSeconds = 60 * 60;
 const authSecret = process.env.AUTH_SECRET || "flashmuse-local-dev-secret-change-me";
 const forceInsecureAuthCookie = process.env.FORCE_INSECURE_AUTH_COOKIE === "true";
 const authCookieDomain = process.env.AUTH_COOKIE_DOMAIN?.trim() || undefined;
@@ -184,9 +184,36 @@ export async function getCurrentSession() {
   }
 
   await prisma.session.update({ where: { id: session.id }, data: { lastSeenAt: new Date() } }).catch(() => null);
-  const token = tokenByHash.get(session.tokenHash);
-  if (authCookieDomain && token) setAuthCookie(cookieStore, token, sessionMaxAgeSeconds);
   return session;
+}
+
+export async function refreshCurrentSessionActivity() {
+  const cookieStore = await cookies();
+  const rawCookieHeader = (await headers()).get("cookie") ?? "";
+  const tokens = getAuthCookieCandidates(cookieStore, rawCookieHeader);
+  if (tokens.length === 0) return false;
+
+  const tokenByHash = new Map(tokens.map((token) => [hashSessionToken(token), token]));
+  const sessions = await prisma.session.findMany({
+    where: { tokenHash: { in: Array.from(tokenByHash.keys()) } },
+    include: { user: true },
+  });
+  const now = new Date();
+  const session = sessions.find((item) => item.expiresAt > now && !item.user.disabled) ?? null;
+
+  const expiredSessionIds = sessions.filter((item) => item.expiresAt <= now).map((item) => item.id);
+  if (expiredSessionIds.length > 0) await prisma.session.deleteMany({ where: { id: { in: expiredSessionIds } } }).catch(() => null);
+
+  if (!session) {
+    await clearAuthCookie();
+    return false;
+  }
+
+  const token = tokenByHash.get(session.tokenHash);
+  if (!token) return false;
+  await prisma.session.update({ where: { id: session.id }, data: { expiresAt: new Date(Date.now() + sessionMaxAgeSeconds * 1000), lastSeenAt: new Date() } }).catch(() => null);
+  setAuthCookie(cookieStore, token, sessionMaxAgeSeconds);
+  return true;
 }
 
 export async function getCurrentUser() {

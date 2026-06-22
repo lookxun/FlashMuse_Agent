@@ -4,7 +4,17 @@ import { Fragment, useMemo, useRef, useState, useTransition, type ReactNode } fr
 import { RiArrowDownSLine, RiArrowRightSLine, RiCloseLine, RiInformation2Line, RiQuillPenAiLine, RiSearchLine } from "react-icons/ri";
 import { useBodyScrollLock } from "@/components/use-body-scroll-lock";
 import { AdminHoverImagePreview } from "./admin-hover-image-preview";
+import { getCachedAdminDetail, setCachedAdminDetail } from "./admin-detail-cache";
 import { fallbackAdminImageToOriginal, getAdminMediaSourceUrl, getAdminMediaThumbnailUrl } from "./admin-media-url";
+
+function AdminDetailLoading({ label }: { label: string }) {
+  return (
+    <div className="flex items-center justify-center gap-2 px-3 py-8 text-center text-[13px] text-[#888888]">
+      <span className="h-4 w-4 animate-spin rounded-full border-2 border-[#d8e6ff] border-t-[#367cee]" aria-hidden="true" />
+      <span>{label}</span>
+    </div>
+  );
+}
 
 function getLocalVideoPosterUrl(url: string) {
   const userVideoMatch = url.match(/^\/generated\/users\/([^/]+)\/videos\//);
@@ -618,12 +628,19 @@ export function AdminCreditsPanel({ settings, stats, rows }: { settings: AdminCr
   const [creditFlowDialogUser, setCreditFlowDialogUser] = useState<AdminCreditUser | null>(null);
   const [assetGenerationDialogUser, setAssetGenerationDialogUser] = useState<AdminCreditUser | null>(null);
   const [promptToolDialogUser, setPromptToolDialogUser] = useState<AdminCreditUser | null>(null);
+  const [loadingDialogTitle, setLoadingDialogTitle] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
+  const isDetailLoading = loadingUserIds.size > 0;
 
   useBodyScrollLock(Boolean(adjustPopover));
 
   const loadUserDetail = async (userId: string) => {
     if (detailsByUserId[userId] || loadingUserIds.has(userId)) return;
+    const cached = getCachedAdminDetail<{ creditUser: AdminCreditUser }>(userId, "records");
+    if (cached?.creditUser) {
+      setDetailsByUserId((current) => ({ ...current, [userId]: cached.creditUser }));
+      return;
+    }
     setLoadingUserIds((current) => new Set(current).add(userId));
     setDetailErrors((current) => {
       const next = { ...current };
@@ -631,9 +648,10 @@ export function AdminCreditsPanel({ settings, stats, rows }: { settings: AdminCr
       return next;
     });
     try {
-      const response = await fetch(`/admin/api/records/user-detail?userId=${encodeURIComponent(userId)}`);
+      const response = await fetch(`/admin/api/records/user-detail?userId=${encodeURIComponent(userId)}&mode=records`);
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(typeof payload.error === "string" ? payload.error : "加载失败");
+      setCachedAdminDetail(userId, "records", payload.detail);
       setDetailsByUserId((current) => ({ ...current, [userId]: payload.detail.creditUser as AdminCreditUser }));
     } catch (error) {
       setDetailErrors((current) => ({ ...current, [userId]: error instanceof Error ? error.message : "加载失败" }));
@@ -646,7 +664,50 @@ export function AdminCreditsPanel({ settings, stats, rows }: { settings: AdminCr
     }
   };
 
+  const loadFullCreditDetailForDialog = async (userId: string, title: string) => {
+    const cached = getCachedAdminDetail<{ creditUser: AdminCreditUser }>(userId, "full");
+    if (cached?.creditUser) return cached.creditUser;
+    const existing = detailsByUserId[userId];
+    if (existing && (existing.currentCreditDetails.length > 0 || existing.conversationCreditDetails.length > 0 || existing.assetGenerationCreditDetails.length > 0 || existing.promptToolCreditDetails.length > 0)) return existing;
+    setLoadingUserIds((current) => new Set(current).add(userId));
+    setLoadingDialogTitle(title);
+    setDetailErrors((current) => {
+      const next = { ...current };
+      delete next[userId];
+      return next;
+    });
+    try {
+      const response = await fetch(`/admin/api/records/user-detail?userId=${encodeURIComponent(userId)}`);
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(typeof payload.error === "string" ? payload.error : "加载失败");
+      const detail = payload.detail.creditUser as AdminCreditUser;
+      setCachedAdminDetail(userId, "full", payload.detail);
+      setDetailsByUserId((current) => ({ ...current, [userId]: detail }));
+      return detail;
+    } catch (error) {
+      setDetailErrors((current) => ({ ...current, [userId]: error instanceof Error ? error.message : "加载失败" }));
+      return undefined;
+    } finally {
+      setLoadingUserIds((current) => {
+        const next = new Set(current);
+        next.delete(userId);
+        return next;
+      });
+      setLoadingDialogTitle(null);
+    }
+  };
+
+  const openCreditDialog = async (userId: string, type: "current" | "conversation" | "asset" | "prompt") => {
+    const detail = await loadFullCreditDetailForDialog(userId, type === "current" ? "正在加载当前积分明细..." : "正在加载积分明细...");
+    if (!detail) return;
+    if (type === "current") setCurrentCreditDialogUser(detail);
+    if (type === "conversation") setCreditFlowDialogUser(detail);
+    if (type === "asset") setAssetGenerationDialogUser(detail);
+    if (type === "prompt") setPromptToolDialogUser(detail);
+  };
+
   const toggleExpandedUser = (userId: string) => {
+    if (isDetailLoading && !loadingUserIds.has(userId)) return;
     setExpandedUserIds((current) => {
       const next = new Set(current);
       if (next.has(userId)) next.delete(userId);
@@ -832,12 +893,13 @@ export function AdminCreditsPanel({ settings, stats, rows }: { settings: AdminCr
               const detailRow = detailsByUserId[row.id] ?? row;
               const isLoadingDetail = loadingUserIds.has(row.id);
               const detailError = detailErrors[row.id];
+              const isRowDisabled = isDetailLoading && !isLoadingDetail;
 
               return (
                 <Fragment key={row.id}>
-                  <tr onClick={() => toggleExpandedUser(row.id)} className="cursor-pointer text-[#333333] transition hover:bg-[#fcfcfc]">
+                  <tr onClick={() => toggleExpandedUser(row.id)} className={`text-[#333333] transition ${isRowDisabled ? "cursor-not-allowed opacity-55" : "cursor-pointer hover:bg-[#fcfcfc]"}`}>
                     <td className="border-b border-[#f2f2f2] py-3 pl-6 pr-0 text-left">
-                      <button type="button" onClick={(event) => { event.stopPropagation(); toggleExpandedUser(row.id); }} className="inline-flex h-7 w-7 items-center justify-center rounded-[7px] text-[#777777] transition hover:bg-[#f2f2f2] hover:text-[#111111]" aria-label={isExpanded ? "收起积分详情" : "展开积分详情"}>
+                      <button type="button" disabled={isRowDisabled} onClick={(event) => { event.stopPropagation(); toggleExpandedUser(row.id); }} className="inline-flex h-7 w-7 items-center justify-center rounded-[7px] text-[#777777] transition hover:bg-[#f2f2f2] hover:text-[#111111] disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-[#777777]" aria-label={isExpanded ? "收起积分详情" : "展开积分详情"}>
                         {isExpanded ? <RiArrowDownSLine className="h-5 w-5" /> : <RiArrowRightSLine className="h-5 w-5" />}
                       </button>
                     </td>
@@ -854,19 +916,19 @@ export function AdminCreditsPanel({ settings, stats, rows }: { settings: AdminCr
                   {isExpanded ? (
                     <tr className="bg-[#fbfbfb]">
                       <td colSpan={8} className="border-b border-[#f2f2f2] px-4 py-4">
-                        {isLoadingDetail ? <div className="px-3 py-8 text-center text-[13px] text-[#999999]">正在加载积分详情...</div> : detailError ? <div className="px-3 py-8 text-center text-[13px] text-red-500">{detailError}</div> : (
+                        {isLoadingDetail ? <AdminDetailLoading label="正在加载积分详情..." /> : detailError ? <div className="px-3 py-8 text-center text-[13px] text-red-500">{detailError}</div> : (
                         <div className="grid grid-cols-3 gap-[5px] px-1 py-1 text-left">
                           <div className="space-y-px">
-                            <CreditDetailItem label="当前积分" value={detailRow.currentCredits.toLocaleString("en-US")} onClick={() => setCurrentCreditDialogUser(detailRow)} />
+                            <CreditDetailItem label="当前积分" value={detailRow.currentCredits.toLocaleString("en-US")} onClick={() => void openCreditDialog(detailRow.id, "current")} />
                             <CreditDetailItem label="已赠送积分" value={formatSignedCredits(detailRow.giftedCredits)} />
                             <CreditDetailChildItem marker="dash" label="注册送积分" value={formatSignedCredits(detailRow.signupGiftedCredits)} />
                             <CreditDetailChildItem marker="dash" label="后台调整赠送积分" value={formatSignedCredits(detailRow.adminAdjustedGiftedCredits)} />
                           </div>
                           <div className="space-y-px">
                             <CreditDetailItem label="已消耗积分" value={`-${detailRow.consumedCredits.toLocaleString("en-US")}`} />
-                            <CreditDetailChildItem marker="dash" label="对话流消耗积分详细" value={`-${detailRow.conversationConsumedCredits.toLocaleString("en-US")}`} onClick={() => setCreditFlowDialogUser(detailRow)} />
-                            <CreditDetailChildItem marker="dash" label="资产库消耗积分详细" value={`-${detailRow.assetGenerationConsumedCredits.toLocaleString("en-US")}`} onClick={() => setAssetGenerationDialogUser(detailRow)} />
-                            <CreditDetailChildItem marker="dash" label="反推/优化提示词消耗积分详细" value={`-${detailRow.promptToolConsumedCredits.toLocaleString("en-US")}`} onClick={() => setPromptToolDialogUser(detailRow)} />
+                            <CreditDetailChildItem marker="dash" label="对话流消耗积分详细" value={`-${detailRow.conversationConsumedCredits.toLocaleString("en-US")}`} onClick={() => void openCreditDialog(detailRow.id, "conversation")} />
+                            <CreditDetailChildItem marker="dash" label="资产库消耗积分详细" value={`-${detailRow.assetGenerationConsumedCredits.toLocaleString("en-US")}`} onClick={() => void openCreditDialog(detailRow.id, "asset")} />
+                            <CreditDetailChildItem marker="dash" label="反推/优化提示词消耗积分详细" value={`-${detailRow.promptToolConsumedCredits.toLocaleString("en-US")}`} onClick={() => void openCreditDialog(detailRow.id, "prompt")} />
                           </div>
                           <div className="space-y-px">
                             <CreditDetailItem label="消耗Token" value={detailRow.consumedTokens.toLocaleString("en-US")} />
@@ -921,6 +983,7 @@ export function AdminCreditsPanel({ settings, stats, rows }: { settings: AdminCr
       {creditFlowDialogUser ? <CreditFlowDialog user={creditFlowDialogUser} onClose={() => setCreditFlowDialogUser(null)} /> : null}
       {assetGenerationDialogUser ? <CreditCategoryDialog title="资产库消耗积分详细" user={assetGenerationDialogUser} categories={assetGenerationDialogUser.assetGenerationCreditDetails} onClose={() => setAssetGenerationDialogUser(null)} /> : null}
       {promptToolDialogUser ? <CreditCategoryDialog title="反推/优化提示词消耗积分详细" user={promptToolDialogUser} categories={promptToolDialogUser.promptToolCreditDetails} onClose={() => setPromptToolDialogUser(null)} /> : null}
+      {loadingDialogTitle ? <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/42 px-8 py-8 backdrop-blur-[4px]"><div className="w-[360px] rounded-[12px] bg-white shadow-[0_24px_80px_rgba(0,0,0,0.22)]"><AdminDetailLoading label={loadingDialogTitle} /></div></div> : null}
     </>
   );
 }

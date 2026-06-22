@@ -2,20 +2,23 @@ import { getAdminEmails, isAdminEmail } from "@/lib/admin";
 import { getCurrentAdminEmail } from "@/lib/admin-auth";
 import { bytePlusImageGenerationModels, bytePlusVideoGenerationModels, imageGenerationModels, videoGenerationModels } from "@/lib/models";
 import { prisma } from "@/lib/prisma";
+import Link from "next/link";
 import { AdminLogoutButton } from "./admin-logout-button";
 import { AdminLoginForm } from "./admin-login-form";
 import { AdminCreditsPanel, type AdminCreditCategoryDetail, type AdminCreditConversationDetail, type AdminCreditFlowItem, type AdminCreditUser } from "./admin-credits-panel";
 import { AdminRecordsPanel, type AdminRecordSummary } from "./admin-records-panel";
+import { AdminServerInfoPanel } from "./admin-server-info-panel";
 import { AdminSystemSettingsPanel } from "./admin-system-settings-panel";
+import { AdminUploadRulesPanel } from "./admin-upload-rules-panel";
 import { AdminUsersPanel, type AdminConversation, type AdminConversationMessage, type AdminMediaItem, type AdminUserRow } from "./admin-users-panel";
 import { getCreditSettings } from "@/lib/credits";
 import { getAdminSystemSettings } from "@/lib/system-settings";
 import type { IconType } from "react-icons";
-import { RiDashboardLine, RiFileList3Line, RiSettingsLine, RiUser3Line, RiVipDiamondLine } from "react-icons/ri";
+import { RiDashboardLine, RiFileList3Line, RiListSettingsLine, RiServerLine, RiSettingsLine, RiUser3Line, RiVipDiamondLine } from "react-icons/ri";
 
 export const dynamic = "force-dynamic";
 
-type AdminTab = "overview" | "users" | "credits" | "records" | "settings";
+type AdminTab = "overview" | "users" | "credits" | "records" | "settings" | "upload-rules" | "server";
 
 const adminNavItems: Array<{ key: AdminTab; label: string; icon: IconType }> = [
   { key: "overview", label: "概览", icon: RiDashboardLine },
@@ -23,11 +26,13 @@ const adminNavItems: Array<{ key: AdminTab; label: string; icon: IconType }> = [
   { key: "credits", label: "积分管理", icon: RiVipDiamondLine },
   { key: "records", label: "生成记录", icon: RiFileList3Line },
   { key: "settings", label: "系统设置", icon: RiSettingsLine },
+  { key: "upload-rules", label: "上传规则", icon: RiListSettingsLine },
+  { key: "server", label: "服务器信息", icon: RiServerLine },
 ];
 
 function getAdminTab(value: string | string[] | undefined): AdminTab {
   const tab = Array.isArray(value) ? value[0] : value;
-  if (tab === "users" || tab === "credits" || tab === "records" || tab === "settings") return tab;
+  if (tab === "users" || tab === "credits" || tab === "records" || tab === "settings" || tab === "upload-rules" || tab === "server") return tab;
   return "overview";
 }
 
@@ -838,6 +843,10 @@ function getPromptToolCategory(source: string) {
   return { id: "optimization", title: "优化提示词" };
 }
 
+function isUploadPromptPlaceholder(value: string) {
+  return value === "上传图片" || value === "资产库上传" || value === "对话流上传";
+}
+
 function getWorkspaceAssetMediaItems(state: unknown): AdminMediaItem[] {
   if (!isRecord(state) || !Array.isArray(state.assets)) return [];
 
@@ -862,12 +871,12 @@ function getWorkspaceAssetMediaItems(state: unknown): AdminMediaItem[] {
       isDeleted: assetType === "trash" || Boolean(asset.deletedAt),
       deletedAtLabel: finiteNumber(asset.deletedAt) > 0 ? formatTimestamp(asset.deletedAt) : undefined,
       isUploadedAsset,
-      isReversePrompt: isUploadedAsset && Boolean(prompt.trim()) && prompt !== "资产库上传",
+      isReversePrompt: isUploadedAsset && Boolean(prompt.trim()) && !isUploadPromptPlaceholder(prompt),
       systemName,
       userName,
       name: formatAdminMediaName(systemName, userName, `资产${index + 1}`),
       url,
-      prompt: prompt === "资产库上传" ? "" : prompt,
+      prompt: isUploadPromptPlaceholder(prompt) ? "" : prompt,
       model: getString(previewMeta?.modelLabel, "-"),
       ratio: getString(previewMeta?.ratio, "-"),
       resolution: getString(previewMeta?.resolution, "-"),
@@ -885,6 +894,103 @@ function getWorkspaceAssetMediaMap(state: unknown) {
     map.set(item.id, item);
     map.set(item.url, item);
     map.set(normalizeMediaUrlForAdmin(item.url), item);
+  }
+  return map;
+}
+
+function isAdminVideoUrl(url: string) {
+  return /\.(mp4|webm|mov|m4v)(\?|#|$)/i.test(url);
+}
+
+function isVideoPosterLikeMedia(url: string, name: string, mediaType: string) {
+  return mediaType !== "video" && (/\/video-posters\//.test(normalizeMediaUrlForAdmin(url)) || /^video_/i.test(name));
+}
+
+function getMediaAssetItems(assetStates: any[], scope: "conversation" | "asset"): AdminMediaItem[] {
+  const assetCategories = new Set(["character_image", "scene_image", "shot_image"]);
+  return assetStates.flatMap((state, index): AdminMediaItem[] => {
+    const media = state?.mediaAsset;
+    if (!media?.url || media.archivedAt || state.hiddenAt) return [];
+    const category = getString(state.currentCategory);
+    const isAssetCategory = assetCategories.has(category);
+    const isConversationCategory = category === "conversation_images" || category === "conversation_uploads" || category === "conversation_videos";
+    if (scope === "asset" && !isAssetCategory) return [];
+    if (scope === "conversation" && !isConversationCategory) return [];
+
+    const systemName = getString(media.systemName) || getString(media.initialName);
+    const currentName = getString(state.currentName);
+    const userName = currentName && currentName !== systemName ? currentName : undefined;
+    const displayName = formatAdminMediaName(systemName, userName, "媒体");
+    if (scope === "conversation" && isVideoPosterLikeMedia(media.url, displayName, getString(media.mediaType))) return [];
+
+    const type = media.mediaType === "video" || isAdminVideoUrl(media.url) ? "video" : "image";
+    const isUploadedAsset = category === "conversation_uploads" || getString(media.sourceKind).includes("upload");
+    const prompt = getString(media.reversePrompt) || getString(media.sourcePrompt);
+    const size = media.width && media.height ? `${media.width} × ${media.height}` : getString(media.imageSize, "-");
+    const deletedAt = state.deletedAt instanceof Date ? state.deletedAt : null;
+    return [{
+      id: getString(media.id, `media-asset-${index}`),
+      requestId: getString(media.requestId),
+      conversationId: getString(media.conversationId),
+      type,
+      assetType: isAssetCategory ? category as "character_image" | "scene_image" | "shot_image" : undefined,
+      isDeleted: Boolean(deletedAt),
+      deletedAtLabel: deletedAt ? formatDate(deletedAt) : undefined,
+      isUploadedAsset,
+      isReversePrompt: isUploadedAsset && Boolean(prompt.trim()) && !isUploadPromptPlaceholder(prompt),
+      systemName,
+      userName,
+      name: displayName === "媒体" ? type === "video" ? `视频${index + 1}` : `图片${index + 1}` : displayName,
+      url: media.url,
+      prompt: isUploadPromptPlaceholder(prompt) ? "" : prompt,
+      model: getString(media.model) ? getModelLabel(type, getString(media.model)) : "-",
+      ratio: getString(media.ratio, "-"),
+      resolution: getString(media.resolution, "-"),
+      duration: type === "video" ? getString(media.videoDuration, "-") : "-",
+      size,
+      style: "-",
+      createdAtTs: media.firstSeenAt instanceof Date ? media.firstSeenAt.getTime() : media.createdAt instanceof Date ? media.createdAt.getTime() : 0,
+    }];
+  });
+}
+
+function getMediaItemMap(items: AdminMediaItem[]) {
+  const map = new Map<string, AdminMediaItem>();
+  for (const item of items) {
+    map.set(item.id, item);
+    map.set(item.url, item);
+    map.set(normalizeMediaUrlForAdmin(item.url), item);
+    if (item.requestId) map.set(item.requestId, item);
+  }
+  return map;
+}
+
+function getMediaItemUrlMap(items: AdminMediaItem[]) {
+  const map = new Map<string, string>();
+  for (const item of items) {
+    if (item.requestId) map.set(item.requestId, item.url);
+  }
+  return map;
+}
+
+function getMediaDeletedInfoMap(items: AdminMediaItem[]) {
+  const map = new Map<string, { deletedAtLabel?: string }>();
+  for (const item of items) {
+    if (!item.isDeleted) continue;
+    const info = { deletedAtLabel: item.deletedAtLabel };
+    map.set(item.url, info);
+    map.set(normalizeMediaUrlForAdmin(item.url), info);
+  }
+  return map;
+}
+
+function getMediaAssetConversationFlowItems(items: AdminMediaItem[]) {
+  const map = new Map<string, AdminCreditFlowItem[]>();
+  for (const item of items) {
+    if (!item.conversationId) continue;
+    const list = map.get(item.conversationId) ?? [];
+    list.push({ id: item.id, requestId: item.requestId || item.id, kind: item.type, systemName: item.systemName || "", displayName: item.name || item.systemName || (item.type === "video" ? "视频" : "图片"), url: item.url, status: "success", errorText: item.isDeleted ? "用户已删除" : undefined, deletedAtLabel: item.deletedAtLabel, credits: 0, totalTokens: 0, usd: 0, cny: 0, count: 1, model: item.model, parameters: formatAdminMediaParameterLine(item, item.type, item.model, item.name || "媒体"), isUploadRecord: item.isUploadedAsset, isReversePrompt: item.isReversePrompt, promptText: item.prompt, createdAtLabel: item.createdAtTs ? formatShortDate(new Date(item.createdAtTs)) : "-", createdAtTs: item.createdAtTs ?? 0 });
+    map.set(item.conversationId, list);
   }
   return map;
 }
@@ -998,6 +1104,37 @@ function getWorkspaceRecordsSummary(state: unknown) {
   return summary;
 }
 
+function getMediaAssetRecordsSummary(assetStates: any[]) {
+  const summary = { imageGenerationCount: 0, imageGenerationDeletedCount: 0, videoGenerationCount: 0, videoGenerationDeletedCount: 0, uploadImageCount: 0, uploadImageDeletedCount: 0, savedAssetCount: 0, latestRecordTs: 0 };
+  for (const state of assetStates) {
+    const media = state?.mediaAsset;
+    if (!media?.url || media.archivedAt || state.hiddenAt) continue;
+    const category = getString(state.currentCategory);
+    const isDeleted = Boolean(state.deletedAt);
+    const systemName = getString(media.systemName) || getString(media.initialName);
+    const currentName = getString(state.currentName);
+    const displayName = formatAdminMediaName(systemName, currentName && currentName !== systemName ? currentName : undefined, "媒体");
+    if (isVideoPosterLikeMedia(media.url, displayName, getString(media.mediaType))) continue;
+
+    const mediaType = media.mediaType === "video" || isAdminVideoUrl(media.url) ? "video" : "image";
+    const isUpload = category === "conversation_uploads" || getString(media.sourceKind).includes("upload");
+    const ts = media.firstSeenAt instanceof Date ? media.firstSeenAt.getTime() : media.createdAt instanceof Date ? media.createdAt.getTime() : 0;
+    summary.latestRecordTs = Math.max(summary.latestRecordTs, ts, state.updatedAt instanceof Date ? state.updatedAt.getTime() : 0);
+    summary.savedAssetCount += 1;
+    if (isUpload && mediaType !== "video") {
+      summary.uploadImageCount += 1;
+      if (isDeleted) summary.uploadImageDeletedCount += 1;
+    } else if (mediaType === "video") {
+      summary.videoGenerationCount += 1;
+      if (isDeleted) summary.videoGenerationDeletedCount += 1;
+    } else {
+      summary.imageGenerationCount += 1;
+      if (isDeleted) summary.imageGenerationDeletedCount += 1;
+    }
+  }
+  return summary;
+}
+
 function AdminShell({ adminEmail, activeTab, children }: { adminEmail: string; activeTab: AdminTab; children: React.ReactNode }) {
   return (
     <main className="min-h-screen bg-[#f6f7f9] text-[#111111]">
@@ -1017,10 +1154,10 @@ function AdminShell({ adminEmail, activeTab, children }: { adminEmail: string; a
                 const Icon = item.icon;
 
                 return (
-                  <a key={item.key} href={item.key === "overview" ? "/admin" : `/admin?tab=${item.key}`} className={`flex h-9 items-center gap-2 rounded-[9px] px-3 text-[13px] font-medium transition ${activeTab === item.key ? "bg-[#111111] text-white" : "text-[#555555] hover:bg-[#f1f1f1] hover:text-[#111111]"}`}>
+                  <Link key={item.key} href={item.key === "overview" ? "/admin" : `/admin?tab=${item.key}`} className={`flex h-9 items-center gap-2 rounded-[9px] px-3 text-[13px] font-medium transition ${activeTab === item.key ? "bg-[#111111] text-white" : "text-[#555555] hover:bg-[#f1f1f1] hover:text-[#111111]"}`}>
                     <Icon className="h-4 w-4 shrink-0" aria-hidden="true" />
                     <span>{item.label}</span>
-                  </a>
+                  </Link>
                 );
               })}
             </nav>
@@ -1159,6 +1296,22 @@ export default async function AdminPage({ searchParams }: { searchParams?: Promi
     );
   }
 
+  if (activeTab === "upload-rules") {
+    return (
+      <AdminShell adminEmail={currentAdminEmail} activeTab={activeTab}>
+        <AdminUploadRulesPanel />
+      </AdminShell>
+    );
+  }
+
+  if (activeTab === "server") {
+    return (
+      <AdminShell adminEmail={currentAdminEmail} activeTab={activeTab}>
+        <AdminServerInfoPanel />
+      </AdminShell>
+    );
+  }
+
   if (activeTab === "users") {
     const [users, totalUsers, todayUsers, disabledUsers, userTotals] = await Promise.all([
       prisma.user.findMany({
@@ -1238,6 +1391,10 @@ export default async function AdminPage({ searchParams }: { searchParams?: Promi
       map.set(ledger.userId, items);
       return map;
     }, new Map<string, typeof creditLedgers>());
+    const latestCreditTsByUser = creditLedgers.reduce((map, ledger) => {
+      map.set(ledger.userId, Math.max(map.get(ledger.userId) ?? 0, ledger.createdAt.getTime()));
+      return map;
+    }, new Map<string, number>());
     const increasedCredits = creditLedgers.filter((item) => item.direction === "increase").reduce((sum, item) => sum + item.credits, 0);
     const rows: AdminCreditUser[] = users.map((user) => {
       const ledgers = creditLedgersByUser.get(user.id) ?? [];
@@ -1264,7 +1421,11 @@ export default async function AdminPage({ searchParams }: { searchParams?: Promi
         currentCreditDetails: [],
         lastActiveLabel: ledgers[0] ? formatShortDate(ledgers[0].createdAt) : "-",
       };
-    }).sort((left, right) => right.consumedCredits - left.consumedCredits);
+    }).sort((left, right) => {
+      const timeDiff = (latestCreditTsByUser.get(right.id) ?? 0) - (latestCreditTsByUser.get(left.id) ?? 0);
+      if (timeDiff !== 0) return timeDiff;
+      return left.userEmail.localeCompare(right.userEmail);
+    });
 
     return (
       <AdminShell adminEmail={currentAdminEmail} activeTab={activeTab}>
@@ -1282,12 +1443,13 @@ export default async function AdminPage({ searchParams }: { searchParams?: Promi
           workspace: { select: { state: true, updatedAt: true } },
           workspaceSessions: { orderBy: { updatedAt: "desc" }, select: { sessionId: true, title: true, updatedAt: true, deletedAt: true, messagesJson: true, summaryJson: true, usageSummary: true, memorySummary: true } },
           workspaceMessages: { orderBy: { createdAt: "asc" }, select: { sessionId: true, messageJson: true, createdAt: true } },
+          userAssetStates: { where: { hiddenAt: null, mediaAsset: { archivedAt: null } }, include: { mediaAsset: true }, orderBy: { updatedAt: "desc" } },
         },
       }),
-      prisma.creditLedger.findMany({ orderBy: { createdAt: "desc" }, select: { userId: true, createdAt: true } }),
+      prisma.creditLedger.findMany({ where: { direction: "consume" }, orderBy: { createdAt: "desc" }, select: { userId: true, createdAt: true } }),
     ]);
 
-    const latestLedgerTsByUser = recordLedgers.reduce((map, ledger) => {
+    const latestModelInteractionTsByUser = recordLedgers.reduce((map, ledger) => {
       map.set(ledger.userId, Math.max(map.get(ledger.userId) ?? 0, ledger.createdAt.getTime()));
       return map;
     }, new Map<string, number>());
@@ -1295,6 +1457,7 @@ export default async function AdminPage({ searchParams }: { searchParams?: Promi
     const summaries: AdminRecordSummary[] = recordUsers.map((user) => {
       const workspaceState = buildAdminWorkspaceState(user.workspace?.state, user.workspaceSessions, user.workspaceMessages);
       const recordSummary = getWorkspaceRecordsSummary(workspaceState);
+      const mediaSummary = getMediaAssetRecordsSummary(user.userAssetStates);
       return {
         id: user.id,
         email: user.email,
@@ -1302,15 +1465,15 @@ export default async function AdminPage({ searchParams }: { searchParams?: Promi
         avatarUrl: user.avatarUrl,
         conversationCount: recordSummary.conversationCount,
         conversationDeletedCount: recordSummary.conversationDeletedCount,
-        imageGenerationCount: Math.max(user.generatedImageCount, recordSummary.imageGenerationCount),
-        imageGenerationDeletedCount: recordSummary.imageGenerationDeletedCount,
-        videoGenerationCount: Math.max(user.generatedVideoCount, recordSummary.videoGenerationCount),
-        videoGenerationDeletedCount: recordSummary.videoGenerationDeletedCount,
-        uploadImageCount: recordSummary.uploadImageCount,
-        uploadImageDeletedCount: recordSummary.uploadImageDeletedCount,
+        imageGenerationCount: Math.max(user.generatedImageCount, mediaSummary.imageGenerationCount, recordSummary.imageGenerationCount),
+        imageGenerationDeletedCount: mediaSummary.imageGenerationDeletedCount,
+        videoGenerationCount: Math.max(user.generatedVideoCount, mediaSummary.videoGenerationCount, recordSummary.videoGenerationCount),
+        videoGenerationDeletedCount: mediaSummary.videoGenerationDeletedCount,
+        uploadImageCount: mediaSummary.uploadImageCount || recordSummary.uploadImageCount,
+        uploadImageDeletedCount: mediaSummary.uploadImageDeletedCount,
         uploadFileCount: recordSummary.uploadFileCount,
         uploadFileDeletedCount: recordSummary.uploadFileDeletedCount,
-        latestRecordTs: Math.max(recordSummary.latestRecordTs, latestLedgerTsByUser.get(user.id) ?? 0, user.updatedAt.getTime()),
+        latestRecordTs: latestModelInteractionTsByUser.get(user.id) ?? 0,
       };
     });
 
@@ -1333,6 +1496,7 @@ export default async function AdminPage({ searchParams }: { searchParams?: Promi
         workspace: { select: { state: true, updatedAt: true } },
         workspaceSessions: { orderBy: { updatedAt: "desc" }, select: { sessionId: true, title: true, updatedAt: true, deletedAt: true, messagesJson: true, summaryJson: true, usageSummary: true, memorySummary: true } },
         workspaceMessages: { orderBy: { createdAt: "asc" }, select: { sessionId: true, messageJson: true, createdAt: true } },
+        userAssetStates: { where: { hiddenAt: null, mediaAsset: { archivedAt: null } }, include: { mediaAsset: true }, orderBy: { updatedAt: "desc" } },
         sessions: { orderBy: { lastSeenAt: "desc" }, take: 1, select: { lastSeenAt: true } },
         _count: { select: { sessions: true } },
       },
@@ -1386,13 +1550,15 @@ export default async function AdminPage({ searchParams }: { searchParams?: Promi
 
   for (const user of users) {
     const adminWorkspaceState = buildAdminWorkspaceState(user.workspace?.state, user.workspaceSessions, user.workspaceMessages);
+    const mediaAssetItems = getMediaAssetItems(user.userAssetStates, "conversation");
+    const assetMediaItems = getMediaAssetItems(user.userAssetStates, "asset");
     userAdminWorkspaceStateMap.set(user.id, adminWorkspaceState);
-    userWorkspaceMediaUrlMaps.set(user.id, getWorkspaceMediaUrlMap(adminWorkspaceState));
+    userWorkspaceMediaUrlMaps.set(user.id, new Map([...getWorkspaceMediaUrlMap(adminWorkspaceState), ...getMediaItemUrlMap(mediaAssetItems)]));
     userWorkspaceMediaSystemNameMaps.set(user.id, getWorkspaceMediaSystemNameMap(adminWorkspaceState));
-    userWorkspaceMediaDetailMaps.set(user.id, getWorkspaceMediaDetailMap(adminWorkspaceState));
-    userWorkspaceAssetMediaMaps.set(user.id, getWorkspaceAssetMediaMap(adminWorkspaceState));
-    userWorkspaceDeletedAssetInfoMaps.set(user.id, getDeletedAssetInfoMap(adminWorkspaceState));
-    userWorkspaceConversationMediaItemMaps.set(user.id, getWorkspaceConversationMediaItems(adminWorkspaceState));
+    userWorkspaceMediaDetailMaps.set(user.id, getMediaItemMap(mediaAssetItems));
+    userWorkspaceAssetMediaMaps.set(user.id, getMediaItemMap(assetMediaItems));
+    userWorkspaceDeletedAssetInfoMaps.set(user.id, getMediaDeletedInfoMap([...mediaAssetItems, ...assetMediaItems]));
+    userWorkspaceConversationMediaItemMaps.set(user.id, getMediaAssetConversationFlowItems(mediaAssetItems));
     userWorkspaceConversationUploadItemMaps.set(user.id, getWorkspaceConversationUploadItems(adminWorkspaceState));
     userWorkspaceImageFailureMaps.set(user.id, getWorkspaceImageFailureCounts(adminWorkspaceState));
     userWorkspaceFailureErrorMaps.set(user.id, getWorkspaceFailureErrorMap(adminWorkspaceState));
@@ -1557,12 +1723,13 @@ export default async function AdminPage({ searchParams }: { searchParams?: Promi
         const effectiveMediaDetail = mediaDetail ?? metadataMedia;
         const displayName = mediaDetail?.name || formatAdminMediaName(rawSystemName, rawUserName, resolvedUrl === "__FAILED__" ? "生成失败" : item.kind === "video" ? "video" : "image");
         const parameterLine = formatAdminMediaParameterLine(effectiveMediaDetail, item.kind, item.model || "-", item.label || "-");
+        const flowKind = effectiveMediaDetail.type ?? item.kind;
         const mediaItem: AdminCreditFlowItem = {
           id: item.id,
           requestId,
-          kind: item.kind,
+          kind: flowKind,
           systemName: rawSystemName,
-          displayName,
+          displayName: mediaDetail?.name || displayName || (flowKind === "video" ? "视频" : "图片"),
           url: resolvedUrl === "__FAILED__" ? "" : resolvedUrl,
           status: resolvedUrl === "__FAILED__" ? "failed" : "success",
           errorText: isDeletedMedia ? "用户已删除" : undefined,
@@ -1572,7 +1739,7 @@ export default async function AdminPage({ searchParams }: { searchParams?: Promi
           totalTokens: item.totalTokens,
           usd: item.usd,
           cny: item.cny,
-          count: item.kind === "video" ? item.videoCount : item.imageCount,
+          count: flowKind === "video" ? Math.max(item.videoCount, 1) : Math.max(item.imageCount, 1),
           model: item.model || "-",
           parameters: parameterLine,
           isChargeDisabled: getMetadataBoolean(item.metadata, "creditChargeDisabled"),
@@ -1744,6 +1911,7 @@ export default async function AdminPage({ searchParams }: { searchParams?: Promi
   }).map((user) => {
     const adminWorkspaceState = userAdminWorkspaceStateMap.get(user.id);
     const workspaceSummary = getWorkspaceSummary(adminWorkspaceState);
+    const mediaSummary = getMediaAssetRecordsSummary(user.userAssetStates);
     const ledgerConversationDetailsForUser = userConversationCreditDetailMap.get(user.id);
     const workspaceConversationsForUser = getWorkspaceConversations(adminWorkspaceState);
     const workspaceConversationIdsForUser = new Set(workspaceConversationsForUser.map((conversation) => conversation.id));
@@ -1781,10 +1949,11 @@ export default async function AdminPage({ searchParams }: { searchParams?: Promi
         createdAtTs: item.createdAtTs,
       };
     }));
-    const baseMediaItems = [...getWorkspaceMediaItems(adminWorkspaceState), ...conversationUploadedImageMediaItems];
+    const mediaAssetItems = getMediaAssetItems(user.userAssetStates, "conversation");
+    const baseMediaItems = mediaAssetItems.length > 0 ? mediaAssetItems : [...getWorkspaceMediaItems(adminWorkspaceState), ...conversationUploadedImageMediaItems];
     const deletedConversationDetailsForUser = Array.from(ledgerConversationDetailsForUser?.values() ?? []).filter((detail) => !workspaceConversationIdsForUser.has(detail.id));
     const mediaItems = [...getDeletedConversationMediaItems(deletedConversationDetailsForUser, baseMediaItems), ...baseMediaItems];
-    const assetMediaItems = getWorkspaceAssetMediaItems(adminWorkspaceState);
+    const assetMediaItems = getMediaAssetItems(user.userAssetStates, "asset");
     const creditSummary = userConsumeMap.get(user.id) ?? { credits: 0, totalTokens: 0, usd: 0, cny: 0 };
 
     return {
@@ -1797,8 +1966,8 @@ export default async function AdminPage({ searchParams }: { searchParams?: Promi
       credits: user.credits,
       disabled: user.disabled,
       generalModeEnabled: user.generalModeEnabled,
-      generatedImageCount: Math.max(user.generatedImageCount, workspaceSummary.generatedImageCount),
-      generatedVideoCount: Math.max(user.generatedVideoCount, workspaceSummary.generatedVideoCount),
+      generatedImageCount: Math.max(user.generatedImageCount, mediaSummary.imageGenerationCount, workspaceSummary.generatedImageCount),
+      generatedVideoCount: Math.max(user.generatedVideoCount, mediaSummary.videoGenerationCount, workspaceSummary.generatedVideoCount),
       conversationCount: workspaceSummary.conversationCount,
       consumedCredits: creditSummary.credits,
       consumedTokens: creditSummary.totalTokens,
@@ -1838,10 +2007,11 @@ export default async function AdminPage({ searchParams }: { searchParams?: Promi
   const todayGenerationTasks = todayLedgers.filter((ledger) => ledger.kind === "image" || ledger.kind === "video").length;
   const totalWorkspaceSummary = users.reduce((summary, user) => {
     const item = getWorkspaceSummary(userAdminWorkspaceStateMap.get(user.id));
+    const mediaItem = getMediaAssetRecordsSummary(user.userAssetStates);
     summary.conversationCount += item.conversationCount;
-    summary.generatedImageCount += item.generatedImageCount;
-    summary.generatedVideoCount += item.generatedVideoCount;
-    summary.savedAssetCount += item.savedAssetCount;
+    summary.generatedImageCount += Math.max(item.generatedImageCount, mediaItem.imageGenerationCount);
+    summary.generatedVideoCount += Math.max(item.generatedVideoCount, mediaItem.videoGenerationCount);
+    summary.savedAssetCount += mediaItem.savedAssetCount || item.savedAssetCount;
     return summary;
   }, { conversationCount: 0, generatedImageCount: 0, generatedVideoCount: 0, savedAssetCount: 0 });
   const totalImages = Math.max(dbTotalImages, totalWorkspaceSummary.generatedImageCount);

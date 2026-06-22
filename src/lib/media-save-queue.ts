@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { syncGeneratedFilesToAli } from "@/lib/ali-sync";
 import { createGeneratedImageThumbnail, getLocalImageDimensions, saveRemoteAsset, type ImageDimensions } from "@/lib/local-assets";
@@ -40,6 +40,7 @@ export type MediaSaveJob = {
 
 const RUNTIME_DIR = join(process.cwd(), ".runtime");
 const JOBS_PATH = join(RUNTIME_DIR, "media-save-jobs.json");
+const URL_MAP_MD_PATH = join(RUNTIME_DIR, "media-url-map.md");
 const inFlight = new Set<string>();
 let fileQueue = Promise.resolve();
 const STALE_DOWNLOADING_MS = 30 * 60 * 1000;
@@ -130,6 +131,26 @@ async function markJob(id: string, patch: Partial<MediaSaveJob>) {
   });
 }
 
+async function appendMediaUrlMap(job: MediaSaveJob, saved: MediaSaveJob) {
+  if (!saved.localUrl) return;
+  await mkdir(RUNTIME_DIR, { recursive: true });
+  const lines = [
+    `## ${new Date().toISOString()}`,
+    `- userId: ${saved.userId ?? job.userId ?? ""}`,
+    `- requestId: ${saved.requestId ?? job.requestId ?? ""}`,
+    `- type: ${saved.type ?? job.type}`,
+    `- model: ${saved.model ?? job.model ?? ""}`,
+    `- jobId: ${saved.id ?? job.id}`,
+    `- localUrl: ${saved.localUrl}`,
+    saved.posterUrl ? `- posterUrl: ${saved.posterUrl}` : undefined,
+    `- remoteUrl: ${saved.remoteUrl ?? job.remoteUrl}`,
+    "",
+  ].filter((line): line is string => typeof line === "string");
+  await appendFile(URL_MAP_MD_PATH, `${lines.join("\n")}\n`, "utf8").catch((error) => {
+    console.warn("[media-save] url map append failed", { id: job.id, requestId: job.requestId, error: error instanceof Error ? error.message : String(error) });
+  });
+}
+
 function scheduleJob(job: MediaSaveJob) {
   const delay = Math.max(0, (job.nextRetryAt ?? Date.now()) - Date.now());
   setTimeout(() => {
@@ -201,6 +222,7 @@ async function processMediaSaveJob(id: string) {
           posterUrl: savedJob.posterUrl,
         });
       }
+      if (savedJob) await appendMediaUrlMap(job, savedJob);
 
       console.log("[media-save] saved remote asset", {
         id: job.id,
@@ -304,6 +326,22 @@ export async function enqueueRemoteAssetSave(input: {
     });
   }
   return job;
+}
+
+export async function waitForMediaSaveJob(id: string | undefined, timeoutMs = 25_000) {
+  if (!id || timeoutMs <= 0) return undefined;
+  const startedAt = Date.now();
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const jobs = await readJobsUnsafe();
+    const job = jobs.find((item) => item.id === id);
+    if (!job) return undefined;
+    if (job.status === "saved" || job.status === "expired") return job;
+    if (job.status === "failed" && job.nextRetryAt && job.nextRetryAt > Date.now()) return job;
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+  }
+
+  return (await readJobsUnsafe()).find((item) => item.id === id);
 }
 
 export async function getMediaSaveStatuses(remoteUrls: string[], userId?: string) {

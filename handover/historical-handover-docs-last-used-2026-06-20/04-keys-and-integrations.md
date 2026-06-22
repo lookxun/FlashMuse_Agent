@@ -25,6 +25,9 @@
 ## 2026-06-05 线上部署和环境变量
 
 - 第一版线上部署已完成，服务器资料目录：`E:\project\【2】server\马来西亚服务器`，IP：`101.47.19.109`，线上项目目录：`/var/www/flashmuse`。
+- 马来服务器登录方式：SSH 用户 `root`，私钥文件在 `E:\project\【2】server\马来西亚服务器\ByteplusVPS.pem`。本机可用命令：`ssh -i "E:\project\【2】server\马来西亚服务器\ByteplusVPS.pem" root@101.47.19.109`。上传文件可用同一个 `-i` 参数执行 `scp`。注意：此前只读 `马来服务器.txt` 会漏掉同目录的 `ByteplusVPS.pem`，不要再误以为没有登录凭据。
+- 马来标准部署方式：先把文件传到 `/var/www/flashmuse`，必要时备份到 `/var/www/flashmuse/.deploy-backups/时间戳-说明/`，然后在马来执行 `cd /var/www/flashmuse && /usr/local/bin/deploy-flashmuse-production.sh`。该脚本会 `npm run build`、重启并保存 PM2、同步阿里 `_next/static` 并清缓存。
+- 阿里服务器资料目录：`E:\project\【2】server\阿里服务器`，IP：`101.37.129.164`，登录信息在 `E:\project\【2】server\阿里服务器\阿里服务器.txt`。不要把密码复制进公开提交或聊天；需要登录时读取该本地文件。马来服务器内部同步阿里使用 `/root/.ssh/flashmuse_to_ali_ed25519`，由线上脚本自动使用。
 - 当前访问地址为 HTTP：前台 `http://101.47.19.109`，工作台 `http://101.47.19.109/workspace`，后台 `http://101.47.19.109/admin`。
 - 线上基础服务：Nginx 反代 `127.0.0.1:3000`，PM2 进程名 `flashmuse`，PostgreSQL 本地库 `flashmuse`。PM2 已设置开机自启。
 - Nginx 直接映射 `/generated/` 到 `/var/www/flashmuse/public/generated/`，因此新生成或上传到服务器的文件能形成公网 HTTP URL。注意：BytePlus 素材审核最终需要 HTTPS，HTTP 只能用于功能测试。

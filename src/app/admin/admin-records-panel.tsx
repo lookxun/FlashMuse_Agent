@@ -2,7 +2,8 @@
 
 import { Fragment, useMemo, useState } from "react";
 import { RiArrowDownSLine, RiArrowRightSLine, RiSearchLine } from "react-icons/ri";
-import { AdminHistoryDialog, AdminMediaDialog, DetailItem, SmallStat, type AdminMediaItem, type AdminUserRow } from "./admin-users-panel";
+import { getCachedAdminDetail, setCachedAdminDetail } from "./admin-detail-cache";
+import { AdminDetailLoading, AdminHistoryDialog, AdminMediaDialog, DetailItem, SmallStat, type AdminMediaItem, type AdminUserRow } from "./admin-users-panel";
 import { CreditCategoryDialog, CreditFlowDialog, type AdminCreditCategoryDetail, type AdminCreditFlowItem, type AdminCreditUser } from "./admin-credits-panel";
 
 const PAGE_SIZE = 15;
@@ -168,6 +169,7 @@ export function AdminRecordsPanel({ summaries }: { summaries: AdminRecordSummary
   const [promptToolUser, setPromptToolUser] = useState<AdminCreditUser | null>(null);
   const [generatedListDialog, setGeneratedListDialog] = useState<{ user: AdminCreditUser; categories: AdminCreditCategoryDetail[]; initialCategoryId: string } | null>(null);
   const [uploadDialog, setUploadDialog] = useState<{ user: AdminCreditUser; categories: AdminCreditCategoryDetail[]; initialCategoryId: string } | null>(null);
+  const [loadingDialogTitle, setLoadingDialogTitle] = useState<string | null>(null);
 
   const rows = useMemo(() => summaries.slice().sort((left, right) => right.latestRecordTs - left.latestRecordTs), [summaries]);
 
@@ -189,6 +191,18 @@ export function AdminRecordsPanel({ summaries }: { summaries: AdminRecordSummary
     uploadImages: rows.reduce((sum, row) => sum + row.uploadImageCount, 0),
     uploadFiles: rows.reduce((sum, row) => sum + row.uploadFileCount, 0),
   };
+  const isDetailLoading = loadingUserIds.size > 0;
+
+  const fetchUserDetail = async (userId: string, mode: "records" | "full") => {
+    const cached = getCachedAdminDetail<AdminRecordDetail>(userId, mode);
+    if (cached) return cached;
+    const response = await fetch(`/admin/api/records/user-detail?userId=${encodeURIComponent(userId)}${mode === "records" ? "&mode=records" : ""}`);
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(typeof payload.error === "string" ? payload.error : "加载失败");
+    const detail = payload.detail as AdminRecordDetail;
+    setCachedAdminDetail(userId, mode, detail);
+    return detail;
+  };
 
   const loadUserDetail = async (userId: string) => {
     if (detailsByUserId[userId] || loadingUserIds.has(userId)) return;
@@ -200,10 +214,8 @@ export function AdminRecordsPanel({ summaries }: { summaries: AdminRecordSummary
     });
 
     try {
-      const response = await fetch(`/admin/api/records/user-detail?userId=${encodeURIComponent(userId)}`);
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(typeof payload.error === "string" ? payload.error : "加载失败");
-      setDetailsByUserId((current) => ({ ...current, [userId]: payload.detail as AdminRecordDetail }));
+      const detail = await fetchUserDetail(userId, "records");
+      setDetailsByUserId((current) => ({ ...current, [userId]: detail }));
     } catch (error) {
       setDetailErrors((current) => ({ ...current, [userId]: error instanceof Error ? error.message : "加载失败" }));
     } finally {
@@ -215,7 +227,66 @@ export function AdminRecordsPanel({ summaries }: { summaries: AdminRecordSummary
     }
   };
 
+  const openHistoryDialog = async (userId: string) => {
+    const existingDetail = detailsByUserId[userId];
+    if (existingDetail?.user.conversations.some((conversation) => conversation.messages.length > 0)) {
+      setHistoryUser(existingDetail.user);
+      return;
+    }
+
+    setLoadingUserIds((current) => new Set(current).add(userId));
+    setLoadingDialogTitle("正在加载历史对话...");
+    setDetailErrors((current) => {
+      const next = { ...current };
+      delete next[userId];
+      return next;
+    });
+
+    try {
+      const detail = await fetchUserDetail(userId, "full");
+      setDetailsByUserId((current) => ({ ...current, [userId]: detail }));
+      setHistoryUser(detail.user);
+    } catch (error) {
+      setDetailErrors((current) => ({ ...current, [userId]: error instanceof Error ? error.message : "加载失败" }));
+    } finally {
+      setLoadingUserIds((current) => {
+        const next = new Set(current);
+        next.delete(userId);
+        return next;
+      });
+      setLoadingDialogTitle(null);
+    }
+  };
+
+  const loadFullDetailForDialog = async (userId: string, title: string) => {
+    const existingDetail = detailsByUserId[userId];
+    if (existingDetail?.user.mediaItems.length || existingDetail?.user.assetMediaItems.length || existingDetail?.creditUser.conversationCreditDetails.length || existingDetail?.creditUser.assetGenerationCreditDetails.length) return existingDetail;
+    setLoadingUserIds((current) => new Set(current).add(userId));
+    setLoadingDialogTitle(title);
+    setDetailErrors((current) => {
+      const next = { ...current };
+      delete next[userId];
+      return next;
+    });
+    try {
+      const detail = await fetchUserDetail(userId, "full");
+      setDetailsByUserId((current) => ({ ...current, [userId]: detail }));
+      return detail;
+    } catch (error) {
+      setDetailErrors((current) => ({ ...current, [userId]: error instanceof Error ? error.message : "加载失败" }));
+      return undefined;
+    } finally {
+      setLoadingUserIds((current) => {
+        const next = new Set(current);
+        next.delete(userId);
+        return next;
+      });
+      setLoadingDialogTitle(null);
+    }
+  };
+
   const toggleExpandedUser = (userId: string) => {
+    if (isDetailLoading && !loadingUserIds.has(userId)) return;
     setExpandedUserIds((current) => {
       const next = new Set(current);
       if (next.has(userId)) {
@@ -228,14 +299,30 @@ export function AdminRecordsPanel({ summaries }: { summaries: AdminRecordSummary
     });
   };
 
-  const openUploadDialog = (creditUser: AdminCreditUser | undefined, initialCategoryId: string) => {
-    if (!creditUser) return;
-    setUploadDialog({ user: creditUser, categories: makeUploadCategories(creditUser), initialCategoryId });
+  const openUploadDialog = async (userId: string, initialCategoryId: string) => {
+    const detail = await loadFullDetailForDialog(userId, "正在加载上传记录...");
+    if (!detail) return;
+    setUploadDialog({ user: detail.creditUser, categories: makeUploadCategories(detail.creditUser), initialCategoryId });
   };
 
-  const openGeneratedListDialog = (user: AdminUserRow, creditUser: AdminCreditUser | undefined, initialCategoryId: string) => {
-    if (!creditUser) return;
-    setGeneratedListDialog({ user: creditUser, categories: makeGeneratedCategories(user, creditUser), initialCategoryId });
+  const openGeneratedListDialog = async (userId: string, initialCategoryId: string) => {
+    const detail = await loadFullDetailForDialog(userId, "正在加载生成列表...");
+    if (!detail) return;
+    setGeneratedListDialog({ user: detail.creditUser, categories: makeGeneratedCategories(detail.user, detail.creditUser), initialCategoryId });
+  };
+
+  const openMediaDialogForUser = async (userId: string, mediaType: "image" | "upload_image" | "video" | "asset_image") => {
+    const detail = await loadFullDetailForDialog(userId, "正在加载媒体列表...");
+    if (!detail) return;
+    setMediaDialog({ user: detail.user, mediaType });
+  };
+
+  const openCreditDialogForUser = async (userId: string, type: "conversation" | "asset" | "prompt") => {
+    const detail = await loadFullDetailForDialog(userId, "正在加载积分明细...");
+    if (!detail) return;
+    if (type === "conversation") setCreditFlowUser(detail.creditUser);
+    if (type === "asset") setAssetCreditUser(detail.creditUser);
+    if (type === "prompt") setPromptToolUser(detail.creditUser);
   };
 
   return (
@@ -278,17 +365,24 @@ export function AdminRecordsPanel({ summaries }: { summaries: AdminRecordSummary
               const creditUser = detail?.creditUser;
               const isLoading = loadingUserIds.has(summary.id);
               const error = detailErrors[summary.id];
+              const isRowDisabled = isDetailLoading && !isLoading;
               const conversationImages = isExpanded ? conversationUploadItems(creditUser, "image") : [];
               const conversationFiles = isExpanded ? conversationUploadItems(creditUser, "file") : [];
               const assetImages = isExpanded ? assetUploadItems(creditUser) : [];
               const generatedConversationImages = isExpanded && user ? workspaceConversationGeneratedItems(user, creditUser, "image") : [];
               const generatedConversationVideos = isExpanded && user ? workspaceConversationGeneratedItems(user, creditUser, "video") : [];
               const generatedAssetImages = isExpanded && user ? workspaceAssetGeneratedImageItems(user, creditUser) : [];
+              const conversationImageTotal = user?.conversationImageCount ?? generatedConversationImages.length;
+              const conversationVideoTotal = user?.conversationVideoCount ?? generatedConversationVideos.length;
+              const assetImageTotal = user?.assetImageCount ?? generatedAssetImages.length;
+              const conversationUploadImageTotal = user?.conversationUploadImageCount ?? conversationImages.length;
+              const conversationUploadFileTotal = user?.conversationUploadFileCount ?? conversationFiles.length;
+              const assetUploadImageTotal = user?.assetUploadImageCount ?? assetImages.length;
               return (
                 <Fragment key={summary.id}>
-                  <tr onClick={() => toggleExpandedUser(summary.id)} className="cursor-pointer text-[#333333] transition hover:bg-[#fcfcfc]">
+                  <tr onClick={() => toggleExpandedUser(summary.id)} className={`text-[#333333] transition ${isRowDisabled ? "cursor-not-allowed opacity-55" : "cursor-pointer hover:bg-[#fcfcfc]"}`}>
                     <td className="border-b border-[#f2f2f2] py-3 pl-6 pr-0 text-left">
-                      <button type="button" onClick={(event) => { event.stopPropagation(); toggleExpandedUser(summary.id); }} className="inline-flex h-7 w-7 items-center justify-center rounded-[7px] text-[#777777] transition hover:bg-[#f2f2f2] hover:text-[#111111]" aria-label={isExpanded ? "收起生成记录" : "展开生成记录"}>
+                      <button type="button" disabled={isRowDisabled} onClick={(event) => { event.stopPropagation(); toggleExpandedUser(summary.id); }} className="inline-flex h-7 w-7 items-center justify-center rounded-[7px] text-[#777777] transition hover:bg-[#f2f2f2] hover:text-[#111111] disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-[#777777]" aria-label={isExpanded ? "收起生成记录" : "展开生成记录"}>
                         {isExpanded ? <RiArrowDownSLine className="h-5 w-5" /> : <RiArrowRightSLine className="h-5 w-5" />}
                       </button>
                     </td>
@@ -311,32 +405,22 @@ export function AdminRecordsPanel({ summaries }: { summaries: AdminRecordSummary
                   {isExpanded ? (
                     <tr className="bg-[#fbfbfb]">
                       <td colSpan={8} className="border-b border-[#f2f2f2] px-4 py-4">
-                        {!detail ? (
-                          <div className="px-3 py-5 text-center text-[13px] text-[#888888]">{error ? `加载失败：${error}` : isLoading ? "正在加载详细记录..." : "正在准备详细记录..."}</div>
-                        ) : (
+                        {!detail ? error ? <div className="px-3 py-5 text-center text-[13px] text-red-500">加载失败：{error}</div> : isLoading ? <AdminDetailLoading label="正在加载详细记录..." /> : <AdminDetailLoading label="正在准备详细记录..." /> : (
                         <div className="grid grid-cols-4 gap-[5px] px-1 py-1 text-left">
                           <div className="space-y-px">
-                            <DetailItem label="对话流图片" value={formatNumber(conversationImageCount(user))} onClick={() => setMediaDialog({ user, mediaType: "image" })} />
-                            <DetailItem label="对话流视频" value={formatNumber(user.generatedVideoCount)} onClick={() => setMediaDialog({ user, mediaType: "video" })} />
-                            <DetailItem label="资产库图片" value={formatNumber(user.assetMediaItems.length)} onClick={() => setMediaDialog({ user, mediaType: "asset_image" })} />
-                            <DetailItem label="历史对话" value={formatNumber(user.conversationCount)} onClick={() => setHistoryUser(user)} />
+                            <DetailItem label="历史对话" value={formatNumber(user.conversationCount)} onClick={() => void openHistoryDialog(user.id)} />
                             <DetailItem label="工作区保存" value={user.workspaceSaved ? user.workspaceUpdatedAtLabel : "未保存"} />
                           </div>
                           <div className="space-y-px">
-                            <DetailItem label="对话流生成图片列表" value={formatNumber(generatedConversationImages.length)} onClick={() => openGeneratedListDialog(user, creditUser, "conversation-generated-images")} />
-                            <DetailItem label="对话流生成视频列表" value={formatNumber(generatedConversationVideos.length)} onClick={() => openGeneratedListDialog(user, creditUser, "conversation-generated-videos")} />
-                            <DetailItem label="资产库生成图片列表" value={formatNumber(generatedAssetImages.length)} onClick={() => openGeneratedListDialog(user, creditUser, "asset-generated-images")} />
+                            <DetailItem label="资产库图片" value={formatNumber(assetImageTotal)} onClick={() => void openMediaDialogForUser(user.id, "asset_image")} />
                           </div>
                           <div className="space-y-px">
-                            <DetailItem label="对话流上传图片列表" value={formatNumber(conversationImages.length)} onClick={() => openUploadDialog(creditUser, "conversation-upload-images")} />
-                            <DetailItem label="对话流上传文件列表" value={formatNumber(conversationFiles.length)} onClick={() => openUploadDialog(creditUser, "conversation-upload-files")} />
-                            <DetailItem label="资产库上传图片列表" value={formatNumber(assetImages.length)} onClick={() => openUploadDialog(creditUser, "asset-upload-images")} />
+                            <DetailItem label="对话流图片" value={formatNumber(conversationImageTotal)} onClick={() => void openMediaDialogForUser(user.id, "image")} />
+                            <DetailItem label="对话流视频" value={formatNumber(conversationVideoTotal)} onClick={() => void openMediaDialogForUser(user.id, "video")} />
                           </div>
                           <div className="space-y-px">
-                            <DetailItem label="已消耗积分" value={creditUser ? `-${formatNumber(creditUser.consumedCredits)}` : "-0"} />
-                            <DetailItem label="对话流消耗积分详细" value={creditUser ? `-${formatNumber(creditUser.conversationConsumedCredits)}` : "-0"} onClick={() => creditUser && setCreditFlowUser(creditUser)} />
-                            <DetailItem label="资产库消耗积分详细" value={creditUser ? `-${formatNumber(creditUser.assetGenerationConsumedCredits)}` : "-0"} onClick={() => creditUser && setAssetCreditUser(creditUser)} />
-                            <DetailItem label="反推/优化提示词消耗积分详细" value={creditUser ? `-${formatNumber(creditUser.promptToolConsumedCredits)}` : "-0"} onClick={() => creditUser && setPromptToolUser(creditUser)} />
+                            <DetailItem label="工作流图片" value="0" />
+                            <DetailItem label="工作流视频" value="0" />
                           </div>
                         </div>
                         )}
@@ -367,6 +451,7 @@ export function AdminRecordsPanel({ summaries }: { summaries: AdminRecordSummary
       {promptToolUser ? <CreditCategoryDialog title="反推/优化提示词消耗积分详细" user={promptToolUser} categories={promptToolUser.promptToolCreditDetails} onClose={() => setPromptToolUser(null)} /> : null}
       {generatedListDialog ? <CreditCategoryDialog title="生成列表" user={generatedListDialog.user} categories={generatedListDialog.categories} initialCategoryId={generatedListDialog.initialCategoryId} showPromptCopyColumn onClose={() => setGeneratedListDialog(null)} /> : null}
       {uploadDialog ? <CreditCategoryDialog title="上传记录" user={uploadDialog.user} categories={uploadDialog.categories} initialCategoryId={uploadDialog.initialCategoryId} showPromptCopyColumn onClose={() => setUploadDialog(null)} /> : null}
+      {loadingDialogTitle ? <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/42 px-8 py-8 backdrop-blur-[4px]"><div className="w-[360px] rounded-[12px] bg-white shadow-[0_24px_80px_rgba(0,0,0,0.22)]"><AdminDetailLoading label={loadingDialogTitle} /></div></div> : null}
     </>
   );
 }

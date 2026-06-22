@@ -116,6 +116,7 @@ export default function Home() {
   const codeInputRefs = useRef<Array<HTMLInputElement | null>>([]);
   const loginHistoryMenuRef = useRef<HTMLDivElement | null>(null);
   const userMenuRef = useRef<HTMLDivElement | null>(null);
+  const authActivityPingRef = useRef(0);
 
   const activeHeroSlide = heroSlides[activeHeroIndex];
   const canSubmitEmail = loginEmail.trim().length > 0 && !isLoginSubmitting;
@@ -125,6 +126,25 @@ export default function Home() {
   const showInternationalBadge = homeSite === "malaysia";
 
   useBodyScrollLock(isLoginOpen);
+
+  useEffect(() => {
+    if (!currentUser?.email) return;
+    let cancelled = false;
+    const activityEvents = ["pointerdown", "keydown", "wheel", "touchstart", "scroll"] as const;
+    const recordActivity = () => {
+      const now = Date.now();
+      if (now - authActivityPingRef.current < 60_000) return;
+      authActivityPingRef.current = now;
+      void fetch("/api/auth/activity", { method: "POST", cache: "no-store", keepalive: true }).then((response) => {
+        if (!cancelled && response.status === 401) setCurrentUser(null);
+      }).catch(() => undefined);
+    };
+    activityEvents.forEach((eventName) => window.addEventListener(eventName, recordActivity, { passive: true, capture: true }));
+    return () => {
+      cancelled = true;
+      activityEvents.forEach((eventName) => window.removeEventListener(eventName, recordActivity, { capture: true }));
+    };
+  }, [currentUser?.email]);
 
   const refreshCurrentUser = async () => {
     try {

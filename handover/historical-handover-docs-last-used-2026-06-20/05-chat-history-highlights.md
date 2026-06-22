@@ -2,6 +2,30 @@
 
 这个文件用于保留和用户对话中的重要结论，帮助下一个 AI 接手时不丢上下文。
 
+## 2026-06-20 本轮关键交接：媒体新表运行时重复、移动分类、排序和服务器登录方式
+
+- 用户反馈媒体新表上线后，对话流生成视频在资产库里还有两个相同视频，可能是远程 URL 和本地 URL 同时存在；还反馈资产库移动分类失效，从生成图片移动到角色图片后两边都看不到。用户要求不要单独修某个资产，而是排查所有媒体新表链路，列出问题、修根因，再用 `ID_636611` 测试。
+- 查到的问题：1）远程媒体保存成本地后，新表没有实时 canonical 合并，导致远程临时 URL 与本地 `/generated/...` 可同时可见；2）资产库移动分类、重命名、删除、恢复只改前端/旧 workspace，没有写 `UserAssetState`；3）前端 `AssetItem` 没声明 `mediaId`，更新新表只能靠旧 `asset.id/url`；4）分类切换/分页/`@` 补拉资产时前端内存没按媒体 identity 去重，同一媒体会越切越多；5）旧迁移遗留的小 `sortOrder` 被当成全局排序优先级后，会把整体最新优先顺序打乱。
+- 修复方式：新增 `src/lib/media-assets.ts` 服务层，提供远程/本地 URL 归一和合并；`/api/media-save-status`、`/api/media-assets POST`、`upsertWorkspaceMessages()` 都会调用 canonical 合并。扩展 `/api/media-assets PATCH` 写 `UserAssetState`，前端移动分类/重命名/删除/恢复全部调用该接口。
+- 排序最终规则：新移动的资产写时间戳级 `sortOrder`，所以能排目标分类首位；旧迁移的小 `sortOrder` 不参与排序，普通资产仍按 `MediaAsset.firstSeenAt desc / createdAt desc / id desc` 最新优先。虚线“角色/场景/分镜生成”卡固定显示第一，最新图片应该在它右边。
+- 前端内存去重规则：按 `mediaId -> normalize(url) -> id` 去重。分类第一页加载会以服务端返回顺序替换旧分类数据，并移除内存中同一媒体旧副本；分页加载更多只追加未出现过的资产；移动分类也会清掉旧副本。用户说的 `1779127907564-da950827-0` 每切分类多一张，判断是旧前端内存重复显示；线上数据库按该片段没查到真实多条。
+- 线上验证：部署前 `ID_636611` 可见重复 `6` 组；执行 `node scripts/migrate-user-media-assets.mjs --user=ID_636611 --apply` 后，最终 `node scripts/audit-visible-duplicate-media.mjs --user=ID_636611` 返回 `visibleDuplicateGroups=0`、`visibleDuplicateItemsExtra=0`，`node scripts/audit-user-media-cost-gaps.mjs --user=ID_636611` 返回 `unmatchedLedgers=0`、`partialLedgers=0`。移动分类接口测试显示 `character_image 31 -> 32`、`conversation_images 154 -> 153`，恢复后回原值。
+- 本轮部署方式：马来服务器登录不要只看 `马来服务器.txt`，同目录有私钥 `E:\project\【2】server\马来西亚服务器\ByteplusVPS.pem`。登录命令：`ssh -i "E:\project\【2】server\马来西亚服务器\ByteplusVPS.pem" root@101.47.19.109`。项目目录 `/var/www/flashmuse`，标准部署脚本 `/usr/local/bin/deploy-flashmuse-production.sh`。阿里服务器资料在 `E:\project\【2】server\阿里服务器\阿里服务器.txt`，马来同步阿里由线上脚本自动用 `/root/.ssh/flashmuse_to_ali_ed25519`。
+- 本轮线上备份目录：`.deploy-backups/20260620194758-media-new-table-fix`、`20260620195515-media-move-sort-fix`、`20260620195952-media-move-front-ui-fix`、`20260620200330-asset-order-fix`、`20260620201200-asset-order-server-fix`、`20260620202220-asset-dedupe-ui-fix`。所有 build 通过，PM2 online，阿里静态已同步；未提交 GitHub。
+
+## 2026-06-20 本轮关键交接：新表上线后续修复、历史排序、审核提示和 @ 引用
+
+- 用户问对话流、资产库、后台是否都应读同一张媒体事实表。结论：媒体事实应统一读 `MediaAsset`，用户资产状态读 `UserAssetState`，对话结构读 `WorkspaceSession/WorkspaceMessage`，扣费读 `CreditLedger`。本轮已把后台生成记录/用户详情/概览切到新表优先，不再主要依赖旧 `UserWorkspaceState.state.assets`。
+- 用户反馈后台同一批 `d0` 视频在“对话流视频”和“对话流图片”都显示，图片里只是视频封面。已修后台媒体类型判断：匹配到新表媒体为视频时，即使旧流水 `kind=image` 也按视频显示；视频封面/`video_` 命名图不进入对话流图片。
+- 用户反馈资产库角色/场景/分镜各生成一张后刷新消失，后又反馈对话流生成图片/视频也会消失。根因是新表分页后前端/旧 workspace 保存了新媒体，但没有同步写 `MediaAsset/UserAssetState`。已新增 `/api/media-assets`，资产库生成/上传成功后直接写新表；`upsertWorkspaceMessages()` 保存消息后也会把对话流生成图片、视频和上传图写入新表。
+- 已对 `ID_636611` 跑迁移补回刚才消失的新媒体：当前可见媒体 `271`，分类为 `character_image=27`、`scene_image=10`、`shot_image=19`、`conversation_images=150`、`conversation_videos=65`，可见重复为 0。
+- 用户问历史对话排序，随后指出“在吗”没动却排前。查线上数据发现 `在吗` 最后消息是 `2026-06-05`，但 `WorkspaceSession.updatedAt` 被刷新到了 `2026-06-19`。已改历史列表排序：优先按最新 `WorkspaceMessage.createdAt`，没有消息才按 `WorkspaceSession.updatedAt`，最后按 `sessionId` 兜底。
+- 用户问资产库同一登录状态下为什么切走再回来还加载。原因是资产库入口和分类切换传了 `force=true`。已加 `loadedAssetFilters`，入口/分类切换默认不强刷已加载分类；滚动分页仍会继续按 60 个加载下一页。
+- 用户反馈 `@` 引用资产弹窗只读出分镜图片。原因是弹窗只从当前内存 `assets` 过滤，用户只加载过分镜分类时角色/场景不在内存。已改为打开 `@` 时自动补拉 `character_image / scene_image / shot_image / conversation_uploads` 四类；加载态为居中蓝色 spinner + `加载中...`。
+- 用户排查 B111/B116 和真人图自动审核。B116 是 `byteplus-polling-error`，`referenceCount=0`，属于输出视频版权风控；B111 是参考图素材审核阶段版权拒绝。已拆文案：输出视频版权风控仍提示“输出视频可能涉及版权限制...重新生成有可能会成功”；审核图片版权拒绝提示“审核图片可能涉及版权限制，平台已拒绝，请换其它图片重试。”
+- BytePlus 自动审核规则已改：同一参考图审核失败会记录 `bytePlusAssetStatus=Failed`；默认最多自动重审 3 次，次数存在 `bytePlusAssetError` 内部前缀 `__byteplus_review_attempts=N__`，前端不显示；同一视频消息的“系统检测到真人图片...”系统提示只出现一次，后续重新生成不再追加。
+- 本轮这些后续修复均已线上部署，`next build` 通过，PM2 online，阿里静态已同步；未提交 GitHub。当前本地仍有未提交代码改动和新增 `/api/media-assets`。
+
 ## 2026-06-20 本轮关键交接：其它账号资产新表迁移完成
 
 - 用户要求现在开始“整理并验证资产新表迁移流程，然后逐账号迁移资产库”，随后要求“迁移线上所有其它账号，然后提交 GitHub”。本轮新增正式迁移编排脚本：`scripts/migrate-user-media-assets.mjs` 单账号流程、`scripts/migrate-selected-media-users.mjs` 多账号逐个流程、`scripts/audit-visible-duplicate-media.mjs` 可见重复校验、`scripts/audit-user-media-cost-gaps.mjs` 成本缺口校验，以及 `scripts/README-media-assets.md`。

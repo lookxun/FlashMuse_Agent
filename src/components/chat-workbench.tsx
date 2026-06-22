@@ -42,6 +42,7 @@ import {
   RiMoreLine,
   RiMoneyCnyCircleLine,
   RiMoneyDollarCircleLine,
+  RiMusic2Line,
   RiMultiImageLine,
   RiMailLine,
   RiPhoneLine,
@@ -63,6 +64,7 @@ import {
   RiUpload2Line,
   RiVipCrown2Line,
   RiVipDiamondLine,
+  RiVideoLine,
   RiQuillPenAiLine,
   RiAccountBoxLine,
   RiAccountCircleLine,
@@ -100,6 +102,9 @@ import { sanitizeModelOutputText } from "@/lib/text-cleanup";
 
 const HISTORY_INITIAL_SESSION_COUNT = 10;
 const HISTORY_LOAD_MORE_COUNT = 5;
+const WORKFLOW_INITIAL_ITEM_COUNT = HISTORY_INITIAL_SESSION_COUNT;
+const WORKFLOW_LOAD_MORE_COUNT = HISTORY_LOAD_MORE_COUNT;
+const MEDIA_DURATION_EPSILON_SECONDS = 0.35;
 const WORKFLOW_MODE_ENABLED = process.env.NEXT_PUBLIC_WORKFLOW_MODE_ENABLED
   ? process.env.NEXT_PUBLIC_WORKFLOW_MODE_ENABLED === "true"
   : process.env.NODE_ENV !== "production";
@@ -126,6 +131,7 @@ type Message = {
   videoDimensionsMap?: Record<string, ImageDimensions>;
   textModel?: ModelName;
   statusText?: string;
+  bytePlusAutoReviewNoticeShown?: boolean;
   pendingImageCount?: number;
   failedImageCount?: number;
   retryingFailedImageIndexes?: number[];
@@ -186,6 +192,7 @@ type SuggestionInput = string | SuggestionItem;
 
 type AssetItem = {
   id: string;
+  mediaId?: string;
   type: AssetType;
   name: string;
   systemName?: string;
@@ -193,7 +200,7 @@ type AssetItem = {
   url: string;
   thumbnailUrl?: string;
   posterUrl?: string;
-  librarySource?: "asset_generation" | "conversation";
+  librarySource?: "asset_generation" | "conversation" | "workflow";
   sourcePrompt: string;
   promptSource?: "generated" | "upload" | "reverse";
   bytePlusAssetId?: string;
@@ -204,6 +211,8 @@ type AssetItem = {
   previewMeta?: PreviewMediaMeta;
   sessionId: string;
   messageId?: string;
+  workflowId?: string;
+  workflowNodeId?: string;
   lockedType?: boolean;
   previousType?: AssetType;
   createdAt: number;
@@ -215,6 +224,8 @@ type UploadableImageAssetType = "character_image" | "scene_image" | "shot_image"
 type AssetGenerationImageType = "character_image" | "scene_image" | "shot_image";
 type AssetGenerateRatio = "single" | "three-view" | "scene-grid";
 
+const UPLOAD_IMAGE_PROMPT_PLACEHOLDER = "上传图片";
+
 type AssetUploadSlot = {
   id: string;
   fileName: string;
@@ -225,6 +236,7 @@ type AssetUploadSlot = {
   tempUrl?: string;
   uploadStatus?: UploadTransferStatus;
   uploadProgress?: number;
+  forceReencode?: boolean;
   error?: string;
   dimensions?: ImageDimensions;
   isDuplicate?: boolean;
@@ -260,6 +272,9 @@ type UploadedDocumentFile = {
   storageName: string;
   size: number;
   extension: string;
+  mediaKind?: "document" | "video" | "audio";
+  durationSeconds?: number;
+  dimensions?: ImageDimensions;
   url?: string;
   uploadStatus?: UploadTransferStatus;
   uploadProgress?: number;
@@ -270,6 +285,13 @@ type UploadedDocumentFile = {
 };
 
 type UploadedFileEntry = string | UploadedDocumentFile;
+
+type MediaFileReference = {
+  name: string;
+  url: string;
+  mediaKind: "video" | "audio";
+  file: UploadedFileEntry;
+};
 
 type PendingGeneration = {
   id: string;
@@ -282,6 +304,8 @@ type PendingGeneration = {
   originalPrompt?: string;
   taskId?: string;
   referenceImages?: string[];
+  referenceVideos?: string[];
+  referenceAudios?: string[];
   videoReferenceMode?: VideoReferenceMode;
   imageReferences?: ImageReference[];
   referenceHint?: string;
@@ -337,6 +361,7 @@ type UploadedImage = {
   source?: "upload" | "asset";
   uploadStatus?: UploadTransferStatus;
   uploadProgress?: number;
+  forceReencode?: boolean;
   error?: string;
 };
 
@@ -366,7 +391,7 @@ type UserDialogTab = "profile" | "credits" | "security" | "settings";
 type WorkspaceStorageMode = "loading" | "user";
 type WorkspaceLoadStatus = "loading" | "retrying" | "loaded" | "failed";
 type UserLanguage = "简体中文" | "繁体中文";
-type AssetFilter = AssetType | "conversation_images" | "conversation_uploads" | "conversation_videos";
+type AssetFilter = AssetType | "conversation_images" | "conversation_uploads" | "conversation_videos" | "workflow_images" | "workflow_videos";
 type AssetCategoryTarget = UploadableImageAssetType | "conversation_image";
 type WorkSession = {
   id: string;
@@ -401,7 +426,9 @@ type WorkspaceStatePayload = {
   sessions?: WorkSession[];
   sessionsHasMore?: boolean;
   sessionsNextOffset?: number;
+  sessionsTotalCount?: number;
   nextConversationNumber?: number;
+  nextWorkflowNumber?: number;
   activePanel?: ActivePanel;
   assetFilter?: AssetFilter;
   assetScrollTopByFilter?: Partial<Record<AssetFilter, number>>;
@@ -488,6 +515,8 @@ type WorkflowItem = {
   id: string;
   title: string;
   createdAt: number;
+  updatedAt?: number;
+  usageSummary?: UsageSummary;
   canvas?: WorkflowCanvasState;
 };
 
@@ -664,10 +693,12 @@ function shouldUseStaticAssetBaseUrl() {
 
   try {
     const currentHost = window.location.host;
+    const currentHostname = window.location.hostname;
     const staticHost = new URL(staticAssetBaseUrl).host;
     const uploadHost = uploadApiBaseUrl ? new URL(uploadApiBaseUrl).host : "";
     const primaryHost = primaryAppBaseUrl ? new URL(primaryAppBaseUrl).host : "";
-    if (currentHost === staticHost || currentHost === uploadHost || currentHost === primaryHost || window.location.hostname === "101.47.19.109") return false;
+    if (currentHostname === "main.venusface.com" || currentHostname === "api.venusface.com" || currentHostname === "101.47.19.109") return false;
+    if (currentHost === staticHost || currentHost === uploadHost || currentHost === primaryHost) return false;
   } catch {
     return Boolean(staticAssetBaseUrl);
   }
@@ -701,6 +732,7 @@ function isGenericMediaReason(value: string | undefined) {
 }
 
 type MediaSaveStatusJob = {
+  id?: string;
   remoteUrl: string;
   localUrl?: string;
   thumbnailUrl?: string;
@@ -812,18 +844,33 @@ function isRemoteMediaUrl(url: string | undefined): url is string {
   return typeof url === "string" && /^https?:\/\//i.test(url);
 }
 
-function collectRemoteMediaUrls(sessions: WorkSession[], assets: AssetItem[], assetGenerateJobs: AssetGenerateJob[]) {
+function getVideoPlaybackUrl(url: string | undefined) {
+  if (!url) return url;
+  if (isRemoteMediaUrl(url)) return url;
+  return getStaticMediaUrl(url) ?? url;
+}
+
+function collectRemoteMediaUrls(sessions: WorkSession[], assets: AssetItem[], assetGenerateJobs: AssetGenerateJob[], workflowItems: WorkflowItem[] = []) {
   const urls = new Set<string>();
+  const addRemoteUrl = (url: string | undefined) => {
+    if (isRemoteMediaUrl(url) && !url.includes("#manual-test")) urls.add(url);
+  };
   sessions.forEach((session) => {
     session.messages.forEach((message) => {
-      message.images?.forEach((url) => { if (isRemoteMediaUrl(url)) urls.add(url); });
-      message.imageResultSlots?.forEach((slot) => { if (slot.type === "image" && isRemoteMediaUrl(slot.url)) urls.add(slot.url); });
-      if (isRemoteMediaUrl(message.videoUrl)) urls.add(message.videoUrl);
-      message.videos?.forEach((url) => { if (isRemoteMediaUrl(url)) urls.add(url); });
+      message.images?.forEach(addRemoteUrl);
+      message.imageResultSlots?.forEach((slot) => { if (slot.type === "image") addRemoteUrl(slot.url); });
+      addRemoteUrl(message.videoUrl);
+      message.videos?.forEach(addRemoteUrl);
     });
   });
-  assets.forEach((asset) => { if (isRemoteMediaUrl(asset.url)) urls.add(asset.url); });
-  assetGenerateJobs.forEach((job) => { if (isRemoteMediaUrl(job.result.url)) urls.add(job.result.url); });
+  assets.forEach((asset) => addRemoteUrl(asset.url));
+  assetGenerateJobs.forEach((job) => addRemoteUrl(job.result.url));
+  workflowItems.forEach((workflow) => {
+    workflow.canvas?.nodes.forEach((node) => {
+      node.data.images?.forEach(addRemoteUrl);
+      addRemoteUrl(node.data.videoUrl);
+    });
+  });
   return Array.from(urls);
 }
 
@@ -913,6 +960,19 @@ function replaceAssetGenerateJobMediaUrls(job: AssetGenerateJob, replacements: M
   const url = replaceUrlValue(job.result.url, replacements);
   return url && url !== job.result.url ? { ...job, result: { ...job.result, url, dimensions: dimensions[url] ?? job.result.dimensions } } : job;
 }
+
+function replaceWorkflowItemMediaUrls(item: WorkflowItem, replacements: Map<string, string>) {
+  if (!item.canvas?.nodes.length) return item;
+  let changed = false;
+  const nodes = item.canvas.nodes.map((node) => {
+    const images = replaceUrlArray(node.data.images, replacements);
+    const videoUrl = replaceUrlValue(node.data.videoUrl, replacements);
+    if (images === node.data.images && videoUrl === node.data.videoUrl) return node;
+    changed = true;
+    return { ...node, data: { ...node.data, images, videoUrl } };
+  });
+  return changed ? { ...item, canvas: { ...item.canvas, nodes } } : item;
+}
 const readableDocumentExtensions = ["md", "txt", "csv"];
 const MAX_DOCUMENT_TEXT_CHARS = 12000;
 const MAX_DOCUMENT_CONTEXT_CHARS = 30000;
@@ -955,7 +1015,7 @@ type MentionAssetGroupType = UploadableImageAssetType | "conversation_upload";
 const mentionAssetTypes: MentionAssetGroupType[] = ["character_image", "scene_image", "shot_image", "conversation_upload"];
 const assetUploadTypes: UploadableImageAssetType[] = ["character_image", "scene_image", "shot_image"];
 const ASSET_UPLOAD_SLOT_COUNT = 8;
-const ASSET_RENDER_PAGE_SIZE = 24;
+const ASSET_RENDER_PAGE_SIZE = 30;
 const assetTypeIcons: Record<AssetType, typeof RiImageLine> = {
   character_image: RiAccountBoxLine,
   scene_image: RiLandscapeLine,
@@ -968,7 +1028,7 @@ const assetCategoryTargetLabels: Record<AssetCategoryTarget, string> = {
   character_image: "角色图片",
   scene_image: "场景图片",
   shot_image: "分镜图片",
-  conversation_image: "对话流图片",
+  conversation_image: "上传图片",
 };
 const mentionAssetTypeLabels: Record<MentionAssetGroupType, string> = {
   character_image: "角色图片",
@@ -980,15 +1040,19 @@ const assetCategoryTargetIcons: Record<AssetCategoryTarget, typeof RiImageLine> 
   character_image: RiAccountBoxLine,
   scene_image: RiLandscapeLine,
   shot_image: RiMultiImageLine,
-  conversation_image: RiImageLine,
+  conversation_image: ImageUploadLineIcon,
 };
 
 function isAssetGenerationAsset(asset: AssetItem) {
   return asset.librarySource === "asset_generation";
 }
 
+function isWorkflowAsset(asset: AssetItem) {
+  return asset.librarySource === "workflow";
+}
+
 function isConversationAsset(asset: AssetItem) {
-  return asset.type !== "trash" && !isAssetGenerationAsset(asset);
+  return asset.type !== "trash" && !isAssetGenerationAsset(asset) && !isWorkflowAsset(asset);
 }
 
 function isMentionGroupAsset(asset: AssetItem, groupType: MentionAssetGroupType) {
@@ -1080,6 +1144,10 @@ function HoverImagePreview({ src, alt, wrapperClassName = "inline-block", childr
 
 function getAssetCardImageUrl(asset: Pick<AssetItem, "url" | "thumbnailUrl" | "posterUrl">) {
   if (asset.thumbnailUrl) return getStaticMediaUrl(asset.thumbnailUrl, mediaThumbnailVersion) ?? asset.thumbnailUrl;
+  if (isUploadedAssetUrl(asset.url)) {
+    const cleanUrl = toLocalGeneratedUrl(asset.url).split("?")[0].split("#")[0];
+    return `/api/media-thumbnail?url=${encodeURIComponent(cleanUrl)}&v=${mediaThumbnailVersion}`;
+  }
   const posterUrl = asset.posterUrl ?? getLocalVideoPosterUrl(asset.url);
   return posterUrl ? getMediaThumbnailUrl(posterUrl) : getMediaThumbnailUrl(asset.url);
 }
@@ -1860,6 +1928,18 @@ function getSessionMediaCounts(session?: WorkSession | null) {
   return { images: imageUrls.size, videos: videoUrls.size };
 }
 
+function getWorkflowMediaCounts(workflow?: WorkflowItem | null) {
+  const imageUrls = new Set<string>();
+  const videoUrls = new Set<string>();
+
+  for (const node of workflow?.canvas?.nodes ?? []) {
+    node.data.images?.filter(Boolean).forEach((url) => imageUrls.add(normalizeMediaUrlForMatch(url)));
+    if (node.data.videoUrl) videoUrls.add(normalizeMediaUrlForMatch(node.data.videoUrl));
+  }
+
+  return { images: imageUrls.size, videos: videoUrls.size };
+}
+
 function getLocalVideoPosterUrl(url: string | undefined) {
   if (!url?.startsWith("/generated/")) return undefined;
   const userVideoMatch = url.match(/^\/generated\/users\/([^/]+)\/videos\//);
@@ -1988,14 +2068,14 @@ function BlackHoverTooltip({ label, children, className = "", side = "top" }: { 
   );
 }
 
-function UsageSummaryButton({ summary, mediaCounts }: { summary?: UsageSummary; mediaCounts?: { images: number; videos: number } }) {
+function UsageSummaryButton({ summary, mediaCounts, className = "absolute right-4 top-1/2 -translate-y-1/2" }: { summary?: UsageSummary; mediaCounts?: { images: number; videos: number }; className?: string }) {
   const safeSummary = normalizeUsageSummary(summary);
   const imageCount = mediaCounts?.images ?? 0;
   const videoCount = mediaCounts?.videos ?? 0;
   const hasUsage = safeSummary.totalTokens > 0 || safeSummary.usd > 0 || safeSummary.credits > 0 || imageCount > 0 || videoCount > 0;
 
   return (
-    <div className="group absolute right-4 top-1/2 -translate-y-1/2">
+    <div className={`group ${className}`}>
       <button type="button" className="flex h-8 w-8 items-center justify-center rounded-md text-[#6f6f6f] transition hover:bg-[#f2f2f2] hover:text-[#111111]" aria-label="查看当前对话用量">
         <RiCopperDiamondLine className="h-[22px] w-[22px]" aria-hidden="true" />
       </button>
@@ -2275,6 +2355,10 @@ function normalizeMediaUrlForMatch(value: string) {
   return value.split("?")[0].split("#")[0].replace(/^https?:\/\/[^/]+/, "");
 }
 
+function getAssetIdentityKey(asset: Pick<AssetItem, "id" | "mediaId" | "url">) {
+  return asset.mediaId || normalizeMediaUrlForMatch(asset.url) || asset.id;
+}
+
 function messageHasMediaUrl(message: Message, url: string) {
   const target = normalizeMediaUrlForMatch(url);
   return [...(message.images ?? []), ...getMessageVideos(message)].some((item) => normalizeMediaUrlForMatch(item) === target);
@@ -2407,7 +2491,7 @@ function AgentMediaPromptPanel({ items, pageIndex, expanded, onToggle, onUseProm
   );
 }
 
-function MediaPromptBlock({ message, references, onUsePrompt, copyState, displayImageUrl, variantIndex = 0, variantCount = 1, onPreviousVariant, onNextVariant }: { message: Message; references?: ImageReference[]; onUsePrompt: (message: Message) => void; copyState?: "success" | "error"; displayImageUrl?: string; variantIndex?: number; variantCount?: number; onPreviousVariant?: () => void; onNextVariant?: () => void }) {
+function MediaPromptBlock({ message, references, mediaReferences, onPreviewMedia, onUsePrompt, copyState, displayImageUrl, variantIndex = 0, variantCount = 1, onPreviousVariant, onNextVariant }: { message: Message; references?: ImageReference[]; mediaReferences?: MediaFileReference[]; onPreviewMedia?: (file: UploadedFileEntry) => void; onUsePrompt: (message: Message) => void; copyState?: "success" | "error"; displayImageUrl?: string; variantIndex?: number; variantCount?: number; onPreviousVariant?: () => void; onNextVariant?: () => void }) {
   const promptRef = useRef<HTMLDivElement | null>(null);
   const [shouldShowPromptOverlay, setShouldShowPromptOverlay] = useState(false);
 
@@ -2493,14 +2577,14 @@ function MediaPromptBlock({ message, references, onUsePrompt, copyState, display
       <div className="group/prompt relative">
         <div ref={promptRef} className="relative max-h-[56px] overflow-hidden text-[14px] leading-7 text-[#111111]">
           {shouldShowReferenceThumbnails ? <InlineReferenceThumbnails references={promptReferences} excludeUrls={mentionedReferenceUrls} /> : null}
-          <ReferencedTextContent content={message.content} references={promptReferences} />
+          <ReferencedTextContent content={message.content} references={promptReferences} mediaReferences={mediaReferences} onPreviewMedia={onPreviewMedia} />
           {inlineCopyButton}
           {shouldShowPromptOverlay ? <div className="pointer-events-none absolute bottom-0 right-0 h-7 w-16 bg-gradient-to-r from-white/0 via-white/90 to-white" /> : null}
         </div>
         {shouldShowPromptOverlay ? (
           <div className="pointer-events-none absolute -inset-x-4 -top-3 z-30 max-h-[250px] rounded-[12px] bg-white/88 px-4 pb-3 pt-3 text-[14px] leading-7 text-[#111111] opacity-0 shadow-[0_18px_36px_rgba(0,0,0,0.08)] backdrop-blur-[10px] transition-opacity delay-500 duration-200 group-hover/prompt:pointer-events-auto group-hover/prompt:opacity-100 group-hover/prompt:delay-0">
             {blockCopyButton}
-            <div className="max-h-[198px] overflow-y-auto pr-2">{shouldShowReferenceThumbnails ? <InlineReferenceThumbnails references={promptReferences} excludeUrls={mentionedReferenceUrls} /> : null}<ReferencedTextContent content={message.content} references={promptReferences} /></div>
+            <div className="max-h-[198px] overflow-y-auto pr-2">{shouldShowReferenceThumbnails ? <InlineReferenceThumbnails references={promptReferences} excludeUrls={mentionedReferenceUrls} /> : null}<ReferencedTextContent content={message.content} references={promptReferences} mediaReferences={mediaReferences} onPreviewMedia={onPreviewMedia} /></div>
           </div>
         ) : null}
       </div>
@@ -2845,21 +2929,72 @@ function createClientId() {
 }
 
 function getNextWorkflowTitle(items: WorkflowItem[]) {
-  let nextIndex = 1;
+  return getNextWorkflowTitleFromNumber(items, 1).title;
+}
+
+function getNextWorkflowTitleFromNumber(items: WorkflowItem[], startNumber: number) {
+  let nextIndex = Math.max(1, Math.floor(startNumber));
 
   while (items.some((item) => item.title === `工作流_${String(nextIndex).padStart(2, "0")}`)) {
     nextIndex += 1;
   }
 
-  return `工作流_${String(nextIndex).padStart(2, "0")}`;
+  return { title: `工作流_${String(nextIndex).padStart(2, "0")}`, nextWorkflowNumber: nextIndex + 1 };
+}
+
+function getMaxWorkflowTitleNumber(items: WorkflowItem[]) {
+  return items.reduce((max, item) => {
+    const number = Number(item.title.match(/^工作流_(\d+)$/)?.[1]);
+    return Number.isFinite(number) ? Math.max(max, number) : max;
+  }, 0);
 }
 
 function createWorkflowItem(items: WorkflowItem[]): WorkflowItem {
+  const createdAt = Date.now();
   return {
     id: createClientId(),
-    title: getNextWorkflowTitle(items),
-    createdAt: Date.now(),
+    title: "新工作流",
+    createdAt,
+    updatedAt: createdAt,
   };
+}
+
+function isUntitledWorkflow(item: WorkflowItem) {
+  return item.title === "新工作流";
+}
+
+function hasWorkflowAction(canvas?: WorkflowCanvasState) {
+  return Boolean(canvas && ((canvas.nodes?.length ?? 0) > 0 || (canvas.edges?.length ?? 0) > 0));
+}
+
+function ensureWorkflowItems(items: WorkflowItem[]) {
+  return items.length > 0 ? items : [createWorkflowItem([])];
+}
+
+function keepSingleUntitledWorkflow(items: WorkflowItem[]) {
+  let hasUntitledWorkflow = false;
+  return items.filter((item) => {
+    if (!isUntitledWorkflow(item)) return true;
+    if (hasUntitledWorkflow) return false;
+    hasUntitledWorkflow = true;
+    return true;
+  });
+}
+
+function getPersistableWorkflowItems(items: WorkflowItem[]) {
+  return keepSingleUntitledWorkflow(ensureWorkflowItems(items));
+}
+
+function normalizeStoredWorkflowItems(value: unknown): WorkflowItem[] {
+  if (!Array.isArray(value)) return ensureWorkflowItems([]);
+  return ensureWorkflowItems(keepSingleUntitledWorkflow(value.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const workflow = item as Partial<WorkflowItem>;
+    if (typeof workflow.id !== "string" || typeof workflow.title !== "string") return [];
+    const createdAt = Number.isFinite(workflow.createdAt) ? Number(workflow.createdAt) : Date.now();
+    const updatedAt = Number.isFinite(workflow.updatedAt) ? Number(workflow.updatedAt) : createdAt;
+    return [{ ...workflow, id: workflow.id, title: workflow.title, createdAt, updatedAt }];
+  })));
 }
 
 function isEmptySession(session: WorkSession) {
@@ -2883,6 +3018,8 @@ function getPersistablePendingRequest(request: PendingGeneration) {
   return {
     ...request,
     referenceImages: request.referenceImages?.filter((url) => !url.startsWith("data:")),
+    referenceVideos: request.referenceVideos?.filter((url) => !url.startsWith("data:")),
+    referenceAudios: request.referenceAudios?.filter((url) => !url.startsWith("data:")),
     imageReferences: request.imageReferences?.filter((reference) => !reference.url.startsWith("data:")),
     messages: request.messages.map((message) => ({
       ...message,
@@ -2991,7 +3128,7 @@ function isAssetTargetType(value: unknown): value is AssetTargetType {
 }
 
 function isAssetFilter(value: unknown): value is AssetFilter {
-  return typeof value === "string" && (assetTypeOrder.includes(value as AssetType) || value === "conversation_images" || value === "conversation_uploads" || value === "conversation_videos");
+  return typeof value === "string" && (assetTypeOrder.includes(value as AssetType) || value === "conversation_images" || value === "conversation_uploads" || value === "conversation_videos" || value === "workflow_images" || value === "workflow_videos");
 }
 
 type StoredWorkspaceUiState = {
@@ -3328,20 +3465,26 @@ function isUploadedAssetUrl(url: string) {
   return /\/generated\/(?:users\/[^/]+\/)?upload_image\//.test(url);
 }
 
+function isUploadPromptPlaceholder(value: string | undefined) {
+  return value === UPLOAD_IMAGE_PROMPT_PLACEHOLDER || value === "资产库上传" || value === "对话流上传";
+}
+
 function isUploadedAsset(asset: Pick<AssetItem, "url" | "sourcePrompt">) {
-  return asset.sourcePrompt === "资产库上传" || isUploadedAssetUrl(asset.url);
+  return isUploadPromptPlaceholder(asset.sourcePrompt) || isUploadedAssetUrl(asset.url);
 }
 
 function isConversationUploadedAsset(asset: AssetItem) {
-  return isConversationAsset(asset) && !isVideoAsset(asset) && isUploadedAssetUrl(asset.url);
+  return isConversationAsset(asset) && !isVideoAsset(asset) && (isUploadedAssetUrl(asset.url) || asset.promptSource === "upload" || isUploadPromptPlaceholder(asset.sourcePrompt));
 }
 
 function isAssetInFilter(asset: AssetItem, filter: AssetFilter) {
   if (filter !== "trash" && (asset.type === "trash" || asset.deletedAt)) return false;
   if (filter === "trash") return asset.type === "trash" || Boolean(asset.deletedAt);
-  if (filter === "conversation_images") return isConversationAsset(asset) && !isVideoAsset(asset) && !isUploadedAssetUrl(asset.url);
+  if (filter === "conversation_images") return isConversationAsset(asset) && !isVideoAsset(asset) && !isConversationUploadedAsset(asset);
   if (filter === "conversation_uploads") return isConversationUploadedAsset(asset);
   if (filter === "conversation_videos") return isConversationAsset(asset) && isVideoAsset(asset);
+  if (filter === "workflow_images") return isWorkflowAsset(asset) && !isVideoAsset(asset);
+  if (filter === "workflow_videos") return isWorkflowAsset(asset) && isVideoAsset(asset);
   if (assetGenerationTypes.includes(filter as UploadableImageAssetType)) return isAssetGenerationAsset(asset) && asset.type === filter;
   return asset.type === filter;
 }
@@ -3600,7 +3743,15 @@ function readBlobAsDataUrl(blob: Blob) {
   });
 }
 
-async function convertImageFileToJpeg(file: File, quality = 0.95) {
+async function canvasToJpegBlob(canvas: HTMLCanvasElement, quality: number) {
+  return new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((result) => result ? resolve(result) : reject(new Error("图片转换失败")), "image/jpeg", quality);
+  });
+}
+
+async function convertImageFileToJpeg(file: File, quality = 0.92) {
+  const maxUploadBytes = 950 * 1024;
+  const maxSide = 2048;
   const sourceUrl = URL.createObjectURL(file);
   try {
     const image = new window.Image();
@@ -3612,18 +3763,43 @@ async function convertImageFileToJpeg(file: File, quality = 0.95) {
     image.src = sourceUrl;
     await loaded;
 
+    const sourceWidth = image.naturalWidth || image.width;
+    const sourceHeight = image.naturalHeight || image.height;
+    const sourceScale = Math.min(1, maxSide / Math.max(sourceWidth, sourceHeight));
     const canvas = document.createElement("canvas");
-    canvas.width = image.naturalWidth || image.width;
-    canvas.height = image.naturalHeight || image.height;
+    canvas.width = Math.max(1, Math.round(sourceWidth * sourceScale));
+    canvas.height = Math.max(1, Math.round(sourceHeight * sourceScale));
     const context = canvas.getContext("2d");
     if (!context || !canvas.width || !canvas.height) throw new Error("图片转换失败");
     context.fillStyle = "#ffffff";
     context.fillRect(0, 0, canvas.width, canvas.height);
-    context.drawImage(image, 0, 0);
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
 
-    const blob = await new Promise<Blob>((resolve, reject) => {
-      canvas.toBlob((result) => result ? resolve(result) : reject(new Error("图片转换失败")), "image/jpeg", quality);
-    });
+    let blob = await canvasToJpegBlob(canvas, quality);
+    for (const nextQuality of [0.86, 0.78, 0.7, 0.62, 0.54]) {
+      if (blob.size <= maxUploadBytes) break;
+      blob = await canvasToJpegBlob(canvas, nextQuality);
+    }
+
+    while (blob.size > maxUploadBytes && Math.max(canvas.width, canvas.height) > 1024) {
+      const resized = document.createElement("canvas");
+      resized.width = Math.max(1, Math.round(canvas.width * 0.82));
+      resized.height = Math.max(1, Math.round(canvas.height * 0.82));
+      const resizedContext = resized.getContext("2d");
+      if (!resizedContext) break;
+      resizedContext.fillStyle = "#ffffff";
+      resizedContext.fillRect(0, 0, resized.width, resized.height);
+      resizedContext.drawImage(canvas, 0, 0, resized.width, resized.height);
+      canvas.width = resized.width;
+      canvas.height = resized.height;
+      const nextContext = canvas.getContext("2d");
+      if (!nextContext) break;
+      nextContext.fillStyle = "#ffffff";
+      nextContext.fillRect(0, 0, canvas.width, canvas.height);
+      nextContext.drawImage(resized, 0, 0);
+      blob = await canvasToJpegBlob(canvas, 0.72);
+    }
+
     const baseName = (file.name || "upload").replace(/\.[^.]+$/, "") || "upload";
     const jpegFile = new File([blob], `${baseName}.jpg`, { type: "image/jpeg", lastModified: file.lastModified || Date.now() });
     const dataUrl = await readBlobAsDataUrl(blob);
@@ -3631,6 +3807,22 @@ async function convertImageFileToJpeg(file: File, quality = 0.95) {
   } finally {
     URL.revokeObjectURL(sourceUrl);
   }
+}
+
+async function withImageConversionTimeout<T>(promise: Promise<T>, timeoutMs = 5000): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = window.setTimeout(() => reject(new Error("图片转换超时")), timeoutMs);
+    promise.then(
+      (value) => {
+        window.clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        window.clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
 }
 
 function uploadJsonWithProgress<T>(url: string, payload: unknown, onProgress?: (progress: number) => void) {
@@ -3680,9 +3872,14 @@ function uploadFormDataWithProgress<T>(url: string, formData: FormData, onProgre
       xhr.abort();
       rejectOnce(new Error("上传已取消"));
     };
-    xhr.open("POST", url);
-    xhr.timeout = 10 * 60 * 1000;
-    if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+    try {
+      xhr.open("POST", url);
+      xhr.timeout = 10 * 60 * 1000;
+      if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
+    } catch (error) {
+      rejectOnce(error instanceof Error ? error : new Error("上传初始化失败"));
+      return;
+    }
     xhr.upload.onprogress = (event) => {
       if (!event.lengthComputable) return;
       onProgress?.(Math.min(95, Math.max(15, Math.round((event.loaded / event.total) * 95))));
@@ -3706,8 +3903,21 @@ function uploadFormDataWithProgress<T>(url: string, formData: FormData, onProgre
     xhr.onerror = () => rejectOnce(new Error("上传失败，请检查网络或跨域配置"));
     xhr.ontimeout = () => rejectOnce(new Error("上传超时，请重试"));
     signal?.addEventListener("abort", abortUpload, { once: true });
-    xhr.send(formData);
+    try {
+      xhr.send(formData);
+    } catch (error) {
+      rejectOnce(error instanceof Error ? error : new Error("上传发送失败"));
+    }
   });
+}
+
+function reportClientDiagnostic(message: string, detail?: unknown) {
+  try {
+    const payload = JSON.stringify({ message, source: "client-diagnostic", stack: detail instanceof Error ? detail.stack : typeof detail === "string" ? detail : JSON.stringify(detail), href: window.location.href, userAgent: navigator.userAgent });
+    navigator.sendBeacon?.("/api/client-error", new Blob([payload], { type: "application/json" }));
+  } catch {
+    // Diagnostics must never affect user actions.
+  }
 }
 
 async function getDirectUploadToken() {
@@ -3736,12 +3946,13 @@ async function uploadDocumentFileAsset(file: File, onProgress?: (progress: numbe
   return data.url;
 }
 
-async function uploadTemporaryAssetImage(file: File, onProgress?: (progress: number) => void, signal?: AbortSignal) {
+async function uploadTemporaryAssetImage(file: File, onProgress?: (progress: number) => void, signal?: AbortSignal, forceReencode = false) {
   const formData = new FormData();
   formData.append("image", file, file.name);
-  const uploadUrl = uploadApiBaseUrl ? `${uploadApiBaseUrl}/api/asset-upload-temp` : "/api/asset-upload-temp";
+  if (forceReencode) formData.append("forceReencode", "1");
+  const uploadUrl = "/api/asset-upload-temp";
   onProgress?.(8);
-  const token = await getDirectUploadToken();
+  const token = "";
   onProgress?.(12);
   const data = await uploadFormDataWithProgress<{ token?: string; error?: string }>(uploadUrl, formData, onProgress, token, signal);
   if (!data.token) throw new Error(data.error || "图片上传失败");
@@ -3749,8 +3960,8 @@ async function uploadTemporaryAssetImage(file: File, onProgress?: (progress: num
 }
 
 async function commitTemporaryAssetImage(tempToken: string) {
-  const uploadUrl = uploadApiBaseUrl ? `${uploadApiBaseUrl}/api/asset-upload-temp` : "/api/asset-upload-temp";
-  const token = await getDirectUploadToken();
+  const uploadUrl = "/api/asset-upload-temp";
+  const token = "";
   const response = await fetch(uploadUrl, {
     method: "PATCH",
     headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
@@ -3763,8 +3974,8 @@ async function commitTemporaryAssetImage(tempToken: string) {
 
 async function deleteTemporaryAssetImages(tempTokens: string[]) {
   if (tempTokens.length === 0) return;
-  const uploadUrl = uploadApiBaseUrl ? `${uploadApiBaseUrl}/api/asset-upload-temp` : "/api/asset-upload-temp";
-  const token = await getDirectUploadToken().catch(() => "");
+  const uploadUrl = "/api/asset-upload-temp";
+  const token = "";
   await fetch(uploadUrl, {
     method: "DELETE",
     headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
@@ -4012,13 +4223,22 @@ function isVideoAsset(asset: Pick<AssetItem, "type" | "url">) {
   return asset.type === "shot_video" || /\.(mp4|webm|mov)(\?|$)/i.test(asset.url);
 }
 
+function isAudioAsset(asset: Pick<AssetItem, "url">) {
+  return /\.(mp3|wav)(\?|$)/i.test(asset.url);
+}
+
 function getAssetCategoryTargets(asset: Pick<AssetItem, "type" | "url">): AssetCategoryTarget[] {
   return isVideoAsset(asset) ? [] : ["character_image", "scene_image", "shot_image", "conversation_image"];
 }
 
 function getSelectedAssetCategoryTarget(asset: AssetItem): AssetCategoryTarget {
-  if (isConversationAsset(asset)) return "conversation_image";
+  if (isConversationUploadedAsset(asset)) return "conversation_image";
   return assetGenerationTypes.includes(asset.type as UploadableImageAssetType) ? asset.type as UploadableImageAssetType : "conversation_image";
+}
+
+function isAssetCategoryTargetSelected(asset: AssetItem, target: AssetCategoryTarget) {
+  if (isConversationAsset(asset) && !isConversationUploadedAsset(asset)) return false;
+  return getSelectedAssetCategoryTarget(asset) === target;
 }
 
 function getAssetCountdownText(asset: Pick<AssetItem, "purgeAt">, now: number) {
@@ -4194,7 +4414,7 @@ function applyAssetGenerationSystemNames(assets: AssetItem[]) {
   assetGenerationTypes.forEach((type) => {
     const prefix = type === "scene_image" ? "场景" : type === "shot_image" ? "分镜" : "角色";
     assets
-      .filter((asset) => asset.librarySource === "asset_generation" && asset.type === type && asset.sourcePrompt !== "资产库上传")
+      .filter((asset) => asset.librarySource === "asset_generation" && asset.type === type && !isUploadPromptPlaceholder(asset.sourcePrompt))
       .sort((a, b) => a.createdAt - b.createdAt)
       .forEach((asset, index) => {
         systemNames.set(asset.id, `${prefix}${index + 1}`);
@@ -4892,24 +5112,48 @@ function PlainMentionEditor({
   );
 }
 
-function ReferencedTextContent({ content, references }: { content: string; references?: ImageReference[] }) {
+function ReferencedTextContent({ content, references, mediaReferences, onPreviewMedia }: { content: string; references?: ImageReference[]; mediaReferences?: MediaFileReference[]; onPreviewMedia?: (file: UploadedFileEntry) => void }) {
   const safeReferences = references ?? [];
-  const parts = content.replace(/\\r\\n|\\n|\\r/g, "\n").replace(/\\t/g, " ").split(/(@[^@\s，。！？；;、]+)/g);
+  const safeMediaReferences = mediaReferences ?? [];
+  const normalizedContent = content.replace(/\\r\\n|\\n|\\r/g, "\n").replace(/\\t/g, " ");
+  const referenceByName = new Map<string, ImageReference | MediaFileReference>();
+  safeReferences.forEach((reference) => referenceByName.set(reference.name, reference));
+  safeMediaReferences.forEach((reference) => referenceByName.set(reference.name, reference));
+  const ranges = getEditorMentionRanges(normalizedContent, new Set(referenceByName.keys()));
+  const parts: Array<{ text: string; reference?: ImageReference | MediaFileReference }> = [];
+  let cursor = 0;
+  ranges.forEach((range) => {
+    if (range.start > cursor) parts.push({ text: normalizedContent.slice(cursor, range.start) });
+    parts.push({ text: normalizedContent.slice(range.start, range.end), reference: referenceByName.get(range.name) });
+    cursor = range.end;
+  });
+  if (cursor < normalizedContent.length) parts.push({ text: normalizedContent.slice(cursor) });
 
   return (
     <span className="align-middle">
       {parts.map((part, index) => {
-        const reference = part.startsWith("@") ? safeReferences.find((item) => item.name === part.slice(1)) : undefined;
+        const reference = part.reference;
 
-        if (!reference) return <span key={`${part}-${index}`}>{part}</span>;
+        if (!reference) return <span key={`${part.text}-${index}`}>{part.text}</span>;
+        if ("mediaKind" in reference) {
+          const Icon = reference.mediaKind === "video" ? RiVideoLine : RiMusic2Line;
+          return (
+            <span key={`${part.text}-${index}`} className="mx-0.5 inline-flex items-center gap-1 align-[-4px] leading-none text-[#4f7cff]">
+              <button type="button" onClick={() => onPreviewMedia?.(reference.file)} className="inline-flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded bg-[#eef3ff] text-[#4f7cff] ring-1 ring-[#dbe5ff] transition hover:bg-white" aria-label={`预览${reference.name}`}>
+                <Icon className="h-3.5 w-3.5" aria-hidden="true" />
+              </button>
+              <span className="max-w-[180px] truncate leading-[18px]">{part.text}</span>
+            </span>
+          );
+        }
 
         return (
-          <span key={`${part}-${index}`} className="mx-0.5 inline-flex items-center gap-1 align-[-3px] leading-none text-[#4f7cff]">
+          <span key={`${part.text}-${index}`} className="mx-0.5 inline-flex items-center gap-1 align-[-3px] leading-none text-[#4f7cff]">
             <HoverImagePreview src={getStaticMediaUrl(reference.url) ?? reference.url} alt={reference.name} wrapperClassName="inline-flex h-[18px] w-[18px] shrink-0 items-center align-middle">
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img src={getStaticMediaUrl(reference.url) ?? reference.url} alt={reference.name} className="block h-[18px] w-[18px] rounded object-cover" />
             </HoverImagePreview>
-            <span className="leading-[18px]">{part}</span>
+            <span className="leading-[18px]">{part.text}</span>
           </span>
         );
       })}
@@ -4917,8 +5161,8 @@ function ReferencedTextContent({ content, references }: { content: string; refer
   );
 }
 
-function UserMessageContent({ content, references }: { content: string; references?: ImageReference[] }) {
-  return <ReferencedTextContent content={content} references={references} />;
+function UserMessageContent({ content, references, mediaReferences, onPreviewMedia }: { content: string; references?: ImageReference[]; mediaReferences?: MediaFileReference[]; onPreviewMedia?: (file: UploadedFileEntry) => void }) {
+  return <ReferencedTextContent content={content} references={references} mediaReferences={mediaReferences} onPreviewMedia={onPreviewMedia} />;
 }
 
 function InlineReferenceThumbnails({ references, excludeUrls }: { references?: ImageReference[]; excludeUrls?: Set<string> }) {
@@ -5005,11 +5249,12 @@ function UploadedDocumentStrip({ files, onPreview }: { files?: UploadedFileEntry
         const displayName = getUploadedFileDisplayName(file);
         const meta = getUploadedDocumentMeta(displayName);
         const sizeText = formatUploadedFileSize(file);
+        const mediaKind = getUploadedFileMediaKind(file);
 
         return (
           <button key={`${getUploadedFileKey(file)}-${index}`} type="button" onClick={() => onPreview?.(file)} className="flex h-[54px] w-[200px] shrink-0 items-center gap-3 rounded-[10px] bg-[#f2f2f2] px-4 text-left transition hover:bg-[#ececec]">
             <div className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-[3px] border-2 text-[15px] font-bold leading-none" style={{ backgroundColor: meta.bg, borderColor: meta.border, color: meta.color }}>
-              {meta.icon}
+              {mediaKind === "video" ? <RiVideoLine className="h-4 w-4" aria-hidden="true" /> : mediaKind === "audio" ? <RiMusic2Line className="h-4 w-4" aria-hidden="true" /> : meta.icon}
             </div>
             <div className="min-w-0 flex-1">
               <div className="truncate text-[13px] font-medium leading-4 text-[#222222]">{displayName}</div>
@@ -5036,6 +5281,7 @@ function AssetManagementPanel({
   assetFilter,
   renderLimit,
   openAssetActionMenuId,
+  isLoadingMore,
   onPreview,
   onUseAsset,
   onRename,
@@ -5056,6 +5302,7 @@ function AssetManagementPanel({
   assetFilter: AssetFilter;
   renderLimit: number;
   openAssetActionMenuId: string;
+  isLoadingMore: boolean;
   onPreview: (asset: AssetItem) => void;
   onUseAsset: (asset: AssetItem) => void;
   onRename: (asset: AssetItem) => void;
@@ -5085,16 +5332,20 @@ function AssetManagementPanel({
     if (isAssetTrashExpired(asset, now)) return false;
     return isAssetInFilter(asset, assetFilter);
   }), [assets, assetFilter, now]);
-  const visibleTypes: AssetType[] = assetFilter === "conversation_images" || assetFilter === "conversation_uploads" || assetFilter === "conversation_videos" ? assetTypeOrder : [assetFilter];
-  const title = assetFilter === "conversation_images" ? "生成图片" : assetFilter === "conversation_uploads" ? "上传图片" : assetFilter === "conversation_videos" ? "生成视频" : assetTypeLabels[assetFilter];
-  const canUploadImages = assetGenerationTypes.includes(assetFilter as UploadableImageAssetType);
+  const visibleTypes: AssetType[] = assetFilter === "conversation_images" || assetFilter === "conversation_uploads" || assetFilter === "conversation_videos" || assetFilter === "workflow_images" || assetFilter === "workflow_videos" ? assetTypeOrder : [assetFilter];
+  const title = assetFilter === "conversation_images" ? "生成图片" : assetFilter === "conversation_uploads" ? "上传图片" : assetFilter === "conversation_videos" ? "生成视频" : assetFilter === "workflow_images" ? "工作流生成图片" : assetFilter === "workflow_videos" ? "工作流生成视频" : assetTypeLabels[assetFilter];
+  const canUploadImages = assetFilter === "conversation_uploads";
   const canGenerateImages = assetGenerationTypes.includes(assetFilter as UploadableImageAssetType);
   const emptyText = assetFilter === "conversation_uploads"
     ? "在对话流上传的图片会出现在这里。"
-    : assetFilter === "conversation_images"
-      ? "对话流生成的图片会出现在这里。"
+      : assetFilter === "conversation_images"
+        ? "对话流生成的图片会出现在这里。"
       : assetFilter === "conversation_videos"
         ? "对话流生成的视频会出现在这里。"
+        : assetFilter === "workflow_images"
+          ? "工作流生成的图片会出现在这里。"
+          : assetFilter === "workflow_videos"
+            ? "工作流生成的视频会出现在这里。"
           : assetFilter === "trash"
             ? "删除的资产会出现在这里。"
           : "还没有生成资产。生成角色图、场景图或分镜图后会自动出现在这里。";
@@ -5167,13 +5418,13 @@ function AssetManagementPanel({
                         <div className="px-2 pb-1.5 pt-1 text-[12px] font-medium leading-none text-[#9a9a9a]">移动位置</div>
                         {getAssetCategoryTargets(asset).map((target) => {
                           const AssetIcon = assetCategoryTargetIcons[target];
-                          const selectedTarget = getSelectedAssetCategoryTarget(asset);
+                          const isSelectedTarget = isAssetCategoryTargetSelected(asset, target);
 
                           return (
                             <button key={target} type="button" onClick={() => onChangeType(asset.id, target)} className="flex h-9 w-full items-center gap-2.5 rounded-lg px-2 text-left text-[#333333] hover:bg-[#f5f5f5]">
                               <AssetIcon className="h-4 w-4 shrink-0 text-[#777777]" aria-hidden="true" />
                               <span className="min-w-0 flex-1 truncate text-[13px] leading-none">{assetCategoryTargetLabels[target]}</span>
-                              {selectedTarget === target ? <RiCheckLine className="h-4 w-4" aria-hidden="true" /> : null}
+                              {isSelectedTarget ? <RiCheckLine className="h-4 w-4" aria-hidden="true" /> : null}
                             </button>
                           );
                         })}
@@ -5277,13 +5528,13 @@ function AssetManagementPanel({
                       <div className="px-2 pb-1.5 pt-1 text-[12px] font-medium leading-none text-[#9a9a9a]">移动位置</div>
                       {getAssetCategoryTargets(asset).map((target) => {
                         const AssetIcon = assetCategoryTargetIcons[target];
-                        const selectedTarget = getSelectedAssetCategoryTarget(asset);
+                        const isSelectedTarget = isAssetCategoryTargetSelected(asset, target);
 
                         return (
                           <button key={target} type="button" onClick={() => onChangeType(asset.id, target)} className="flex h-9 w-full items-center gap-2.5 rounded-lg px-2 text-left text-[#333333] hover:bg-[#f5f5f5]">
                             <AssetIcon className="h-4 w-4 shrink-0 text-[#777777]" aria-hidden="true" />
                             <span className="min-w-0 flex-1 truncate text-[13px] leading-none">{assetCategoryTargetLabels[target]}</span>
-                            {selectedTarget === target ? <RiCheckLine className="h-4 w-4" aria-hidden="true" /> : null}
+                            {isSelectedTarget ? <RiCheckLine className="h-4 w-4" aria-hidden="true" /> : null}
                           </button>
                         );
                       })}
@@ -5332,8 +5583,8 @@ function AssetManagementPanel({
 
       {visibleAssets.length === 0 && assetFilter !== "character_image" && assetFilter !== "scene_image" && assetFilter !== "shot_image" ? (
         <div className="rounded-2xl border border-dashed border-[#d8d8d8] bg-[#fafafa] px-6 py-12 text-center text-sm text-[#8a8a8a]">{emptyText}</div>
-      ) : assetFilter === "conversation_images" || assetFilter === "conversation_uploads" || assetFilter === "conversation_videos" ? (
-        renderAssetGrid(getRenderableAssets(visibleAssets), assetFilter === "conversation_videos" ? "video-row" : "square")
+      ) : assetFilter === "conversation_images" || assetFilter === "conversation_uploads" || assetFilter === "conversation_videos" || assetFilter === "workflow_images" || assetFilter === "workflow_videos" ? (
+        renderAssetGrid(getRenderableAssets(visibleAssets), assetFilter === "conversation_videos" || assetFilter === "workflow_videos" ? "video-row" : "square")
       ) : assetFilter === "character_image" ? (
         renderAssetGrid(getRenderableAssets(visibleAssets), "square", "character_image")
       ) : assetFilter === "scene_image" ? (
@@ -5388,6 +5639,7 @@ function AssetManagementPanel({
           );
         }) : <div className="flex min-h-[280px] items-center justify-center text-sm text-[#a0a0a0]">当前没有内容</div>
       )}
+      {isLoadingMore ? <div className="py-4 text-center text-[13px] text-[#8a8a8a]">正在加载中...</div> : null}
     </div>
   );
 }
@@ -5401,10 +5653,10 @@ function AssetUploadDialog({
   onSelectSlot,
   onSelectFiles,
   onRemoveSlot,
+  onRetrySlot,
   onChangeName,
   onRestoreEmptyName,
   onClearName,
-  onChangeType,
   onSubmit,
 }: {
   slots: AssetUploadSlot[];
@@ -5415,17 +5667,17 @@ function AssetUploadDialog({
   onSelectSlot: (index: number) => void;
   onSelectFiles: (files: File[]) => void;
   onRemoveSlot: (index: number) => void;
+  onRetrySlot: (index: number) => void;
   onChangeName: (value: string) => void;
   onRestoreEmptyName: () => void;
   onClearName: () => void;
-  onChangeType: (type: UploadableImageAssetType) => void;
   onSubmit: () => void;
 }) {
   const filledSlots = slots.map((slot, index) => ({ slot, index })).filter((item) => item.slot.dataUrl);
   const activeSlot = slots[activeIndex]?.dataUrl ? slots[activeIndex] : filledSlots[0]?.slot;
   const hasImages = filledSlots.length > 0;
   const hasPendingUpload = filledSlots.some((item) => item.slot.uploadStatus === "uploading");
-  const hasFailedUpload = filledSlots.some((item) => item.slot.uploadStatus === "error" || (item.slot.dataUrl && !item.slot.tempToken));
+  const hasReadyUpload = filledSlots.some((item) => item.slot.dataUrl && item.slot.uploadStatus === "ready" && item.slot.tempToken);
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col items-center justify-center overscroll-contain bg-black/35 px-4">
@@ -5440,7 +5692,7 @@ function AssetUploadDialog({
         </button>
 
         <div className="text-[15px] font-semibold text-[#111111]">上传图片</div>
-        <div className="mt-1 text-[12px] leading-5 text-[#8a8a8a]">最多同时上传八张图片。点击图片位置后，下方会显示该图片的文件名和分类。</div>
+        <div className="mt-1 text-[12px] leading-5 text-[#8a8a8a]">最多同时上传八张图片。所有上传图片都会保存到上传图片分类。</div>
 
         <div className="mt-5 grid w-max grid-cols-4 justify-start gap-2">
           {filledSlots.map(({ slot, index }) => {
@@ -5458,8 +5710,18 @@ function AssetUploadDialog({
                       ) : null}
                     </button>
                     {slot.uploadStatus === "uploading" ? <UploadProgressOverlay progress={slot.uploadProgress} /> : null}
-                    {slot.uploadStatus === "error" ? <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/50 px-2 text-center text-[11px] font-medium leading-4 text-white">上传失败</div> : null}
-                    <button type="button" onClick={() => onRemoveSlot(index)} className="absolute right-0.5 top-0.5 flex h-5 w-5 items-center justify-center rounded-full bg-black/45 text-white backdrop-blur-[6px] transition hover:bg-black/62" aria-label="移除图片">
+                    {slot.uploadStatus === "error" ? (
+                      <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-1.5 bg-black/58 px-2 text-center text-[13px] font-semibold leading-4 text-white">
+                        <span>上传失败</span>
+                        {slot.uploadFile ? (
+                          <button type="button" onClick={() => onRetrySlot(index)} className="inline-flex items-center gap-1 text-[13px] font-semibold text-[#75a7ff] transition hover:text-[#a9c8ff]">
+                            <RiRefreshLine className="h-3.5 w-3.5" aria-hidden="true" />
+                            <span>重试</span>
+                          </button>
+                        ) : null}
+                      </div>
+                    ) : null}
+                    <button type="button" onClick={() => onRemoveSlot(index)} className="absolute right-0.5 top-0.5 z-30 flex h-5 w-5 items-center justify-center rounded-full bg-black/45 text-white backdrop-blur-[6px] transition hover:bg-black/62" aria-label="移除图片">
                       <RiCloseLine className="h-3.5 w-3.5" aria-hidden="true" />
                     </button>
                   </div>
@@ -5497,28 +5759,11 @@ function AssetUploadDialog({
           </div>
         </div>
 
-        <div className="mt-4">
-          <div className="mb-2 text-[12px] font-medium leading-none text-[#777777]">分类</div>
-          <div className="inline-flex h-10 rounded-[10px] bg-[#f3f3f3] p-1">
-            {assetUploadTypes.map((type) => {
-              const AssetIcon = assetTypeIcons[type];
-              const isActive = activeSlot?.type === type;
-
-              return (
-                <button key={type} type="button" disabled={!activeSlot?.dataUrl || isUploading} onClick={() => onChangeType(type)} className={isActive ? "inline-flex h-8 min-w-[92px] items-center justify-center gap-1.5 rounded-[8px] bg-white px-3 text-[#111111] shadow-sm" : "inline-flex h-8 min-w-[92px] items-center justify-center gap-1.5 rounded-[8px] px-3 text-[#777777] transition hover:text-[#333333] disabled:hover:text-[#777777]"}>
-                  <AssetIcon className="h-3.5 w-3.5" aria-hidden="true" />
-                  <span className="text-[12px] font-medium leading-none">{assetTypeLabels[type]}</span>
-                </button>
-              );
-            })}
-          </div>
-        </div>
-
         <div className="mt-auto flex justify-end gap-2 pt-6">
           <button type="button" onClick={onClose} disabled={isUploading} className="h-9 w-20 rounded-lg border border-[#e0e0e0] px-4 text-[13px] font-medium text-[#777777] transition hover:bg-[#f7f7f7] disabled:pointer-events-none disabled:opacity-50">
             取消
           </button>
-          <button type="button" onClick={onSubmit} disabled={!hasImages || isUploading || hasPendingUpload || hasFailedUpload} className="h-9 min-w-20 rounded-lg bg-[#111111] px-4 text-[13px] font-medium text-white transition hover:bg-[#252525] disabled:cursor-not-allowed disabled:bg-[#d7d7d7]">
+          <button type="button" onClick={onSubmit} disabled={!hasReadyUpload || isUploading || hasPendingUpload} className="h-9 min-w-20 rounded-lg bg-[#111111] px-4 text-[13px] font-medium text-white transition hover:bg-[#252525] disabled:cursor-not-allowed disabled:bg-[#d7d7d7]">
             {isUploading ? "保存中..." : hasPendingUpload ? "上传中..." : "确定上传"}
           </button>
         </div>
@@ -5929,18 +6174,22 @@ function isRequestTooLargeError(message: string) {
 }
 
 async function readFileAsUploadedImage(file: File): Promise<UploadedImage> {
-  const converted = await convertImageFileToJpeg(file);
+  const dataUrl = await readBlobAsDataUrl(file);
   return {
     id: createClientId(),
-    name: converted.file.name || file.name || "粘贴图片",
+    name: file.name || "粘贴图片",
     referenceName: getUploadedReferenceBaseName(file.name || "粘贴图片"),
     source: "upload",
-    url: converted.dataUrl,
-    previewUrl: converted.dataUrl,
-    uploadFile: converted.file,
+    url: dataUrl,
+    previewUrl: dataUrl,
+    uploadFile: file,
     uploadStatus: "uploading",
     uploadProgress: 6,
   };
+}
+
+async function readFileAsAssetUploadItem(file: File) {
+  return { fileName: getUploadedReferenceBaseName(file.name), dataUrl: await readBlobAsDataUrl(file), file };
 }
 
 function getFileExtension(fileName: string) {
@@ -5952,6 +6201,23 @@ function isReadableDocumentFile(file: File | string) {
   return readableDocumentExtensions.includes(getFileExtension(fileName));
 }
 
+function getUploadedFileMediaKind(file: UploadedFileEntry): "document" | "video" | "audio" {
+  if (typeof file !== "string" && file.mediaKind) return file.mediaKind;
+  const extension = getFileExtension(getUploadedFileDisplayName(file));
+  if (["mp4", "mov"].includes(extension)) return "video";
+  if (["mp3", "wav"].includes(extension)) return "audio";
+  return "document";
+}
+
+function isUploadedMediaFile(file: UploadedFileEntry) {
+  const kind = getUploadedFileMediaKind(file);
+  return kind === "video" || kind === "audio";
+}
+
+function getUploadedMediaFileUrl(file: UploadedFileEntry) {
+  return typeof file === "string" ? "" : file.url ?? "";
+}
+
 function formatFileSize(bytes: number) {
   if (!Number.isFinite(bytes) || bytes <= 0) return "";
   if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))}KB`;
@@ -5960,6 +6226,8 @@ function formatFileSize(bytes: number) {
 
 function getUploadedDocumentMeta(fileName: string) {
   const extension = getFileExtension(fileName);
+  if (extension === "mp4" || extension === "mov") return { label: "视频", icon: "V", color: "#7c3aed", border: "#c4b5fd", bg: "#f1ebff" };
+  if (extension === "mp3" || extension === "wav") return { label: "音频", icon: "A", color: "#0f766e", border: "#8bd6cb", bg: "#e5f7f4" };
   if (extension === "doc" || extension === "docx") return { label: "Word", icon: "W", color: "#1f65d6", border: "#8bb8ff", bg: "#e3efff" };
   if (extension === "ppt" || extension === "pptx") return { label: "PPT", icon: "P", color: "#d84324", border: "#ffa895", bg: "#ffe8e1" };
   if (extension === "xls" || extension === "xlsx" || extension === "csv") return { label: "Excel", icon: "X", color: "#238445", border: "#87c99b", bg: "#e4f4e9" };
@@ -5992,6 +6260,74 @@ function getUploadedFileStorageValue(file: UploadedFileEntry) {
 
 function getUploadedFilePreviewText(file: UploadedFileEntry) {
   return typeof file === "string" ? "" : file.text?.trim() ?? "";
+}
+
+function getMediaDurationLabel(seconds?: number) {
+  if (!Number.isFinite(seconds ?? Number.NaN) || !seconds) return "";
+  return `${Math.round(seconds * 10) / 10}s`;
+}
+
+function getUploadedMediaDuration(file: UploadedFileEntry) {
+  return typeof file === "string" ? 0 : Math.max(0, file.durationSeconds ?? 0);
+}
+
+function validateMediaDuration(kindLabel: string, durationSeconds: number | undefined, rule: { minSeconds?: number; maxSeconds?: number }) {
+  if (!Number.isFinite(durationSeconds ?? Number.NaN) || !durationSeconds) return `${kindLabel}时长读取失败`;
+  if (rule.minSeconds !== undefined && durationSeconds < rule.minSeconds - MEDIA_DURATION_EPSILON_SECONDS) return `${kindLabel}时长不能少于 ${rule.minSeconds} 秒`;
+  if (rule.maxSeconds !== undefined && durationSeconds > rule.maxSeconds + MEDIA_DURATION_EPSILON_SECONDS) return `${kindLabel}时长不能超过 ${rule.maxSeconds} 秒`;
+  return undefined;
+}
+
+function validateReferenceVideoDimensions(dimensions?: ImageDimensions) {
+  if (!dimensions?.width || !dimensions.height) return "视频尺寸读取失败";
+  const ratio = dimensions.width / dimensions.height;
+  if (ratio < 0.4 || ratio > 2.5) return "视频宽高比需在 0.4 到 2.5 之间";
+  if (dimensions.width < 300 || dimensions.width > 6000 || dimensions.height < 300 || dimensions.height > 6000) return "视频宽高需在 300 到 6000 像素之间";
+  const pixels = dimensions.width * dimensions.height;
+  if (pixels < 409600 || pixels > 2086876) return "视频总像素需在 409600 到 2086876 之间";
+  return undefined;
+}
+
+function getUploadedFilePreviewAsset(file: UploadedFileEntry): AssetItem | undefined {
+  if (!isUploadedMediaFile(file)) return undefined;
+  const url = getUploadedMediaFileUrl(file);
+  if (!url) return undefined;
+  const kind = getUploadedFileMediaKind(file);
+  const name = getUploadedFileDisplayName(file);
+  const media = typeof file === "string" ? undefined : file;
+  return {
+    id: getUploadedFileKey(file),
+    type: kind === "video" ? "shot_video" : "other",
+    name,
+    systemName: name,
+    url,
+    librarySource: "conversation",
+    sourcePrompt: kind === "video" ? "参考视频" : "参考音频",
+    previewMeta: media?.dimensions ? getPreviewMetaWithDimensions(undefined, media.dimensions, "video") : undefined,
+    sessionId: "",
+    createdAt: Date.now(),
+  };
+}
+
+function getUploadedMediaReferences(files?: UploadedFileEntry[]): MediaFileReference[] {
+  return (files ?? []).flatMap((file): MediaFileReference[] => {
+    const mediaKind = getUploadedFileMediaKind(file);
+    if (mediaKind !== "video" && mediaKind !== "audio") return [];
+    const url = getUploadedMediaFileUrl(file);
+    if (!url) return [];
+    return [{ name: getUploadedFileDisplayName(file), url, mediaKind, file }];
+  });
+}
+
+function ensureMediaFileMentions(text: string, references: MediaFileReference[]) {
+  const missing = references.filter((reference) => !text.includes(`@${reference.name}`));
+  if (missing.length === 0) return text;
+  const prefix = missing.map((reference) => `@${reference.name}`).join(" ");
+  return [prefix, text].filter(Boolean).join(" ").trim();
+}
+
+function getDocumentOnlyUploadedFiles(files?: UploadedFileEntry[]) {
+  return (files ?? []).filter((file) => !isUploadedMediaFile(file));
 }
 
 function isUploadedMarkdownFile(file: UploadedFileEntry) {
@@ -6077,7 +6413,7 @@ function getUploadedFileStorageName(file: File) {
   return sizeText ? `${file.name} · ${sizeText}` : file.name;
 }
 
-function createUploadedDocumentEntry(file: File): UploadedDocumentFile {
+function createUploadedDocumentEntry(file: File, media?: { mediaKind?: "document" | "video" | "audio"; durationSeconds?: number; dimensions?: ImageDimensions }): UploadedDocumentFile {
   const extension = getFileExtension(file.name);
   const readable = isReadableDocumentFile(file);
 
@@ -6087,11 +6423,36 @@ function createUploadedDocumentEntry(file: File): UploadedDocumentFile {
     storageName: getUploadedFileStorageName(file),
     size: file.size,
     extension,
+    mediaKind: media?.mediaKind ?? "document",
+    durationSeconds: media?.durationSeconds,
+    dimensions: media?.dimensions,
     uploadStatus: "uploading",
     uploadProgress: 6,
     status: readable ? "reading" : undefined,
     progress: readable ? 6 : undefined,
   };
+}
+
+function readMediaFileMetadata(file: File, kind: "video" | "audio") {
+  return new Promise<{ durationSeconds?: number; dimensions?: ImageDimensions }>((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const element = kind === "video" ? document.createElement("video") : document.createElement("audio");
+    const cleanup = () => URL.revokeObjectURL(url);
+    element.preload = "metadata";
+    element.onloadedmetadata = () => {
+      const durationSeconds = Number.isFinite(element.duration) ? element.duration : undefined;
+      const dimensions = kind === "video"
+        ? { width: Math.floor((element as HTMLVideoElement).videoWidth), height: Math.floor((element as HTMLVideoElement).videoHeight) }
+        : undefined;
+      cleanup();
+      resolve({ durationSeconds, dimensions: dimensions?.width && dimensions.height ? dimensions : undefined });
+    };
+    element.onerror = () => {
+      cleanup();
+      reject(new Error(kind === "video" ? "视频信息读取失败" : "音频信息读取失败"));
+    };
+    element.src = url;
+  });
 }
 
 function readDocumentFileText(file: File, onProgress: (progress: number) => void) {
@@ -6141,6 +6502,8 @@ export function ChatWorkbench() {
   const [activePanel, setActivePanel] = useState<ActivePanel>(() => initialWorkspaceUiStateRef.current?.activePanel ?? "chat");
   const [assetFilter, setAssetFilter] = useState<AssetFilter>(() => initialWorkspaceUiStateRef.current?.assetFilter ?? "character_image");
   const [assetsLoadStatus, setAssetsLoadStatus] = useState<"idle" | "loading" | "loaded" | "failed">("idle");
+  const [assetLoadingReason, setAssetLoadingReason] = useState<"" | "initial" | "scroll" | "auto">("");
+  const [loadedAssetFilters, setLoadedAssetFilters] = useState<Partial<Record<AssetFilter, boolean>>>({});
   const [assetCounts, setAssetCounts] = useState<Record<string, number>>({});
   const [assetsHasMore, setAssetsHasMore] = useState(false);
   const [assetsNextOffset, setAssetsNextOffset] = useState(0);
@@ -6198,11 +6561,14 @@ export function ChatWorkbench() {
   const [historyVisibleSessionCount, setHistoryVisibleSessionCount] = useState(HISTORY_INITIAL_SESSION_COUNT);
   const [historyHasMoreSessions, setHistoryHasMoreSessions] = useState(false);
   const [historyNextOffset, setHistoryNextOffset] = useState(HISTORY_INITIAL_SESSION_COUNT);
+  const [historyTotalSessionCount, setHistoryTotalSessionCount] = useState(0);
   const [isHistoryLoadingMore, setIsHistoryLoadingMore] = useState(false);
+  const [nextWorkflowNumber, setNextWorkflowNumber] = useState(1);
   const [workspaceLoadStatus, setWorkspaceLoadStatus] = useState<WorkspaceLoadStatus>("loading");
   const [workspaceLoadRetryKey, setWorkspaceLoadRetryKey] = useState(0);
   const [workflowItems, setWorkflowItems] = useState<WorkflowItem[]>([]);
   const [activeWorkflowId, setActiveWorkflowId] = useState("");
+  const [workflowVisibleItemCount, setWorkflowVisibleItemCount] = useState(WORKFLOW_INITIAL_ITEM_COUNT);
   const [activeSessionId, setActiveSessionId] = useState("");
   const [loadingSessionIds, setLoadingSessionIds] = useState<Set<string>>(() => new Set());
   const [loadingOlderMessageSessionIds, setLoadingOlderMessageSessionIds] = useState<Set<string>>(() => new Set());
@@ -6354,6 +6720,7 @@ export function ChatWorkbench() {
   const previewAssetRef = useRef<AssetItem | null>(null);
   const preloadedPreviewThumbUrlsRef = useRef<Set<string>>(new Set());
   const preloadingSavedMediaUrlsRef = useRef<Set<string>>(new Set());
+  const persistedWorkflowMediaKeysRef = useRef<Set<string>>(new Set());
   const inputImageUploadAbortControllersRef = useRef<Map<string, AbortController>>(new Map());
   const previewDragStartRef = useRef({ pointerX: 0, pointerY: 0, panX: 0, panY: 0 });
   const activeAssetGenerateJobIdRef = useRef("");
@@ -6367,6 +6734,7 @@ export function ChatWorkbench() {
   const userProfileSaveTimerRef = useRef<number | null>(null);
   const workspaceInstanceCheckFailuresRef = useRef(0);
   const authCheckFailuresRef = useRef(0);
+  const authActivityPingRef = useRef(0);
   const typingScrollFrameRef = useRef<number | null>(null);
   const copyFeedbackTimerRef = useRef<number | null>(null);
   const inputTipTimerRef = useRef<number | null>(null);
@@ -6658,7 +7026,7 @@ export function ChatWorkbench() {
   const activeUploadedImages = activeSession?.uploadedImages ?? [];
   const hasReadingUploadedFiles = activeUploadedFiles.some((file) => typeof file !== "string" && file.status === "reading");
   const hasUploadingInputs = activeUploadedImages.some((image) => image.uploadStatus === "uploading") || activeUploadedFiles.some((file) => typeof file !== "string" && file.uploadStatus === "uploading");
-  const hasFailedUploadInputs = activeUploadedImages.some((image) => image.uploadStatus === "error");
+  const hasFailedUploadInputs = activeUploadedImages.some((image) => image.uploadStatus === "error") || activeUploadedFiles.some((file) => typeof file !== "string" && file.uploadStatus === "error");
   const activeSessionIdValue = activeSession?.id ?? "";
   const resolvedTheme: "light" | "dark" = themeMode === "system" ? systemPrefersDark ? "dark" : "light" : themeMode;
   const themeModeLabel = themeMode === "dark" ? "深色模式" : themeMode === "system" ? `跟随系统 · ${resolvedTheme === "dark" ? "深色" : "浅色"}` : "浅色模式";
@@ -6788,10 +7156,10 @@ export function ChatWorkbench() {
   const previewAssetId = previewAsset?.id;
   const previewDisplayMeta = previewAsset ? enrichAssetPreviewMeta(previewAsset).previewMeta : undefined;
   const previewIsUploadedAsset = previewAsset ? isUploadedAsset(previewAsset) : false;
-  const isPreviewDownloadReady = Boolean(previewAsset && !isRemoteMediaUrl(previewAsset.url));
-  const previewSourceLabel = previewAsset && !previewDisplayMeta ? previewAsset.promptSource === "upload" || previewAsset.sourcePrompt === "资产库上传" ? previewAsset.librarySource === "asset_generation" ? "资产库上传" : "对话流上传" : "" : "";
+  const isPreviewDownloadReady = Boolean(previewAsset?.url);
+  const previewSourceLabel = previewAsset && !previewDisplayMeta ? previewAsset.promptSource === "upload" || isUploadPromptPlaceholder(previewAsset.sourcePrompt) ? UPLOAD_IMAGE_PROMPT_PLACEHOLDER : "" : "";
   const previewHasReversedUploadPrompt = Boolean(previewAsset?.sourcePrompt.trim()) && previewAsset?.promptSource === "reverse" && previewIsUploadedAsset;
-  const previewHasUsablePrompt = Boolean(previewAsset?.sourcePrompt.trim()) && previewAsset?.sourcePrompt !== "资产库上传" && (!previewIsUploadedAsset || previewHasReversedUploadPrompt);
+  const previewHasUsablePrompt = Boolean(previewAsset?.sourcePrompt.trim()) && !isUploadPromptPlaceholder(previewAsset?.sourcePrompt) && (!previewIsUploadedAsset || previewHasReversedUploadPrompt);
   const previewPromptText = previewHasUsablePrompt ? previewAsset?.sourcePrompt.trim() ?? "" : "";
   const canReversePreviewPrompt = Boolean(previewAsset && !isVideoAsset(previewAsset) && previewIsUploadedAsset && !previewHasUsablePrompt);
   const previewPromptErrorText = previewPromptError && previewPromptError.assetId === previewAssetId ? previewPromptError.message : "";
@@ -6800,9 +7168,11 @@ export function ChatWorkbench() {
   const canReviewBytePlusAsset = Boolean(previewAsset && !isVideoAsset(previewAsset) && (previewAsset.type === "character_image" || previewAsset.type === "shot_image" || isConversationUploadedAsset(previewAsset)));
   const canSubmitBytePlusAsset = Boolean(ENABLE_BYTEPLUS_ASSET_REVIEW && canReviewBytePlusAsset && previewAsset && !previewAsset.bytePlusAssetId);
   const canRefreshBytePlusAsset = Boolean(ENABLE_BYTEPLUS_ASSET_REVIEW && canReviewBytePlusAsset && previewAsset && previewAsset.bytePlusAssetId && previewAsset.bytePlusAssetStatus !== "Active");
-  const validReferenceNames = getValidReferenceNames(assets, activeUploadedImages, activeConversationImageReferences);
+  const validReferenceNames = new Set([...getValidReferenceNames(assets, activeUploadedImages, activeConversationImageReferences), ...getUploadedMediaReferences(activeUploadedFiles).map((reference) => reference.name)]);
   const hasAnyConversationRunning = resolvingSessionIds.size > 0 || sessions.some((session) => getSessionPendingRequests(session).length > 0) || Boolean(modelInfoSessionId);
   const hasAnyAssetGenerating = assetGenerateJobs.some((job) => job.result.status === "generating");
+  const hasAnyWorkflowGenerating = workflowItems.some((workflow) => workflow.canvas?.nodes.some((node) => node.data.isRunning));
+  const hasAnyGenerationRunning = hasAnyConversationRunning || hasAnyAssetGenerating || hasAnyWorkflowGenerating;
   const characterValidReferenceNames = getValidReferenceNames(assets, [], []);
   const assetGenerateReferenceImages = useMemo(() => getOrderedExplicitImageReferences(characterGeneratePrompt, assets, [], []), [assets, characterGeneratePrompt]);
   const characterAtQuery = getAtQueryAtCursor(characterGeneratePrompt, characterPromptCursorOffset);
@@ -7305,14 +7675,7 @@ export function ChatWorkbench() {
 
     try {
       const defaultType = getDefaultAssetUploadType(assetFilter);
-      const newItems = await Promise.all(imageFiles.map(async (file) => {
-        const converted = await convertImageFileToJpeg(file);
-        return {
-          fileName: getUploadedReferenceBaseName(file.name),
-          dataUrl: converted.dataUrl,
-          file: converted.file,
-        };
-      }));
+      const newItems = await Promise.all(imageFiles.map(readFileAsAssetUploadItem));
       const newItemsWithDimensions = await Promise.all(newItems.map(async (item) => ({
         ...item,
         dimensions: await getDataUrlImageDimensions(item.dataUrl).catch(() => undefined),
@@ -7348,18 +7711,31 @@ export function ChatWorkbench() {
       assetUploadAbortControllersRef.current.set(slot.id, controller);
       void uploadTemporaryAssetImage(slot.uploadFile, (progress) => {
         setAssetUploadSlots((current) => current.map((item) => item.id === slot.id ? { ...item, uploadStatus: "uploading", uploadProgress: progress } : item));
-      }, controller.signal)
+      }, controller.signal, Boolean(slot.forceReencode))
         .then((tempToken) => {
           assetUploadAbortControllersRef.current.delete(slot.id);
-          setAssetUploadSlots((current) => current.map((item) => item.id === slot.id ? { ...item, uploadFile: undefined, tempToken, uploadStatus: "ready", uploadProgress: 100, error: undefined } : item));
+          setAssetUploadSlots((current) => current.map((item) => item.id === slot.id ? { ...item, uploadFile: undefined, tempToken, uploadStatus: "ready", uploadProgress: 100, forceReencode: undefined, error: undefined } : item));
         })
         .catch((error) => {
           assetUploadAbortControllersRef.current.delete(slot.id);
           if (controller.signal.aborted) return;
-          setAssetUploadSlots((current) => current.map((item) => item.id === slot.id ? { ...item, uploadFile: undefined, uploadStatus: "error", uploadProgress: 100, error: toUserErrorMessage(error, "上传失败") } : item));
+          const errorMessage = toUserErrorMessage(error, "上传失败");
+          reportClientDiagnostic("asset-upload-temp failed", { fileName: slot.fileName, error: errorMessage, rawError: error instanceof Error ? error.message : String(error) });
+          setAssetUploadSlots((current) => current.map((item) => item.id === slot.id ? { ...item, uploadStatus: "error", uploadProgress: 100, error: errorMessage } : item));
         });
     });
   }, [assetUploadSlots]);
+
+  const retryAssetUploadSlot = useCallback((index: number) => {
+    const slot = assetUploadSlots[index];
+    if (!slot?.uploadFile) {
+      showAssetUploadTip("请重新选择图片");
+      return;
+    }
+    assetUploadAbortControllersRef.current.get(slot.id)?.abort();
+    assetUploadAbortControllersRef.current.delete(slot.id);
+    setAssetUploadSlots((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, tempToken: undefined, uploadStatus: "uploading", uploadProgress: 6, forceReencode: true, error: undefined } : item));
+  }, [assetUploadSlots, showAssetUploadTip]);
 
   const removeAssetUploadSlot = useCallback((index: number) => {
     const slot = assetUploadSlots[index];
@@ -7394,19 +7770,11 @@ export function ChatWorkbench() {
     setAssetUploadSlots((current) => normalizeAssetUploadSlots(current, getDefaultAssetUploadType(assetFilter)).map((slot, index) => (index === activeAssetUploadIndex ? { ...slot, fileName: "" } : slot)));
   }, [activeAssetUploadIndex, assetFilter]);
 
-  const updateActiveAssetUploadType = useCallback((type: UploadableImageAssetType) => {
-    setAssetUploadSlots((current) => normalizeAssetUploadSlots(current, getDefaultAssetUploadType(assetFilter)).map((slot, index) => (index === activeAssetUploadIndex ? { ...slot, type } : slot)));
-  }, [activeAssetUploadIndex, assetFilter]);
-
   const submitAssetUpload = useCallback(async () => {
-    const uploadItems = visibleAssetUploadSlots.filter((slot) => slot.dataUrl);
+    const uploadItems = visibleAssetUploadSlots.filter((slot) => slot.dataUrl && slot.uploadStatus === "ready" && slot.tempToken);
     if (uploadItems.length === 0 || isAssetUploading) return;
     if (uploadItems.some((slot) => slot.uploadStatus === "uploading")) {
       showAssetUploadTip("图片上传中，请稍候");
-      return;
-    }
-    if (uploadItems.some((slot) => slot.uploadStatus === "error" || !slot.tempToken)) {
-      showAssetUploadTip("有图片上传失败，请删除后重新上传");
       return;
     }
 
@@ -7440,21 +7808,28 @@ export function ChatWorkbench() {
       });
 
       if (newItems.length > 0) {
+        let simulatedAssets = assets;
+        const itemsToPersist: Array<{ name: string; url: string }> = [];
+        newItems.forEach((item) => {
+          if (simulatedAssets.some((asset) => asset.url === item.url)) return;
+          const name = getVersionedName(item.name, simulatedAssets);
+          itemsToPersist.push({ name, url: item.url });
+          simulatedAssets = [{ id: item.url, type: "other", name, systemName: name, url: item.url, librarySource: "conversation", sourcePrompt: UPLOAD_IMAGE_PROMPT_PLACEHOLDER, promptSource: "upload", sessionId: activeSessionIdValue, lockedType: true, createdAt: Date.now() }, ...simulatedAssets];
+        });
         setAssets((current) => {
           let nextAssets = current;
 
-          newItems.forEach((item) => {
+          itemsToPersist.forEach((item) => {
             if (nextAssets.some((asset) => asset.url === item.url)) return;
-            const name = getVersionedName(item.name, nextAssets);
             nextAssets = [
               {
             id: createClientId(),
-            type: item.type,
-            name,
-            systemName: name,
+            type: "other",
+            name: item.name,
+            systemName: item.name,
             url: item.url,
-            librarySource: "asset_generation",
-            sourcePrompt: "资产库上传",
+            librarySource: "conversation",
+            sourcePrompt: UPLOAD_IMAGE_PROMPT_PLACEHOLDER,
             promptSource: "upload",
             sessionId: activeSessionIdValue,
                 lockedType: true,
@@ -7465,6 +7840,21 @@ export function ChatWorkbench() {
           });
 
           return nextAssets;
+        });
+        itemsToPersist.forEach((item) => {
+          void fetch("/api/media-assets", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              url: item.url,
+              name: item.name,
+              currentCategory: "conversation_uploads",
+              mediaType: "image",
+              sourcePrompt: UPLOAD_IMAGE_PROMPT_PLACEHOLDER,
+              promptSource: "upload",
+              conversationId: activeSessionIdValue,
+            }),
+          }).catch((error) => console.warn("[media-assets] failed to persist uploaded asset", error));
         });
       }
 
@@ -7516,7 +7906,14 @@ export function ChatWorkbench() {
   const applyWorkflowCreditResult = useCallback((credit?: { skipped?: boolean; balance?: number }) => {
     if (!credit || credit.skipped) return;
     if (typeof credit.balance === "number") setCurrentUserCredits(Math.max(0, Math.floor(credit.balance)));
-  }, []);
+    setWorkflowItems((current) => current.map((workflow) => {
+      if (workflow.id !== activeWorkflowId) return workflow;
+      const chargedCredits = Math.max(0, Math.floor((credit as { chargedCredits?: number }).chargedCredits ?? 0));
+      const usage = (credit as { usage?: UsageMeta }).usage;
+      const nextUsage = addUsageSummary(workflow.usageSummary, usage ?? (chargedCredits > 0 ? { credits: chargedCredits } : undefined));
+      return nextUsage ? { ...workflow, usageSummary: nextUsage, updatedAt: Date.now() } : workflow;
+    }));
+  }, [activeWorkflowId]);
 
   const ensureSessionMemorySummary = useCallback(async (session: WorkSession, model: ModelName, requestId: string) => {
     if (!shouldUpdateMemorySummary(session)) return session;
@@ -7563,7 +7960,7 @@ export function ChatWorkbench() {
 
   const reversePreviewPrompt = useCallback(async () => {
     if (!previewAsset || isVideoAsset(previewAsset) || isReversePromptingPreview) return;
-    if (!isUploadedAsset(previewAsset) || (previewAsset.sourcePrompt.trim() && previewAsset.sourcePrompt !== "资产库上传")) return;
+    if (!isUploadedAsset(previewAsset) || (previewAsset.sourcePrompt.trim() && !isUploadPromptPlaceholder(previewAsset.sourcePrompt))) return;
 
     setIsReversePromptingPreview(true);
     setPreviewPromptError(null);
@@ -7602,12 +7999,19 @@ export function ChatWorkbench() {
       applyCreditResult(activeSessionIdValue, data.credit);
       setPreviewAsset((current) => current && current.id === previewAsset.id ? { ...current, sourcePrompt: nextPrompt, promptSource: "reverse" } : current);
       setAssets((current) => current.map((asset) => asset.id === previewAsset.id || normalizeMediaUrlForMatch(asset.url) === normalizeMediaUrlForMatch(previewAsset.url) ? { ...asset, sourcePrompt: nextPrompt, promptSource: "reverse" } : asset));
+      if (workspaceStorageMode === "user") {
+        void fetch("/api/media-assets", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ assetId: previewAsset.id, mediaAssetId: previewAsset.mediaId, url: previewAsset.url, reversePrompt: nextPrompt }),
+        }).catch((error) => console.warn("[media-assets] failed to persist reverse prompt", error));
+      }
     } catch (error) {
       setPreviewPromptError({ assetId: previewAsset.id, message: toUserErrorMessage(error, "服务器繁忙，请稍候再试！") });
     } finally {
       setIsReversePromptingPreview(false);
     }
-  }, [activeSession, activeSessionIdValue, addSessionUsage, applyCreditResult, isReversePromptingPreview, previewAsset, showInputTip]);
+  }, [activeSession, activeSessionIdValue, addSessionUsage, applyCreditResult, isReversePromptingPreview, previewAsset, showInputTip, workspaceStorageMode]);
 
   const applyBytePlusAssetUpdate = useCallback((assetId: string, patch: Partial<AssetItem>) => {
     setPreviewAsset((current) => current && current.id === assetId ? { ...current, ...patch } : current);
@@ -7723,8 +8127,14 @@ export function ChatWorkbench() {
   }, [activeSessionId, activeUploadedImages]);
 
   const removeActiveUploadedFile = useCallback((fileIndex: number) => {
-    setSessions((current) => current.map((session) => (session.id === activeSessionId ? { ...session, uploadedFiles: (session.uploadedFiles ?? []).filter((_, index) => index !== fileIndex) } : session)));
-  }, [activeSessionId]);
+    const removingFile = activeUploadedFiles[fileIndex];
+    const removingName = removingFile && isUploadedMediaFile(removingFile) ? getUploadedFileDisplayName(removingFile) : "";
+    setSessions((current) => current.map((session) => {
+      if (session.id !== activeSessionId) return session;
+      const nextDraft = removingName ? (session.draftInput ?? "").replace(new RegExp(`(^|\\s)@${escapeRegExp(removingName)}(?=\\s|$)\\s?`, "g"), (match, prefix: string) => prefix ? prefix : "").replace(/\s{2,}/g, " ").trimStart() : session.draftInput;
+      return { ...session, draftInput: nextDraft, uploadedFiles: (session.uploadedFiles ?? []).filter((_, index) => index !== fileIndex) };
+    }));
+  }, [activeSessionId, activeUploadedFiles]);
 
   const markTypingComplete = useCallback((messageId: string) => {
     setActiveTypingMessageIds((current) => {
@@ -7774,6 +8184,13 @@ export function ChatWorkbench() {
     if (activeIndex < historyVisibleSessionCount) return;
     setHistoryVisibleSessionCount(Math.max(HISTORY_INITIAL_SESSION_COUNT, activeIndex + 1));
   }, [activeSessionId, historyVisibleSessionCount, sessions]);
+
+  useEffect(() => {
+    if (!activeWorkflowId) return;
+    const activeIndex = workflowItems.findIndex((item) => item.id === activeWorkflowId);
+    if (activeIndex < workflowVisibleItemCount) return;
+    setWorkflowVisibleItemCount(Math.max(WORKFLOW_INITIAL_ITEM_COUNT, activeIndex + 1));
+  }, [activeWorkflowId, workflowItems, workflowVisibleItemCount]);
 
   const loadSessionDetails = useCallback(async (sessionId: string) => {
     const targetSession = sessionsRef.current.find((session) => session.id === sessionId);
@@ -7851,6 +8268,7 @@ export function ChatWorkbench() {
       });
       setHistoryHasMoreSessions(Boolean(data.state?.sessionsHasMore));
       setHistoryNextOffset(Math.floor(Number(data.state?.sessionsNextOffset ?? historyNextOffset)));
+      setHistoryTotalSessionCount((current) => Math.max(current, Math.floor(Number(data.state?.sessionsTotalCount ?? 0)), sessionsRef.current.filter((session) => !isDeletedSession(session)).length + nextItems.length));
       setHistoryVisibleSessionCount((count) => Math.max(count, count + nextItems.length));
     } catch {
       showInputTip("历史对话加载失败，请稍后重试");
@@ -7859,12 +8277,14 @@ export function ChatWorkbench() {
     }
   }, [historyHasMoreSessions, historyNextOffset, isHistoryLoadingMore, showInputTip]);
 
-  const loadWorkspaceAssets = useCallback(async (force = false, filter: AssetFilter = assetFilter, offset = 0) => {
-    const hasFilterAssets = assets.some((asset) => isAssetInFilter(asset, filter));
-    if (assetsLoadStatus === "loading" || (!force && offset === 0 && assetsLoadStatus === "loaded" && hasFilterAssets)) return;
+  const loadWorkspaceAssets = useCallback(async (force = false, filter: AssetFilter = assetFilter, offset = 0, reason: "initial" | "scroll" | "auto" = offset > 0 ? "scroll" : "initial") => {
+    const filterAssetCount = assets.filter((asset) => isAssetInFilter(asset, filter)).length;
+    const hasFilterAssets = filterAssetCount > 0;
+    if (assetsLoadStatus === "loading" || (!force && offset === 0 && loadedAssetFilters[filter] && hasFilterAssets)) return;
+    setAssetLoadingReason(reason);
     setAssetsLoadStatus("loading");
     try {
-      const { response, data } = await fetchJsonWithRetry<{ state?: WorkspaceStatePayload | null }>(`/api/workspace-state?assetsOnly=1&assetFilter=${encodeURIComponent(filter)}&assetOffset=${offset}&assetLimit=60`, { cache: "no-store" }, 2, 45_000);
+      const { response, data } = await fetchJsonWithRetry<{ state?: WorkspaceStatePayload | null }>(`/api/workspace-state?assetsOnly=1&assetFilter=${encodeURIComponent(filter)}&assetOffset=${offset}&assetLimit=30`, { cache: "no-store" }, 2, 45_000);
       if (response.status === 401) {
         window.location.replace("/");
         return;
@@ -7876,32 +8296,68 @@ export function ChatWorkbench() {
       const nextAssetGenerateJobs = Array.isArray(state.assetGenerateJobs) ? normalizeStoredAssetGenerateJobs(state.assetGenerateJobs).map((job) => replaceAssetGenerateJobMediaUrls(job, legacyMediaUrlReplacements, {})) : [];
       setAssets((current) => {
         const kept = offset > 0 ? current : current.filter((asset) => !isAssetInFilter(asset, filter));
-        const byId = new Map(kept.map((asset) => [asset.id, asset]));
-        nextAssets.forEach((asset) => byId.set(asset.id, asset));
-        return Array.from(byId.values());
+        const incomingKeys = new Set(nextAssets.map(getAssetIdentityKey));
+        if (offset === 0) return [...nextAssets, ...kept.filter((asset) => !incomingKeys.has(getAssetIdentityKey(asset)))];
+        const existingKeys = new Set(kept.map(getAssetIdentityKey));
+        return [...kept, ...nextAssets.filter((asset) => !existingKeys.has(getAssetIdentityKey(asset)))];
       });
       if (state.assetCounts && typeof state.assetCounts === "object") setAssetCounts(state.assetCounts);
       setAssetsHasMore(Boolean(state.assetsHasMore));
       setAssetsNextOffset(Math.floor(Number(state.assetsNextOffset ?? nextAssets.length)));
       setAssetRenderLimit((current) => Math.max(current, offset + nextAssets.length, ASSET_RENDER_PAGE_SIZE));
       setAssetGenerateJobs(nextAssetGenerateJobs);
+      setLoadedAssetFilters((current) => ({ ...current, [filter]: true }));
       setAssetsLoadStatus("loaded");
+      setAssetLoadingReason("");
     } catch {
       if (assets.some((asset) => isAssetInFilter(asset, filter))) {
         setAssetsLoadStatus("loaded");
+        setAssetLoadingReason("");
         showInputTip("资产库刷新失败，已显示上次加载内容");
         return;
       }
       setAssetsLoadStatus("failed");
+      setAssetLoadingReason("");
       showInputTip("资产库加载失败，请稍后重试");
     }
-  }, [assetFilter, assets, assetsLoadStatus, showInputTip]);
+  }, [assetFilter, assets, assetsLoadStatus, loadedAssetFilters, showInputTip]);
+
+  const loadMentionAssetFilters = useCallback(async () => {
+    const filters: AssetFilter[] = ["character_image", "scene_image", "shot_image", "conversation_uploads"];
+    const missingFilters = filters.filter((filter) => !loadedAssetFilters[filter] || !assets.some((asset) => isAssetInFilter(asset, filter)));
+    if (missingFilters.length === 0 || assetsLoadStatus === "loading") return;
+    setAssetsLoadStatus("loading");
+    try {
+      const loadedFilters: Partial<Record<AssetFilter, boolean>> = {};
+      for (const filter of missingFilters) {
+        const { data } = await fetchJsonWithRetry<{ state?: WorkspaceStatePayload | null }>(`/api/workspace-state?assetsOnly=1&assetFilter=${encodeURIComponent(filter)}&assetOffset=0&assetLimit=30`, { cache: "no-store" }, 2, 45_000);
+        const state = data.state ?? {};
+        const nextAssets = Array.isArray(state.assets)
+          ? applyAssetGenerationSystemNames(applySessionMediaSystemNamesToAssets(normalizeStoredAssets(state.assets).map((asset) => replaceAssetMediaUrls(asset, legacyMediaUrlReplacements)), sessionsRef.current))
+          : [];
+        setAssets((current) => {
+          const incomingKeys = new Set(nextAssets.map(getAssetIdentityKey));
+          return [...nextAssets, ...current.filter((asset) => !incomingKeys.has(getAssetIdentityKey(asset)))];
+        });
+        if (state.assetCounts && typeof state.assetCounts === "object") setAssetCounts(state.assetCounts);
+        loadedFilters[filter] = true;
+      }
+      setLoadedAssetFilters((current) => ({ ...current, ...loadedFilters }));
+      setAssetsLoadStatus("loaded");
+    } catch {
+      setAssetsLoadStatus(assets.some((asset) => mentionAssetTypes.some((type) => isMentionGroupAsset(asset, type))) ? "loaded" : "failed");
+      showInputTip("资产引用加载失败，请稍后重试");
+    }
+  }, [assets, assetsLoadStatus, loadedAssetFilters, showInputTip]);
 
   useEffect(() => {
     if (!isLoaded || workspaceStorageMode !== "user" || workspaceLoadStatus !== "loaded") return;
-    if (activePanel !== "assets") return;
-    if (assetsLoadStatus === "idle" || assetsLoadStatus === "failed") void loadWorkspaceAssets();
-  }, [activePanel, assetsLoadStatus, isLoaded, loadWorkspaceAssets, workspaceLoadStatus, workspaceStorageMode]);
+    if (activePanel !== "assets" || assetsLoadStatus === "loading") return;
+    const filterAssetCount = assets.filter((asset) => isAssetInFilter(asset, assetFilter)).length;
+    const serverFilterCount = Number(assetCounts[assetFilter]);
+    const needsCurrentFilter = !loadedAssetFilters[assetFilter] || (!filterAssetCount && Number.isFinite(serverFilterCount) && serverFilterCount > 0);
+    if (assetsLoadStatus === "idle" || assetsLoadStatus === "failed" || needsCurrentFilter) void loadWorkspaceAssets(false, assetFilter, 0);
+  }, [activePanel, assetCounts, assetFilter, assets, assetsLoadStatus, isLoaded, loadWorkspaceAssets, loadedAssetFilters, workspaceLoadStatus, workspaceStorageMode]);
 
   useEffect(() => {
     let cancelled = false;
@@ -7951,7 +8407,9 @@ export function ChatWorkbench() {
           const savedSessions = Array.isArray(state.sessions) && state.sessions.length > 0 ? state.sessions : [createSession(state.nextConversationNumber ?? 1)];
           const normalizedWorkspace = normalizeSessionCodesAndMediaNames(getPersistableSessions(savedSessions), state.nextConversationNumber);
           const nextSessions = normalizedWorkspace.sessions.map((session) => replaceSessionMediaUrls(session, legacyMediaUrlReplacements, {}));
-          const nextWorkflows = Array.isArray(state.workflowItems) ? state.workflowItems.filter((item) => item && typeof item.id === "string" && typeof item.title === "string") : [];
+          const nextWorkflows = normalizeStoredWorkflowItems(state.workflowItems);
+          const nextStoredWorkflowNumber = Math.max(1, Math.floor(Number(state.nextWorkflowNumber ?? 1)));
+          const nextWorkflowNumberValue = Math.max(nextStoredWorkflowNumber, getMaxWorkflowTitleNumber(nextWorkflows) + 1);
           const nextActiveWorkflowId = state.activeWorkflowId && nextWorkflows.some((item) => item.id === state.activeWorkflowId) ? state.activeWorkflowId : nextWorkflows[0]?.id ?? "";
           const nextActiveSessionId = state.activeSessionId && nextSessions.some((session) => session.id === state.activeSessionId) ? state.activeSessionId : nextSessions[0].id;
           const savedAssets = Array.isArray(state.assets) ? applyAssetGenerationSystemNames(applySessionMediaSystemNamesToAssets(normalizeStoredAssets(state.assets).map((asset) => replaceAssetMediaUrls(asset, legacyMediaUrlReplacements)), nextSessions)) : undefined;
@@ -7969,9 +8427,12 @@ export function ChatWorkbench() {
           setSessions(nextSessions);
           setHistoryHasMoreSessions(Boolean(state.sessionsHasMore));
           setHistoryNextOffset(Math.floor(Number(state.sessionsNextOffset ?? nextSessions.length)));
+          setHistoryTotalSessionCount(Math.max(Math.floor(Number(state.sessionsTotalCount ?? 0)), nextSessions.filter((session) => !isDeletedSession(session)).length));
           setHistoryVisibleSessionCount(Math.max(HISTORY_INITIAL_SESSION_COUNT, nextSessions.length));
           setNextConversationNumber(normalizedWorkspace.nextConversationNumber);
           setWorkflowItems(nextWorkflows);
+          setNextWorkflowNumber(nextWorkflowNumberValue);
+          setWorkflowVisibleItemCount(Math.max(WORKFLOW_INITIAL_ITEM_COUNT, Math.min(nextWorkflows.length, WORKFLOW_INITIAL_ITEM_COUNT)));
           setActiveWorkflowId(nextActiveWorkflowId);
           setActiveSessionId(nextActiveSessionId);
           setCompletedTypingMessageIds(new Set(getAssistantMessageIds(nextSessions)));
@@ -8135,6 +8596,42 @@ export function ChatWorkbench() {
   useEffect(() => {
     if (!isLoaded || workspaceStorageMode !== "user") return;
     let cancelled = false;
+    const activityEvents = ["pointerdown", "keydown", "wheel", "touchstart", "scroll"] as const;
+    const recordActivity = () => {
+      const now = Date.now();
+      if (now - authActivityPingRef.current < 60_000) return;
+      authActivityPingRef.current = now;
+      void fetch("/api/auth/activity", { method: "POST", cache: "no-store", keepalive: true }).then((response) => {
+        if (!cancelled && response.status === 401) window.location.replace("/");
+      }).catch(() => undefined);
+    };
+    activityEvents.forEach((eventName) => window.addEventListener(eventName, recordActivity, { passive: true, capture: true }));
+    return () => {
+      cancelled = true;
+      activityEvents.forEach((eventName) => window.removeEventListener(eventName, recordActivity, { capture: true }));
+    };
+  }, [isLoaded, workspaceStorageMode]);
+
+  useEffect(() => {
+    if (!isLoaded || workspaceStorageMode !== "user" || !hasAnyGenerationRunning) return;
+    let cancelled = false;
+    const keepGenerationAlive = () => {
+      authActivityPingRef.current = Date.now();
+      void fetch("/api/auth/activity", { method: "POST", cache: "no-store", keepalive: true }).then((response) => {
+        if (!cancelled && response.status === 401) window.location.replace("/");
+      }).catch(() => undefined);
+    };
+    keepGenerationAlive();
+    const interval = window.setInterval(keepGenerationAlive, 5 * 60 * 1000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [hasAnyGenerationRunning, isLoaded, workspaceStorageMode]);
+
+  useEffect(() => {
+    if (!isLoaded || workspaceStorageMode !== "user") return;
+    let cancelled = false;
 
     const checkAuth = async () => {
       try {
@@ -8177,6 +8674,7 @@ export function ChatWorkbench() {
       setActivePanel("chat");
       setMode("agent");
       setSessions((current) => [session, ...current]);
+      setHistoryTotalSessionCount((count) => count + 1);
       setActiveSessionId(session.id);
       setPendingHomePrompt({ sessionId: session.id, prompt });
     }, 0);
@@ -8241,10 +8739,11 @@ export function ChatWorkbench() {
     const payload: WorkspaceStatePayload = {
       sessions: getPersistableSessions(sessions),
       nextConversationNumber,
+      nextWorkflowNumber,
       activePanel,
       assetFilter,
       assetScrollTopByFilter,
-      workflowItems,
+      workflowItems: getPersistableWorkflowItems(workflowItems),
       activeWorkflowId,
       activeSessionId,
       inputSettings: {
@@ -8274,14 +8773,14 @@ export function ChatWorkbench() {
     return () => {
       if (workspaceSaveTimerRef.current !== null) window.clearTimeout(workspaceSaveTimerRef.current);
     };
-  }, [activePanel, activeSessionId, activeWorkflowId, agentModelTier, assetFilter, assetGenerateJobs, assetScrollTopByFilter, assets, assetsLoadStatus, feedbackLogs, intentMemoryRules, isLoaded, mode, nextConversationNumber, selectedDurations, selectedGeneralModels, selectedGenerationModels, selectedImageCounts, selectedRatios, selectedResolutions, sessions, workflowItems, workspaceLoadStatus, workspaceStorageMode]);
+  }, [activePanel, activeSessionId, activeWorkflowId, agentModelTier, assetFilter, assetGenerateJobs, assetScrollTopByFilter, assets, assetsLoadStatus, feedbackLogs, intentMemoryRules, isLoaded, mode, nextConversationNumber, nextWorkflowNumber, selectedDurations, selectedGeneralModels, selectedGenerationModels, selectedImageCounts, selectedRatios, selectedResolutions, sessions, workflowItems, workspaceLoadStatus, workspaceStorageMode]);
 
   useEffect(() => {
     if (!isLoaded || workspaceStorageMode !== "user") return;
     let cancelled = false;
 
     const pollMediaSaveStatus = async () => {
-      const urls = collectRemoteMediaUrls(sessionsRef.current, assets, assetGenerateJobs).slice(0, 80);
+      const urls = collectRemoteMediaUrls(sessionsRef.current, assets, assetGenerateJobs, workflowItems).slice(0, 80);
       if (urls.length === 0) return;
 
       try {
@@ -8302,15 +8801,63 @@ export function ChatWorkbench() {
         preloadResults.forEach(({ job }) => preloadingSavedMediaUrlsRef.current.delete(job.remoteUrl));
         if (cancelled) return;
         const readyJobs = preloadResults.filter((item) => item.ready).map((item) => item.job);
-        if (readyJobs.length === 0) return;
-
         const replacements = new Map(readyJobs.map((job) => [job.remoteUrl, job.localUrl as string]));
         const dimensions = Object.fromEntries(readyJobs.filter((job) => job.localUrl && job.dimensions).map((job) => [job.localUrl as string, job.dimensions as ImageDimensions]));
         const videoPosters = Object.fromEntries(readyJobs.filter((job) => job.localUrl && job.posterUrl).map((job) => [job.localUrl as string, job.posterUrl as string]));
+        const persistItems = savedJobs.flatMap((job) => {
+          if (!job.localUrl) return [];
+          const isVideo = job.type === "video" || /\.(mp4|webm|mov)(\?|#|$)/i.test(job.localUrl);
+          const fromMessage = sessionsRef.current.flatMap((session) => session.messages.map((message) => ({ session, message }))).find(({ message }) => {
+            if (isVideo) return message.videoUrl === job.remoteUrl || message.videos?.includes(job.remoteUrl);
+            return message.images?.includes(job.remoteUrl) || message.imageResultSlots?.some((slot) => slot.type === "image" && slot.url === job.remoteUrl);
+          });
+          const fromAsset = assets.find((asset) => asset.url === job.remoteUrl);
+          const fromWorkflow = workflowItems.flatMap((workflow) => workflow.canvas?.nodes.map((node) => ({ workflow, node })) ?? []).find(({ node }) => {
+            if (isVideo) return node.data.videoUrl === job.remoteUrl;
+            return node.data.images?.includes(job.remoteUrl);
+          });
+          const message = fromMessage?.message;
+          const session = fromMessage?.session;
+          const name = message?.mediaSystemNames?.[job.remoteUrl] ?? fromAsset?.systemName ?? fromAsset?.name ?? fromWorkflow?.node.title;
+          const sourcePrompt = isVideo
+            ? message?.videoPrompts?.[job.remoteUrl] ?? message?.generationMeta?.originalPrompt ?? fromAsset?.sourcePrompt ?? fromWorkflow?.node.data.prompt ?? message?.content
+            : message?.imagePrompts?.[job.remoteUrl] ?? fromAsset?.sourcePrompt ?? fromWorkflow?.node.data.prompt ?? fromWorkflow?.node.data.text ?? message?.content;
+          const assetGenerationCategory = fromAsset && ["character_image", "scene_image", "shot_image"].includes(fromAsset.type) ? fromAsset.type : undefined;
+          const currentCategory = fromWorkflow
+            ? isVideo ? "workflow_videos" : "workflow_images"
+            : fromAsset?.librarySource === "asset_generation" && assetGenerationCategory
+            ? fromAsset.type
+            : isVideo ? "conversation_videos" : "conversation_images";
+          return [{
+            url: job.localUrl,
+            name,
+            currentCategory,
+            mediaType: isVideo ? "video" : "image",
+            posterUrl: job.posterUrl,
+            thumbnailUrl: job.thumbnailUrl,
+            dimensions: job.dimensions,
+            sourcePrompt,
+            promptSource: "generated",
+            conversationId: session?.id ?? fromAsset?.sessionId,
+            messageId: message?.id ?? fromAsset?.messageId,
+            workflowId: fromWorkflow?.workflow.id,
+            workflowNodeId: fromWorkflow?.node.id,
+          }];
+        });
 
-        setSessions((current) => current.map((session) => replaceSessionMediaUrls(session, replacements, dimensions, videoPosters)));
-        setAssets((current) => current.map((asset) => replaceAssetMediaUrls(asset, replacements, videoPosters)));
-        setAssetGenerateJobs((current) => current.map((job) => replaceAssetGenerateJobMediaUrls(job, replacements, dimensions)));
+        if (readyJobs.length > 0) {
+          setSessions((current) => current.map((session) => replaceSessionMediaUrls(session, replacements, dimensions, videoPosters)));
+          setAssets((current) => current.map((asset) => replaceAssetMediaUrls(asset, replacements, videoPosters)));
+          setAssetGenerateJobs((current) => current.map((job) => replaceAssetGenerateJobMediaUrls(job, replacements, dimensions)));
+          setWorkflowItems((current) => current.map((item) => replaceWorkflowItemMediaUrls(item, replacements)));
+        }
+        persistItems.forEach((item) => {
+          void fetch("/api/media-assets", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(item),
+          }).catch((error) => console.warn("[media-assets] failed to persist saved generated asset", error));
+        });
       } catch {
         // Remote media saving is best-effort; generated content can still display via temporary URL.
       }
@@ -8323,7 +8870,84 @@ export function ChatWorkbench() {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [assetGenerateJobs, assets, isLoaded, workspaceStorageMode]);
+  }, [assetGenerateJobs, assets, isLoaded, workflowItems, workspaceStorageMode]);
+
+  useEffect(() => {
+    if (!isLoaded || workspaceStorageMode !== "user") return;
+    const items = workflowItems.flatMap((workflow) => {
+      return (workflow.canvas?.nodes ?? []).flatMap((node) => {
+        const baseName = `${workflow.title}_${node.title}`.replace(/\s+/g, "").slice(0, 48) || node.title || workflow.title;
+        const sourcePrompt = node.data.prompt?.trim() || node.data.text?.trim() || workflow.title;
+        const imageItems = (node.data.images ?? []).flatMap((url, index) => {
+          if (!url || url.startsWith("data:") || isRemoteMediaUrl(url)) return [];
+          return [{ workflow, node, url, mediaType: "image" as const, currentCategory: "workflow_images" as const, name: node.data.images && node.data.images.length > 1 ? `${baseName}_${index + 1}` : baseName, sourcePrompt }];
+        });
+        const videoItems = node.data.videoUrl && !node.data.videoUrl.startsWith("data:") && !isRemoteMediaUrl(node.data.videoUrl)
+          ? [{ workflow, node, url: node.data.videoUrl, mediaType: "video" as const, currentCategory: "workflow_videos" as const, name: baseName, sourcePrompt }]
+          : [];
+        return [...imageItems, ...videoItems];
+      });
+    });
+    const newItems = items.filter((item) => {
+      const key = `${item.workflow.id}:${item.node.id}:${item.url}`;
+      if (persistedWorkflowMediaKeysRef.current.has(key)) return false;
+      if (assets.some((asset) => asset.url === item.url && isWorkflowAsset(asset))) {
+        persistedWorkflowMediaKeysRef.current.add(key);
+        return false;
+      }
+      persistedWorkflowMediaKeysRef.current.add(key);
+      return true;
+    });
+    if (newItems.length === 0) return;
+
+    setAssets((current) => {
+      let next = current;
+      newItems.forEach((item) => {
+        if (next.some((asset) => asset.url === item.url)) return;
+        next = [{
+          id: createClientId(),
+          type: item.mediaType === "video" ? "shot_video" : "other",
+          name: item.name,
+          systemName: item.name,
+          url: item.url,
+          librarySource: "workflow",
+          sourcePrompt: item.sourcePrompt,
+          promptSource: "generated",
+          sessionId: item.workflow.id,
+          workflowId: item.workflow.id,
+          workflowNodeId: item.node.id,
+          lockedType: true,
+          createdAt: Date.now(),
+        }, ...next];
+      });
+      return next;
+    });
+
+    newItems.forEach((item) => {
+      void fetch("/api/media-assets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          url: item.url,
+          name: item.name,
+          currentCategory: item.currentCategory,
+          mediaType: item.mediaType,
+          sourcePrompt: item.sourcePrompt,
+          promptSource: "generated",
+          workflowId: item.workflow.id,
+          workflowNodeId: item.node.id,
+          model: item.node.data.model,
+          settings: {
+            ratio: item.node.data.ratio,
+            resolution: item.node.data.resolution,
+          },
+        }),
+      }).catch((error) => {
+        persistedWorkflowMediaKeysRef.current.delete(`${item.workflow.id}:${item.node.id}:${item.url}`);
+        console.warn("[media-assets] failed to persist workflow generated asset", error);
+      });
+    });
+  }, [assets, isLoaded, workflowItems, workspaceStorageMode]);
 
   useEffect(() => {
     if (!isLoaded || workspaceStorageMode !== "user") return;
@@ -8452,7 +9076,7 @@ export function ChatWorkbench() {
       });
       if (distanceToBottom < 520) {
         setAssetRenderLimit((current) => current + ASSET_RENDER_PAGE_SIZE);
-        if (assetsHasMore && assetsLoadStatus !== "loading") void loadWorkspaceAssets(false, assetFilter, assetsNextOffset);
+        if (assetsHasMore && assetsLoadStatus !== "loading") void loadWorkspaceAssets(false, assetFilter, assetsNextOffset, "scroll");
       }
       return;
     }
@@ -8465,7 +9089,7 @@ export function ChatWorkbench() {
     const frame = window.requestAnimationFrame(() => {
       const element = chatScrollRef.current;
       if (!element) return;
-      if (element.scrollHeight <= element.clientHeight + 120) void loadWorkspaceAssets(false, assetFilter, assetsNextOffset);
+      if (element.scrollHeight <= element.clientHeight + 120) void loadWorkspaceAssets(false, assetFilter, assetsNextOffset, "auto");
     });
     return () => window.cancelAnimationFrame(frame);
   }, [activePanel, assetFilter, assets.length, assetsHasMore, assetsLoadStatus, assetsNextOffset, loadWorkspaceAssets]);
@@ -9195,13 +9819,21 @@ export function ChatWorkbench() {
     const session = createSession(nextConversationNumber);
     setNextConversationNumber((current) => Math.max(current + 1, nextConversationNumber + 1));
     setSessions((current) => [session, ...current]);
+    setHistoryTotalSessionCount((count) => count + 1);
     setActiveSessionId(session.id);
   };
 
   const startNewWorkflow = () => {
     setOpenWorkflowMenuId("");
+    const existingUntitledWorkflow = workflowItems.find(isUntitledWorkflow);
+    if (existingUntitledWorkflow) {
+      setActiveWorkflowId(existingUntitledWorkflow.id);
+      return;
+    }
+
     const workflow = createWorkflowItem(workflowItems);
     setWorkflowItems((current) => [workflow, ...current]);
+    setWorkflowVisibleItemCount((count) => Math.max(WORKFLOW_INITIAL_ITEM_COUNT, Math.min(workflowItems.length + 1, count + 1)));
     setActiveWorkflowId(workflow.id);
   };
 
@@ -9210,7 +9842,7 @@ export function ChatWorkbench() {
     setWorkflowItems((current) => {
       const target = current.find((item) => item.id === workflowId);
       if (!target) return current;
-      return [target, ...current.filter((item) => item.id !== workflowId)];
+      return [{ ...target, updatedAt: Date.now() }, ...current.filter((item) => item.id !== workflowId)];
     });
   };
 
@@ -9226,15 +9858,25 @@ export function ChatWorkbench() {
   const deleteWorkflow = (workflowId: string) => {
     setOpenWorkflowMenuId("");
     setWorkflowItems((current) => {
-      const next = current.filter((item) => item.id !== workflowId);
+      const next = ensureWorkflowItems(current.filter((item) => item.id !== workflowId));
       if (activeWorkflowId === workflowId) setActiveWorkflowId(next[0]?.id ?? "");
       return next;
     });
   };
 
   const updateWorkflowCanvas = useCallback((workflowId: string, canvas: WorkflowCanvasState) => {
-    setWorkflowItems((current) => current.map((item) => item.id === workflowId ? { ...item, canvas } : item));
-  }, []);
+    setWorkflowItems((current) => {
+      const target = current.find((item) => item.id === workflowId);
+      if (!target) return current;
+      let title = target.title;
+      if (isUntitledWorkflow(target) && hasWorkflowAction(canvas)) {
+        const result = getNextWorkflowTitleFromNumber(current, nextWorkflowNumber);
+        title = result.title;
+        setNextWorkflowNumber(result.nextWorkflowNumber);
+      }
+      return current.map((item) => item.id === workflowId ? { ...item, title, canvas, updatedAt: Date.now() } : item);
+    });
+  }, [nextWorkflowNumber]);
 
   const pinSession = (sessionId: string) => {
     setOpenSessionMenuId("");
@@ -9259,7 +9901,7 @@ export function ChatWorkbench() {
     if (!title) return;
 
     if (activePanel === "workflow") {
-      setWorkflowItems((current) => current.map((item) => (item.id === renamingSessionId ? { ...item, title } : item)));
+      setWorkflowItems((current) => current.map((item) => (item.id === renamingSessionId ? { ...item, title, updatedAt: Date.now() } : item)));
     } else {
       setSessions((current) => current.map((item) => (item.id === renamingSessionId ? { ...item, title, updatedAt: Date.now() } : item)));
       if (workspaceStorageMode === "user") {
@@ -9279,9 +9921,23 @@ export function ChatWorkbench() {
     setRenameInput("");
   };
 
+  const persistMediaAssetState = useCallback((asset: AssetItem | undefined, patch: Record<string, unknown>) => {
+    if (!asset || workspaceStorageMode !== "user") return;
+    if (isRemoteMediaUrl(asset.url)) return;
+    void fetch("/api/media-assets", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ assetId: asset.id, mediaAssetId: asset.mediaId, url: asset.url, ...patch }),
+    }).catch((error) => {
+      console.warn("[media-assets] failed to update asset state", error);
+      showInputTip("资产状态保存失败，请刷新后重试");
+    });
+  }, [showInputTip, workspaceStorageMode]);
+
   const submitRenameAsset = () => {
     const name = assetRenameInput.trim();
     if (!name) return;
+    const asset = assets.find((item) => item.id === renamingAssetId);
 
     setAssets((current) => current.map((asset) => {
       if (asset.id !== renamingAssetId) return asset;
@@ -9291,6 +9947,7 @@ export function ChatWorkbench() {
     setOpenAssetActionMenuId("");
     setRenamingAssetId("");
     setAssetRenameInput("");
+    persistMediaAssetState(asset, { name });
   };
 
   const cancelRenameAsset = () => {
@@ -9304,10 +9961,12 @@ export function ChatWorkbench() {
     setAssets((current) => current.map((asset) => (asset.id === assetId ? { ...asset, previousType: asset.type, type: "trash", deletedAt: Date.now(), purgeAt: Date.now() + ASSET_TRASH_RETENTION_MS } : asset)));
     if (deletingAsset?.url) setAssetGenerateJobs((current) => current.filter((job) => job.result.url !== deletingAsset.url));
     setPreviewAsset((current) => (current?.id === assetId ? { ...current, previousType: current.type, type: "trash", deletedAt: Date.now(), purgeAt: Date.now() + ASSET_TRASH_RETENTION_MS } : current));
+    persistMediaAssetState(deletingAsset, { delete: true });
   };
 
   const restoreAsset = (assetId: string) => {
     setOpenAssetActionMenuId("");
+    const restoringAsset = assets.find((asset) => asset.id === assetId);
     setAssets((current) =>
       current.map((asset) =>
         asset.id === assetId
@@ -9321,6 +9980,7 @@ export function ChatWorkbench() {
           : asset,
       ),
     );
+    persistMediaAssetState(restoringAsset, { restore: true });
   };
 
   const deleteSession = (sessionId: string) => {
@@ -9331,6 +9991,7 @@ export function ChatWorkbench() {
       const visibleSessions = nextSessions.filter((session) => !isDeletedSession(session));
       const safeSessions = visibleSessions.length > 0 ? nextSessions : [createSession(nextConversationNumber), ...nextSessions];
       if (visibleSessions.length === 0) setNextConversationNumber((current) => Math.max(current + 1, nextConversationNumber + 1));
+      setHistoryTotalSessionCount((count) => Math.max(visibleSessions.length === 0 ? 1 : 0, count - 1 + (visibleSessions.length === 0 ? 1 : 0)));
       const nextVisibleSessions = safeSessions.filter((session) => !isDeletedSession(session));
 
       if (sessionId === activeSessionId || !nextVisibleSessions.some((session) => session.id === activeSessionId)) {
@@ -9374,6 +10035,7 @@ export function ChatWorkbench() {
                     imageDimensions: payload.imageDimensions,
                     imagePrompts: payload.imagePrompts,
                     imageReferences: payload.imageReferences,
+                    uploadedFiles: payload.uploadedFiles,
                     videoDimensions: payload.videoDimensions,
                     videoUrl: payload.videoUrl,
                     videos: payload.videos,
@@ -9698,10 +10360,19 @@ export function ChatWorkbench() {
   const addGeneratedAssets = useCallback((sessionId: string, mode: WorkMode, sourcePrompt: string, urls: string[], messageId?: string, assetTargetType?: AssetTargetType, contextText = "", mediaSystemNames: Record<string, string> = {}, mediaPosterUrls: Record<string, string> = {}) => {
     if (urls.length === 0) return;
 
+    const namingText = [sourcePrompt, contextText].filter(Boolean).join("\n");
+    const type = getAssetTypeFromText(namingText || sourcePrompt, mode, assetTargetType);
+    const simulatedAssets = [...assets];
+    const itemsToPersist: Array<{ url: string; name: string; posterUrl?: string }> = [];
+    urls.forEach((url) => {
+      if (!url || simulatedAssets.some((asset) => asset.url === url)) return;
+      const systemName = mediaSystemNames[url] || getConversationAssetName(mode, simulatedAssets);
+      if (!isRemoteMediaUrl(url)) itemsToPersist.push({ url, name: systemName, posterUrl: mediaPosterUrls[url] });
+      simulatedAssets.unshift({ id: url, type, name: systemName, systemName, url, posterUrl: mediaPosterUrls[url], librarySource: "conversation", sourcePrompt: namingText || sourcePrompt, promptSource: "generated", sessionId, messageId, createdAt: Date.now() });
+    });
+
     setAssets((current) => {
       let nextAssets = current;
-      const namingText = [sourcePrompt, contextText].filter(Boolean).join("\n");
-      const type = getAssetTypeFromText(namingText || sourcePrompt, mode, assetTargetType);
 
       urls.forEach((url) => {
         if (!url || nextAssets.some((asset) => asset.url === url)) return;
@@ -9729,10 +10400,40 @@ export function ChatWorkbench() {
 
       return nextAssets;
     });
-  }, []);
+    if (workspaceStorageMode === "user") {
+      itemsToPersist.forEach((item) => {
+        void fetch("/api/media-assets", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            url: item.url,
+            name: item.name,
+            currentCategory: mode === "video" ? "conversation_videos" : "conversation_images",
+            mediaType: mode === "video" ? "video" : "image",
+            posterUrl: item.posterUrl,
+            sourcePrompt: namingText || sourcePrompt,
+            promptSource: "generated",
+            conversationId: sessionId,
+            messageId,
+          }),
+        }).catch((error) => console.warn("[media-assets] failed to persist conversation generated asset", error));
+      });
+    }
+  }, [assets, workspaceStorageMode]);
 
   const addUploadedImagesToAssets = useCallback((sessionId: string, images: UploadedImage[], contextText: string) => {
     if (images.length === 0) return;
+    void contextText;
+
+    const simulatedAssets = [...assets];
+    const itemsToPersist: Array<{ url: string; name: string }> = [];
+    images.forEach((image) => {
+      if (!image.url || simulatedAssets.some((asset) => asset.url === image.url)) return;
+      const baseName = getUploadedImageReferenceName(image, images);
+      const name = getUniqueUploadedAssetName(baseName, simulatedAssets, image.url);
+      itemsToPersist.push({ url: image.url, name });
+      simulatedAssets.unshift({ id: image.url, type: "other", name, systemName: name, url: image.url, librarySource: "conversation", sourcePrompt: UPLOAD_IMAGE_PROMPT_PLACEHOLDER, promptSource: "upload", sessionId, lockedType: true, createdAt: Date.now() });
+    });
 
     setAssets((current) => {
       let nextAssets = current;
@@ -9741,20 +10442,20 @@ export function ChatWorkbench() {
         if (!image.url || nextAssets.some((asset) => asset.url === image.url)) return;
 
         const baseName = getUploadedImageReferenceName(image, images);
-        const type = getUploadedAssetType(baseName, contextText);
         const name = getUniqueUploadedAssetName(baseName, nextAssets, image.url);
 
         nextAssets = [
           {
             id: createClientId(),
-            type,
+            type: "other",
             name,
             systemName: name,
             url: image.url,
             librarySource: "conversation",
-            sourcePrompt: "资产库上传",
+            sourcePrompt: UPLOAD_IMAGE_PROMPT_PLACEHOLDER,
             promptSource: "upload",
             sessionId,
+            lockedType: true,
             createdAt: Date.now(),
           },
           ...nextAssets,
@@ -9763,7 +10464,24 @@ export function ChatWorkbench() {
 
       return nextAssets;
     });
-  }, []);
+    if (workspaceStorageMode === "user") {
+      itemsToPersist.forEach((item) => {
+        void fetch("/api/media-assets", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            url: item.url,
+            name: item.name,
+            currentCategory: "conversation_uploads",
+            mediaType: "image",
+            sourcePrompt: UPLOAD_IMAGE_PROMPT_PLACEHOLDER,
+            promptSource: "upload",
+            conversationId: sessionId,
+          }),
+        }).catch((error) => console.warn("[media-assets] failed to persist conversation uploaded asset", error));
+      });
+    }
+  }, [assets, workspaceStorageMode]);
 
   const reserveMediaSystemNames = useCallback((sessionId: string, mode: WorkMode, urls: string[]) => {
     const cleanUrls = urls.filter((url) => url && !url.startsWith("data:"));
@@ -10110,7 +10828,7 @@ export function ChatWorkbench() {
                 applyCreditResult(sessionId, imageResult.credit);
                 const imagePrompts = Object.fromEntries(resultImages.map((url) => [url, itemPrompt]));
                 appendImagesToAssistantMessage(sessionId, pendingRequest.id, resultImages, resultDimensions, 1, imagePrompts, mediaSystemNames, pendingRequest.retryFailedIndex, pendingRequest.retryFailedIndex ?? index);
-                if (autoSaveHistory) addGeneratedAssets(sessionId, pendingRequest.mode, itemPrompt, resultImages, undefined, pendingRequest.assetTargetType, contextText, mediaSystemNames);
+                addGeneratedAssets(sessionId, pendingRequest.mode, itemPrompt, resultImages, undefined, pendingRequest.assetTargetType, contextText, mediaSystemNames);
                 notifyGenerationCompleteOnce(pendingRequest.id, "图片生成已完成");
                 return resultImages;
               } catch (error) {
@@ -10155,25 +10873,39 @@ export function ChatWorkbench() {
 
           if (!taskId) {
           const modelVideoPrompt = replaceMentionNamesForModelPrompt(videoPrompt, pendingRequest.imageReferences);
+          let reviewNoticeShownForRequest = false;
+          const hasReviewNoticeShown = () => {
+            if (reviewNoticeShownForRequest) return true;
+            const session = sessionsRef.current.find((item) => item.id === sessionId);
+            return Boolean(session?.messages.some((message) =>
+              message.role === "assistant" && message.requestId === pendingRequest.id && message.bytePlusAutoReviewNoticeShown,
+            ));
+          };
+          const showReviewNoticeOnce = () => {
+            if (hasReviewNoticeShown()) return false;
+            reviewNoticeShownForRequest = true;
+            appendSystemMessage(sessionId, { content: BYTEPLUS_AUTO_REVIEW_NOTICE, mode: "video" });
+            return true;
+          };
           const createVideoTask = (autoBytePlusAssetReview = false) => fetch("/api/video", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             signal: abortController.signal,
-            body: JSON.stringify({ prompt: withReferenceHint(modelVideoPrompt), model: pendingRequest.model, referenceImages: pendingRequest.referenceImages, referenceMode: pendingRequest.videoReferenceMode, settings, conversationId: sessionId, conversationTitle, requestId: videoRequestId, metadata: pendingRequest.agentGenerated ? { creditSource: "agent_video_generation" } : undefined, autoBytePlusAssetReview }),
+            body: JSON.stringify({ prompt: withReferenceHint(modelVideoPrompt), model: pendingRequest.model, referenceImages: pendingRequest.referenceImages, referenceVideos: pendingRequest.referenceVideos, referenceAudios: pendingRequest.referenceAudios, referenceMode: pendingRequest.videoReferenceMode, settings, conversationId: sessionId, conversationTitle, requestId: videoRequestId, metadata: pendingRequest.agentGenerated ? { creditSource: "agent_video_generation" } : undefined, autoBytePlusAssetReview }),
           });
 
           let taskResponse = await createVideoTask();
           let taskData = await readJson<{ id?: string; polling_url?: string; pollingUrl?: string; status?: string; usage?: UsageMeta; autoBytePlusAssetReview?: { triggered?: boolean; assets?: Array<{ url?: string; assetId?: string; groupId?: string; status?: AssetItem["bytePlusAssetStatus"]; error?: string }> } }>(taskResponse);
           if (taskData.status === "reviewing" && taskData.autoBytePlusAssetReview?.triggered) {
             const reviewNotice = BYTEPLUS_AUTO_REVIEW_NOTICE;
-            updateAssistantMessageByRequestId(sessionId, pendingRequest.id, { statusText: reviewNotice });
-            if (itemIndex === 0) appendSystemMessage(sessionId, { content: reviewNotice, mode: "video" });
+            const shouldShowReviewNotice = showReviewNoticeOnce();
+            updateAssistantMessageByRequestId(sessionId, pendingRequest.id, shouldShowReviewNotice ? { statusText: reviewNotice, bytePlusAutoReviewNoticeShown: true } : { bytePlusAutoReviewNoticeShown: true });
             taskResponse = await createVideoTask(true);
             taskData = await readJson<{ id?: string; polling_url?: string; pollingUrl?: string; status?: string; usage?: UsageMeta; autoBytePlusAssetReview?: { triggered?: boolean; assets?: Array<{ url?: string; assetId?: string; groupId?: string; status?: AssetItem["bytePlusAssetStatus"]; error?: string }> } }>(taskResponse);
           }
           if (taskData.autoBytePlusAssetReview?.triggered) {
             applyBytePlusAssetUpdatesByUrl(taskData.autoBytePlusAssetReview.assets ?? []);
-            updateAssistantMessageByRequestId(sessionId, pendingRequest.id, { statusText: "系统检测到真人图片，需要审核才能生成视频，此次视频生成任务会延长时间，请稍候...." });
+            if (showReviewNoticeOnce()) updateAssistantMessageByRequestId(sessionId, pendingRequest.id, { statusText: BYTEPLUS_AUTO_REVIEW_NOTICE, bytePlusAutoReviewNoticeShown: true });
           }
           pendingVideoUsage = taskData.usage;
 
@@ -10260,7 +10992,7 @@ export function ChatWorkbench() {
 
             const mediaSystemNames = reserveMediaSystemNames(sessionId, "video", [pollData.content.video_url]);
             appendVideoToAssistantMessage(sessionId, pendingRequest.id, pollData.content.video_url, videoPrompt, mediaSystemNames[pollData.content.video_url], pollData.content.poster_url);
-            if (autoSaveHistory) addGeneratedAssets(sessionId, pendingRequest.mode, videoPrompt, [pollData.content.video_url], undefined, pendingRequest.assetTargetType, pendingRequest.messages.map((message) => message.content).join("\n"), mediaSystemNames, pollData.content.poster_url ? { [pollData.content.video_url]: pollData.content.poster_url } : {});
+            addGeneratedAssets(sessionId, pendingRequest.mode, videoPrompt, [pollData.content.video_url], undefined, pendingRequest.assetTargetType, pendingRequest.messages.map((message) => message.content).join("\n"), mediaSystemNames, pollData.content.poster_url ? { [pollData.content.video_url]: pollData.content.poster_url } : {});
             notifyGenerationCompleteOnce(pendingRequest.id, "视频生成已完成");
             return pollData.content.video_url;
           }
@@ -10384,6 +11116,34 @@ export function ChatWorkbench() {
       showInputTip(`当前模型最多支持 ${submitMaxUploadFiles} 个文件`);
       return;
     }
+    const uploadedVideoFiles = availableUploadedFiles.filter((file) => getUploadedFileMediaKind(file) === "video");
+    const uploadedAudioFiles = availableUploadedFiles.filter((file) => getUploadedFileMediaKind(file) === "audio");
+    if (uploadedVideoFiles.length > 0 && !submitUploadRule.video.enabled) {
+      showInputTip("当前模型不支持上传视频");
+      return;
+    }
+    if (uploadedAudioFiles.length > 0 && !submitUploadRule.audio.enabled) {
+      showInputTip("当前模型不支持上传音频");
+      return;
+    }
+    if (uploadedVideoFiles.length > submitUploadRule.video.maxCount) {
+      showInputTip(`当前模型最多支持 ${submitUploadRule.video.maxCount} 个参考视频`);
+      return;
+    }
+    if (uploadedAudioFiles.length > submitUploadRule.audio.maxCount) {
+      showInputTip(`当前模型最多支持 ${submitUploadRule.audio.maxCount} 个参考音频`);
+      return;
+    }
+    const uploadedVideoDuration = uploadedVideoFiles.reduce((sum, file) => sum + getUploadedMediaDuration(file), 0);
+    const uploadedAudioDuration = uploadedAudioFiles.reduce((sum, file) => sum + getUploadedMediaDuration(file), 0);
+    if (submitUploadRule.video.maxTotalSeconds !== undefined && uploadedVideoDuration > submitUploadRule.video.maxTotalSeconds + MEDIA_DURATION_EPSILON_SECONDS) {
+      showInputTip(`参考视频总时长不能超过 ${submitUploadRule.video.maxTotalSeconds} 秒`);
+      return;
+    }
+    if (submitUploadRule.audio.maxTotalSeconds !== undefined && uploadedAudioDuration > submitUploadRule.audio.maxTotalSeconds + MEDIA_DURATION_EPSILON_SECONDS) {
+      showInputTip(`参考音频总时长不能超过 ${submitUploadRule.audio.maxTotalSeconds} 秒`);
+      return;
+    }
     if (hasReadingUploadedFiles && !isSuggestionSend) {
       showInputTip("文件读取中");
       return;
@@ -10393,10 +11153,12 @@ export function ChatWorkbench() {
       return;
     }
     if (hasFailedUploadInputs && !isSuggestionSend) {
-      showInputTip("有图片上传失败，请删除后重新上传");
+      showInputTip("有文件上传失败，请删除后重新上传");
       return;
     }
-    if ((!rawText && availableUploadedImages.length === 0 && availableUploadedFiles.length === 0) || !activeSession || (submitMode !== "agent" && submitMode !== "general" && activeHasMaxPendingRequests) || sendingSessionIdsRef.current.has(activeSession.id)) return;
+    const uploadedMediaReferencesForText = getUploadedMediaReferences(availableUploadedFiles);
+    const rawTextWithMediaMentions = submitMode === "video" ? ensureMediaFileMentions(rawText, uploadedMediaReferencesForText) : rawText;
+    if ((!rawTextWithMediaMentions && availableUploadedImages.length === 0 && availableUploadedFiles.length === 0) || !activeSession || (submitMode !== "agent" && submitMode !== "general" && activeHasMaxPendingRequests) || sendingSessionIdsRef.current.has(activeSession.id)) return;
     if (workspaceStorageMode === "user" && currentUserCredits <= 0) {
       showInputTip("积分不足，请充值后再使用模型");
       return;
@@ -10470,7 +11232,7 @@ export function ChatWorkbench() {
       sendUploadedImages = availableUploadedImages;
     }
 
-    const explicitImageReferences = getOrderedExplicitImageReferences(rawText, assets, sendUploadedImages, activeConversationImageReferences);
+    const explicitImageReferences = getOrderedExplicitImageReferences(rawTextWithMediaMentions, assets, sendUploadedImages, activeConversationImageReferences);
     const uploadedImageReferences = sendUploadedImages.map((image) => ({ name: getUploadedImageReferenceName(image, sendUploadedImages), url: image.url }));
     const recentReferenceImages = explicitImageReferences.length > 0 || uploadedImageReferences.length > 0 ? [] : getRecentReferenceImages(sessionForSend.messages, rawText);
     const recentImageReferences = recentReferenceImages.map((url, index) => ({ name: `图片${index + 1}`, url }));
@@ -10488,22 +11250,29 @@ export function ChatWorkbench() {
       return;
     }
     const referenceImages = namedImageReferences.map((reference) => reference.url);
+    const referenceVideos = uploadedVideoFiles.map(getUploadedMediaFileUrl).filter(Boolean);
+    const referenceAudios = uploadedAudioFiles.map(getUploadedMediaFileUrl).filter(Boolean);
     const modelReferenceImages = namedImageReferences.map((reference) => {
       const matchedAsset = assets.find((asset) => normalizeMediaUrlForMatch(asset.url) === normalizeMediaUrlForMatch(reference.url));
       if (matchedAsset?.bytePlusAssetStatus === "Active" && matchedAsset.bytePlusAssetId) return `asset://${matchedAsset.bytePlusAssetId}`;
       return reference.url;
     });
-    const referencedAssets = getReferencedAssets(rawText, assets);
+    const referencedAssets = getReferencedAssets(rawTextWithMediaMentions, assets);
     const displayImageReferences = (namedImageReferences.length > 0 ? namedImageReferences : referenceImages.map((url, index) => ({ name: `图片${index + 1}`, url }))).slice(0, currentMaxReferenceImages);
-    const text = rawText || getImageOnlyPrompt(submitMode);
+    const text = rawTextWithMediaMentions || getImageOnlyPrompt(submitMode);
     const generationMode: WorkMode = submitMode;
+    if (generationMode === "video" && referenceAudios.length > 0 && referenceImages.length === 0 && referenceVideos.length === 0) {
+      showInputTip("参考音频不能单独用于生视频，请同时上传参考图片或参考视频");
+      setSessionSending(sessionId, false);
+      return;
+    }
     const directVideoReferenceMode = generationMode === "video" ? getExplicitVideoReferenceMode(text, referenceImages.length) : undefined;
     if (directVideoReferenceMode === "first_last_frame" && referenceImages.length < 2) {
       showInputTip("首尾帧生视频需要至少两张参考图");
       setSessionSending(sessionId, false);
       return;
     }
-    const userMessage: Message = { id: createClientId(), role: "user", content: rawText, createdAt: nowTimestamp(), images: referenceImages.length > 0 ? referenceImages : undefined, imageReferences: displayImageReferences.length > 0 ? displayImageReferences : undefined, uploadedFiles: availableUploadedFiles.length > 0 ? availableUploadedFiles : undefined };
+    const userMessage: Message = { id: createClientId(), role: "user", content: rawTextWithMediaMentions, createdAt: nowTimestamp(), images: referenceImages.length > 0 ? referenceImages : undefined, imageReferences: displayImageReferences.length > 0 ? displayImageReferences : undefined, uploadedFiles: availableUploadedFiles.length > 0 ? availableUploadedFiles : undefined };
     const payloadUserMessage: Message = { ...userMessage, content: text };
     const messagesWithoutSuggestions = sessionForSend.messages.map((message) => (message.suggestions ? { ...message, suggestions: undefined } : message));
     const optimisticMessages = [...messagesWithoutSuggestions, payloadUserMessage];
@@ -10705,6 +11474,8 @@ export function ChatWorkbench() {
       preserveOriginalInput: false,
       assetTargetType: assetTargetType === "other" ? undefined : assetTargetType,
       referenceImages: (shouldApplyBytePlusReferenceMode ? effectiveModelReferenceImages : effectiveReferenceImages).length > 0 ? (shouldApplyBytePlusReferenceMode ? effectiveModelReferenceImages : effectiveReferenceImages) : undefined,
+      referenceVideos: generationMode === "video" && referenceVideos.length > 0 ? referenceVideos : undefined,
+      referenceAudios: generationMode === "video" && referenceAudios.length > 0 ? referenceAudios : undefined,
       videoReferenceMode: directVideoReferenceMode,
       imageReferences: effectiveDisplayImageReferences.length > 0 ? effectiveDisplayImageReferences : undefined,
       referenceHint: getReferenceHint(effectiveDisplayImageReferences),
@@ -10758,6 +11529,7 @@ export function ChatWorkbench() {
         mode: generationMode,
         requestId: pendingRequest.id,
         imageReferences: pendingRequest.imageReferences,
+        uploadedFiles: availableUploadedFiles.length > 0 ? availableUploadedFiles : undefined,
         generationMeta: { mode: "video", model: pendingRequest.model, settings: pendingRequest.settings, preserveOriginalInput: pendingRequest.preserveOriginalInput, assetTargetType: pendingRequest.assetTargetType, originalPrompt: pendingRequest.originalPrompt, agentGenerated: pendingRequest.agentGenerated },
       });
     }
@@ -10919,6 +11691,9 @@ export function ChatWorkbench() {
 
     const sessionId = activeSession.id;
     const replaySettings = replayMeta?.settings;
+    const replayUploadedFiles = message.uploadedFiles ?? previousUserMessage?.uploadedFiles ?? [];
+    const replayReferenceVideos = getUploadedMediaReferences(replayUploadedFiles).filter((reference) => reference.mediaKind === "video").map((reference) => reference.url);
+    const replayReferenceAudios = getUploadedMediaReferences(replayUploadedFiles).filter((reference) => reference.mediaKind === "audio").map((reference) => reference.url);
     const replayMessages: ChatPayloadMessage[] = activeSession.messages
       .slice(0, messageIndex)
       .filter((item) => item.id !== "seed-1" && item.role !== "system")
@@ -10952,6 +11727,8 @@ export function ChatWorkbench() {
       originalPrompt: generationMode === "image" || generationMode === "video" ? replayPrompt : undefined,
       preserveOriginalInput: false,
       referenceImages: effectiveReplayReferenceImages && effectiveReplayReferenceImages.length > 0 ? effectiveReplayReferenceImages : undefined,
+      referenceVideos: generationMode === "video" && replayReferenceVideos.length > 0 ? replayReferenceVideos : undefined,
+      referenceAudios: generationMode === "video" && replayReferenceAudios.length > 0 ? replayReferenceAudios : undefined,
       videoReferenceMode: replayVideoReferenceMode,
       imageReferences: effectiveReplayImageReferences && effectiveReplayImageReferences.length > 0 ? effectiveReplayImageReferences : undefined,
       referenceHint: effectiveReplayImageReferences && effectiveReplayImageReferences.length > 0 ? getReferenceHint(effectiveReplayImageReferences) : undefined,
@@ -10993,6 +11770,7 @@ export function ChatWorkbench() {
         mode: generationMode,
         requestId: pendingRequest.id,
         imageReferences: pendingRequest.imageReferences,
+        uploadedFiles: replayUploadedFiles.length > 0 ? replayUploadedFiles : undefined,
         generationMeta: generationMode === "image" || generationMode === "video" ? { mode: generationMode, model: pendingRequest.model, settings: pendingRequest.settings, preserveOriginalInput: pendingRequest.preserveOriginalInput, assetTargetType: pendingRequest.assetTargetType, originalPrompt: pendingRequest.originalPrompt, agentGenerated: pendingRequest.agentGenerated } : undefined,
       });
     }
@@ -11011,6 +11789,9 @@ export function ChatWorkbench() {
     const sessionId = activeSession.id;
     const requestId = createClientId();
     const retryStartedAt = Date.now();
+    const retryMediaReferences = getUploadedMediaReferences(message.uploadedFiles);
+    const retryReferenceVideos = retryMediaReferences.filter((reference) => reference.mediaKind === "video").map((reference) => reference.url);
+    const retryReferenceAudios = retryMediaReferences.filter((reference) => reference.mediaKind === "audio").map((reference) => reference.url);
     const pendingRequest: PendingGeneration = {
       id: requestId,
       model: meta.model,
@@ -11019,6 +11800,8 @@ export function ChatWorkbench() {
       originalPrompt: prompt,
       preserveOriginalInput: meta.preserveOriginalInput,
       referenceImages: message.imageReferences?.map((reference) => reference.url).filter(Boolean),
+      referenceVideos: meta.mode === "video" && retryReferenceVideos.length > 0 ? retryReferenceVideos : undefined,
+      referenceAudios: meta.mode === "video" && retryReferenceAudios.length > 0 ? retryReferenceAudios : undefined,
       imageReferences: message.imageReferences,
       referenceHint: message.imageReferences?.length ? getReferenceHint(message.imageReferences) : undefined,
       assetTargetType: meta.assetTargetType,
@@ -11186,9 +11969,13 @@ export function ChatWorkbench() {
   const addFilesToInput = useCallback(async (files: File[]) => {
     const tips = new Set<string>();
     const imageFiles: File[] = [];
-    const documentFiles: File[] = [];
+    const uploadFiles: Array<{ file: File; media?: { mediaKind?: "document" | "video" | "audio"; durationSeconds?: number; dimensions?: ImageDimensions } }> = [];
     let acceptedImageCount = 0;
-    let acceptedDocumentCount = 0;
+    let acceptedFileCount = 0;
+    let acceptedVideoCount = activeUploadedFiles.filter((file) => getUploadedFileMediaKind(file) === "video").length;
+    let acceptedAudioCount = activeUploadedFiles.filter((file) => getUploadedFileMediaKind(file) === "audio").length;
+    let acceptedVideoDuration = activeUploadedFiles.filter((file) => getUploadedFileMediaKind(file) === "video").reduce((sum, file) => sum + getUploadedMediaDuration(file), 0);
+    let acceptedAudioDuration = activeUploadedFiles.filter((file) => getUploadedFileMediaKind(file) === "audio").reduce((sum, file) => sum + getUploadedMediaDuration(file), 0);
     const maxImages = currentUploadRule.image.maxCount;
     const maxUploadFiles = currentUploadRule.document.maxCount + currentUploadRule.video.maxCount + currentUploadRule.audio.maxCount;
     const remainingImages = Math.max(0, maxImages - activeUploadedImages.length);
@@ -11221,11 +12008,11 @@ export function ChatWorkbench() {
           tips.add("当前模型不支持该文件格式");
         } else if (file.size > currentUploadRule.document.maxSizeMb * 1024 * 1024) {
           tips.add(`当前模型支持的单个文件最大为 ${currentUploadRule.document.maxSizeMb}MB`);
-        } else if (acceptedDocumentCount >= remainingDocuments) {
+        } else if (acceptedFileCount >= remainingDocuments) {
           tips.add(`当前模型最多支持 ${maxUploadFiles} 个文件`);
         } else {
-          documentFiles.push(file);
-          acceptedDocumentCount += 1;
+          uploadFiles.push({ file, media: { mediaKind: "document" } });
+          acceptedFileCount += 1;
         }
         continue;
       }
@@ -11237,11 +12024,28 @@ export function ChatWorkbench() {
           tips.add("当前模型不支持该视频格式");
         } else if (file.size > currentUploadRule.video.maxSizeMb * 1024 * 1024) {
           tips.add(`当前模型支持的单个视频最大为 ${currentUploadRule.video.maxSizeMb}MB`);
-        } else if (acceptedDocumentCount >= remainingDocuments) {
+        } else if (acceptedVideoCount >= currentUploadRule.video.maxCount) {
+          tips.add(`当前模型最多支持 ${currentUploadRule.video.maxCount} 个参考视频`);
+        } else if (acceptedFileCount >= remainingDocuments) {
           tips.add(`当前模型最多支持 ${maxUploadFiles} 个文件`);
         } else {
-          documentFiles.push(file);
-          acceptedDocumentCount += 1;
+          try {
+            const media = await readMediaFileMetadata(file, "video");
+            const durationError = validateMediaDuration("视频", media.durationSeconds, currentUploadRule.video);
+            const dimensionError = validateReferenceVideoDimensions(media.dimensions);
+            const nextTotal = acceptedVideoDuration + (media.durationSeconds ?? 0);
+            if (durationError) tips.add(durationError);
+            else if (dimensionError) tips.add(dimensionError);
+            else if (currentUploadRule.video.maxTotalSeconds !== undefined && nextTotal > currentUploadRule.video.maxTotalSeconds + MEDIA_DURATION_EPSILON_SECONDS) tips.add(`参考视频总时长不能超过 ${currentUploadRule.video.maxTotalSeconds} 秒`);
+            else {
+              uploadFiles.push({ file, media: { mediaKind: "video", ...media } });
+              acceptedVideoCount += 1;
+              acceptedVideoDuration = nextTotal;
+              acceptedFileCount += 1;
+            }
+          } catch (error) {
+            tips.add(toUserErrorMessage(error, "视频信息读取失败"));
+          }
         }
         continue;
       }
@@ -11253,11 +12057,26 @@ export function ChatWorkbench() {
           tips.add("当前模型不支持该音频格式");
         } else if (file.size > currentUploadRule.audio.maxSizeMb * 1024 * 1024) {
           tips.add(`当前模型支持的单个音频最大为 ${currentUploadRule.audio.maxSizeMb}MB`);
-        } else if (acceptedDocumentCount >= remainingDocuments) {
+        } else if (acceptedAudioCount >= currentUploadRule.audio.maxCount) {
+          tips.add(`当前模型最多支持 ${currentUploadRule.audio.maxCount} 个参考音频`);
+        } else if (acceptedFileCount >= remainingDocuments) {
           tips.add(`当前模型最多支持 ${maxUploadFiles} 个文件`);
         } else {
-          documentFiles.push(file);
-          acceptedDocumentCount += 1;
+          try {
+            const media = await readMediaFileMetadata(file, "audio");
+            const durationError = validateMediaDuration("音频", media.durationSeconds, currentUploadRule.audio);
+            const nextTotal = acceptedAudioDuration + (media.durationSeconds ?? 0);
+            if (durationError) tips.add(durationError);
+            else if (currentUploadRule.audio.maxTotalSeconds !== undefined && nextTotal > currentUploadRule.audio.maxTotalSeconds + MEDIA_DURATION_EPSILON_SECONDS) tips.add(`参考音频总时长不能超过 ${currentUploadRule.audio.maxTotalSeconds} 秒`);
+            else {
+              uploadFiles.push({ file, media: { mediaKind: "audio", ...media } });
+              acceptedAudioCount += 1;
+              acceptedAudioDuration = nextTotal;
+              acceptedFileCount += 1;
+            }
+          } catch (error) {
+            tips.add(toUserErrorMessage(error, "音频信息读取失败"));
+          }
         }
         continue;
       }
@@ -11267,8 +12086,8 @@ export function ChatWorkbench() {
 
     Array.from(tips).slice(0, 3).forEach((tip) => showInputTip(tip));
 
-    if (documentFiles.length > 0) {
-      const documentEntries = documentFiles.map(createUploadedDocumentEntry);
+    if (uploadFiles.length > 0) {
+      const documentEntries = uploadFiles.map((item) => createUploadedDocumentEntry(item.file, item.media));
       setSessions((current) =>
         current.map((session) => {
           if (session.id !== activeSessionId) return session;
@@ -11279,7 +12098,7 @@ export function ChatWorkbench() {
         }),
       );
 
-      documentFiles.forEach((file, index) => {
+      uploadFiles.forEach(({ file }, index) => {
         const entry = documentEntries[index];
         if (!entry) return;
 
@@ -11323,15 +12142,44 @@ export function ChatWorkbench() {
       }, controller.signal)
         .then((tempToken) => {
           inputImageUploadAbortControllersRef.current.delete(image.id);
-          setSessions((current) => current.map((session) => session.id === activeSessionId ? { ...session, uploadedImages: (session.uploadedImages ?? []).map((item) => item.id === image.id ? { ...item, tempToken, uploadProgress: 100, uploadStatus: "ready", error: undefined } : item) } : session));
+          setSessions((current) => current.map((session) => session.id === activeSessionId ? { ...session, uploadedImages: (session.uploadedImages ?? []).map((item) => item.id === image.id ? { ...item, tempToken, uploadProgress: 100, uploadStatus: "ready", forceReencode: undefined, error: undefined } : item) } : session));
         })
-        .catch((error) => {
-          inputImageUploadAbortControllersRef.current.delete(image.id);
-          if (controller.signal.aborted) return;
-          setSessions((current) => current.map((session) => session.id === activeSessionId ? { ...session, uploadedImages: (session.uploadedImages ?? []).map((item) => item.id === image.id ? { ...item, uploadProgress: 100, uploadStatus: "error", error: toUserErrorMessage(error, "上传失败") } : item) } : session));
+          .catch((error) => {
+            inputImageUploadAbortControllersRef.current.delete(image.id);
+            if (controller.signal.aborted) return;
+            const errorMessage = toUserErrorMessage(error, "上传失败");
+            reportClientDiagnostic("input-image-upload failed", { fileName: image.name, error: errorMessage, rawError: error instanceof Error ? error.message : String(error) });
+          setSessions((current) => current.map((session) => session.id === activeSessionId ? { ...session, uploadedImages: (session.uploadedImages ?? []).map((item) => item.id === image.id ? { ...item, uploadProgress: 100, uploadStatus: "error", error: errorMessage } : item) } : session));
         });
     });
-  }, [activeSessionId, activeUploadedFiles.length, activeUploadedImages.length, addActiveUploadedImages, currentUploadRule, showInputTip]);
+  }, [activeSessionId, activeUploadedFiles, activeUploadedImages.length, addActiveUploadedImages, currentUploadRule, showInputTip]);
+
+  const retryInputImageUpload = useCallback((imageId: string) => {
+    const image = activeUploadedImages.find((item) => item.id === imageId);
+    if (!image?.uploadFile) {
+      showInputTip("请重新选择图片");
+      return;
+    }
+    inputImageUploadAbortControllersRef.current.get(imageId)?.abort();
+    inputImageUploadAbortControllersRef.current.delete(imageId);
+    const controller = new AbortController();
+    inputImageUploadAbortControllersRef.current.set(imageId, controller);
+    setSessions((current) => current.map((session) => session.id === activeSessionId ? { ...session, uploadedImages: (session.uploadedImages ?? []).map((item) => item.id === imageId ? { ...item, tempToken: undefined, uploadProgress: 6, uploadStatus: "uploading", forceReencode: true, error: undefined } : item) } : session));
+    void uploadTemporaryAssetImage(image.uploadFile, (progress) => {
+      setSessions((current) => current.map((session) => session.id === activeSessionId ? { ...session, uploadedImages: (session.uploadedImages ?? []).map((item) => item.id === imageId ? { ...item, uploadProgress: progress, uploadStatus: "uploading" } : item) } : session));
+    }, controller.signal, true)
+      .then((tempToken) => {
+        inputImageUploadAbortControllersRef.current.delete(imageId);
+        setSessions((current) => current.map((session) => session.id === activeSessionId ? { ...session, uploadedImages: (session.uploadedImages ?? []).map((item) => item.id === imageId ? { ...item, tempToken, uploadProgress: 100, uploadStatus: "ready", forceReencode: undefined, error: undefined } : item) } : session));
+      })
+      .catch((error) => {
+        inputImageUploadAbortControllersRef.current.delete(imageId);
+        if (controller.signal.aborted) return;
+        const errorMessage = toUserErrorMessage(error, "上传失败");
+        reportClientDiagnostic("input-image-upload retry failed", { fileName: image.name, error: errorMessage, rawError: error instanceof Error ? error.message : String(error) });
+        setSessions((current) => current.map((session) => session.id === activeSessionId ? { ...session, uploadedImages: (session.uploadedImages ?? []).map((item) => item.id === imageId ? { ...item, uploadProgress: 100, uploadStatus: "error", error: errorMessage } : item) } : session));
+      });
+  }, [activeSessionId, activeUploadedImages, showInputTip]);
 
   const hasDraggedFiles = (event: DragEvent) => Array.from(event.dataTransfer.types).includes("Files");
   const handleChatDragEnter = (event: DragEvent) => {
@@ -11462,10 +12310,11 @@ export function ChatWorkbench() {
     focusCharacterEditorAt(Math.min(MAX_DRAFT_INPUT_LENGTH, insertBase.length + referenceText.length));
   };
   const openCharacterMentionAssetMenu = () => {
-    if (assetsLoadStatus !== "loaded") {
+    const needsMentionAssetLoad = ["character_image", "scene_image", "shot_image", "conversation_uploads"].some((filter) => !loadedAssetFilters[filter as AssetFilter] || !assets.some((asset) => isAssetInFilter(asset, filter as AssetFilter)));
+    if (assetsLoadStatus !== "loaded" || needsMentionAssetLoad) {
       setCharacterPromptCursorOffset(getCurrentCharacterPromptCursor());
       setIsCharacterAtAssetMenuOpen(true);
-      void loadWorkspaceAssets();
+      void loadMentionAssetFilters();
       return;
     }
     if (!hasMentionAssetImages) {
@@ -11580,10 +12429,10 @@ export function ChatWorkbench() {
   };
   const addCharacterGeneratedAsset = useCallback((url: string, prompt: string, dimensions?: ImageDimensions, type = assetGenerateType, previewMeta = characterPreviewMeta) => {
     if (!url) return;
+    const name = getNextAssetGenerationName(type, assets);
 
     setAssets((current) => {
       if (current.some((asset) => asset.url === url)) return current;
-      const name = getNextAssetGenerationName(type, current);
 
       return [
         {
@@ -11602,7 +12451,25 @@ export function ChatWorkbench() {
         ...current,
       ];
     });
-  }, [activeSessionIdValue, assetGenerateType, characterPreviewMeta]);
+    if (isRemoteMediaUrl(url)) return;
+    void fetch("/api/media-assets", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        url,
+        name,
+        currentCategory: type,
+        mediaType: "image",
+        sourcePrompt: prompt,
+        promptSource: "generated",
+        model: characterGenerateModel,
+        settings: { ratio: characterGenerateDisplayRatio, resolution: characterGenerateDisplayResolution, style: characterGenerateStyleLabel, imageCount: "1张" },
+        dimensions,
+        previewMeta: dimensions ? getPreviewMetaWithDimensions(previewMeta, dimensions, "image") : previewMeta,
+        conversationId: activeSessionIdValue,
+      }),
+    }).catch((error) => console.warn("[media-assets] failed to persist generated asset", error));
+  }, [activeSessionIdValue, assetGenerateType, assets, characterGenerateDisplayRatio, characterGenerateDisplayResolution, characterGenerateModel, characterGenerateStyleLabel, characterPreviewMeta]);
   const generateCharacterImage = async () => {
     const rawPrompt = characterGeneratePrompt.trim();
     if (!rawPrompt || characterGenerateResult.status === "generating") return;
@@ -11794,9 +12661,10 @@ export function ChatWorkbench() {
   };
   const openMentionAssetMenu = () => {
     closeAllPopupMenus("mention");
-    if (assetsLoadStatus !== "loaded") {
+    const needsMentionAssetLoad = ["character_image", "scene_image", "shot_image", "conversation_uploads"].some((filter) => !loadedAssetFilters[filter as AssetFilter] || !assets.some((asset) => isAssetInFilter(asset, filter as AssetFilter)));
+    if (assetsLoadStatus !== "loaded" || needsMentionAssetLoad) {
       setIsAtAssetMenuOpen(true);
-      void loadWorkspaceAssets();
+      void loadMentionAssetFilters();
       return;
     }
     if (!hasMentionAssetImages) {
@@ -11867,6 +12735,9 @@ export function ChatWorkbench() {
   const historySessions = sessions.filter((session) => !isDeletedSession(session));
   const visibleHistorySessions = historySessions.slice(0, historyVisibleSessionCount);
   const hiddenHistorySessionCount = Math.max(0, historySessions.length - visibleHistorySessions.length);
+  const historyDisplaySessionCount = Math.max(historyTotalSessionCount, historySessions.length);
+  const visibleWorkflowItems = workflowItems.slice(0, workflowVisibleItemCount);
+  const hiddenWorkflowItemCount = Math.max(0, workflowItems.length - visibleWorkflowItems.length);
   const shouldShowHistoryLoadStatus = activePanel !== "workflow" && sessions.length === 0 && workspaceLoadStatus !== "loaded";
   const historyLoadStatusText = workspaceLoadStatus === "failed" ? "重新加载历史" : "历史加载中...";
   const retryWorkspaceLoad = () => {
@@ -11911,7 +12782,7 @@ export function ChatWorkbench() {
             setPreviewDocumentFile(null);
             setStoredWorkspaceUiState({ activePanel: "assets", assetFilter });
             setActivePanel("assets");
-            void loadWorkspaceAssets(true, assetFilter, 0);
+            void loadWorkspaceAssets(false, assetFilter, 0);
           }} className={isSidebarCollapsed ? activePanel === "assets" ? "relative flex h-10 w-10 items-center justify-center rounded-lg bg-[#ececec] font-medium text-[#111111]" : "relative flex h-10 w-10 items-center justify-center rounded-lg font-medium text-[#555555] transition hover:bg-[#ececec]" : activePanel === "assets" ? "flex h-10 w-full items-center gap-2 rounded-lg bg-[#ececec] px-3 text-left font-medium text-[#111111]" : "flex h-10 w-full items-center gap-2 rounded-lg px-3 text-left font-medium text-[#555555] transition hover:bg-[#ececec]"} title="资产库" aria-label="资产库">
             {activePanel === "assets" ? <RiFolderOpenLine className="h-5 w-5 shrink-0 text-[#111111]" aria-hidden="true" /> : <RiFolderLine className="h-5 w-5 shrink-0 text-[#555555]" aria-hidden="true" />}
             {!isSidebarCollapsed ? <span className="text-[13px] leading-[1.2]">资产库</span> : null}
@@ -11922,10 +12793,6 @@ export function ChatWorkbench() {
 
         {activePanel === "assets" ? (
           <>
-            {!isSidebarCollapsed ? <div className="mb-2 flex items-center justify-between px-3 text-xs text-[#8a8a8a]">
-              <span className="inline-flex items-center gap-1.5"><span className="h-1.5 w-1.5 rounded-full bg-[#b7b7b7]" aria-hidden="true" />资产生成</span>
-              <span className="w-10 shrink-0 text-right">{getAssetCount("asset_generation", assets.filter((asset) => asset.type !== "trash" && isAssetGenerationAsset(asset)).length)}</span>
-            </div> : null}
             <div className={isSidebarCollapsed ? "yinzao-chat-scroll yinzao-scrollbar-hover min-h-0 flex-1 space-y-[6px] overflow-y-auto pb-px pt-px" : "yinzao-chat-scroll yinzao-scrollbar-hover -mr-3 min-h-0 flex-1 space-y-[3px] overflow-y-auto pb-px pl-px pr-3 pt-px"}>
               {assetGenerationTypes.map((type) => ({ label: assetTypeLabels[type], value: type, count: getAssetCount(type, assets.filter((asset) => asset.type === type && isAssetGenerationAsset(asset)).length) })).map((item) => {
                 const isActive = assetFilter === item.value;
@@ -11941,7 +12808,7 @@ export function ChatWorkbench() {
                       setPreviewDocumentFile(null);
                       setStoredWorkspaceUiState({ activePanel: "assets", assetFilter: item.value, assetScrollTopByFilter: { ...assetScrollTopByFilter, [item.value]: 0 } });
                       setAssetFilter(item.value);
-                      void loadWorkspaceAssets(true, item.value, 0);
+                      void loadWorkspaceAssets(false, item.value, 0);
                       requestAnimationFrame(() => chatScrollRef.current?.scrollTo({ top: 0, behavior: "auto" }));
                     }}
                     className={isSidebarCollapsed ? isActive ? "relative mx-auto flex h-10 w-10 items-center justify-center rounded-lg bg-[#ececec]" : "relative mx-auto flex h-10 w-10 items-center justify-center rounded-lg transition hover:bg-[#ececec]" : isActive ? "flex h-9 w-full items-center rounded-lg bg-[#ececec] px-3 text-left" : "flex h-9 w-full items-center rounded-lg px-3 text-left transition hover:bg-[#ececec]"}
@@ -11954,13 +12821,38 @@ export function ChatWorkbench() {
                   </button>
                 );
               })}
-              {!isSidebarCollapsed ? <div className="flex items-center justify-between px-3 pb-1 pt-4 text-xs text-[#8a8a8a]">
+              {[{ label: "上传图片", value: "conversation_uploads" as const, count: getAssetCount("conversation_uploads", assets.filter(isConversationUploadedAsset).length), icon: ImageUploadLineIcon }].map((item) => {
+                const isActive = assetFilter === item.value;
+                const AssetIcon = item.icon;
+
+                return (
+                  <button
+                    key={item.value}
+                    type="button"
+                    onClick={() => {
+                      setAssetRenderLimit(ASSET_RENDER_PAGE_SIZE);
+                      setPreviewDocumentFile(null);
+                      setStoredWorkspaceUiState({ activePanel: "assets", assetFilter: item.value, assetScrollTopByFilter: { ...assetScrollTopByFilter, [item.value]: 0 } });
+                      setAssetFilter(item.value);
+                      void loadWorkspaceAssets(false, item.value, 0);
+                      requestAnimationFrame(() => chatScrollRef.current?.scrollTo({ top: 0, behavior: "auto" }));
+                    }}
+                    className={isSidebarCollapsed ? isActive ? "relative mx-auto flex h-10 w-10 items-center justify-center rounded-lg bg-[#ececec]" : "relative mx-auto flex h-10 w-10 items-center justify-center rounded-lg transition hover:bg-[#ececec]" : isActive ? "flex h-9 w-full items-center rounded-lg bg-[#ececec] px-3 text-left" : "flex h-9 w-full items-center rounded-lg px-3 text-left transition hover:bg-[#ececec]"}
+                    title={item.label}
+                    aria-label={item.label}
+                  >
+                    <AssetIcon className={isSidebarCollapsed ? "h-5 w-5 shrink-0 text-[#777777]" : "mr-2 h-5 w-5 shrink-0 text-[#777777]"} aria-hidden="true" />
+                    {!isSidebarCollapsed ? <span className={isActive ? "min-w-0 flex-1 truncate text-[13px] font-medium text-[#111111]" : "min-w-0 flex-1 truncate text-[13px] font-medium text-[#333333]"}>{item.label}</span> : null}
+                    {!isSidebarCollapsed ? <span className="ml-auto w-10 shrink-0 text-right text-[12px] text-[#9a9a9a]">{item.count}</span> : null}
+                  </button>
+                );
+              })}
+              {!isSidebarCollapsed ? <div className="mx-3 my-3 h-px bg-[#e5e5e5]" aria-hidden="true" /> : <div className="mx-auto my-2 h-px w-12 bg-[#e5e5e5]" aria-hidden="true" />}
+              {!isSidebarCollapsed ? <div className="flex items-center px-3 pb-1 pt-4 text-xs text-[#8a8a8a]">
                 <span className="inline-flex items-center gap-1.5"><span className="h-1.5 w-1.5 rounded-full bg-[#b7b7b7]" aria-hidden="true" />对话流资产</span>
-                <span className="w-10 shrink-0 text-right">{getAssetCount("conversation", assets.filter(isConversationAsset).length)}</span>
               </div> : <div className="h-2" />}
               {[
-                { label: "上传图片", value: "conversation_uploads" as const, count: getAssetCount("conversation_uploads", assets.filter(isConversationUploadedAsset).length), icon: ImageUploadLineIcon },
-                { label: "生成图片", value: "conversation_images" as const, count: getAssetCount("conversation_images", assets.filter((asset) => isConversationAsset(asset) && !isVideoAsset(asset) && !isUploadedAssetUrl(asset.url)).length), icon: RiImageAiLine },
+                { label: "生成图片", value: "conversation_images" as const, count: getAssetCount("conversation_images", assets.filter((asset) => isConversationAsset(asset) && !isVideoAsset(asset) && !isConversationUploadedAsset(asset)).length), icon: RiImageAiLine },
                 { label: "生成视频", value: "conversation_videos" as const, count: getAssetCount("conversation_videos", assets.filter((asset) => isConversationAsset(asset) && isVideoAsset(asset)).length), icon: RiFilmAiLine },
               ].map((item) => {
                 const isActive = assetFilter === item.value;
@@ -11975,7 +12867,7 @@ export function ChatWorkbench() {
                       setPreviewDocumentFile(null);
                       setStoredWorkspaceUiState({ activePanel: "assets", assetFilter: item.value, assetScrollTopByFilter: { ...assetScrollTopByFilter, [item.value]: 0 } });
                       setAssetFilter(item.value);
-                      void loadWorkspaceAssets(true, item.value, 0);
+                      void loadWorkspaceAssets(false, item.value, 0);
                       requestAnimationFrame(() => chatScrollRef.current?.scrollTo({ top: 0, behavior: "auto" }));
                     }}
                     className={isSidebarCollapsed ? isActive ? "relative mx-auto flex h-10 w-10 items-center justify-center rounded-lg bg-[#ececec]" : "relative mx-auto flex h-10 w-10 items-center justify-center rounded-lg transition hover:bg-[#ececec]" : isActive ? "flex h-9 w-full items-center rounded-lg bg-[#ececec] px-3 text-left" : "flex h-9 w-full items-center rounded-lg px-3 text-left transition hover:bg-[#ececec]"}
@@ -11988,9 +12880,40 @@ export function ChatWorkbench() {
                   </button>
                 );
               })}
-              {!isSidebarCollapsed ? <div className="flex items-center justify-between px-3 pb-1 pt-4 text-xs text-[#8a8a8a]">
+              {!isSidebarCollapsed ? <div className="flex items-center px-3 pb-1 pt-4 text-xs text-[#8a8a8a]">
+                <span className="inline-flex items-center gap-1.5"><span className="h-1.5 w-1.5 rounded-full bg-[#b7b7b7]" aria-hidden="true" />工作流资产</span>
+              </div> : <div className="h-2" />}
+              {[
+                { label: "生成图片", value: "workflow_images" as const, count: getAssetCount("workflow_images", assets.filter((asset) => isWorkflowAsset(asset) && !isVideoAsset(asset)).length), icon: RiImageAiLine },
+                { label: "生成视频", value: "workflow_videos" as const, count: getAssetCount("workflow_videos", assets.filter((asset) => isWorkflowAsset(asset) && isVideoAsset(asset)).length), icon: RiFilmAiLine },
+              ].map((item) => {
+                const isActive = assetFilter === item.value;
+                const AssetIcon = item.icon;
+
+                return (
+                  <button
+                    key={item.value}
+                    type="button"
+                    onClick={() => {
+                      setAssetRenderLimit(ASSET_RENDER_PAGE_SIZE);
+                      setPreviewDocumentFile(null);
+                      setStoredWorkspaceUiState({ activePanel: "assets", assetFilter: item.value, assetScrollTopByFilter: { ...assetScrollTopByFilter, [item.value]: 0 } });
+                      setAssetFilter(item.value);
+                      void loadWorkspaceAssets(false, item.value, 0);
+                      requestAnimationFrame(() => chatScrollRef.current?.scrollTo({ top: 0, behavior: "auto" }));
+                    }}
+                    className={isSidebarCollapsed ? isActive ? "relative mx-auto flex h-10 w-10 items-center justify-center rounded-lg bg-[#ececec]" : "relative mx-auto flex h-10 w-10 items-center justify-center rounded-lg transition hover:bg-[#ececec]" : isActive ? "flex h-9 w-full items-center rounded-lg bg-[#ececec] px-3 text-left" : "flex h-9 w-full items-center rounded-lg px-3 text-left transition hover:bg-[#ececec]"}
+                    title={item.label}
+                    aria-label={item.label}
+                  >
+                    <AssetIcon className={isSidebarCollapsed ? "h-5 w-5 shrink-0 text-[#777777]" : "mr-2 h-5 w-5 shrink-0 text-[#777777]"} aria-hidden="true" />
+                    {!isSidebarCollapsed ? <span className={isActive ? "min-w-0 flex-1 truncate text-[13px] font-medium text-[#111111]" : "min-w-0 flex-1 truncate text-[13px] font-medium text-[#333333]"}>{item.label}</span> : null}
+                    {!isSidebarCollapsed ? <span className="ml-auto w-10 shrink-0 text-right text-[12px] text-[#9a9a9a]">{item.count}</span> : null}
+                  </button>
+                );
+              })}
+              {!isSidebarCollapsed ? <div className="flex items-center px-3 pb-1 pt-4 text-xs text-[#8a8a8a]">
                 <span className="inline-flex items-center gap-1.5"><span className="h-1.5 w-1.5 rounded-full bg-[#b7b7b7]" aria-hidden="true" />回收资产30天删除</span>
-                <span className="w-10 shrink-0 text-right">{getAssetCount("trash", assets.filter((asset) => asset.type === "trash").length)}</span>
               </div> : <div className="h-2" />}
               {[{ label: assetTypeLabels.trash, value: "trash" as const, count: getAssetCount("trash", assets.filter((asset) => asset.type === "trash").length), icon: RiDeleteBinLine }].map((item) => {
                 const isActive = assetFilter === item.value;
@@ -12005,7 +12928,7 @@ export function ChatWorkbench() {
                       setPreviewDocumentFile(null);
                       setStoredWorkspaceUiState({ activePanel: "assets", assetFilter: item.value, assetScrollTopByFilter: { ...assetScrollTopByFilter, [item.value]: 0 } });
                       setAssetFilter(item.value);
-                      void loadWorkspaceAssets(true, item.value, 0);
+                      void loadWorkspaceAssets(false, item.value, 0);
                       requestAnimationFrame(() => chatScrollRef.current?.scrollTo({ top: 0, behavior: "auto" }));
                     }}
                     className={isSidebarCollapsed ? isActive ? "relative mx-auto flex h-10 w-10 items-center justify-center rounded-lg bg-[#ececec]" : "relative mx-auto flex h-10 w-10 items-center justify-center rounded-lg transition hover:bg-[#ececec]" : isActive ? "flex h-9 w-full items-center rounded-lg bg-[#ececec] px-3 text-left" : "flex h-9 w-full items-center rounded-lg px-3 text-left transition hover:bg-[#ececec]"}
@@ -12024,7 +12947,7 @@ export function ChatWorkbench() {
           <>
             {!isSidebarCollapsed ? <div className="mb-2 flex items-center justify-between px-2 text-xs text-[#8a8a8a]">
               <span>{activePanel === "workflow" ? "我的工作流" : "历史对话"}</span>
-              <span>{activePanel === "workflow" ? workflowItems.length : historySessions.length}</span>
+              <span>{activePanel === "workflow" ? workflowItems.length : historyDisplaySessionCount}</span>
             </div> : null}
             <button
               type="button"
@@ -12058,7 +12981,7 @@ export function ChatWorkbench() {
                 {isCollapsedHistoryMenuOpen ? (
                   <div onClick={(event) => event.stopPropagation()} className="absolute left-[66px] top-0 z-40 flex max-h-[520px] w-[222px] flex-col overflow-hidden rounded-[12px] border border-[#e0e0e0] bg-white p-2 shadow-[0_10px_28px_rgba(0,0,0,0.12)]">
                     <div className="yinzao-chat-scroll yinzao-scrollbar-hover min-h-0 flex-1 space-y-[3px] overflow-y-auto pr-1">
-                      {activePanel === "workflow" ? workflowItems.map((item) => {
+                      {activePanel === "workflow" ? visibleWorkflowItems.map((item) => {
                         const isMenuOpen = openWorkflowMenuId === item.id;
 
                         return (
@@ -12125,7 +13048,15 @@ export function ChatWorkbench() {
                           </div>
                         )
                       ) : null}
-                      {activePanel !== "workflow" && (hiddenHistorySessionCount > 0 || historyHasMoreSessions) ? (
+                      {activePanel === "workflow" && hiddenWorkflowItemCount > 0 ? (
+                        <button
+                          type="button"
+                          onClick={() => setWorkflowVisibleItemCount((count) => Math.min(workflowItems.length, count + WORKFLOW_LOAD_MORE_COUNT))}
+                          className="mt-2 flex h-9 w-full items-center rounded-lg px-3 text-left transition hover:bg-[#ececec]"
+                        >
+                          <div className="min-w-0 truncate text-[13px] font-medium leading-[1.2] text-[#9a9a9a]">加载更多</div>
+                        </button>
+                      ) : activePanel !== "workflow" && (hiddenHistorySessionCount > 0 || historyHasMoreSessions) ? (
                         <button
                           type="button"
                           disabled={isHistoryLoadingMore}
@@ -12146,7 +13077,7 @@ export function ChatWorkbench() {
                 ) : null}
               </div>
             ) : <div className="yinzao-chat-scroll yinzao-scrollbar-hover -mr-3 min-h-0 flex-1 space-y-[3px] overflow-y-auto pb-10 pl-px pr-3 pt-px">
-              {activePanel === "workflow" ? workflowItems.map((item) => {
+              {activePanel === "workflow" ? visibleWorkflowItems.map((item) => {
                 const isMenuOpen = openWorkflowMenuId === item.id;
 
                 return (
@@ -12274,7 +13205,15 @@ export function ChatWorkbench() {
                   </div>
                 )
               ) : null}
-              {activePanel !== "workflow" && (hiddenHistorySessionCount > 0 || historyHasMoreSessions) ? (
+              {activePanel === "workflow" && hiddenWorkflowItemCount > 0 ? (
+                <button
+                  type="button"
+                  onClick={() => setWorkflowVisibleItemCount((count) => Math.min(workflowItems.length, count + WORKFLOW_LOAD_MORE_COUNT))}
+                  className="mt-2 flex h-9 w-full items-center rounded-lg px-3 text-left transition hover:bg-[#ececec]"
+                >
+                  <div className="min-w-0 truncate text-[13px] font-medium leading-[1.2] text-[#9a9a9a]">加载更多</div>
+                </button>
+              ) : activePanel !== "workflow" && (hiddenHistorySessionCount > 0 || historyHasMoreSessions) ? (
                 <button
                   type="button"
                   disabled={isHistoryLoadingMore}
@@ -12478,7 +13417,7 @@ export function ChatWorkbench() {
             ) : null}
           </div>
 
-          {activePanel === "chat" ? <div className="absolute right-4 top-1/2 flex -translate-y-1/2 items-center justify-end"><UsageSummaryButton summary={activeSession?.usageSummary} mediaCounts={getSessionMediaCounts(activeSession)} /></div> : null}
+          {activePanel === "chat" ? <UsageSummaryButton summary={activeSession?.usageSummary} mediaCounts={getSessionMediaCounts(activeSession)} /> : null}
 
         </div> : null}
 
@@ -12509,7 +13448,7 @@ export function ChatWorkbench() {
                 </div>
               </div>
             ) : (
-            <AssetManagementPanel assets={assets} assetFilter={assetFilter} renderLimit={assetRenderLimit} openAssetActionMenuId={openAssetActionMenuId} now={timerNow} pendingAssetGenerateJobs={assetGenerateJobs} onOpenPendingGenerate={openAssetGenerateJob} onDismissGenerateJob={(jobId) => setAssetGenerateJobs((current) => current.filter((job) => job.id !== jobId))} onOpenUpload={openAssetUploadDialog} onPreview={(asset) => { setPreviewDocumentFile(null); setPreviewAsset(enrichAssetPreviewMeta(asset)); }} onUseAsset={(asset) => {
+            <AssetManagementPanel assets={assets} assetFilter={assetFilter} renderLimit={assetRenderLimit} openAssetActionMenuId={openAssetActionMenuId} isLoadingMore={assetsLoadStatus === "loading" && hasCurrentFilterAssets && assetLoadingReason === "scroll"} now={timerNow} pendingAssetGenerateJobs={assetGenerateJobs} onOpenPendingGenerate={openAssetGenerateJob} onDismissGenerateJob={(jobId) => setAssetGenerateJobs((current) => current.filter((job) => job.id !== jobId))} onOpenUpload={openAssetUploadDialog} onPreview={(asset) => { setPreviewDocumentFile(null); setPreviewAsset(enrichAssetPreviewMeta(asset)); }} onUseAsset={(asset) => {
               if (activeUploadedImages.length >= currentMaxReferenceImages && !activeUploadedImages.some((image) => image.url === asset.url)) {
                 showInputTip(`当前模型最多支持 ${currentMaxReferenceImages} 张参考图，不能上传更多图片`);
                 return;
@@ -12553,23 +13492,35 @@ export function ChatWorkbench() {
               setCharacterPromptCursorOffset(assetGeneratePromptDrafts.shot_image.length);
               setIsCharacterGenerateOpen(true);
             }} onChangeType={(assetId, target) => {
-              setAssets((current) => current.map((asset) => {
-                if (asset.id !== assetId) return asset;
-                if (target === "conversation_image") return { ...asset, librarySource: "conversation", lockedType: true };
-                return { ...asset, type: target, librarySource: "asset_generation", lockedType: true };
-              }));
+              const changingAsset = assets.find((asset) => asset.id === assetId);
+              setAssets((current) => {
+                const targetAsset = current.find((asset) => asset.id === assetId);
+                if (!targetAsset) return current;
+                const movedAsset = target === "conversation_image"
+                  ? { ...targetAsset, type: "other" as const, librarySource: "conversation" as const, sourcePrompt: targetAsset.sourcePrompt || UPLOAD_IMAGE_PROMPT_PLACEHOLDER, promptSource: "upload" as const, lockedType: true }
+                  : { ...targetAsset, type: target, librarySource: "asset_generation" as const, lockedType: true };
+                const movedKey = getAssetIdentityKey(movedAsset);
+                return [movedAsset, ...current.filter((asset) => asset.id !== assetId && getAssetIdentityKey(asset) !== movedKey)];
+              });
               setOpenAssetActionMenuId("");
+              setLoadedAssetFilters((current) => ({ ...current, [assetFilter]: false, [target === "conversation_image" ? "conversation_uploads" : target]: false, conversation_uploads: false }));
+              persistMediaAssetState(changingAsset, { currentCategory: target === "conversation_image" ? "conversation_uploads" : target });
             }} onDelete={deleteAsset} onRestore={restoreAsset} />
             )
           ) : activePanel === "workflow" ? (
             activeWorkflow ? (
-              <WorkflowCanvas
-                workflowId={activeWorkflow.id}
-                value={activeWorkflow.canvas}
-                workflowTitle={activeWorkflow.title}
-                onChange={(canvas) => updateWorkflowCanvas(activeWorkflow.id, canvas)}
-                onCredit={applyWorkflowCreditResult}
-              />
+              <>
+                <WorkflowCanvas
+                  workflowId={activeWorkflow.id}
+                  value={activeWorkflow.canvas}
+                  workflowTitle={activeWorkflow.title}
+                  enabledImageModelIds={enabledGenerationModelIds.image}
+                  enabledVideoModelIds={enabledGenerationModelIds.video}
+                  onChange={(canvas) => updateWorkflowCanvas(activeWorkflow.id, canvas)}
+                  onCredit={applyWorkflowCreditResult}
+                />
+                <UsageSummaryButton summary={activeWorkflow.usageSummary} mediaCounts={getWorkflowMediaCounts(activeWorkflow)} className="absolute right-4 top-4 z-30" />
+              </>
             ) : (
               <div className="flex h-full min-h-full items-center justify-center bg-[#f3f3f3] bg-[linear-gradient(to_right,#d8d8d8_1px,transparent_1px),linear-gradient(to_bottom,#d8d8d8_1px,transparent_1px),linear-gradient(to_right,#e9e9e9_1px,transparent_1px),linear-gradient(to_bottom,#e9e9e9_1px,transparent_1px)] bg-[size:120px_120px,120px_120px,24px_24px,24px_24px] text-center">
                 <div className="rounded-[16px] border border-[#e5e5e5] bg-white/90 px-8 py-7 shadow-[0_14px_40px_rgba(15,23,42,0.08)] backdrop-blur">
@@ -12629,7 +13580,7 @@ export function ChatWorkbench() {
                   </button>
                 </div>
               ) : null}
-              {messages.map((message) => {
+              {messages.map((message, messageIndex) => {
                 const isLegacyAgentErrorNotice = message.role === "assistant" && message.mode === "agent" && Boolean(message.error) && message.content === message.error;
 
                 if (message.role === "system" || isLegacyAgentErrorNotice) {
@@ -12684,6 +13635,7 @@ export function ChatWorkbench() {
                 const isActiveImagePending = activeMessagePendingRequest?.mode === "image" && imagePendingCount > 0;
                 const isActiveMediaPending = isActiveVideoPending || isActiveImagePending;
                 const userImageReferences = message.role === "user" ? getDisplayImageReferences(message) : undefined;
+                const previousUserMessageForMedia = message.role === "assistant" ? [...messages.slice(0, messageIndex)].reverse().find((item) => item.role === "user") : undefined;
                 const isAgentMediaMessage = message.role === "assistant" && isAgentGeneratedMedia(message);
                 const mediaPromptReferences = message.role === "assistant" && (message.mode === "image" || message.mode === "video") ? (message.imageReferences?.length ? message.imageReferences : getOrderedExplicitImageReferences(message.content, assets, [], activeConversationImageReferences)) : undefined;
                 const imageVariantGroups = message.role === "assistant" && message.mode === "image" && !isAgentMediaMessage ? getImageVariantPages(message) : [];
@@ -12698,6 +13650,9 @@ export function ChatWorkbench() {
                 const displayedPendingImageCount = showImageStatusOnCurrentPage && !displayedImageResultSlots ? imagePendingCount : 0;
                 const displayedFailedImageCount = showImageStatusOnCurrentPage ? imageFailedCount : 0;
                 const displayedMessageVideos = getMessageVideos(message);
+                const userMediaReferences = message.role === "user" ? getUploadedMediaReferences(message.uploadedFiles) : [];
+                const mediaPromptFileReferences = message.role === "assistant" && (message.mode === "image" || message.mode === "video") ? getUploadedMediaReferences(message.uploadedFiles?.length ? message.uploadedFiles : previousUserMessageForMedia?.uploadedFiles) : [];
+                const documentUploadedFiles = getDocumentOnlyUploadedFiles(message.uploadedFiles);
                 const agentPromptItems = isAgentMediaMessage ? getAgentMediaPromptItems(message) : [];
                 const agentPromptPageIndex = Math.min(agentPromptPageIndexes[message.id] ?? 0, Math.max(0, agentPromptItems.length - 1));
                 const setImageVariantIndex = (nextIndex: number) => {
@@ -12739,9 +13694,19 @@ export function ChatWorkbench() {
                         {message.role === "assistant" ? (
                         message.mode === "agent" || message.mode === "general" || isAgentMediaMessage ? (
                           isAgentMediaMessage ? <><InlineAssistantIcon message={message} activated={isAgentActivationMessage(message.content)} provider={message.textModel ? generalModelProviders[message.textModel] : undefined} /><ReferencedTextContent content={message.content} references={mediaPromptReferences} /></> : <TypewriterFormattedMessage messageId={message.id} content={message.content} isComplete={isAssistantMessageComplete} onComplete={markTypingComplete} onTick={keepTypingInPlace} leadingIcon={<InlineAssistantIcon message={message} activated={isAgentActivationMessage(message.content)} provider={message.textModel ? generalModelProviders[message.textModel] : undefined} />} />
-                        ) : message.mode === "image" || message.mode === "video" ? <MediaPromptBlock message={message} references={mediaPromptReferences} onUsePrompt={(item) => void copyPrompt(item)} copyState={copyFeedback?.messageId === message.id ? copyFeedback.state : undefined} displayImageUrl={displayedMessageImages[0]} variantIndex={selectedImageVariantIndex} variantCount={imageVariantCount} onPreviousVariant={() => setImageVariantIndex(selectedImageVariantIndex - 1)} onNextVariant={() => setImageVariantIndex(selectedImageVariantIndex + 1)} /> : <TypewriterFormattedMessage messageId={message.id} content={message.content} isComplete={isAssistantMessageComplete} onComplete={markTypingComplete} onTick={keepTypingAtBottom} />
+                        ) : message.mode === "image" || message.mode === "video" ? <MediaPromptBlock message={message} references={mediaPromptReferences} mediaReferences={mediaPromptFileReferences} onPreviewMedia={(file) => {
+                          const previewMedia = getUploadedFilePreviewAsset(file);
+                          if (!previewMedia) return;
+                          setPreviewDocumentFile(null);
+                          setPreviewAsset(previewMedia);
+                        }} onUsePrompt={(item) => void copyPrompt(item)} copyState={copyFeedback?.messageId === message.id ? copyFeedback.state : undefined} displayImageUrl={displayedMessageImages[0]} variantIndex={selectedImageVariantIndex} variantCount={imageVariantCount} onPreviousVariant={() => setImageVariantIndex(selectedImageVariantIndex - 1)} onNextVariant={() => setImageVariantIndex(selectedImageVariantIndex + 1)} /> : <TypewriterFormattedMessage messageId={message.id} content={message.content} isComplete={isAssistantMessageComplete} onComplete={markTypingComplete} onTick={keepTypingAtBottom} />
                         ) : (
-                        <UserMessageContent content={message.content} references={userImageReferences} />
+                        <UserMessageContent content={message.content} references={userImageReferences} mediaReferences={userMediaReferences} onPreviewMedia={(file) => {
+                          const previewMedia = getUploadedFilePreviewAsset(file);
+                          if (!previewMedia) return;
+                          setPreviewDocumentFile(null);
+                          setPreviewAsset(previewMedia);
+                        }} />
                         )}
                       </div>
                       {message.role === "user" && message.content.trim() ? (
@@ -12762,7 +13727,17 @@ export function ChatWorkbench() {
 
                     {message.role === "user" ? (
                       <>
-                        <UploadedDocumentStrip files={message.uploadedFiles} onPreview={setPreviewDocumentFile} />
+                        <UploadedDocumentStrip files={documentUploadedFiles} onPreview={(file) => {
+                          const previewMedia = getUploadedFilePreviewAsset(file);
+                          if (previewMedia) {
+                            setPreviewDocumentFile(null);
+                            setPreviewAsset(previewMedia);
+                          } else if (isUploadedMediaFile(file)) {
+                            showInputTip("文件上传中");
+                          } else {
+                            setPreviewDocumentFile(file);
+                          }
+                        }} />
                         <ReferenceThumbnailStrip references={userImageReferences} onUseReference={(reference) => {
                           if (activeUploadedImages.length >= currentMaxReferenceImages && !activeUploadedImages.some((image) => image.url === reference.url)) {
                             showInputTip(`当前模型最多支持 ${currentMaxReferenceImages} 张参考图，不能上传更多图片`);
@@ -12801,11 +13776,13 @@ export function ChatWorkbench() {
                           </LazyMediaMount>
                         ) : null}
 
-                     {message.role === "assistant" && message.mode === "video" && isAssistantMessageComplete && (displayedMessageVideos.length > 0 || videoFailedCount > 0 || (isActiveVideoPending && videoPendingCount > 0)) ? (
-                       <LazyMediaMount height={360} className={isAgentMediaMessage ? "mt-2 grid w-full max-w-[1006px] grid-cols-2 gap-0.5" : "mt-2 flex max-w-full flex-wrap gap-0.5"}>
-                          {displayedMessageVideos.map((url, videoIndex) => (
-                             <InlineVideoResult key={`${url}-${videoIndex}`} url={url} posterUrl={getVideoPosterForMessage(message, url)} rounded={isAgentMediaMessage} compact={isAgentMediaMessage} onLoadedDimensions={(dimensions) => updateMessageVideoDimensions(activeSession?.id ?? "", message.id, dimensions)} onPreview={() => setPreviewAsset({ id: `${message.id}-video-${videoIndex}`, type: "shot_video", name: getCanonicalMediaName(message, url, `生成视频${videoIndex + 1}`), url, posterUrl: getVideoPosterForMessage(message, url), sourcePrompt: message.videoPrompts?.[url] ?? message.generationMeta?.itemPrompts?.[videoIndex] ?? message.generationMeta?.originalPrompt ?? message.content, previewMeta: getPreviewMediaMeta(message), sessionId: activeSession?.id ?? "", messageId: message.id, createdAt: message.createdAt ?? Date.now() })} />
-                          ))}
+                      {message.role === "assistant" && message.mode === "video" && isAssistantMessageComplete && (displayedMessageVideos.length > 0 || videoFailedCount > 0 || (isActiveVideoPending && videoPendingCount > 0)) ? (
+                        <LazyMediaMount height={360} className={isAgentMediaMessage ? "mt-2 grid w-full max-w-[1006px] grid-cols-2 gap-0.5" : "mt-2 flex max-w-full flex-wrap gap-0.5"}>
+                           {displayedMessageVideos.map((url, videoIndex) => (
+                             <div key={`${url}-${videoIndex}`} className="contents">
+                               <InlineVideoResult url={url} posterUrl={getVideoPosterForMessage(message, url)} rounded={isAgentMediaMessage} compact={isAgentMediaMessage} onLoadedDimensions={(dimensions) => updateMessageVideoDimensions(activeSession?.id ?? "", message.id, dimensions)} onPreview={() => setPreviewAsset({ id: `${message.id}-video-${videoIndex}`, type: "shot_video", name: getCanonicalMediaName(message, url, `生成视频${videoIndex + 1}`), url, posterUrl: getVideoPosterForMessage(message, url), sourcePrompt: message.videoPrompts?.[url] ?? message.generationMeta?.itemPrompts?.[videoIndex] ?? message.generationMeta?.originalPrompt ?? message.content, previewMeta: getPreviewMediaMeta(message), sessionId: activeSession?.id ?? "", messageId: message.id, createdAt: message.createdAt ?? Date.now() })} />
+                             </div>
+                            ))}
                           {Array.from({ length: isActiveVideoPending ? videoPendingCount : 0 }).map((_, pendingIndex) => (
                             <MediaWaitingCard key={`video-pending-${pendingIndex}`} createdAt={message.createdAt} now={timerNow} isImage={false} index={videoPendingCount > 1 ? displayedMessageVideos.length + pendingIndex + 1 : undefined} rounded={isAgentMediaMessage} compactVideo={isAgentMediaMessage} />
                           ))}
@@ -12996,12 +13973,26 @@ export function ChatWorkbench() {
                       const displayName = getUploadedFileDisplayName(file);
                       const meta = getUploadedDocumentMeta(displayName);
                       const sizeText = formatUploadedFileSize(file);
+                      const mediaKind = getUploadedFileMediaKind(file);
                       const progress = typeof file === "string" ? 0 : Math.min(100, Math.max(0, Math.floor(file.progress ?? 0)));
                       const uploadProgress = typeof file === "string" ? 0 : Math.min(100, Math.max(0, Math.floor(file.uploadProgress ?? 0)));
                       const isUploading = typeof file !== "string" && file.uploadStatus === "uploading";
+                      const durationText = typeof file !== "string" ? getMediaDurationLabel(file.durationSeconds) : "";
+                      const isMediaFile = isUploadedMediaFile(file);
+                      const canPreviewMediaFile = Boolean(getUploadedFilePreviewAsset(file));
 
                       return (
-                        <div key={`${getUploadedFileKey(file)}-${index}`} onClick={() => setPreviewDocumentFile(file)} className="relative flex h-[54px] w-[200px] shrink-0 cursor-pointer items-center gap-3 overflow-hidden rounded-[10px] bg-[#f2f2f2] px-4 transition hover:bg-[#ececec]">
+                        <div key={`${getUploadedFileKey(file)}-${index}`} onClick={() => {
+                          if (isMediaFile) {
+                            if (!canPreviewMediaFile) {
+                              showInputTip("文件上传中");
+                              return;
+                            }
+                            insertTextAtDraftCursor(`@${displayName} `);
+                            return;
+                          }
+                          setPreviewDocumentFile(file);
+                        }} className="relative flex h-[54px] w-[200px] shrink-0 cursor-pointer items-center gap-3 overflow-hidden rounded-[10px] bg-[#f2f2f2] px-4 transition hover:bg-[#ececec]">
                           <button
                             type="button"
                             disabled={isMainInputDisabled}
@@ -13014,12 +14005,30 @@ export function ChatWorkbench() {
                           >
                             <RiCloseLine className="h-3 w-3" aria-hidden="true" />
                           </button>
+                          {isMediaFile ? (
+                            <button
+                              type="button"
+                              disabled={isMainInputDisabled || !canPreviewMediaFile}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                if (!canPreviewMediaFile) {
+                                  showInputTip("文件上传中");
+                                  return;
+                                }
+                                insertTextAtDraftCursor(`@${displayName} `);
+                              }}
+                              className="absolute bottom-1 right-1 z-30 inline-flex h-4.5 min-w-4.5 items-center justify-center rounded-[4px] bg-black/45 px-1 text-[10px] font-medium leading-none text-white transition hover:bg-black/60 disabled:cursor-not-allowed disabled:opacity-40"
+                              aria-label={`引用${displayName}`}
+                            >
+                              @
+                            </button>
+                          ) : null}
                           <div className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-[3px] border-2 text-[15px] font-bold leading-none" style={{ backgroundColor: meta.bg, borderColor: meta.border, color: meta.color }}>
-                            {meta.icon}
+                            {mediaKind === "video" ? <RiVideoLine className="h-4 w-4" aria-hidden="true" /> : mediaKind === "audio" ? <RiMusic2Line className="h-4 w-4" aria-hidden="true" /> : meta.icon}
                           </div>
                           <div className="min-w-0 flex-1">
                             <div className="truncate text-[13px] font-medium leading-4 text-[#222222]">{displayName}</div>
-                            <div className="mt-0.5 truncate text-[11px] leading-4 text-[#9a9a9a]">{meta.label}{sizeText ? ` · ${sizeText}` : ""}</div>
+                            <div className="mt-0.5 truncate text-[11px] leading-4 text-[#9a9a9a]">{meta.label}{sizeText ? ` · ${sizeText}` : ""}{durationText ? ` · ${durationText}` : ""}</div>
                           </div>
                           {isUploading ? <UploadProgressOverlay progress={uploadProgress} /> : null}
                           {!isUploading && typeof file !== "string" && file.status === "reading" ? <div className="absolute inset-x-0 bottom-0 h-[2px] bg-black/8"><div className="h-full bg-[#367cee] transition-all" style={{ width: `${progress}%` }} /></div> : null}
@@ -13074,7 +14083,17 @@ export function ChatWorkbench() {
                           <span className="text-[10px] leading-4">@{getUploadedImageReferenceName(image, activeUploadedImages)}</span>
                         </button>
                         {isUploading ? <UploadProgressOverlay progress={uploadProgress} /> : null}
-                        {image.uploadStatus === "error" ? <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/50 px-2 text-center text-[11px] font-medium leading-4 text-white">上传失败</div> : null}
+                        {image.uploadStatus === "error" ? (
+                          <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-1.5 bg-black/58 px-2 text-center text-[13px] font-semibold leading-4 text-white">
+                            <span>上传失败</span>
+                            {image.uploadFile ? (
+                              <button type="button" onClick={() => retryInputImageUpload(image.id)} className="inline-flex items-center gap-1 text-[13px] font-semibold text-[#75a7ff] transition hover:text-[#a9c8ff]">
+                                <RiRefreshLine className="h-3.5 w-3.5" aria-hidden="true" />
+                                <span>重试</span>
+                              </button>
+                            ) : null}
+                          </div>
+                        ) : null}
                       </div>
                       );
                     })}
@@ -13110,7 +14129,7 @@ export function ChatWorkbench() {
               {isAtAssetMenuOpen && (hasAtAssetOptions || assetsLoadStatus === "loading") ? (
                 <div onClick={(event) => event.stopPropagation()} className="absolute bottom-full left-2 z-50 mb-4 max-h-80 w-[380px] overflow-y-auto rounded-[12px] bg-white p-2 shadow-[0_18px_44px_rgba(0,0,0,0.14)]">
                   <div className="px-2 pb-2 text-[12px] text-[#8a8a8a]">引用资产</div>
-                  {assetsLoadStatus === "loading" ? <div className="px-2 py-4 text-[13px] text-[#367cee]">加载中...</div> : null}
+                  {assetsLoadStatus === "loading" ? <div className="flex min-h-[180px] items-center justify-center gap-2 text-[13px] font-medium text-[#367cee]"><LoadingSpinner size={18} /><span>加载中...</span></div> : null}
                   {assetsLoadStatus !== "loading" ? <>
                   <div className="mb-2 flex flex-nowrap gap-1.5 px-1">
                     {atAssetGroups.map((group) => {
@@ -13334,10 +14353,10 @@ export function ChatWorkbench() {
           onSelectSlot={selectAssetUploadSlot}
           onSelectFiles={(files) => void selectAssetUploadFiles(files)}
           onRemoveSlot={removeAssetUploadSlot}
+          onRetrySlot={retryAssetUploadSlot}
           onChangeName={updateActiveAssetUploadName}
           onRestoreEmptyName={() => restoreEmptyAssetUploadName()}
           onClearName={clearActiveAssetUploadName}
-          onChangeType={updateActiveAssetUploadType}
           onSubmit={() => void submitAssetUpload()}
         />
       ) : null}
@@ -13493,7 +14512,7 @@ export function ChatWorkbench() {
                     {isCharacterAtAssetMenuOpen && (hasCharacterAtAssetOptions || assetsLoadStatus === "loading") && !isCharacterGenerateInputDisabled ? (
                       <div onClick={(event) => event.stopPropagation()} className="absolute right-0 top-10 z-[90] max-h-80 w-[380px] overflow-y-auto rounded-[12px] bg-white p-2 shadow-[0_18px_44px_rgba(0,0,0,0.14)]">
                         <div className="px-2 pb-2 text-[12px] text-[#8a8a8a]">引用资产</div>
-                        {assetsLoadStatus === "loading" ? <div className="px-2 py-4 text-[13px] text-[#367cee]">加载中...</div> : null}
+                        {assetsLoadStatus === "loading" ? <div className="flex min-h-[180px] items-center justify-center gap-2 text-[13px] font-medium text-[#367cee]"><LoadingSpinner size={18} /><span>加载中...</span></div> : null}
                         {assetsLoadStatus !== "loading" ? <>
                         <div className="mb-2 flex flex-nowrap gap-1.5 px-1">
                           {characterAtAssetGroups.map((group) => {
@@ -14146,14 +15165,14 @@ export function ChatWorkbench() {
                     ) : null}
                   </div>
                 ) : null}
-                <div ref={previewViewportRef} className={`relative z-10 flex min-h-0 min-w-0 flex-1 items-center justify-center overflow-hidden px-4 pb-5 sm:px-6 sm:pb-6 lg:px-7 lg:pb-7 ${!isVideoAsset(previewAsset) && previewFitMode === "actual" ? isPreviewDragging ? "cursor-grabbing" : "cursor-grab" : ""}`} onDoubleClick={(event) => { event.preventDefault(); event.stopPropagation(); }} onWheel={(event) => {
-                  if (!previewWheelZoom || isVideoAsset(previewAsset)) return;
+                <div ref={previewViewportRef} className={`relative z-10 flex min-h-0 min-w-0 flex-1 items-center justify-center overflow-hidden px-4 pb-5 sm:px-6 sm:pb-6 lg:px-7 lg:pb-7 ${!isVideoAsset(previewAsset) && !isAudioAsset(previewAsset) && previewFitMode === "actual" ? isPreviewDragging ? "cursor-grabbing" : "cursor-grab" : ""}`} onDoubleClick={(event) => { event.preventDefault(); event.stopPropagation(); }} onWheel={(event) => {
+                  if (!previewWheelZoom || isVideoAsset(previewAsset) || isAudioAsset(previewAsset)) return;
                   event.preventDefault();
                   const delta = event.deltaY < 0 ? 0.1 : -0.1;
                   setPreviewFitMode("actual");
                   applyPreviewScale(visiblePreviewScale + delta);
                 }} onMouseDown={(event) => {
-                  if (isVideoAsset(previewAsset) || previewFitMode !== "actual") return;
+                  if (isVideoAsset(previewAsset) || isAudioAsset(previewAsset) || previewFitMode !== "actual") return;
                   event.preventDefault();
                   previewDragStartRef.current = { pointerX: event.clientX, pointerY: event.clientY, panX: previewPan.x, panY: previewPan.y };
                   setIsPreviewDragging(true);
@@ -14163,8 +15182,16 @@ export function ChatWorkbench() {
                   setPreviewPan({ x: start.panX + event.clientX - start.pointerX, y: start.panY + event.clientY - start.pointerY });
                 }} onMouseUp={() => setIsPreviewDragging(false)} onMouseLeave={() => setIsPreviewDragging(false)}>
                   <div className="flex h-full w-full items-center justify-center bg-transparent">
-                    {isVideoAsset(previewAsset) ? (
-                      <video key={`${previewAsset.id}-${previewAsset.url}`} src={getStaticMediaUrl(previewAsset.url)} poster={getStaticMediaUrl(previewAsset.posterUrl, videoPosterVersion)} preload="metadata" className="h-full w-full max-h-full max-w-full object-contain shadow-[0_8px_30px_rgba(0,0,0,0.08)]" controls playsInline onLoadedMetadata={(event) => {
+                    {isAudioAsset(previewAsset) ? (
+                      <div className="flex w-full max-w-[680px] flex-col items-center gap-5 rounded-[20px] bg-white/92 px-8 py-10 shadow-[0_8px_30px_rgba(0,0,0,0.08)]">
+                        <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-[#e5f7f4] text-[#0f766e]">
+                          <RiMusic2Line className="h-8 w-8" aria-hidden="true" />
+                        </div>
+                        <div className="max-w-full truncate text-[15px] font-medium text-[#222222]">{previewAsset.name}</div>
+                        <audio key={`${previewAsset.id}-${previewAsset.url}`} src={getStaticMediaUrl(previewAsset.url)} preload="metadata" controls className="w-full" />
+                      </div>
+                    ) : isVideoAsset(previewAsset) ? (
+                      <video key={`${previewAsset.id}-${previewAsset.url}`} src={getVideoPlaybackUrl(previewAsset.url)} poster={getStaticMediaUrl(previewAsset.posterUrl, videoPosterVersion)} preload="metadata" className="h-full w-full max-h-full max-w-full object-contain shadow-[0_8px_30px_rgba(0,0,0,0.08)]" controls playsInline onLoadedMetadata={(event) => {
                         const video = event.currentTarget;
                         if (!video.videoWidth || !video.videoHeight) return;
                         const dimensions = { width: video.videoWidth, height: video.videoHeight };

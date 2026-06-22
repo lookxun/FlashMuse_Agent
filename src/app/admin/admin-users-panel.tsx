@@ -4,6 +4,7 @@ import { Fragment, useMemo, useState, useTransition } from "react";
 import { RiArrowDownSLine, RiArrowRightSLine, RiCloseLine, RiQuillPenAiLine, RiSearchLine } from "react-icons/ri";
 import { useBodyScrollLock } from "@/components/use-body-scroll-lock";
 import { AdminHoverImagePreview } from "./admin-hover-image-preview";
+import { getCachedAdminDetail, setCachedAdminDetail } from "./admin-detail-cache";
 import { fallbackAdminImageToOriginal, getAdminMediaSourceUrl, getAdminMediaThumbnailUrl, normalizeAdminMediaUrl } from "./admin-media-url";
 
 function getLocalVideoPosterUrl(url: string) {
@@ -38,6 +39,7 @@ export type AdminConversation = {
 export type AdminMediaItem = {
   id: string;
   requestId?: string;
+  conversationId?: string;
   type: "image" | "video";
   systemName?: string;
   assetType?: "character_image" | "scene_image" | "shot_image";
@@ -92,6 +94,13 @@ export type AdminUserRow = {
   conversations: AdminConversation[];
   mediaItems: AdminMediaItem[];
   assetMediaItems: AdminMediaItem[];
+  conversationImageCount?: number;
+  conversationVideoCount?: number;
+  conversationUploadImageCount?: number;
+  conversationUploadFileCount?: number;
+  assetImageCount?: number;
+  assetGeneratedImageCount?: number;
+  assetUploadImageCount?: number;
 };
 
 type AdminUserStats = {
@@ -159,6 +168,15 @@ export function DetailItem({ label, value, onClick }: { label: string; value: st
   return (
     <div className={className}>
       {content}
+    </div>
+  );
+}
+
+export function AdminDetailLoading({ label }: { label: string }) {
+  return (
+    <div className="flex items-center justify-center gap-2 px-3 py-8 text-center text-[13px] text-[#888888]">
+      <span className="h-4 w-4 animate-spin rounded-full border-2 border-[#d8e6ff] border-t-[#367cee]" aria-hidden="true" />
+      <span>{label}</span>
     </div>
   );
 }
@@ -510,6 +528,8 @@ export function AdminUsersPanel({ users, stats }: { users: AdminUserRow[]; stats
   const [detailErrors, setDetailErrors] = useState<Record<string, string>>({});
   const [historyUser, setHistoryUser] = useState<AdminUserRow | null>(null);
   const [mediaDialog, setMediaDialog] = useState<{ user: AdminUserRow; mediaType: "image" | "upload_image" | "video" | "asset_image" } | null>(null);
+  const [loadingDialogTitle, setLoadingDialogTitle] = useState<string | null>(null);
+  const isDetailLoading = loadingUserIds.size > 0;
 
   const filteredUsers = useMemo(() => {
     const keyword = query.trim().toLowerCase();
@@ -537,6 +557,16 @@ export function AdminUsersPanel({ users, stats }: { users: AdminUserRow[]; stats
     { key: "disabled", label: "禁用" },
   ];
 
+  async function fetchUserDetail(userId: string, mode: "records" | "full") {
+    const cached = getCachedAdminDetail<{ user: AdminUserRow }>(userId, mode);
+    if (cached?.user) return cached.user;
+    const response = await fetch(`/admin/api/records/user-detail?userId=${encodeURIComponent(userId)}${mode === "records" ? "&mode=records" : ""}`);
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(typeof payload.error === "string" ? payload.error : "加载失败");
+    setCachedAdminDetail(userId, mode, payload.detail);
+    return payload.detail.user as AdminUserRow;
+  }
+
   async function loadUserDetail(userId: string) {
     if (detailsByUserId[userId] || loadingUserIds.has(userId)) return;
     setLoadingUserIds((current) => new Set(current).add(userId));
@@ -546,10 +576,8 @@ export function AdminUsersPanel({ users, stats }: { users: AdminUserRow[]; stats
       return next;
     });
     try {
-      const response = await fetch(`/admin/api/records/user-detail?userId=${encodeURIComponent(userId)}`);
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(typeof payload.error === "string" ? payload.error : "加载失败");
-      setDetailsByUserId((current) => ({ ...current, [userId]: payload.detail.user as AdminUserRow }));
+      const detail = await fetchUserDetail(userId, "records");
+      setDetailsByUserId((current) => ({ ...current, [userId]: detail }));
     } catch (error) {
       setDetailErrors((current) => ({ ...current, [userId]: error instanceof Error ? error.message : "加载失败" }));
     } finally {
@@ -561,7 +589,71 @@ export function AdminUsersPanel({ users, stats }: { users: AdminUserRow[]; stats
     }
   }
 
+  async function openHistoryDialog(userId: string) {
+    const existingDetail = detailsByUserId[userId];
+    if (existingDetail?.conversations.some((conversation) => conversation.messages.length > 0)) {
+      setHistoryUser(existingDetail);
+      return;
+    }
+
+    setLoadingUserIds((current) => new Set(current).add(userId));
+    setLoadingDialogTitle("正在加载历史对话...");
+    setDetailErrors((current) => {
+      const next = { ...current };
+      delete next[userId];
+      return next;
+    });
+
+    try {
+      const detail = await fetchUserDetail(userId, "full");
+      setDetailsByUserId((current) => ({ ...current, [userId]: detail }));
+      setHistoryUser(detail);
+    } catch (error) {
+      setDetailErrors((current) => ({ ...current, [userId]: error instanceof Error ? error.message : "加载失败" }));
+    } finally {
+      setLoadingUserIds((current) => {
+        const next = new Set(current);
+        next.delete(userId);
+        return next;
+      });
+      setLoadingDialogTitle(null);
+    }
+  }
+
+  async function openMediaDialogForUser(userId: string, mediaType: "image" | "upload_image" | "video" | "asset_image") {
+    const existingDetail = detailsByUserId[userId];
+    const hasFullMedia = Boolean(existingDetail && (existingDetail.mediaItems.length > 0 || existingDetail.assetMediaItems.length > 0));
+    if (hasFullMedia && existingDetail) {
+      setMediaDialog({ user: existingDetail, mediaType });
+      return;
+    }
+
+    setLoadingUserIds((current) => new Set(current).add(userId));
+    setLoadingDialogTitle("正在加载媒体列表...");
+    setDetailErrors((current) => {
+      const next = { ...current };
+      delete next[userId];
+      return next;
+    });
+
+    try {
+      const detail = await fetchUserDetail(userId, "full");
+      setDetailsByUserId((current) => ({ ...current, [userId]: detail }));
+      setMediaDialog({ user: detail, mediaType });
+    } catch (error) {
+      setDetailErrors((current) => ({ ...current, [userId]: error instanceof Error ? error.message : "加载失败" }));
+    } finally {
+      setLoadingUserIds((current) => {
+        const next = new Set(current);
+        next.delete(userId);
+        return next;
+      });
+      setLoadingDialogTitle(null);
+    }
+  }
+
   function toggleExpandedUser(userId: string) {
+    if (isDetailLoading && !loadingUserIds.has(userId)) return;
     setExpandedUserIds((current) => {
       const next = new Set(current);
       if (next.has(userId)) {
@@ -672,13 +764,14 @@ export function AdminUsersPanel({ users, stats }: { users: AdminUserRow[]; stats
                   const expandedUser = detailUser ?? user;
                   const isLoadingDetail = loadingUserIds.has(user.id);
                   const detailError = detailErrors[user.id];
+                  const isRowDisabled = isDetailLoading && !isLoadingDetail;
                   const loginPlace = getLoginPlace(user);
 
                   return (
                     <Fragment key={user.id}>
-                      <tr className="cursor-pointer text-[#333333] transition hover:bg-[#fcfcfc]" onClick={() => toggleExpandedUser(user.id)}>
+                      <tr className={`text-[#333333] transition ${isRowDisabled ? "cursor-not-allowed opacity-55" : "cursor-pointer hover:bg-[#fcfcfc]"}`} onClick={() => toggleExpandedUser(user.id)}>
                         <td className="border-b border-[#f2f2f2] py-3 pl-6 pr-0 text-left">
-                          <button type="button" onClick={(event) => { event.stopPropagation(); toggleExpandedUser(user.id); }} className="inline-flex h-7 w-7 items-center justify-center rounded-[7px] text-[#777777] transition hover:bg-[#f2f2f2] hover:text-[#111111]" aria-label={isExpanded ? "收起用户详情" : "展开用户详情"}>
+                          <button type="button" disabled={isRowDisabled} onClick={(event) => { event.stopPropagation(); toggleExpandedUser(user.id); }} className="inline-flex h-7 w-7 items-center justify-center rounded-[7px] text-[#777777] transition hover:bg-[#f2f2f2] hover:text-[#111111] disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-[#777777]" aria-label={isExpanded ? "收起用户详情" : "展开用户详情"}>
                             {isExpanded ? <RiArrowDownSLine className="h-5 w-5" /> : <RiArrowRightSLine className="h-5 w-5" />}
                           </button>
                         </td>
@@ -726,7 +819,7 @@ export function AdminUsersPanel({ users, stats }: { users: AdminUserRow[]; stats
                       {isExpanded ? (
                         <tr className="bg-[#fbfbfb]">
                           <td colSpan={8} className="border-b border-[#f2f2f2] px-4 py-4">
-                            {isLoadingDetail ? <div className="px-3 py-8 text-center text-[13px] text-[#999999]">正在加载用户详情...</div> : detailError ? <div className="px-3 py-8 text-center text-[13px] text-red-500">{detailError}</div> : (
+                            {isLoadingDetail ? <AdminDetailLoading label="正在加载用户详情..." /> : detailError ? <div className="px-3 py-8 text-center text-[13px] text-red-500">{detailError}</div> : (
                             <div className="grid grid-cols-4 gap-[5px] px-1 py-1 text-left">
                               <div className="space-y-px">
                                 <DetailItem label="登录帐号" value={expandedUser.email} />
@@ -748,10 +841,10 @@ export function AdminUsersPanel({ users, stats }: { users: AdminUserRow[]; stats
                                 <DetailItem label="预览滚轮" value={`缩放${yesNo(expandedUser.previewWheelZoom)} / 翻页${yesNo(expandedUser.previewWheelFlip)}`} />
                               </div>
                               <div className="space-y-px">
-                                <DetailItem label="历史对话" value={formatNumber(expandedUser.conversationCount)} onClick={() => setHistoryUser(expandedUser)} />
-                                <DetailItem label="对话流图片" value={formatNumber(expandedUser.mediaItems.filter((item) => item.type === "image" && !item.isUploadedAsset).length)} onClick={() => setMediaDialog({ user: expandedUser, mediaType: "image" })} />
-                                <DetailItem label="对话流视频" value={formatNumber(expandedUser.generatedVideoCount)} onClick={() => setMediaDialog({ user: expandedUser, mediaType: "video" })} />
-                                <DetailItem label="资产库图片" value={formatNumber(expandedUser.assetMediaItems.length)} onClick={() => setMediaDialog({ user: expandedUser, mediaType: "asset_image" })} />
+                                <DetailItem label="历史对话" value={formatNumber(expandedUser.conversationCount)} onClick={() => void openHistoryDialog(expandedUser.id)} />
+                                <DetailItem label="对话流图片" value={formatNumber(expandedUser.conversationImageCount ?? expandedUser.mediaItems.filter((item) => item.type === "image" && !item.isUploadedAsset).length)} onClick={() => void openMediaDialogForUser(expandedUser.id, "image")} />
+                                <DetailItem label="对话流视频" value={formatNumber(expandedUser.conversationVideoCount ?? expandedUser.generatedVideoCount)} onClick={() => void openMediaDialogForUser(expandedUser.id, "video")} />
+                                <DetailItem label="资产库图片" value={formatNumber(expandedUser.assetImageCount ?? expandedUser.assetMediaItems.length)} onClick={() => void openMediaDialogForUser(expandedUser.id, "asset_image")} />
                                 <DetailItem label="工作区保存" value={expandedUser.workspaceSaved ? expandedUser.workspaceUpdatedAtLabel : "未保存"} />
                               </div>
                               <div className="space-y-px">
@@ -799,6 +892,7 @@ export function AdminUsersPanel({ users, stats }: { users: AdminUserRow[]; stats
 
       {historyUser ? <AdminHistoryDialog user={historyUser} onClose={() => setHistoryUser(null)} /> : null}
       {mediaDialog ? <AdminMediaDialog user={mediaDialog.user} mediaType={mediaDialog.mediaType} onClose={() => setMediaDialog(null)} /> : null}
+      {loadingDialogTitle ? <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/42 px-8 py-8 backdrop-blur-[4px]"><div className="w-[360px] rounded-[12px] bg-white shadow-[0_24px_80px_rgba(0,0,0,0.22)]"><AdminDetailLoading label={loadingDialogTitle} /></div></div> : null}
     </>
   );
 }

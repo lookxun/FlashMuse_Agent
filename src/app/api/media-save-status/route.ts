@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getMediaSaveStatuses } from "@/lib/media-save-queue";
 import { getCurrentUser } from "@/lib/auth";
+import { canonicalizeSavedMediaJobForUser } from "@/lib/media-assets";
 
 export async function POST(request: Request) {
   try {
@@ -8,6 +9,7 @@ export async function POST(request: Request) {
     const urls = Array.isArray(body.urls) ? body.urls.filter((url): url is string => typeof url === "string") : [];
     const user = await getCurrentUser();
     const jobs = await getMediaSaveStatuses(urls, user?.id);
+    if (user) await Promise.all(jobs.map((job) => canonicalizeSavedMediaJobForUser(user.id, job)));
 
     return NextResponse.json({
       jobs: jobs.map((job) => ({

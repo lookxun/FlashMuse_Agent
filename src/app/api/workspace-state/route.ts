@@ -8,6 +8,8 @@ import { DEFAULT_WORKSPACE_SESSION_LIMIT, getWorkspaceSessionMessages, stripSess
 
 export const runtime = "nodejs";
 
+const UPLOAD_IMAGE_PROMPT_PLACEHOLDER = "上传图片";
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -88,10 +90,42 @@ function getPositiveInteger(value: string | null, fallback: number, max: number)
 function getWorkspaceShellState(state: unknown) {
   if (!isRecord(state)) return {};
   const shell: Record<string, unknown> = {};
-  (["activePanel", "activeSessionId", "assetFilter", "assetScrollTopByFilter", "activeWorkflowId", "nextConversationNumber", "inputSettings", "intentMemoryRules", "feedbackLogs"] as const).forEach((key) => {
+  (["activePanel", "activeSessionId", "assetFilter", "assetScrollTopByFilter", "workflowItems", "activeWorkflowId", "nextConversationNumber", "nextWorkflowNumber", "inputSettings", "intentMemoryRules", "feedbackLogs"] as const).forEach((key) => {
     if (key in state) shell[key] = state[key];
   });
   return shell;
+}
+
+type WorkspaceSessionListRow = {
+  sessionId: string;
+  title: string;
+  updatedAt: Date;
+  deletedAt: Date | null;
+  summaryJson: Prisma.JsonValue | null;
+  usageSummary: Prisma.JsonValue | null;
+  memorySummary: Prisma.JsonValue | null;
+};
+
+async function getOrderedWorkspaceSessionRows(userId: string, offset: number, limit: number) {
+  const rows = await prisma.workspaceSession.findMany({
+    where: { userId, deletedAt: null },
+    select: { sessionId: true, title: true, updatedAt: true, deletedAt: true, summaryJson: true, usageSummary: true, memorySummary: true },
+  });
+  const latestMessages = rows.length > 0
+    ? await prisma.workspaceMessage.groupBy({
+        by: ["sessionId"],
+        where: { userId, sessionId: { in: rows.map((row) => row.sessionId) } },
+        _max: { createdAt: true },
+      })
+    : [];
+  const latestBySession = new Map(latestMessages.map((row) => [row.sessionId, row._max.createdAt?.getTime() ?? 0]));
+  const ordered = rows.sort((left, right) => {
+    const rightTime = latestBySession.get(right.sessionId) || right.updatedAt.getTime();
+    const leftTime = latestBySession.get(left.sessionId) || left.updatedAt.getTime();
+    if (rightTime !== leftTime) return rightTime - leftTime;
+    return right.sessionId.localeCompare(left.sessionId);
+  });
+  return ordered.slice(offset, offset + limit + 1) as WorkspaceSessionListRow[];
 }
 
 function getAssetMergeKey(asset: unknown) {
@@ -127,6 +161,14 @@ function getMediaModelDisplayName(model: string | null | undefined) {
   return labels[model] ?? model.replace(/^byteplus:(conversation-image|video)\./, "").replace(/^[^/]+\//, "");
 }
 
+function stripBytePlusReviewAttemptMarker(value: string | null | undefined) {
+  return typeof value === "string" ? value.replace(/^__byteplus_review_attempts=\d+__\s*/, "") : undefined;
+}
+
+function isUploadPromptPlaceholder(value: string | null | undefined) {
+  return value === UPLOAD_IMAGE_PROMPT_PLACEHOLDER || value === "资产库上传" || value === "对话流上传";
+}
+
 function normalizePreviewMetaForDisplay(value: Prisma.JsonValue | null, fallbackModel: string | null | undefined) {
   if (!isRecord(value)) return undefined;
   const modelLabel = typeof value.modelLabel === "string" ? value.modelLabel : fallbackModel || "";
@@ -139,6 +181,7 @@ function categoryToLegacyType(value: unknown) {
 
 function mediaStateToLegacyAsset(item: {
   id: string;
+  sortOrder: number | null;
   currentName: string | null;
   currentCategory: string;
   previousCategory: string | null;
@@ -169,6 +212,8 @@ function mediaStateToLegacyAsset(item: {
     height: number | null;
     conversationId: string | null;
     messageId: string | null;
+    workflowId: string | null;
+    workflowNodeId: string | null;
     createdAt: Date;
     firstSeenAt: Date;
     systemName: string | null;
@@ -178,9 +223,11 @@ function mediaStateToLegacyAsset(item: {
 }) {
   const media = item.mediaAsset;
   const type = categoryToLegacyType(item.deletedAt ? "trash" : item.currentCategory);
-  const sourcePrompt = media.reversePrompt || media.sourcePrompt || (media.sourceKind.includes("upload") ? "资产库上传" : "");
+  const isUploadCategory = item.currentCategory === "conversation_uploads" || item.currentCategory === "workflow_uploads";
+  const sourcePrompt = media.reversePrompt || media.sourcePrompt || (isUploadCategory || media.sourceKind.includes("upload") ? UPLOAD_IMAGE_PROMPT_PLACEHOLDER : "");
   const isAssetCategory = ["character_image", "scene_image", "shot_image"].includes(type);
-  const librarySource = isAssetCategory ? "asset_generation" : "conversation";
+  const isWorkflowCategory = item.currentCategory === "workflow_images" || item.currentCategory === "workflow_uploads" || item.currentCategory === "workflow_videos";
+  const librarySource = isAssetCategory ? "asset_generation" : isWorkflowCategory ? "workflow" : "conversation";
   const previewMeta = isRecord(media.previewMeta)
     ? normalizePreviewMetaForDisplay(media.previewMeta, media.model)
     : media.model || media.ratio || media.resolution || media.imageSize || media.videoDuration || media.width || media.height
@@ -204,11 +251,13 @@ function mediaStateToLegacyAsset(item: {
     posterUrl: media.posterUrl || undefined,
     librarySource,
     sourcePrompt,
-    promptSource: media.promptSource || (media.sourceKind.includes("upload") ? "upload" : "generated"),
+    promptSource: media.reversePrompt && !isUploadPromptPlaceholder(media.reversePrompt) ? "reverse" : isUploadCategory ? "upload" : media.promptSource || (media.sourceKind.includes("upload") ? "upload" : "generated"),
     lockedType: true,
     previewMeta,
-    sessionId: media.conversationId || "",
+    sessionId: media.conversationId || media.workflowId || "",
     messageId: media.messageId || undefined,
+    workflowId: media.workflowId || undefined,
+    workflowNodeId: media.workflowNodeId || undefined,
     previousType: item.previousCategory || undefined,
     createdAt: dbDateToMs(media.firstSeenAt) ?? dbDateToMs(media.createdAt) ?? Date.now(),
     deletedAt: dbDateToMs(item.deletedAt),
@@ -216,7 +265,7 @@ function mediaStateToLegacyAsset(item: {
     bytePlusAssetId: item.bytePlusAssetId || undefined,
     bytePlusAssetGroupId: item.bytePlusAssetGroupId || undefined,
     bytePlusAssetStatus: item.bytePlusAssetStatus || undefined,
-    bytePlusAssetError: item.bytePlusAssetError || undefined,
+    bytePlusAssetError: stripBytePlusReviewAttemptMarker(item.bytePlusAssetError),
     bytePlusAssetUpdatedAt: dbDateToMs(item.bytePlusAssetUpdatedAt),
   };
 }
@@ -234,7 +283,7 @@ function getAssetPageWhere(userId: string, filter: AssetFilterKey): Prisma.UserA
   if (filter === "workflow_uploads") return { ...visible, deletedAt: null, currentCategory: "workflow_uploads" };
   if (filter === "workflow_videos") return { ...visible, deletedAt: null, currentCategory: "workflow_videos" };
   if (filter === "workflow_images") return { ...visible, deletedAt: null, currentCategory: "workflow_images" };
-  if (filter === "conversation_uploads") return { ...visible, deletedAt: null, mediaAsset: { archivedAt: null, url: { contains: "/upload_image/" } } };
+  if (filter === "conversation_uploads") return { ...visible, deletedAt: null, OR: [{ currentCategory: "conversation_uploads" }, { mediaAsset: { archivedAt: null, url: { contains: "/upload_image/" } } }] };
   if (filter === "conversation_videos") return { ...visible, deletedAt: null, currentCategory: "conversation_videos" };
   if (filter === "conversation_images") return { ...visible, deletedAt: null, currentCategory: "conversation_images", NOT: { mediaAsset: { url: { contains: "/upload_image/" } } } };
   return { ...visible, deletedAt: null, currentCategory: "conversation_images", NOT: { mediaAsset: { url: { contains: "/upload_image/" } } } };
@@ -253,6 +302,7 @@ async function getAssetCounts(userId: string) {
     where: { userId, hiddenAt: null, mediaAsset: { archivedAt: null } },
     select: {
       id: true,
+      sortOrder: true,
       currentName: true,
       currentCategory: true,
       previousCategory: true,
@@ -289,6 +339,8 @@ async function getAssetCounts(userId: string) {
           systemName: true,
           initialName: true,
           legacyLibrarySource: true,
+          workflowId: true,
+          workflowNodeId: true,
         },
       },
     },
@@ -320,6 +372,7 @@ async function getAssetCounts(userId: string) {
 
 const assetRowSelect = {
   id: true,
+  sortOrder: true,
   currentName: true,
   currentCategory: true,
   previousCategory: true,
@@ -356,9 +409,30 @@ const assetRowSelect = {
       systemName: true,
       initialName: true,
       legacyLibrarySource: true,
+      workflowId: true,
+      workflowNodeId: true,
     },
   },
 } satisfies Prisma.UserAssetStateSelect;
+
+type AssetRow = Prisma.UserAssetStateGetPayload<{ select: typeof assetRowSelect }>;
+
+function getAssetSortTime(row: AssetRow) {
+  // Only timestamp-like sortOrder values are treated as explicit user ordering.
+  // Legacy small sortOrder values came from old arrays and must not override newest-first.
+  if (typeof row.sortOrder === "number" && row.sortOrder > 1_000_000_000) return row.sortOrder * 1000;
+  return row.mediaAsset.firstSeenAt.getTime() || row.mediaAsset.createdAt.getTime();
+}
+
+function sortAssetRows(rows: AssetRow[]) {
+  return rows.sort((left, right) => {
+    const diff = getAssetSortTime(right) - getAssetSortTime(left);
+    if (diff !== 0) return diff;
+    const createdDiff = right.mediaAsset.createdAt.getTime() - left.mediaAsset.createdAt.getTime();
+    if (createdDiff !== 0) return createdDiff;
+    return right.id.localeCompare(left.id);
+  });
+}
 
 function mergeWorkspaceAssets(existingState: unknown, nextState: unknown) {
   if (!isRecord(existingState) || !isRecord(nextState)) return nextState;
@@ -414,19 +488,17 @@ export async function GET(request: Request) {
   const offset = getPositiveInteger(params.get("offset"), 0, 100000);
 
   if (summaryOnly && historyOnly) {
-    const rows = await prisma.workspaceSession.findMany({
-      where: { userId: user.id, deletedAt: null },
-      orderBy: [{ updatedAt: "desc" }, { sessionId: "desc" }],
-      skip: offset,
-      take: limit + 1,
-      select: { sessionId: true, title: true, updatedAt: true, deletedAt: true, summaryJson: true, usageSummary: true, memorySummary: true },
-    });
+    const [rows, sessionsTotalCount] = await Promise.all([
+      getOrderedWorkspaceSessionRows(user.id, offset, limit),
+      prisma.workspaceSession.count({ where: { userId: user.id, deletedAt: null } }),
+    ]);
     const pageRows = rows.slice(0, limit);
     return Response.json({
       state: {
         sessions: pageRows.map((row) => workspaceSessionRowToPayload(row, false)),
         sessionsHasMore: rows.length > limit,
         sessionsNextOffset: offset + pageRows.length,
+        sessionsTotalCount,
       },
     });
   }
@@ -446,17 +518,16 @@ export async function GET(request: Request) {
       const rowsPromise = prisma.userAssetState.findMany({
         where: getAssetPageWhere(user.id, assetFilter),
         orderBy: [{ mediaAsset: { firstSeenAt: "desc" } }, { mediaAsset: { createdAt: "desc" } }, { id: "desc" }],
-        skip: assetOffset,
-        take: assetLimit + 1,
         select: assetRowSelect,
       });
       const [assetCounts, rows] = await Promise.all([countsPromise, rowsPromise]);
-      const pageRows = rows.slice(0, assetLimit);
+      const sortedRows = sortAssetRows(rows);
+      const pageRows = sortedRows.slice(assetOffset, assetOffset + assetLimit);
       return Response.json({
         state: {
           assets: pageRows.map(mediaStateToLegacyAsset),
           assetCounts,
-          assetsHasMore: rows.length > assetLimit,
+          assetsHasMore: sortedRows.length > assetOffset + assetLimit,
           assetsNextOffset: assetOffset + pageRows.length,
           assetFilter,
         },
@@ -471,7 +542,7 @@ export async function GET(request: Request) {
     if (assetRows.length > 0) {
       return Response.json({
         state: {
-          assets: assetRows.map(mediaStateToLegacyAsset),
+          assets: sortAssetRows(assetRows).map(mediaStateToLegacyAsset),
           assetCounts,
         },
       });
@@ -491,13 +562,10 @@ export async function GET(request: Request) {
   if (summaryOnly && panel === "chat") {
     const shellState = getWorkspaceShellState(baseState);
     const activeSessionId = typeof shellState.activeSessionId === "string" ? shellState.activeSessionId : "";
-    const rows = await prisma.workspaceSession.findMany({
-      where: { userId: user.id, deletedAt: null },
-      orderBy: [{ updatedAt: "desc" }, { sessionId: "desc" }],
-      skip: offset,
-      take: limit + 2,
-      select: { sessionId: true, title: true, updatedAt: true, deletedAt: true, summaryJson: true, usageSummary: true, memorySummary: true },
-    });
+    const [rows, sessionsTotalCount] = await Promise.all([
+      getOrderedWorkspaceSessionRows(user.id, offset, limit + 1),
+      prisma.workspaceSession.count({ where: { userId: user.id, deletedAt: null } }),
+    ]);
     const pageRows = rows.slice(0, limit);
     const activeRow = activeSessionId && !pageRows.some((row) => row.sessionId === activeSessionId)
       ? await prisma.workspaceSession.findFirst({
@@ -517,6 +585,7 @@ export async function GET(request: Request) {
         sessions: sessionRows.map((row) => workspaceSessionRowToPayload(row, row.sessionId === nextActiveSessionId, row.sessionId === nextActiveSessionId ? activeMessagePage?.messages : undefined, row.sessionId === nextActiveSessionId ? activeMessagePage : undefined)),
         sessionsHasMore: rows.length > limit + (activeRowWasFirstExtra ? 1 : 0),
         sessionsNextOffset: offset + pageRows.length,
+        sessionsTotalCount,
       },
     });
   }
@@ -533,13 +602,10 @@ export async function GET(request: Request) {
 
   if (summaryOnly) {
     const activeSessionId = isRecord(baseState) && typeof baseState.activeSessionId === "string" ? baseState.activeSessionId : "";
-    const rows = await prisma.workspaceSession.findMany({
-      where: { userId: user.id, deletedAt: null },
-      orderBy: [{ updatedAt: "desc" }, { sessionId: "desc" }],
-      skip: offset,
-      take: limit + 2,
-      select: { sessionId: true, title: true, updatedAt: true, deletedAt: true, summaryJson: true, usageSummary: true, memorySummary: true },
-    });
+    const [rows, sessionsTotalCount] = await Promise.all([
+      getOrderedWorkspaceSessionRows(user.id, offset, limit + 1),
+      prisma.workspaceSession.count({ where: { userId: user.id, deletedAt: null } }),
+    ]);
     const pageRows = rows.slice(0, limit);
     const activeRow = activeSessionId && !pageRows.some((row) => row.sessionId === activeSessionId)
       ? await prisma.workspaceSession.findFirst({
@@ -563,6 +629,7 @@ export async function GET(request: Request) {
       sessions,
       sessionsHasMore: hasMore,
       sessionsNextOffset: offset + pageRows.length,
+      sessionsTotalCount,
     };
 
     return Response.json({ state });
