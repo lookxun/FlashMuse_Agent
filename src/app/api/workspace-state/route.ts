@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { getCurrentUser, jsonError } from "@/lib/auth";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
@@ -5,10 +7,12 @@ import { getCreditSettings } from "@/lib/credits";
 import { migrateLegacyUserProfileFromWorkspace, stripUserProfileFromWorkspaceState } from "@/lib/user-profile";
 import { compactWorkspaceState, hasJsonChanged, replaceLegacyMediaUrls } from "@/lib/workspace-state-cleanup";
 import { DEFAULT_WORKSPACE_SESSION_LIMIT, getWorkspaceSessionMessages, stripSessionsFromWorkspaceState, upsertWorkspaceSessions, workspaceSessionRowToPayload } from "@/lib/workspace-sessions";
+import { getWorkspaceWorkflowPayloads, stripWorkflowsFromWorkspaceState, upsertWorkspaceWorkflows } from "@/lib/workspace-workflows";
 
 export const runtime = "nodejs";
 
 const UPLOAD_IMAGE_PROMPT_PLACEHOLDER = "上传图片";
+const OWN_GENERATED_HOST_RE = /^https?:\/\/(101\.47\.19\.109|101\.37\.129\.164|main\.venusface\.com|api\.venusface\.com|ali\.venusface\.com|static\.venusface\.com)\/generated\//i;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -109,23 +113,10 @@ type WorkspaceSessionListRow = {
 async function getOrderedWorkspaceSessionRows(userId: string, offset: number, limit: number) {
   const rows = await prisma.workspaceSession.findMany({
     where: { userId, deletedAt: null },
+    orderBy: [{ updatedAt: "desc" }, { sessionId: "desc" }],
     select: { sessionId: true, title: true, updatedAt: true, deletedAt: true, summaryJson: true, usageSummary: true, memorySummary: true },
   });
-  const latestMessages = rows.length > 0
-    ? await prisma.workspaceMessage.groupBy({
-        by: ["sessionId"],
-        where: { userId, sessionId: { in: rows.map((row) => row.sessionId) } },
-        _max: { createdAt: true },
-      })
-    : [];
-  const latestBySession = new Map(latestMessages.map((row) => [row.sessionId, row._max.createdAt?.getTime() ?? 0]));
-  const ordered = rows.sort((left, right) => {
-    const rightTime = latestBySession.get(right.sessionId) || right.updatedAt.getTime();
-    const leftTime = latestBySession.get(left.sessionId) || left.updatedAt.getTime();
-    if (rightTime !== leftTime) return rightTime - leftTime;
-    return right.sessionId.localeCompare(left.sessionId);
-  });
-  return ordered.slice(offset, offset + limit + 1) as WorkspaceSessionListRow[];
+  return rows.slice(offset, offset + limit + 1) as WorkspaceSessionListRow[];
 }
 
 function getAssetMergeKey(asset: unknown) {
@@ -173,6 +164,24 @@ function normalizePreviewMetaForDisplay(value: Prisma.JsonValue | null, fallback
   if (!isRecord(value)) return undefined;
   const modelLabel = typeof value.modelLabel === "string" ? value.modelLabel : fallbackModel || "";
   return { ...value, modelLabel: getMediaModelDisplayName(modelLabel) };
+}
+
+function getCommonRatioLabel(width: number, height: number) {
+  const commonRatios: Array<[string, number]> = [["16:9", 16 / 9], ["21:9", 21 / 9], ["9:16", 9 / 16], ["4:3", 4 / 3], ["3:4", 3 / 4], ["1:1", 1]];
+  const ratio = width / height;
+  const match = commonRatios.find(([, value]) => Math.abs(ratio - value) / value < 0.025);
+  if (match) return match[0];
+  const gcd = (a: number, b: number): number => (b === 0 ? a : gcd(b, a % b));
+  const divisor = gcd(width, height);
+  return `${Math.round(width / divisor)}:${Math.round(height / divisor)}`;
+}
+
+function getImageResolutionFromDimensions(width: number | null | undefined, height: number | null | undefined) {
+  if (!width || !height) return undefined;
+  const maxSide = Math.max(width, height);
+  if (maxSide >= 3500) return "4K";
+  if (maxSide >= 1900) return "2K";
+  return "1K";
 }
 
 function categoryToLegacyType(value: unknown) {
@@ -228,14 +237,15 @@ function mediaStateToLegacyAsset(item: {
   const isAssetCategory = ["character_image", "scene_image", "shot_image"].includes(type);
   const isWorkflowCategory = item.currentCategory === "workflow_images" || item.currentCategory === "workflow_uploads" || item.currentCategory === "workflow_videos";
   const librarySource = isAssetCategory ? "asset_generation" : isWorkflowCategory ? "workflow" : "conversation";
+  const isWorkflowTemporaryName = isWorkflowCategory && (item.currentName === "图片生成" || item.currentName === "视频生成");
   const previewMeta = isRecord(media.previewMeta)
     ? normalizePreviewMetaForDisplay(media.previewMeta, media.model)
     : media.model || media.ratio || media.resolution || media.imageSize || media.videoDuration || media.width || media.height
       ? {
           modelLabel: getMediaModelDisplayName(media.model),
-          ratio: media.ratio || "-",
+          ratio: media.width && media.height ? getCommonRatioLabel(media.width, media.height) : media.ratio || "-",
           sizeText: media.width && media.height ? `${media.width} × ${media.height}` : media.imageSize || "-",
-          resolution: media.resolution || media.imageSize || "-",
+          resolution: media.resolution || media.imageSize || getImageResolutionFromDimensions(media.width, media.height) || "-",
           duration: media.videoDuration || undefined,
           mode: media.mediaType === "video" ? "video" : "image",
         }
@@ -244,7 +254,7 @@ function mediaStateToLegacyAsset(item: {
     id: item.id,
     mediaId: media.id,
     type,
-    name: item.currentName || media.initialName || media.systemName || "未命名资产",
+    name: isWorkflowTemporaryName ? media.systemName || media.initialName || item.currentName || "未命名资产" : item.currentName || media.initialName || media.systemName || "未命名资产",
     systemName: media.systemName || media.initialName || undefined,
     url: media.url,
     thumbnailUrl: media.thumbnailUrl || undefined,
@@ -297,6 +307,14 @@ function isLegacyUploadedAsset(asset: ReturnType<typeof mediaStateToLegacyAsset>
   return /\/generated\/(?:users\/[^/]+\/)?upload_image\//.test(asset.url);
 }
 
+function isVisiblePersistedMediaUrl(url: string) {
+  const ownGenerated = url.match(OWN_GENERATED_HOST_RE);
+  const generatedPath = ownGenerated ? url.slice(url.indexOf("/generated/")) : url;
+  if (/^https?:\/\//i.test(url) && !ownGenerated) return false;
+  if (generatedPath.startsWith("/generated/")) return existsSync(join(process.cwd(), "public", generatedPath.replace(/^\//, "")));
+  return true;
+}
+
 async function getAssetCounts(userId: string) {
   const rows = await prisma.userAssetState.findMany({
     where: { userId, hiddenAt: null, mediaAsset: { archivedAt: null } },
@@ -346,7 +364,7 @@ async function getAssetCounts(userId: string) {
     },
   });
   const counts: Record<string, number> = { character_image: 0, scene_image: 0, shot_image: 0, trash: 0, conversation_images: 0, conversation_uploads: 0, conversation_videos: 0, workflow_images: 0, workflow_uploads: 0, workflow_videos: 0, asset_generation: 0, conversation: 0, workflow: 0 };
-  for (const row of rows) {
+  for (const row of rows.filter((item) => isVisiblePersistedMediaUrl(item.mediaAsset.url))) {
     const asset = mediaStateToLegacyAsset(row);
     if (asset.type === "trash" || asset.deletedAt) {
       counts.trash += 1;
@@ -437,7 +455,6 @@ function sortAssetRows(rows: AssetRow[]) {
 function mergeWorkspaceAssets(existingState: unknown, nextState: unknown) {
   if (!isRecord(existingState) || !isRecord(nextState)) return nextState;
   const preservedState: Record<string, unknown> = { ...nextState };
-  if (Array.isArray(existingState.assets) && !("assets" in nextState)) preservedState.assets = existingState.assets;
   if (Array.isArray(existingState.assetGenerateJobs) && !("assetGenerateJobs" in nextState)) preservedState.assetGenerateJobs = existingState.assetGenerateJobs;
   const nextRecord = preservedState;
   if (!Array.isArray(existingState.assets) || !Array.isArray(nextRecord.assets)) return nextRecord;
@@ -467,6 +484,12 @@ function mergeWorkspaceAssets(existingState: unknown, nextState: unknown) {
   if (restoredAssets.length === 0) return nextRecord;
 
   return { ...nextRecord, assets: [...nextAssets, ...restoredAssets] };
+}
+
+function stripLegacyAssetsFromWorkspaceState(state: unknown) {
+  if (!isRecord(state)) return state;
+  const { assets: _assets, ...rest } = state;
+  return rest;
 }
 
 async function getWorkspaceStateWithoutLegacySessions(userId: string, state: unknown) {
@@ -521,7 +544,7 @@ export async function GET(request: Request) {
         select: assetRowSelect,
       });
       const [assetCounts, rows] = await Promise.all([countsPromise, rowsPromise]);
-      const sortedRows = sortAssetRows(rows);
+      const sortedRows = sortAssetRows(rows.filter((item) => isVisiblePersistedMediaUrl(item.mediaAsset.url)));
       const pageRows = sortedRows.slice(assetOffset, assetOffset + assetLimit);
       return Response.json({
         state: {
@@ -539,22 +562,10 @@ export async function GET(request: Request) {
       select: assetRowSelect,
     });
     const assetCounts = await countsPromise;
-    if (assetRows.length > 0) {
-      return Response.json({
-        state: {
-          assets: sortAssetRows(assetRows).map(mediaStateToLegacyAsset),
-          assetCounts,
-        },
-      });
-    }
-    const cleanState = isRecord(baseState) ? replaceLegacyMediaUrls(stripUserProfileFromWorkspaceState(baseState)) : {};
-    const state = isRecord(cleanState) ? cleanState : {};
     return Response.json({
       state: {
-        assets: Array.isArray(state.assets) ? state.assets : [],
-        assetGenerateJobs: Array.isArray(state.assetGenerateJobs) ? state.assetGenerateJobs : [],
-        assetFilter: state.assetFilter,
-        assetScrollTopByFilter: state.assetScrollTopByFilter,
+        assets: sortAssetRows(assetRows.filter((item) => isVisiblePersistedMediaUrl(item.mediaAsset.url))).map(mediaStateToLegacyAsset),
+        assetCounts,
       },
     });
   }
@@ -562,9 +573,10 @@ export async function GET(request: Request) {
   if (summaryOnly && panel === "chat") {
     const shellState = getWorkspaceShellState(baseState);
     const activeSessionId = typeof shellState.activeSessionId === "string" ? shellState.activeSessionId : "";
-    const [rows, sessionsTotalCount] = await Promise.all([
+    const [rows, sessionsTotalCount, workflowItems] = await Promise.all([
       getOrderedWorkspaceSessionRows(user.id, offset, limit + 1),
       prisma.workspaceSession.count({ where: { userId: user.id, deletedAt: null } }),
+      getWorkspaceWorkflowPayloads(user.id, baseState),
     ]);
     const pageRows = rows.slice(0, limit);
     const activeRow = activeSessionId && !pageRows.some((row) => row.sessionId === activeSessionId)
@@ -581,6 +593,7 @@ export async function GET(request: Request) {
     return Response.json({
       state: {
         ...shellState,
+        workflowItems,
         activeSessionId: nextActiveSessionId,
         sessions: sessionRows.map((row) => workspaceSessionRowToPayload(row, row.sessionId === nextActiveSessionId, row.sessionId === nextActiveSessionId ? activeMessagePage?.messages : undefined, row.sessionId === nextActiveSessionId ? activeMessagePage : undefined)),
         sessionsHasMore: rows.length > limit + (activeRowWasFirstExtra ? 1 : 0),
@@ -592,19 +605,20 @@ export async function GET(request: Request) {
 
   if (workspace?.state) {
     const cleaned = await getWorkspaceStateWithoutLegacySessions(user.id, workspace.state);
-    baseState = cleaned.state;
+    baseState = stripWorkflowsFromWorkspaceState(cleaned.state);
     if (!isRecord(cleaned.cleanState) || !Array.isArray(cleaned.cleanState.sessions)) {
-      if (hasJsonChanged(workspace.state, cleaned.state)) {
-        await prisma.userWorkspaceState.update({ where: { userId: user.id }, data: { state: cleaned.state as Prisma.InputJsonValue } });
+      if (hasJsonChanged(workspace.state, baseState)) {
+        await prisma.userWorkspaceState.update({ where: { userId: user.id }, data: { state: baseState as Prisma.InputJsonValue } });
       }
     }
   }
 
   if (summaryOnly) {
     const activeSessionId = isRecord(baseState) && typeof baseState.activeSessionId === "string" ? baseState.activeSessionId : "";
-    const [rows, sessionsTotalCount] = await Promise.all([
+    const [rows, sessionsTotalCount, workflowItems] = await Promise.all([
       getOrderedWorkspaceSessionRows(user.id, offset, limit + 1),
       prisma.workspaceSession.count({ where: { userId: user.id, deletedAt: null } }),
+      getWorkspaceWorkflowPayloads(user.id, workspace?.state),
     ]);
     const pageRows = rows.slice(0, limit);
     const activeRow = activeSessionId && !pageRows.some((row) => row.sessionId === activeSessionId)
@@ -625,6 +639,7 @@ export async function GET(request: Request) {
     );
     const state = {
       ...(isRecord(baseState) ? baseState : {}),
+      workflowItems,
       activeSessionId: nextActiveSessionId,
       sessions,
       sessionsHasMore: hasMore,
@@ -642,10 +657,11 @@ export async function GET(request: Request) {
   });
   if (allRows.length > 0) {
     const sessions = await applyLedgerUsageSummariesToSessions(user.id, allRows.map((row) => workspaceSessionRowToPayload(row, true)));
-    return Response.json({ state: { ...(isRecord(baseState) ? baseState : {}), sessions } });
+    const workflowItems = await getWorkspaceWorkflowPayloads(user.id, workspace?.state);
+    return Response.json({ state: { ...(isRecord(baseState) ? baseState : {}), workflowItems, sessions } });
   }
 
-  if (baseState) return Response.json({ state: { ...(isRecord(baseState) ? baseState : {}), sessions: [], sessionsHasMore: false, sessionsNextOffset: 0 } });
+  if (baseState) return Response.json({ state: { ...(isRecord(baseState) ? baseState : {}), workflowItems: await getWorkspaceWorkflowPayloads(user.id, workspace?.state), sessions: [], sessionsHasMore: false, sessionsNextOffset: 0 } });
 
   return Response.json({ state: null });
 }
@@ -658,8 +674,13 @@ export async function PUT(request: Request) {
   if (!body || typeof body !== "object") return jsonError("工作区数据无效");
 
   await migrateLegacyUserProfileFromWorkspace(user.id, body);
-  if (isRecord(body)) await upsertWorkspaceSessions(user.id, body.sessions);
-  const cleanBody = stripSessionsFromWorkspaceState(compactWorkspaceState(replaceLegacyMediaUrls(stripUserProfileFromWorkspaceState(body))));
+  if (isRecord(body)) {
+    await Promise.all([
+      upsertWorkspaceSessions(user.id, body.sessions),
+      upsertWorkspaceWorkflows(user.id, body.workflowItems, { activePanel: body.activePanel }),
+    ]);
+  }
+  const cleanBody = stripLegacyAssetsFromWorkspaceState(stripWorkflowsFromWorkspaceState(stripSessionsFromWorkspaceState(compactWorkspaceState(replaceLegacyMediaUrls(stripUserProfileFromWorkspaceState(body))))));
   const existingWorkspace = await prisma.userWorkspaceState.findUnique({ where: { userId: user.id }, select: { state: true } });
   const safeBody = mergeWorkspaceAssets(existingWorkspace?.state, cleanBody);
 

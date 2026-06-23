@@ -11,18 +11,40 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function mediaTypeFromUrl(url: string) {
+  if (/\.(mp3|wav|m4a|aac|ogg)(\?|#|$)/i.test(url)) return "audio";
+  if (/\.(pdf|txt|md|csv|doc|docx|xls|xlsx)(\?|#|$)/i.test(url)) return "document";
   return /\.(mp4|webm|mov|m4v)(\?|#|$)/i.test(url) ? "video" : "image";
 }
 
 function currentCategoryFromBody(value: unknown) {
-  return typeof value === "string" && ["character_image", "scene_image", "shot_image", "conversation_images", "conversation_uploads", "conversation_videos", "workflow_images", "workflow_uploads", "workflow_videos"].includes(value) ? value : "conversation_images";
+  return typeof value === "string" && ["character_image", "scene_image", "shot_image", "conversation_images", "conversation_uploads", "conversation_videos", "conversation_upload_videos", "conversation_upload_audios", "conversation_upload_documents", "conversation_upload_files", "workflow_images", "workflow_uploads", "workflow_videos"].includes(value) ? value : "conversation_images";
 }
 
 function sourceKindFromCategory(category: string, mediaType: string, promptSource: string | undefined) {
   if (category === "character_image" || category === "scene_image" || category === "shot_image") return mediaType === "video" ? "asset_generation_video" : promptSource === "upload" ? "asset_upload_image" : "asset_generation_image";
   if (category.startsWith("workflow_")) return category.includes("upload") ? "workflow_upload" : "workflow_generation";
+  if (category === "conversation_upload_videos") return "conversation_upload_video";
+  if (category === "conversation_upload_audios") return "conversation_upload_audio";
+  if (category === "conversation_upload_documents") return "conversation_upload_document";
+  if (category === "conversation_upload_files") return "conversation_upload_file";
   if (category === "conversation_uploads") return mediaType === "video" ? "conversation_upload_video" : "conversation_upload_image";
   return mediaType === "video" ? "conversation_generation_video" : "conversation_generation_image";
+}
+
+function workspaceKindFromInput(category: string, body: Record<string, unknown>) {
+  if (typeof body.workflowId === "string" || category.startsWith("workflow_")) return "workflow";
+  if (category === "character_image" || category === "scene_image" || category === "shot_image") return "asset_generation";
+  return "conversation";
+}
+
+function sourceDetailFromBody(value: unknown) {
+  if (typeof value === "string") return value.trim() || undefined;
+  if (!isRecord(value)) return undefined;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return undefined;
+  }
 }
 
 export async function POST(request: Request) {
@@ -46,7 +68,10 @@ export async function POST(request: Request) {
   const mediaType = typeof body.mediaType === "string" ? body.mediaType : mediaTypeFromUrl(normalizedUrl);
   const promptSource = typeof body.promptSource === "string" ? body.promptSource : undefined;
   const sourceKind = sourceKindFromCategory(currentCategory, mediaType, promptSource);
+  const workspaceKind = workspaceKindFromInput(currentCategory, body);
+  const workspaceId = workspaceKind === "workflow" && typeof body.workflowId === "string" ? body.workflowId : workspaceKind === "conversation" && typeof body.conversationId === "string" ? body.conversationId : undefined;
   const name = typeof body.name === "string" && body.name.trim() ? body.name.trim() : undefined;
+  const persistName = workspaceKind === "workflow" && (name === "图片生成" || name === "视频生成") ? undefined : name;
   const posterUrl = resolved.posterUrl;
   const thumbnailUrl = resolved.thumbnailUrl;
   const dimensions = isRecord(body.dimensions) ? body.dimensions : undefined;
@@ -55,6 +80,7 @@ export async function POST(request: Request) {
   const settings = isRecord(body.settings) ? body.settings : undefined;
   const settingsJson = settings as Prisma.InputJsonValue | undefined;
   const previewMetaJson = (isRecord(body.previewMeta) ? body.previewMeta : undefined) as Prisma.InputJsonValue | undefined;
+  const sourceDetail = sourceDetailFromBody(body.sourceDetail);
 
   const media = await prisma.mediaAsset.upsert({
     where: { userId_normalizedUrl: { userId: user.id, normalizedUrl } },
@@ -67,6 +93,7 @@ export async function POST(request: Request) {
       posterUrl,
       thumbnailUrl,
       sourceKind,
+      sourceDetail,
       sourcePrompt: typeof body.sourcePrompt === "string" ? body.sourcePrompt : undefined,
       promptSource,
       model: typeof body.model === "string" ? body.model : undefined,
@@ -78,13 +105,15 @@ export async function POST(request: Request) {
       previewMeta: previewMetaJson,
       width,
       height,
-      systemName: name,
-      initialName: name,
+      systemName: persistName,
+      initialName: persistName,
       initialCategory: currentCategory,
       conversationId: typeof body.conversationId === "string" ? body.conversationId : undefined,
       messageId: typeof body.messageId === "string" ? body.messageId : undefined,
       workflowId: typeof body.workflowId === "string" ? body.workflowId : undefined,
       workflowNodeId: typeof body.workflowNodeId === "string" ? body.workflowNodeId : undefined,
+      workspaceKind,
+      workspaceId,
       requestId: typeof body.requestId === "string" ? body.requestId : undefined,
       firstSeenAt: new Date(),
     },
@@ -95,6 +124,7 @@ export async function POST(request: Request) {
       posterUrl,
       thumbnailUrl,
       sourceKind,
+      sourceDetail,
       sourcePrompt: typeof body.sourcePrompt === "string" ? body.sourcePrompt : undefined,
       promptSource,
       model: typeof body.model === "string" ? body.model : undefined,
@@ -106,13 +136,15 @@ export async function POST(request: Request) {
       previewMeta: previewMetaJson,
       width,
       height,
-      systemName: name,
-      initialName: name,
+      systemName: persistName,
+      initialName: persistName,
       initialCategory: currentCategory,
       conversationId: typeof body.conversationId === "string" ? body.conversationId : undefined,
       messageId: typeof body.messageId === "string" ? body.messageId : undefined,
       workflowId: typeof body.workflowId === "string" ? body.workflowId : undefined,
       workflowNodeId: typeof body.workflowNodeId === "string" ? body.workflowNodeId : undefined,
+      workspaceKind,
+      workspaceId,
       requestId: typeof body.requestId === "string" ? body.requestId : undefined,
     },
     select: { id: true },
@@ -120,14 +152,15 @@ export async function POST(request: Request) {
 
   const existingState = await prisma.userAssetState.findUnique({
     where: { userId_mediaAssetId: { userId: user.id, mediaAssetId: media.id } },
-    select: { id: true, userRenamed: true, userRecategorized: true, lockedCategory: true },
+    select: { id: true, currentName: true, currentCategory: true, userRenamed: true, userRecategorized: true, lockedCategory: true },
   });
   if (existingState) {
     const shouldPreserveCategory = existingState.userRecategorized || existingState.lockedCategory;
+    const hasTemporaryWorkflowName = existingState.currentCategory.startsWith("workflow_") && (existingState.currentName === "图片生成" || existingState.currentName === "视频生成");
     await prisma.userAssetState.update({
       where: { id: existingState.id },
       data: {
-        ...(name && !existingState.userRenamed ? { currentName: name, userRenamed: true } : {}),
+        ...(persistName && (!existingState.userRenamed || hasTemporaryWorkflowName) ? { currentName: persistName, userRenamed: false } : {}),
         ...(shouldPreserveCategory ? {} : { currentCategory, userRecategorized: true, lockedCategory: true }),
         hiddenAt: null,
         hiddenReason: null,
@@ -139,11 +172,11 @@ export async function POST(request: Request) {
       data: {
         userId: user.id,
         mediaAssetId: media.id,
-        currentName: name,
+        currentName: persistName,
         currentCategory,
         originalCategory: currentCategory,
         lockedCategory: true,
-        userRenamed: Boolean(name),
+        userRenamed: Boolean(persistName),
         userRecategorized: true,
       },
     });
@@ -156,7 +189,7 @@ export async function POST(request: Request) {
 
 function stateCategoryFromBody(value: unknown, mediaUrl: string) {
   if (value === "conversation_image") return /\/generated\/(?:users\/[^/]+\/)?upload_image\//.test(mediaUrl) ? "conversation_uploads" : "conversation_images";
-  return typeof value === "string" && ["character_image", "scene_image", "shot_image", "conversation_images", "conversation_uploads", "conversation_videos", "workflow_images", "workflow_uploads", "workflow_videos"].includes(value) ? value : undefined;
+  return typeof value === "string" && ["character_image", "scene_image", "shot_image", "conversation_images", "conversation_uploads", "conversation_videos", "conversation_upload_videos", "conversation_upload_audios", "conversation_upload_documents", "conversation_upload_files", "workflow_images", "workflow_uploads", "workflow_videos"].includes(value) ? value : undefined;
 }
 
 export async function PATCH(request: Request) {
@@ -192,10 +225,12 @@ export async function PATCH(request: Request) {
     const fallbackCategory = stateCategoryFromBody(body.currentCategory, resolved.url) ?? (/\/generated\/(?:users\/[^/]+\/)?upload_image\//.test(resolved.url) ? "conversation_uploads" : mediaTypeFromUrl(resolved.url) === "video" ? "conversation_videos" : "conversation_images");
     const fallbackMediaType = mediaTypeFromUrl(resolved.url);
     const fallbackPromptSource = fallbackCategory.includes("upload") ? "upload" : "generated";
+    const fallbackWorkspaceKind = workspaceKindFromInput(fallbackCategory, body);
+    const fallbackWorkspaceId = fallbackWorkspaceKind === "workflow" && typeof body.workflowId === "string" ? body.workflowId : fallbackWorkspaceKind === "conversation" && typeof body.conversationId === "string" ? body.conversationId : undefined;
     const fallbackMedia = await prisma.mediaAsset.upsert({
       where: { userId_normalizedUrl: { userId: user.id, normalizedUrl: resolved.normalizedUrl } },
-      create: { userId: user.id, mediaType: fallbackMediaType, url: resolved.url, normalizedUrl: resolved.normalizedUrl, originalUrl: resolved.originalUrl, posterUrl: resolved.posterUrl, thumbnailUrl: resolved.thumbnailUrl, sourceKind: sourceKindFromCategory(fallbackCategory, fallbackMediaType, fallbackPromptSource), sourcePrompt: fallbackPromptSource === "upload" ? "上传图片" : undefined, promptSource: fallbackPromptSource, reversePrompt: reversePrompt || undefined, initialCategory: fallbackCategory, firstSeenAt: new Date() },
-      update: { mediaType: fallbackMediaType, url: resolved.url, originalUrl: resolved.originalUrl, posterUrl: resolved.posterUrl, thumbnailUrl: resolved.thumbnailUrl, reversePrompt: reversePrompt || undefined },
+      create: { userId: user.id, mediaType: fallbackMediaType, url: resolved.url, normalizedUrl: resolved.normalizedUrl, originalUrl: resolved.originalUrl, posterUrl: resolved.posterUrl, thumbnailUrl: resolved.thumbnailUrl, sourceKind: sourceKindFromCategory(fallbackCategory, fallbackMediaType, fallbackPromptSource), sourcePrompt: fallbackPromptSource === "upload" ? "上传图片" : undefined, promptSource: fallbackPromptSource, reversePrompt: reversePrompt || undefined, initialCategory: fallbackCategory, workspaceKind: fallbackWorkspaceKind, workspaceId: fallbackWorkspaceId, firstSeenAt: new Date() },
+      update: { mediaType: fallbackMediaType, url: resolved.url, originalUrl: resolved.originalUrl, posterUrl: resolved.posterUrl, thumbnailUrl: resolved.thumbnailUrl, workspaceKind: fallbackWorkspaceKind, workspaceId: fallbackWorkspaceId, reversePrompt: reversePrompt || undefined },
       select: { id: true },
     });
     const deletedAt = body.delete === true ? new Date() : null;

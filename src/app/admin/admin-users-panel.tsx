@@ -51,6 +51,7 @@ export type AdminMediaItem = {
   userName?: string;
   url: string;
   prompt: string;
+  promptConstraints?: string[];
   model: string;
   ratio: string;
   resolution: string;
@@ -319,6 +320,7 @@ export function AdminMediaDialog({ user, mediaType, onClose }: { user: AdminUser
                         </span>
                       ) : null}
                       {activeMedia.prompt || "暂无提示词"}
+                      {activeMedia.promptConstraints?.length ? <div className="mt-1 text-[13px] leading-6 text-[#999999]">{activeMedia.promptConstraints.join("，")}</div> : null}
                     </div>
                   </div>
                 </div>

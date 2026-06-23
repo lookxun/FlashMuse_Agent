@@ -106,6 +106,10 @@ function mergeMediaAssetPatch(keeper: Record<string, any>, duplicate: Record<str
     reversePrompt: keeper.reversePrompt || duplicate.reversePrompt,
     conversationId: keeper.conversationId || duplicate.conversationId,
     messageId: keeper.messageId || duplicate.messageId,
+    workflowId: keeper.workflowId || duplicate.workflowId,
+    workflowNodeId: keeper.workflowNodeId || duplicate.workflowNodeId,
+    workspaceKind: keeper.workspaceKind || duplicate.workspaceKind,
+    workspaceId: keeper.workspaceId || duplicate.workspaceId,
     firstSeenAt: keeper.firstSeenAt && duplicate.firstSeenAt && keeper.firstSeenAt < duplicate.firstSeenAt ? keeper.firstSeenAt : duplicate.firstSeenAt || keeper.firstSeenAt,
   } satisfies Prisma.MediaAssetUpdateInput;
 }

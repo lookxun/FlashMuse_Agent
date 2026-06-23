@@ -124,6 +124,7 @@ function mediaItemToFlowItem(item: AdminMediaItem, index: number, creditLookup?:
     isCostUnavailable: Boolean(creditItem && !creditItem.isChargeDisabled && creditItem.status !== "failed" && creditItem.credits === 0 && creditItem.usd === 0 && creditItem.cny === 0),
     isReversePrompt: item.isReversePrompt,
     promptText: item.prompt,
+    promptConstraints: item.promptConstraints,
     createdAtLabel: item.createdAtTs ? new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(item.createdAtTs)) : "-",
     createdAtTs: item.createdAtTs ?? 0,
   };

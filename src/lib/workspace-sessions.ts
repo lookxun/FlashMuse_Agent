@@ -74,6 +74,19 @@ function getDimension(value: unknown) {
   return Number.isFinite(width) && Number.isFinite(height) ? { width: Math.floor(width), height: Math.floor(height) } : undefined;
 }
 
+function getPromptDetail(value: unknown) {
+  if (!isRecord(value)) return undefined;
+  const prompt = getString(value.prompt).trim();
+  const constraints = Array.isArray(value.constraints) ? value.constraints.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim()) : [];
+  if (!prompt && constraints.length === 0) return undefined;
+  return { prompt, constraints };
+}
+
+function getPromptSourceDetail(detail: { constraints?: string[] } | undefined) {
+  const constraints = detail?.constraints?.filter(Boolean) ?? [];
+  return constraints.length > 0 ? JSON.stringify({ agentConstraints: constraints }) : undefined;
+}
+
 function getMessageImageUrls(message: Record<string, unknown>) {
   if (Array.isArray(message.imageResultSlots)) {
     const slots = message.imageResultSlots.filter(isRecord).filter((slot) => slot.type === "image").map((slot) => getString(slot.url)).filter(Boolean);
@@ -97,7 +110,7 @@ async function syncWorkspaceMessageMediaAssets(userId: string, sessionId: string
     const meta = isRecord(message.generationMeta) ? message.generationMeta : undefined;
     const settings = isRecord(meta?.settings) ? meta.settings : undefined;
     const mediaSystemNames = isRecord(message.mediaSystemNames) ? message.mediaSystemNames : undefined;
-    const items: Array<{ url: string; mediaType: "image" | "video"; category: string; sourceKind: string; sourcePrompt?: string; promptSource: string; name?: string; posterUrl?: string; width?: number; height?: number; videoDuration?: string }> = [];
+    const items: Array<{ url: string; mediaType: "image" | "video"; category: string; sourceKind: string; sourcePrompt?: string; sourceDetail?: string; promptSource: string; name?: string; posterUrl?: string; width?: number; height?: number; videoDuration?: string }> = [];
 
     if (role === "user") {
       for (const url of getMessageImageUrls(message).filter((item) => /\/generated\/(?:users\/[^/]+\/)?upload_image\//.test(normalizeMediaUrl(item)))) {
@@ -107,7 +120,9 @@ async function syncWorkspaceMessageMediaAssets(userId: string, sessionId: string
 
     if (role === "assistant") {
       const imagePrompts = isRecord(message.imagePrompts) ? message.imagePrompts : undefined;
+      const imagePromptDetails = isRecord(message.imagePromptDetails) ? message.imagePromptDetails : undefined;
       const videoPrompts = isRecord(message.videoPrompts) ? message.videoPrompts : undefined;
+      const videoPromptDetails = isRecord(message.videoPromptDetails) ? message.videoPromptDetails : undefined;
       const imageDimensions = isRecord(message.imageDimensions) ? message.imageDimensions : undefined;
       const videoDimensionsMap = isRecord(message.videoDimensionsMap) ? message.videoDimensionsMap : undefined;
       const videoPosters = isRecord(message.videoPosters) ? message.videoPosters : undefined;
@@ -123,12 +138,14 @@ async function syncWorkspaceMessageMediaAssets(userId: string, sessionId: string
 
       for (const url of getMessageImageUrls(message)) {
         const dim = getDimension(imageDimensions?.[url]);
-        items.push({ url, mediaType: "image", category: "conversation_images", sourceKind: "conversation_generation_image", sourcePrompt: getString(imagePrompts?.[url], originalPrompt), promptSource: "generated", width: dim?.width, height: dim?.height });
+        const detail = getPromptDetail(imagePromptDetails?.[url]);
+        items.push({ url, mediaType: "image", category: "conversation_images", sourceKind: "conversation_generation_image", sourcePrompt: detail?.prompt || getString(imagePrompts?.[url], originalPrompt), sourceDetail: getPromptSourceDetail(detail), promptSource: "generated", width: dim?.width, height: dim?.height });
       }
 
       for (const url of getMessageVideoUrls(message)) {
         const dim = getDimension(videoDimensionsMap?.[url]) || getDimension(message.videoDimensions);
-        items.push({ url, mediaType: "video", category: "conversation_videos", sourceKind: "conversation_generation_video", sourcePrompt: getString(videoPrompts?.[url], originalPrompt), promptSource: "generated", posterUrl: getString(videoPosters?.[url]), width: dim?.width, height: dim?.height, videoDuration: getString(settings?.duration) });
+        const detail = getPromptDetail(videoPromptDetails?.[url]);
+        items.push({ url, mediaType: "video", category: "conversation_videos", sourceKind: "conversation_generation_video", sourcePrompt: detail?.prompt || getString(videoPrompts?.[url], originalPrompt), sourceDetail: getPromptSourceDetail(detail), promptSource: "generated", posterUrl: getString(videoPosters?.[url]), width: dim?.width, height: dim?.height, videoDuration: getString(settings?.duration) });
       }
     }
 
@@ -139,8 +156,8 @@ async function syncWorkspaceMessageMediaAssets(userId: string, sessionId: string
       const systemName = getString(mediaSystemNames?.[item.url]) || item.name;
       const media = await prisma.mediaAsset.upsert({
         where: { userId_normalizedUrl: { userId, normalizedUrl } },
-        create: { userId, mediaType: item.mediaType || mediaTypeFromUrl(normalizedUrl), url: resolved.url, normalizedUrl, originalUrl: resolved.originalUrl, posterUrl: resolved.posterUrl || undefined, thumbnailUrl: resolved.thumbnailUrl || undefined, sourceKind: item.sourceKind, sourcePrompt: item.sourcePrompt, promptSource: item.promptSource, model: getString(meta?.model) || undefined, ratio: getString(settings?.ratio) || undefined, resolution: getString(settings?.resolution) || undefined, imageSize: getString(settings?.imageSize || settings?.size) || undefined, videoDuration: item.videoDuration || undefined, generationSettings: settings as Prisma.InputJsonValue | undefined, width: item.width, height: item.height, systemName: systemName || undefined, initialName: systemName || undefined, initialCategory: item.category, conversationId: sessionId, messageId, requestId: getString(message.requestId) || undefined, firstSeenAt: createdAt },
-        update: { mediaType: item.mediaType || mediaTypeFromUrl(normalizedUrl), url: resolved.url, originalUrl: resolved.originalUrl, posterUrl: resolved.posterUrl || undefined, thumbnailUrl: resolved.thumbnailUrl || undefined, sourcePrompt: item.sourcePrompt, promptSource: item.promptSource, model: getString(meta?.model) || undefined, ratio: getString(settings?.ratio) || undefined, resolution: getString(settings?.resolution) || undefined, imageSize: getString(settings?.imageSize || settings?.size) || undefined, videoDuration: item.videoDuration || undefined, generationSettings: settings as Prisma.InputJsonValue | undefined, width: item.width, height: item.height, systemName: systemName || undefined, initialName: systemName || undefined, conversationId: sessionId, messageId, requestId: getString(message.requestId) || undefined },
+        create: { userId, mediaType: item.mediaType || mediaTypeFromUrl(normalizedUrl), url: resolved.url, normalizedUrl, originalUrl: resolved.originalUrl, posterUrl: resolved.posterUrl || undefined, thumbnailUrl: resolved.thumbnailUrl || undefined, sourceKind: item.sourceKind, sourceDetail: item.sourceDetail, sourcePrompt: item.sourcePrompt, promptSource: item.promptSource, model: getString(meta?.model) || undefined, ratio: getString(settings?.ratio) || undefined, resolution: getString(settings?.resolution) || undefined, imageSize: getString(settings?.imageSize || settings?.size) || undefined, videoDuration: item.videoDuration || undefined, generationSettings: settings as Prisma.InputJsonValue | undefined, width: item.width, height: item.height, systemName: systemName || undefined, initialName: systemName || undefined, initialCategory: item.category, conversationId: sessionId, messageId, workspaceKind: "conversation", workspaceId: sessionId, requestId: getString(message.requestId) || undefined, firstSeenAt: createdAt },
+        update: { mediaType: item.mediaType || mediaTypeFromUrl(normalizedUrl), url: resolved.url, originalUrl: resolved.originalUrl, posterUrl: resolved.posterUrl || undefined, thumbnailUrl: resolved.thumbnailUrl || undefined, sourceDetail: item.sourceDetail, sourcePrompt: item.sourcePrompt, promptSource: item.promptSource, model: getString(meta?.model) || undefined, ratio: getString(settings?.ratio) || undefined, resolution: getString(settings?.resolution) || undefined, imageSize: getString(settings?.imageSize || settings?.size) || undefined, videoDuration: item.videoDuration || undefined, generationSettings: settings as Prisma.InputJsonValue | undefined, width: item.width, height: item.height, systemName: systemName || undefined, initialName: systemName || undefined, conversationId: sessionId, messageId, workspaceKind: "conversation", workspaceId: sessionId, requestId: getString(message.requestId) || undefined },
         select: { id: true },
       });
 
@@ -174,6 +191,7 @@ export async function upsertWorkspaceSessions(userId: string, sessions: unknown)
       if (!sessionId) return Promise.resolve();
 
       const baseData = {
+        workspaceKind: "conversation",
         title: typeof session.title === "string" && session.title.trim() ? session.title.trim() : "新对话",
         updatedAt: toDate(session.updatedAt),
         deletedAt: toNullableDate(session.deletedAt),

@@ -105,17 +105,11 @@ function formatBytePlusReviewError(message: string, attempts: number) {
 
 async function getWorkspaceAssets(userId: string | undefined) {
   if (!userId) return [];
-  const [workspace, assetStates] = await Promise.all([
-    prisma.userWorkspaceState.findUnique({ where: { userId }, select: { state: true } }).catch(() => null),
-    prisma.userAssetState.findMany({
-      where: { userId, hiddenAt: null, mediaAsset: { archivedAt: null } },
-      select: { currentName: true, bytePlusAssetId: true, bytePlusAssetGroupId: true, bytePlusAssetStatus: true, bytePlusAssetError: true, bytePlusAssetUpdatedAt: true, mediaAsset: { select: { url: true, normalizedUrl: true, systemName: true, initialName: true } } },
-    }).catch(() => []),
-  ]);
-  const state = workspace?.state;
-  const assets = state && typeof state === "object" && Array.isArray((state as { assets?: unknown }).assets) ? (state as { assets: unknown[] }).assets : [];
-  const legacyAssets = assets.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item));
-  const tableAssets = assetStates.map((state) => ({
+  const assetStates = await prisma.userAssetState.findMany({
+    where: { userId, hiddenAt: null, mediaAsset: { archivedAt: null } },
+    select: { currentName: true, bytePlusAssetId: true, bytePlusAssetGroupId: true, bytePlusAssetStatus: true, bytePlusAssetError: true, bytePlusAssetUpdatedAt: true, mediaAsset: { select: { url: true, normalizedUrl: true, systemName: true, initialName: true } } },
+  }).catch(() => []);
+  return assetStates.map((state) => ({
     url: state.mediaAsset.url,
     normalizedUrl: state.mediaAsset.normalizedUrl,
     name: state.currentName || state.mediaAsset.systemName || state.mediaAsset.initialName,
@@ -125,7 +119,6 @@ async function getWorkspaceAssets(userId: string | undefined) {
     bytePlusAssetError: state.bytePlusAssetError,
     bytePlusAssetUpdatedAt: state.bytePlusAssetUpdatedAt?.getTime(),
   }));
-  return [...tableAssets, ...legacyAssets];
 }
 
 async function getBytePlusReferenceFailure(userId: string | undefined, referenceImages: string[]) {
@@ -228,31 +221,6 @@ async function patchWorkspaceBytePlusAssets(userId: string | undefined, updates:
       },
     }).catch(() => undefined);
   }
-  const workspace = await prisma.userWorkspaceState.findUnique({ where: { userId }, select: { state: true } }).catch(() => null);
-  const state = workspace?.state;
-  if (!state || typeof state !== "object" || Array.isArray(state) || !Array.isArray((state as { assets?: unknown }).assets)) return;
-
-  const updateByUrl = new Map(updates.map((item) => [normalizeMediaUrlForMatch(item.url), item]));
-  let changed = false;
-  const nextAssets = (state as { assets: unknown[] }).assets.map((item) => {
-    if (!item || typeof item !== "object" || Array.isArray(item)) return item;
-    const record = item as Record<string, unknown>;
-    const url = getAssetString(record, "url");
-    const update = url ? updateByUrl.get(normalizeMediaUrlForMatch(url)) : undefined;
-    if (!update) return item;
-    changed = true;
-    return {
-      ...record,
-      bytePlusAssetId: update.assetId,
-      bytePlusAssetGroupId: update.groupId,
-      bytePlusAssetStatus: update.status,
-      bytePlusAssetError: update.error,
-      bytePlusAssetUpdatedAt: Date.now(),
-    };
-  });
-
-  if (!changed) return;
-  await prisma.userWorkspaceState.update({ where: { userId }, data: { state: { ...(state as Record<string, unknown>), assets: nextAssets } as Prisma.InputJsonValue } });
 }
 
 type AutoBytePlusAssetReviewItem = {

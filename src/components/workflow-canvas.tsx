@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode, type WheelEvent as ReactWheelEvent } from "react";
-import { RiAddLine, RiArrowDownSLine, RiArrowUpLine, RiCheckLine, RiCloseLine, RiCursorLine, RiEmotionSadLine, RiFileTextLine, RiFilmLine, RiFocus3Line, RiGoogleFill, RiHand, RiImageAiLine, RiLoader4Line, RiOpenaiFill, RiResetLeftLine, RiShining2Line, RiTBoxLine, RiTimeLine, RiTiktokFill, RiVideoLine, RiZoomInLine, RiZoomOutLine } from "react-icons/ri";
+import { RiAddLine, RiArrowDownSLine, RiArrowUpLine, RiCheckLine, RiCloseLine, RiCursorLine, RiEmotionSadLine, RiEyeLine, RiFileTextLine, RiFilmLine, RiFocus3Line, RiGoogleFill, RiHand, RiImageAiLine, RiLoader4Line, RiOpenaiFill, RiPlayLargeFill, RiResetLeftLine, RiShining2Line, RiTBoxLine, RiTimeLine, RiTiktokFill, RiVideoLine, RiZoomInLine, RiZoomOutLine } from "react-icons/ri";
 import { BytePlusIcon } from "@/components/byteplus-icon";
 import { DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, bytePlusVideoGenerationModels, frontendConversationModels, frontendImageGenerationModels, getSupportedImageResolutions, getSupportedVideoRatios, getSupportedVideoResolutions, imageGenerationModels, normalizeImageResolutionForModel, normalizeVideoRatioForModel, normalizeVideoResolutionForModel, videoGenerationModels, type ConversationModel, type GenerationModel, type ModelName } from "@/lib/models";
 import { toUserErrorMessage } from "@/lib/error-message";
@@ -17,8 +17,10 @@ export type WorkflowNodeData = {
   resolution?: string;
   duration?: string;
   images?: string[];
+  imageDimensions?: Record<string, { width: number; height: number }>;
   videoUrl?: string;
   posterUrl?: string;
+  mediaSystemNames?: Record<string, string>;
   error?: string;
   isRunning?: boolean;
   taskId?: string;
@@ -77,6 +79,10 @@ type WorkflowCanvasProps = {
   onChange: (next: WorkflowCanvasState) => void;
   workflowTitle: string;
   onCredit?: (credit?: CreditResult) => void;
+  onGeneratedMedia?: (media: { nodeId: string; kind: "image" | "video"; urls: string[]; posterUrl?: string; sourcePrompt: string; model?: ModelName; ratio?: string; resolution?: string; duration?: string; dimensions?: Record<string, { width: number; height: number }> }) => void;
+  onPreviewMedia?: (media: { nodeId: string; kind: "image" | "video"; url: string; posterUrl?: string; name: string; sourcePrompt?: string; model?: ModelName; ratio?: string; resolution?: string; duration?: string; dimensions?: { width: number; height: number } }) => void;
+  getImageDisplayUrl?: (url: string) => string;
+  getVideoPosterDisplayUrl?: (url: string, posterUrl?: string) => string | undefined;
   enabledImageModelIds?: string[];
   enabledVideoModelIds?: string[];
 };
@@ -236,7 +242,7 @@ type VideoApiResponse = {
   errorCode?: string;
 };
 
-export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onCredit, enabledImageModelIds, enabledVideoModelIds }: WorkflowCanvasProps) {
+export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onCredit, onGeneratedMedia, onPreviewMedia, getImageDisplayUrl, getVideoPosterDisplayUrl, enabledImageModelIds, enabledVideoModelIds }: WorkflowCanvasProps) {
   const state = useMemo(() => normalizeState(value), [value]);
   const imageModels = useMemo(() => {
     const enabled = enabledImageModelIds && enabledImageModelIds.length > 0 ? new Set(enabledImageModelIds) : undefined;
@@ -258,7 +264,12 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
   const [connectingFrom, setConnectingFrom] = useState<string>("");
   const [selectedNodeId, setSelectedNodeId] = useState<string>("");
   const canvasRef = useRef<HTMLDivElement | null>(null);
+  const stateRef = useRef(state);
   const effectiveTool = isSpaceDown ? "pan" : tool;
+
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
 
   useEffect(() => {
     setPan({ x: state.viewport?.x ?? 0, y: state.viewport?.y ?? 0 });
@@ -273,7 +284,9 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
   }, [pan.x, pan.y, zoom]);
 
   const updateState = (updater: (current: WorkflowCanvasState) => WorkflowCanvasState) => {
-    onChange(updater(state));
+    const next = updater(stateRef.current);
+    stateRef.current = next;
+    onChange(next);
   };
 
   const updateNode = (nodeId: string, patch: Partial<WorkflowNodeData>) => {
@@ -318,7 +331,8 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
 
   const startDrag = (node: WorkflowNode, event: ReactPointerEvent<HTMLDivElement>) => {
     if (effectiveTool === "pan") return;
-    if ((event.target as HTMLElement).closest("button,input,textarea,select,video")) return;
+    if ((event.target as HTMLElement).closest("button,input,textarea,select")) return;
+    event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
     setSelectedNodeId(node.id);
     setDragState({ nodeId: node.id, startX: event.clientX, startY: event.clientY, originX: node.x, originY: node.y });
@@ -344,9 +358,9 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
   };
 
   const startPan = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!(event.target as HTMLElement).closest(".workflow-node,button,input,textarea,select,video")) setSelectedNodeId("");
+    if (!(event.target as HTMLElement).closest(".workflow-node,button,input,textarea,select")) setSelectedNodeId("");
     if (effectiveTool !== "pan") return;
-    if ((event.target as HTMLElement).closest("button,input,textarea,select,video")) return;
+    if ((event.target as HTMLElement).closest("button,input,textarea,select")) return;
     event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
     setPanState({ startX: event.clientX, startY: event.clientY, originX: pan.x, originY: pan.y });
@@ -515,8 +529,10 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
           requestId: createId("workflow_image"),
           metadata: { creditSource: "workflow_image_generation" },
         }),
-      }).then((response) => readJson<{ images?: string[]; usage?: UsageMeta; credit?: CreditResult }>(response));
-      updateNode(node.id, { images: data.images ?? [], isRunning: false, error: undefined });
+      }).then((response) => readJson<{ images?: string[]; imageDimensions?: Record<string, { width: number; height: number }>; usage?: UsageMeta; credit?: CreditResult }>(response));
+      const images = data.images ?? [];
+      updateNode(node.id, { images, imageDimensions: data.imageDimensions, isRunning: false, error: undefined });
+      if (images.length > 0) onGeneratedMedia?.({ nodeId: node.id, kind: "image", urls: images, sourcePrompt: prompt, model, ratio: settings.ratio, resolution: settings.resolution, dimensions: data.imageDimensions });
       onCredit?.({ ...data.credit, usage: data.usage });
     } catch (error) {
       updateNode(node.id, { isRunning: false, error: toUserErrorMessage(error) });
@@ -536,7 +552,9 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
       if (pollData.status === "failed" || pollData.error?.message) throw new Error(pollData.error?.message || "视频生成失败");
       const videoUrl = getVideoUrlFromResponse(pollData);
       if (isVideoDoneStatus(pollData.status) && videoUrl) {
-        updateNode(node.id, { videoUrl, posterUrl: getPosterUrlFromResponse(pollData), isRunning: false, error: undefined, taskId: undefined });
+        const posterUrl = getPosterUrlFromResponse(pollData);
+        updateNode(node.id, { videoUrl, posterUrl, isRunning: false, error: undefined, taskId: undefined });
+        onGeneratedMedia?.({ nodeId: node.id, kind: "video", urls: [videoUrl], posterUrl, sourcePrompt: prompt, model, ratio: settings.ratio, resolution: settings.resolution, duration: settings.duration });
         onCredit?.({ ...pollData.credit, usage: pollData.usage });
         return;
       }
@@ -654,6 +672,12 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
           {state.nodes.map((node) => {
             const isSelected = selectedNodeId === node.id;
             const Icon = getNodeIcon(node.kind);
+            const sourcePrompt = node.data.prompt?.trim() || node.data.text?.trim() || node.data.outputText?.trim() || workflowTitle;
+            const imageUrl = node.data.images?.[0];
+            const imageDisplayUrl = imageUrl ? getImageDisplayUrl?.(imageUrl) : undefined;
+            const videoPosterDisplayUrl = node.data.videoUrl ? getVideoPosterDisplayUrl?.(node.data.videoUrl, node.data.posterUrl) : undefined;
+            const imageMediaName = imageUrl ? node.data.mediaSystemNames?.[imageUrl] ?? "图片生成" : "图片生成";
+            const videoMediaName = node.data.videoUrl ? node.data.mediaSystemNames?.[node.data.videoUrl] ?? "视频生成" : "视频生成";
             return (
               <div key={node.id} onPointerDown={(event) => startDrag(node, event)} className="workflow-node absolute flex w-[320px] flex-col overflow-visible" style={{ transform: `translate(${node.x}px, ${node.y}px)` }}>
                 <div className="mb-2 flex h-6 cursor-grab items-center gap-1.5 active:cursor-grabbing">
@@ -666,8 +690,8 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
                   {isSelected ? <NodePort side="left" onClick={() => connectTo(node.id)} /> : null}
                   {isSelected ? <NodePort side="right" onClick={() => setConnectingFrom(node.id)} /> : null}
                   {node.kind === "text" ? <TextDisplayCard node={node} selected={isSelected} /> : null}
-                  {node.kind === "image" ? <ImageDisplayCard node={node} selected={isSelected} /> : null}
-                  {node.kind === "video" ? <VideoDisplayCard node={node} selected={isSelected} /> : null}
+                  {node.kind === "image" ? <ImageDisplayCard node={node} selected={isSelected} displayUrl={imageDisplayUrl} onPreview={imageUrl && onPreviewMedia ? () => onPreviewMedia({ nodeId: node.id, kind: "image", url: imageUrl, name: imageMediaName, sourcePrompt, model: node.data.model, ratio: node.data.ratio, resolution: node.data.resolution, dimensions: node.data.imageDimensions?.[imageUrl] }) : undefined} /> : null}
+                  {node.kind === "video" ? <VideoDisplayCard node={node} selected={isSelected} posterDisplayUrl={videoPosterDisplayUrl} onPreview={node.data.videoUrl && onPreviewMedia ? () => onPreviewMedia({ nodeId: node.id, kind: "video", url: node.data.videoUrl as string, posterUrl: node.data.posterUrl, name: videoMediaName, sourcePrompt, model: node.data.model, ratio: node.data.ratio, resolution: node.data.resolution, duration: node.data.duration }) : undefined} /> : null}
                 </div>
 
                 {isSelected ? (
@@ -728,18 +752,41 @@ function TextDisplayCard({ node, selected }: { node: WorkflowNode; selected?: bo
   return <div className={`flex h-[180px] w-full items-center justify-center rounded-[14px] border bg-white text-[#9a9a9a] shadow-[0_10px_24px_rgba(15,23,42,0.06)] ${cardBorderClassName(selected)}`}><RiFileTextLine className="h-10 w-10" aria-hidden="true" /></div>;
 }
 
-function ImageDisplayCard({ node, selected }: { node: WorkflowNode; selected?: boolean }) {
+function PreviewEyeButton({ label, onPreview }: { label: string; onPreview: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={(event) => {
+        event.stopPropagation();
+        onPreview();
+      }}
+      className="absolute bottom-3 right-3 z-20 inline-flex h-9 w-9 items-center justify-center rounded-full bg-black/55 text-white shadow-[0_8px_20px_rgba(0,0,0,0.24)] backdrop-blur transition hover:bg-black/72"
+      aria-label={label}
+      title={label}
+    >
+      <RiEyeLine className="h-4.5 w-4.5" aria-hidden="true" />
+    </button>
+  );
+}
+
+function ImageDisplayCard({ node, selected, displayUrl, onPreview }: { node: WorkflowNode; selected?: boolean; displayUrl?: string; onPreview?: () => void }) {
   if (node.data.isRunning) return <WaitingCard isImage startedAt={node.data.startedAt} selected={selected} />;
   if (node.data.error) return <FailedCard isImage selected={selected} />;
   const url = node.data.images?.[0];
-  if (url) return <img src={getStaticMediaUrl(url)} alt="生成图片" className={`h-[180px] w-full rounded-[14px] border object-cover shadow-[0_10px_24px_rgba(15,23,42,0.08)] ${cardBorderClassName(selected)}`} />;
+  if (url) return <div className={`relative h-[180px] w-full overflow-hidden rounded-[14px] border bg-[#f4f4f4] shadow-[0_10px_24px_rgba(15,23,42,0.08)] ${cardBorderClassName(selected)}`}><img src={displayUrl ?? getStaticMediaUrl(url) ?? url} alt="生成图片" draggable={false} className="h-full w-full select-none object-cover" />{onPreview ? <PreviewEyeButton label="预览图片" onPreview={onPreview} /> : null}</div>;
   return <EmptyMediaCard kind="image" selected={selected} />;
 }
 
-function VideoDisplayCard({ node, selected }: { node: WorkflowNode; selected?: boolean }) {
+function VideoDisplayCard({ node, selected, posterDisplayUrl, onPreview }: { node: WorkflowNode; selected?: boolean; posterDisplayUrl?: string; onPreview?: () => void }) {
   if (node.data.isRunning) return <WaitingCard isImage={false} startedAt={node.data.startedAt} selected={selected} />;
   if (node.data.error) return <FailedCard isImage={false} selected={selected} />;
-  if (node.data.videoUrl) return <video src={getStaticMediaUrl(node.data.videoUrl)} poster={getStaticMediaUrl(node.data.posterUrl)} className={`h-[180px] w-full rounded-[14px] border bg-black object-cover shadow-[0_10px_24px_rgba(15,23,42,0.08)] ${cardBorderClassName(selected)}`} controls playsInline preload="metadata" />;
+  if (node.data.videoUrl) return (
+    <div className={`relative h-[180px] w-full overflow-hidden rounded-[14px] border bg-black shadow-[0_10px_24px_rgba(15,23,42,0.08)] ${cardBorderClassName(selected)}`}>
+      {posterDisplayUrl ? <img src={posterDisplayUrl} alt="视频封面" draggable={false} className="h-full w-full select-none object-cover" /> : <video src={getStaticMediaUrl(node.data.videoUrl) ?? node.data.videoUrl} poster={getStaticMediaUrl(node.data.posterUrl) ?? node.data.posterUrl} className="h-full w-full select-none object-cover" draggable={false} playsInline preload="metadata" muted />}
+      <span className="pointer-events-none absolute left-1/2 top-1/2 flex h-12 w-12 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-black/42 text-white shadow-[0_8px_24px_rgba(0,0,0,0.22)] backdrop-blur-[4px]"><RiPlayLargeFill className="ml-0.5 h-6 w-6" aria-hidden="true" /></span>
+      {onPreview ? <PreviewEyeButton label="预览视频" onPreview={onPreview} /> : null}
+    </div>
+  );
   return <EmptyMediaCard kind="video" selected={selected} />;
 }
 
@@ -749,6 +796,11 @@ function WorkflowPromptBox({ value, placeholder, onChange, children, running, on
       <textarea
         value={value}
         onChange={(event) => onChange(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
+          event.preventDefault();
+          if (!running && value.trim()) onRun();
+        }}
         placeholder={placeholder}
         className="min-h-10 w-full resize-none border-0 bg-transparent px-2 py-1 text-[14px] leading-6 text-[#111111] outline-none placeholder:text-[#b3b3b3] selection:bg-[#2f6df6] selection:text-white"
       />

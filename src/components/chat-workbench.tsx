@@ -120,6 +120,7 @@ type Message = {
   imageResultSlots?: ImageResultSlot[];
   imageDimensions?: Record<string, ImageDimensions>;
   imagePrompts?: Record<string, string>;
+  imagePromptDetails?: Record<string, PromptDetail>;
   mediaSystemNames?: Record<string, string>;
   imageReferences?: ImageReference[];
   uploadedFiles?: UploadedFileEntry[];
@@ -127,6 +128,7 @@ type Message = {
   videoUrl?: string;
   videos?: string[];
   videoPrompts?: Record<string, string>;
+  videoPromptDetails?: Record<string, PromptDetail>;
   videoPosters?: Record<string, string>;
   videoDimensionsMap?: Record<string, ImageDimensions>;
   textModel?: ModelName;
@@ -144,6 +146,11 @@ type Message = {
   mediaErrorReasons?: string[];
   mode?: WorkMode;
   generationMeta?: MessageGenerationMeta;
+};
+
+type PromptDetail = {
+  prompt: string;
+  constraints?: string[];
 };
 
 type ImageReference = {
@@ -315,6 +322,7 @@ type PendingGeneration = {
   agentDisplayText?: string;
   agentSuggestions?: SuggestionInput[];
   agentItemPrompts?: string[];
+  agentItemPromptDetails?: PromptDetail[];
   agentItemSettings?: GenerationSettings[];
   selectedMediaModels?: Record<"image" | "video", ModelName>;
   retryFailedIndex?: number;
@@ -382,6 +390,7 @@ type MessageGenerationMeta = {
   originalPrompt?: string;
   agentGenerated?: boolean;
   itemPrompts?: string[];
+  itemPromptDetails?: PromptDetail[];
 };
 
 type ControlMenuName = "model" | "generalChatModel" | "generalImageModel" | "generalVideoModel" | "characterModel" | "characterRatio" | "characterResolution" | "characterStyle" | "imageSettings" | "style" | "duration" | "imageCount";
@@ -513,9 +522,13 @@ const userCreditSourceLabels: Partial<Record<UserCreditSource, string>> = {
 
 type WorkflowItem = {
   id: string;
+  workflowCode?: string;
   title: string;
   createdAt: number;
   updatedAt?: number;
+  nextImageNumber?: number;
+  nextVideoNumber?: number;
+  deletedAt?: number;
   usageSummary?: UsageSummary;
   canvas?: WorkflowCanvasState;
 };
@@ -866,7 +879,7 @@ function collectRemoteMediaUrls(sessions: WorkSession[], assets: AssetItem[], as
   assets.forEach((asset) => addRemoteUrl(asset.url));
   assetGenerateJobs.forEach((job) => addRemoteUrl(job.result.url));
   workflowItems.forEach((workflow) => {
-    workflow.canvas?.nodes.forEach((node) => {
+    workflow.canvas?.nodes?.forEach((node) => {
       node.data.images?.forEach(addRemoteUrl);
       addRemoteUrl(node.data.videoUrl);
     });
@@ -961,15 +974,22 @@ function replaceAssetGenerateJobMediaUrls(job: AssetGenerateJob, replacements: M
   return url && url !== job.result.url ? { ...job, result: { ...job.result, url, dimensions: dimensions[url] ?? job.result.dimensions } } : job;
 }
 
-function replaceWorkflowItemMediaUrls(item: WorkflowItem, replacements: Map<string, string>) {
-  if (!item.canvas?.nodes.length) return item;
+function replaceWorkflowItemMediaUrls(item: WorkflowItem, replacements: Map<string, string>, videoPosters: Record<string, string> = {}) {
+  if (!item.canvas?.nodes?.length) return item;
   let changed = false;
   const nodes = item.canvas.nodes.map((node) => {
     const images = replaceUrlArray(node.data.images, replacements);
+    const imageDimensions = node.data.imageDimensions && images
+      ? Object.fromEntries(Object.entries(node.data.imageDimensions).map(([url, dimensions]) => [replacements.get(url) ?? url, dimensions]))
+      : node.data.imageDimensions;
+    const mediaSystemNames = node.data.mediaSystemNames
+      ? Object.fromEntries(Object.entries(node.data.mediaSystemNames).map(([url, name]) => [replacements.get(url) ?? url, name]))
+      : node.data.mediaSystemNames;
     const videoUrl = replaceUrlValue(node.data.videoUrl, replacements);
-    if (images === node.data.images && videoUrl === node.data.videoUrl) return node;
+    const posterUrl = (videoUrl && videoPosters[videoUrl]) || (node.data.videoUrl && videoPosters[node.data.videoUrl]) || node.data.posterUrl;
+    if (images === node.data.images && imageDimensions === node.data.imageDimensions && mediaSystemNames === node.data.mediaSystemNames && videoUrl === node.data.videoUrl && posterUrl === node.data.posterUrl) return node;
     changed = true;
-    return { ...node, data: { ...node.data, images, videoUrl } };
+    return { ...node, data: { ...node.data, images, imageDimensions, mediaSystemNames, videoUrl, posterUrl } };
   });
   return changed ? { ...item, canvas: { ...item.canvas, nodes } } : item;
 }
@@ -1725,17 +1745,39 @@ function getAgentGenerationSettingsFromPlan(plan: AgentPlanResponse | undefined,
 }
 
 function getAgentPromptFromPlan(plan: AgentPlanResponse | undefined, text: string, mode: WorkMode) {
-  const constraints = plan?.constraints?.filter(Boolean) ?? [];
+  return joinPromptDetail(getAgentPromptDetailFromPlan(plan, text, mode));
+}
+
+function cleanPromptConstraints(value: unknown) {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim()) : [];
+}
+
+function joinPromptDetail(detail: PromptDetail | undefined) {
+  if (!detail) return "";
+  return [detail.prompt.trim(), ...(detail.constraints ?? [])].filter(Boolean).join("，");
+}
+
+function getPromptSourceDetail(detail: PromptDetail | undefined) {
+  const constraints = cleanPromptConstraints(detail?.constraints);
+  return constraints.length > 0 ? JSON.stringify({ agentConstraints: constraints }) : undefined;
+}
+
+function getAgentPromptDetailFromPlan(plan: AgentPlanResponse | undefined, text: string, mode: WorkMode): PromptDetail {
+  const constraints = cleanPromptConstraints(plan?.constraints);
   const fallbackSubject = plan?.subject || text.replace(/(\d+|[一二两三四五六七八九十]{1,3})\s*张/g, "").trim();
   const qualityText = plan?.quality === "high" ? "高品质，精致细节，清晰画质" : "画面自然清晰";
   const basePrompt = plan?.prompt?.trim() || (mode === "image" ? `${qualityText}，${fallbackSubject}` : `${qualityText}，${fallbackSubject}，自然动作变化，镜头稳定流畅`);
 
-  if (mode !== "image") return [basePrompt, ...constraints].filter(Boolean).join("，");
+  if (mode !== "image") return { prompt: basePrompt, constraints };
 
-  return buildAgentSingleImagePrompt(basePrompt, constraints, text, plan);
+  return buildAgentSingleImagePromptDetail(basePrompt, constraints, text, plan);
 }
 
 function buildAgentSingleImagePrompt(basePrompt: string, constraints: string[], sourceText: string, plan?: AgentPlanResponse) {
+  return joinPromptDetail(buildAgentSingleImagePromptDetail(basePrompt, constraints, sourceText, plan));
+}
+
+function buildAgentSingleImagePromptDetail(basePrompt: string, constraints: string[], sourceText: string, plan?: AgentPlanResponse): PromptDetail {
   const combinedText = [sourceText, plan?.subject, basePrompt, ...constraints].filter(Boolean).join("，");
   const requestedCount = plan?.count && Number.isFinite(plan.count) ? plan.count : parseChineseNumber(sourceText.match(/(\d+|[一二两三四五六七八九十]{1,3})\s*张/)?.[1]) ?? 1;
   const noPeopleScene = wantsNoPeopleScene(combinedText);
@@ -1755,6 +1797,7 @@ function buildAgentSingleImagePrompt(basePrompt: string, constraints: string[], 
     .replace(/^，|，$/g, "");
   const singleSubjectConstraint = !combinedLayout && !noPeopleScene && (asksSingleSubject || (requestedCount > 1 && isPersonSubject && !explicitMultiPerson)) ? "画面中只有一位人物主体" : undefined;
   const hardConstraints = [
+    ...constraints,
     noPeopleScene ? "纯场景画面，没有任何人物、角色、行人、人影、剪影或人形主体" : undefined,
     noPeopleScene ? "画面主体只能是场景、环境、建筑、自然景观或空间氛围" : undefined,
     noPeopleScene ? "no people, no person, no human, no character, no figure, no silhouette, no man, no woman" : undefined,
@@ -1763,7 +1806,7 @@ function buildAgentSingleImagePrompt(basePrompt: string, constraints: string[], 
     singleSubjectConstraint ? "不要多人同框" : undefined,
   ];
 
-  return [cleanedPrompt || basePrompt, ...hardConstraints].filter(Boolean).join("，");
+  return { prompt: cleanedPrompt || basePrompt, constraints: cleanPromptConstraints(hardConstraints) };
 }
 
 function wantsNoPeopleScene(text: string) {
@@ -1787,18 +1830,22 @@ function removePeopleTerms(prompt: string) {
 }
 
 function getAgentItemPromptsFromPlan(plan: AgentPlanResponse | undefined, sourceText: string, mode: WorkMode) {
+  return getAgentItemPromptDetailsFromPlan(plan, sourceText, mode)?.map(joinPromptDetail);
+}
+
+function getAgentItemPromptDetailsFromPlan(plan: AgentPlanResponse | undefined, sourceText: string, mode: WorkMode) {
   if (!plan?.items?.length) return undefined;
 
-  const prompts = plan.items
+  const details = plan.items
     .map((item) => {
       if (!item.prompt?.trim()) return "";
-      if (mode === "image") return buildAgentSingleImagePrompt(item.prompt, item.constraints ?? [], sourceText, { ...plan, prompt: item.prompt, constraints: item.constraints });
-      if (mode === "video") return [item.prompt.trim(), ...(item.constraints ?? [])].filter(Boolean).join("，");
-      return "";
+      if (mode === "image") return buildAgentSingleImagePromptDetail(item.prompt, cleanPromptConstraints(item.constraints), sourceText, { ...plan, prompt: item.prompt, constraints: item.constraints });
+      if (mode === "video") return { prompt: item.prompt.trim(), constraints: cleanPromptConstraints(item.constraints) };
+      return undefined;
     })
-    .filter(Boolean);
+    .filter((item): item is PromptDetail => Boolean(item));
 
-  return prompts.length > 0 ? prompts : undefined;
+  return details.length > 0 ? details : undefined;
 }
 
 function getNearestSupportedDuration(model: ModelName, durationText?: string) {
@@ -2949,6 +2996,10 @@ function getMaxWorkflowTitleNumber(items: WorkflowItem[]) {
   }, 0);
 }
 
+function getMaxWorkflowCodeNumber(items: WorkflowItem[]) {
+  return items.reduce((max, item) => Math.max(max, getWorkflowNumber(getWorkflowCode(item))), 0);
+}
+
 function createWorkflowItem(items: WorkflowItem[]): WorkflowItem {
   const createdAt = Date.now();
   return {
@@ -2960,7 +3011,11 @@ function createWorkflowItem(items: WorkflowItem[]): WorkflowItem {
 }
 
 function isUntitledWorkflow(item: WorkflowItem) {
-  return item.title === "新工作流";
+  return !item.deletedAt && item.title === "新工作流";
+}
+
+function isDeletedWorkflow(item: Pick<WorkflowItem, "deletedAt">) {
+  return Boolean(item.deletedAt);
 }
 
 function hasWorkflowAction(canvas?: WorkflowCanvasState) {
@@ -2968,13 +3023,13 @@ function hasWorkflowAction(canvas?: WorkflowCanvasState) {
 }
 
 function ensureWorkflowItems(items: WorkflowItem[]) {
-  return items.length > 0 ? items : [createWorkflowItem([])];
+  return items.some((item) => !isDeletedWorkflow(item)) ? items : [createWorkflowItem([]), ...items];
 }
 
 function keepSingleUntitledWorkflow(items: WorkflowItem[]) {
   let hasUntitledWorkflow = false;
   return items.filter((item) => {
-    if (!isUntitledWorkflow(item)) return true;
+    if (isDeletedWorkflow(item) || !isUntitledWorkflow(item)) return true;
     if (hasUntitledWorkflow) return false;
     hasUntitledWorkflow = true;
     return true;
@@ -2985,6 +3040,19 @@ function getPersistableWorkflowItems(items: WorkflowItem[]) {
   return keepSingleUntitledWorkflow(ensureWorkflowItems(items));
 }
 
+function normalizeWorkflowCodesAndMediaNumbers(items: WorkflowItem[]) {
+  let nextWorkflowCodeNumber = getMaxWorkflowCodeNumber(items) + 1;
+  return items.map((item) => {
+    const workflowCode = getWorkflowCode(item) ?? (isUntitledWorkflow(item) ? undefined : `w${nextWorkflowCodeNumber++}`);
+    return {
+      ...item,
+      workflowCode,
+      nextImageNumber: Math.max(1, Math.floor(item.nextImageNumber ?? 1)),
+      nextVideoNumber: Math.max(1, Math.floor(item.nextVideoNumber ?? 1)),
+    };
+  });
+}
+
 function normalizeStoredWorkflowItems(value: unknown): WorkflowItem[] {
   if (!Array.isArray(value)) return ensureWorkflowItems([]);
   return ensureWorkflowItems(keepSingleUntitledWorkflow(value.flatMap((item) => {
@@ -2993,7 +3061,11 @@ function normalizeStoredWorkflowItems(value: unknown): WorkflowItem[] {
     if (typeof workflow.id !== "string" || typeof workflow.title !== "string") return [];
     const createdAt = Number.isFinite(workflow.createdAt) ? Number(workflow.createdAt) : Date.now();
     const updatedAt = Number.isFinite(workflow.updatedAt) ? Number(workflow.updatedAt) : createdAt;
-    return [{ ...workflow, id: workflow.id, title: workflow.title, createdAt, updatedAt }];
+    const deletedAt = Number.isFinite(workflow.deletedAt) ? Number(workflow.deletedAt) : undefined;
+    const workflowCode = getWorkflowCode({ workflowCode: workflow.workflowCode, title: workflow.title }) ?? undefined;
+    const nextImageNumber = Math.max(1, Math.floor(workflow.nextImageNumber ?? 1));
+    const nextVideoNumber = Math.max(1, Math.floor(workflow.nextVideoNumber ?? 1));
+    return [{ ...workflow, id: workflow.id, workflowCode, title: workflow.title, createdAt, updatedAt, nextImageNumber, nextVideoNumber, deletedAt }];
   })));
 }
 
@@ -3042,6 +3114,10 @@ function keepSingleEmptySession(sessions: WorkSession[]) {
 
 function isDeletedSession(session: Pick<WorkSession, "deletedAt">) {
   return Boolean(session.deletedAt);
+}
+
+function sortByUpdatedAtDesc<T extends { updatedAt?: number }>(items: T[]) {
+  return [...items].sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0));
 }
 
 function getPersistableSessions(sessions: WorkSession[]) {
@@ -3453,8 +3529,28 @@ function getConversationNumber(code?: string) {
   return Number.isFinite(value) && value > 0 ? value : 0;
 }
 
+function getWorkflowNumber(code?: string) {
+  const value = Number(code?.match(/^w(\d+)$/)?.[1]);
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+function getWorkflowNumberFromTitle(title?: string) {
+  const value = Number(title?.match(/^工作流_(\d+)$/)?.[1]);
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+function getWorkflowCode(item: Pick<WorkflowItem, "workflowCode" | "title">) {
+  if (getWorkflowNumber(item.workflowCode) > 0) return item.workflowCode;
+  const titleNumber = getWorkflowNumberFromTitle(item.title);
+  return titleNumber > 0 ? `w${titleNumber}` : undefined;
+}
+
 function buildConversationMediaSystemName(mode: WorkMode, index: number, conversationCode?: string) {
   return `${mode === "video" ? "video" : "image"}_${index}_${conversationCode || "d0"}`;
+}
+
+function buildWorkflowMediaSystemName(mediaType: "image" | "video", index: number, workflowCode?: string) {
+  return `${mediaType}_${index}_${workflowCode || "w0"}`;
 }
 
 function getMediaSystemName(message: Message, url: string, fallbackName: string) {
@@ -3937,11 +4033,11 @@ async function getDirectUploadToken() {
   }
 }
 
-async function uploadDocumentFileAsset(file: File, onProgress?: (progress: number) => void) {
+async function uploadDocumentFileAsset(file: File, options: { conversationId?: string; mediaKind?: "document" | "video" | "audio"; durationSeconds?: number; dimensions?: ImageDimensions } = {}, onProgress?: (progress: number) => void) {
   onProgress?.(6);
   const dataUrl = await readFileAsDataUrl(file);
   onProgress?.(12);
-  const data = await uploadJsonWithProgress<{ url?: string; error?: string }>("/api/upload-file", { file: dataUrl, name: file.name }, onProgress);
+  const data = await uploadJsonWithProgress<{ url?: string; error?: string }>("/api/upload-file", { file: dataUrl, name: file.name, ...options }, onProgress);
   if (!data.url) throw new Error(data.error || "文件上传失败");
   return data.url;
 }
@@ -4406,6 +4502,64 @@ function applySessionMediaSystemNamesToAssets(assets: AssetItem[], sessions: Wor
 
     return { ...asset, name: userName || systemName, systemName, userName };
   });
+}
+
+function reserveWorkflowMediaSystemNamesForItems(workflows: WorkflowItem[], assets: AssetItem[], workflowId: string, mediaType: "image" | "video", urls: string[]) {
+  const cleanUrls = urls.filter((url) => url && !url.startsWith("data:"));
+  const result: Record<string, string> = {};
+  if (cleanUrls.length === 0) return { names: result, workflows };
+
+  const workflow = workflows.find((item) => item.id === workflowId);
+  if (!workflow) return { names: result, workflows };
+
+  const workflowCode = getWorkflowCode(workflow) || "w0";
+  let nextImageNumber = Math.max(1, Math.floor(workflow.nextImageNumber ?? 1));
+  let nextVideoNumber = Math.max(1, Math.floor(workflow.nextVideoNumber ?? 1));
+  const existingNames = new Map<string, string>();
+  const usedSystemNames = new Set<string>();
+  let maxExistingImageNumber = 0;
+  let maxExistingVideoNumber = 0;
+
+  assets.filter((asset) => isWorkflowAsset(asset) && (asset.workflowId || asset.sessionId) === workflowId).forEach((asset) => {
+    const systemName = asset.systemName || asset.name;
+    if (!systemName) return;
+    usedSystemNames.add(systemName);
+    const imageNumber = Number(systemName.match(/^image_(\d+)_w\d+$/)?.[1]);
+    const videoNumber = Number(systemName.match(/^video_(\d+)_w\d+$/)?.[1]);
+    if (Number.isFinite(imageNumber)) maxExistingImageNumber = Math.max(maxExistingImageNumber, imageNumber);
+    if (Number.isFinite(videoNumber)) maxExistingVideoNumber = Math.max(maxExistingVideoNumber, videoNumber);
+    if (Number.isFinite(imageNumber)) nextImageNumber = Math.max(nextImageNumber, imageNumber + 1);
+    if (Number.isFinite(videoNumber)) nextVideoNumber = Math.max(nextVideoNumber, videoNumber + 1);
+    existingNames.set(normalizeMediaUrlForMatch(asset.url), systemName);
+  });
+
+  if (maxExistingImageNumber > 0 && nextImageNumber > maxExistingImageNumber + cleanUrls.length + 1) nextImageNumber = maxExistingImageNumber + 1;
+  if (maxExistingVideoNumber > 0 && nextVideoNumber > maxExistingVideoNumber + cleanUrls.length + 1) nextVideoNumber = maxExistingVideoNumber + 1;
+
+  cleanUrls.forEach((url) => {
+    const key = normalizeMediaUrlForMatch(url);
+    const existingName = existingNames.get(key);
+    if (existingName) {
+      result[url] = existingName;
+      return;
+    }
+
+    if (mediaType === "video") {
+      while (usedSystemNames.has(buildWorkflowMediaSystemName("video", nextVideoNumber, workflowCode))) nextVideoNumber += 1;
+      result[url] = buildWorkflowMediaSystemName("video", nextVideoNumber, workflowCode);
+      usedSystemNames.add(result[url]);
+      nextVideoNumber += 1;
+    } else {
+      while (usedSystemNames.has(buildWorkflowMediaSystemName("image", nextImageNumber, workflowCode))) nextImageNumber += 1;
+      result[url] = buildWorkflowMediaSystemName("image", nextImageNumber, workflowCode);
+      usedSystemNames.add(result[url]);
+      nextImageNumber += 1;
+    }
+  });
+
+  const changed = workflow.workflowCode !== workflowCode || (workflow.nextImageNumber ?? 1) !== nextImageNumber || (workflow.nextVideoNumber ?? 1) !== nextVideoNumber;
+  const nextWorkflows = changed ? workflows.map((item) => item.id === workflowId ? { ...item, workflowCode, nextImageNumber, nextVideoNumber } : item) : workflows;
+  return { names: result, workflows: nextWorkflows };
 }
 
 function applyAssetGenerationSystemNames(assets: AssetItem[]) {
@@ -4927,6 +5081,23 @@ function renderEditorContent(element: HTMLElement, value: string, validReference
   }
 }
 
+function isEditorScrolledToBottom(element: HTMLElement) {
+  return element.scrollHeight - element.scrollTop - element.clientHeight <= 8;
+}
+
+function preserveEditorScroll(element: HTMLElement, callback: () => void) {
+  const wasAtBottom = isEditorScrolledToBottom(element);
+  const previousScrollTop = element.scrollTop;
+
+  callback();
+
+  if (wasAtBottom) {
+    element.scrollTop = element.scrollHeight;
+  } else {
+    element.scrollTop = previousScrollTop;
+  }
+}
+
 function PlainMentionEditor({
   value,
   disabled = false,
@@ -4959,13 +5130,32 @@ function PlainMentionEditor({
   onCursorChange: (offset: number) => void;
 }) {
   const isComposingRef = useRef(false);
+  const inputScrollSnapshotRef = useRef<{ wasAtBottom: boolean; scrollTop: number } | null>(null);
+
+  const captureInputScroll = useCallback((element: HTMLElement) => {
+    inputScrollSnapshotRef.current = { wasAtBottom: isEditorScrolledToBottom(element), scrollTop: element.scrollTop };
+  }, []);
+
+  const restoreInputScroll = useCallback((element: HTMLElement) => {
+    const snapshot = inputScrollSnapshotRef.current;
+    if (!snapshot) return;
+
+    const apply = () => {
+      element.scrollTop = snapshot.wasAtBottom ? element.scrollHeight : snapshot.scrollTop;
+    };
+
+    apply();
+    requestAnimationFrame(apply);
+  }, []);
 
   const syncEditor = useCallback((nextValue: string, caretOffset?: number) => {
     const element = editorRef.current;
     if (!element) return;
 
-    renderEditorContent(element, nextValue, validReferences);
-    setSelectionTextOffset(element, caretOffset ?? nextValue.length);
+    preserveEditorScroll(element, () => {
+      renderEditorContent(element, nextValue, validReferences);
+      setSelectionTextOffset(element, caretOffset ?? nextValue.length);
+    });
   }, [editorRef, validReferences]);
 
   const commitInput = useCallback((rawValue: string, caretOffset: number, options?: { syncDom?: boolean }) => {
@@ -5008,8 +5198,11 @@ function PlainMentionEditor({
     if (isComposingRef.current) return;
     if (getEditableText(element) === value) return;
 
-    renderEditorContent(element, value, validReferences);
-    setSelectionTextOffset(element, value.length);
+    const currentCaretOffset = getSelectionTextOffset(element);
+    preserveEditorScroll(element, () => {
+      renderEditorContent(element, value, validReferences);
+      setSelectionTextOffset(element, Math.min(currentCaretOffset, value.length));
+    });
   }, [editorRef, validReferences, value]);
 
   return (
@@ -5028,6 +5221,8 @@ function PlainMentionEditor({
       data-enable-grammarly="false"
       suppressContentEditableWarning
       onCompositionStart={() => {
+        const element = editorRef.current;
+        if (element) captureInputScroll(element);
         isComposingRef.current = true;
       }}
       onCompositionEnd={(event) => {
@@ -5035,18 +5230,26 @@ function PlainMentionEditor({
         isComposingRef.current = false;
         const element = event.currentTarget;
         commitInput(getEditableText(element), getSelectionTextOffset(element));
+        restoreInputScroll(element);
+      }}
+      onBeforeInput={(event) => {
+        if (disabled) return;
+        captureInputScroll(event.currentTarget);
       }}
       onInput={(event) => {
         if (disabled) return;
         if (isComposingRef.current) return;
         const element = event.currentTarget;
         commitInput(getEditableText(element), getSelectionTextOffset(element));
+        restoreInputScroll(element);
       }}
       onPaste={(event) => {
         if (disabled) {
           event.preventDefault();
           return;
         }
+
+        captureInputScroll(event.currentTarget);
 
         const files = Array.from(event.clipboardData.files ?? []);
         if (files.some((file) => file.type.startsWith("image/"))) {
@@ -5066,12 +5269,15 @@ function PlainMentionEditor({
         const selectedTextLength = selection?.rangeCount && element.contains(selection.getRangeAt(0).commonAncestorContainer) ? selection.getRangeAt(0).toString().length : 0;
         const nextText = `${currentText.slice(0, selectionOffset)}${text}${currentText.slice(selectionOffset + selectedTextLength)}`;
         commitInput(nextText, selectionOffset + text.length, { syncDom: true });
+        restoreInputScroll(element);
       }}
       onKeyDown={(event) => {
         if (disabled) {
           event.preventDefault();
           return;
         }
+
+        captureInputScroll(event.currentTarget);
 
         if ((event.key === "Backspace" || event.key === "Delete") && !event.ctrlKey && !event.metaKey && !event.altKey) {
           const element = event.currentTarget;
@@ -5085,6 +5291,7 @@ function PlainMentionEditor({
               event.preventDefault();
               const nextText = `${currentText.slice(0, mentionRange.start)}${currentText.slice(mentionRange.end)}`;
               commitInput(nextText, mentionRange.start, { syncDom: true });
+              restoreInputScroll(element);
               return;
             }
           }
@@ -5102,6 +5309,7 @@ function PlainMentionEditor({
         const selectionOffset = getSelectionTextOffset(element);
         const currentText = getEditableText(element);
         commitInput(`${currentText.slice(0, selectionOffset)}\n${currentText.slice(selectionOffset)}`, selectionOffset + 1, { syncDom: true });
+        restoreInputScroll(element);
       }}
       onKeyUp={syncCursorFromDom}
       onMouseUp={syncCursorFromDom}
@@ -6720,7 +6928,6 @@ export function ChatWorkbench() {
   const previewAssetRef = useRef<AssetItem | null>(null);
   const preloadedPreviewThumbUrlsRef = useRef<Set<string>>(new Set());
   const preloadingSavedMediaUrlsRef = useRef<Set<string>>(new Set());
-  const persistedWorkflowMediaKeysRef = useRef<Set<string>>(new Set());
   const inputImageUploadAbortControllersRef = useRef<Map<string, AbortController>>(new Map());
   const previewDragStartRef = useRef({ pointerX: 0, pointerY: 0, panX: 0, panY: 0 });
   const activeAssetGenerateJobIdRef = useRef("");
@@ -7016,7 +7223,8 @@ export function ChatWorkbench() {
   }, []);
 
   const activeSession = sessions.find((session) => session.id === activeSessionId && !isDeletedSession(session)) ?? sessions.find((session) => !isDeletedSession(session)) ?? sessions[0];
-  const activeWorkflow = workflowItems.find((item) => item.id === activeWorkflowId) ?? workflowItems[0];
+  const activeWorkflowItems = sortByUpdatedAtDesc(workflowItems.filter((item) => !isDeletedWorkflow(item)));
+  const activeWorkflow = activeWorkflowItems.find((item) => item.id === activeWorkflowId) ?? activeWorkflowItems[0];
   const messages = activeSession?.messages ?? initialMessages;
   const activeInput = activeSession?.draftInput ?? "";
   const activeInputLength = Array.from(activeInput).length;
@@ -7112,6 +7320,66 @@ export function ChatWorkbench() {
   }, [sessions]);
   const visibleAssetUploadSlots = normalizeAssetUploadSlots(assetUploadSlots, getDefaultAssetUploadType(assetFilter));
   const previewMediaOptions = useMemo(() => {
+    if (previewAsset?.librarySource === "workflow") {
+      const workflowId = previewAsset.workflowId || previewAsset.sessionId;
+      const workflow = workflowItems.find((item) => item.id === workflowId);
+      if (workflow?.canvas?.nodes?.length) {
+        return workflow.canvas.nodes.flatMap((node) => {
+          const sourcePrompt = node.data.prompt?.trim() || node.data.text?.trim() || workflow.title;
+          const imageItems = (node.data.images ?? []).map((url, imageIndex) => {
+            const existingAsset = assets.find((asset) => isWorkflowAsset(asset) && normalizeMediaUrlForMatch(asset.url) === normalizeMediaUrlForMatch(url));
+            if (existingAsset) return getCanonicalPreviewAsset(existingAsset);
+            const dimensions = node.data.imageDimensions?.[url];
+            return {
+              id: `${workflow.id}-${node.id}-image-${imageIndex}`,
+              type: "other" as const,
+              name: node.data.mediaSystemNames?.[url] ?? "图片生成",
+              systemName: node.data.mediaSystemNames?.[url] ?? "图片生成",
+              url,
+              posterUrl: undefined,
+              librarySource: "workflow" as const,
+              sourcePrompt,
+              promptSource: "generated" as const,
+              previewMeta: {
+                modelLabel: node.data.model ? getGenerationModelLabel("image", node.data.model) : "-",
+                ratio: dimensions ? getCommonRatioLabel(dimensions.width, dimensions.height) : node.data.ratio || "-",
+                sizeText: dimensions ? `${dimensions.width} × ${dimensions.height}` : "-",
+                resolution: dimensions ? getImageResolutionFromDimensions(dimensions) ?? node.data.resolution ?? "-" : node.data.resolution || "-",
+                mode: "image" as const,
+              },
+              sessionId: workflow.id,
+              workflowId: workflow.id,
+              workflowNodeId: node.id,
+              lockedType: true,
+              createdAt: workflow.updatedAt ?? Date.now(),
+            };
+          });
+          const videoItem = node.data.videoUrl ? (() => {
+            const existingAsset = assets.find((asset) => isWorkflowAsset(asset) && normalizeMediaUrlForMatch(asset.url) === normalizeMediaUrlForMatch(node.data.videoUrl as string));
+            if (existingAsset) return [getCanonicalPreviewAsset(existingAsset)];
+            return [{
+              id: `${workflow.id}-${node.id}-video`,
+              type: "shot_video" as const,
+              name: node.data.mediaSystemNames?.[node.data.videoUrl as string] ?? "视频生成",
+              systemName: node.data.mediaSystemNames?.[node.data.videoUrl as string] ?? "视频生成",
+              url: node.data.videoUrl as string,
+              posterUrl: node.data.posterUrl,
+              librarySource: "workflow" as const,
+              sourcePrompt,
+              promptSource: "generated" as const,
+              previewMeta: { modelLabel: node.data.model ? getGenerationModelLabel("video", node.data.model) : "-", ratio: node.data.ratio || "-", sizeText: "-", resolution: node.data.resolution || "-", mode: "video" as const, duration: node.data.duration },
+              sessionId: workflow.id,
+              workflowId: workflow.id,
+              workflowNodeId: node.id,
+              lockedType: true,
+              createdAt: workflow.updatedAt ?? Date.now(),
+            }];
+          })() : [];
+          return [...imageItems, ...videoItem];
+        });
+      }
+    }
+
     const isAssetLibraryPreview = Boolean(previewAsset && assets.some((asset) => asset.id === previewAsset.id));
     if (isAssetLibraryPreview) {
       return assets.filter((asset) => {
@@ -7151,7 +7419,7 @@ export function ChatWorkbench() {
 
       return [...imageItems, ...videoItem];
     });
-  }, [activeSessionIdValue, assetFilter, assets, getCanonicalMediaName, getCanonicalPreviewAsset, messages, previewAsset, timerNow]);
+  }, [activeSessionIdValue, assetFilter, assets, getCanonicalMediaName, getCanonicalPreviewAsset, messages, previewAsset, timerNow, workflowItems]);
   const enrichAssetPreviewMeta = getCanonicalPreviewAsset;
   const previewAssetId = previewAsset?.id;
   const previewDisplayMeta = previewAsset ? enrichAssetPreviewMeta(previewAsset).previewMeta : undefined;
@@ -7171,7 +7439,7 @@ export function ChatWorkbench() {
   const validReferenceNames = new Set([...getValidReferenceNames(assets, activeUploadedImages, activeConversationImageReferences), ...getUploadedMediaReferences(activeUploadedFiles).map((reference) => reference.name)]);
   const hasAnyConversationRunning = resolvingSessionIds.size > 0 || sessions.some((session) => getSessionPendingRequests(session).length > 0) || Boolean(modelInfoSessionId);
   const hasAnyAssetGenerating = assetGenerateJobs.some((job) => job.result.status === "generating");
-  const hasAnyWorkflowGenerating = workflowItems.some((workflow) => workflow.canvas?.nodes.some((node) => node.data.isRunning));
+  const hasAnyWorkflowGenerating = activeWorkflowItems.some((workflow) => workflow.canvas?.nodes?.some((node) => node.data.isRunning));
   const hasAnyGenerationRunning = hasAnyConversationRunning || hasAnyAssetGenerating || hasAnyWorkflowGenerating;
   const characterValidReferenceNames = getValidReferenceNames(assets, [], []);
   const assetGenerateReferenceImages = useMemo(() => getOrderedExplicitImageReferences(characterGeneratePrompt, assets, [], []), [assets, characterGeneratePrompt]);
@@ -7294,14 +7562,6 @@ export function ChatWorkbench() {
   }, [clampPreviewScale, previewAsset, previewNaturalSize]);
 
   useEffect(() => {
-    const editor = editorRef.current;
-    if (!editor) return;
-    if (draftCursorOffset < activeInput.length) return;
-
-    editor.scrollTop = editor.scrollHeight;
-  }, [activeInput, draftCursorOffset]);
-
-  useEffect(() => {
     if (!previewAssetId) return;
     const frame = window.requestAnimationFrame(() => {
       resetPreviewTransform();
@@ -7374,7 +7634,7 @@ export function ChatWorkbench() {
 
   useEffect(() => {
     if (!previewAsset || previewMediaOptions.length <= 1) return;
-    const currentIndex = previewMediaOptions.findIndex((item) => item.id === previewAsset.id || item.url === previewAsset.url);
+    const currentIndex = previewMediaOptions.findIndex((item) => item.id === previewAsset.id || normalizeMediaUrlForMatch(item.url) === normalizeMediaUrlForMatch(previewAsset.url));
     if (currentIndex < 0) return;
     if (currentIndex >= previewThumbPageStart && currentIndex < previewThumbPageStart + previewThumbPageSize) return;
     const timer = window.setTimeout(() => setPreviewThumbPageStart(Math.floor(currentIndex / previewThumbPageSize) * previewThumbPageSize), 0);
@@ -7406,7 +7666,7 @@ export function ChatWorkbench() {
 
   const shiftPreviewAsset = useCallback((direction: number) => {
     if (!previewAsset || previewMediaOptions.length <= 1) return;
-    const currentIndex = previewMediaOptions.findIndex((item) => item.id === previewAsset.id || item.url === previewAsset.url);
+    const currentIndex = previewMediaOptions.findIndex((item) => item.id === previewAsset.id || normalizeMediaUrlForMatch(item.url) === normalizeMediaUrlForMatch(previewAsset.url));
     if (currentIndex < 0) return;
     const nextIndex = currentIndex + direction;
     if (nextIndex < 0 || nextIndex >= previewMediaOptions.length) return;
@@ -7881,7 +8141,7 @@ export function ChatWorkbench() {
   const setActiveDraftInput = useCallback((value: string) => {
     const nextValue = Array.from(value).slice(0, MAX_DRAFT_INPUT_LENGTH).join("");
     if (value !== nextValue) showInputTip("最多输入2000字");
-    setSessions((current) => current.map((session) => (session.id === activeSessionId ? { ...session, draftInput: nextValue } : session)));
+    setSessions((current) => current.map((session) => (session.id === activeSessionId ? { ...session, draftInput: nextValue, updatedAt: Date.now() } : session)));
   }, [activeSessionId, showInputTip]);
 
   const addSessionUsage = useCallback((sessionId: string, usage?: UsageMeta) => {
@@ -8113,6 +8373,7 @@ export function ChatWorkbench() {
           draftInput: nextDraft,
           uploadedFiles: session.uploadedFiles,
           uploadedImages: nextUploadedImages,
+          updatedAt: Date.now(),
         };
       }),
     );
@@ -8123,7 +8384,7 @@ export function ChatWorkbench() {
     inputImageUploadAbortControllersRef.current.get(imageId)?.abort();
     inputImageUploadAbortControllersRef.current.delete(imageId);
     if (image?.tempToken) void deleteTemporaryAssetImages([image.tempToken]);
-    setSessions((current) => current.map((session) => (session.id === activeSessionId ? { ...session, uploadedImages: (session.uploadedImages ?? []).filter((image) => image.id !== imageId) } : session)));
+    setSessions((current) => current.map((session) => (session.id === activeSessionId ? { ...session, uploadedImages: (session.uploadedImages ?? []).filter((image) => image.id !== imageId), updatedAt: Date.now() } : session)));
   }, [activeSessionId, activeUploadedImages]);
 
   const removeActiveUploadedFile = useCallback((fileIndex: number) => {
@@ -8132,7 +8393,7 @@ export function ChatWorkbench() {
     setSessions((current) => current.map((session) => {
       if (session.id !== activeSessionId) return session;
       const nextDraft = removingName ? (session.draftInput ?? "").replace(new RegExp(`(^|\\s)@${escapeRegExp(removingName)}(?=\\s|$)\\s?`, "g"), (match, prefix: string) => prefix ? prefix : "").replace(/\s{2,}/g, " ").trimStart() : session.draftInput;
-      return { ...session, draftInput: nextDraft, uploadedFiles: (session.uploadedFiles ?? []).filter((_, index) => index !== fileIndex) };
+      return { ...session, draftInput: nextDraft, uploadedFiles: (session.uploadedFiles ?? []).filter((_, index) => index !== fileIndex), updatedAt: Date.now() };
     }));
   }, [activeSessionId, activeUploadedFiles]);
 
@@ -8187,10 +8448,10 @@ export function ChatWorkbench() {
 
   useEffect(() => {
     if (!activeWorkflowId) return;
-    const activeIndex = workflowItems.findIndex((item) => item.id === activeWorkflowId);
+    const activeIndex = activeWorkflowItems.findIndex((item) => item.id === activeWorkflowId);
     if (activeIndex < workflowVisibleItemCount) return;
     setWorkflowVisibleItemCount(Math.max(WORKFLOW_INITIAL_ITEM_COUNT, activeIndex + 1));
-  }, [activeWorkflowId, workflowItems, workflowVisibleItemCount]);
+  }, [activeWorkflowId, activeWorkflowItems, workflowVisibleItemCount]);
 
   const loadSessionDetails = useCallback(async (sessionId: string) => {
     const targetSession = sessionsRef.current.find((session) => session.id === sessionId);
@@ -8351,13 +8612,13 @@ export function ChatWorkbench() {
   }, [assets, assetsLoadStatus, loadedAssetFilters, showInputTip]);
 
   useEffect(() => {
-    if (!isLoaded || workspaceStorageMode !== "user" || workspaceLoadStatus !== "loaded") return;
+    if (workspaceStorageMode !== "user") return;
     if (activePanel !== "assets" || assetsLoadStatus === "loading") return;
     const filterAssetCount = assets.filter((asset) => isAssetInFilter(asset, assetFilter)).length;
     const serverFilterCount = Number(assetCounts[assetFilter]);
     const needsCurrentFilter = !loadedAssetFilters[assetFilter] || (!filterAssetCount && Number.isFinite(serverFilterCount) && serverFilterCount > 0);
     if (assetsLoadStatus === "idle" || assetsLoadStatus === "failed" || needsCurrentFilter) void loadWorkspaceAssets(false, assetFilter, 0);
-  }, [activePanel, assetCounts, assetFilter, assets, assetsLoadStatus, isLoaded, loadWorkspaceAssets, loadedAssetFilters, workspaceLoadStatus, workspaceStorageMode]);
+  }, [activePanel, assetCounts, assetFilter, assets, assetsLoadStatus, loadWorkspaceAssets, loadedAssetFilters, workspaceStorageMode]);
 
   useEffect(() => {
     let cancelled = false;
@@ -8407,7 +8668,7 @@ export function ChatWorkbench() {
           const savedSessions = Array.isArray(state.sessions) && state.sessions.length > 0 ? state.sessions : [createSession(state.nextConversationNumber ?? 1)];
           const normalizedWorkspace = normalizeSessionCodesAndMediaNames(getPersistableSessions(savedSessions), state.nextConversationNumber);
           const nextSessions = normalizedWorkspace.sessions.map((session) => replaceSessionMediaUrls(session, legacyMediaUrlReplacements, {}));
-          const nextWorkflows = normalizeStoredWorkflowItems(state.workflowItems);
+          const nextWorkflows = normalizeWorkflowCodesAndMediaNumbers(normalizeStoredWorkflowItems(state.workflowItems));
           const nextStoredWorkflowNumber = Math.max(1, Math.floor(Number(state.nextWorkflowNumber ?? 1)));
           const nextWorkflowNumberValue = Math.max(nextStoredWorkflowNumber, getMaxWorkflowTitleNumber(nextWorkflows) + 1);
           const nextActiveWorkflowId = state.activeWorkflowId && nextWorkflows.some((item) => item.id === state.activeWorkflowId) ? state.activeWorkflowId : nextWorkflows[0]?.id ?? "";
@@ -8432,7 +8693,7 @@ export function ChatWorkbench() {
           setNextConversationNumber(normalizedWorkspace.nextConversationNumber);
           setWorkflowItems(nextWorkflows);
           setNextWorkflowNumber(nextWorkflowNumberValue);
-          setWorkflowVisibleItemCount(Math.max(WORKFLOW_INITIAL_ITEM_COUNT, Math.min(nextWorkflows.length, WORKFLOW_INITIAL_ITEM_COUNT)));
+          setWorkflowVisibleItemCount(Math.max(WORKFLOW_INITIAL_ITEM_COUNT, Math.min(nextWorkflows.filter((item) => !isDeletedWorkflow(item)).length, WORKFLOW_INITIAL_ITEM_COUNT)));
           setActiveWorkflowId(nextActiveWorkflowId);
           setActiveSessionId(nextActiveSessionId);
           setCompletedTypingMessageIds(new Set(getAssistantMessageIds(nextSessions)));
@@ -8743,7 +9004,7 @@ export function ChatWorkbench() {
       activePanel,
       assetFilter,
       assetScrollTopByFilter,
-      workflowItems: getPersistableWorkflowItems(workflowItems),
+      workflowItems: getPersistableWorkflowItems(normalizeWorkflowCodesAndMediaNumbers(workflowItems)),
       activeWorkflowId,
       activeSessionId,
       inputSettings: {
@@ -8760,7 +9021,6 @@ export function ChatWorkbench() {
       feedbackLogs: feedbackLogs.slice(0, MAX_FEEDBACK_LOGS),
     };
     if (assetsLoadStatus === "loaded" || assetGenerateJobs.length > 0) payload.assetGenerateJobs = getPersistableAssetGenerateJobs(assetGenerateJobs);
-    if (assetsLoadStatus === "loaded" || assets.length > 0) payload.assets = assets;
 
     workspaceSaveTimerRef.current = window.setTimeout(() => {
       fetch("/api/workspace-state", {
@@ -8812,16 +9072,18 @@ export function ChatWorkbench() {
             return message.images?.includes(job.remoteUrl) || message.imageResultSlots?.some((slot) => slot.type === "image" && slot.url === job.remoteUrl);
           });
           const fromAsset = assets.find((asset) => asset.url === job.remoteUrl);
-          const fromWorkflow = workflowItems.flatMap((workflow) => workflow.canvas?.nodes.map((node) => ({ workflow, node })) ?? []).find(({ node }) => {
+          const fromWorkflow = workflowItems.flatMap((workflow) => workflow.canvas?.nodes?.map((node) => ({ workflow, node })) ?? []).find(({ node }) => {
             if (isVideo) return node.data.videoUrl === job.remoteUrl;
             return node.data.images?.includes(job.remoteUrl);
           });
           const message = fromMessage?.message;
           const session = fromMessage?.session;
-          const name = message?.mediaSystemNames?.[job.remoteUrl] ?? fromAsset?.systemName ?? fromAsset?.name ?? fromWorkflow?.node.title;
+          const workflowName = fromWorkflow?.node.data.mediaSystemNames?.[job.remoteUrl] ?? (job.localUrl ? fromWorkflow?.node.data.mediaSystemNames?.[job.localUrl] : undefined);
+          const name = message?.mediaSystemNames?.[job.remoteUrl] ?? fromAsset?.systemName ?? fromAsset?.name ?? workflowName ?? fromWorkflow?.node.title;
+          const promptDetail = isVideo ? message?.videoPromptDetails?.[job.remoteUrl] : message?.imagePromptDetails?.[job.remoteUrl];
           const sourcePrompt = isVideo
-            ? message?.videoPrompts?.[job.remoteUrl] ?? message?.generationMeta?.originalPrompt ?? fromAsset?.sourcePrompt ?? fromWorkflow?.node.data.prompt ?? message?.content
-            : message?.imagePrompts?.[job.remoteUrl] ?? fromAsset?.sourcePrompt ?? fromWorkflow?.node.data.prompt ?? fromWorkflow?.node.data.text ?? message?.content;
+            ? promptDetail?.prompt ?? message?.videoPrompts?.[job.remoteUrl] ?? message?.generationMeta?.originalPrompt ?? fromAsset?.sourcePrompt ?? fromWorkflow?.node.data.prompt ?? message?.content
+            : promptDetail?.prompt ?? message?.imagePrompts?.[job.remoteUrl] ?? fromAsset?.sourcePrompt ?? fromWorkflow?.node.data.prompt ?? fromWorkflow?.node.data.text ?? message?.content;
           const assetGenerationCategory = fromAsset && ["character_image", "scene_image", "shot_image"].includes(fromAsset.type) ? fromAsset.type : undefined;
           const currentCategory = fromWorkflow
             ? isVideo ? "workflow_videos" : "workflow_images"
@@ -8837,11 +9099,14 @@ export function ChatWorkbench() {
             thumbnailUrl: job.thumbnailUrl,
             dimensions: job.dimensions,
             sourcePrompt,
+            sourceDetail: getPromptSourceDetail(promptDetail),
             promptSource: "generated",
             conversationId: session?.id ?? fromAsset?.sessionId,
             messageId: message?.id ?? fromAsset?.messageId,
             workflowId: fromWorkflow?.workflow.id,
             workflowNodeId: fromWorkflow?.node.id,
+            model: fromWorkflow?.node.data.model,
+            settings: fromWorkflow ? { ratio: fromWorkflow.node.data.ratio, resolution: fromWorkflow.node.data.resolution, duration: fromWorkflow.node.data.duration } : undefined,
           }];
         });
 
@@ -8849,7 +9114,7 @@ export function ChatWorkbench() {
           setSessions((current) => current.map((session) => replaceSessionMediaUrls(session, replacements, dimensions, videoPosters)));
           setAssets((current) => current.map((asset) => replaceAssetMediaUrls(asset, replacements, videoPosters)));
           setAssetGenerateJobs((current) => current.map((job) => replaceAssetGenerateJobMediaUrls(job, replacements, dimensions)));
-          setWorkflowItems((current) => current.map((item) => replaceWorkflowItemMediaUrls(item, replacements)));
+          setWorkflowItems((current) => current.map((item) => replaceWorkflowItemMediaUrls(item, replacements, videoPosters)));
         }
         persistItems.forEach((item) => {
           void fetch("/api/media-assets", {
@@ -8871,83 +9136,6 @@ export function ChatWorkbench() {
       window.clearInterval(interval);
     };
   }, [assetGenerateJobs, assets, isLoaded, workflowItems, workspaceStorageMode]);
-
-  useEffect(() => {
-    if (!isLoaded || workspaceStorageMode !== "user") return;
-    const items = workflowItems.flatMap((workflow) => {
-      return (workflow.canvas?.nodes ?? []).flatMap((node) => {
-        const baseName = `${workflow.title}_${node.title}`.replace(/\s+/g, "").slice(0, 48) || node.title || workflow.title;
-        const sourcePrompt = node.data.prompt?.trim() || node.data.text?.trim() || workflow.title;
-        const imageItems = (node.data.images ?? []).flatMap((url, index) => {
-          if (!url || url.startsWith("data:") || isRemoteMediaUrl(url)) return [];
-          return [{ workflow, node, url, mediaType: "image" as const, currentCategory: "workflow_images" as const, name: node.data.images && node.data.images.length > 1 ? `${baseName}_${index + 1}` : baseName, sourcePrompt }];
-        });
-        const videoItems = node.data.videoUrl && !node.data.videoUrl.startsWith("data:") && !isRemoteMediaUrl(node.data.videoUrl)
-          ? [{ workflow, node, url: node.data.videoUrl, mediaType: "video" as const, currentCategory: "workflow_videos" as const, name: baseName, sourcePrompt }]
-          : [];
-        return [...imageItems, ...videoItems];
-      });
-    });
-    const newItems = items.filter((item) => {
-      const key = `${item.workflow.id}:${item.node.id}:${item.url}`;
-      if (persistedWorkflowMediaKeysRef.current.has(key)) return false;
-      if (assets.some((asset) => asset.url === item.url && isWorkflowAsset(asset))) {
-        persistedWorkflowMediaKeysRef.current.add(key);
-        return false;
-      }
-      persistedWorkflowMediaKeysRef.current.add(key);
-      return true;
-    });
-    if (newItems.length === 0) return;
-
-    setAssets((current) => {
-      let next = current;
-      newItems.forEach((item) => {
-        if (next.some((asset) => asset.url === item.url)) return;
-        next = [{
-          id: createClientId(),
-          type: item.mediaType === "video" ? "shot_video" : "other",
-          name: item.name,
-          systemName: item.name,
-          url: item.url,
-          librarySource: "workflow",
-          sourcePrompt: item.sourcePrompt,
-          promptSource: "generated",
-          sessionId: item.workflow.id,
-          workflowId: item.workflow.id,
-          workflowNodeId: item.node.id,
-          lockedType: true,
-          createdAt: Date.now(),
-        }, ...next];
-      });
-      return next;
-    });
-
-    newItems.forEach((item) => {
-      void fetch("/api/media-assets", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          url: item.url,
-          name: item.name,
-          currentCategory: item.currentCategory,
-          mediaType: item.mediaType,
-          sourcePrompt: item.sourcePrompt,
-          promptSource: "generated",
-          workflowId: item.workflow.id,
-          workflowNodeId: item.node.id,
-          model: item.node.data.model,
-          settings: {
-            ratio: item.node.data.ratio,
-            resolution: item.node.data.resolution,
-          },
-        }),
-      }).catch((error) => {
-        persistedWorkflowMediaKeysRef.current.delete(`${item.workflow.id}:${item.node.id}:${item.url}`);
-        console.warn("[media-assets] failed to persist workflow generated asset", error);
-      });
-    });
-  }, [assets, isLoaded, workflowItems, workspaceStorageMode]);
 
   useEffect(() => {
     if (!isLoaded || workspaceStorageMode !== "user") return;
@@ -9825,7 +10013,7 @@ export function ChatWorkbench() {
 
   const startNewWorkflow = () => {
     setOpenWorkflowMenuId("");
-    const existingUntitledWorkflow = workflowItems.find(isUntitledWorkflow);
+    const existingUntitledWorkflow = activeWorkflowItems.find(isUntitledWorkflow);
     if (existingUntitledWorkflow) {
       setActiveWorkflowId(existingUntitledWorkflow.id);
       return;
@@ -9833,7 +10021,7 @@ export function ChatWorkbench() {
 
     const workflow = createWorkflowItem(workflowItems);
     setWorkflowItems((current) => [workflow, ...current]);
-    setWorkflowVisibleItemCount((count) => Math.max(WORKFLOW_INITIAL_ITEM_COUNT, Math.min(workflowItems.length + 1, count + 1)));
+    setWorkflowVisibleItemCount((count) => Math.max(WORKFLOW_INITIAL_ITEM_COUNT, Math.min(activeWorkflowItems.length + 1, count + 1)));
     setActiveWorkflowId(workflow.id);
   };
 
@@ -9858,8 +10046,10 @@ export function ChatWorkbench() {
   const deleteWorkflow = (workflowId: string) => {
     setOpenWorkflowMenuId("");
     setWorkflowItems((current) => {
-      const next = ensureWorkflowItems(current.filter((item) => item.id !== workflowId));
-      if (activeWorkflowId === workflowId) setActiveWorkflowId(next[0]?.id ?? "");
+      const deletedAt = Date.now();
+      const next = ensureWorkflowItems(current.map((item) => item.id === workflowId ? { ...item, deletedAt, updatedAt: deletedAt } : item));
+      const nextVisible = next.filter((item) => !isDeletedWorkflow(item));
+      if (activeWorkflowId === workflowId) setActiveWorkflowId(nextVisible[0]?.id ?? next[0]?.id ?? "");
       return next;
     });
   };
@@ -9869,12 +10059,14 @@ export function ChatWorkbench() {
       const target = current.find((item) => item.id === workflowId);
       if (!target) return current;
       let title = target.title;
+      let workflowCode = getWorkflowCode(target);
       if (isUntitledWorkflow(target) && hasWorkflowAction(canvas)) {
         const result = getNextWorkflowTitleFromNumber(current, nextWorkflowNumber);
         title = result.title;
+        workflowCode = `w${getWorkflowNumberFromTitle(result.title)}`;
         setNextWorkflowNumber(result.nextWorkflowNumber);
       }
-      return current.map((item) => item.id === workflowId ? { ...item, title, canvas, updatedAt: Date.now() } : item);
+      return current.map((item) => item.id === workflowId ? { ...item, workflowCode, title, canvas, updatedAt: Date.now() } : item);
     });
   }, [nextWorkflowNumber]);
 
@@ -9883,7 +10075,7 @@ export function ChatWorkbench() {
     setSessions((current) => {
       const target = current.find((session) => session.id === sessionId);
       if (!target) return current;
-      return [target, ...current.filter((session) => session.id !== sessionId)];
+      return [{ ...target, updatedAt: Date.now() }, ...current.filter((session) => session.id !== sessionId)];
     });
   };
 
@@ -10103,7 +10295,7 @@ export function ChatWorkbench() {
     );
   }, []);
 
-  const appendImagesToAssistantMessage = useCallback((sessionId: string, requestId: string, imageUrls: string[], imageDimensions: Record<string, ImageDimensions> = {}, pendingCompleteCount = 1, imagePrompts: Record<string, string> = {}, mediaSystemNames: Record<string, string> = {}, retryFailedIndex?: number, targetSlotIndex?: number) => {
+  const appendImagesToAssistantMessage = useCallback((sessionId: string, requestId: string, imageUrls: string[], imageDimensions: Record<string, ImageDimensions> = {}, pendingCompleteCount = 1, imagePrompts: Record<string, string> = {}, mediaSystemNames: Record<string, string> = {}, retryFailedIndex?: number, targetSlotIndex?: number, imagePromptDetails: Record<string, PromptDetail> = {}) => {
     setSessions((current) =>
       current.map((session) =>
         session.id === sessionId
@@ -10139,6 +10331,7 @@ export function ChatWorkbench() {
                       })(),
                       imageDimensions: { ...(message.imageDimensions ?? {}), ...imageDimensions },
                       imagePrompts: { ...(message.imagePrompts ?? {}), ...imagePrompts },
+                      imagePromptDetails: { ...(message.imagePromptDetails ?? {}), ...imagePromptDetails },
                       mediaSystemNames: { ...(message.mediaSystemNames ?? {}), ...mediaSystemNames },
                       pendingImageCount: Math.max(0, (message.pendingImageCount ?? (message.retryingFailedImageIndexes?.length ? 0 : 1)) - pendingCompleteCount),
                       failedImageCount: message.retryingFailedImageIndexes?.length ? Math.max(0, (message.failedImageCount ?? 1) - pendingCompleteCount) : message.failedImageCount,
@@ -10252,7 +10445,7 @@ export function ChatWorkbench() {
     );
   }, []);
 
-  const appendVideoToAssistantMessage = useCallback((sessionId: string, requestId: string, videoUrl: string, prompt: string, mediaSystemName?: string, posterUrl?: string) => {
+  const appendVideoToAssistantMessage = useCallback((sessionId: string, requestId: string, videoUrl: string, prompt: string, mediaSystemName?: string, posterUrl?: string, promptDetail?: PromptDetail) => {
     setSessions((current) =>
       current.map((session) =>
         session.id === sessionId
@@ -10266,6 +10459,7 @@ export function ChatWorkbench() {
                       videoUrl: message.videoUrl ?? videoUrl,
                       videos: [...(message.videos ?? (message.videoUrl ? [message.videoUrl] : [])), videoUrl].filter((url, index, array) => array.indexOf(url) === index),
                       videoPrompts: { ...(message.videoPrompts ?? {}), [videoUrl]: prompt },
+                      videoPromptDetails: promptDetail ? { ...(message.videoPromptDetails ?? {}), [videoUrl]: promptDetail } : message.videoPromptDetails,
                       videoPosters: posterUrl ? { ...(message.videoPosters ?? {}), [videoUrl]: posterUrl } : message.videoPosters,
                       mediaSystemNames: mediaSystemName ? { ...(message.mediaSystemNames ?? {}), [videoUrl]: mediaSystemName } : message.mediaSystemNames,
                       pendingVideoCount: Math.max(0, (message.pendingVideoCount ?? (message.retryingFailedVideoIndexes?.length ? 0 : 1)) - 1),
@@ -10357,7 +10551,7 @@ export function ChatWorkbench() {
     );
   }, []);
 
-  const addGeneratedAssets = useCallback((sessionId: string, mode: WorkMode, sourcePrompt: string, urls: string[], messageId?: string, assetTargetType?: AssetTargetType, contextText = "", mediaSystemNames: Record<string, string> = {}, mediaPosterUrls: Record<string, string> = {}) => {
+  const addGeneratedAssets = useCallback((sessionId: string, mode: WorkMode, sourcePrompt: string, urls: string[], messageId?: string, assetTargetType?: AssetTargetType, contextText = "", mediaSystemNames: Record<string, string> = {}, mediaPosterUrls: Record<string, string> = {}, mediaPromptDetails: Record<string, PromptDetail> = {}) => {
     if (urls.length === 0) return;
 
     const namingText = [sourcePrompt, contextText].filter(Boolean).join("\n");
@@ -10402,6 +10596,7 @@ export function ChatWorkbench() {
     });
     if (workspaceStorageMode === "user") {
       itemsToPersist.forEach((item) => {
+        const promptDetail = mediaPromptDetails[item.url];
         void fetch("/api/media-assets", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -10411,7 +10606,8 @@ export function ChatWorkbench() {
             currentCategory: mode === "video" ? "conversation_videos" : "conversation_images",
             mediaType: mode === "video" ? "video" : "image",
             posterUrl: item.posterUrl,
-            sourcePrompt: namingText || sourcePrompt,
+            sourcePrompt: promptDetail?.prompt || namingText || sourcePrompt,
+            sourceDetail: getPromptSourceDetail(promptDetail),
             promptSource: "generated",
             conversationId: sessionId,
             messageId,
@@ -10482,6 +10678,100 @@ export function ChatWorkbench() {
       });
     }
   }, [assets, workspaceStorageMode]);
+
+  const addWorkflowGeneratedAssets = useCallback((workflowId: string, nodeId: string, media: { kind: "image" | "video"; urls: string[]; posterUrl?: string; sourcePrompt: string; model?: ModelName; ratio?: string; resolution?: string; duration?: string; dimensions?: Record<string, ImageDimensions> }) => {
+    const cleanUrls = media.urls.filter((url) => url && !url.startsWith("data:"));
+    if (cleanUrls.length === 0) return;
+    const workflow = workflowItems.find((item) => item.id === workflowId);
+    if (!workflow) return;
+    const reserved = reserveWorkflowMediaSystemNamesForItems(workflowItems, assets, workflowId, media.kind, cleanUrls);
+    if (reserved.workflows !== workflowItems) {
+      const reservedWorkflow = reserved.workflows.find((item) => item.id === workflowId);
+      if (reservedWorkflow) {
+        setWorkflowItems((current) => current.map((item) => item.id === workflowId ? {
+          ...item,
+          workflowCode: reservedWorkflow.workflowCode,
+          nextImageNumber: Math.max(item.nextImageNumber ?? 1, reservedWorkflow.nextImageNumber ?? 1),
+          nextVideoNumber: Math.max(item.nextVideoNumber ?? 1, reservedWorkflow.nextVideoNumber ?? 1),
+        } : item));
+      }
+    }
+
+    const items = cleanUrls.map((url) => {
+      const name = reserved.names[url] ?? (media.kind === "video" ? "视频生成" : "图片生成");
+      const dimensions = media.dimensions?.[url];
+      const displayRatio = dimensions ? getCommonRatioLabel(dimensions.width, dimensions.height) : media.ratio || "-";
+      const previewMeta: PreviewMediaMeta = media.kind === "video"
+        ? { modelLabel: media.model ? getGenerationModelLabel("video", media.model) : "-", ratio: displayRatio, sizeText: dimensions ? `${dimensions.width} × ${dimensions.height}` : "-", resolution: media.resolution || "-", mode: "video", duration: media.duration }
+        : { modelLabel: media.model ? getGenerationModelLabel("image", media.model) : "-", ratio: displayRatio, sizeText: dimensions ? `${dimensions.width} × ${dimensions.height}` : "-", resolution: media.resolution || "-", mode: "image" };
+      return { url, name, dimensions, previewMeta };
+    });
+
+    const systemNamesByUrl = Object.fromEntries(items.map((item) => [item.url, item.name]));
+    setWorkflowItems((current) => current.map((workflow) => {
+      if (workflow.id !== workflowId || !workflow.canvas?.nodes?.length) return workflow;
+      return {
+        ...workflow,
+        canvas: {
+          ...workflow.canvas,
+          nodes: workflow.canvas.nodes.map((node) => node.id === nodeId ? { ...node, data: { ...node.data, mediaSystemNames: { ...(node.data.mediaSystemNames ?? {}), ...systemNamesByUrl } } } : node),
+        },
+      };
+    }));
+
+    setAssets((current) => {
+      let next = current;
+      items.forEach((item) => {
+        const existingIndex = next.findIndex((asset) => normalizeMediaUrlForMatch(asset.url) === normalizeMediaUrlForMatch(item.url) && isWorkflowAsset(asset));
+        if (existingIndex >= 0) {
+          next = next.map((asset, index) => index === existingIndex ? { ...asset, name: item.name, systemName: item.name, userName: undefined, sourcePrompt: media.sourcePrompt, previewMeta: item.previewMeta, workflowId, workflowNodeId: nodeId } : asset);
+          return;
+        }
+        next = [{
+          id: createClientId(),
+          type: media.kind === "video" ? "shot_video" : "other",
+          name: item.name,
+          systemName: item.name,
+          url: item.url,
+          posterUrl: media.kind === "video" ? media.posterUrl : undefined,
+          librarySource: "workflow",
+          sourcePrompt: media.sourcePrompt,
+          promptSource: "generated",
+          previewMeta: item.previewMeta,
+          sessionId: workflowId,
+          workflowId,
+          workflowNodeId: nodeId,
+          lockedType: true,
+          createdAt: Date.now(),
+        }, ...next];
+      });
+      return next;
+    });
+
+    if (workspaceStorageMode === "user") {
+      items.forEach((item) => {
+        if (isRemoteMediaUrl(item.url)) return;
+        void fetch("/api/media-assets", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            url: item.url,
+            name: item.name,
+            currentCategory: media.kind === "video" ? "workflow_videos" : "workflow_images",
+            mediaType: media.kind,
+            posterUrl: media.kind === "video" ? media.posterUrl : undefined,
+            dimensions: item.dimensions,
+            sourcePrompt: media.sourcePrompt,
+            promptSource: "generated",
+            workflowId,
+            workflowNodeId: nodeId,
+            model: media.model,
+            settings: { ratio: media.ratio, resolution: media.resolution, duration: media.duration },
+          }),
+        }).then(() => loadWorkspaceAssets(true, media.kind === "video" ? "workflow_videos" : "workflow_images", 0, "auto")).catch((error) => console.warn("[media-assets] failed to persist workflow generated asset", error));
+      });
+    }
+  }, [assets, loadWorkspaceAssets, workflowItems, workspaceStorageMode]);
 
   const reserveMediaSystemNames = useCallback((sessionId: string, mode: WorkMode, urls: string[]) => {
     const cleanUrls = urls.filter((url) => url && !url.startsWith("data:"));
@@ -10618,7 +10908,8 @@ export function ChatWorkbench() {
           ? (availableMediaModels[generationMode].includes(pendingRequest.selectedMediaModels?.[generationMode] ?? "") ? pendingRequest.selectedMediaModels?.[generationMode] : availableMediaModels[generationMode][0]) as ModelName
           : getAgentGenerationModel(agentModelTier, generationMode, selectedGenerationModels, { sourceText, session: sessions.find((session) => session.id === sessionId), feedbackLogs, enabledModels: availableMediaModels });
         const agentSettings = getAgentGenerationSettingsFromPlan(plan, sourceText, generationMode, generationModel);
-        const agentPrompt = generationMode === "image" || generationMode === "video" ? getAgentPromptFromPlan(plan, sourceText, generationMode) : undefined;
+        const agentPromptDetail = generationMode === "image" || generationMode === "video" ? getAgentPromptDetailFromPlan(plan, sourceText, generationMode) : undefined;
+        const agentPrompt = joinPromptDetail(agentPromptDetail);
         const videoReferenceMode = generationMode === "video" ? getExplicitVideoReferenceMode([sourceText, agentPrompt ?? ""].join(" "), pendingRequest.referenceImages?.length ?? 0) : undefined;
         if (videoReferenceMode === "first_last_frame" && (pendingRequest.referenceImages?.length ?? 0) < 2) {
           appendSystemMessage(sessionId, { content: "首尾帧生视频需要至少两张参考图，请补充首帧和尾帧图片。", error: "首尾帧生视频需要至少两张参考图，请补充首帧和尾帧图片。", mode: "video" });
@@ -10633,10 +10924,12 @@ export function ChatWorkbench() {
         if (generationMode === "video" && generationModel.startsWith("byteplus:video.") && (pendingRequest.referenceImages?.length ?? 0) > (effectiveVideoReferenceImages?.length ?? 0)) {
           appendSystemMessage(sessionId, { content: getBytePlusVideoReferenceLimitHint(videoReferenceMode), mode: "video" });
         }
-        const plannedItemPrompts = agentPrompt ? getAgentItemPromptsFromPlan(plan, sourceText, generationMode) : undefined;
+        const plannedItemPromptDetails = agentPrompt ? getAgentItemPromptDetailsFromPlan(plan, sourceText, generationMode) : undefined;
+        const plannedItemPrompts = plannedItemPromptDetails?.map(joinPromptDetail);
         const agentItemPrompts = generationMode === "video" && agentPrompt && (!plannedItemPrompts?.length) && plan.count && plan.count > 1
           ? Array.from({ length: Math.min(20, Math.floor(plan.count)) }).map((_, index) => `${agentPrompt}，第 ${index + 1} 镜，只生成当前这一镜的一段视频`)
           : plannedItemPrompts;
+        const agentItemPromptDetails = plannedItemPromptDetails ?? (agentPromptDetail ? [agentPromptDetail] : undefined);
         const agentItemSettings = generationMode === "video" ? getAgentVideoItemSettingsFromPlan(plan, agentSettings, generationModel) : undefined;
         const agentDisplayText = generationMode === "image" || generationMode === "video" ? getAgentDisplayTextFromPlan(plan, generationMode, sourceText) : undefined;
         const assetTargetType = getAssetTypeFromText([sourceText, plan.subject, ...(plan.constraints ?? [])].filter(Boolean).join("，"), generationMode);
@@ -10653,6 +10946,7 @@ export function ChatWorkbench() {
           agentDisplayText,
           agentSuggestions: getAgentMediaSuggestions(generationMode, plan.suggestions),
           agentItemPrompts,
+          agentItemPromptDetails,
           agentItemSettings,
           referenceImages: effectiveVideoReferenceImages,
           imageReferences: effectiveVideoImageReferences,
@@ -10671,7 +10965,7 @@ export function ChatWorkbench() {
             mode: generationMode,
             requestId: pendingRequest.id,
             imageReferences: effectiveVideoImageReferences,
-            generationMeta: { mode: "image", model: nextPendingRequest.model, settings: nextPendingRequest.settings, preserveOriginalInput: nextPendingRequest.preserveOriginalInput, assetTargetType: nextPendingRequest.assetTargetType, originalPrompt: agentPrompt, agentGenerated: true },
+            generationMeta: { mode: "image", model: nextPendingRequest.model, settings: nextPendingRequest.settings, preserveOriginalInput: nextPendingRequest.preserveOriginalInput, assetTargetType: nextPendingRequest.assetTargetType, originalPrompt: agentPrompt, agentGenerated: true, itemPromptDetails: nextPendingRequest.agentItemPromptDetails },
           });
         }
 
@@ -10684,7 +10978,7 @@ export function ChatWorkbench() {
             mode: generationMode,
             requestId: pendingRequest.id,
             imageReferences: pendingRequest.imageReferences,
-            generationMeta: { mode: "video", model: nextPendingRequest.model, settings: nextPendingRequest.settings, preserveOriginalInput: nextPendingRequest.preserveOriginalInput, assetTargetType: nextPendingRequest.assetTargetType, originalPrompt: agentPrompt, agentGenerated: true, itemPrompts: agentItemPrompts },
+            generationMeta: { mode: "video", model: nextPendingRequest.model, settings: nextPendingRequest.settings, preserveOriginalInput: nextPendingRequest.preserveOriginalInput, assetTargetType: nextPendingRequest.assetTargetType, originalPrompt: agentPrompt, agentGenerated: true, itemPrompts: agentItemPrompts, itemPromptDetails: nextPendingRequest.agentItemPromptDetails },
           });
         }
 
@@ -10819,7 +11113,9 @@ export function ChatWorkbench() {
           const results = await Promise.allSettled(
             Array.from({ length: imageCount }).map(async (_, index) => {
               try {
-                const itemPrompt = pendingRequest.agentGenerated ? pendingRequest.agentItemPrompts?.[index] ?? getAgentImageVariantPrompt(prompt, sourceText, index, imageCount) : prompt;
+                const fallbackPromptDetail = pendingRequest.agentGenerated ? { prompt: getAgentImageVariantPrompt(prompt, sourceText, index, imageCount) } : undefined;
+                const itemPromptDetail = pendingRequest.agentGenerated ? pendingRequest.agentItemPromptDetails?.[index] ?? fallbackPromptDetail : undefined;
+                const itemPrompt = pendingRequest.agentGenerated ? joinPromptDetail(itemPromptDetail) || prompt : prompt;
                 const imageResult = await createImageWithRetry(itemPrompt, `${pendingRequest.id}:image:${index}`);
                 const resultImages = imageResult.images;
                 const resultDimensions = Object.fromEntries(resultImages.map((url) => [url, imageResult.imageDimensions[url]]).filter((item): item is [string, ImageDimensions] => Boolean(item[1])));
@@ -10827,8 +11123,9 @@ export function ChatWorkbench() {
                 addSessionUsage(sessionId, imageResult.usage);
                 applyCreditResult(sessionId, imageResult.credit);
                 const imagePrompts = Object.fromEntries(resultImages.map((url) => [url, itemPrompt]));
-                appendImagesToAssistantMessage(sessionId, pendingRequest.id, resultImages, resultDimensions, 1, imagePrompts, mediaSystemNames, pendingRequest.retryFailedIndex, pendingRequest.retryFailedIndex ?? index);
-                addGeneratedAssets(sessionId, pendingRequest.mode, itemPrompt, resultImages, undefined, pendingRequest.assetTargetType, contextText, mediaSystemNames);
+                const imagePromptDetails = itemPromptDetail ? Object.fromEntries(resultImages.map((url) => [url, itemPromptDetail])) : {};
+                appendImagesToAssistantMessage(sessionId, pendingRequest.id, resultImages, resultDimensions, 1, imagePrompts, mediaSystemNames, pendingRequest.retryFailedIndex, pendingRequest.retryFailedIndex ?? index, imagePromptDetails);
+                addGeneratedAssets(sessionId, pendingRequest.mode, itemPrompt, resultImages, undefined, pendingRequest.assetTargetType, contextText, mediaSystemNames, {}, imagePromptDetails);
                 notifyGenerationCompleteOnce(pendingRequest.id, "图片生成已完成");
                 return resultImages;
               } catch (error) {
@@ -10862,7 +11159,7 @@ export function ChatWorkbench() {
 
       if (pendingRequest.mode === "video" && prompt) {
         const withReferenceHint = (value: string) => pendingRequest.referenceHint ? `${value}\n\n${pendingRequest.referenceHint}` : value;
-        const createAndPollVideo = async (videoPrompt: string, itemSettings: GenerationSettings | undefined, itemIndex: number) => {
+        const createAndPollVideo = async (videoPrompt: string, itemSettings: GenerationSettings | undefined, itemIndex: number, promptDetail?: PromptDetail) => {
           let taskId = itemIndex === 0 ? pendingRequest.taskId : undefined;
           let videoUsageRecorded = false;
           let pendingVideoUsage: UsageMeta | undefined;
@@ -10991,8 +11288,8 @@ export function ChatWorkbench() {
             }
 
             const mediaSystemNames = reserveMediaSystemNames(sessionId, "video", [pollData.content.video_url]);
-            appendVideoToAssistantMessage(sessionId, pendingRequest.id, pollData.content.video_url, videoPrompt, mediaSystemNames[pollData.content.video_url], pollData.content.poster_url);
-            addGeneratedAssets(sessionId, pendingRequest.mode, videoPrompt, [pollData.content.video_url], undefined, pendingRequest.assetTargetType, pendingRequest.messages.map((message) => message.content).join("\n"), mediaSystemNames, pollData.content.poster_url ? { [pollData.content.video_url]: pollData.content.poster_url } : {});
+            appendVideoToAssistantMessage(sessionId, pendingRequest.id, pollData.content.video_url, videoPrompt, mediaSystemNames[pollData.content.video_url], pollData.content.poster_url, promptDetail);
+            addGeneratedAssets(sessionId, pendingRequest.mode, videoPrompt, [pollData.content.video_url], undefined, pendingRequest.assetTargetType, pendingRequest.messages.map((message) => message.content).join("\n"), mediaSystemNames, pollData.content.poster_url ? { [pollData.content.video_url]: pollData.content.poster_url } : {}, promptDetail ? { [pollData.content.video_url]: promptDetail } : {});
             notifyGenerationCompleteOnce(pendingRequest.id, "视频生成已完成");
             return pollData.content.video_url;
           }
@@ -11009,11 +11306,12 @@ export function ChatWorkbench() {
           }
         };
 
-        const videoPrompts = pendingRequest.agentGenerated ? pendingRequest.agentItemPrompts?.length ? pendingRequest.agentItemPrompts : [prompt] : [prompt];
+        const videoPromptDetails = pendingRequest.agentGenerated ? pendingRequest.agentItemPromptDetails?.length ? pendingRequest.agentItemPromptDetails : [{ prompt }] : undefined;
+        const videoPrompts = pendingRequest.agentGenerated ? videoPromptDetails?.map(joinPromptDetail) ?? [prompt] : [prompt];
         const results = await Promise.allSettled(
           videoPrompts.map(async (videoPrompt, index) => {
             try {
-              return await createAndPollVideo(videoPrompt, pendingRequest.agentItemSettings?.[index], index);
+              return await createAndPollVideo(videoPrompt, pendingRequest.agentItemSettings?.[index], index, videoPromptDetails?.[index]);
             } catch (error) {
               markAssistantVideoFailure(sessionId, pendingRequest.id, toUserErrorMessage(error, GENERIC_MEDIA_ERROR_MESSAGE));
               throw error;
@@ -11050,6 +11348,7 @@ export function ChatWorkbench() {
             originalPrompt: pendingRequest.originalPrompt,
             agentGenerated: pendingRequest.agentGenerated,
             itemPrompts: videoPrompts,
+            itemPromptDetails: videoPromptDetails,
           },
         });
       }
@@ -11736,6 +12035,7 @@ export function ChatWorkbench() {
       agentGenerated: replayMeta?.agentGenerated,
       agentDisplayText: replayMeta?.agentGenerated ? message.content : undefined,
       agentItemPrompts: replayMeta?.itemPrompts,
+      agentItemPromptDetails: replayMeta?.itemPromptDetails,
       settings:
         generationMode === "agent"
           ? undefined
@@ -11771,7 +12071,7 @@ export function ChatWorkbench() {
         requestId: pendingRequest.id,
         imageReferences: pendingRequest.imageReferences,
         uploadedFiles: replayUploadedFiles.length > 0 ? replayUploadedFiles : undefined,
-        generationMeta: generationMode === "image" || generationMode === "video" ? { mode: generationMode, model: pendingRequest.model, settings: pendingRequest.settings, preserveOriginalInput: pendingRequest.preserveOriginalInput, assetTargetType: pendingRequest.assetTargetType, originalPrompt: pendingRequest.originalPrompt, agentGenerated: pendingRequest.agentGenerated } : undefined,
+        generationMeta: generationMode === "image" || generationMode === "video" ? { mode: generationMode, model: pendingRequest.model, settings: pendingRequest.settings, preserveOriginalInput: pendingRequest.preserveOriginalInput, assetTargetType: pendingRequest.assetTargetType, originalPrompt: pendingRequest.originalPrompt, agentGenerated: pendingRequest.agentGenerated, itemPrompts: pendingRequest.agentItemPrompts, itemPromptDetails: pendingRequest.agentItemPromptDetails } : undefined,
       });
     }
     void runGeneration(sessionId, pendingRequest);
@@ -11808,6 +12108,7 @@ export function ChatWorkbench() {
       agentGenerated: meta.agentGenerated,
       agentDisplayText: meta.agentGenerated ? message.content : undefined,
       agentItemPrompts: meta.mode === "video" ? [prompt] : undefined,
+      agentItemPromptDetails: meta.itemPromptDetails?.[targetItemIndex] ? [meta.itemPromptDetails[targetItemIndex]] : undefined,
       retryFailedIndex: failedIndex,
       settings: meta.mode === "image" ? { ...meta.settings, imageCount: "1张" } : meta.settings,
       messages: activeSession.messages.filter((item) => item.role !== "system").map((item) => ({ role: item.role === "assistant" ? "assistant" : "user", content: item.content, images: item.images })),
@@ -12094,15 +12395,15 @@ export function ChatWorkbench() {
           const existingFiles = session.uploadedFiles ?? [];
           const existingKeys = new Set(existingFiles.map(getUploadedFileStorageValue));
           const nextFiles = [...existingFiles, ...documentEntries.filter((file) => !existingKeys.has(file.storageName))].slice(0, maxUploadFiles);
-          return { ...session, uploadedFiles: nextFiles };
+          return { ...session, uploadedFiles: nextFiles, updatedAt: Date.now() };
         }),
       );
 
-      uploadFiles.forEach(({ file }, index) => {
+      uploadFiles.forEach(({ file, media }, index) => {
         const entry = documentEntries[index];
         if (!entry) return;
 
-        void uploadDocumentFileAsset(file, (progress) => {
+        void uploadDocumentFileAsset(file, { conversationId: activeSessionId, mediaKind: media?.mediaKind, durationSeconds: media?.durationSeconds, dimensions: media?.dimensions }, (progress) => {
           setSessions((current) => current.map((session) => session.id === activeSessionId ? { ...session, uploadedFiles: (session.uploadedFiles ?? []).map((item) => typeof item !== "string" && item.id === entry.id ? { ...item, uploadProgress: progress, uploadStatus: "uploading" } : item) } : session));
         })
           .then((url) => {
@@ -12732,12 +13033,12 @@ export function ChatWorkbench() {
   };
 
   const showWorkspaceIntlBadge = workspaceSite === "malaysia";
-  const historySessions = sessions.filter((session) => !isDeletedSession(session));
+  const historySessions = sortByUpdatedAtDesc(sessions.filter((session) => !isDeletedSession(session)));
   const visibleHistorySessions = historySessions.slice(0, historyVisibleSessionCount);
   const hiddenHistorySessionCount = Math.max(0, historySessions.length - visibleHistorySessions.length);
   const historyDisplaySessionCount = Math.max(historyTotalSessionCount, historySessions.length);
-  const visibleWorkflowItems = workflowItems.slice(0, workflowVisibleItemCount);
-  const hiddenWorkflowItemCount = Math.max(0, workflowItems.length - visibleWorkflowItems.length);
+  const visibleWorkflowItems = activeWorkflowItems.slice(0, workflowVisibleItemCount);
+  const hiddenWorkflowItemCount = Math.max(0, activeWorkflowItems.length - visibleWorkflowItems.length);
   const shouldShowHistoryLoadStatus = activePanel !== "workflow" && sessions.length === 0 && workspaceLoadStatus !== "loaded";
   const historyLoadStatusText = workspaceLoadStatus === "failed" ? "重新加载历史" : "历史加载中...";
   const retryWorkspaceLoad = () => {
@@ -12946,8 +13247,8 @@ export function ChatWorkbench() {
         ) : (
           <>
             {!isSidebarCollapsed ? <div className="mb-2 flex items-center justify-between px-2 text-xs text-[#8a8a8a]">
-              <span>{activePanel === "workflow" ? "我的工作流" : "历史对话"}</span>
-              <span>{activePanel === "workflow" ? workflowItems.length : historyDisplaySessionCount}</span>
+              <span>{activePanel === "workflow" ? "历史工作流" : "历史对话"}</span>
+              <span>{activePanel === "workflow" ? activeWorkflowItems.length : historyDisplaySessionCount}</span>
             </div> : null}
             <button
               type="button"
@@ -13051,7 +13352,7 @@ export function ChatWorkbench() {
                       {activePanel === "workflow" && hiddenWorkflowItemCount > 0 ? (
                         <button
                           type="button"
-                          onClick={() => setWorkflowVisibleItemCount((count) => Math.min(workflowItems.length, count + WORKFLOW_LOAD_MORE_COUNT))}
+                          onClick={() => setWorkflowVisibleItemCount((count) => Math.min(activeWorkflowItems.length, count + WORKFLOW_LOAD_MORE_COUNT))}
                           className="mt-2 flex h-9 w-full items-center rounded-lg px-3 text-left transition hover:bg-[#ececec]"
                         >
                           <div className="min-w-0 truncate text-[13px] font-medium leading-[1.2] text-[#9a9a9a]">加载更多</div>
@@ -13208,7 +13509,7 @@ export function ChatWorkbench() {
               {activePanel === "workflow" && hiddenWorkflowItemCount > 0 ? (
                 <button
                   type="button"
-                  onClick={() => setWorkflowVisibleItemCount((count) => Math.min(workflowItems.length, count + WORKFLOW_LOAD_MORE_COUNT))}
+                  onClick={() => setWorkflowVisibleItemCount((count) => Math.min(activeWorkflowItems.length, count + WORKFLOW_LOAD_MORE_COUNT))}
                   className="mt-2 flex h-9 w-full items-center rounded-lg px-3 text-left transition hover:bg-[#ececec]"
                 >
                   <div className="min-w-0 truncate text-[13px] font-medium leading-[1.2] text-[#9a9a9a]">加载更多</div>
@@ -13516,6 +13817,41 @@ export function ChatWorkbench() {
                   workflowTitle={activeWorkflow.title}
                   enabledImageModelIds={enabledGenerationModelIds.image}
                   enabledVideoModelIds={enabledGenerationModelIds.video}
+                  getImageDisplayUrl={(url) => getMediaThumbnailUrl(url)}
+                  getVideoPosterDisplayUrl={(url, posterUrl) => {
+                    const poster = posterUrl ?? getLocalVideoPosterUrl(url);
+                    return poster ? getMediaThumbnailUrl(poster) : undefined;
+                  }}
+                  onGeneratedMedia={(media) => addWorkflowGeneratedAssets(activeWorkflow.id, media.nodeId, { kind: media.kind, urls: media.urls, posterUrl: media.posterUrl, sourcePrompt: media.sourcePrompt, model: media.model, ratio: media.ratio, resolution: media.resolution, duration: media.duration, dimensions: media.dimensions })}
+                  onPreviewMedia={(media) => {
+                    const existingAsset = assets.find((asset) => isWorkflowAsset(asset) && normalizeMediaUrlForMatch(asset.url) === normalizeMediaUrlForMatch(media.url));
+                    setPreviewDocumentFile(null);
+                    if (existingAsset) {
+                      setPreviewAsset(enrichAssetPreviewMeta(existingAsset));
+                      return;
+                    }
+                    const dimensions = media.dimensions;
+                    const previewMeta: PreviewMediaMeta = media.kind === "video"
+                      ? { modelLabel: media.model ? getGenerationModelLabel("video", media.model) : "-", ratio: dimensions ? getCommonRatioLabel(dimensions.width, dimensions.height) : media.ratio || "-", sizeText: dimensions ? `${dimensions.width} × ${dimensions.height}` : "-", resolution: dimensions ? getVideoResolutionFromDimensions(dimensions) ?? media.resolution ?? "-" : media.resolution || "-", mode: "video", duration: media.duration }
+                      : { modelLabel: media.model ? getGenerationModelLabel("image", media.model) : "-", ratio: dimensions ? getCommonRatioLabel(dimensions.width, dimensions.height) : media.ratio || "-", sizeText: dimensions ? `${dimensions.width} × ${dimensions.height}` : "-", resolution: dimensions ? getImageResolutionFromDimensions(dimensions) ?? media.resolution ?? "-" : media.resolution || "-", mode: "image" };
+                    setPreviewAsset({
+                      id: `${activeWorkflow.id}-${media.nodeId}-${media.kind}`,
+                      type: media.kind === "video" ? "shot_video" : "other",
+                      name: media.name,
+                      systemName: media.name,
+                      url: media.url,
+                      posterUrl: media.posterUrl,
+                      librarySource: "workflow",
+                      sourcePrompt: media.sourcePrompt || activeWorkflow.title,
+                      promptSource: "generated",
+                      previewMeta,
+                      sessionId: activeWorkflow.id,
+                      workflowId: activeWorkflow.id,
+                      workflowNodeId: media.nodeId,
+                      lockedType: true,
+                      createdAt: activeWorkflow.updatedAt ?? Date.now(),
+                    });
+                  }}
                   onChange={(canvas) => updateWorkflowCanvas(activeWorkflow.id, canvas)}
                   onCredit={applyWorkflowCreditResult}
                 />

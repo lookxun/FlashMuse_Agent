@@ -95,6 +95,7 @@ export type AdminCreditFlowItem = {
   isCostUnavailable?: boolean;
   isReversePrompt?: boolean;
   promptText?: string;
+  promptConstraints?: string[];
   createdAtLabel: string;
   createdAtTs: number;
 };
@@ -396,7 +397,7 @@ export function CreditFlowDialog({ user, onClose }: { user: AdminCreditUser; onC
                       <CreditFlowRow label="对话积分" credits={activeConversation.chatCredits} expectedCredits={activeConversation.chatExpectedCredits} usd={activeConversation.chatUsd ?? 0} cny={activeConversation.chatCny ?? 0} isChargeDisabled={activeConversation.chatChargeDisabled} />
                       <CreditFlowRow label="规划积分" credits={activeConversation.planCredits} expectedCredits={activeConversation.planExpectedCredits} usd={activeConversation.planUsd ?? 0} cny={activeConversation.planCny ?? 0} isChargeDisabled={activeConversation.planChargeDisabled} />
                       {activeConversation.mediaItems.map((item) => (
-                        <CreditFlowRow key={item.id} label={item.displayName} mediaName={item.mediaName} credits={item.credits} expectedCredits={item.expectedCredits} usd={item.usd} cny={item.cny} meta={formatMetaWithTime(item.parameters, item.createdAtLabel)} errorText={item.errorText} deletedAtLabel={item.deletedAtLabel} mediaUrl={item.url} mediaKind={item.kind} status={item.status} isUploadRecord={item.isUploadRecord} isChargeDisabled={item.isChargeDisabled} isCreditMissing={item.isCreditMissing} isCostUnavailable={item.isCostUnavailable} isReversePrompt={item.isReversePrompt} promptText={item.promptText} />
+                        <CreditFlowRow key={item.id} label={item.displayName} mediaName={item.mediaName} credits={item.credits} expectedCredits={item.expectedCredits} usd={item.usd} cny={item.cny} meta={formatMetaWithTime(item.parameters, item.createdAtLabel)} errorText={item.errorText} deletedAtLabel={item.deletedAtLabel} mediaUrl={item.url} mediaKind={item.kind} status={item.status} isUploadRecord={item.isUploadRecord} isChargeDisabled={item.isChargeDisabled} isCreditMissing={item.isCreditMissing} isCostUnavailable={item.isCostUnavailable} isReversePrompt={item.isReversePrompt} promptText={item.promptText} promptConstraints={item.promptConstraints} />
                       ))}
                       {activeConversation.mediaItems.length === 0 ? <div className="px-4 py-8 text-center text-[13px] text-[#999999]">该对话暂无图片或视频积分</div> : null}
                     </div>
@@ -411,7 +412,7 @@ export function CreditFlowDialog({ user, onClose }: { user: AdminCreditUser; onC
   );
 }
 
-function CreditFlowRow({ label, mediaName, credits, expectedCredits, usd, cny, meta, errorText, deletedAtLabel, mediaUrl, mediaKind, status = "success", isUploadRecord, isChargeDisabled, isCreditMissing, isCostUnavailable, isReversePrompt, promptText, showPromptCopyColumn }: { label: string; mediaName?: string; credits: number; expectedCredits?: number; usd: number; cny: number; meta?: string; errorText?: string; deletedAtLabel?: string; mediaUrl?: string; mediaKind?: "image" | "video" | "file"; status?: "success" | "failed"; isUploadRecord?: boolean; isChargeDisabled?: boolean; isCreditMissing?: boolean; isCostUnavailable?: boolean; isReversePrompt?: boolean; promptText?: string; showPromptCopyColumn?: boolean }) {
+function CreditFlowRow({ label, mediaName, credits, expectedCredits, usd, cny, meta, errorText, deletedAtLabel, mediaUrl, mediaKind, status = "success", isUploadRecord, isChargeDisabled, isCreditMissing, isCostUnavailable, isReversePrompt, promptText, promptConstraints, showPromptCopyColumn }: { label: string; mediaName?: string; credits: number; expectedCredits?: number; usd: number; cny: number; meta?: string; errorText?: string; deletedAtLabel?: string; mediaUrl?: string; mediaKind?: "image" | "video" | "file"; status?: "success" | "failed"; isUploadRecord?: boolean; isChargeDisabled?: boolean; isCreditMissing?: boolean; isCostUnavailable?: boolean; isReversePrompt?: boolean; promptText?: string; promptConstraints?: string[]; showPromptCopyColumn?: boolean }) {
   const isDeleted = errorText === "用户已删除";
   const safeExpectedCredits = Math.max(0, Math.floor(expectedCredits ?? credits));
   const creditsLabel = isUploadRecord ? "--" : isChargeDisabled && credits === 0 ? "0（扣分关闭）" : isCreditMissing && credits === 0 ? "0（扣分异常）" : (isCostUnavailable || credits === 0) && status !== "failed" ? "0（未返回成本）" : credits === 0 ? "0" : `-${credits.toLocaleString("en-US")}${safeExpectedCredits > credits ? ` / 应扣${safeExpectedCredits.toLocaleString("en-US")}` : ""}`;
@@ -420,7 +421,7 @@ function CreditFlowRow({ label, mediaName, credits, expectedCredits, usd, cny, m
 
   const copyPrompt = async () => {
     if (!promptText) return;
-    await navigator.clipboard.writeText(promptText);
+    await navigator.clipboard.writeText([promptText, ...(promptConstraints ?? [])].filter(Boolean).join("\n"));
     setCopiedPrompt(true);
     window.setTimeout(() => setCopiedPrompt(false), 1200);
   };
@@ -469,6 +470,7 @@ function CreditFlowRow({ label, mediaName, credits, expectedCredits, usd, cny, m
                 </span>
               ) : <span className="mr-2 text-[11px] font-medium text-[#999999]">提示词</span>}
               {promptText}
+              {promptConstraints?.length ? <div className="mt-0.5 text-[#999999]">{promptConstraints.join("，")}</div> : null}
             </div>
           ) : null}
           {meta ? <div className="mt-1 whitespace-pre-line text-[11px] leading-5 text-[#999999]">{meta}</div> : null}
@@ -546,7 +548,7 @@ export function CreditCategoryDialog({ title, user, categories, initialCategoryI
                     </div>
                     <div className="divide-y divide-[#eeeeee]">
                       {activeCategory.items.map((item) => (
-                        <CreditFlowRow key={item.id} label={item.displayName} mediaName={item.mediaName} credits={item.credits} expectedCredits={item.expectedCredits} usd={item.usd} cny={item.cny} meta={formatMetaWithTime(item.parameters, item.createdAtLabel)} errorText={item.errorText} deletedAtLabel={item.deletedAtLabel} mediaUrl={item.url} mediaKind={item.kind} status={item.status} isUploadRecord={item.isUploadRecord} isChargeDisabled={item.isChargeDisabled} isCreditMissing={item.isCreditMissing} isCostUnavailable={item.isCostUnavailable} isReversePrompt={item.isReversePrompt} promptText={item.promptText} showPromptCopyColumn={showPromptCopyColumn} />
+                        <CreditFlowRow key={item.id} label={item.displayName} mediaName={item.mediaName} credits={item.credits} expectedCredits={item.expectedCredits} usd={item.usd} cny={item.cny} meta={formatMetaWithTime(item.parameters, item.createdAtLabel)} errorText={item.errorText} deletedAtLabel={item.deletedAtLabel} mediaUrl={item.url} mediaKind={item.kind} status={item.status} isUploadRecord={item.isUploadRecord} isChargeDisabled={item.isChargeDisabled} isCreditMissing={item.isCreditMissing} isCostUnavailable={item.isCostUnavailable} isReversePrompt={item.isReversePrompt} promptText={item.promptText} promptConstraints={item.promptConstraints} showPromptCopyColumn={showPromptCopyColumn} />
                       ))}
                       {activeCategory.items.length === 0 ? <div className="px-4 py-8 text-center text-[13px] text-[#999999]">当前分类暂无积分明细</div> : null}
                     </div>

@@ -28,6 +28,7 @@
 - Do not classify uncertain conversation media into user asset categories by prompt guessing.
 - If recovering or migrating assets, prefer reliable sources in this order: `WorkspaceMessage`, then `CreditLedger.metadata`, then old workspace assets.
 - All generated images/videos and uploaded images are assets. Future uploaded videos should also be treated as assets. Current Seedance reference audio/video uploads are reference files stored under user `files`; they must be preserved in messages and requests even if they are not yet user-facing asset-library categories.
+- Current rule after 2026-06-23 deploy: uploaded videos, uploaded audios, and uploaded documents are also table-tracked assets. They are saved under `/generated/users/{userId}/files/...` and written into `MediaAsset + UserAssetState` with internal categories `conversation_upload_videos`, `conversation_upload_audios`, and `conversation_upload_documents`. User-facing asset-library groups for these categories are not added yet.
 
 ## Reference Image Rule
 
@@ -36,6 +37,11 @@
 - Avoid duplicate reference URLs before sending to model.
 - The `@` menu intentionally shows only role, scene, shot, and upload-image groups to avoid large-menu lag. Manually typed `@` may still resolve other existing conversation references when the code supports them.
 - Uploaded reference audio/video files can be mentioned with `@文件名` in video prompts. If the user does not manually place the mention, the client prepends missing media-file mentions to the prompt before sending.
+
+## Conversation Input Rule
+
+- The long conversation input editor should preserve the user's scroll/caret context. If the user scrolls upward inside the input box, typing, newline, paste, deleting mention spans, or inserting `@` references must not force the input content/caret to jump to the bottom.
+- If the input editor is already at the bottom, continued typing should keep following the bottom normally.
 
 ## BytePlus Seedance Video Rule
 
@@ -75,13 +81,21 @@
 - Workflow sidebar loading mirrors conversation history basics: show 10 items first and load 5 more at a time.
 - Workflow nodes should use the same enabled model lists as conversation image/video generation. Backend model availability switches must affect both UIs.
 - Text workflow nodes correspond to Agent text generation, image nodes correspond to image generation mode, and video nodes correspond to video generation mode. UI should reuse conversation input/control/card visual language where practical.
+- Workflow history should persist in `WorkspaceWorkflow`, mirroring conversation history tables rather than relying on `UserWorkspaceState.state.workflowItems`. Deletion is soft deletion with `deletedAt`; absent items in partial client payloads must not be treated as deletions.
+- Workflow node media cards should display thumbnails/poster thumbnails. Preview opens via the node card's bottom-right eye button because the card itself is used for selection and dragging. Preview modal should use the original image/video URL.
+- Workflow media naming must match conversation media naming semantics but use workflow codes. `工作流_01` maps to `w1`, `工作流_02` maps to `w2`; generated workflow media names are `image_N_wX` / `video_N_wX`. Counters are independent per workflow, successful generations fix the name permanently, and failed generations do not consume a number.
+- Workflow generated media must be written to the current node immediately on success for self-preview. A generation result belongs to the node that generated it and must not overwrite sibling nodes. Use latest canvas state when async generation completes.
+- Workflow right-side preview thumbnails must be scoped to the current workflow canvas. They should show only images/videos currently displayed in that workflow's nodes, not old hidden/history assets or other workflows' assets.
+- Workflow node cards must remain draggable regardless of state: empty, waiting, success image/video, or failed. Embedded media should not trigger browser drag-download; use `draggable={false}` on generated images/video posters.
+- Workflow input behavior should match conversation input: `Enter` sends/generates, `Shift+Enter` inserts a newline, and IME composition should not trigger send.
 
 ## Auth Session Rule
 
-- Local code now intends normal user login to be idle-based, not 30-day persistent login.
+- Normal user login is idle-based, not 30-day persistent login.
 - The idle timeout is 1 hour. Real user actions such as click, keyboard, wheel, touch, or scroll call `/api/auth/activity` and extend the session.
 - Routine background auth checks, workspace-instance checks, autosave, and media polling must not extend idle expiry.
 - Active generation waits are treated as activity. While any conversation, asset, or workflow generation is running, the workspace should keep the session alive periodically so long model waits do not kick the user out.
+- Admin login now follows the same 1-hour idle rule. Admin uses separate cookie `flashmuse-admin-session` and endpoint `/admin/api/auth/activity`, because the admin cookie path is `/admin`.
 
 ## Handover Maintenance Rule
 

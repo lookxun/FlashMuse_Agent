@@ -4,7 +4,7 @@ import { isAdminEmail } from "@/lib/admin";
 import { normalizeEmail } from "@/lib/auth";
 
 export const adminCookieName = "flashmuse-admin-session";
-const adminSessionMaxAgeSeconds = 60 * 60 * 8;
+const adminSessionMaxAgeSeconds = 60 * 60;
 const authSecret = process.env.AUTH_SECRET || "flashmuse-local-dev-secret-change-me";
 const forceInsecureAuthCookie = process.env.FORCE_INSECURE_AUTH_COOKIE === "true";
 const authCookieDomain = process.env.AUTH_COOKIE_DOMAIN?.trim() || undefined;
@@ -82,6 +82,26 @@ export async function createAdminSession(email: string) {
   const cookieStore = await cookies();
 
   setAdminCookie(cookieStore, token, adminSessionMaxAgeSeconds);
+}
+
+export async function refreshCurrentAdminActivity() {
+  const cookieStore = await cookies();
+  const rawCookieHeader = (await headers()).get("cookie") ?? "";
+  const tokens = getAdminCookieCandidates(cookieStore, rawCookieHeader);
+  if (tokens.length === 0) return false;
+
+  for (const token of tokens) {
+    const email = readValidAdminEmail(token);
+    if (!email) continue;
+
+    const expiresAt = Date.now() + adminSessionMaxAgeSeconds * 1000;
+    const payload = Buffer.from(JSON.stringify({ email, expiresAt })).toString("base64url");
+    setAdminCookie(cookieStore, `${payload}.${signAdminPayload(payload)}`, adminSessionMaxAgeSeconds);
+    return true;
+  }
+
+  await clearAdminSession();
+  return false;
 }
 
 export async function getCurrentAdminEmail() {

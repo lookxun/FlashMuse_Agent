@@ -23,6 +23,8 @@ export type CreditChargeResult = {
 export type CreditContext = {
   conversationId?: string;
   conversationTitle?: string;
+  workspaceKind?: string;
+  workspaceId?: string;
   requestId?: string;
   label?: string;
   model?: string;
@@ -86,6 +88,17 @@ function isPromptToolCreditSource(value: unknown) {
   return value === "image_prompt_reverse" || value === "prompt_optimization";
 }
 
+function getWorkspaceKindFromContext(context: CreditContext) {
+  if (context.workspaceKind) return context.workspaceKind;
+  const source = getMetadataRecord(context.metadata)?.creditSource;
+  if (typeof source === "string" && source.startsWith("workflow_")) return "workflow";
+  return context.conversationId ? "conversation" : undefined;
+}
+
+function getWorkspaceIdFromContext(context: CreditContext) {
+  return context.workspaceId || context.conversationId;
+}
+
 function mergeCreditMetadata(metadata: Prisma.InputJsonValue | undefined, extra: Prisma.InputJsonObject): Prisma.InputJsonValue {
   return metadata && typeof metadata === "object" && !Array.isArray(metadata) ? { ...metadata, ...extra } : extra;
 }
@@ -123,6 +136,8 @@ export async function chargeCredits(userId: string, kind: CreditKind, usage?: Us
   const promptTokens = Math.max(0, Math.floor(cleanNumber(usage?.promptTokens)));
   const completionTokens = Math.max(0, Math.floor(cleanNumber(usage?.completionTokens)));
   const totalTokens = Math.max(0, Math.floor(cleanNumber(usage?.totalTokens) || promptTokens + completionTokens));
+  const workspaceKind = getWorkspaceKindFromContext(context);
+  const workspaceId = getWorkspaceIdFromContext(context);
 
   if (context.requestId) {
     const existing = await prisma.creditLedger.findUnique({ where: { requestId_kind: { requestId: context.requestId, kind } } }).catch(() => null);
@@ -158,6 +173,8 @@ export async function chargeCredits(userId: string, kind: CreditKind, usage?: Us
         userId,
         conversationId: context.conversationId,
         conversationTitle: context.conversationTitle,
+        workspaceKind,
+        workspaceId,
         requestId: context.requestId,
         direction: "consume",
         kind,
@@ -202,6 +219,8 @@ export async function recordCreditFailure(userId: string, kind: CreditKind, cont
       userId,
       conversationId: context.conversationId,
       conversationTitle: context.conversationTitle,
+      workspaceKind: getWorkspaceKindFromContext(context),
+      workspaceId: getWorkspaceIdFromContext(context),
       requestId: context.requestId,
       direction: "consume",
       kind,
@@ -240,6 +259,8 @@ export async function grantCredits(userId: string, credits: number, kind: Credit
         userId,
         conversationId: context.conversationId,
         conversationTitle: context.conversationTitle,
+        workspaceKind: getWorkspaceKindFromContext(context),
+        workspaceId: getWorkspaceIdFromContext(context),
         requestId: context.requestId,
         direction: "increase",
         kind,

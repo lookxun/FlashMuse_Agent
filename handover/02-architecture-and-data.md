@@ -8,6 +8,7 @@
 - `UserWorkspaceState`: legacy workspace shell JSON and UI/workflow settings. Do not treat `state.assets` as the source of truth anymore.
 - `WorkspaceSession`: one row per conversation, with title, soft delete state, summary/memory fields, and legacy JSON.
 - `WorkspaceMessage`: one row per message, used for paged message loading and media extraction.
+- `WorkspaceWorkflow`: workflow history table. One row per workflow with title, soft delete state, `canvasJson`, optional usage summary, and workflow media naming fields `workflowCode`, `nextImageNumber`, and `nextVideoNumber`. Deployed on 2026-06-23 through migrations `20260623043000_workspace_workflows` and `20260623044000_backfill_workspace_workflows`; migration `20260624090000_workflow_media_names` was deployed on 2026-06-24. Production workflow UI entry remains disabled.
 - `MediaAsset`: fixed media facts: URL, normalized URL, type, source, prompt, model, dimensions, poster/thumbnail, cost share, conversation/message IDs, workflow placeholders, archive status.
 - `UserAssetState`: per-user mutable state for a media item: current name, category, sort order, soft delete, hidden state, BytePlus review state.
 
@@ -17,9 +18,9 @@
 - User-visible mutable asset state belongs in `UserAssetState`.
 - Conversation structure belongs in `WorkspaceSession + WorkspaceMessage`.
 - Billing belongs in `CreditLedger`.
-- Old workspace JSON is fallback, compatibility, and shell state only.
+- Old workspace JSON is shell state only for current code. Do not use `UserWorkspaceState.state.assets` as UI source of truth. Production `assetsOnly` currently reads `MediaAsset + UserAssetState` for all users with new-table rows; online audit on 2026-06-23 found `fallbackUsers=0`.
 - Uploaded-image reverse prompts belong in `MediaAsset.reversePrompt`; display paths should prefer `reversePrompt` over upload placeholders and original `sourcePrompt`.
-- New conversation uploads and generated conversation media should be persisted immediately through `/api/media-assets` and still be recoverable from `WorkspaceMessage` sync.
+- New conversation uploads, generated conversation media, workflow media, and uploaded video/audio/document files should be persisted into `MediaAsset + UserAssetState`. Generated conversation media is still recoverable from `WorkspaceMessage` sync.
 
 ## Core Media Generation Chain
 
@@ -33,11 +34,17 @@ The image/video generation chain is a core product path. Future workflow media m
 - Frontend polling through `/api/media-save-status` replaces temporary URLs with local URLs in chat messages, preview state, download source, asset list entries, asset-generation jobs, and workflow canvas nodes.
 - Saved local media is persisted to `MediaAsset + UserAssetState` even if UI replacement is delayed by preload/static-sync readiness.
 - Saved workflow media should use `workflow_images` / `workflow_videos` and include `workflowId` / `workflowNodeId` when available.
-- Current workflow state is still stored in `UserWorkspaceState.state.workflowItems`, not a separate workflow table. `workflowItems` contains id, title, created/updated times, optional `usageSummary`, and `canvas` with `nodes`, `edges`, and `viewport`. `nextWorkflowNumber` is stored beside it in the workspace shell to prevent reusing names like `工作流_01` after deletion.
-- `/api/workspace-state` summary shell must include `workflowItems`, `activeWorkflowId`, and `nextWorkflowNumber`. Do not strip these out of summary loads, or the frontend can autosave an empty workflow list over existing local workflow state.
+- Workflow history source of truth is now deployed `WorkspaceWorkflow`. `UserWorkspaceState` keeps workflow shell fields such as `activeWorkflowId` and `nextWorkflowNumber`; do not rely on `UserWorkspaceState.state.workflowItems` as the durable history source going forward.
+- `/api/workspace-state` summary shell returns workflow items loaded from `WorkspaceWorkflow`. It should continue to include `workflowItems`, `activeWorkflowId`, and `nextWorkflowNumber` for the frontend shell.
 - Workflow media source of truth follows the same media chain as conversation media. Local workflow images/videos should be upserted through `/api/media-assets` using categories `workflow_images` / `workflow_videos`, and should include `workflowId` and `workflowNodeId`. Frontend legacy assets returned from `mediaStateToLegacyAsset()` use `librarySource="workflow"` so they do not mix into conversation asset filters.
+- Workflow media naming mirrors conversation naming but uses workflow codes: `工作流_01 -> w1`, `工作流_02 -> w2`, then `image_N_wX` / `video_N_wX`. Each workflow has independent counters stored on `WorkspaceWorkflow.nextImageNumber` and `nextVideoNumber`. A successful generation reserves a name immediately; failed generations do not consume a name; names should not be recomputed when assets are loaded or refreshed.
+- Workflow nodes now carry `data.mediaSystemNames` keyed by media URL, analogous to conversation `Message.mediaSystemNames`. `data.imageDimensions` and `data.mediaSystemNames` must survive refresh/autosave. Server workflow save merges existing node media fields when the incoming client canvas lacks them, specifically preserving `images`, `imageDimensions`, `mediaSystemNames`, `videoUrl`, and `posterUrl`.
+- Runtime workflow node scanning/re-posting should not be used as the primary persistence path. It caused duplicate POSTs, name drift, and counter jumps. Workflow generated media should be handled at generation-success time through the `onGeneratedMedia` callback and then through remote-to-local replacement polling.
+- Workflow preview thumbnails should be built from the current workflow canvas nodes when previewing workflow media. Do not show all historical `workflow_images` or `workflow_videos` from the asset table in the preview rail; only media currently visible in that workflow's canvas should appear.
 - `.runtime/media-url-map.md` is an operational runtime mapping from remote temporary URLs to local URLs. It may contain signed provider URLs and must not be committed or copied into docs.
 - Data URLs and unsaved remote provider URLs should be skipped by asset-table sync. They are display/transient inputs, not durable asset identities.
+- Agent-generated media prompt details now split main prompt and hard constraints. `MediaAsset.sourcePrompt` stores the main asset prompt. `MediaAsset.sourceDetail` may contain JSON like `{ "agentConstraints": [...] }`; admin displays `sourcePrompt` in black and constraints in gray. Preserve per-URL mapping for multi-image and multi-video results.
+- Remote provider temporary URLs must not be inserted as `MediaAsset.url` / `normalizedUrl`. Use runtime mapping/debug files, especially `.runtime/media-url-map.md`, to associate remote URLs with saved local media and `mediaAssetId` where possible.
 
 ## Current User Asset Categories
 
@@ -53,12 +60,23 @@ Conversation media categories:
 - `conversation_uploads`
 - `conversation_images`
 - `conversation_videos`
+- `conversation_upload_videos`
+- `conversation_upload_audios`
+- `conversation_upload_documents`
+
+The three upload-file categories are internal new-table categories deployed on 2026-06-23. They are written by `/api/upload-file` but are not yet exposed as asset-library UI groups.
 
 Workflow categories are now actively used by local workflow work, though production workflow entry still remains feature-gated:
 
 - `workflow_uploads`
 - `workflow_images`
 - `workflow_videos`
+
+Workspace source markers are deployed:
+
+- `workspaceKind="conversation"` and `workspaceId=conversationId` for conversation rows.
+- `workspaceKind="workflow"` and `workspaceId=workflowId` for workflow rows.
+- `workspaceKind="asset_generation"` for role/scene/shot asset generation media where appropriate.
 
 Do not reintroduce old user-facing `shot_video` or `other` as primary asset library categories unless the user explicitly changes the product decision.
 
@@ -72,6 +90,7 @@ Do not reintroduce old user-facing `shot_video` or `other` as primary asset libr
 - Fresh upload cards should use `/api/media-thumbnail?url=...` fallback when no stored `thumbnailUrl` exists, so missing thumbnail files do not render broken images.
 - The upload-image placeholder text is now `上传图片`. Legacy placeholders `资产库上传` and `对话流上传` are recognized only for backward compatibility.
 - All upload-image entries should start in `conversation_uploads`; do not infer role/scene/shot from upload filenames or prompt context.
+- Uploaded videos, uploaded audios, and uploaded documents are now written into `MediaAsset + UserAssetState` by `/api/upload-file` with `sourcePrompt` values `上传视频`, `上传音频`, and `上传文档`. Their current categories are `conversation_upload_videos`, `conversation_upload_audios`, and `conversation_upload_documents`. UI groups for these categories are future work.
 - Browser image upload now uses same-origin `/api/asset-upload-temp` for temporary image uploads. Do not reintroduce cross-origin temporary image upload to `NEXT_PUBLIC_UPLOAD_BASE_URL` unless there is a verified need and browser/network behavior is retested from `ali.venusface.com` and `main.venusface.com`.
 - Frontend image conversion is best-effort. If canvas JPEG conversion fails or takes more than 5 seconds, the original file is uploaded and the server re-encodes it. Server upload saving intentionally re-encodes all uploaded images through ffmpeg into standard JPG, even when the input MIME is JPEG.
 - User asset category is mutable user state. Ordinary media upserts must not overwrite `UserAssetState.currentCategory` after a user has manually moved an asset. Use `/api/media-assets` `PATCH` for explicit moves; `POST` should preserve locked/user-recategorized existing state.

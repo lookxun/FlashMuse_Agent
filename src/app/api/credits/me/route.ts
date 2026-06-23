@@ -96,34 +96,26 @@ function getWorkspaceSessionMediaCounts(messages: unknown) {
   return { imageCount, videoCount };
 }
 
-function getWorkspaceAssetGenerationCounts(state: unknown) {
+async function getWorkspaceAssetGenerationCounts(userId: string) {
   const counts: Record<"character_image_generation" | "scene_image_generation" | "shot_image_generation", number> = {
     character_image_generation: 0,
     scene_image_generation: 0,
     shot_image_generation: 0,
   };
-
-  if (!state || typeof state !== "object" || Array.isArray(state)) return counts;
-  const assets = (state as { assets?: unknown }).assets;
-  if (!Array.isArray(assets)) return counts;
-
+  const rows = await prisma.userAssetState.findMany({
+    where: { userId, hiddenAt: null, deletedAt: null, mediaAsset: { archivedAt: null } },
+    select: { currentCategory: true, mediaAsset: { select: { normalizedUrl: true } } },
+  });
   const urls = {
     character_image_generation: new Set<string>(),
     scene_image_generation: new Set<string>(),
     shot_image_generation: new Set<string>(),
   };
-
-  for (const asset of assets) {
-    if (!asset || typeof asset !== "object" || Array.isArray(asset)) continue;
-    const librarySource = (asset as { librarySource?: unknown }).librarySource;
-    const type = (asset as { type?: unknown }).type;
-    const url = (asset as { url?: unknown }).url;
-    if (librarySource !== "asset_generation" || typeof url !== "string" || !url) continue;
-    if (type === "character_image") urls.character_image_generation.add(url);
-    if (type === "scene_image") urls.scene_image_generation.add(url);
-    if (type === "shot_image") urls.shot_image_generation.add(url);
+  for (const row of rows) {
+    if (row.currentCategory === "character_image") urls.character_image_generation.add(row.mediaAsset.normalizedUrl);
+    if (row.currentCategory === "scene_image") urls.scene_image_generation.add(row.mediaAsset.normalizedUrl);
+    if (row.currentCategory === "shot_image") urls.shot_image_generation.add(row.mediaAsset.normalizedUrl);
   }
-
   counts.character_image_generation = urls.character_image_generation.size;
   counts.scene_image_generation = urls.scene_image_generation.size;
   counts.shot_image_generation = urls.shot_image_generation.size;
@@ -134,7 +126,7 @@ export async function GET() {
   const user = await getCurrentUser();
   if (!user) return jsonError("请先登录", 401);
 
-  const [settings, ledgers, increaseTotal, workspace] = await Promise.all([
+  const [settings, ledgers, increaseTotal, workspace, workspaceAssetGenerationCounts] = await Promise.all([
     getCreditSettings(),
     prisma.creditLedger.findMany({
       where: { userId: user.id },
@@ -149,10 +141,10 @@ export async function GET() {
       where: { userId: user.id },
       select: { state: true },
     }),
+    getWorkspaceAssetGenerationCounts(user.id),
   ]);
 
   const workspaceSessionUsageMap = getWorkspaceSessionUsageMap(workspace?.state);
-  const workspaceAssetGenerationCounts = getWorkspaceAssetGenerationCounts(workspace?.state);
 
   const map = new Map<string, {
     conversationId: string;

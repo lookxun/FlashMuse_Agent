@@ -22,6 +22,16 @@ function getString(value: unknown, fallback = "") {
   return typeof value === "string" ? value : fallback;
 }
 
+function getPromptConstraintsFromSourceDetail(value: unknown) {
+  if (typeof value !== "string" || !value.trim()) return [];
+  try {
+    const parsed = JSON.parse(value) as { agentConstraints?: unknown };
+    return Array.isArray(parsed.agentConstraints) ? parsed.agentConstraints.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim()) : [];
+  } catch {
+    return [];
+  }
+}
+
 function getStringArray(value: unknown) {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.length > 0) : [];
 }
@@ -135,32 +145,13 @@ function buildAdminWorkspaceState(state: unknown, sessionRows: Array<{ sessionId
 }
 
 function getDeletedAssetInfoMap(state: unknown) {
-  const map = new Map<string, { deletedAtLabel?: string }>();
-  if (!isRecord(state) || !Array.isArray(state.assets)) return map;
-  for (const asset of state.assets.filter(isRecord)) {
-    const url = getString(asset.url);
-    const deletedAt = finiteNumber(asset.deletedAt);
-    if (!url || asset.type !== "trash" && deletedAt <= 0) continue;
-    const info = { deletedAtLabel: deletedAt > 0 ? formatTimestamp(deletedAt) : undefined };
-    map.set(url, info);
-    map.set(normalizeMediaUrlForAdmin(url), info);
-  }
-  return map;
+  void state;
+  return new Map<string, { deletedAtLabel?: string }>();
 }
 
 function getWorkspaceAssetDisplayNameMap(state: unknown) {
-  const map = new Map<string, string>();
-  if (!isRecord(state) || !Array.isArray(state.assets)) return map;
-  for (const asset of state.assets.filter(isRecord)) {
-    const url = getString(asset.url);
-    if (!url) continue;
-    const systemName = getString(asset.systemName) || getString(asset.name);
-    const userName = getString(asset.userName) || (getString(asset.name) && getString(asset.name) !== systemName ? getString(asset.name) : "");
-    const displayName = formatAdminMediaName(systemName, userName, userName || systemName || "媒体");
-    map.set(url, displayName);
-    map.set(normalizeMediaUrlForAdmin(url), displayName);
-  }
-  return map;
+  void state;
+  return new Map<string, string>();
 }
 
 function getWorkspaceConversations(state: unknown): AdminConversation[] {
@@ -231,21 +222,8 @@ function getWorkspaceMediaItems(state: unknown): AdminMediaItem[] {
 }
 
 function getWorkspaceAssetMediaItems(state: unknown): AdminMediaItem[] {
-  if (!isRecord(state) || !Array.isArray(state.assets)) return [];
-  return state.assets.filter(isRecord).flatMap((asset, index): AdminMediaItem[] => {
-    const assetType = getString(asset.type);
-    const effectiveAssetType = assetType === "trash" ? getString(asset.previousType) : assetType;
-    if (asset.librarySource !== "asset_generation") return [];
-    if (effectiveAssetType !== "character_image" && effectiveAssetType !== "scene_image" && effectiveAssetType !== "shot_image") return [];
-    const url = getString(asset.url);
-    if (!url) return [];
-    const previewMeta = isRecord(asset.previewMeta) ? asset.previewMeta : undefined;
-    const prompt = getString(asset.sourcePrompt);
-    const isUploadedAsset = !previewMeta;
-    const systemName = getString(asset.systemName) || getString(asset.name);
-    const userName = getString(asset.userName) || (getString(asset.name) && getString(asset.name) !== systemName ? getString(asset.name) : "");
-    return [{ id: getString(asset.id, `asset-image-${index}`), type: "image", assetType: effectiveAssetType, isDeleted: assetType === "trash" || Boolean(asset.deletedAt), deletedAtLabel: finiteNumber(asset.deletedAt) > 0 ? formatTimestamp(asset.deletedAt) : undefined, isUploadedAsset, isReversePrompt: isUploadedAsset && Boolean(prompt.trim()) && !isUploadPromptPlaceholder(prompt), systemName, userName, name: formatAdminMediaName(systemName, userName, `资产${index + 1}`), url, prompt: isUploadPromptPlaceholder(prompt) ? "" : prompt, model: getString(previewMeta?.modelLabel, "-"), ratio: getString(previewMeta?.ratio, "-"), resolution: getString(previewMeta?.resolution, "-"), duration: "-", size: getString(previewMeta?.sizeText, "-"), style: getString(previewMeta?.styleLabel, "-"), createdAtTs: finiteNumber(asset.createdAt) }];
-  });
+  void state;
+  return [];
 }
 
 function isAdminVideoUrl(url: string) {
@@ -275,6 +253,7 @@ function getMediaAssetItems(assetStates: any[], scope: "conversation" | "asset")
     const type = media.mediaType === "video" || isAdminVideoUrl(media.url) ? "video" : "image";
     const isUploadedAsset = category === "conversation_uploads" || getString(media.sourceKind).includes("upload");
     const prompt = getString(media.reversePrompt) || getString(media.sourcePrompt);
+    const promptConstraints = getPromptConstraintsFromSourceDetail(media.sourceDetail);
     const size = media.width && media.height ? `${media.width} × ${media.height}` : getString(media.imageSize, "-");
     const deletedAt = state.deletedAt instanceof Date ? state.deletedAt : null;
     return [{
@@ -292,6 +271,7 @@ function getMediaAssetItems(assetStates: any[], scope: "conversation" | "asset")
       name: displayName === "媒体" ? type === "video" ? `视频${index + 1}` : `图片${index + 1}` : displayName,
       url: media.url,
       prompt: isUploadPromptPlaceholder(prompt) ? "" : prompt,
+      promptConstraints,
       model: getString(media.model) ? getModelLabel(type, getString(media.model)) : "-",
       ratio: getString(media.ratio, "-"),
       resolution: getString(media.resolution, "-"),
@@ -305,7 +285,7 @@ function getMediaAssetItems(assetStates: any[], scope: "conversation" | "asset")
 
 function makeMediaFlowItem(item: AdminMediaItem, index: number, creditLookup: Map<string, AdminCreditFlowItem>): AdminCreditFlowItem {
   const creditItem = (item.requestId ? creditLookup.get(item.requestId) : undefined) ?? creditLookup.get(item.url) ?? creditLookup.get(normalizeMediaUrlForAdmin(item.url));
-  return { id: item.id || `${item.url}-${index}`, requestId: item.requestId || item.id || `${item.url}-${index}`, kind: item.type, systemName: item.systemName || item.name || "", displayName: item.name || item.systemName || (item.type === "video" ? `视频${index + 1}` : `图片${index + 1}`), url: item.url, status: "success", errorText: item.isDeleted ? "用户已删除" : undefined, deletedAtLabel: item.deletedAtLabel, credits: creditItem?.credits ?? 0, expectedCredits: creditItem?.expectedCredits, totalTokens: creditItem?.totalTokens ?? 0, usd: creditItem?.usd ?? 0, cny: creditItem?.cny ?? 0, count: 1, model: creditItem?.model ?? item.model, parameters: [item.model, item.ratio, [item.size, item.resolution].filter((value) => value && value !== "-").join(" "), item.type === "video" ? item.duration : ""].filter((value) => value && value !== "-").join(" | "), isCreditMissing: !creditItem, isCostUnavailable: Boolean(creditItem && !creditItem.isChargeDisabled && creditItem.status !== "failed" && creditItem.credits === 0 && creditItem.usd === 0 && creditItem.cny === 0), isReversePrompt: item.isReversePrompt, promptText: item.prompt, createdAtLabel: item.createdAtTs ? formatShortDate(new Date(item.createdAtTs)) : "-", createdAtTs: item.createdAtTs ?? 0 };
+  return { id: item.id || `${item.url}-${index}`, requestId: item.requestId || item.id || `${item.url}-${index}`, kind: item.type, systemName: item.systemName || item.name || "", displayName: item.name || item.systemName || (item.type === "video" ? `视频${index + 1}` : `图片${index + 1}`), url: item.url, status: "success", errorText: item.isDeleted ? "用户已删除" : undefined, deletedAtLabel: item.deletedAtLabel, credits: creditItem?.credits ?? 0, expectedCredits: creditItem?.expectedCredits, totalTokens: creditItem?.totalTokens ?? 0, usd: creditItem?.usd ?? 0, cny: creditItem?.cny ?? 0, count: 1, model: creditItem?.model ?? item.model, parameters: [item.model, item.ratio, [item.size, item.resolution].filter((value) => value && value !== "-").join(" "), item.type === "video" ? item.duration : ""].filter((value) => value && value !== "-").join(" | "), isCreditMissing: !creditItem, isCostUnavailable: Boolean(creditItem && !creditItem.isChargeDisabled && creditItem.status !== "failed" && creditItem.credits === 0 && creditItem.usd === 0 && creditItem.cny === 0), isReversePrompt: item.isReversePrompt, promptText: item.prompt, promptConstraints: item.promptConstraints, createdAtLabel: item.createdAtTs ? formatShortDate(new Date(item.createdAtTs)) : "-", createdAtTs: item.createdAtTs ?? 0 };
 }
 
 function addCategoryItem(map: Map<string, AdminCreditCategoryDetail>, id: string, title: string, item: AdminCreditFlowItem) {
@@ -554,7 +534,7 @@ export async function GET(request: Request) {
     const ledgerUrl = getLedgerMediaUrls(item.metadata)[0] ?? "";
     const matchedMedia = ledgerUrl ? mediaByUrl.get(ledgerUrl) ?? mediaByUrl.get(normalizeMediaUrlForAdmin(ledgerUrl)) : item.requestId ? mediaByUrl.get(item.requestId) : undefined;
     const flowKind = matchedMedia?.type ?? (item.kind === "video" ? "video" : "image");
-    const flowItem: AdminCreditFlowItem = { id: item.id, requestId: item.requestId ?? item.id, kind: flowKind, systemName: matchedMedia?.systemName || "", displayName: matchedMedia?.name || item.label || (flowKind === "video" ? "视频" : "图片"), url: matchedMedia?.url || ledgerUrl, status: getMetadataString(item.metadata, "status") === "failed" ? "failed" : "success", errorText: getMetadataString(item.metadata, "failureReason") || (matchedMedia?.isDeleted ? "用户已删除" : undefined), deletedAtLabel: matchedMedia?.deletedAtLabel, credits: item.credits, expectedCredits: getLedgerExpectedCredits(item, creditSettings.creditsPerCny), totalTokens: item.totalTokens, usd: item.usd, cny: item.cny, count: flowKind === "video" ? Math.max(item.videoCount, 1) : Math.max(item.imageCount, 1), model: item.model || "-", parameters: matchedMedia ? [matchedMedia.model, matchedMedia.ratio, [matchedMedia.size, matchedMedia.resolution].filter((value) => value && value !== "-").join(" "), matchedMedia.type === "video" ? matchedMedia.duration : ""].filter((value) => value && value !== "-").join(" | ") : getModelLabel(flowKind, item.model || "-"), isChargeDisabled: getMetadataBoolean(item.metadata, "creditChargeDisabled"), isCostUnavailable: !getMetadataBoolean(item.metadata, "creditChargeDisabled") && item.credits === 0 && item.usd === 0 && item.cny === 0, promptText: matchedMedia?.prompt || getMetadataString(item.metadata, "originalPrompt") || getMetadataString(item.metadata, "prompt"), createdAtLabel: formatShortDate(item.createdAt), createdAtTs: item.createdAt.getTime() };
+    const flowItem: AdminCreditFlowItem = { id: item.id, requestId: item.requestId ?? item.id, kind: flowKind, systemName: matchedMedia?.systemName || "", displayName: matchedMedia?.name || item.label || (flowKind === "video" ? "视频" : "图片"), url: matchedMedia?.url || ledgerUrl, status: getMetadataString(item.metadata, "status") === "failed" ? "failed" : "success", errorText: getMetadataString(item.metadata, "failureReason") || (matchedMedia?.isDeleted ? "用户已删除" : undefined), deletedAtLabel: matchedMedia?.deletedAtLabel, credits: item.credits, expectedCredits: getLedgerExpectedCredits(item, creditSettings.creditsPerCny), totalTokens: item.totalTokens, usd: item.usd, cny: item.cny, count: flowKind === "video" ? Math.max(item.videoCount, 1) : Math.max(item.imageCount, 1), model: item.model || "-", parameters: matchedMedia ? [matchedMedia.model, matchedMedia.ratio, [matchedMedia.size, matchedMedia.resolution].filter((value) => value && value !== "-").join(" "), matchedMedia.type === "video" ? matchedMedia.duration : ""].filter((value) => value && value !== "-").join(" | ") : getModelLabel(flowKind, item.model || "-"), isChargeDisabled: getMetadataBoolean(item.metadata, "creditChargeDisabled"), isCostUnavailable: !getMetadataBoolean(item.metadata, "creditChargeDisabled") && item.credits === 0 && item.usd === 0 && item.cny === 0, promptText: matchedMedia?.prompt || getMetadataString(item.metadata, "originalPrompt") || getMetadataString(item.metadata, "prompt"), promptConstraints: matchedMedia?.promptConstraints, createdAtLabel: formatShortDate(item.createdAt), createdAtTs: item.createdAt.getTime() };
     if (item.requestId) creditLookup.set(item.requestId, flowItem);
     if (flowItem.url) {
       creditLookup.set(flowItem.url, flowItem);

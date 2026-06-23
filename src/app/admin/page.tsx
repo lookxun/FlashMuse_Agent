@@ -3,6 +3,7 @@ import { getCurrentAdminEmail } from "@/lib/admin-auth";
 import { bytePlusImageGenerationModels, bytePlusVideoGenerationModels, imageGenerationModels, videoGenerationModels } from "@/lib/models";
 import { prisma } from "@/lib/prisma";
 import Link from "next/link";
+import { AdminActivityTracker } from "./admin-activity-tracker";
 import { AdminLogoutButton } from "./admin-logout-button";
 import { AdminLoginForm } from "./admin-login-form";
 import { AdminCreditsPanel, type AdminCreditCategoryDetail, type AdminCreditConversationDetail, type AdminCreditFlowItem, type AdminCreditUser } from "./admin-credits-panel";
@@ -119,6 +120,16 @@ function countStringArray(value: unknown) {
 
 function getString(value: unknown, fallback = "") {
   return typeof value === "string" ? value : fallback;
+}
+
+function getPromptConstraintsFromSourceDetail(value: unknown) {
+  if (typeof value !== "string" || !value.trim()) return [];
+  try {
+    const parsed = JSON.parse(value) as { agentConstraints?: unknown };
+    return Array.isArray(parsed.agentConstraints) ? parsed.agentConstraints.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim()) : [];
+  } catch {
+    return [];
+  }
 }
 
 function getStringArray(value: unknown) {
@@ -257,19 +268,8 @@ function getMediaPrompt(message: Record<string, unknown>, key: string) {
 }
 
 function getDeletedAssetInfoMap(state: unknown) {
-  const map = new Map<string, { deletedAtLabel?: string }>();
-  if (!isRecord(state) || !Array.isArray(state.assets)) return map;
-
-  for (const asset of state.assets.filter(isRecord)) {
-    const url = getString(asset.url);
-    const deletedAt = finiteNumber(asset.deletedAt);
-    if (!url || asset.type !== "trash" && deletedAt <= 0) continue;
-    const info = { deletedAtLabel: deletedAt > 0 ? formatTimestamp(deletedAt) : undefined };
-    map.set(url, info);
-    map.set(normalizeMediaUrlForAdmin(url), info);
-  }
-
-  return map;
+  void state;
+  return new Map<string, { deletedAtLabel?: string }>();
 }
 
 function getMessageRole(value: unknown): AdminConversationMessage["role"] {
@@ -598,20 +598,8 @@ function getWorkspaceMediaSystemNameMap(state: unknown) {
 }
 
 function getWorkspaceAssetDisplayNameMap(state: unknown) {
-  const map = new Map<string, string>();
-  if (!isRecord(state) || !Array.isArray(state.assets)) return map;
-
-  for (const asset of state.assets.filter(isRecord)) {
-    const url = getString(asset.url);
-    if (!url) continue;
-    const systemName = getString(asset.systemName) || getString(asset.name);
-    const userName = getString(asset.userName) || (getString(asset.name) && getString(asset.name) !== systemName ? getString(asset.name) : "");
-    const displayName = formatAdminMediaName(systemName, userName, userName || systemName || "媒体");
-    map.set(url, displayName);
-    map.set(normalizeMediaUrlForAdmin(url), displayName);
-  }
-
-  return map;
+  void state;
+  return new Map<string, string>();
 }
 
 function getWorkspaceMediaDetailMap(state: unknown) {
@@ -848,44 +836,8 @@ function isUploadPromptPlaceholder(value: string) {
 }
 
 function getWorkspaceAssetMediaItems(state: unknown): AdminMediaItem[] {
-  if (!isRecord(state) || !Array.isArray(state.assets)) return [];
-
-  return state.assets.filter(isRecord).flatMap((asset, index): AdminMediaItem[] => {
-    const assetType = getString(asset.type);
-    const effectiveAssetType = assetType === "trash" ? getString(asset.previousType) : assetType;
-    if (asset.librarySource !== "asset_generation") return [];
-    if (effectiveAssetType !== "character_image" && effectiveAssetType !== "scene_image" && effectiveAssetType !== "shot_image") return [];
-    const url = getString(asset.url);
-    if (!url) return [];
-
-    const previewMeta = isRecord(asset.previewMeta) ? asset.previewMeta : undefined;
-    const prompt = getString(asset.sourcePrompt);
-    const isUploadedAsset = !previewMeta;
-    const systemName = getString(asset.systemName) || getString(asset.name);
-    const userName = getString(asset.userName) || (getString(asset.name) && getString(asset.name) !== systemName ? getString(asset.name) : "");
-
-    return [{
-      id: getString(asset.id, `asset-image-${index}`),
-      type: "image",
-      assetType: effectiveAssetType,
-      isDeleted: assetType === "trash" || Boolean(asset.deletedAt),
-      deletedAtLabel: finiteNumber(asset.deletedAt) > 0 ? formatTimestamp(asset.deletedAt) : undefined,
-      isUploadedAsset,
-      isReversePrompt: isUploadedAsset && Boolean(prompt.trim()) && !isUploadPromptPlaceholder(prompt),
-      systemName,
-      userName,
-      name: formatAdminMediaName(systemName, userName, `资产${index + 1}`),
-      url,
-      prompt: isUploadPromptPlaceholder(prompt) ? "" : prompt,
-      model: getString(previewMeta?.modelLabel, "-"),
-      ratio: getString(previewMeta?.ratio, "-"),
-      resolution: getString(previewMeta?.resolution, "-"),
-      duration: "-",
-      size: getString(previewMeta?.sizeText, "-"),
-      style: getString(previewMeta?.styleLabel, "-"),
-      createdAtTs: finiteNumber(asset.createdAt),
-    }];
-  });
+  void state;
+  return [];
 }
 
 function getWorkspaceAssetMediaMap(state: unknown) {
@@ -989,7 +941,7 @@ function getMediaAssetConversationFlowItems(items: AdminMediaItem[]) {
   for (const item of items) {
     if (!item.conversationId) continue;
     const list = map.get(item.conversationId) ?? [];
-    list.push({ id: item.id, requestId: item.requestId || item.id, kind: item.type, systemName: item.systemName || "", displayName: item.name || item.systemName || (item.type === "video" ? "视频" : "图片"), url: item.url, status: "success", errorText: item.isDeleted ? "用户已删除" : undefined, deletedAtLabel: item.deletedAtLabel, credits: 0, totalTokens: 0, usd: 0, cny: 0, count: 1, model: item.model, parameters: formatAdminMediaParameterLine(item, item.type, item.model, item.name || "媒体"), isUploadRecord: item.isUploadedAsset, isReversePrompt: item.isReversePrompt, promptText: item.prompt, createdAtLabel: item.createdAtTs ? formatShortDate(new Date(item.createdAtTs)) : "-", createdAtTs: item.createdAtTs ?? 0 });
+    list.push({ id: item.id, requestId: item.requestId || item.id, kind: item.type, systemName: item.systemName || "", displayName: item.name || item.systemName || (item.type === "video" ? "视频" : "图片"), url: item.url, status: "success", errorText: item.isDeleted ? "用户已删除" : undefined, deletedAtLabel: item.deletedAtLabel, credits: 0, totalTokens: 0, usd: 0, cny: 0, count: 1, model: item.model, parameters: formatAdminMediaParameterLine(item, item.type, item.model, item.name || "媒体"), isUploadRecord: item.isUploadedAsset, isReversePrompt: item.isReversePrompt, promptText: item.prompt, promptConstraints: item.promptConstraints, createdAtLabel: item.createdAtTs ? formatShortDate(new Date(item.createdAtTs)) : "-", createdAtTs: item.createdAtTs ?? 0 });
     map.set(item.conversationId, list);
   }
   return map;
@@ -998,7 +950,6 @@ function getMediaAssetConversationFlowItems(items: AdminMediaItem[]) {
 function getWorkspaceSummary(state: unknown) {
   const summary = { conversationCount: 0, generatedImageCount: 0, generatedVideoCount: 0, savedAssetCount: 0, totalTokens: 0, usd: 0 };
   if (!isRecord(state)) return summary;
-  summary.savedAssetCount = Array.isArray(state.assets) ? state.assets.filter(isRecord).filter((asset) => getString(asset.url)).length : 0;
   if (!Array.isArray(state.sessions)) return summary;
 
   summary.conversationCount = state.sessions.length;
@@ -1046,24 +997,6 @@ function getWorkspaceRecordsSummary(state: unknown) {
   if (!isRecord(state)) return summary;
 
   const deletedAssetInfoMap = getDeletedAssetInfoMap(state);
-  if (Array.isArray(state.assets)) {
-    for (const asset of state.assets.filter(isRecord)) {
-      const assetType = getString(asset.type);
-      const effectiveAssetType = assetType === "trash" ? getString(asset.previousType) : assetType;
-      if (asset.librarySource !== "asset_generation") continue;
-      if (effectiveAssetType !== "character_image" && effectiveAssetType !== "scene_image" && effectiveAssetType !== "shot_image") continue;
-      const createdAtTs = finiteNumber(asset.createdAt);
-      summary.latestRecordTs = Math.max(summary.latestRecordTs, createdAtTs);
-      const isDeleted = assetType === "trash" || Boolean(asset.deletedAt);
-      if (isRecord(asset.previewMeta)) {
-        summary.imageGenerationCount += 1;
-        if (isDeleted) summary.imageGenerationDeletedCount += 1;
-      } else {
-        summary.uploadImageCount += 1;
-        if (isDeleted) summary.uploadImageDeletedCount += 1;
-      }
-    }
-  }
 
   if (!Array.isArray(state.sessions)) return summary;
   summary.conversationCount = state.sessions.filter(isRecord).length;
@@ -1138,6 +1071,7 @@ function getMediaAssetRecordsSummary(assetStates: any[]) {
 function AdminShell({ adminEmail, activeTab, children }: { adminEmail: string; activeTab: AdminTab; children: React.ReactNode }) {
   return (
     <main className="min-h-screen bg-[#f6f7f9] text-[#111111]">
+      <AdminActivityTracker />
       <div className="grid min-h-screen min-w-[1464px] grid-cols-[220px_minmax(0,1fr)]">
         <aside className="sticky top-0 flex h-screen flex-col border-r border-[#e6e6e6] bg-white px-4 py-5">
           <div>
@@ -1619,7 +1553,7 @@ export default async function AdminPage({ searchParams }: { searchParams?: Promi
       detail.totalCredits += item.credits;
       detail.totalUsd += item.usd;
       detail.totalCny += item.cny;
-      detail.items.push({ id: item.id, requestId: item.requestId ?? item.id, kind: "image", systemName: "", displayName: assetMedia?.name || item.label || category.title, url: assetMedia?.url || assetLedgerUrl, status: "success", errorText: isDeletedAssetMedia || assetMedia?.isDeleted ? "用户已删除" : undefined, deletedAtLabel: assetMedia?.deletedAtLabel, credits: item.credits, expectedCredits: getLedgerExpectedCredits(item, creditSettings.creditsPerCny), totalTokens: item.totalTokens, usd: item.usd, cny: item.cny, count: item.imageCount, model: item.model || "-", parameters: formatAdminMediaParameterLine(assetMedia, "image", item.model || "-", item.label || category.title), isChargeDisabled: getMetadataBoolean(item.metadata, "creditChargeDisabled"), isCostUnavailable: !getMetadataBoolean(item.metadata, "creditChargeDisabled") && item.credits === 0 && item.usd === 0 && item.cny === 0, promptText: assetMedia?.prompt, createdAtLabel: formatShortDate(item.createdAt), createdAtTs: item.createdAt.getTime() });
+      detail.items.push({ id: item.id, requestId: item.requestId ?? item.id, kind: "image", systemName: "", displayName: assetMedia?.name || item.label || category.title, url: assetMedia?.url || assetLedgerUrl, status: "success", errorText: isDeletedAssetMedia || assetMedia?.isDeleted ? "用户已删除" : undefined, deletedAtLabel: assetMedia?.deletedAtLabel, credits: item.credits, expectedCredits: getLedgerExpectedCredits(item, creditSettings.creditsPerCny), totalTokens: item.totalTokens, usd: item.usd, cny: item.cny, count: item.imageCount, model: item.model || "-", parameters: formatAdminMediaParameterLine(assetMedia, "image", item.model || "-", item.label || category.title), isChargeDisabled: getMetadataBoolean(item.metadata, "creditChargeDisabled"), isCostUnavailable: !getMetadataBoolean(item.metadata, "creditChargeDisabled") && item.credits === 0 && item.usd === 0 && item.cny === 0, promptText: assetMedia?.prompt, promptConstraints: assetMedia?.promptConstraints, createdAtLabel: formatShortDate(item.createdAt), createdAtTs: item.createdAt.getTime() });
       userDetails.set(category.id, detail);
       userAssetGenerationCreditDetailMap.set(item.userId, userDetails);
     } else if (creditSource === "image_prompt_reverse" || creditSource === "prompt_optimization") {
@@ -1745,6 +1679,7 @@ export default async function AdminPage({ searchParams }: { searchParams?: Promi
           isChargeDisabled: getMetadataBoolean(item.metadata, "creditChargeDisabled"),
           isCostUnavailable: !getMetadataBoolean(item.metadata, "creditChargeDisabled") && item.credits === 0 && item.usd === 0 && item.cny === 0 && resolvedUrl !== "__FAILED__",
           promptText: effectiveMediaDetail.prompt,
+          promptConstraints: effectiveMediaDetail.promptConstraints,
           createdAtLabel: formatShortDate(item.createdAt),
           createdAtTs: item.createdAt.getTime(),
         };
@@ -1950,7 +1885,7 @@ export default async function AdminPage({ searchParams }: { searchParams?: Promi
       };
     }));
     const mediaAssetItems = getMediaAssetItems(user.userAssetStates, "conversation");
-    const baseMediaItems = mediaAssetItems.length > 0 ? mediaAssetItems : [...getWorkspaceMediaItems(adminWorkspaceState), ...conversationUploadedImageMediaItems];
+    const baseMediaItems = mediaAssetItems;
     const deletedConversationDetailsForUser = Array.from(ledgerConversationDetailsForUser?.values() ?? []).filter((detail) => !workspaceConversationIdsForUser.has(detail.id));
     const mediaItems = [...getDeletedConversationMediaItems(deletedConversationDetailsForUser, baseMediaItems), ...baseMediaItems];
     const assetMediaItems = getMediaAssetItems(user.userAssetStates, "asset");
@@ -2004,7 +1939,9 @@ export default async function AdminPage({ searchParams }: { searchParams?: Promi
   const mau = users.filter((user) => getUserSessionActiveTime(user) >= thirtyDaysAgo).length;
   const todayLedgers = creditLedgers.filter((ledger) => ledger.createdAt >= todayStart);
   const todayConsumedCredits = todayLedgers.filter((ledger) => ledger.direction === "consume").reduce((sum, ledger) => sum + ledger.credits, 0);
-  const todayGenerationTasks = todayLedgers.filter((ledger) => ledger.kind === "image" || ledger.kind === "video").length;
+  const todayGeneratedImages = todayLedgers.reduce((sum, ledger) => sum + (ledger.kind === "image" ? Math.max(ledger.imageCount, 1) : 0), 0);
+  const todayGeneratedVideos = todayLedgers.reduce((sum, ledger) => sum + (ledger.kind === "video" ? Math.max(ledger.videoCount, 1) : 0), 0);
+  const todayGenerationTasks = todayGeneratedImages + todayGeneratedVideos;
   const totalWorkspaceSummary = users.reduce((summary, user) => {
     const item = getWorkspaceSummary(userAdminWorkspaceStateMap.get(user.id));
     const mediaItem = getMediaAssetRecordsSummary(user.userAssetStates);
@@ -2095,7 +2032,7 @@ export default async function AdminPage({ searchParams }: { searchParams?: Promi
             <StatCard label="当前总积分余额" value={totalCredits.toLocaleString("en-US")} note={`今日消耗 ${todayConsumedCredits.toLocaleString("en-US")}`} />
             <StatCard label="历史对话总数" value={totalWorkspaceSummary.conversationCount.toLocaleString("en-US")} note="来自工作区记录" />
             <StatCard label="资产保存总数" value={totalWorkspaceSummary.savedAssetCount.toLocaleString("en-US")} note={`图片：${totalImages.toLocaleString("en-US")}，视频：${totalVideos.toLocaleString("en-US")}`} />
-            <StatCard label="今日生成任务" value={todayGenerationTasks.toLocaleString("en-US")} note={`图片 ${totalImages} / 视频 ${totalVideos}`} />
+            <StatCard label="今日生成任务" value={todayGenerationTasks.toLocaleString("en-US")} note={`图片 ${todayGeneratedImages.toLocaleString("en-US")} / 视频 ${todayGeneratedVideos.toLocaleString("en-US")}`} />
           </section>
 
           <div className="mt-6 grid grid-cols-2 gap-4">

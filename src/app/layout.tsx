@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import Script from "next/script";
 import { GlobalScrollbarController } from "@/components/global-scrollbar-controller";
 import "./globals.css";
 
@@ -34,9 +35,7 @@ export default function RootLayout({
         <link rel="icon" href="/home-assets/logo.png?v=20260518-2" type="image/png" />
         <link rel="shortcut icon" href="/home-assets/logo.png?v=20260518-2" type="image/png" />
         <link rel="apple-touch-icon" href="/home-assets/logo.png?v=20260518-2" type="image/png" />
-        <script
-          dangerouslySetInnerHTML={{
-            __html: `
+        <Script id="client-error-reporter" strategy="afterInteractive">{`
 window.addEventListener('error', function (event) {
   try {
     navigator.sendBeacon('/api/client-error', new Blob([JSON.stringify({
@@ -60,9 +59,7 @@ window.addEventListener('unhandledrejection', function (event) {
       userAgent: navigator.userAgent
     })], { type: 'application/json' }));
   } catch (_) {}
-});`,
-          }}
-        />
+});`}</Script>
       </head>
       <body className="min-h-full flex flex-col"><GlobalScrollbarController />{children}</body>
     </html>
