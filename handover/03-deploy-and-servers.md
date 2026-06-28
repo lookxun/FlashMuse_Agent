@@ -25,6 +25,10 @@ Current notes:
 - Latest 2026-06-24 deploy uploaded local source archive `/tmp/flashmuse-20260624-workflow-input-deploy.tgz`, backed up production source to `.deploy-backups/20260624-workflow-input-deploy/source-before-deploy.tgz`, applied Prisma migration `20260624090000_workflow_media_names`, ran `npx prisma generate`, then `/usr/local/bin/deploy-flashmuse-production.sh`. Build passed with only existing Turbopack/NFT warnings, PM2 stayed online, and Ali `_next/static` synced. `NEXT_PUBLIC_WORKFLOW_MODE_ENABLED` was confirmed disabled/unset before deploy.
 - Latest 2026-06-24 deploy guard files: before snapshot `.runtime/deploy-checks/20260624-before-workflow-input-deploy.json`, after snapshot `.runtime/deploy-checks/20260624-after-workflow-input-deploy.json`. Compare returned `ok: true`; `stableMissingInNewTable=0`, `fallbackUsers=0`, and `assetListHash=81ece40e2d3c6134` stayed unchanged.
 - Latest 2026-06-26 app deploy was a narrow error-message-only deploy. Only `src/lib/error-message.ts` was copied to production, with backup `/var/www/flashmuse/.deploy-backups/20260626-error-message-audio-sensitive/error-message.ts.before`, then `/usr/local/bin/deploy-flashmuse-production.sh` ran. Build passed with existing Turbopack/NFT warnings; PM2 stayed online; Ali `_next/static` synced; `/workspace`, `/admin`, and `/api/model-availability` returned 200. Local tldraw/workflow work was intentionally not deployed.
+- Latest 2026-06-28 deploys were narrow production diagnostics/upload UI deploys. They intentionally did not deploy local workflow/tldraw dirty work. Backups: `.deploy-backups/20260628162851-generation-diagnostics`, `.deploy-backups/20260628164248-upload-diagnostics`, `.deploy-backups/20260628170012-upload-timeout-label`, and `.deploy-backups/20260628171000-upload-timeout-90s`.
+- New production diagnostic file `.runtime/generation-diagnostics-log.jsonl` records text/Agent/intent, image, video, and media-save main generation chain diagnostics. It is created on first relevant request.
+- New production diagnostic file `.runtime/upload-diagnostics-log.jsonl` records `/api/asset-upload-temp` and image upload/re-encode/commit diagnostics. It is created on first relevant upload request.
+- 2026-06-28 deployment verification passed after each narrow deploy: local and/or production `npx tsc --noEmit` passed, production build passed with only existing Turbopack/NFT broad-file warnings, PM2 stayed online, Ali `_next/static` synced, and `/workspace`, `/admin` when checked, `/api/model-availability`, and `/api/asset-upload-temp` OPTIONS when checked returned 200/204.
 - `scripts/prod-deploy-snapshot.mjs` is the reusable deploy guard. Production copy: `.runtime/deploy-checks/prod-deploy-snapshot.mjs`. Use it before risky deploys: `node .runtime/deploy-checks/prod-deploy-snapshot.mjs snapshot LABEL`, then compare with `node .runtime/deploy-checks/prod-deploy-snapshot.mjs compare BEFORE.json AFTER.json`.
 - For database changes on production, set `DATABASE_URL` from the running PM2 process if `.env.local` cannot be sourced directly. Working pattern used: `export DATABASE_URL="$(pm2 env 0 | grep ^DATABASE_URL | cut -c15-)"`, then run `npx prisma migrate deploy` and `npx prisma generate` before the standard deploy script.
 - On 2026-06-21, upload failures around 1MB were traced to `/etc/nginx/conf.d/flashmuse.conf`: missing semicolons after `server_name main.venusface.com api.venusface.com` caused `client_max_body_size` to be parsed incorrectly. Fixed config backup: `/etc/nginx/conf.d/flashmuse.conf.bak.20260621025418-upload-size-fix`.
@@ -58,6 +62,15 @@ Verified during rebuild:
 - `https://main.venusface.com/workspace` -> 200.
 - `https://api.venusface.com/api/model-availability` -> 200.
 - `https://main.venusface.com/admin` -> 200.
+
+## GitHub Repository
+
+- Current repository: `https://github.com/lookxun/FlashMuse_Agent`.
+- Current local `origin`: `https://github.com/lookxun/FlashMuse_Agent.git`.
+- Repository was renamed on 2026-06-26 from `lookxun/AI-Video-Assistant` to `lookxun/FlashMuse_Agent`.
+- Latest pushed commit after the rename and local workflow sync: `1c9211d Sync local workflow updates and repo rename`.
+- Repository-level Git identity is configured locally as `lookxun <lookxun@users.noreply.github.com>`. This only fixes local commits; pushing still requires valid GitHub credentials on the machine.
+- GitHub CLI `gh` is not installed on this Windows machine. The 2026-06-26 repository rename used the GitHub REST API with the existing local Git credential; do not print or store credentials in docs.
 
 ## Deployment Rules
 

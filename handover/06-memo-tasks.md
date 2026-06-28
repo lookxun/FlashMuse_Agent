@@ -1,6 +1,6 @@
 # Memo Tasks
 
-Last synced: 2026-06-21
+Last synced: 2026-06-26
 
 Definition: memo tasks are things the user says not to do now but may want later. Each item must include why it is not being done now and what to do later. When the user asks to see memo tasks, show all items in this file.
 
@@ -28,9 +28,9 @@ What to do later: when approved, enable production workflow entry, retest workfl
 
 ### [x] M004 Commit Deployed Local Changes
 
-Temporary reason: completed on 2026-06-23 after the user asked to do a GitHub sync.
+Temporary reason: completed on 2026-06-23 after the user asked to do a GitHub sync. Future local workflow/repo-rename changes were also committed and pushed on 2026-06-26.
 
-What to do later: no action unless future deployed local changes accumulate again.
+What to do later: no action unless future deployed local changes accumulate again. Current GitHub repository is `https://github.com/lookxun/FlashMuse_Agent`; latest pushed sync commit is `1c9211d Sync local workflow updates and repo rename`.
 
 ### [ ] M005 Input Mention Refactor
 

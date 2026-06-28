@@ -17,6 +17,8 @@ Read in this order:
 
 Project path: `E:\project\FlashMuse_Agent`
 
+GitHub repository: `https://github.com/lookxun/FlashMuse_Agent`
+
 Local root note, 2026-06-26:
 
 - The temporary copied folder `E:\project\FlashMuse_Agent` was removed after comparing it with the original `E:\project\AI-Video-Assistant` folder.
@@ -38,8 +40,17 @@ Default rule for future handover maintenance:
 5. Archived folders named `historical-handover-docs-last-used-*` are read-only. Do not modify, overwrite, or move files inside them unless the user explicitly asks to reorganize historical backups.
 6. Future handover updates must be written to the current files directly under `handover/`, not into archived folders.
 
-Important local state on rebuild:
+Important local state on 2026-06-20 rebuild:
 
-- Local key source files match the currently deployed Malaysia server source hashes for `src/lib/media-assets.ts`, `src/app/api/media-assets/route.ts`, `src/app/api/workspace-state/route.ts`, and `src/components/chat-workbench.tsx`.
-- Local Git still has uncommitted deployed changes. Do not assume GitHub is current.
-- Latest local commit seen during rebuild: `508008e Add media asset migration tooling`.
+- At that time, local key source files matched the currently deployed Malaysia server source hashes for `src/lib/media-assets.ts`, `src/app/api/media-assets/route.ts`, `src/app/api/workspace-state/route.ts`, and `src/components/chat-workbench.tsx`.
+- At that time, local Git still had uncommitted deployed changes; this was later superseded by 2026-06-23 and 2026-06-26 GitHub syncs.
+- Latest local commit seen during that rebuild: `508008e Add media asset migration tooling`.
+
+Important local state after 2026-06-26 repo rename/GitHub sync:
+
+- GitHub repository was renamed from `lookxun/AI-Video-Assistant` to `lookxun/FlashMuse_Agent`.
+- Local `origin` now points to `https://github.com/lookxun/FlashMuse_Agent.git`.
+- Latest pushed source-code sync commit after local workflow/custom context-menu/snapping and diagnostics work: `0f4c97c Implement workflow canvas updates and diagnostics`.
+- Later handover-only commits may follow this source-code sync commit.
+- Local repository-level Git identity was set to `lookxun <lookxun@users.noreply.github.com>` so future local commits do not fail with `Author identity unknown`.
+- After the local folder rename, if homepage flashes or Turbopack reports `Next.js package not found`, stop local Next Node processes and delete `.next`; this fixed the issue once on 2026-06-26.
