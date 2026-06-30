@@ -4,11 +4,11 @@ import { assertUserCanUseCredits, chargeCredits } from "@/lib/credits";
 import { createOpenRouterVideoTask, getBytePlusEffectiveReferenceImages, getOpenRouterVideoTask, type VideoReferenceMode } from "@/lib/openrouter-video";
 import { createCodedApiError } from "@/lib/error-code";
 import { GENERIC_MEDIA_ERROR_MESSAGE } from "@/lib/error-message";
-import { validateReferenceImageCount } from "@/lib/upload-rules";
+import { getUploadRule, validateReferenceImageCount } from "@/lib/upload-rules";
 import { enqueueRemoteAssetSave } from "@/lib/media-save-queue";
 import { getMediaSaveStatuses } from "@/lib/media-save-queue";
 import { upsertVideoManifestEntry } from "@/lib/video-manifest";
-import { isAgentVideoModelEnabled, isConversationVideoModelEnabled } from "@/lib/system-settings";
+import { getUploadRuleOverrides, isAgentVideoModelEnabled, isConversationVideoModelEnabled } from "@/lib/system-settings";
 import { prisma } from "@/lib/prisma";
 import { appendUploadRuleFeedbackLog } from "@/lib/upload-rule-feedback-log";
 import { appendVideoDiagnosticsLog, summarizeVideoReference } from "@/lib/video-diagnostics-log";
@@ -62,6 +62,10 @@ function withBytePlusVideoUsd(usage: UsageMeta | undefined, model: string | unde
 
 function isBytePlusVideoModel(model?: string) {
   return Boolean(model?.startsWith("byteplus:video."));
+}
+
+function getUploadRuleVideoReferenceMode(mode?: VideoReferenceMode) {
+  return mode === "first_last_frame" || mode === "first_frame" ? mode : undefined;
 }
 
 function getBytePlusReferenceRole(index: number, mode?: VideoReferenceMode) {
@@ -651,13 +655,18 @@ export async function POST(request: Request) {
     const referenceImages = Array.isArray(body.referenceImages) ? body.referenceImages : [];
     const referenceVideos = Array.isArray(body.referenceVideos) ? body.referenceVideos.filter((url) => typeof url === "string" && url.trim()) : [];
     const referenceAudios = Array.isArray(body.referenceAudios) ? body.referenceAudios.filter((url) => typeof url === "string" && url.trim()) : [];
+    const uploadRuleOverrides = getUploadRuleOverrides();
+    const uploadRuleVideoReferenceMode = getUploadRuleVideoReferenceMode(body.referenceMode);
+    const uploadRule = getUploadRule({ mode: "video", modelId: body.model, transportMode: "local-base64", videoReferenceMode: uploadRuleVideoReferenceMode }, uploadRuleOverrides);
     if (!isBytePlusVideoModel(body.model) && (referenceVideos.length > 0 || referenceAudios.length > 0)) return NextResponse.json({ error: "当前模型不支持上传音频或视频" }, { status: 400 });
-    if (referenceVideos.length > 3) return NextResponse.json({ error: "当前模型最多支持 3 个参考视频" }, { status: 400 });
-    if (referenceAudios.length > 3) return NextResponse.json({ error: "当前模型最多支持 3 个参考音频" }, { status: 400 });
+    if (referenceVideos.length > 0 && !uploadRule.video.enabled) return NextResponse.json({ error: "当前模型不支持上传视频" }, { status: 400 });
+    if (referenceAudios.length > 0 && !uploadRule.audio.enabled) return NextResponse.json({ error: "当前模型不支持上传音频" }, { status: 400 });
+    if (referenceVideos.length > uploadRule.video.maxCount) return NextResponse.json({ error: `当前模型最多支持 ${uploadRule.video.maxCount} 个参考视频` }, { status: 400 });
+    if (referenceAudios.length > uploadRule.audio.maxCount) return NextResponse.json({ error: `当前模型最多支持 ${uploadRule.audio.maxCount} 个参考音频` }, { status: 400 });
     if (referenceAudios.length > 0 && referenceImages.length === 0 && referenceVideos.length === 0) return NextResponse.json({ error: "参考音频不能单独用于生视频，请同时上传参考图片或参考视频" }, { status: 400 });
     if (isBytePlusVideoModel(body.model) && body.referenceMode === "first_frame" && referenceImages.length < 1) return NextResponse.json({ error: "首帧生视频需要至少一张参考图" }, { status: 400 });
     if (isBytePlusVideoModel(body.model) && body.referenceMode === "first_last_frame" && referenceImages.length < 2) return NextResponse.json({ error: "首尾帧生视频需要至少两张参考图" }, { status: 400 });
-    const referenceLimitError = validateReferenceImageCount({ mode: "video", modelId: body.model, transportMode: "local-base64" }, referenceImages.length);
+    const referenceLimitError = validateReferenceImageCount({ mode: "video", modelId: body.model, transportMode: "local-base64", videoReferenceMode: uploadRuleVideoReferenceMode }, referenceImages.length, uploadRuleOverrides);
     if (referenceLimitError) return NextResponse.json({ error: referenceLimitError }, { status: 400 });
 
     const user = await getCurrentUser();

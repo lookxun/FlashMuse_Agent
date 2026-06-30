@@ -7,6 +7,8 @@ import { DEFAULT_CHAT_MODEL, isModelName } from "@/lib/models";
 import { createCodedApiError } from "@/lib/error-code";
 import type { Prisma } from "@prisma/client";
 import { appendUploadRuleFeedbackLog, summarizeMessageUploads } from "@/lib/upload-rule-feedback-log";
+import { getUploadRuleOverrides } from "@/lib/system-settings";
+import { validateReferenceImageCount } from "@/lib/upload-rules";
 
 function mergeChatCreditMetadata(metadata: Prisma.InputJsonValue | undefined, extra: Prisma.InputJsonObject): Prisma.InputJsonValue {
   return metadata && typeof metadata === "object" && !Array.isArray(metadata) ? { ...metadata, ...extra } : extra;
@@ -76,6 +78,10 @@ export async function POST(request: Request) {
     if (body.mode !== "agent" && body.mode !== "general" && body.mode !== "chat" && body.mode !== "image" && body.mode !== "video") {
       return NextResponse.json({ error: "对话模式不正确" }, { status: 400 });
     }
+
+    const uploadSummary = summarizeMessageUploads(body.messages);
+    const referenceLimitError = validateReferenceImageCount({ mode: body.mode === "general" ? "general" : "agent", modelId: model, transportMode: "local-base64" }, uploadSummary.imageCount, getUploadRuleOverrides());
+    if (referenceLimitError) return NextResponse.json({ error: referenceLimitError }, { status: 400 });
 
     user = await getCurrentUser();
     if (body.mode === "general" && !user?.generalModeEnabled) {

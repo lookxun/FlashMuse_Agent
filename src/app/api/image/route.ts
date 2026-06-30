@@ -5,7 +5,7 @@ import { generateOpenRouterImage } from "@/lib/openrouter";
 import { createCodedApiError } from "@/lib/error-code";
 import { GENERIC_MEDIA_ERROR_MESSAGE } from "@/lib/error-message";
 import { getExpectedImageDimensions } from "@/lib/models";
-import { isAgentImageModelEnabled, isAssetImageModelEnabled, isConversationImageModelEnabled } from "@/lib/system-settings";
+import { getUploadRuleOverrides, isAgentImageModelEnabled, isAssetImageModelEnabled, isConversationImageModelEnabled } from "@/lib/system-settings";
 import { validateReferenceImageCount } from "@/lib/upload-rules";
 import type { Prisma } from "@prisma/client";
 import { appendUploadRuleFeedbackLog } from "@/lib/upload-rule-feedback-log";
@@ -94,7 +94,7 @@ export async function POST(request: Request) {
     const creditSource = getCreditSource(body.metadata);
     if (body.model && !isImageModelEnabledForSource(body.model, creditSource)) return NextResponse.json({ error: "连接不到模型，请联系管理员！" }, { status: 400 });
     const referenceImages = Array.isArray(body.referenceImages) ? body.referenceImages : [];
-    const referenceLimitError = validateReferenceImageCount({ mode: isAssetImageCreditSource(creditSource) ? "asset-image" : "image", modelId: body.model, transportMode: "local-base64" }, referenceImages.length);
+    const referenceLimitError = validateReferenceImageCount({ mode: isAssetImageCreditSource(creditSource) ? "asset-image" : "image", modelId: body.model, transportMode: "local-base64" }, referenceImages.length, getUploadRuleOverrides());
     if (referenceLimitError) return NextResponse.json({ error: referenceLimitError }, { status: 400 });
 
     const user = await getCurrentUser();

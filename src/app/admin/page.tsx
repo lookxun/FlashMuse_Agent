@@ -13,7 +13,7 @@ import { AdminSystemSettingsPanel } from "./admin-system-settings-panel";
 import { AdminUploadRulesPanel } from "./admin-upload-rules-panel";
 import { AdminUsersPanel, type AdminConversation, type AdminConversationMessage, type AdminMediaItem, type AdminUserRow } from "./admin-users-panel";
 import { getCreditSettings } from "@/lib/credits";
-import { getAdminSystemSettings } from "@/lib/system-settings";
+import { getAdminSystemSettings, getUploadRuleOverrides } from "@/lib/system-settings";
 import type { IconType } from "react-icons";
 import { RiDashboardLine, RiFileList3Line, RiListSettingsLine, RiServerLine, RiSettingsLine, RiUser3Line, RiVipDiamondLine } from "react-icons/ri";
 
@@ -1233,7 +1233,7 @@ export default async function AdminPage({ searchParams }: { searchParams?: Promi
   if (activeTab === "upload-rules") {
     return (
       <AdminShell adminEmail={currentAdminEmail} activeTab={activeTab}>
-        <AdminUploadRulesPanel />
+        <AdminUploadRulesPanel initialUploadRuleOverrides={getUploadRuleOverrides()} />
       </AdminShell>
     );
   }

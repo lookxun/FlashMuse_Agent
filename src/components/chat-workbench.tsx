@@ -34,6 +34,8 @@ import {
   RiFolderOpenLine,
   RiFormatClear,
   RiLandscapeLine,
+  RiImage2Line,
+  RiImageCircleLine,
   RiImageLine,
   RiLayoutLeft2Line,
   RiLayoutLeftLine,
@@ -97,7 +99,7 @@ import { toUserErrorMessage } from "@/lib/error-message";
 import { useBodyScrollLock } from "@/components/use-body-scroll-lock";
 import { BytePlusIcon } from "@/components/byteplus-icon";
 import { WorkflowCanvas, type WorkflowCanvasState, type WorkflowNode } from "@/components/workflow-tldraw-canvas";
-import { getSupportedUploadTypeLabel, getUploadAcceptValue, getUploadKindFromFileName, getUploadRule } from "@/lib/upload-rules";
+import { getSupportedUploadTypeLabel, getUploadAcceptValue, getUploadKindFromFileName, getUploadRule, type UploadRuleOverrides } from "@/lib/upload-rules";
 import { sanitizeModelOutputText } from "@/lib/text-cleanup";
 
 const HISTORY_INITIAL_SESSION_COUNT = 10;
@@ -330,23 +332,26 @@ type PendingGeneration = {
   sourceText?: string;
 };
 
-type VideoReferenceMode = "reference" | "first_frame" | "last_frame" | "first_last_frame";
+type VideoReferenceMode = "reference" | "first_frame" | "first_last_frame";
 
-function getExplicitVideoReferenceMode(text: string, referenceCount: number): VideoReferenceMode | undefined {
-  if (referenceCount <= 0) return undefined;
+const videoReferenceModeOptions: Array<{ value: VideoReferenceMode; label: string; description: string; icon: typeof RiImageLine }> = [
+  { value: "reference", label: "融合模式", description: "支持 1-9 张图片，1-3 个视频，1-3 个音频", icon: RiImageCircleLine },
+  { value: "first_frame", label: "首帧模式", description: "支持 1 张首帧图片", icon: RiImage2Line },
+  { value: "first_last_frame", label: "首尾帧模式", description: "支持 2 张图片：首帧和尾帧", icon: RiMultiImageLine },
+];
 
-  const normalized = text.replace(/\s+/g, "");
-  if (/首尾帧|首帧.*尾帧|尾帧.*首帧|第一帧.*最后一帧|最后一帧.*第一帧|开头帧.*结尾帧|结尾帧.*开头帧/.test(normalized)) return "first_last_frame";
-  if (/尾帧|最后一帧|结尾帧|结束帧|收尾帧|作为结尾|当作结尾|做结尾|做尾帧|以这张图结束|以此图结束/.test(normalized)) return undefined;
-  if (/首帧|第一帧|开头帧|起始帧|开始帧|作为开头|当作开头|做开头|做首帧|从这张图开始|以这张图开始|用这张图开头/.test(normalized)) return "first_frame";
+function getVideoReferenceModeLabel(value: VideoReferenceMode) {
+  return videoReferenceModeOptions.find((option) => option.value === value)?.label ?? "融合模式";
+}
 
-  return undefined;
+function isBytePlusSeedanceVideoModel(modelId?: string) {
+  return modelId === "byteplus:video.seedance-2-0" || modelId === "byteplus:video.seedance-2-0-fast";
 }
 
 function getEffectiveBytePlusVideoReferenceItems<T>(items: T[] | undefined, mode?: VideoReferenceMode): T[] {
   const safeItems = Array.isArray(items) ? items.filter(Boolean) : [];
   if (mode === "first_last_frame") return safeItems.slice(0, 2);
-  if (mode === "first_frame" || mode === "last_frame") return safeItems.slice(0, 1);
+  if (mode === "first_frame") return safeItems.slice(0, 1);
   return safeItems.slice(0, 9);
 }
 
@@ -393,7 +398,7 @@ type MessageGenerationMeta = {
   itemPromptDetails?: PromptDetail[];
 };
 
-type ControlMenuName = "model" | "generalChatModel" | "generalImageModel" | "generalVideoModel" | "characterModel" | "characterRatio" | "characterResolution" | "characterStyle" | "imageSettings" | "style" | "duration" | "imageCount";
+type ControlMenuName = "model" | "generalChatModel" | "generalImageModel" | "generalVideoModel" | "characterModel" | "characterRatio" | "characterResolution" | "characterStyle" | "imageSettings" | "style" | "duration" | "imageCount" | "videoReferenceMode";
 type ModeMenuName = "mode";
 type ActivePanel = "chat" | "workflow" | "assets";
 type UserDialogTab = "profile" | "credits" | "security" | "settings";
@@ -610,6 +615,7 @@ const HOME_PROMPT_STORAGE_KEY = "flashmuse-home-prompt-v1";
 const WORKSPACE_USER_DIALOG_STORAGE_KEY = "flashmuse-workspace-user-dialog-v1";
 const WORKSPACE_THEME_STORAGE_KEY = "flashmuse-workspace-theme-v1";
 const WORKSPACE_UI_STATE_STORAGE_KEY = "flashmuse-workspace-ui-state-v1";
+const WORKFLOW_SESSION_COLLAPSE_STORAGE_PREFIX = "flashmuse-workflow-first-collapse-v1";
 type WorkspaceThemeMode = "light" | "dark" | "system";
 
 function getStoredWorkspaceThemeMode(): WorkspaceThemeMode {
@@ -3292,6 +3298,21 @@ function setStoredWorkspaceUiState(next: StoredWorkspaceUiState) {
   try {
     const current = getStoredWorkspaceUiState();
     window.localStorage.setItem(WORKSPACE_UI_STATE_STORAGE_KEY, JSON.stringify({ ...current, ...next }));
+  } catch {
+    // UI state persistence is best-effort.
+  }
+}
+
+function getWorkflowSessionCollapseStorageKey(userId: string, email: string) {
+  const userKey = userId.trim() || email.trim();
+  return userKey ? `${WORKFLOW_SESSION_COLLAPSE_STORAGE_PREFIX}:${userKey}` : "";
+}
+
+function clearWorkflowSessionCollapseStorage(userId: string, email: string) {
+  if (typeof window === "undefined") return;
+  try {
+    const key = getWorkflowSessionCollapseStorageKey(userId, email);
+    if (key) window.sessionStorage.removeItem(key);
   } catch {
     // UI state persistence is best-effort.
   }
@@ -6816,6 +6837,7 @@ export function ChatWorkbench() {
     image: DEFAULT_IMAGE_MODEL,
     video: DEFAULT_VIDEO_MODEL,
   });
+  const [selectedVideoReferenceMode, setSelectedVideoReferenceMode] = useState<VideoReferenceMode>("reference");
   const [selectedGeneralModels, setSelectedGeneralModels] = useState<Record<"chat" | "image" | "video", ModelName>>({
     chat: frontendConversationModels[0].id,
     image: DEFAULT_IMAGE_MODEL,
@@ -6834,6 +6856,7 @@ export function ChatWorkbench() {
     video: [...videoGenerationModels, ...bytePlusVideoGenerationModels].map((model) => model.id),
   });
   const [enabledAssetImageModelIds, setEnabledAssetImageModelIds] = useState<string[]>([DEFAULT_CHARACTER_IMAGE_MODEL, ...imageGenerationModels.map((model) => model.id)]);
+  const [uploadRuleOverrides, setUploadRuleOverrides] = useState<UploadRuleOverrides>({});
   const [sessions, setSessions] = useState<WorkSession[]>([]);
   const [nextConversationNumber, setNextConversationNumber] = useState(1);
   const sessionsRef = useRef<WorkSession[]>([]);
@@ -7011,6 +7034,7 @@ export function ChatWorkbench() {
   const dragUploadDepthRef = useRef(0);
   const workspaceSaveTimerRef = useRef<number | null>(null);
   const workflowTextSaveTimerRef = useRef<number | null>(null);
+  const loadedWorkflowAssetIdsRef = useRef<Set<string>>(new Set());
   const userProfileSaveTimerRef = useRef<number | null>(null);
   const workspaceInstanceCheckFailuresRef = useRef(0);
   const authCheckFailuresRef = useRef(0);
@@ -7042,7 +7066,8 @@ export function ChatWorkbench() {
   const selectedResolution = mode === "image" ? normalizeImageResolutionForModel(selectedGenerationModels.image, selectedRatios.image === "智能比例" ? "智能比例" : selectedResolutions.image) : mode === "video" ? (selectedRatios.video === "智能比例" ? "720p" : normalizeVideoResolutionForModel(selectedGenerationModels.video, selectedResolutions.video)) : selectedResolutions[mode];
   const selectedImageCount = selectedImageCounts[mode];
   const selectedGenerationModel = mode === "general" ? selectedGeneralModels.chat : mode === "agent" ? selectedModel : selectedGenerationModels[mode];
-  const currentUploadRule = useMemo(() => getUploadRule({ mode, modelId: selectedGenerationModel, transportMode: "local-base64" }), [mode, selectedGenerationModel]);
+  const isSelectedBytePlusSeedanceVideoModel = mode === "video" && isBytePlusSeedanceVideoModel(selectedGenerationModels.video);
+  const currentUploadRule = useMemo(() => getUploadRule({ mode, modelId: selectedGenerationModel, transportMode: "local-base64", videoReferenceMode: mode === "video" && isSelectedBytePlusSeedanceVideoModel ? selectedVideoReferenceMode : undefined }, uploadRuleOverrides), [isSelectedBytePlusSeedanceVideoModel, mode, selectedGenerationModel, selectedVideoReferenceMode, uploadRuleOverrides]);
   const currentMaxReferenceImages = currentUploadRule.image.maxCount;
   const uploadAcceptValue = useMemo(() => getUploadAcceptValue(currentUploadRule), [currentUploadRule]);
   const supportedUploadTypeLabel = useMemo(() => getSupportedUploadTypeLabel(currentUploadRule), [currentUploadRule]);
@@ -7053,7 +7078,7 @@ export function ChatWorkbench() {
   const isShotGeneration = assetGenerateType === "shot_image";
   const characterGenerateDisplayRatio = characterGenerateRatio === "single" ? "9:16" : "16:9";
   const characterGenerateDisplayResolution = normalizeImageResolutionForModel(characterGenerateModel, characterGenerateResolution);
-  const assetGenerateUploadRule = useMemo(() => getUploadRule({ mode: "asset-image", modelId: characterGenerateModel, transportMode: "local-base64" }), [characterGenerateModel]);
+  const assetGenerateUploadRule = useMemo(() => getUploadRule({ mode: "asset-image", modelId: characterGenerateModel, transportMode: "local-base64" }, uploadRuleOverrides), [characterGenerateModel, uploadRuleOverrides]);
   const assetGenerateMaxReferenceImages = assetGenerateUploadRule.image.maxCount;
   const characterGenerateDisplayDimensions = getDisplayDimensions(characterGenerateDisplayRatio, characterGenerateDisplayResolution, "image", characterGenerateModel);
   const characterGenerateQualityBadgeLabel = getImageQualityBadgeLabel(characterGenerateDisplayResolution);
@@ -7105,10 +7130,36 @@ export function ChatWorkbench() {
     if (!currentUserGeneralModeEnabled && mode === "general") setMode("agent");
   }, [currentUserGeneralModeEnabled, mode]);
 
+  const applyWorkflowFirstSessionCollapse = useCallback(() => {
+    const storageKey = getWorkflowSessionCollapseStorageKey(currentUserId, currentUserEmail === "user@example.com" && !currentUserId ? "" : currentUserEmail);
+    if (!storageKey) return;
+    try {
+      if (window.sessionStorage.getItem(storageKey)) return;
+      window.sessionStorage.setItem(storageKey, "1");
+    } catch {
+      // UI state persistence is best-effort.
+    }
+    setIsSidebarVisible(true);
+    setIsSidebarCollapsed(true);
+  }, [currentUserEmail, currentUserId]);
+
+  useEffect(() => {
+    if (activePanel !== "workflow" || !WORKFLOW_MODE_ENABLED) return;
+    applyWorkflowFirstSessionCollapse();
+  }, [activePanel, applyWorkflowFirstSessionCollapse]);
+
+  const enterWorkflowPanel = useCallback(() => {
+    if (!WORKFLOW_MODE_ENABLED) return;
+    applyWorkflowFirstSessionCollapse();
+    setStoredWorkspaceUiState({ activePanel: "workflow" });
+    setActivePanel("workflow");
+  }, [applyWorkflowFirstSessionCollapse]);
+
   const logoutUser = useCallback(async () => {
+    clearWorkflowSessionCollapseStorage(currentUserId, currentUserEmail);
     await fetch("/api/auth/logout", { method: "POST" }).catch(() => null);
     window.location.href = "/";
-  }, []);
+  }, [currentUserEmail, currentUserId]);
 
   const openUserDialog = useCallback((tab: UserDialogTab) => {
     setIsUserMenuOpen(false);
@@ -7301,7 +7352,8 @@ export function ChatWorkbench() {
   const messages = activeSession?.messages ?? initialMessages;
   const activeInput = activeSession?.draftInput ?? "";
   const activeInputLength = Array.from(activeInput).length;
-  const toolbarRequiredWidth = mode === "agent" ? 800 : Math.min(1006, 610 + selectedGenerationModelLabel.length * 8 + (mode === "video" ? 90 : 70));
+  const isToolbarBytePlusSeedanceVideo = mode === "video" && isBytePlusSeedanceVideoModel(selectedGenerationModels.video);
+  const toolbarRequiredWidth = mode === "agent" ? 800 : Math.min(isToolbarBytePlusSeedanceVideo ? 1120 : 1006, 610 + selectedGenerationModelLabel.length * 8 + (mode === "video" ? isToolbarBytePlusSeedanceVideo ? 190 : 90 : 70));
   const inputShellWidth = Math.max(toolbarRequiredWidth, 800 + Math.min(206, Math.max(0, activeInputLength - 650) * 0.42));
   const activeUploadedFiles = activeSession?.uploadedFiles ?? [];
   const activeUploadedImages = activeSession?.uploadedImages ?? [];
@@ -8676,8 +8728,10 @@ export function ChatWorkbench() {
           ? applyAssetGenerationSystemNames(applySessionMediaSystemNamesToAssets(normalizeStoredAssets(state.assets).map((asset) => replaceAssetMediaUrls(asset, legacyMediaUrlReplacements)), sessionsRef.current))
           : [];
         setAssets((current) => {
-          const incomingKeys = new Set(nextAssets.map(getAssetIdentityKey));
-          return [...nextAssets, ...current.filter((asset) => !incomingKeys.has(getAssetIdentityKey(asset)))];
+          const incomingByKey = new Map(nextAssets.map((asset) => [getAssetIdentityKey(asset), asset]));
+          const currentKeys = new Set(current.map(getAssetIdentityKey));
+          const updatedCurrent = current.map((asset) => incomingByKey.get(getAssetIdentityKey(asset)) ?? asset);
+          return [...updatedCurrent, ...nextAssets.filter((asset) => !currentKeys.has(getAssetIdentityKey(asset)))];
         });
         if (state.assetCounts && typeof state.assetCounts === "object") setAssetCounts(state.assetCounts);
         loadedFilters[filter] = true;
@@ -8705,6 +8759,7 @@ export function ChatWorkbench() {
         const incomingKeys = new Set(nextAssets.map(getAssetIdentityKey));
         return [...nextAssets, ...current.filter((asset) => !incomingKeys.has(getAssetIdentityKey(asset)))];
       });
+      loadedWorkflowAssetIdsRef.current.add(workflowId);
     } catch {
       showInputTip("工作流历史资产加载失败，请稍后重试");
     }
@@ -8722,6 +8777,7 @@ export function ChatWorkbench() {
   useEffect(() => {
     if (workspaceStorageMode !== "user") return;
     if (activePanel !== "workflow" || !activeWorkflow?.id) return;
+    if (loadedWorkflowAssetIdsRef.current.has(activeWorkflow.id)) return;
     void loadWorkflowAssets(activeWorkflow.id);
   }, [activePanel, activeWorkflow?.id, loadWorkflowAssets, workspaceStorageMode]);
 
@@ -8865,7 +8921,7 @@ export function ChatWorkbench() {
     const loadModelAvailability = async () => {
       try {
         const response = await fetch("/api/model-availability", { cache: "no-store" });
-        const data = (await response.json()) as { generalModels?: string[]; generalModelProviders?: Record<string, "openrouter" | "byteplus">; chatModels?: string[]; chatModelProviders?: Record<string, "openrouter" | "byteplus">; imageModels?: string[]; assetImageModels?: string[]; videoModels?: string[]; agentImageModels?: string[]; agentVideoModels?: string[] };
+        const data = (await response.json()) as { generalModels?: string[]; generalModelProviders?: Record<string, "openrouter" | "byteplus">; chatModels?: string[]; chatModelProviders?: Record<string, "openrouter" | "byteplus">; imageModels?: string[]; assetImageModels?: string[]; videoModels?: string[]; agentImageModels?: string[]; agentVideoModels?: string[]; uploadRuleOverrides?: UploadRuleOverrides };
         if (cancelled) return;
         const next = {
           image: Array.isArray(data.imageModels) ? data.imageModels : [],
@@ -8891,6 +8947,7 @@ export function ChatWorkbench() {
         setGeneralModelProviders(data.generalModelProviders && typeof data.generalModelProviders === "object" ? data.generalModelProviders : {});
         setEnabledAgentChatModelIds(Array.isArray(data.chatModels) ? data.chatModels : []);
         setAgentChatModelProviders(data.chatModelProviders && typeof data.chatModelProviders === "object" ? data.chatModelProviders : {});
+        setUploadRuleOverrides(data.uploadRuleOverrides && typeof data.uploadRuleOverrides === "object" ? data.uploadRuleOverrides : {});
         setCharacterGenerateModel((current) => nextAssetImageModels.includes(current) ? current : nextAssetImageModels[0] ?? current);
       } catch {
         if (!cancelled) {
@@ -8901,6 +8958,7 @@ export function ChatWorkbench() {
           setAgentChatModelProviders({});
           setEnabledAgentGenerationModelIds({ image: [], video: [] });
           setEnabledAssetImageModelIds([]);
+          setUploadRuleOverrides({});
         }
       }
     };
@@ -9627,6 +9685,47 @@ export function ChatWorkbench() {
         </div>
       ) : null}
     </div>
+    );
+  };
+
+  const renderVideoReferenceModeMenu = () => {
+    if (!isSelectedBytePlusSeedanceVideoModel) return null;
+    const selectedOption = videoReferenceModeOptions.find((option) => option.value === selectedVideoReferenceMode) ?? videoReferenceModeOptions[0];
+    return (
+      <div className="relative" onClick={(event) => event.stopPropagation()}>
+        <button
+          type="button"
+          disabled={isMainInputDisabled}
+          onClick={() => {
+            const shouldClose = openControlMenu === "videoReferenceMode";
+            closeAllPopupMenus();
+            if (!shouldClose) setOpenControlMenu("videoReferenceMode");
+          }}
+          className={`${toolButtonClassName} ${openControlMenu === "videoReferenceMode" ? toolButtonActiveClassName : ""}`}
+        >
+          <ToolButtonLabel icon={selectedOption.icon} label={selectedOption.label} showChevron />
+        </button>
+
+        {openControlMenu === "videoReferenceMode" ? (
+          <div className="absolute bottom-full right-0 z-[70] mb-2 w-[360px] rounded-[14px] bg-white p-2.5 shadow-[0_18px_40px_rgba(0,0,0,0.12)]">
+            <div className="px-2 pb-2 text-[12px] font-medium text-[#a0a0a0]">参考模式</div>
+            {videoReferenceModeOptions.map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                onClick={() => {
+                  setSelectedVideoReferenceMode(option.value);
+                  setOpenControlMenu("");
+                }}
+                className={option.value === selectedVideoReferenceMode ? "flex min-h-[58px] w-full items-center justify-between rounded-[10px] bg-[#f5f5f5] px-3 py-2 text-left text-[14px] font-medium text-[#111111]" : "flex min-h-[58px] w-full items-center justify-between rounded-[10px] px-3 py-2 text-left text-[14px] text-[#555555] hover:bg-[#f7f7f7]"}
+              >
+                <span className="flex min-w-0 items-start gap-2"><IconRenderer icon={option.icon} /><span className="min-w-0"><span className="block whitespace-nowrap">{option.label}</span><span className="mt-1 block whitespace-nowrap text-[12px] font-normal leading-4 text-[#999999]">{option.description}</span></span></span>
+                {option.value === selectedVideoReferenceMode ? <RiCheckLine className="h-[18px] w-[18px] text-[#111111]" aria-hidden="true" /> : null}
+              </button>
+            ))}
+          </div>
+        ) : null}
+      </div>
     );
   };
 
@@ -11049,7 +11148,7 @@ export function ChatWorkbench() {
         const agentSettings = getAgentGenerationSettingsFromPlan(plan, sourceText, generationMode, generationModel);
         const agentPromptDetail = generationMode === "image" || generationMode === "video" ? getAgentPromptDetailFromPlan(plan, sourceText, generationMode) : undefined;
         const agentPrompt = joinPromptDetail(agentPromptDetail);
-        const videoReferenceMode = generationMode === "video" ? getExplicitVideoReferenceMode([sourceText, agentPrompt ?? ""].join(" "), pendingRequest.referenceImages?.length ?? 0) : undefined;
+        const videoReferenceMode = generationMode === "video" && isBytePlusSeedanceVideoModel(generationModel) ? pendingRequest.videoReferenceMode ?? "reference" : undefined;
         if (videoReferenceMode === "first_last_frame" && (pendingRequest.referenceImages?.length ?? 0) < 2) {
           appendSystemMessage(sessionId, { content: "首尾帧生视频需要至少两张参考图，请补充首帧和尾帧图片。", error: "首尾帧生视频需要至少两张参考图，请补充首帧和尾帧图片。", mode: "video" });
           return;
@@ -11544,7 +11643,8 @@ export function ChatWorkbench() {
     let enabledModelsForSubmit = enabledGenerationModelIds;
     const availableUploadedImages = isSuggestionSend ? [] : activeUploadedImages;
     const availableUploadedFiles = isSuggestionSend ? [] : activeUploadedFiles;
-    const submitUploadRule = getUploadRule({ mode: submitMode, modelId: submitMode === "general" ? generalModelsForSubmit.chat : submitMode === "agent" ? selectedModel : generationModelsForSubmit[submitMode], transportMode: "local-base64" });
+    const submitVideoReferenceMode = submitMode === "video" && isBytePlusSeedanceVideoModel(generationModelsForSubmit.video) ? selectedVideoReferenceMode : undefined;
+    const submitUploadRule = getUploadRule({ mode: submitMode, modelId: submitMode === "general" ? generalModelsForSubmit.chat : submitMode === "agent" ? selectedModel : generationModelsForSubmit[submitMode], transportMode: "local-base64", videoReferenceMode: submitVideoReferenceMode }, uploadRuleOverrides);
     if (availableUploadedImages.length > submitUploadRule.image.maxCount) {
       showInputTip(`当前模型最多支持 ${submitUploadRule.image.maxCount} 张参考图，不能上传更多图片`);
       return;
@@ -11704,7 +11804,12 @@ export function ChatWorkbench() {
       setSessionSending(sessionId, false);
       return;
     }
-    const directVideoReferenceMode = generationMode === "video" ? getExplicitVideoReferenceMode(text, referenceImages.length) : undefined;
+    const directVideoReferenceMode = generationMode === "video" && isBytePlusSeedanceVideoModel(generationModelsForSubmit.video) ? selectedVideoReferenceMode : undefined;
+    if (directVideoReferenceMode === "first_frame" && referenceImages.length < 1) {
+      showInputTip("首帧生视频需要至少一张参考图");
+      setSessionSending(sessionId, false);
+      return;
+    }
     if (directVideoReferenceMode === "first_last_frame" && referenceImages.length < 2) {
       showInputTip("首尾帧生视频需要至少两张参考图");
       setSessionSending(sessionId, false);
@@ -12147,7 +12252,11 @@ export function ChatWorkbench() {
       : agentModelTier === "advanced" ? ADVANCED_CHAT_MODEL : DEFAULT_CHAT_MODEL;
     const replayResolution = generationMode === "image" ? normalizeImageResolutionForModel(replayModel, replaySettings?.resolution ?? selectedResolutions[generationMode]) : generationMode === "video" ? ((replaySettings?.ratio ?? selectedRatios.video) === "智能比例" ? "720p" : normalizeVideoResolutionForModel(replayModel, replaySettings?.resolution ?? selectedResolutions.video)) : replaySettings?.resolution ?? selectedResolutions[generationMode];
     const replayRatio = generationMode === "video" ? ((replaySettings?.ratio ?? selectedRatios.video) === "智能比例" ? "智能比例" : normalizeVideoRatioForModel(replayModel, replaySettings?.ratio ?? selectedRatios.video, replayResolution)) : replaySettings?.ratio ?? selectedRatios[generationMode];
-    const replayVideoReferenceMode = generationMode === "video" ? getExplicitVideoReferenceMode(replayPrompt, referenceImages?.length ?? 0) : undefined;
+    const replayVideoReferenceMode = generationMode === "video" && isBytePlusSeedanceVideoModel(replayModel) ? selectedVideoReferenceMode : undefined;
+    if (replayVideoReferenceMode === "first_frame" && (referenceImages?.length ?? 0) < 1) {
+      showInputTip("首帧生视频需要至少一张参考图");
+      return;
+    }
     if (replayVideoReferenceMode === "first_last_frame" && (referenceImages?.length ?? 0) < 2) {
       showInputTip("首尾帧生视频需要至少两张参考图");
       return;
@@ -12622,6 +12731,10 @@ export function ChatWorkbench() {
   }, [activeSessionId, activeUploadedImages, showInputTip]);
 
   const hasDraggedFiles = (event: DragEvent) => Array.from(event.dataTransfer.types).includes("Files");
+  const clearDragUploadOverlay = useCallback(() => {
+    dragUploadDepthRef.current = 0;
+    setIsDragUploadActive(false);
+  }, []);
   const handleChatDragEnter = (event: DragEvent) => {
     if (!hasDraggedFiles(event)) return;
     event.preventDefault();
@@ -12646,11 +12759,24 @@ export function ChatWorkbench() {
     if (!hasDraggedFiles(event)) return;
     event.preventDefault();
     event.stopPropagation();
-    dragUploadDepthRef.current = 0;
-    setIsDragUploadActive(false);
+    clearDragUploadOverlay();
     const files = Array.from(event.dataTransfer.files ?? []);
     if (files.length > 0) void addFilesToInput(files);
   };
+
+  useEffect(() => {
+    const handleWindowDrop = (event: globalThis.DragEvent) => {
+      if (!Array.from(event.dataTransfer?.types ?? []).includes("Files")) return;
+      clearDragUploadOverlay();
+    };
+    const handleWindowDragEnd = () => clearDragUploadOverlay();
+    window.addEventListener("drop", handleWindowDrop, true);
+    window.addEventListener("dragend", handleWindowDragEnd, true);
+    return () => {
+      window.removeEventListener("drop", handleWindowDrop, true);
+      window.removeEventListener("dragend", handleWindowDragEnd, true);
+    };
+  }, [clearDragUploadOverlay]);
 
   const focusEditorAt = useCallback((offset: number) => {
     requestAnimationFrame(() => {
@@ -13221,7 +13347,7 @@ export function ChatWorkbench() {
             {!isSidebarCollapsed ? <span className="text-[13px] leading-[1.2]">对话模式</span> : null}
             {activePanel !== "chat" && hasAnyConversationRunning ? <span className={isSidebarCollapsed ? "absolute ml-7 mt-7 flex w-4 shrink-0 justify-end" : "ml-auto flex w-7 shrink-0 justify-end"}><HaloPulseIndicator /></span> : null}
           </button>
-          <button type="button" disabled={!WORKFLOW_MODE_ENABLED} onClick={() => { if (!WORKFLOW_MODE_ENABLED) return; setStoredWorkspaceUiState({ activePanel: "workflow" }); setActivePanel("workflow"); }} className={!WORKFLOW_MODE_ENABLED ? isSidebarCollapsed ? "relative flex h-10 w-10 cursor-not-allowed items-center justify-center rounded-lg font-medium text-[#b0b0b0]" : "flex h-10 w-full cursor-not-allowed items-center gap-2 rounded-lg px-3 text-left font-medium text-[#b0b0b0]" : isSidebarCollapsed ? activePanel === "workflow" ? "relative flex h-10 w-10 items-center justify-center rounded-lg bg-[#ececec] font-medium text-[#111111]" : "relative flex h-10 w-10 items-center justify-center rounded-lg font-medium text-[#555555] transition hover:bg-[#ececec]" : activePanel === "workflow" ? "flex h-10 w-full items-center gap-2 rounded-lg bg-[#ececec] px-3 text-left font-medium text-[#111111]" : "flex h-10 w-full items-center gap-2 rounded-lg px-3 text-left font-medium text-[#555555] transition hover:bg-[#ececec]"} title="工作流模式暂未开放" aria-label="工作流模式暂未开放">
+          <button type="button" disabled={!WORKFLOW_MODE_ENABLED} onClick={enterWorkflowPanel} className={!WORKFLOW_MODE_ENABLED ? isSidebarCollapsed ? "relative flex h-10 w-10 cursor-not-allowed items-center justify-center rounded-lg font-medium text-[#b0b0b0]" : "flex h-10 w-full cursor-not-allowed items-center gap-2 rounded-lg px-3 text-left font-medium text-[#b0b0b0]" : isSidebarCollapsed ? activePanel === "workflow" ? "relative flex h-10 w-10 items-center justify-center rounded-lg bg-[#ececec] font-medium text-[#111111]" : "relative flex h-10 w-10 items-center justify-center rounded-lg font-medium text-[#555555] transition hover:bg-[#ececec]" : activePanel === "workflow" ? "flex h-10 w-full items-center gap-2 rounded-lg bg-[#ececec] px-3 text-left font-medium text-[#111111]" : "flex h-10 w-full items-center gap-2 rounded-lg px-3 text-left font-medium text-[#555555] transition hover:bg-[#ececec]"} title="工作流模式暂未开放" aria-label="工作流模式暂未开放">
             {activePanel === "workflow" && WORKFLOW_MODE_ENABLED ? <RiGitMergeLine className="h-5 w-5 shrink-0 text-[#111111]" aria-hidden="true" /> : <RiGitPullRequestLine className={!WORKFLOW_MODE_ENABLED ? "h-5 w-5 shrink-0 text-[#b0b0b0]" : "h-5 w-5 shrink-0 text-[#555555]"} aria-hidden="true" />}
             {!isSidebarCollapsed ? <span className="text-[13px] leading-[1.2]">工作流模式</span> : null}
             {!isSidebarCollapsed && !WORKFLOW_MODE_ENABLED ? <span className="ml-auto rounded-full bg-white px-2 py-0.5 text-[11px] text-[#9a9a9a] ring-1 ring-[#e3e3e3]">未开放</span> : null}
@@ -13945,17 +14071,17 @@ export function ChatWorkbench() {
               setIsCharacterGenerateOpen(true);
             }} onChangeType={(assetId, target) => {
               const changingAsset = assets.find((asset) => asset.id === assetId);
+              const movedAt = Date.now();
               setAssets((current) => {
                 const targetAsset = current.find((asset) => asset.id === assetId);
                 if (!targetAsset) return current;
                 const movedAsset = target === "conversation_image"
-                  ? { ...targetAsset, type: "other" as const, librarySource: "conversation" as const, sourcePrompt: targetAsset.sourcePrompt || UPLOAD_IMAGE_PROMPT_PLACEHOLDER, promptSource: "upload" as const, lockedType: true }
-                  : { ...targetAsset, type: target, librarySource: "asset_generation" as const, lockedType: true };
+                  ? { ...targetAsset, type: "other" as const, librarySource: "conversation" as const, sourcePrompt: targetAsset.sourcePrompt || UPLOAD_IMAGE_PROMPT_PLACEHOLDER, promptSource: "upload" as const, lockedType: true, createdAt: movedAt, updatedAt: movedAt }
+                  : { ...targetAsset, type: target, librarySource: "asset_generation" as const, lockedType: true, createdAt: movedAt, updatedAt: movedAt };
                 const movedKey = getAssetIdentityKey(movedAsset);
                 return [movedAsset, ...current.filter((asset) => asset.id !== assetId && getAssetIdentityKey(asset) !== movedKey)];
               });
               setOpenAssetActionMenuId("");
-              setLoadedAssetFilters((current) => ({ ...current, [assetFilter]: false, [target === "conversation_image" ? "conversation_uploads" : target]: false, conversation_uploads: false }));
               persistMediaAssetState(changingAsset, { currentCategory: target === "conversation_image" ? "conversation_uploads" : target });
             }} onDelete={deleteAsset} onRestore={restoreAsset} />
             )
@@ -13970,19 +14096,30 @@ export function ChatWorkbench() {
                   leftSidebarVisible={isSidebarVisible}
                   onToggleLeftSidebar={toggleSidebarVisibility}
                   workflowAssets={assets.filter((asset) => isWorkflowAsset(asset) && (asset.workflowId || asset.sessionId) === activeWorkflow.id).map((asset) => ({ id: asset.id, name: asset.name, url: asset.url, posterUrl: asset.posterUrl, kind: isVideoAsset(asset) ? "video" : "image", nodeId: asset.workflowNodeId, sourcePrompt: asset.sourcePrompt, ratio: asset.previewMeta?.ratio, resolution: asset.previewMeta?.resolution, duration: asset.previewMeta?.duration, dimensions: getPreviewMetaDimensions(asset.previewMeta) }))}
-                  referenceAssets={assets.filter((asset) => mentionAssetTypes.some((type) => isMentionGroupAsset(asset, type))).map((asset) => { const groupType = mentionAssetTypes.find((type) => isMentionGroupAsset(asset, type)) ?? "conversation_upload"; return { id: asset.id, name: asset.name, url: asset.url, thumbnailUrl: getMediaThumbnailUrl(asset.url), groupType, groupLabel: mentionAssetTypeLabels[groupType] }; })}
+                  referenceAssets={[
+                    ...assets.filter((asset) => isAssetInFilter(asset, "character_image")).map((asset) => ({ id: asset.id, name: asset.name, url: asset.url, thumbnailUrl: getMediaThumbnailUrl(asset.url), groupType: "character_image", groupLabel: mentionAssetTypeLabels.character_image })),
+                    ...assets.filter((asset) => isAssetInFilter(asset, "scene_image")).map((asset) => ({ id: asset.id, name: asset.name, url: asset.url, thumbnailUrl: getMediaThumbnailUrl(asset.url), groupType: "scene_image", groupLabel: mentionAssetTypeLabels.scene_image })),
+                    ...assets.filter((asset) => isAssetInFilter(asset, "shot_image")).map((asset) => ({ id: asset.id, name: asset.name, url: asset.url, thumbnailUrl: getMediaThumbnailUrl(asset.url), groupType: "shot_image", groupLabel: mentionAssetTypeLabels.shot_image })),
+                    ...assets.filter((asset) => isAssetInFilter(asset, "conversation_uploads")).map((asset) => ({ id: asset.id, name: asset.name, url: asset.url, thumbnailUrl: getMediaThumbnailUrl(asset.url), groupType: "conversation_upload", groupLabel: mentionAssetTypeLabels.conversation_upload })),
+                  ]}
                   referenceAssetsLoadStatus={assetsLoadStatus}
                   onLoadReferenceAssets={() => { void loadMentionAssetFilters(); }}
+                  onExternalFilesDrop={(files) => {
+                    clearDragUploadOverlay();
+                    void addFilesToInput(files);
+                  }}
                   enabledTextModelIds={enabledAgentChatModelIds}
                   textModelProviders={agentChatModelProviders}
                   enabledImageModelIds={enabledGenerationModelIds.image}
                   enabledVideoModelIds={enabledGenerationModelIds.video}
+                  uploadRuleOverrides={uploadRuleOverrides}
                   getImageDisplayUrl={(url) => getMediaThumbnailUrl(url)}
                   getVideoPosterDisplayUrl={(url, posterUrl) => {
                     const poster = posterUrl ?? getLocalVideoPosterUrl(url);
                     return poster ? getMediaThumbnailUrl(poster) : undefined;
                   }}
                   onGeneratedMedia={(media) => addWorkflowGeneratedAssets(activeWorkflow.id, media.nodeId, { kind: media.kind, urls: media.urls, posterUrl: media.posterUrl, sourcePrompt: media.sourcePrompt, model: media.model, ratio: media.ratio, resolution: media.resolution, duration: media.duration, dimensions: media.dimensions })}
+                  onShowTip={showInputTip}
                   onPreviewMedia={(media) => {
                     const existingAsset = assets.find((asset) => isWorkflowAsset(asset) && normalizeMediaUrlForMatch(asset.url) === normalizeMediaUrlForMatch(media.url));
                     const workflowNode = activeWorkflow.canvas?.nodes?.find((node) => node.id === media.nodeId);
@@ -14020,6 +14157,11 @@ export function ChatWorkbench() {
                   onChange={(canvas) => updateWorkflowCanvas(activeWorkflow.id, canvas)}
                   onCredit={applyWorkflowCreditResult}
                 />
+                {inputReminder ? (
+                  <div className="pointer-events-none absolute bottom-[108px] left-1/2 z-[10000] -translate-x-1/2">
+                    <ReminderToast reminder={inputReminder} />
+                  </div>
+                ) : null}
                 <UsageSummaryButton summary={activeWorkflow.usageSummary} mediaCounts={getWorkflowMediaCounts(activeWorkflow)} className="absolute right-4 top-4 z-30" />
               </>
             ) : (
@@ -14826,6 +14968,7 @@ export function ChatWorkbench() {
                     {renderImageSettingsMenu()}
                     {mode === "image" ? renderControlMenu("imageCount", selectedImageCount, "同时生成数量", imageCountOptions, selectedImageCount, (value) => setSelectedImageCounts((current) => ({ ...current, [mode]: value })), RiImageAddLine) : null}
                     {mode === "video" ? renderControlMenu("duration", selectedVideoDuration, "视频时长", currentDurationOptions, selectedVideoDuration, (value) => setSelectedDurations((current) => ({ ...current, video: value })), RiTimeLine) : null}
+                    {mode === "video" ? renderVideoReferenceModeMenu() : null}
                   </>
                 ) : null}
               </div>

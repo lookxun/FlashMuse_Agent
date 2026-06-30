@@ -4,7 +4,7 @@ import { isAdminEmail } from "@/lib/admin";
 import { normalizeEmail } from "@/lib/auth";
 
 export const adminCookieName = "flashmuse-admin-session";
-const adminSessionMaxAgeSeconds = 60 * 60;
+const adminSessionMaxAgeSeconds = process.env.NODE_ENV === "development" ? 24 * 60 * 60 : 60 * 60;
 const authSecret = process.env.AUTH_SECRET || "flashmuse-local-dev-secret-change-me";
 const forceInsecureAuthCookie = process.env.FORCE_INSECURE_AUTH_COOKIE === "true";
 const authCookieDomain = process.env.AUTH_COOKIE_DOMAIN?.trim() || undefined;

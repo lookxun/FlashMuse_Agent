@@ -1,13 +1,15 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactElement, type ReactNode, type SyntheticEvent } from "react";
+import { createPortal } from "react-dom";
 import { BaseBoxShapeUtil, HTMLContainer, Rectangle2d, SelectionForegroundOverlayUtil, T, Tldraw, createShapeId, defaultOverlayUtils, resizeBox, useActions, useEditor, useValue, type Editor, type TLComponents, type TLResizeInfo, type TLShape, type TLShapeId, type TLUiOverrides, type TldrawOptions } from "tldraw";
-import { RiAddLine, RiArrowDownSLine, RiArrowUpLine, RiCheckLine, RiCheckboxBlankCircleLine, RiCloseLine, RiCursorLine, RiEmotionSadLine, RiEyeLine, RiFileTextLine, RiFilmAiLine, RiFocus3Line, RiGoogleFill, RiHand, RiImageAiLine, RiImageLine, RiLayoutLeft2Line, RiLayoutLeftLine, RiLoader4Line, RiNodeTree, RiOpenaiFill, RiPlayLargeFill, RiResetLeftLine, RiRoadMapLine, RiShining2Line, RiStackLine, RiTBoxLine, RiTextBlock, RiTimeLine, RiTiktokFill, RiVideoLine, RiVideoOnLine, RiVoiceprintLine, RiZoomInLine, RiZoomOutLine } from "react-icons/ri";
+import { type IconType } from "react-icons";
+import { RiAddLine, RiArrowDownSLine, RiArrowUpLine, RiBringForward, RiBringToFront, RiCheckLine, RiCheckboxBlankCircleLine, RiCheckboxMultipleLine, RiClipboardLine, RiCloseLine, RiCursorLine, RiDeleteBinLine, RiDownloadLine, RiEmotionSadLine, RiExportLine, RiEyeLine, RiEyeOffLine, RiFileCodeLine, RiFileCopy2Line, RiFileCopyLine, RiFileImageLine, RiFileTextLine, RiFilmAiLine, RiFocus3Line, RiGoogleFill, RiHand, RiHistoryLine, RiImage2Line, RiImageAiLine, RiImageCircleLine, RiImageLine, RiLayoutLeft2Line, RiLayoutLeftLine, RiLoader4Line, RiLockLine, RiLockUnlockLine, RiMore2Line, RiMultiImageLine, RiNodeTree, RiOpenaiFill, RiPlayLargeFill, RiResetLeftLine, RiRoadMapLine, RiScissorsCutLine, RiSendBackward, RiSendToBack, RiShining2Line, RiStackLine, RiTBoxLine, RiTextBlock, RiTimeLine, RiTiktokFill, RiVideoLine, RiVideoOnLine, RiVoiceprintLine, RiZoomInLine, RiZoomOutLine } from "react-icons/ri";
 import { BytePlusIcon } from "@/components/byteplus-icon";
 import { DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, bytePlusVideoGenerationModels, frontendConversationModels, frontendImageGenerationModels, getExpectedImageDimensions, getExpectedVideoDimensions, getSupportedImageResolutions, getSupportedVideoRatios, getSupportedVideoResolutions, imageGenerationModels, normalizeImageResolutionForModel, normalizeVideoRatioForModel, normalizeVideoResolutionForModel, videoGenerationModels, type ConversationModel, type GenerationModel, type ModelName } from "@/lib/models";
-import { toUserErrorMessage } from "@/lib/error-message";
+import { GENERIC_MEDIA_ERROR_MESSAGE, toUserErrorMessage } from "@/lib/error-message";
 import { sanitizeModelOutputText } from "@/lib/text-cleanup";
-import { getUploadKindFromFileName, getUploadRule, type UploadKind, type UploadKindRule, type UploadRule } from "@/lib/upload-rules";
+import { getUploadKindFromFileName, getUploadRule, type UploadKind, type UploadKindRule, type UploadRule, type UploadRuleOverrides } from "@/lib/upload-rules";
 
 export type WorkflowNodeKind = "text" | "image" | "video";
 
@@ -19,6 +21,7 @@ export type WorkflowNodeData = {
   ratio?: string;
   resolution?: string;
   duration?: string;
+  videoReferenceMode?: WorkflowVideoReferenceMode;
   images?: string[];
   imageDimensions?: Record<string, { width: number; height: number }>;
   videoUrl?: string;
@@ -26,6 +29,8 @@ export type WorkflowNodeData = {
   videoDimensions?: { width: number; height: number };
   durationSeconds?: number;
   videoCurrentTime?: number;
+  isLocked?: boolean;
+  isHidden?: boolean;
   mediaSystemNames?: Record<string, string>;
   visualSize?: { width: number; height: number };
   error?: string;
@@ -35,6 +40,7 @@ export type WorkflowNodeData = {
   uploads?: WorkflowUploadItem[];
 };
 
+type WorkflowVideoReferenceMode = "reference" | "first_frame" | "first_last_frame";
 type WorkflowUploadKind = UploadKind;
 
 type WorkflowUploadItem = {
@@ -97,18 +103,21 @@ type WorkflowCanvasProps = {
   onCredit?: (credit?: CreditResult) => void;
   onGeneratedMedia?: (media: { nodeId: string; kind: "image" | "video"; urls: string[]; posterUrl?: string; sourcePrompt: string; model?: ModelName; ratio?: string; resolution?: string; duration?: string; dimensions?: Record<string, { width: number; height: number }>; durationSeconds?: Record<string, number> }) => void;
   onPreviewMedia?: (media: { nodeId: string; kind: "image" | "video"; url: string; posterUrl?: string; name: string; sourcePrompt?: string; model?: ModelName; ratio?: string; resolution?: string; duration?: string; dimensions?: { width: number; height: number } }) => void;
+  onShowTip?: (message: string) => void;
   getImageDisplayUrl?: (url: string) => string;
   getVideoPosterDisplayUrl?: (url: string, posterUrl?: string) => string | undefined;
   enabledTextModelIds?: string[];
   textModelProviders?: Record<string, "openrouter" | "byteplus">;
   enabledImageModelIds?: string[];
   enabledVideoModelIds?: string[];
+  uploadRuleOverrides?: UploadRuleOverrides;
   leftSidebarVisible?: boolean;
   onToggleLeftSidebar?: () => void;
   workflowAssets?: WorkflowAssetSummary[];
   referenceAssets?: WorkflowReferenceAsset[];
   referenceAssetsLoadStatus?: "idle" | "loading" | "loaded" | "failed";
   onLoadReferenceAssets?: () => void;
+  onExternalFilesDrop?: (files: File[]) => void;
 };
 
 type WorkflowAssetSummary = {
@@ -138,7 +147,9 @@ const workflowReferenceGroupOrder = ["character_image", "scene_image", "shot_ima
 const workflowReadableDocumentFormats = ["md", "txt", "csv"];
 const MAX_WORKFLOW_DOCUMENT_TEXT_CHARS = 50_000;
 const MAX_WORKFLOW_DOCUMENT_CONTEXT_CHARS = 30_000;
+const MEDIA_DURATION_EPSILON_SECONDS = 0.35;
 const WORKFLOW_TEXT_OUTPUT_INSTRUCTIONS = "\n\n输出要求：请只用中文回答，不要夹带英文段落或英文标题；不要输出代码、代码块、命令行、JSON、Markdown 表格或反引号内容；不要解释格式规则。第一行写一个简短中文标题，不要带 # 号；正文用清晰分段、短句和列表表达。可以适当使用少量自然表情或符号做视觉提示，但不要堆砌。重点可用 **加粗**，重要提醒可用 [blue]...[/blue] 或 [red]...[/red]。";
+const BYTEPLUS_AUTO_REVIEW_NOTICE = "系统检测到真人图片，需要审核才能生成视频，此次视频生成任务会延长时间，请稍候....";
 
 class WorkflowSelectionForegroundOverlayUtil extends SelectionForegroundOverlayUtil {
   override options = { zIndex: 100, lineWidth: 3 };
@@ -163,8 +174,9 @@ type VideoApiResponse = {
   videoUrl?: string;
   usage?: UsageMeta;
   credit?: CreditResult;
-  error?: { message?: string };
+  error?: string | { message?: string };
   errorCode?: string;
+  autoBytePlusAssetReview?: { triggered?: boolean; assets?: Array<{ url?: string; assetId?: string; groupId?: string; status?: string; error?: string }> };
 };
 
 type WorkflowNodeShape = TLShape<"workflow_node">;
@@ -190,6 +202,11 @@ const MAX_WORKFLOW_PROMPT_LENGTH = 2000;
 const DEFAULT_WORKFLOW_IMAGE_MODEL = "byteplus:conversation-image.seedream-4-5";
 const DEFAULT_WORKFLOW_VIDEO_MODEL = "byteplus:video.seedance-2-0";
 const WORKFLOW_NODE_GAP = 160;
+const workflowVideoReferenceModeOptions: Array<{ value: WorkflowVideoReferenceMode; label: string; icon: IconType }> = [
+  { value: "reference", label: "融合模式", icon: RiImageCircleLine },
+  { value: "first_frame", label: "首帧模式", icon: RiImage2Line },
+  { value: "first_last_frame", label: "首尾帧模式", icon: RiMultiImageLine },
+];
 
 const ratioCardMeta: Record<string, { icon: string; width: string; height: string }> = {
   智能比例: { icon: "spark", width: "16", height: "16" },
@@ -244,22 +261,106 @@ function getWorkflowUploadAccept(rule: UploadRule, kind: WorkflowUploadKind) {
   return Array.from(values).join(",");
 }
 
-function getWorkflowUploadRule(node: WorkflowNode) {
+function getWorkflowUploadRule(node: WorkflowNode, overrides?: UploadRuleOverrides, videoReferenceMode?: WorkflowVideoReferenceMode) {
   const mode = node.kind === "text" ? "agent" : node.kind;
-  return getUploadRule({ mode, modelId: node.data.model, transportMode: node.kind === "video" ? "server-url" : "local-base64" });
+  return getUploadRule({ mode, modelId: node.data.model, transportMode: node.kind === "video" ? "server-url" : "local-base64", videoReferenceMode: node.kind === "video" ? videoReferenceMode ?? node.data.videoReferenceMode ?? getWorkflowUploadRuleVideoReferenceMode(node.data.prompt ?? "") : undefined }, overrides);
 }
 
 const disabledWorkflowUploadRule: UploadKindRule = { enabled: false, maxCount: 0, maxSizeMb: 0, formats: [] };
 const workflowReadableDocumentUploadRule: UploadKindRule = { enabled: true, maxCount: 5, maxSizeMb: 10, formats: workflowReadableDocumentFormats };
 
-function getEffectiveWorkflowUploadRule(node: WorkflowNode) {
-  const rule = getWorkflowUploadRule(node);
+function getEffectiveWorkflowUploadRule(node: WorkflowNode, overrides?: UploadRuleOverrides, videoReferenceMode?: WorkflowVideoReferenceMode) {
+  const rule = getWorkflowUploadRule(node, overrides, videoReferenceMode);
 
   return { ...rule, document: node.kind === "text" ? workflowReadableDocumentUploadRule : disabledWorkflowUploadRule };
 }
 
 function sanitizeWorkflowReferenceName(name: string) {
   return name.replace(/\.[^.]+$/, "").replace(/[@\s，。！？；;、]+/g, "").trim() || "上传文件";
+}
+
+function escapeWorkflowRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function removeWorkflowUploadReferenceText(prompt: string, referenceName: string) {
+  if (!referenceName) return prompt;
+  return prompt.replace(new RegExp(`@${escapeWorkflowRegExp(referenceName)}\\s?`, "g"), "");
+}
+
+function sortWorkflowDurationOptions(options: string[]) {
+  return [...options].sort((a, b) => (parseInt(b, 10) || 0) - (parseInt(a, 10) || 0));
+}
+
+function getWorkflowUploadRuleVideoReferenceMode(text: string): WorkflowVideoReferenceMode | undefined {
+  const normalized = text.replace(/\s+/g, "");
+  if (/首尾帧|首帧.*尾帧|尾帧.*首帧|第一帧.*最后一帧|最后一帧.*第一帧|开头帧.*结尾帧|结尾帧.*开头帧/.test(normalized)) return "first_last_frame";
+  if (/尾帧|最后一帧|结尾帧|结束帧|收尾帧|作为结尾|当作结尾|做结尾|做尾帧|以这张图结束|以此图结束/.test(normalized)) return undefined;
+  if (/首帧|第一帧|开头帧|起始帧|开始帧|作为开头|当作开头|做开头|做首帧|从这张图开始|以这张图开始|用这张图开头/.test(normalized)) return "first_frame";
+  return undefined;
+}
+
+function isWorkflowBytePlusSeedanceVideoModel(modelId?: string) {
+  return modelId === "byteplus:video.seedance-2-0" || modelId === "byteplus:video.seedance-2-0-fast";
+}
+
+function getWorkflowVideoReferenceModeLabel(value?: WorkflowVideoReferenceMode) {
+  return workflowVideoReferenceModeOptions.find((option) => option.value === value)?.label ?? "融合模式";
+}
+
+function getWorkflowEffectiveBytePlusVideoReferenceItems<T>(items: T[] | undefined, mode?: WorkflowVideoReferenceMode): T[] {
+  const safeItems = Array.isArray(items) ? items.filter(Boolean) : [];
+  if (mode === "first_last_frame") return safeItems.slice(0, 2);
+  if (mode === "first_frame") return safeItems.slice(0, 1);
+  return safeItems.slice(0, 9);
+}
+
+function getWorkflowBytePlusVideoReferenceLimitHint(mode?: WorkflowVideoReferenceMode) {
+  if (mode === "first_last_frame") return "首尾帧模式只会使用前两张参考图";
+  if (mode === "first_frame") return "首帧模式只会使用第一张参考图";
+  return "融合模式最多使用九张参考图";
+}
+
+function getWorkflowReferenceHint(referenceCount: number) {
+  if (referenceCount <= 0) return "";
+  return `参考图顺序：${Array.from({ length: referenceCount }, (_, index) => `参考图${index + 1}`).join("，")}。生成时必须分别保留这些参考图对应的主体、人物特征、服装和场景关系，不要把人物或场景替换成无关内容。`;
+}
+
+function appendWorkflowReferenceHint(prompt: string, referenceCount: number) {
+  const hint = getWorkflowReferenceHint(referenceCount);
+  return hint ? `${prompt}\n\n${hint}` : prompt;
+}
+
+function pruneWorkflowUploadsForRule(node: WorkflowNode, uploadRule: UploadRule) {
+  const uploads = node.data.uploads ?? [];
+  if (uploads.length === 0) return {};
+
+  const seenCounts: Record<WorkflowUploadKind, number> = { image: 0, document: 0, video: 0, audio: 0 };
+  const keptUploads = uploads.filter((upload) => {
+    const rule = uploadRule[upload.kind];
+    if (!rule?.enabled) return false;
+    if (seenCounts[upload.kind] >= rule.maxCount) return false;
+    seenCounts[upload.kind] += 1;
+    return true;
+  });
+  if (keptUploads.length === uploads.length) return {};
+
+  const removedUploads = uploads.filter((upload) => !keptUploads.includes(upload));
+  const prompt = removedUploads.reduce((current, upload) => removeWorkflowUploadReferenceText(current, getWorkflowUploadReferenceName(upload)), node.data.prompt ?? "");
+  return { uploads: keptUploads, prompt };
+}
+
+function pruneWorkflowUploadsForModel(node: WorkflowNode, model: ModelName, overrides?: UploadRuleOverrides) {
+  const uploads = node.data.uploads ?? [];
+  if (uploads.length === 0) return {};
+
+  const nextNode = { ...node, data: { ...node.data, model } };
+  const uploadRule = getEffectiveWorkflowUploadRule(nextNode, overrides);
+  return pruneWorkflowUploadsForRule(nextNode, uploadRule);
+}
+
+function pruneWorkflowUploadsForVideoReferenceMode(node: WorkflowNode, videoReferenceMode: WorkflowVideoReferenceMode, overrides?: UploadRuleOverrides) {
+  return pruneWorkflowUploadsForRule({ ...node, data: { ...node.data, videoReferenceMode } }, getEffectiveWorkflowUploadRule(node, overrides, videoReferenceMode));
 }
 
 function readWorkflowFileAsDataUrl(file: File) {
@@ -288,6 +389,49 @@ function readWorkflowDocumentText(file: File, onProgress: (progress: number) => 
   });
 }
 
+function getWorkflowUploadDuration(upload: WorkflowUploadItem) {
+  return Math.max(0, upload.durationSeconds ?? 0);
+}
+
+function validateWorkflowMediaDuration(kindLabel: string, durationSeconds: number | undefined, rule: { minSeconds?: number; maxSeconds?: number }) {
+  if (!Number.isFinite(durationSeconds ?? Number.NaN) || !durationSeconds) return `${kindLabel}时长读取失败`;
+  if (rule.minSeconds !== undefined && durationSeconds < rule.minSeconds - MEDIA_DURATION_EPSILON_SECONDS) return `${kindLabel}时长不能少于 ${rule.minSeconds} 秒`;
+  if (rule.maxSeconds !== undefined && durationSeconds > rule.maxSeconds + MEDIA_DURATION_EPSILON_SECONDS) return `${kindLabel}时长不能超过 ${rule.maxSeconds} 秒`;
+  return undefined;
+}
+
+function validateWorkflowReferenceVideoDimensions(dimensions?: { width: number; height: number }) {
+  if (!dimensions?.width || !dimensions.height) return "视频尺寸读取失败";
+  const ratio = dimensions.width / dimensions.height;
+  if (ratio < 0.4 || ratio > 2.5) return "视频宽高比需在 0.4 到 2.5 之间";
+  if (dimensions.width < 300 || dimensions.width > 6000 || dimensions.height < 300 || dimensions.height > 6000) return "视频宽高需在 300 到 6000 像素之间";
+  const pixels = dimensions.width * dimensions.height;
+  if (pixels < 409600 || pixels > 2086876) return "视频总像素需在 409600 到 2086876 之间";
+  return undefined;
+}
+
+function readWorkflowMediaFileMetadata(file: File, kind: "video" | "audio") {
+  return new Promise<{ durationSeconds?: number; dimensions?: { width: number; height: number } }>((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const element = kind === "video" ? document.createElement("video") : document.createElement("audio");
+    const cleanup = () => URL.revokeObjectURL(url);
+    element.preload = "metadata";
+    element.onloadedmetadata = () => {
+      const durationSeconds = Number.isFinite(element.duration) ? element.duration : undefined;
+      const dimensions = kind === "video"
+        ? { width: Math.floor((element as HTMLVideoElement).videoWidth), height: Math.floor((element as HTMLVideoElement).videoHeight) }
+        : undefined;
+      cleanup();
+      resolve({ durationSeconds, dimensions: dimensions?.width && dimensions.height ? dimensions : undefined });
+    };
+    element.onerror = () => {
+      cleanup();
+      reject(new Error(kind === "video" ? "视频信息读取失败" : "音频信息读取失败"));
+    };
+    element.src = url;
+  });
+}
+
 function appendWorkflowDocumentContext(prompt: string, uploads?: WorkflowUploadItem[]) {
   const documents = (uploads ?? []).filter((upload) => upload.kind === "document" && upload.status === "ready" && upload.text?.trim());
   if (documents.length === 0) return prompt;
@@ -306,16 +450,79 @@ function appendWorkflowDocumentContext(prompt: string, uploads?: WorkflowUploadI
   return `${prompt || "请阅读我上传的文档，并告诉我可以怎么继续创作。"}\n\n已读取文档内容如下。请把这些内容作为当前上下文，不要假装没有读取：\n\n${sections.join("\n\n---\n\n")}`;
 }
 
-async function uploadWorkflowImage(file: File) {
+function uploadWorkflowFormDataWithProgress<T>(url: string, formData: FormData, onProgress?: (progress: number) => void) {
+  return new Promise<T>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    let settled = false;
+    const rejectOnce = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    };
+    const resolveOnce = (data: T) => {
+      if (settled) return;
+      settled = true;
+      resolve(data);
+    };
+    try {
+      xhr.open("POST", url);
+      xhr.timeout = 90 * 1000;
+    } catch (error) {
+      rejectOnce(error instanceof Error ? error : new Error("上传初始化失败"));
+      return;
+    }
+    xhr.upload.onprogress = (event) => {
+      if (!event.lengthComputable) return;
+      onProgress?.(Math.min(95, Math.max(15, Math.round((event.loaded / event.total) * 95))));
+    };
+    xhr.onload = () => {
+      let data: T & { error?: string };
+      try {
+        data = JSON.parse(xhr.responseText || "{}") as T & { error?: string };
+      } catch {
+        rejectOnce(new Error("上传失败"));
+        return;
+      }
+      if (xhr.status < 200 || xhr.status >= 300) {
+        rejectOnce(new Error(data.error || "上传失败"));
+        return;
+      }
+      onProgress?.(100);
+      resolveOnce(data);
+    };
+    xhr.onabort = () => rejectOnce(new Error("上传已取消"));
+    xhr.onerror = () => rejectOnce(new Error("上传失败，请检查网络或跨域配置"));
+    xhr.ontimeout = () => rejectOnce(new Error("上传超时，请重试"));
+    try {
+      xhr.send(formData);
+    } catch (error) {
+      rejectOnce(error instanceof Error ? error : new Error("上传发送失败"));
+    }
+  });
+}
+
+async function uploadWorkflowImageOnce(file: File, onProgress?: (progress: number) => void, forceReencode = false) {
   const formData = new FormData();
   formData.append("image", file, file.name);
-  const postResponse = await fetch("/api/asset-upload-temp", { method: "POST", body: formData });
-  const postData = await readJson<{ token?: string; error?: string }>(postResponse);
+  if (forceReencode) formData.append("forceReencode", "1");
+  onProgress?.(8);
+  onProgress?.(12);
+  const postData = await uploadWorkflowFormDataWithProgress<{ token?: string; error?: string }>("/api/asset-upload-temp", formData, onProgress);
   if (!postData.token) throw new Error(postData.error || "图片上传失败");
   const patchResponse = await fetch("/api/asset-upload-temp", { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: postData.token }) });
   const patchData = await readJson<{ url?: string; error?: string }>(patchResponse);
   if (!patchData.url) throw new Error(patchData.error || "图片保存失败");
   return patchData.url;
+}
+
+async function uploadWorkflowImage(file: File, onProgress?: (progress: number) => void) {
+  try {
+    return await uploadWorkflowImageOnce(file, onProgress);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!message.includes("转码")) throw error;
+    return uploadWorkflowImageOnce(file, onProgress, true);
+  }
 }
 
 async function uploadWorkflowFile(file: File, kind: Exclude<WorkflowUploadKind, "image">) {
@@ -334,6 +541,11 @@ function getWorkflowUploadReferenceName(upload: WorkflowUploadItem) {
   return sanitizeWorkflowReferenceName(upload.name);
 }
 
+function getWorkflowUploadMediaSrc(upload: WorkflowUploadItem) {
+  if (upload.url) return getStaticMediaUrl(upload.url) ?? upload.url;
+  return upload.previewUrl;
+}
+
 function getWorkflowPromptReferenceUrls(prompt: string, node: WorkflowNode, referenceAssets: WorkflowReferenceAsset[], kind: "image" | "video" | "audio") {
   const names = new Set(getWorkflowMentionNames(prompt));
   const urls: string[] = [];
@@ -345,6 +557,45 @@ function getWorkflowPromptReferenceUrls(prompt: string, node: WorkflowNode, refe
     if (!urls.includes(upload.url)) urls.push(upload.url);
   });
   return urls;
+}
+
+function validateWorkflowUploadsForSubmit(node: WorkflowNode, overrides?: UploadRuleOverrides, videoReferenceMode?: WorkflowVideoReferenceMode) {
+  const uploadRule = getEffectiveWorkflowUploadRule(node, overrides, videoReferenceMode);
+  const uploads = node.data.uploads ?? [];
+  if (uploads.some((upload) => upload.status === "uploading")) return "文件上传中";
+  if (uploads.some((upload) => upload.status === "error")) return "有文件上传失败，请删除后重新上传";
+
+  for (const kind of ["image", "document", "video", "audio"] as const) {
+    const kindUploads = uploads.filter((upload) => upload.kind === kind);
+    const kindRule = uploadRule[kind];
+    if (kindUploads.length === 0) continue;
+    if (!kindRule.enabled) return kind === "image" ? "当前模型不支持上传图片" : kind === "video" ? "当前模型不支持上传视频" : kind === "audio" ? "当前模型不支持上传音频" : "当前模型不支持上传文件";
+    if (kindUploads.length > kindRule.maxCount) return kind === "image" ? `当前模型最多支持 ${kindRule.maxCount} 张参考图，不能上传更多图片` : kind === "video" ? `当前模型最多支持 ${kindRule.maxCount} 个参考视频` : kind === "audio" ? `当前模型最多支持 ${kindRule.maxCount} 个参考音频` : `当前类型最多支持 ${kindRule.maxCount} 个文件`;
+    const badFormat = kindUploads.find((upload) => !kindRule.formats.includes(upload.name.split(".").pop()?.toLowerCase() ?? ""));
+    if (badFormat) return kind === "image" ? "当前模型不支持该图片格式" : kind === "video" ? "当前模型不支持该视频格式" : kind === "audio" ? "当前模型不支持该音频格式" : "当前模型不支持该文件格式";
+  }
+
+  const videoUploads = uploads.filter((upload) => upload.kind === "video");
+  let videoDuration = 0;
+  for (const upload of videoUploads) {
+    const durationError = validateWorkflowMediaDuration("视频", upload.durationSeconds, uploadRule.video);
+    const dimensionError = validateWorkflowReferenceVideoDimensions(upload.dimensions);
+    if (durationError) return durationError;
+    if (dimensionError) return dimensionError;
+    videoDuration += getWorkflowUploadDuration(upload);
+  }
+  if (uploadRule.video.maxTotalSeconds !== undefined && videoDuration > uploadRule.video.maxTotalSeconds + MEDIA_DURATION_EPSILON_SECONDS) return `参考视频总时长不能超过 ${uploadRule.video.maxTotalSeconds} 秒`;
+
+  const audioUploads = uploads.filter((upload) => upload.kind === "audio");
+  let audioDuration = 0;
+  for (const upload of audioUploads) {
+    const durationError = validateWorkflowMediaDuration("音频", upload.durationSeconds, uploadRule.audio);
+    if (durationError) return durationError;
+    audioDuration += getWorkflowUploadDuration(upload);
+  }
+  if (uploadRule.audio.maxTotalSeconds !== undefined && audioDuration > uploadRule.audio.maxTotalSeconds + MEDIA_DURATION_EPSILON_SECONDS) return `参考音频总时长不能超过 ${uploadRule.audio.maxTotalSeconds} 秒`;
+
+  return undefined;
 }
 
 function getShapeId(nodeId: string) {
@@ -550,7 +801,7 @@ function getDefaultNodeData(kind: WorkflowNodeKind): WorkflowNodeData {
   if (kind === "text") return { text: "", prompt: "" };
   if (kind === "video") {
     const resolution = normalizeVideoResolutionForModel(DEFAULT_WORKFLOW_VIDEO_MODEL, "720p");
-    return { model: DEFAULT_WORKFLOW_VIDEO_MODEL, ratio: normalizeVideoRatioForModel(DEFAULT_WORKFLOW_VIDEO_MODEL, "16:9", resolution), resolution, duration: "8秒", prompt: "" };
+    return { model: DEFAULT_WORKFLOW_VIDEO_MODEL, ratio: normalizeVideoRatioForModel(DEFAULT_WORKFLOW_VIDEO_MODEL, "16:9", resolution), resolution, duration: "8秒", videoReferenceMode: "reference", prompt: "" };
   }
   const defaultImageModel = frontendImageGenerationModels.some((model) => model.id === DEFAULT_WORKFLOW_IMAGE_MODEL) ? DEFAULT_WORKFLOW_IMAGE_MODEL : frontendImageGenerationModels[0]?.id ?? DEFAULT_IMAGE_MODEL;
   const resolution = normalizeImageResolutionForModel(defaultImageModel, "2K");
@@ -581,13 +832,19 @@ function normalizeState(value?: WorkflowCanvasState): WorkflowCanvasState {
     ? { x: Number.isFinite(value.viewport.x) ? value.viewport.x : 0, y: Number.isFinite(value.viewport.y) ? value.viewport.y : 0, zoom: Number.isFinite(value.viewport.zoom) ? value.viewport.zoom : 1 }
     : undefined;
   const historicalTextNodes = Array.isArray(value.historicalTextNodes)
-    ? value.historicalTextNodes.filter((node) => node?.kind === "text" && getWorkflowTextNodeContent(node).trim()).map((node) => ({
-      ...node,
-      title: node.title || getNodeLabel("text"),
-      x: Number.isFinite(node.x) ? node.x : 160,
-      y: Number.isFinite(node.y) ? node.y : 120,
-      data: { ...getDefaultNodeData("text"), ...(node.data && typeof node.data === "object" ? node.data : {}) },
-    }))
+    ? value.historicalTextNodes.reduce<WorkflowNode[]>((items, node) => {
+      if (node?.kind !== "text" || !getWorkflowTextNodeContent(node).trim()) return items;
+      const normalizedNode = {
+        ...node,
+        title: node.title || getNodeLabel("text"),
+        x: Number.isFinite(node.x) ? node.x : 160,
+        y: Number.isFinite(node.y) ? node.y : 120,
+        data: { ...getDefaultNodeData("text"), ...(node.data && typeof node.data === "object" ? node.data : {}) },
+      };
+      const contentKey = normalizeWorkflowHistoricalTextContent(normalizedNode);
+      if (!contentKey || items.some((item) => normalizeWorkflowHistoricalTextContent(item) === contentKey)) return items;
+      return [...items, normalizedNode];
+    }, [])
     : undefined;
   return { nodes, edges, viewport, historicalTextNodes };
 }
@@ -596,12 +853,23 @@ function getWorkflowTextNodeContent(node: WorkflowNode) {
   return node.kind === "text" ? node.data.text ?? node.data.prompt ?? node.data.outputText ?? "" : "";
 }
 
+function normalizeWorkflowHistoricalTextContent(node: WorkflowNode) {
+  return getWorkflowTextNodeContent(node).replace(/\r\n/g, "\n").trim();
+}
+
 function addHistoricalTextNodes(state: WorkflowCanvasState, nodes: WorkflowNode[]) {
-  const additions = nodes.filter((node) => node.kind === "text" && getWorkflowTextNodeContent(node).trim());
+  const seen = new Set<string>();
+  const additions = nodes.filter((node) => {
+    if (node.kind !== "text") return false;
+    const contentKey = normalizeWorkflowHistoricalTextContent(node);
+    if (!contentKey || seen.has(contentKey)) return false;
+    seen.add(contentKey);
+    return true;
+  });
   if (additions.length === 0) return state;
   const existing = state.historicalTextNodes ?? [];
-  const existingIds = new Set(existing.map((node) => node.id));
-  const nextHistorical = [...additions.filter((node) => !existingIds.has(node.id)), ...existing].slice(0, 80);
+  const additionKeys = new Set(additions.map(normalizeWorkflowHistoricalTextContent));
+  const nextHistorical = [...additions, ...existing.filter((node) => !additionKeys.has(normalizeWorkflowHistoricalTextContent(node)))].slice(0, 80);
   return { ...state, historicalTextNodes: nextHistorical };
 }
 
@@ -610,9 +878,17 @@ function stateKey(value: WorkflowCanvasState) {
 }
 
 async function readJson<T>(response: Response): Promise<T> {
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw data;
+  const data = await response.json().catch(() => ({})) as { error?: string | { message?: string }; errorCode?: string };
+  if (!response.ok) {
+    throw new Error(getWorkflowApiErrorMessage(data, GENERIC_MEDIA_ERROR_MESSAGE));
+  }
   return data as T;
+}
+
+function getWorkflowApiErrorMessage(data: { error?: string | { message?: string }; errorCode?: string }, fallback = GENERIC_MEDIA_ERROR_MESSAGE) {
+  const rawError = typeof data.error === "string" ? data.error : data.error?.message;
+  const codedError = data.errorCode && rawError && !/^\(B_\d+\)/.test(rawError) ? `(${data.errorCode}) ${rawError}` : rawError;
+  return toUserErrorMessage(codedError, fallback);
 }
 
 function getVideoUrlFromResponse(data: VideoApiResponse) {
@@ -665,6 +941,62 @@ function getStaticMediaUrl(url: string | undefined) {
   return url;
 }
 
+type WorkflowHoverImagePreviewPosition = {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+};
+
+function getWorkflowHoverImagePreviewPosition(clientX: number, clientY: number, naturalSize?: { width: number; height: number }): WorkflowHoverImagePreviewPosition {
+  const margin = 16;
+  const gap = 14;
+  const viewportWidth = window.innerWidth;
+  const viewportHeight = window.innerHeight;
+  const availableRight = Math.max(0, viewportWidth - clientX - gap - margin);
+  const availableLeft = Math.max(0, clientX - gap - margin);
+  const useLeft = availableLeft > availableRight;
+  const maxWidth = Math.max(120, Math.min(720, (useLeft ? availableLeft : availableRight) || viewportWidth - margin * 2));
+  const maxHeight = Math.max(120, Math.min(760, viewportHeight - margin * 2));
+  const naturalWidth = Math.max(1, naturalSize?.width ?? maxWidth);
+  const naturalHeight = Math.max(1, naturalSize?.height ?? maxHeight);
+  const scale = Math.min(maxWidth / naturalWidth, maxHeight / naturalHeight, 1);
+  const width = Math.max(120, Math.round(naturalWidth * scale));
+  const height = Math.max(120, Math.round(naturalHeight * scale));
+  const rawLeft = useLeft ? clientX - gap - width : clientX + gap;
+  const rawTop = clientY + gap + height > viewportHeight - margin ? clientY - gap - height : clientY + gap;
+  const left = Math.min(Math.max(margin, rawLeft), Math.max(margin, viewportWidth - margin - width));
+  const top = Math.min(Math.max(margin, rawTop), Math.max(margin, viewportHeight - margin - height));
+  return { left, top, width, height };
+}
+
+function WorkflowHoverImagePreview({ src, alt, wrapperClassName = "inline-block", children }: { src: string; alt: string; wrapperClassName?: string; children: ReactNode }) {
+  const [position, setPosition] = useState<WorkflowHoverImagePreviewPosition | null>(null);
+  const [naturalSize, setNaturalSize] = useState<{ width: number; height: number } | undefined>(undefined);
+  const pointerRef = useRef<{ x: number; y: number } | null>(null);
+  const displaySrc = getStaticMediaUrl(src) ?? src;
+  const updatePosition = (clientX: number, clientY: number, size = naturalSize) => {
+    pointerRef.current = { x: clientX, y: clientY };
+    setPosition(getWorkflowHoverImagePreviewPosition(clientX, clientY, size));
+  };
+  const preview = position && typeof document !== "undefined" ? createPortal(
+    <span className="pointer-events-none fixed z-[9999] flex items-center justify-center rounded-[10px] border border-white/70 bg-white p-1 shadow-[0_18px_60px_rgba(0,0,0,0.32)]" style={{ left: position.left, top: position.top, width: position.width + 8, height: position.height + 8 }}>
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img src={displaySrc} alt={alt} className="block object-contain" style={{ width: position.width, height: position.height }} onLoad={(event) => {
+        const image = event.currentTarget;
+        if (!image.naturalWidth || !image.naturalHeight) return;
+        const nextSize = { width: image.naturalWidth, height: image.naturalHeight };
+        setNaturalSize(nextSize);
+        const pointer = pointerRef.current;
+        if (pointer) setPosition(getWorkflowHoverImagePreviewPosition(pointer.x, pointer.y, nextSize));
+      }} />
+    </span>,
+    document.body,
+  ) : null;
+
+  return <span className={wrapperClassName} onMouseEnter={(event) => updatePosition(event.clientX, event.clientY)} onMouseMove={(event) => updatePosition(event.clientX, event.clientY)} onMouseLeave={() => { pointerRef.current = null; setPosition(null); }}>{children}{preview}</span>;
+}
+
 function blobToDataUrl(blob: Blob) {
   return new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
@@ -707,9 +1039,67 @@ function downloadBlob(blob: Blob, fileName: string) {
   window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
 }
 
+async function copyWorkflowTextNode(node: WorkflowNode) {
+  const text = getWorkflowTextNodeContent(node);
+  if (!text.trim()) return;
+  await navigator.clipboard.writeText(text);
+}
+
+function getWorkflowMediaBaseName(node: WorkflowNode, fallback: string) {
+  const imageUrl = node.data.images?.[0];
+  if (node.kind === "image" && imageUrl) return node.data.mediaSystemNames?.[imageUrl] ?? fallback;
+  if (node.kind === "video" && node.data.videoUrl) return node.data.mediaSystemNames?.[node.data.videoUrl] ?? fallback;
+  return fallback;
+}
+
+function loadImageElement(src: string) {
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new Image();
+    image.crossOrigin = "anonymous";
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("图片加载失败"));
+    image.src = src;
+  });
+}
+
+async function getWorkflowImageJpegBlob(url: string) {
+  const source = await getWorkflowExportImageSrc(getStaticMediaUrl(url));
+  if (!source) throw new Error("图片导出失败");
+  const image = await loadImageElement(source);
+  const canvas = document.createElement("canvas");
+  canvas.width = image.naturalWidth || image.width || 1;
+  canvas.height = image.naturalHeight || image.height || 1;
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("图片导出失败");
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+  return new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("图片导出失败")), "image/jpeg", 0.92);
+  });
+}
+
+async function exportWorkflowImageJpg(node: WorkflowNode) {
+  const imageUrl = node.data.images?.[0];
+  if (!imageUrl) return;
+  const blob = await getWorkflowImageJpegBlob(imageUrl);
+  downloadBlob(blob, `${getWorkflowMediaBaseName(node, "workflow-image")}.jpg`);
+}
+
+async function exportWorkflowVideoFrame(node: WorkflowNode, frame: "first" | "last" | "current") {
+  const videoUrl = getStaticMediaUrl(node.data.videoUrl);
+  if (!videoUrl) return;
+  const time = frame === "first" ? 0 : frame === "last" ? Number.POSITIVE_INFINITY : node.data.videoCurrentTime ?? 0;
+  const frameUrl = await getWorkflowVideoFrameDataUrl(videoUrl, time);
+  if (!frameUrl) throw new Error("视频帧导出失败");
+  const blob = await fetch(frameUrl).then((response) => response.blob());
+  const suffix = frame === "first" ? "首帧" : frame === "last" ? "尾帧" : "当前帧";
+  downloadBlob(blob, `${getWorkflowMediaBaseName(node, "workflow-video")}-${suffix}.jpg`);
+}
+
 async function downloadWorkflowNode(node: WorkflowNode) {
   if (node.kind === "text") {
-    const text = node.data.text ?? node.data.prompt ?? node.data.outputText ?? "";
+    const text = getWorkflowTextNodeContent(node);
     downloadBlob(new Blob([text], { type: "text/plain;charset=utf-8" }), getWorkflowDownloadFileName(node));
     return;
   }
@@ -820,6 +1210,7 @@ type WorkflowRuntime = {
   runImageNode: (node: WorkflowNode) => void;
   runVideoNode: (node: WorkflowNode) => void;
   onGeneratedMedia?: WorkflowCanvasProps["onGeneratedMedia"];
+  onShowTip?: (message: string) => void;
   markNodeAction: (nodeId: string) => void;
   onPreviewMedia?: WorkflowCanvasProps["onPreviewMedia"];
   getImageDisplayUrl?: (url: string) => string;
@@ -827,6 +1218,7 @@ type WorkflowRuntime = {
   referenceAssets: WorkflowReferenceAsset[];
   referenceAssetsLoadStatus: "idle" | "loading" | "loaded" | "failed";
   onLoadReferenceAssets?: () => void;
+  uploadRuleOverrides?: UploadRuleOverrides;
 };
 
 const WorkflowRuntimeContext = createContext<WorkflowRuntime | null>(null);
@@ -962,6 +1354,9 @@ function WorkflowShapeComponent({ shape }: { shape: WorkflowNodeShape }) {
 function WorkflowSelectedNodeOverlay() {
   const runtime = useWorkflowRuntime();
   const editor = useEditor();
+  const editorBoxRef = useRef<HTMLDivElement | null>(null);
+  const [measuredEditorHeight, setMeasuredEditorHeight] = useState(320);
+  const [dockSafeBottom, setDockSafeBottom] = useState<number | null>(null);
   const selected = useValue("workflow-selected-node-overlay", () => {
     const selectedShapeId = editor.getOnlySelectedShapeId();
     if (!selectedShapeId) return undefined;
@@ -969,6 +1364,40 @@ function WorkflowSelectedNodeOverlay() {
     if (!shape || shape.type !== "workflow_node") return undefined;
     const point = editor.pageToViewport({ x: shape.x, y: shape.y });
     return { shape, point, zoom: editor.getCamera().z };
+  }, [editor]);
+
+  useEffect(() => {
+    const element = editorBoxRef.current;
+    if (!element) return;
+    const updateHeight = () => setMeasuredEditorHeight(Math.max(1, Math.ceil(element.getBoundingClientRect().height)));
+    updateHeight();
+    const observer = new ResizeObserver(updateHeight);
+    observer.observe(element);
+    window.addEventListener("resize", updateHeight);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", updateHeight);
+    };
+  }, [selected?.shape.id]);
+
+  useEffect(() => {
+    const dock = document.querySelector<HTMLElement>(".lovart-workflow-dock");
+    const editorContainer = (editor as Editor & { getContainer?: () => HTMLElement | null }).getContainer?.();
+    const updateDockSafeBottom = () => {
+      const rect = dock?.getBoundingClientRect();
+      const containerRect = editorContainer?.getBoundingClientRect();
+      setDockSafeBottom(rect && containerRect ? Math.floor(rect.top - containerRect.top) - 8 : null);
+    };
+    updateDockSafeBottom();
+    if (!dock) return undefined;
+    const observer = new ResizeObserver(updateDockSafeBottom);
+    observer.observe(dock);
+    if (editorContainer) observer.observe(editorContainer);
+    window.addEventListener("resize", updateDockSafeBottom);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", updateDockSafeBottom);
+    };
   }, [editor]);
 
   if (!selected) return null;
@@ -984,8 +1413,20 @@ function WorkflowSelectedNodeOverlay() {
   const maxParamWidth = Math.max(0, screenNodeWidth - estimateTitleTextWidth(title));
   const sizeLabel = buildWorkflowParamLabel(paramParts, maxParamWidth);
   const paramWidth = sizeLabel ? Math.min(maxParamWidth, estimateParamTextWidth(sizeLabel) + 2) : 0;
-  const inputLeft = point.x + screenNodeWidth / 2;
-  const inputTop = point.y + screenNodeHeight + 8;
+  const viewportBounds = editor.getViewportScreenBounds();
+  const viewportWidth = viewportBounds.w;
+  const viewportHeight = viewportBounds.h;
+  const fallbackBottomToolbarSafeArea = 70;
+  const safeViewportBottom = dockSafeBottom ?? viewportHeight - fallbackBottomToolbarSafeArea;
+  const inputWidth = Math.min(680, Math.max(1, viewportWidth));
+  const inputGap = 8;
+  const minViewportTop = 16;
+  const inputMaxHeight = Math.min(560, Math.max(160, safeViewportBottom - minViewportTop));
+  const inputHeight = Math.min(Math.max(1, measuredEditorHeight), inputMaxHeight);
+  const inputLeft = Math.max(inputWidth / 2, Math.min(point.x + screenNodeWidth / 2, viewportWidth - inputWidth / 2));
+  const belowTop = point.y + screenNodeHeight + inputGap;
+  const inputTop = Math.max(minViewportTop, Math.min(belowTop, safeViewportBottom - inputHeight));
+  const promptMaxHeight = Math.max(52, inputMaxHeight - 176);
   const stopCanvasPointer = (event: SyntheticEvent) => event.stopPropagation();
 
   return (
@@ -999,31 +1440,45 @@ function WorkflowSelectedNodeOverlay() {
       </div>
       {showEditor ? (
         <div
-          className="pointer-events-auto absolute z-[9999] w-[680px] max-w-[calc(100vw-32px)] -translate-x-1/2 rounded-[26px] border-0 bg-transparent px-0 py-0"
-          style={{ left: inputLeft, top: inputTop }}
+          ref={editorBoxRef}
+          className="pointer-events-auto absolute z-[9999] -translate-x-1/2 rounded-[26px] border-0 bg-transparent px-0 py-0"
+          style={{ left: inputLeft, top: inputTop, width: inputWidth, maxHeight: inputMaxHeight }}
           onPointerDownCapture={stopCanvasPointer}
           onMouseDownCapture={stopCanvasPointer}
           onClick={stopCanvasPointer}
           onWheel={stopCanvasPointer}
         >
-          {node.kind === "image" ? <ImageNodeEditor node={node} modelOptions={runtime.modelOptions} onChange={runtime.updateNode} onRun={() => runtime.runImageNode(node)} /> : null}
-          {node.kind === "video" ? <VideoNodeEditor node={node} modelOptions={runtime.modelOptions} onChange={runtime.updateNode} onRun={() => runtime.runVideoNode(node)} /> : null}
+          {node.kind === "image" ? <ImageNodeEditor node={node} modelOptions={runtime.modelOptions} promptMaxHeight={promptMaxHeight} onChange={runtime.updateNode} onRun={() => runtime.runImageNode(node)} /> : null}
+          {node.kind === "video" ? <VideoNodeEditor node={node} modelOptions={runtime.modelOptions} promptMaxHeight={promptMaxHeight} onChange={runtime.updateNode} onRun={() => runtime.runVideoNode(node)} /> : null}
         </div>
       ) : null}
     </>
   );
 }
 
-type WorkflowContextMenuState = { x: number; y: number } | null;
+type WorkflowContextMenuState = { x: number; y: number; pagePoint?: { x: number; y: number }; isBlankCanvas?: boolean } | null;
 
-function WorkflowCustomContextMenu({ menu, onClose }: { menu: WorkflowContextMenuState; onClose: () => void }) {
+function WorkflowCustomContextMenu({ menu, onClose, onAddNode, onUsePrompt }: { menu: WorkflowContextMenuState; onClose: () => void; onAddNode: (kind: WorkflowNodeKind, pagePoint?: { x: number; y: number }) => void; onUsePrompt: (node: WorkflowNode) => void }) {
   const editor = useEditor();
   const actions = useActions();
   const selectedShapeIds = useValue("workflow-context-menu-selected", () => editor.getSelectedShapeIds(), [editor]);
   const hasSelection = selectedShapeIds.length > 0;
   const hasShapes = useValue("workflow-context-menu-has-shapes", () => editor.getCurrentPageShapes().length > 0, [editor]);
+  const selectedWorkflowShape = useValue("workflow-context-menu-node", () => {
+    const selectedWorkflowShapes = editor.getSelectedShapes().filter((shape): shape is WorkflowNodeShape => shape.type === "workflow_node");
+    return selectedWorkflowShapes.length === 1 ? selectedWorkflowShapes[0] : undefined;
+  }, [editor]);
 
   if (!menu) return null;
+
+  const selectedWorkflowNode = menu.isBlankCanvas ? undefined : selectedWorkflowShape?.props.node;
+  const showSelectionActions = hasSelection && !menu.isBlankCanvas;
+  const isSelectedWorkflowShapeLocked = Boolean(selectedWorkflowShape && editor.isShapeOrAncestorLocked(selectedWorkflowShape));
+  const selectedTextContent = selectedWorkflowNode?.kind === "text" ? getWorkflowTextNodeContent(selectedWorkflowNode) : "";
+  const showTextItems = Boolean(selectedWorkflowNode?.kind === "text" && selectedTextContent.trim());
+  const showImageItems = Boolean(selectedWorkflowNode?.kind === "image" && selectedWorkflowNode.data.images?.[0]);
+  const showVideoItems = Boolean(selectedWorkflowNode?.kind === "video" && selectedWorkflowNode.data.videoUrl);
+  const showNodeSpecificItems = showTextItems || showImageItems || showVideoItems;
 
   const runAction = (actionId: string) => {
     const action = actions[actionId];
@@ -1031,10 +1486,26 @@ function WorkflowCustomContextMenu({ menu, onClose }: { menu: WorkflowContextMen
     void action.onSelect("context-menu");
     onClose();
   };
+  const runAddNode = (kind: WorkflowNodeKind) => {
+    onAddNode(kind, menu.pagePoint);
+    onClose();
+  };
   const runDownload = () => {
     const selectedWorkflowNodes = editor.getSelectedShapes().filter((shape): shape is WorkflowNodeShape => shape.type === "workflow_node").map((shape) => shape.props.node);
     const node = selectedWorkflowNodes.length === 1 ? selectedWorkflowNodes[0] : undefined;
     if (node) void downloadWorkflowNode(node).catch((error) => console.warn("[workflow] download failed", error));
+    onClose();
+  };
+  const runNodeTask = (task: (node: WorkflowNode) => void | Promise<void>) => {
+    const node = selectedWorkflowNode;
+    if (!node) return;
+    void Promise.resolve(task(node)).catch((error) => console.warn("[workflow] context menu task failed", error));
+    onClose();
+  };
+  const runUsePrompt = () => {
+    const node = selectedWorkflowNode;
+    if (!node) return;
+    onUsePrompt(node);
     onClose();
   };
   const runDelete = () => {
@@ -1046,35 +1517,75 @@ function WorkflowCustomContextMenu({ menu, onClose }: { menu: WorkflowContextMen
     editor.select(...editor.getCurrentPageShapes().map((shape) => shape.id));
     onClose();
   };
+  const runZoomToAll = () => {
+    const workflowNodes = editor.getCurrentPageShapes().filter((shape): shape is WorkflowNodeShape => shape.type === "workflow_node").map((shape) => shape.props.node);
+    zoomToWorkflowNodes(editor, workflowNodes);
+    onClose();
+  };
 
   const itemClassName = "flex h-8 w-full items-center justify-between rounded-[6px] px-2 text-left text-[13px] text-[#222222] transition hover:bg-[#f3f3f3] disabled:cursor-not-allowed disabled:text-[#b8b8b8] disabled:hover:bg-transparent";
+  const submenuClassName = "absolute left-[calc(100%-2px)] top-0 hidden w-[148px] rounded-[10px] border border-[#e8e8e8] bg-white p-1.5 shadow-[0_12px_32px_rgba(0,0,0,0.16)] group-hover:block";
+  const iconClassName = "h-4 w-4 shrink-0 text-[#6f767d]";
+  const menuLabel = (Icon: typeof RiAddLine, label: string) => <span className="flex min-w-0 items-center gap-2"><Icon className={iconClassName} aria-hidden="true" /><span className="truncate">{label}</span></span>;
   const separator = <div className="my-1 h-px bg-[#eeeeee]" />;
 
   return (
     <div data-workflow-context-menu className="pointer-events-auto absolute z-[10000] w-[180px] rounded-[10px] border border-[#e8e8e8] bg-white p-1.5 text-[#222222] shadow-[0_12px_32px_rgba(0,0,0,0.16)]" style={{ left: menu.x, top: menu.y }} onPointerDown={(event) => event.stopPropagation()} onContextMenu={(event) => event.preventDefault()}>
-      <button type="button" disabled={!hasSelection} onClick={() => runAction("cut")} className={itemClassName}><span>剪切</span><span className="text-[11px] text-[#999999]">Ctrl X</span></button>
-      <button type="button" disabled={!hasSelection} onClick={() => runAction("copy")} className={itemClassName}><span>复制</span><span className="text-[11px] text-[#999999]">Ctrl C</span></button>
-      <button type="button" onClick={() => runAction("paste")} className={itemClassName}><span>粘贴</span><span className="text-[11px] text-[#999999]">Ctrl V</span></button>
-      <button type="button" disabled={!hasSelection} onClick={() => runAction("duplicate")} className={itemClassName}><span>复制副本</span><span className="text-[11px] text-[#999999]">Ctrl D</span></button>
-      <button type="button" disabled={!hasSelection} onClick={runDelete} className={itemClassName}><span>删除</span><span className="text-[11px] text-[#999999]">Del</span></button>
-      {separator}
-      <button type="button" disabled={!hasSelection} onClick={() => runAction("bring-to-front")} className={itemClassName}>置于顶层</button>
-      <button type="button" disabled={!hasSelection} onClick={() => runAction("bring-forward")} className={itemClassName}>上移一层</button>
-      <button type="button" disabled={!hasSelection} onClick={() => runAction("send-backward")} className={itemClassName}>下移一层</button>
-      <button type="button" disabled={!hasSelection} onClick={() => runAction("send-to-back")} className={itemClassName}>置于底层</button>
-      {separator}
-      <button type="button" disabled={!hasSelection} onClick={() => runAction("copy-as-svg")} className={itemClassName}>复制为 SVG</button>
-      <button type="button" disabled={!hasSelection} onClick={() => runAction("copy-as-png")} className={itemClassName}>复制为 PNG</button>
-      <button type="button" disabled={!hasSelection} onClick={() => runAction("export-as-svg")} className={itemClassName}>导出 SVG</button>
-      <button type="button" disabled={!hasSelection} onClick={() => runAction("export-as-png")} className={itemClassName}>导出 PNG</button>
-      <button type="button" disabled={!hasSelection} onClick={runDownload} className={itemClassName}>下载</button>
-      {separator}
-      <button type="button" disabled={!hasShapes} onClick={runSelectAll} className={itemClassName}><span>全选</span><span className="text-[11px] text-[#999999]">Ctrl A</span></button>
+      {menu.isBlankCanvas ? (
+        <>
+          <button type="button" onClick={() => runAddNode("text")} className={itemClassName}>{menuLabel(RiTextBlock, "插入文本节点")}<span className="text-[11px] text-[#999999]">T</span></button>
+          <button type="button" onClick={() => runAddNode("image")} className={itemClassName}>{menuLabel(RiImageAiLine, "插入图片节点")}<span className="text-[11px] text-[#999999]">I</span></button>
+          <button type="button" onClick={() => runAddNode("video")} className={itemClassName}>{menuLabel(RiFilmAiLine, "插入视频节点")}<span className="text-[11px] text-[#999999]">V</span></button>
+          {separator}
+          <button type="button" onClick={() => { editor.zoomIn(); onClose(); }} className={itemClassName}>{menuLabel(RiZoomInLine, "画布放大")}<span className="text-[11px] text-[#999999]">Ctrl +</span></button>
+          <button type="button" onClick={() => { editor.zoomOut(); onClose(); }} className={itemClassName}>{menuLabel(RiZoomOutLine, "画布缩小")}<span className="text-[11px] text-[#999999]">Ctrl -</span></button>
+          {hasShapes ? <button type="button" onClick={runZoomToAll} className={itemClassName}>{menuLabel(RiFocus3Line, "显示全部节点")}<span className="text-[11px] text-[#999999]">Shift 1</span></button> : null}
+          {separator}
+        </>
+      ) : null}
+      {selectedWorkflowNode ? <button type="button" onClick={() => runAction("toggle-lock")} className={itemClassName}>{menuLabel(isSelectedWorkflowShapeLocked ? RiLockUnlockLine : RiLockLine, isSelectedWorkflowShapeLocked ? "解锁" : "锁定")}</button> : null}
+      {selectedWorkflowNode ? separator : null}
+      {showSelectionActions ? <button type="button" onClick={() => runAction("cut")} className={itemClassName}>{menuLabel(RiScissorsCutLine, "剪切")}<span className="text-[11px] text-[#999999]">Ctrl X</span></button> : null}
+      {showSelectionActions ? <button type="button" onClick={() => runAction("copy")} className={itemClassName}>{menuLabel(RiFileCopyLine, "复制")}<span className="text-[11px] text-[#999999]">Ctrl C</span></button> : null}
+      <button type="button" onClick={() => runAction("paste")} className={itemClassName}>{menuLabel(RiClipboardLine, "粘贴")}<span className="text-[11px] text-[#999999]">Ctrl V</span></button>
+      {showSelectionActions ? <button type="button" onClick={() => runAction("duplicate")} className={itemClassName}>{menuLabel(RiFileCopy2Line, "复制副本")}<span className="text-[11px] text-[#999999]">Ctrl D</span></button> : null}
+      {showSelectionActions ? <button type="button" onClick={runDelete} className={itemClassName}>{menuLabel(RiDeleteBinLine, "删除")}<span className="text-[11px] text-[#999999]">Del</span></button> : null}
+      {showSelectionActions ? separator : null}
+      {showSelectionActions ? <button type="button" onClick={() => runAction("bring-to-front")} className={itemClassName}>{menuLabel(RiBringToFront, "置于顶层")}</button> : null}
+      {showSelectionActions ? <button type="button" onClick={() => runAction("bring-forward")} className={itemClassName}>{menuLabel(RiBringForward, "上移一层")}</button> : null}
+      {showSelectionActions ? <button type="button" onClick={() => runAction("send-backward")} className={itemClassName}>{menuLabel(RiSendBackward, "下移一层")}</button> : null}
+      {showSelectionActions ? <button type="button" onClick={() => runAction("send-to-back")} className={itemClassName}>{menuLabel(RiSendToBack, "置于底层")}</button> : null}
+      {showNodeSpecificItems ? separator : null}
+      {showTextItems ? <button type="button" onClick={() => runNodeTask(copyWorkflowTextNode)} className={itemClassName}>{menuLabel(RiFileTextLine, "复制文字")}</button> : null}
+      {showImageItems || showVideoItems ? <button type="button" onClick={runUsePrompt} className={itemClassName}>{menuLabel(RiTBoxLine, "使用提示词")}</button> : null}
+      {showImageItems ? (
+        <div className="group relative">
+          <button type="button" className={itemClassName}>{menuLabel(RiExportLine, "导出")}<span className="text-[16px] leading-none text-[#999999]">›</span></button>
+          <div className={submenuClassName}>
+            <button type="button" onClick={() => runAction("export-as-svg")} className={itemClassName}>{menuLabel(RiFileCodeLine, "导出 SVG")}</button>
+            <button type="button" onClick={() => runAction("export-as-png")} className={itemClassName}>{menuLabel(RiFileImageLine, "导出 PNG")}</button>
+            <button type="button" onClick={() => runNodeTask(exportWorkflowImageJpg)} className={itemClassName}>{menuLabel(RiFileImageLine, "导出 JPG")}</button>
+          </div>
+        </div>
+      ) : null}
+      {showVideoItems ? (
+        <div className="group relative">
+          <button type="button" className={itemClassName}>{menuLabel(RiExportLine, "导出")}<span className="text-[16px] leading-none text-[#999999]">›</span></button>
+          <div className={submenuClassName}>
+            <button type="button" onClick={() => runNodeTask((node) => exportWorkflowVideoFrame(node, "first"))} className={itemClassName}>{menuLabel(RiImageLine, "导出首帧")}</button>
+            <button type="button" onClick={() => runNodeTask((node) => exportWorkflowVideoFrame(node, "last"))} className={itemClassName}>{menuLabel(RiImageLine, "导出尾帧")}</button>
+            <button type="button" onClick={() => runNodeTask((node) => exportWorkflowVideoFrame(node, "current"))} className={itemClassName}>{menuLabel(RiImageLine, "导出当前帧")}</button>
+          </div>
+        </div>
+      ) : null}
+      {showNodeSpecificItems ? <button type="button" onClick={runDownload} className={itemClassName}>{menuLabel(RiDownloadLine, "下载")}</button> : null}
+      {hasShapes ? separator : null}
+      {hasShapes ? <button type="button" onClick={runSelectAll} className={itemClassName}>{menuLabel(RiCheckboxMultipleLine, "全选")}<span className="text-[11px] text-[#999999]">Ctrl A</span></button> : null}
     </div>
   );
 }
 
-export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onCredit, onGeneratedMedia, onPreviewMedia, getImageDisplayUrl, getVideoPosterDisplayUrl, enabledTextModelIds, textModelProviders = {}, enabledImageModelIds, enabledVideoModelIds, leftSidebarVisible = true, onToggleLeftSidebar, workflowAssets = [], referenceAssets = [], referenceAssetsLoadStatus = "idle", onLoadReferenceAssets }: WorkflowCanvasProps) {
+export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onCredit, onGeneratedMedia, onPreviewMedia, onShowTip, getImageDisplayUrl, getVideoPosterDisplayUrl, enabledTextModelIds, textModelProviders = {}, enabledImageModelIds, enabledVideoModelIds, uploadRuleOverrides, leftSidebarVisible = true, onToggleLeftSidebar, workflowAssets = [], referenceAssets = [], referenceAssetsLoadStatus = "idle", onLoadReferenceAssets, onExternalFilesDrop }: WorkflowCanvasProps) {
   const editorRef = useRef<Editor | null>(null);
   const stateRef = useRef(normalizeState(value));
   const loadedWorkflowIdRef = useRef(workflowId);
@@ -1122,7 +1633,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
 
   const exportStateFromEditor = useCallback((editor: Editor): WorkflowCanvasState => {
     const shapes = editor.getCurrentPageShapesSorted().filter((shape): shape is WorkflowNodeShape => shape.type === "workflow_node");
-    const nodes = shapes.map((shape) => ({ ...shape.props.node, x: shape.x, y: shape.y }));
+    const nodes = shapes.map((shape) => ({ ...shape.props.node, x: shape.x, y: shape.y, data: { ...shape.props.node.data, isLocked: shape.isLocked || undefined } }));
     const nodeIds = new Set(nodes.map((node) => node.id));
     const current = stateRef.current;
     const missingNodes = current.nodes.filter((node) => !nodeIds.has(node.id));
@@ -1164,6 +1675,14 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     setEditorTick((tick) => tick + 1);
   }, [exportStateFromEditor, onChange]);
 
+  const syncSelectedNodeFromEditor = useCallback((editor: Editor) => {
+    const selected = editor.getOnlySelectedShapeId();
+    const nextSelectedNodeId = selected ? getNodeIdFromShapeId(String(selected)) : "";
+    if (nextSelectedNodeId === selectedNodeIdRef.current) return;
+    selectedNodeIdRef.current = nextSelectedNodeId;
+    setSelectedNodeId(nextSelectedNodeId);
+  }, []);
+
   const scheduleEmit = useCallback(() => {
     if (loadingRef.current || !editorRef.current) return;
     if (rafRef.current !== null) return;
@@ -1171,16 +1690,11 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
       rafRef.current = null;
       const editor = editorRef.current;
       if (!editor || loadingRef.current) return;
-      const selected = editor.getOnlySelectedShapeId();
-      const nextSelectedNodeId = selected ? getNodeIdFromShapeId(String(selected)) : "";
-      if (nextSelectedNodeId !== selectedNodeIdRef.current) {
-        selectedNodeIdRef.current = nextSelectedNodeId;
-        setSelectedNodeId(nextSelectedNodeId);
-      }
+      syncSelectedNodeFromEditor(editor);
       normalizeWorkflowShapesForTldrawActions(editor);
       emitEditorState(editor);
     });
-  }, [emitEditorState, normalizeWorkflowShapesForTldrawActions]);
+  }, [emitEditorState, normalizeWorkflowShapesForTldrawActions, syncSelectedNodeFromEditor]);
 
   const syncNodeGeometryFromEditor = useCallback((editor: Editor) => {
     if (loadingRef.current) return;
@@ -1213,7 +1727,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     const existing = editor.getCurrentPageShapes().filter((shape) => shape.type === "workflow_node").map((shape) => shape.id);
     if (existing.length > 0) editor.deleteShapes(existing);
     if (nextState.nodes.length > 0) {
-      editor.createShapes(nextState.nodes.map((node) => ({ id: getShapeId(node.id), type: "workflow_node", x: node.x, y: node.y, props: { ...getWorkflowNodeVisualSize(node), node } })) as never);
+      editor.createShapes(nextState.nodes.map((node) => ({ id: getShapeId(node.id), type: "workflow_node", x: node.x, y: node.y, isLocked: Boolean(node.data.isLocked), props: { ...getWorkflowNodeVisualSize(node), node } })) as never);
     }
     stateRef.current = nextState;
     loadingRef.current = false;
@@ -1248,12 +1762,14 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
       stateRef.current = addHistoricalTextNodes(stateRef.current, [(shape as WorkflowNodeShape).props.node]);
       syncAfterTldrawAction();
     });
+    const unlistenStore = editor.store.listen(() => syncSelectedNodeFromEditor(editor));
     unlistenRef.current = () => {
       unlistenCreate();
       unlistenChange();
       unlistenDelete();
+      unlistenStore();
     };
-  }, [loadStateIntoEditor, scheduleEmit, workflowId]);
+  }, [loadStateIntoEditor, scheduleEmit, syncSelectedNodeFromEditor, workflowId]);
 
   useEffect(() => {
     const next = normalizeState(value);
@@ -1304,8 +1820,8 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
       nextIds.add(id);
       const shape = editor.getShape(id) as WorkflowNodeShape | undefined;
       const size = getWorkflowNodeVisualSize(node);
-      if (shape) editor.updateShape<WorkflowNodeShape>({ id, type: "workflow_node", x: node.x, y: node.y, props: { ...shape.props, ...size, node } });
-      else editor.createShapes([{ id, type: "workflow_node", x: node.x, y: node.y, props: { ...size, node } }] as never);
+      if (shape) editor.updateShape<WorkflowNodeShape>({ id, type: "workflow_node", x: node.x, y: node.y, isLocked: Boolean(node.data.isLocked), props: { ...shape.props, ...size, node } });
+      else editor.createShapes([{ id, type: "workflow_node", x: node.x, y: node.y, isLocked: Boolean(node.data.isLocked), props: { ...size, node } }] as never);
     });
     const removed = Array.from(existingIds).filter((id) => !nextIds.has(id));
     if (removed.length > 0) editor.deleteShapes(removed);
@@ -1319,10 +1835,17 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
 
   const updateNode = useCallback((nodeId: string, patch: Partial<WorkflowNodeData>) => {
     markNodeAction(nodeId);
-    updateState((current) => ({ ...current, nodes: current.nodes.map((node) => node.id === nodeId ? { ...node, data: { ...node.data, ...patch } } : node) }));
-  }, [markNodeAction, updateState]);
+    updateState((current) => ({
+      ...current,
+      nodes: current.nodes.map((node) => {
+        if (node.id !== nodeId) return node;
+        const nextPatch = patch.model && patch.model !== node.data.model ? { ...patch, ...pruneWorkflowUploadsForModel(node, patch.model, uploadRuleOverrides) } : patch;
+        return { ...node, data: { ...node.data, ...nextPatch } };
+      }),
+    }));
+  }, [markNodeAction, updateState, uploadRuleOverrides]);
 
-  const addNode = useCallback((kind: WorkflowNodeKind) => {
+  const addNode = useCallback((kind: WorkflowNodeKind, pagePoint?: { x: number; y: number }) => {
     const editor = editorRef.current;
     const current = stateRef.current;
     const viewport = editor?.getViewportPageBounds();
@@ -1331,7 +1854,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     const anchorId = recentActionNodeIdsRef.current.find((nodeId) => current.nodes.some((node) => node.id === nodeId)) || selectedNodeIdRef.current;
     const anchor = current.nodes.find((node) => node.id === anchorId);
     const fallback = viewport ? { x: viewport.x + viewport.w / 2 - size.w / 2, y: viewport.y + viewport.h / 2 - size.h / 2 } : undefined;
-    const position = findNonOverlappingNodePosition(current.nodes, size, anchor, fallback);
+    const position = pagePoint ? { x: pagePoint.x - size.w / 2, y: pagePoint.y - size.h / 2 } : findNonOverlappingNodePosition(current.nodes, size, anchor, fallback);
     const node: WorkflowNode = {
       id: draftNode.id,
       kind,
@@ -1349,6 +1872,36 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
       if (!nextEditor.getShape(shapeId)) return;
       nextEditor.select(shapeId);
       focusWorkflowNodeInViewport(nextEditor, node);
+    }));
+  }, [updateState]);
+
+  const addNodeFromPrompt = useCallback((sourceNode: WorkflowNode) => {
+    if (sourceNode.kind !== "image" && sourceNode.kind !== "video") return;
+    const current = stateRef.current;
+    const kind = sourceNode.kind;
+    const defaultData = getDefaultNodeData(kind);
+    const data: WorkflowNodeData = {
+      ...defaultData,
+      prompt: sourceNode.data.prompt ?? "",
+      model: sourceNode.data.model ?? defaultData.model,
+      ratio: sourceNode.data.ratio ?? defaultData.ratio,
+      resolution: sourceNode.data.resolution ?? defaultData.resolution,
+      duration: kind === "video" ? sourceNode.data.duration ?? defaultData.duration : undefined,
+      uploads: sourceNode.data.uploads?.map((upload) => ({ ...upload, id: createId("workflow_upload") })),
+    };
+    const draftNode: WorkflowNode = { id: createId("workflow_node"), kind, title: getNodeLabel(kind), x: 0, y: 0, data };
+    const size = getWorkflowNodeVisualSize(draftNode);
+    const position = findNonOverlappingNodePosition(current.nodes, size, sourceNode);
+    const node = { ...draftNode, x: position.x, y: position.y };
+    recentActionNodeIdsRef.current = [node.id, ...recentActionNodeIdsRef.current].slice(0, 20);
+    updateState((state) => ({ ...state, nodes: [...state.nodes, node] }));
+    window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+      const editor = editorRef.current;
+      if (!editor) return;
+      const shapeId = getShapeId(node.id);
+      if (!editor.getShape(shapeId)) return;
+      editor.select(shapeId);
+      focusWorkflowNodeInViewport(editor, node);
     }));
   }, [updateState]);
 
@@ -1415,7 +1968,48 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     });
   }, [updateState]);
 
+  const deleteHistoricalTextNode = useCallback((historicalNode: WorkflowNode) => {
+    updateState((state) => ({ ...state, historicalTextNodes: (state.historicalTextNodes ?? []).filter((item) => item.id !== historicalNode.id) }));
+  }, [updateState]);
+
+  const deleteHistoricalWorkflowAsset = useCallback((asset: WorkflowAssetSummary) => {
+    void fetch("/api/media-assets", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ assetId: asset.id, url: asset.url, delete: true }),
+    }).catch((error) => console.warn("[workflow] failed to move history asset to trash", error));
+  }, []);
+
+  const toggleWorkflowNodeLock = useCallback((nodeId: string) => {
+    const shape = editorRef.current?.getShape(getShapeId(nodeId)) as WorkflowNodeShape | undefined;
+    const nextLocked = !shape?.isLocked;
+    updateNode(nodeId, { isLocked: nextLocked || undefined });
+  }, [updateNode]);
+
+  const toggleWorkflowNodeHidden = useCallback((nodeId: string) => {
+    const editor = editorRef.current;
+    const shapeId = getShapeId(nodeId);
+    const shape = editor?.getShape(shapeId) as WorkflowNodeShape | undefined;
+    if (shape?.isLocked) editor?.updateShape<WorkflowNodeShape>({ id: shapeId, type: "workflow_node", isLocked: false });
+    const node = stateRef.current.nodes.find((item) => item.id === nodeId);
+    const nextHidden = !node?.data.isHidden;
+    if (nextHidden) editor?.deselect(shapeId);
+    updateNode(nodeId, { isHidden: nextHidden || undefined });
+  }, [updateNode]);
+
+  const getWorkflowShapeVisibility = useCallback((shape: TLShape) => {
+    if (shape.type !== "workflow_node") return "inherit";
+    return (shape as WorkflowNodeShape).props.node.data.isHidden ? "hidden" : "inherit";
+  }, []);
+
   const handleWorkflowAssetDrop = useCallback((event: ReactDragEvent<HTMLDivElement>) => {
+    if (event.dataTransfer.types.includes("Files")) {
+      event.preventDefault();
+      event.stopPropagation();
+      const files = Array.from(event.dataTransfer.files ?? []);
+      if (files.length > 0) onExternalFilesDrop?.(files);
+      return;
+    }
     const assetId = event.dataTransfer.getData("application/x-flashmuse-workflow-asset") || event.dataTransfer.getData("text/plain");
     if (!assetId) return;
     const asset = workflowAssets.find((item) => item.id === assetId);
@@ -1424,7 +2018,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     const editor = editorRef.current;
     const pagePoint = editor?.screenToPage({ x: event.clientX, y: event.clientY });
     restoreWorkflowAssetToCanvas(asset, pagePoint);
-  }, [restoreWorkflowAssetToCanvas, workflowAssets]);
+  }, [onExternalFilesDrop, restoreWorkflowAssetToCanvas, workflowAssets]);
 
   const handleWorkflowContextMenu = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
     const editor = editorRef.current;
@@ -1435,6 +2029,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     const target = event.target as HTMLElement | null;
     const nodeElement = target?.closest<HTMLElement>("[data-workflow-node-id]");
     const nodeId = nodeElement?.dataset.workflowNodeId;
+    const isBlankCanvas = !nodeId;
     if (nodeId && stateRef.current.nodes.some((node) => node.id === nodeId)) {
       const shapeId = getShapeId(nodeId);
       if (!editor.getSelectedShapeIds().includes(shapeId)) editor.select(shapeId);
@@ -1443,9 +2038,12 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     const rect = event.currentTarget.getBoundingClientRect();
     const menuWidth = 180;
     const menuMaxHeight = 520;
+    const pagePoint = editor.screenToPage({ x: event.clientX, y: event.clientY });
     setContextMenu({
       x: Math.max(8, Math.min(event.clientX - rect.left, rect.width - menuWidth - 8)),
       y: Math.max(8, Math.min(event.clientY - rect.top, rect.height - menuMaxHeight - 8)),
+      pagePoint,
+      isBlankCanvas,
     });
   }, [markNodeAction]);
 
@@ -1518,17 +2116,42 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     const handleToolShortcut = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
       if (target?.closest("input, textarea, [contenteditable='true']")) return;
-      if (event.key.toLowerCase() === "v") {
-        setCanvasTool("select");
+      if (event.isComposing) return;
+      const key = event.key.toLowerCase();
+      if ((event.ctrlKey || event.metaKey) && (event.key === "+" || event.key === "=")) {
+        event.preventDefault();
+        editorRef.current?.zoomIn();
+        setContextMenu(null);
         return;
       }
-      if (event.key.toLowerCase() === "h") {
+      if ((event.ctrlKey || event.metaKey) && event.key === "-") {
+        event.preventDefault();
+        editorRef.current?.zoomOut();
+        setContextMenu(null);
+        return;
+      }
+      if (event.shiftKey && event.key === "1") {
+        const editor = editorRef.current;
+        if (!editor) return;
+        event.preventDefault();
+        const workflowNodes = editor.getCurrentPageShapes().filter((shape): shape is WorkflowNodeShape => shape.type === "workflow_node").map((shape) => shape.props.node);
+        zoomToWorkflowNodes(editor, workflowNodes);
+        setContextMenu(null);
+        return;
+      }
+      if (!event.ctrlKey && !event.metaKey && !event.altKey && (key === "t" || key === "i" || key === "v")) {
+        event.preventDefault();
+        addNode(key === "t" ? "text" : key === "i" ? "image" : "video");
+        setContextMenu(null);
+        return;
+      }
+      if (!event.ctrlKey && !event.metaKey && !event.altKey && key === "h") {
         setCanvasTool("hand");
       }
     };
     window.addEventListener("keydown", handleToolShortcut, true);
     return () => window.removeEventListener("keydown", handleToolShortcut, true);
-  }, [setCanvasTool]);
+  }, [addNode, setCanvasTool]);
 
   const connectTo = useCallback((targetId: string) => {
     if (!connectingFrom || connectingFrom === targetId) return;
@@ -1555,20 +2178,27 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     const prompt = [upstreamPrompt, ownPrompt].filter(Boolean).join("\n\n").trim();
     if (!prompt) return updateNode(node.id, { error: "请先输入提示词，或连接一个文本节点。" });
     const model = getEnabledImageModel(node.data.model);
+    const uploadError = validateWorkflowUploadsForSubmit({ ...node, data: { ...node.data, model } }, uploadRuleOverrides);
+    if (uploadError) {
+      onShowTip?.(uploadError);
+      return updateNode(node.id, { error: uploadError });
+    }
     const imageRatio = imageRatioOptions.includes(node.data.ratio ?? "") ? node.data.ratio : "16:9";
     const settings = { ratio: imageRatio, resolution: node.data.resolution ?? normalizeImageResolutionForModel(model, getSupportedImageResolutions(model)[0]) };
     updateNode(node.id, { isRunning: true, error: undefined, images: [], visualSize: undefined, startedAt: Date.now() });
     try {
       const referenceImages = [...getReferenceImages(node.id), ...getPromptReferenceUrls(prompt, node, "image")].filter((url, index, array) => array.indexOf(url) === index);
-      const data = await fetch("/api/image", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt, model, settings, referenceImages, count: 1, conversationId: workflowId, conversationTitle: workflowTitle, requestId: createId("workflow_image"), metadata: { creditSource: "workflow_image_generation" } }) }).then((response) => readJson<{ images?: string[]; imageDimensions?: Record<string, { width: number; height: number }>; usage?: UsageMeta; credit?: CreditResult }>(response));
+      const modelPrompt = appendWorkflowReferenceHint(prompt, referenceImages.length);
+      const data = await fetch("/api/image", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt: modelPrompt, model, settings, referenceImages, count: 1, conversationId: workflowId, conversationTitle: workflowTitle, requestId: createId("workflow_image"), metadata: { creditSource: "workflow_image_generation" } }) }).then((response) => readJson<{ images?: string[]; imageDimensions?: Record<string, { width: number; height: number }>; usage?: UsageMeta; credit?: CreditResult; failureReasons?: string[] }>(response));
       const images = data.images ?? [];
+      if (images.length === 0) throw new Error(data.failureReasons?.[0] ?? "图片平台没有返回图片，且没有返回可用原因。");
       updateNode(node.id, { images, imageDimensions: data.imageDimensions, visualSize: undefined, isRunning: false, error: undefined });
-      if (images.length > 0) onGeneratedMedia?.({ nodeId: node.id, kind: "image", urls: images, sourcePrompt: prompt, model, ratio: settings.ratio, resolution: settings.resolution, dimensions: data.imageDimensions });
+      onGeneratedMedia?.({ nodeId: node.id, kind: "image", urls: images, sourcePrompt: prompt, model, ratio: settings.ratio, resolution: settings.resolution, dimensions: data.imageDimensions });
       onCredit?.({ ...data.credit, usage: data.usage });
     } catch (error) {
-      updateNode(node.id, { isRunning: false, error: toUserErrorMessage(error) });
+      updateNode(node.id, { isRunning: false, error: toUserErrorMessage(error, GENERIC_MEDIA_ERROR_MESSAGE) });
     }
-  }, [getEnabledImageModel, getInputText, getPromptReferenceUrls, getReferenceImages, onCredit, onGeneratedMedia, updateNode, workflowId, workflowTitle]);
+  }, [getEnabledImageModel, getInputText, getPromptReferenceUrls, getReferenceImages, onCredit, onGeneratedMedia, onShowTip, updateNode, uploadRuleOverrides, workflowId, workflowTitle]);
 
   const pollVideoNode = useCallback(async (node: WorkflowNode, taskId: string, prompt: string, model: ModelName, settings: { ratio?: string; resolution?: string; duration?: string }, requestId: string, initialUsage?: UsageMeta) => {
     let usage = initialUsage;
@@ -1576,13 +2206,15 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
       await new Promise((resolve) => window.setTimeout(resolve, videoPollIntervalMs));
       const pollData = await fetch("/api/video", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ taskId, prompt, model, settings, conversationId: workflowId, conversationTitle: workflowTitle, requestId, usage, metadata: { creditSource: "workflow_video_generation" } }) }).then((response) => readJson<VideoApiResponse>(response));
       usage = pollData.usage ?? usage;
-      if (pollData.status === "failed" || pollData.error?.message) throw new Error(pollData.error?.message || "视频生成失败");
+      const pollError = getWorkflowApiErrorMessage({ error: pollData.error, errorCode: pollData.errorCode }, GENERIC_MEDIA_ERROR_MESSAGE);
+      if (pollData.status === "failed" || pollData.error) throw new Error(pollError);
       const videoUrl = getVideoUrlFromResponse(pollData);
       if (isVideoDoneStatus(pollData.status) && videoUrl) {
         const posterUrl = getPosterUrlFromResponse(pollData);
+        const chargedUsage = pollData.usage ?? usage;
         updateNode(node.id, { videoUrl, posterUrl, videoCurrentTime: 0, visualSize: undefined, isRunning: false, error: undefined, taskId: undefined });
         onGeneratedMedia?.({ nodeId: node.id, kind: "video", urls: [videoUrl], posterUrl, sourcePrompt: prompt, model, ratio: settings.ratio, resolution: settings.resolution, duration: settings.duration });
-        onCredit?.({ ...pollData.credit, usage: pollData.usage });
+        onCredit?.({ ...pollData.credit, usage: chargedUsage });
         return;
       }
     }
@@ -1595,37 +2227,55 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     const prompt = [upstreamPrompt, ownPrompt].filter(Boolean).join("\n\n").trim();
     if (!prompt) return updateNode(node.id, { error: "请先输入视频提示词，或连接一个文本/图片节点。" });
     const model = getEnabledVideoModel(node.data.model);
+    const videoReferenceMode = isWorkflowBytePlusSeedanceVideoModel(model) ? node.data.videoReferenceMode ?? "reference" : getWorkflowUploadRuleVideoReferenceMode(prompt);
+    const uploadError = validateWorkflowUploadsForSubmit({ ...node, data: { ...node.data, model } }, uploadRuleOverrides, videoReferenceMode);
+    if (uploadError) {
+      onShowTip?.(uploadError);
+      return updateNode(node.id, { error: uploadError });
+    }
     const resolution = normalizeVideoResolutionForModel(model, node.data.resolution);
     const settings = { ratio: normalizeVideoRatioForModel(model, node.data.ratio, resolution), resolution, duration: node.data.duration ?? workflowVideoModels.find((item) => item.id === model)?.durations?.[0] ?? "5秒" };
     const requestId = createId("workflow_video");
     updateNode(node.id, { isRunning: true, error: undefined, videoUrl: undefined, posterUrl: undefined, videoCurrentTime: undefined, visualSize: undefined, startedAt: Date.now() });
     try {
-      const referenceImages = [...getReferenceImages(node.id), ...getPromptReferenceUrls(prompt, node, "image")].filter((url, index, array) => array.indexOf(url) === index);
+      const allReferenceImages = [...getReferenceImages(node.id), ...getPromptReferenceUrls(prompt, node, "image")].filter((url, index, array) => array.indexOf(url) === index);
+      const referenceImages = isWorkflowBytePlusSeedanceVideoModel(model) ? getWorkflowEffectiveBytePlusVideoReferenceItems(allReferenceImages, videoReferenceMode) : allReferenceImages;
       const referenceVideos = getPromptReferenceUrls(prompt, node, "video");
       const referenceAudios = getPromptReferenceUrls(prompt, node, "audio");
-      const createData = await fetch("/api/video", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt, model, settings, referenceImages, referenceVideos, referenceAudios, conversationId: workflowId, conversationTitle: workflowTitle, requestId, metadata: { creditSource: "workflow_video_generation" } }) }).then((response) => readJson<VideoApiResponse>(response));
+      if (referenceImages.length < allReferenceImages.length) onShowTip?.(getWorkflowBytePlusVideoReferenceLimitHint(videoReferenceMode));
+      if (isWorkflowBytePlusSeedanceVideoModel(model) && videoReferenceMode === "first_frame" && referenceImages.length < 1) throw new Error("首帧生视频需要至少一张参考图");
+      if (isWorkflowBytePlusSeedanceVideoModel(model) && videoReferenceMode === "first_last_frame" && referenceImages.length < 2) throw new Error("首尾帧生视频需要至少两张参考图");
+      if (referenceAudios.length > 0 && referenceImages.length === 0 && referenceVideos.length === 0) throw new Error("上传音频需要同时提供参考图片或参考视频");
+      const modelPrompt = appendWorkflowReferenceHint(prompt, referenceImages.length);
+      const createVideoTask = (autoBytePlusAssetReview = false) => fetch("/api/video", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt: modelPrompt, model, settings, referenceImages, referenceVideos, referenceAudios, referenceMode: videoReferenceMode, conversationId: workflowId, conversationTitle: workflowTitle, requestId, metadata: { creditSource: "workflow_video_generation" }, autoBytePlusAssetReview }) }).then((response) => readJson<VideoApiResponse>(response));
+      let createData = await createVideoTask();
+      if (createData.status === "reviewing" && createData.autoBytePlusAssetReview?.triggered) {
+        onShowTip?.(BYTEPLUS_AUTO_REVIEW_NOTICE);
+        updateNode(node.id, { error: undefined });
+        createData = await createVideoTask(true);
+      }
       const taskId = getVideoTaskId(createData);
-      if (!taskId) throw new Error("视频任务创建失败");
+      if (!taskId) throw new Error(getWorkflowApiErrorMessage({ error: createData.error ?? "视频平台没有返回任务编号", errorCode: createData.errorCode }, GENERIC_MEDIA_ERROR_MESSAGE));
       updateNode(node.id, { taskId });
-      await pollVideoNode(node, taskId, prompt, model, settings, requestId, createData.usage);
+      await pollVideoNode(node, taskId, modelPrompt, model, settings, requestId, createData.usage);
     } catch (error) {
-      updateNode(node.id, { isRunning: false, error: toUserErrorMessage(error), taskId: undefined });
+      updateNode(node.id, { isRunning: false, error: toUserErrorMessage(error, GENERIC_MEDIA_ERROR_MESSAGE), taskId: undefined });
     }
-  }, [getEnabledVideoModel, getInputText, getPromptReferenceUrls, getReferenceImages, pollVideoNode, updateNode, workflowId, workflowTitle]);
+  }, [getEnabledVideoModel, getInputText, getPromptReferenceUrls, getReferenceImages, onShowTip, pollVideoNode, updateNode, uploadRuleOverrides, workflowId, workflowTitle]);
 
-  const runtime = useMemo<WorkflowRuntime>(() => ({ selectedNodeId, connectingFrom, modelOptions, workflowTitle, updateNode, deleteNode, connectTo, setConnectingFrom, runImageNode: (node) => void runImageNode(node), runVideoNode: (node) => void runVideoNode(node), onGeneratedMedia, markNodeAction, onPreviewMedia, getImageDisplayUrl, getVideoPosterDisplayUrl, referenceAssets, referenceAssetsLoadStatus, onLoadReferenceAssets }), [connectTo, connectingFrom, deleteNode, getImageDisplayUrl, getVideoPosterDisplayUrl, markNodeAction, modelOptions, onGeneratedMedia, onLoadReferenceAssets, onPreviewMedia, referenceAssets, referenceAssetsLoadStatus, runImageNode, runVideoNode, selectedNodeId, updateNode, workflowTitle]);
+  const runtime = useMemo<WorkflowRuntime>(() => ({ selectedNodeId, connectingFrom, modelOptions, workflowTitle, updateNode, deleteNode, connectTo, setConnectingFrom, runImageNode: (node) => void runImageNode(node), runVideoNode: (node) => void runVideoNode(node), onGeneratedMedia, onShowTip, markNodeAction, onPreviewMedia, getImageDisplayUrl, getVideoPosterDisplayUrl, referenceAssets, referenceAssetsLoadStatus, onLoadReferenceAssets, uploadRuleOverrides }), [connectTo, connectingFrom, deleteNode, getImageDisplayUrl, getVideoPosterDisplayUrl, markNodeAction, modelOptions, onGeneratedMedia, onLoadReferenceAssets, onPreviewMedia, onShowTip, referenceAssets, referenceAssetsLoadStatus, runImageNode, runVideoNode, selectedNodeId, updateNode, uploadRuleOverrides, workflowTitle]);
 
   return (
     <WorkflowRuntimeContext.Provider value={runtime}>
-      <div className="relative h-full min-h-full overflow-hidden bg-[#cccccc] text-[#111111] workflow-tldraw-shell workflow-lovart-skin" style={{ "--workflow-canvas-bg": canvasBackground } as CSSProperties} onContextMenu={handleWorkflowContextMenu} onPointerDownCapture={handleWorkflowPointerDownCapture} onDragOver={(event) => { if (event.dataTransfer.types.includes("application/x-flashmuse-workflow-asset")) event.preventDefault(); }} onDrop={handleWorkflowAssetDrop}>
+      <div className="relative h-full min-h-full overflow-hidden bg-[#cccccc] text-[#111111] workflow-tldraw-shell workflow-lovart-skin" style={{ "--workflow-canvas-bg": canvasBackground } as CSSProperties} onContextMenu={handleWorkflowContextMenu} onPointerDownCapture={handleWorkflowPointerDownCapture} onDragOver={(event) => { if (event.dataTransfer.types.includes("application/x-flashmuse-workflow-asset") || event.dataTransfer.types.includes("Files")) { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; } }} onDrop={handleWorkflowAssetDrop}>
         <style>{`.workflow-tldraw-shell .tl-watermark_SEE-LICENSE,.workflow-tldraw-shell [data-testid="tl-watermark-unlicensed"],.workflow-tldraw-shell [data-testid="tl-watermark-licensed"]{display:none!important;visibility:hidden!important;opacity:0!important;pointer-events:none!important;width:0!important;height:0!important;}.workflow-tldraw-shell .yinzao-tool-button-active+div{opacity:.9!important;backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);}`}</style>
-        <Tldraw hideUi shapeUtils={[WorkflowNodeShapeUtil]} overlayUtils={workflowOverlayUtils} components={workflowTldrawComponents} overrides={workflowTldrawOverrides} options={workflowTldrawOptions} onMount={handleMount} licenseKey="">
+        <Tldraw hideUi shapeUtils={[WorkflowNodeShapeUtil]} overlayUtils={workflowOverlayUtils} components={workflowTldrawComponents} overrides={workflowTldrawOverrides} options={workflowTldrawOptions} getShapeVisibility={getWorkflowShapeVisibility} onMount={handleMount} licenseKey="">
           <WorkflowCanvasStatusControls state={stateRef.current} tick={editorTick} canvasBackground={canvasBackground} onCanvasBackgroundChange={setCanvasBackground} isLayerPanelOpen={isLayerPanelOpen} onToggleLayerPanel={() => setIsLayerPanelOpen((current) => !current)} />
           <WorkflowSelectedNodeOverlay />
-          <WorkflowCustomContextMenu menu={contextMenu} onClose={() => setContextMenu(null)} />
+          <WorkflowCustomContextMenu menu={contextMenu} onClose={() => setContextMenu(null)} onAddNode={addNode} onUsePrompt={addNodeFromPrompt} />
         </Tldraw>
         <WorkflowEdgesOverlay editor={editorRef.current} state={stateRef.current} tick={editorTick} />
-        {isLayerPanelOpen ? <WorkflowLayerPanel state={stateRef.current} workflowAssets={workflowAssets} selectedNodeId={selectedNodeId} getImageDisplayUrl={getImageDisplayUrl} getVideoPosterDisplayUrl={getVideoPosterDisplayUrl} onClose={() => setIsLayerPanelOpen(false)} onSelectNode={(nodeId, focus) => { const editor = editorRef.current; const node = stateRef.current.nodes.find((item) => item.id === nodeId); if (!editor || !node) return; editor.select(getShapeId(nodeId)); if (focus) focusWorkflowNodeInViewport(editor, node); }} onReorderNode={reorderWorkflowNodeLayer} onRestoreAsset={restoreWorkflowAssetToCanvas} onRestoreTextNode={restoreHistoricalTextNodeToCanvas} /> : null}
+        {isLayerPanelOpen ? <WorkflowLayerPanel state={stateRef.current} workflowAssets={workflowAssets} selectedNodeId={selectedNodeId} getImageDisplayUrl={getImageDisplayUrl} getVideoPosterDisplayUrl={getVideoPosterDisplayUrl} onClose={() => setIsLayerPanelOpen(false)} onSelectNode={(nodeId, focus) => { const editor = editorRef.current; const node = stateRef.current.nodes.find((item) => item.id === nodeId); if (!editor || !node || node.data.isHidden) return; editor.select(getShapeId(nodeId)); if (focus) focusWorkflowNodeInViewport(editor, node); }} onReorderNode={reorderWorkflowNodeLayer} onRestoreAsset={restoreWorkflowAssetToCanvas} onRestoreTextNode={restoreHistoricalTextNodeToCanvas} onDeleteHistoricalTextNode={deleteHistoricalTextNode} onDeleteHistoricalAsset={deleteHistoricalWorkflowAsset} onToggleNodeLock={toggleWorkflowNodeLock} onToggleNodeHidden={toggleWorkflowNodeHidden} /> : null}
         <div className="pointer-events-auto absolute left-4 top-3 z-20 flex items-center gap-2 text-[#5c626b]">
           {onToggleLeftSidebar ? (
             <button type="button" onClick={onToggleLeftSidebar} className="flex h-8 w-8 items-center justify-center rounded-md text-[#5c626b] transition hover:bg-black/5 hover:text-[#30343a]" aria-label={leftSidebarVisible ? "隐藏左侧栏" : "显示左侧栏"} title={leftSidebarVisible ? "隐藏左侧栏" : "显示左侧栏"}>
@@ -1805,10 +2455,13 @@ function WorkflowMiniMap({ editor, state }: { editor: Editor; state: WorkflowCan
   );
 }
 
-function WorkflowLayerPanel({ state, workflowAssets, selectedNodeId, getImageDisplayUrl, getVideoPosterDisplayUrl, onClose, onSelectNode, onReorderNode, onRestoreAsset, onRestoreTextNode }: { state: WorkflowCanvasState; workflowAssets: WorkflowAssetSummary[]; selectedNodeId: string; getImageDisplayUrl?: (url: string) => string; getVideoPosterDisplayUrl?: (url: string, posterUrl?: string) => string | undefined; onClose: () => void; onSelectNode: (nodeId: string, focus?: boolean) => void; onReorderNode: (dragNodeId: string, targetNodeId: string, position: "before" | "after") => void; onRestoreAsset: (asset: WorkflowAssetSummary) => void; onRestoreTextNode: (node: WorkflowNode) => void }) {
+function WorkflowLayerPanel({ state, workflowAssets, selectedNodeId, getImageDisplayUrl, getVideoPosterDisplayUrl, onClose, onSelectNode, onReorderNode, onRestoreAsset, onRestoreTextNode, onDeleteHistoricalTextNode, onDeleteHistoricalAsset, onToggleNodeLock, onToggleNodeHidden }: { state: WorkflowCanvasState; workflowAssets: WorkflowAssetSummary[]; selectedNodeId: string; getImageDisplayUrl?: (url: string) => string; getVideoPosterDisplayUrl?: (url: string, posterUrl?: string) => string | undefined; onClose: () => void; onSelectNode: (nodeId: string, focus?: boolean) => void; onReorderNode: (dragNodeId: string, targetNodeId: string, position: "before" | "after") => void; onRestoreAsset: (asset: WorkflowAssetSummary) => void; onRestoreTextNode: (node: WorkflowNode) => void; onDeleteHistoricalTextNode: (node: WorkflowNode) => void; onDeleteHistoricalAsset: (asset: WorkflowAssetSummary) => void; onToggleNodeLock: (nodeId: string) => void; onToggleNodeHidden: (nodeId: string) => void }) {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const [dropIndicator, setDropIndicator] = useState<{ nodeId: string; position: "before" | "after" } | null>(null);
   const [isHistoryExpanded, setIsHistoryExpanded] = useState(true);
+  const [historyHeight, setHistoryHeight] = useState(180);
+  const [isHistoryResizing, setIsHistoryResizing] = useState(false);
+  const [deletedHistoricalAssetIds, setDeletedHistoricalAssetIds] = useState<Set<string>>(() => new Set());
   const currentMediaUrls = new Set(state.nodes.flatMap((node) => [...(node.data.images ?? []), ...(node.data.videoUrl ? [node.data.videoUrl] : [])].map(normalizeWorkflowMediaUrl)));
   const workflowAssetByUrl = new Map(workflowAssets.map((asset) => [normalizeWorkflowMediaUrl(asset.url), asset]));
   const orderedNodes = [...state.nodes].reverse();
@@ -1817,18 +2470,10 @@ function WorkflowLayerPanel({ state, workflowAssets, selectedNodeId, getImageDis
     const videoAssets = node.data.videoUrl ? [workflowAssetByUrl.get(normalizeWorkflowMediaUrl(node.data.videoUrl)) ?? { id: `${node.id}-video`, name: node.data.mediaSystemNames?.[node.data.videoUrl] ?? "Video 1", url: node.data.videoUrl, posterUrl: node.data.posterUrl, kind: "video" as const, nodeId: node.id, sourcePrompt: node.data.prompt, ratio: node.data.ratio, resolution: node.data.resolution, duration: node.data.duration }] : [];
     return [...imageAssets, ...videoAssets].map((asset) => ({ ...asset, nodeId: node.id }));
   });
-  const historicalAssets = workflowAssets.filter((asset) => !currentMediaUrls.has(normalizeWorkflowMediaUrl(asset.url)));
+  const historicalAssets = workflowAssets.filter((asset) => !deletedHistoricalAssetIds.has(asset.id) && !currentMediaUrls.has(normalizeWorkflowMediaUrl(asset.url)));
   const historicalTextNodes = state.historicalTextNodes ?? [];
   const hasHistory = historicalTextNodes.length > 0 || historicalAssets.length > 0;
-
-  useEffect(() => {
-    const closeOnOutsidePointerDown = (event: PointerEvent) => {
-      if (panelRef.current?.contains(event.target as Node)) return;
-      onClose();
-    };
-    window.addEventListener("pointerdown", closeOnOutsidePointerDown, true);
-    return () => window.removeEventListener("pointerdown", closeOnOutsidePointerDown, true);
-  }, [onClose]);
+  const historyContentHeight = Math.max(0, historyHeight - 44);
 
   const startLayerDrag = (event: ReactDragEvent<HTMLElement>, nodeId: string) => {
     event.dataTransfer.setData("application/x-flashmuse-workflow-node", nodeId);
@@ -1852,6 +2497,32 @@ function WorkflowLayerPanel({ state, workflowAssets, selectedNodeId, getImageDis
     onReorderNode(dragNodeId, targetNodeId, position);
   };
   const renderDropIndicator = (nodeId: string) => dropIndicator?.nodeId === nodeId ? <div className={`pointer-events-none absolute left-0 right-0 z-20 h-[2px] bg-[#111111] ${dropIndicator.position === "before" ? "top-[-1px]" : "bottom-[-1px]"}`} /> : null;
+  const startHistoryResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const panel = panelRef.current;
+    if (!panel) return;
+    const rect = panel.getBoundingClientRect();
+    const startY = event.clientY;
+    const startHeight = historyHeight;
+    setIsHistoryResizing(true);
+    const resize = (moveEvent: PointerEvent) => {
+      const maxHeight = Math.max(120, rect.height - 180);
+      const nextHeight = startHeight + moveEvent.clientY - startY;
+      setHistoryHeight(Math.max(96, Math.min(maxHeight, nextHeight)));
+    };
+    const stop = () => {
+      setIsHistoryResizing(false);
+      window.removeEventListener("pointermove", resize, true);
+      window.removeEventListener("pointerup", stop, true);
+    };
+    window.addEventListener("pointermove", resize, true);
+    window.addEventListener("pointerup", stop, true);
+  };
+  const deleteHistoricalAsset = (asset: WorkflowAssetSummary) => {
+    setDeletedHistoricalAssetIds((current) => new Set(current).add(asset.id));
+    onDeleteHistoricalAsset(asset);
+  };
 
   return (
     <div ref={panelRef} onDragOver={(event) => event.stopPropagation()} onDrop={(event) => event.stopPropagation()} className="workflow-layer-panel pointer-events-auto absolute bottom-0 left-0 top-0 z-30 flex w-[274px] flex-col border-r border-[#e5e5e5] bg-white text-[#333333] shadow-[12px_0_28px_rgba(0,0,0,0.08)]">
@@ -1859,20 +2530,25 @@ function WorkflowLayerPanel({ state, workflowAssets, selectedNodeId, getImageDis
         <div className="text-[16px] font-semibold text-[#111111]">图层</div>
         <button type="button" onClick={onClose} className="flex h-8 w-8 items-center justify-center rounded-md text-[#555555] hover:bg-[#f2f2f2]" aria-label="关闭图层"><RiCloseLine className="h-5 w-5" /></button>
       </div>
-      <div className={`${isHistoryExpanded ? "h-[180px] pb-5" : "h-14 pb-0"} shrink-0 border-b border-[#eeeeee] px-5 transition-[height] duration-150`}>
-        <div className="mb-3 flex h-8 items-center justify-between text-[14px] font-semibold text-[#111111]">
-          <span>历史记录</span>
+      <div className={`${isHistoryExpanded ? "pb-0" : "h-14 pb-0"} shrink-0 px-5 ${isHistoryResizing ? "" : "transition-[height] duration-150"}`} style={isHistoryExpanded ? { height: historyHeight } : undefined}>
+        <div className="mb-3 flex h-8 items-center justify-between text-[12px] text-[#9aa3af]">
+          <div className="flex items-center gap-2">
+            <RiHistoryLine className="h-5 w-5" />
+            <span>历史记录</span>
+          </div>
           <button type="button" onClick={() => setIsHistoryExpanded((current) => !current)} className="flex h-7 w-7 items-center justify-center rounded-md text-[#555555] transition hover:bg-[#f2f2f2]" aria-label={isHistoryExpanded ? "收起历史记录" : "展开历史记录"} title={isHistoryExpanded ? "收起历史记录" : "展开历史记录"}>
             <RiArrowDownSLine className={`h-4 w-4 transition-transform ${isHistoryExpanded ? "" : "-rotate-90"}`} />
           </button>
         </div>
         {isHistoryExpanded ? hasHistory ? (
-          <div className="h-[112px] space-y-1 overflow-y-auto pr-1">
-            {historicalTextNodes.map((node) => <WorkflowHistoricalTextLayerRow key={node.id} node={node} onRestore={() => onRestoreTextNode(node)} />)}
-            {historicalAssets.map((asset) => <WorkflowAssetLayerRow key={asset.id} asset={asset} getImageDisplayUrl={getImageDisplayUrl} getVideoPosterDisplayUrl={getVideoPosterDisplayUrl} onRestore={() => onRestoreAsset(asset)} />)}
+          <div className="overflow-y-auto pr-1" style={{ height: historyContentHeight }}>
+            <div className="ml-5 space-y-1">
+              {historicalTextNodes.map((node) => <WorkflowHistoricalTextLayerRow key={node.id} node={node} onRestore={() => onRestoreTextNode(node)} onDelete={() => onDeleteHistoricalTextNode(node)} />)}
+              {historicalAssets.map((asset) => <WorkflowAssetLayerRow key={asset.id} asset={asset} getImageDisplayUrl={getImageDisplayUrl} getVideoPosterDisplayUrl={getVideoPosterDisplayUrl} compact onRestore={() => onRestoreAsset(asset)} onDelete={() => deleteHistoricalAsset(asset)} />)}
+            </div>
           </div>
         ) : (
-          <div className="flex h-[112px] flex-col items-center justify-center text-[#c4c8d0]">
+          <div className="flex flex-col items-center justify-center text-[#c4c8d0]" style={{ height: historyContentHeight }}>
             <div className="flex items-center gap-3 opacity-60">
               <RiTextBlock className="h-6 w-6" />
               <RiImageAiLine className="h-6 w-6" />
@@ -1883,23 +2559,31 @@ function WorkflowLayerPanel({ state, workflowAssets, selectedNodeId, getImageDis
           </div>
         ) : null}
       </div>
+      {isHistoryExpanded ? (
+        <div role="separator" aria-label="调整历史记录高度" onPointerDown={startHistoryResize} className="group relative z-20 h-px shrink-0 cursor-row-resize bg-[#d0d5dd] transition hover:bg-[#98a2b3]" title="拖动调整历史记录高度">
+          <div className="absolute left-0 right-0 top-0 h-[10px] bg-transparent" />
+          <div className="absolute left-1/2 top-1/2 h-1.5 w-5 -translate-x-1/2 -translate-y-1/2 rounded-full border border-[#c7ccd4] bg-white transition group-hover:border-[#98a2b3] group-hover:bg-[#f7f7f7]" />
+        </div>
+      ) : <div className="h-px shrink-0 bg-[#eeeeee]" />}
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
-        <div className="mb-2 flex items-center gap-2 text-[12px] text-[#4b5563]">
-          <RiNodeTree className="h-5 w-5 text-[#333333]" />
+        <div className="mb-2 flex items-center gap-2 text-[12px] text-[#9aa3af]">
+          <RiNodeTree className="h-5 w-5" />
           <span>画布上的节点</span>
         </div>
         <div className="ml-5 space-y-1">
           {orderedNodes.length === 0 ? <div className="px-2 py-4 text-[13px] text-[#9a9a9a]">当前画布暂无节点</div> : orderedNodes.map((node) => {
             const nodeAssets = currentCanvasAssets.filter((asset) => asset.nodeId === node.id);
             if (nodeAssets.length > 0) {
-              return <div key={node.id} className="relative space-y-1" draggable onDragStart={(event) => startLayerDrag(event, node.id)} onDragEnd={() => setDropIndicator(null)} onDragOver={(event) => updateLayerDropIndicator(event, node.id)} onDrop={(event) => dropLayerAtIndicator(event, node.id)}>{renderDropIndicator(node.id)}{nodeAssets.map((asset) => <WorkflowAssetLayerRow key={`${node.id}-${asset.id}`} asset={asset} selected={selectedNodeId === node.id} getImageDisplayUrl={getImageDisplayUrl} getVideoPosterDisplayUrl={getVideoPosterDisplayUrl} compact onSelect={() => onSelectNode(node.id)} onFocus={() => onSelectNode(node.id, true)} />)}</div>;
+              return <div key={node.id} className="relative space-y-1" draggable={!node.data.isLocked} onDragStart={(event) => startLayerDrag(event, node.id)} onDragEnd={() => setDropIndicator(null)} onDragOver={(event) => updateLayerDropIndicator(event, node.id)} onDrop={(event) => dropLayerAtIndicator(event, node.id)}>{renderDropIndicator(node.id)}{nodeAssets.map((asset) => <WorkflowAssetLayerRow key={`${node.id}-${asset.id}`} asset={asset} selected={selectedNodeId === node.id} getImageDisplayUrl={getImageDisplayUrl} getVideoPosterDisplayUrl={getVideoPosterDisplayUrl} compact isLocked={Boolean(node.data.isLocked)} isHidden={Boolean(node.data.isHidden)} onToggleLock={() => onToggleNodeLock(node.id)} onToggleHidden={() => onToggleNodeHidden(node.id)} onSelect={() => onSelectNode(node.id)} onFocus={() => onSelectNode(node.id, true)} />)}</div>;
             }
+            const textHasContent = node.kind === "text" && getWorkflowTextNodeContent(node).trim();
             return (
-              <div key={node.id} className="relative" draggable onDragStart={(event) => startLayerDrag(event, node.id)} onDragEnd={() => setDropIndicator(null)} onDragOver={(event) => updateLayerDropIndicator(event, node.id)} onDrop={(event) => dropLayerAtIndicator(event, node.id)}>
+              <div key={node.id} className="relative" draggable={!node.data.isLocked} onDragStart={(event) => startLayerDrag(event, node.id)} onDragEnd={() => setDropIndicator(null)} onDragOver={(event) => updateLayerDropIndicator(event, node.id)} onDrop={(event) => dropLayerAtIndicator(event, node.id)}>
                 {renderDropIndicator(node.id)}
-                <button type="button" onClick={() => onSelectNode(node.id)} onDoubleClick={() => onSelectNode(node.id, true)} className={`flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left transition hover:bg-[#f3f4f6] ${selectedNodeId === node.id ? "bg-[#eef1f4]" : ""}`}>
+                <button type="button" onClick={() => onSelectNode(node.id)} onDoubleClick={() => onSelectNode(node.id, true)} className={`group flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left transition hover:bg-[#f3f4f6] ${selectedNodeId === node.id ? "bg-[#eef1f4]" : ""}`}>
                   <span className="flex h-5 w-5 shrink-0 items-center justify-center text-[#6b7280]"><WorkflowLayerNodeIcon node={node} /></span>
-                  <span className="min-w-0 flex-1 truncate text-[12px] text-[#6b7280]">{getWorkflowLayerNodeLabel(node)}</span>
+                  <span className={`min-w-0 flex-1 truncate text-[12px] ${node.kind === "text" && getWorkflowTextNodeContent(node).trim() ? "text-[#111111]" : "text-[#6b7280]"}`}>{getWorkflowLayerNodeLabel(node)}</span>
+                  {textHasContent ? <WorkflowLayerRowControls isLocked={Boolean(node.data.isLocked)} isHidden={Boolean(node.data.isHidden)} onToggleLock={() => onToggleNodeLock(node.id)} onToggleHidden={() => onToggleNodeHidden(node.id)} /> : null}
                 </button>
               </div>
             );
@@ -1921,25 +2605,58 @@ function getWorkflowLayerNodeLabel(node: WorkflowNode) {
   return (node.data.text ?? node.data.prompt ?? node.data.outputText ?? "").trim() || node.title || getNodeLabel(node.kind);
 }
 
-function WorkflowHistoricalTextLayerRow({ node, onRestore }: { node: WorkflowNode; onRestore: () => void }) {
+function WorkflowHistoricalTextLayerRow({ node, onRestore, onDelete }: { node: WorkflowNode; onRestore: () => void; onDelete: () => void }) {
+  const [menuOpen, setMenuOpen] = useState(false);
   return (
-    <div className="group flex h-10 cursor-pointer items-center gap-2 rounded-lg px-2 text-[13px] text-[#4b5563] hover:bg-[#f3f4f6]">
-      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-[#f8fafc] text-[#5c626b]"><RiTextBlock className="h-4 w-4" /></span>
-      <span className="min-w-0 flex-1 truncate">{getWorkflowLayerNodeLabel(node)}</span>
-      <button type="button" onClick={onRestore} className="hidden h-7 shrink-0 rounded-md px-2 text-[12px] font-medium text-[#367cee] hover:bg-[#eaf1ff] group-hover:block">移入</button>
+    <div className="group relative flex h-9 cursor-pointer items-center gap-2 rounded-lg px-2 text-[12px] text-[#6b7280] hover:bg-[#f3f4f6]">
+      <span className="flex h-5 w-5 shrink-0 items-center justify-center text-[#6b7280]"><RiTextBlock className="h-4.5 w-4.5" /></span>
+      <span className="min-w-0 flex-1 truncate text-[#111111]">{getWorkflowLayerNodeLabel(node)}</span>
+      <button type="button" onClick={(event) => { event.stopPropagation(); setMenuOpen((current) => !current); }} className="hidden h-7 w-7 shrink-0 items-center justify-center rounded-md text-[#6b7280] hover:bg-[#e8ebef] group-hover:flex" aria-label="历史文本菜单"><RiMore2Line className="h-4 w-4" /></button>
+      {menuOpen ? <WorkflowHistoryRowMenu onRestore={onRestore} onDelete={onDelete} onClose={() => setMenuOpen(false)} /> : null}
     </div>
   );
 }
 
-function WorkflowAssetLayerRow({ asset, getImageDisplayUrl, getVideoPosterDisplayUrl, compact, onRestore, onSelect, onFocus, selected }: { asset: WorkflowAssetSummary; getImageDisplayUrl?: (url: string) => string; getVideoPosterDisplayUrl?: (url: string, posterUrl?: string) => string | undefined; compact?: boolean; onRestore?: () => void; onSelect?: () => void; onFocus?: () => void; selected?: boolean }) {
+function WorkflowAssetLayerRow({ asset, getImageDisplayUrl, getVideoPosterDisplayUrl, compact, onRestore, onDelete, onSelect, onFocus, selected, isLocked, isHidden, onToggleLock, onToggleHidden }: { asset: WorkflowAssetSummary; getImageDisplayUrl?: (url: string) => string; getVideoPosterDisplayUrl?: (url: string, posterUrl?: string) => string | undefined; compact?: boolean; onRestore?: () => void; onDelete?: () => void; onSelect?: () => void; onFocus?: () => void; selected?: boolean; isLocked?: boolean; isHidden?: boolean; onToggleLock?: () => void; onToggleHidden?: () => void }) {
+  const [menuOpen, setMenuOpen] = useState(false);
   const previewUrl = asset.kind === "video" ? getVideoPosterDisplayUrl?.(asset.url, asset.posterUrl) : getImageDisplayUrl?.(asset.url);
   return (
-    <div draggable={Boolean(onRestore)} onClick={onSelect} onDoubleClick={onFocus} onDragStart={(event) => { if (!onRestore) return; event.dataTransfer.setData("application/x-flashmuse-workflow-asset", asset.id); event.dataTransfer.setData("text/plain", asset.id); event.dataTransfer.effectAllowed = "copy"; }} className={`group flex items-center gap-2 rounded-lg px-2 text-[13px] text-[#4b5563] ${compact ? "h-9" : "h-10"} ${onRestore ? "cursor-grab hover:bg-[#f3f4f6] active:cursor-grabbing" : onSelect ? "cursor-pointer hover:bg-[#f3f4f6]" : ""} ${selected ? "bg-[#eef1f4]" : ""}`}>
+    <div draggable={Boolean(onRestore)} onClick={onSelect} onDoubleClick={onFocus} onDragStart={(event) => { if (!onRestore) return; event.dataTransfer.setData("application/x-flashmuse-workflow-asset", asset.id); event.dataTransfer.setData("text/plain", asset.id); event.dataTransfer.effectAllowed = "copy"; }} className={`group relative flex items-center gap-2 rounded-lg px-2 text-[12px] text-[#6b7280] ${compact ? "h-9" : "h-10"} ${onRestore ? "cursor-grab hover:bg-[#f3f4f6] active:cursor-grabbing" : onSelect ? "cursor-pointer hover:bg-[#f3f4f6]" : ""} ${selected ? "bg-[#eef1f4]" : ""}`}>
       <span className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-md border border-[#dfe3e8] bg-[#f8fafc] text-[#5c626b]">
-        {previewUrl ? <img src={previewUrl} alt="" className="h-full w-full object-cover" draggable={false} /> : asset.kind === "video" ? <RiVideoLine className="h-4 w-4" /> : <RiImageAiLine className="h-4 w-4" />}
+        {previewUrl ? <WorkflowHoverImagePreview src={asset.kind === "image" ? asset.url : previewUrl} alt={asset.name} wrapperClassName="block h-full w-full"><img src={previewUrl} alt="" className="h-full w-full object-cover" draggable={false} /></WorkflowHoverImagePreview> : asset.kind === "video" ? <RiVideoLine className="h-4 w-4" /> : <RiImageAiLine className="h-4 w-4" />}
       </span>
-      <span className="min-w-0 flex-1 truncate">{asset.name}</span>
-      {onRestore ? <button type="button" onClick={onRestore} className="hidden h-7 shrink-0 rounded-md px-2 text-[12px] font-medium text-[#367cee] hover:bg-[#eaf1ff] group-hover:block">移入</button> : null}
+      <span className={`min-w-0 flex-1 truncate ${asset.url ? "text-[#111111]" : ""}`}>{asset.name}</span>
+      {onToggleLock && onToggleHidden ? <WorkflowLayerRowControls isLocked={Boolean(isLocked)} isHidden={Boolean(isHidden)} onToggleLock={onToggleLock} onToggleHidden={onToggleHidden} /> : null}
+      {onRestore ? <button type="button" onClick={(event) => { event.stopPropagation(); setMenuOpen((current) => !current); }} onPointerDown={(event) => event.stopPropagation()} className="hidden h-7 w-7 shrink-0 items-center justify-center rounded-md text-[#6b7280] hover:bg-[#e8ebef] group-hover:flex" aria-label="历史资产菜单"><RiMore2Line className="h-4 w-4" /></button> : null}
+      {menuOpen && onRestore && onDelete ? <WorkflowHistoryRowMenu onRestore={onRestore} onDelete={onDelete} onClose={() => setMenuOpen(false)} /> : null}
+    </div>
+  );
+}
+
+function WorkflowLayerRowControls({ isLocked, isHidden, onToggleLock, onToggleHidden }: { isLocked: boolean; isHidden: boolean; onToggleLock: () => void; onToggleHidden: () => void }) {
+  const showLockButton = !isHidden;
+  const showHiddenButton = !isLocked;
+  return (
+    <span className={`ml-auto -mr-1 shrink-0 items-center gap-0 text-[#c7ccd4] ${isLocked || isHidden ? "flex" : "hidden group-hover:flex"}`}>
+      {showLockButton ? (
+        <button type="button" onClick={(event) => { event.stopPropagation(); onToggleLock(); }} onPointerDown={(event) => event.stopPropagation()} className="flex h-7 w-6 items-center justify-center rounded-md transition hover:bg-[#e8ebef] hover:text-[#6b7280]" aria-label={isLocked ? "解锁节点" : "锁定节点"} title={isLocked ? "解锁" : "锁定"}>
+          {isLocked ? <RiLockLine className="h-4 w-4" /> : <RiLockUnlockLine className="h-4 w-4" />}
+        </button>
+      ) : null}
+      {showHiddenButton ? (
+        <button type="button" onClick={(event) => { event.stopPropagation(); onToggleHidden(); }} onPointerDown={(event) => event.stopPropagation()} className="flex h-7 w-6 items-center justify-center rounded-md transition hover:bg-[#e8ebef] hover:text-[#6b7280]" aria-label={isHidden ? "显示节点" : "隐藏节点"} title={isHidden ? "显示" : "隐藏"}>
+          {isHidden ? <RiEyeOffLine className="h-4 w-4" /> : <RiEyeLine className="h-4 w-4" />}
+        </button>
+      ) : null}
+    </span>
+  );
+}
+
+function WorkflowHistoryRowMenu({ onRestore, onDelete, onClose }: { onRestore: () => void; onDelete: () => void; onClose: () => void }) {
+  return (
+    <div className="absolute right-1 top-8 z-30 w-[132px] rounded-[10px] border border-[#e8e8e8] bg-white p-1.5 shadow-[0_12px_28px_rgba(0,0,0,0.16)]" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}>
+      <button type="button" onClick={() => { onRestore(); onClose(); }} className="flex h-8 w-full items-center rounded-md px-2 text-left text-[12px] text-[#222222] hover:bg-[#f3f4f6]">恢复进画布</button>
+      <button type="button" onClick={() => { onDelete(); onClose(); }} className="mt-1 flex h-8 w-full items-center rounded-md px-2 text-left text-[12px] text-[#dc2626] hover:bg-[#fef2f2]">删除</button>
     </div>
   );
 }
@@ -1998,8 +2715,20 @@ function NodePort({ side, onClick }: { side: "left" | "right"; onClick: () => vo
 
 function cardBorderClassName(_selected?: boolean) { return "border-[#f5f5f5]"; }
 function EmptyMediaCard({ kind, selected, height }: { kind: WorkflowNodeKind; selected?: boolean; height: number }) { const Icon = getNodeIcon(kind); const iconSize = Math.max(40, Math.min(220, height * 0.16)); return <div className={`flex w-full items-center justify-center border bg-[#e6e6e6] text-[#d1d1d1] ${cardBorderClassName(selected)}`} style={{ height }}><Icon style={{ width: iconSize, height: iconSize }} /></div>; }
-function WaitingCard({ isImage, startedAt, selected, height }: { isImage: boolean; startedAt?: number; selected?: boolean; height: number }) { const statusFontSize = Math.max(12, Math.min(44, height * 0.035)); const timeFontSize = Math.max(11, Math.min(34, height * 0.028)); const inset = Math.max(12, Math.min(48, height * 0.035)); return <div className={`relative w-full overflow-hidden border bg-[#e6e6e6] text-left text-[#4f6f86] ${cardBorderClassName(selected)}`} style={{ height }}><div className="absolute inset-0 animate-[yinzaoVideoWaiting_5s_ease-in-out_infinite] bg-[radial-gradient(circle_at_16%_22%,rgba(193,210,255,0.7),transparent_31%),radial-gradient(circle_at_42%_70%,rgba(188,177,255,0.46),transparent_34%),radial-gradient(circle_at_76%_34%,rgba(126,205,255,0.52),transparent_35%),linear-gradient(120deg,#eef8ff_0%,#d8efff_36%,#edfaff_68%,#dcf8ff_100%)]" /><div className="absolute z-10 inline-flex rounded-md bg-black/12 px-[0.8em] py-[0.32em] font-medium text-black/75 backdrop-blur-sm" style={{ left: inset, top: inset, fontSize: statusFontSize }}>{getVideoWaitProgress(startedAt)}%{isImage ? "生成中" : "渲染中"}</div><div className="absolute z-10 text-[#4f6f86]" style={{ left: inset, bottom: inset, fontSize: timeFontSize }}><div className="mt-1 text-[#6f8fa3]">已等待 {formatElapsedTime(startedAt)}</div></div></div>; }
-function FailedCard({ isImage, selected, height }: { isImage: boolean; selected?: boolean; height: number }) { return <div className={`relative flex w-full items-center justify-center border bg-[#e6e6e6] text-[#777777] ${cardBorderClassName(selected)}`} style={{ height }}><div className="absolute left-4 top-4 inline-flex items-center gap-2 text-[13px] font-medium leading-none"><RiEmotionSadLine className="h-5 w-5" /><span>{isImage ? "图片生成失败" : "视频生成失败"}</span></div><div className="inline-flex items-center gap-1 text-[13px] font-medium text-[#367cee]"><RiResetLeftLine className="h-3.5 w-3.5" /><span>修改后重试</span></div></div>; }
+function useWorkflowFixedScreenScale() {
+  const editor = useEditor();
+  return useValue("workflow-fixed-screen-scale", () => 1 / Math.max(0.01, editor.getCamera().z), [editor]);
+}
+function WaitingCard({ isImage, startedAt, selected, height }: { isImage: boolean; startedAt?: number; selected?: boolean; height: number }) {
+  const fixedScale = useWorkflowFixedScreenScale();
+  const inset = 14 * fixedScale;
+  return <div className={`relative w-full overflow-hidden border bg-[#e6e6e6] text-left text-[#4f6f86] ${cardBorderClassName(selected)}`} style={{ height }}><div className="absolute inset-0 animate-[yinzaoVideoWaiting_5s_ease-in-out_infinite] bg-[radial-gradient(circle_at_16%_22%,rgba(193,210,255,0.7),transparent_31%),radial-gradient(circle_at_42%_70%,rgba(188,177,255,0.46),transparent_34%),radial-gradient(circle_at_76%_34%,rgba(126,205,255,0.52),transparent_35%),linear-gradient(120deg,#eef8ff_0%,#d8efff_36%,#edfaff_68%,#dcf8ff_100%)]" /><div className="absolute z-10 overflow-hidden" style={{ left: inset, right: inset, top: inset }}><div className="inline-flex max-w-full rounded-md bg-black/12 font-medium leading-none text-black/75 backdrop-blur-sm" style={{ fontSize: 13 * fixedScale, padding: `${4 * fixedScale}px ${10 * fixedScale}px` }}><span className="truncate">{getVideoWaitProgress(startedAt)}%{isImage ? "生成中" : "渲染中"}</span></div></div><div className="absolute z-10 overflow-hidden" style={{ left: inset, right: inset, bottom: inset }}><div className="truncate leading-none text-[#6f8fa3]" style={{ fontSize: 12 * fixedScale }}>已等待 {formatElapsedTime(startedAt)}</div></div></div>;
+}
+function FailedCard({ isImage, selected, height, error, onRetry }: { isImage: boolean; selected?: boolean; height: number; error?: string; onRetry?: () => void }) {
+  const fixedScale = useWorkflowFixedScreenScale();
+  const inset = 14 * fixedScale;
+  return <div className={`relative flex w-full items-center justify-center overflow-hidden border bg-[#e6e6e6] text-[#777777] ${cardBorderClassName(selected)}`} style={{ height }}><div className="absolute z-10 overflow-hidden" style={{ left: inset, right: inset, top: inset }}><div className="inline-flex max-w-full items-center font-medium leading-none" style={{ gap: 8 * fixedScale, fontSize: 13 * fixedScale }}><RiEmotionSadLine className="shrink-0" style={{ width: 20 * fixedScale, height: 20 * fixedScale }} /><span className="truncate">{isImage ? "图片生成失败" : "视频生成失败"}</span></div></div><div className="absolute left-1/2 top-1/2 z-10 w-full -translate-x-1/2 -translate-y-1/2 overflow-hidden px-3 text-center"><button type="button" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onRetry?.(); }} className="inline-flex max-w-full items-center whitespace-nowrap bg-transparent font-medium leading-none text-[#367cee] transition hover:text-[#2568d8]" style={{ gap: 4 * fixedScale, fontSize: 13 * fixedScale }}><RiResetLeftLine className="shrink-0" style={{ width: 14 * fixedScale, height: 14 * fixedScale }} /><span className="truncate">修改后重试</span></button></div>{error ? <div className="absolute z-10 overflow-hidden" style={{ left: inset, right: inset, bottom: inset }}><div className="truncate text-left text-red-500" style={{ fontSize: 12 * fixedScale, lineHeight: `${20 * fixedScale}px` }}>{error}</div></div> : null}</div>;
+}
 function isRightClickOrContextMenuEvent(event: SyntheticEvent) {
   const nativeEvent = event.nativeEvent as MouseEvent | PointerEvent | WheelEvent;
   return event.type === "contextmenu" || ("button" in nativeEvent && nativeEvent.button === 2);
@@ -2049,7 +2778,7 @@ function TextDisplayCard({ node, height, isEditing }: { node: WorkflowNode; sele
   );
 }
 function PreviewEyeButton({ label, onPreview }: { label: string; onPreview: () => void }) { return <button type="button" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onPreview(); }} className="absolute bottom-3 right-3 z-20 inline-flex h-9 w-9 items-center justify-center rounded-full bg-black/55 text-white shadow-[0_8px_20px_rgba(0,0,0,0.24)] backdrop-blur transition hover:bg-black/72" aria-label={label} title={label}><RiEyeLine className="h-4.5 w-4.5" /></button>; }
-function ImageDisplayCard({ node, selected, displayUrl, height }: { node: WorkflowNode; selected?: boolean; displayUrl?: string; height: number }) { if (node.data.isRunning) return <WaitingCard isImage startedAt={node.data.startedAt} selected={selected} height={height} />; if (node.data.error) return <FailedCard isImage selected={selected} height={height} />; const url = node.data.images?.[0]; if (url) return <div className={`relative w-full overflow-hidden border bg-[#e6e6e6] ${cardBorderClassName(selected)}`} style={{ height }}><img src={displayUrl ?? getStaticMediaUrl(url) ?? url} alt="生成图片" draggable={false} className="h-full w-full select-none object-cover" /></div>; return <EmptyMediaCard kind="image" selected={selected} height={height} />; }
+function ImageDisplayCard({ node, selected, displayUrl, height }: { node: WorkflowNode; selected?: boolean; displayUrl?: string; height: number }) { const runtime = useWorkflowRuntime(); if (node.data.isRunning) return <WaitingCard isImage startedAt={node.data.startedAt} selected={selected} height={height} />; if (node.data.error) return <FailedCard isImage selected={selected} height={height} error={node.data.error} onRetry={() => runtime.runImageNode(node)} />; const url = node.data.images?.[0]; if (url) return <div className={`relative w-full overflow-hidden border bg-[#e6e6e6] ${cardBorderClassName(selected)}`} style={{ height }}><img src={displayUrl ?? getStaticMediaUrl(url) ?? url} alt="生成图片" draggable={false} className="h-full w-full select-none object-cover" /></div>; return <EmptyMediaCard kind="image" selected={selected} height={height} />; }
 function WorkflowInlineVideo({ node, url, onSelect }: { node: WorkflowNode; url: string; onSelect: () => void }) {
   const editor = useEditor();
   const runtime = useWorkflowRuntime();
@@ -2089,7 +2818,7 @@ function WorkflowInlineVideo({ node, url, onSelect }: { node: WorkflowNode; url:
   return <div className="relative h-full w-full cursor-default bg-[#e6e6e6]" style={{ pointerEvents: "all" }}><video src={displayUrl} className="h-full w-full select-none object-cover" style={{ pointerEvents: "all", cursor: "default" }} draggable={false} controls playsInline preload="auto" onLoadedMetadata={(event) => saveVideoMetadata(event.currentTarget)} onDragStart={(event) => event.preventDefault()} onTimeUpdate={(event) => saveCurrentTime(event.currentTarget.currentTime)} onPause={(event) => saveCurrentTime(event.currentTarget.currentTime, true)} onSeeked={(event) => saveCurrentTime(event.currentTarget.currentTime, true)} onEnded={(event) => saveCurrentTime(event.currentTarget.currentTime, true)} onPointerDownCapture={markVideoEvent} onPointerUpCapture={markVideoEvent} onMouseDownCapture={markVideoEvent} onMouseUpCapture={markVideoEvent} onClickCapture={markVideoEvent} onDoubleClickCapture={markVideoEvent} /><div className="absolute left-0 right-0 top-0 z-10 cursor-default" style={{ bottom: 112, pointerEvents: "all" }} onDragStart={(event) => event.preventDefault()} onPointerDown={(event) => { if (event.button !== 2) onSelect(); }} /></div>;
 }
 
-function VideoDisplayCard({ node, selected, height, onSelect }: { node: WorkflowNode; selected?: boolean; height: number; onSelect: () => void }) { if (node.data.isRunning) return <WaitingCard isImage={false} startedAt={node.data.startedAt} selected={selected} height={height} />; if (node.data.error) return <FailedCard isImage={false} selected={selected} height={height} />; if (node.data.videoUrl) return <div className={`relative w-full overflow-hidden border bg-[#e6e6e6] ${cardBorderClassName(selected)}`} style={{ height }}><WorkflowInlineVideo node={node} url={node.data.videoUrl} onSelect={onSelect} /></div>; return <EmptyMediaCard kind="video" selected={selected} height={height} />; }
+function VideoDisplayCard({ node, selected, height, onSelect }: { node: WorkflowNode; selected?: boolean; height: number; onSelect: () => void }) { const runtime = useWorkflowRuntime(); if (node.data.isRunning) return <WaitingCard isImage={false} startedAt={node.data.startedAt} selected={selected} height={height} />; if (node.data.error) return <FailedCard isImage={false} selected={selected} height={height} error={node.data.error} onRetry={() => runtime.runVideoNode(node)} />; if (node.data.videoUrl) return <div className={`relative w-full overflow-hidden border bg-[#e6e6e6] ${cardBorderClassName(selected)}`} style={{ height }}><WorkflowInlineVideo node={node} url={node.data.videoUrl} onSelect={onSelect} /></div>; return <EmptyMediaCard kind="video" selected={selected} height={height} />; }
 
 function getWorkflowEditableText(element: HTMLElement) {
   let text = "";
@@ -2406,12 +3135,14 @@ function WorkflowFormattedText({ content }: { content: string }) {
 }
 
 function WorkflowUploadProgressOverlay({ progress }: { progress?: number }) {
-  const safeProgress = Math.min(100, Math.max(0, Math.floor(progress ?? 8)));
+  const value = Math.min(100, Math.max(0, Math.floor(progress ?? 0)));
+  const degrees = value * 3.6;
 
   return (
-    <div className="absolute inset-0 z-20 flex items-end bg-black/18">
-      <div className="h-1 w-full bg-white/25">
-        <div className="h-full bg-[#367cee] transition-all" style={{ width: `${safeProgress}%` }} />
+    <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/45 backdrop-blur-[1px]">
+      <div className="relative flex h-11 w-11 items-center justify-center rounded-full" style={{ background: `conic-gradient(#367cee ${degrees}deg, rgba(255,255,255,0.26) 0deg)` }}>
+        <div className="absolute inset-[4px] rounded-full bg-black/62" />
+        <span className="relative text-[11px] font-semibold leading-none text-white">{value}%</span>
       </div>
     </div>
   );
@@ -2424,7 +3155,7 @@ function WorkflowUploadIcon({ kind }: { kind: WorkflowUploadKind }) {
   return <RiImageLine className="h-5 w-5" aria-hidden="true" />;
 }
 
-function WorkflowMentionEditor({ value, placeholder, running, validReferences, focusRequest, onChange, onRun, onPasteImages, onLimit, onCursorChange, onAtTrigger, onAtClose }: { value: string; placeholder: string; running?: boolean; validReferences: Set<string>; focusRequest?: { offset: number; key: number }; onChange: (value: string) => void; onRun: () => void; onPasteImages: (files: File[]) => void; onLimit: () => void; onCursorChange: (offset: number) => void; onAtTrigger: (query: { index: number; query: string; cursor: number }) => void; onAtClose: () => void }) {
+function WorkflowMentionEditor({ value, placeholder, running, maxHeight = 500, validReferences, focusRequest, onChange, onRun, onPasteImages, onLimit, onCursorChange, onAtTrigger, onAtClose }: { value: string; placeholder: string; running?: boolean; maxHeight?: number; validReferences: Set<string>; focusRequest?: { offset: number; key: number }; onChange: (value: string) => void; onRun: () => void; onPasteImages: (files: File[]) => void; onLimit: () => void; onCursorChange: (offset: number) => void; onAtTrigger: (query: { index: number; query: string; cursor: number }) => void; onAtClose: () => void }) {
   const editorRef = useRef<HTMLDivElement | null>(null);
   const isComposingRef = useRef(false);
   const scrollSnapshotRef = useRef<{ wasAtBottom: boolean; scrollTop: number } | null>(null);
@@ -2584,35 +3315,87 @@ function WorkflowMentionEditor({ value, placeholder, running, validReferences, f
         onMouseUp={syncCursorFromDom}
         onFocus={syncCursorFromDom}
         className={`workflow-prompt-textarea min-h-[52px] w-full overflow-y-auto whitespace-pre-wrap break-words border-0 bg-transparent px-2 py-1 outline-none selection:bg-[#2f6df6] selection:text-white ${running ? "cursor-not-allowed text-[#999999] caret-transparent" : "text-[#111111] caret-[#111111]"}`}
-        style={{ maxHeight: 500, font: "14px / 24px var(--font-geist-sans), Arial, Helvetica, sans-serif" }}
+        style={{ maxHeight, font: "14px / 24px var(--font-geist-sans), Arial, Helvetica, sans-serif" }}
       />
     </div>
   );
 }
 
-function WorkflowPromptBox({ node, value, placeholder, onChange, children, running, onRun }: { node: WorkflowNode; value: string; placeholder: string; onChange: (value: string) => void; children: ReactNode; running?: boolean; onRun: () => void }) {
+function WorkflowInputToast({ message, exiting }: { message: string; exiting?: boolean }) {
+  return <div className={`pointer-events-none inline-flex h-10 items-center gap-1.5 whitespace-nowrap rounded-lg bg-[#111111] px-3 text-[12px] font-medium leading-none text-white shadow-[0_8px_18px_rgba(0,0,0,0.18)] ${exiting ? "yinzao-asset-upload-tip-exit" : "yinzao-asset-upload-tip-enter"}`}><span>{message}</span></div>;
+}
+
+function WorkflowPromptBox({ node, value, placeholder, maxPromptHeight, onChange, children, running, onRun }: { node: WorkflowNode; value: string; placeholder: string; maxPromptHeight?: number; onChange: (value: string) => void; children: ReactNode; running?: boolean; onRun: () => void }) {
   const runtime = useWorkflowRuntime();
   const [isReferenceMenuOpen, setIsReferenceMenuOpen] = useState(false);
   const [referenceGroupType, setReferenceGroupType] = useState("character_image");
   const [activeAtQuery, setActiveAtQuery] = useState<{ index: number; query: string; cursor: number } | null>(null);
   const [cursorOffset, setCursorOffset] = useState(0);
   const [focusRequest, setFocusRequest] = useState<{ offset: number; key: number }>();
-  const [uploadError, setUploadError] = useState("");
+  const [localTip, setLocalTip] = useState<{ message: string; exiting?: boolean }>();
   const suppressAtTriggerUntilRef = useRef(0);
   const focusRequestKeyRef = useRef(0);
   const uploadsRef = useRef<WorkflowUploadItem[]>(node.data.uploads ?? []);
-  const uploadRule = getEffectiveWorkflowUploadRule(node);
-  const uploadButtons = [
-    { label: "图片", icon: RiImageLine, ariaLabel: "上传图片", kind: "image" as const },
-    { label: "视频", icon: RiVideoOnLine, ariaLabel: "上传视频", kind: "video" as const },
-    { label: "音频", icon: RiVoiceprintLine, ariaLabel: "上传音频", kind: "audio" as const },
-    { label: "文件", icon: RiFileTextLine, ariaLabel: "上传文件", kind: "document" as const },
-  ];
+  const localTipTimerRef = useRef<number | null>(null);
+  const uploadRule = getEffectiveWorkflowUploadRule(node, runtime.uploadRuleOverrides);
+  const showVideoReferenceModeMenu = node.kind === "video" && isWorkflowBytePlusSeedanceVideoModel(node.data.model);
+  const selectedVideoReferenceMode = node.data.videoReferenceMode ?? "reference";
+  const requiredImageReferenceCount = showVideoReferenceModeMenu ? selectedVideoReferenceMode === "first_last_frame" ? 2 : selectedVideoReferenceMode === "first_frame" ? 1 : 0 : 0;
+  const currentImageReferenceCount = showVideoReferenceModeMenu ? getWorkflowPromptReferenceUrls(value, node, runtime.referenceAssets, "image").length : 0;
+  const canRun = Boolean(value.trim()) && !running && currentImageReferenceCount >= requiredImageReferenceCount;
+  const changeVideoReferenceMode = (videoReferenceMode: WorkflowVideoReferenceMode) => {
+    runtime.updateNode(node.id, { videoReferenceMode, ...pruneWorkflowUploadsForVideoReferenceMode(node, videoReferenceMode, runtime.uploadRuleOverrides) });
+  };
+  const uploadButtons: Array<{ label: string; icon: IconType; ariaLabel: string; kind: WorkflowUploadKind; hideCount?: boolean; multiple?: boolean }> = showVideoReferenceModeMenu && selectedVideoReferenceMode === "first_frame"
+    ? [{ label: "首帧", icon: RiImageLine, ariaLabel: "上传首帧图片", kind: "image", hideCount: true, multiple: false }]
+    : showVideoReferenceModeMenu && selectedVideoReferenceMode === "first_last_frame"
+      ? [
+        { label: "首帧", icon: RiImageLine, ariaLabel: "上传首帧图片", kind: "image", hideCount: true, multiple: false },
+        { label: "尾帧", icon: RiImageLine, ariaLabel: "上传尾帧图片", kind: "image", hideCount: true, multiple: false },
+      ]
+      : [
+        { label: "图片", icon: RiImageLine, ariaLabel: "上传图片", kind: "image" },
+        { label: "视频", icon: RiVideoOnLine, ariaLabel: "上传视频", kind: "video" },
+        { label: "音频", icon: RiVoiceprintLine, ariaLabel: "上传音频", kind: "audio" },
+        { label: "文件", icon: RiFileTextLine, ariaLabel: "上传文件", kind: "document" },
+      ];
+  const uploads = node.data.uploads ?? [];
+  const uploadCounts = uploads.reduce<Record<WorkflowUploadKind, number>>((counts, upload) => ({ ...counts, [upload.kind]: counts[upload.kind] + 1 }), { image: 0, document: 0, video: 0, audio: 0 });
+  const useSlotUploadLayout = showVideoReferenceModeMenu && (selectedVideoReferenceMode === "first_frame" || selectedVideoReferenceMode === "first_last_frame");
+  const visibleUploadButtons = useSlotUploadLayout
+    ? uploadButtons.slice(Math.min(uploadCounts.image, uploadButtons.length))
+    : uploadButtons.filter(({ kind }) => uploadRule[kind].enabled && uploadCounts[kind] < uploadRule[kind].maxCount);
+
+  const showLocalTip = (message: string) => {
+    if (localTipTimerRef.current !== null) window.clearTimeout(localTipTimerRef.current);
+    setLocalTip({ message });
+    localTipTimerRef.current = window.setTimeout(() => {
+      setLocalTip((current) => current ? { ...current, exiting: true } : current);
+      localTipTimerRef.current = window.setTimeout(() => {
+        setLocalTip(undefined);
+        localTipTimerRef.current = null;
+      }, 100);
+    }, 3000);
+  };
+
+  const runFromPromptBox = () => {
+    if (!canRun) return;
+    const uploadError = validateWorkflowUploadsForSubmit(node, runtime.uploadRuleOverrides, showVideoReferenceModeMenu ? selectedVideoReferenceMode : undefined);
+    if (uploadError) {
+      showLocalTip(uploadError);
+      return;
+    }
+    onRun();
+  };
 
   useEffect(() => {
     const close = () => setIsReferenceMenuOpen(false);
     window.addEventListener("workflow-close-popups", close);
     return () => window.removeEventListener("workflow-close-popups", close);
+  }, []);
+
+  useEffect(() => () => {
+    if (localTipTimerRef.current !== null) window.clearTimeout(localTipTimerRef.current);
   }, []);
 
   useEffect(() => {
@@ -2638,42 +3421,94 @@ function WorkflowPromptBox({ node, value, placeholder, onChange, children, runni
     setActiveAtQuery(null);
     setIsReferenceMenuOpen(false);
   };
-  const insertAssetReference = (asset: WorkflowReferenceAsset) => insertReferenceText(asset.name);
   const updateUploads = (updater: (uploads: WorkflowUploadItem[]) => WorkflowUploadItem[]) => {
     const nextUploads = updater(uploadsRef.current);
     uploadsRef.current = nextUploads;
     runtime.updateNode(node.id, { uploads: nextUploads });
   };
+  const insertAssetReference = (asset: WorkflowReferenceAsset) => {
+    const currentUploads = uploadsRef.current;
+    const existingUpload = currentUploads.find((upload) => upload.kind === "image" && upload.url === asset.url);
+    const nextUpload: WorkflowUploadItem = existingUpload ?? { id: createId("workflow_upload_asset"), kind: "image", name: asset.name, url: asset.url, previewUrl: asset.thumbnailUrl, status: "ready", progress: 100 };
+    const imageCount = currentUploads.filter((upload) => upload.kind === "image").length;
+    if (!existingUpload && imageCount >= uploadRule.image.maxCount) {
+      showLocalTip(`当前模型最多支持 ${uploadRule.image.maxCount} 张参考图，不能上传更多图片`);
+      setIsReferenceMenuOpen(false);
+      return;
+    }
+    if (!existingUpload) updateUploads((uploads) => [...uploads, nextUpload]);
+    insertReferenceText(getWorkflowUploadReferenceName(nextUpload));
+  };
   const removeUpload = (uploadId: string) => {
     const removing = (node.data.uploads ?? []).find((upload) => upload.id === uploadId);
     if (removing?.previewUrl?.startsWith("blob:")) URL.revokeObjectURL(removing.previewUrl);
+    if (removing) onChange(removeWorkflowUploadReferenceText(value, getWorkflowUploadReferenceName(removing)));
     updateUploads((uploads) => uploads.filter((upload) => upload.id !== uploadId));
   };
-  const handleUploadFiles = (kind: WorkflowUploadKind, files: File[]) => {
-    setUploadError("");
+  const handleUploadFiles = async (kind: WorkflowUploadKind, files: File[]) => {
     const kindRule = uploadRule[kind];
     if (!kindRule.enabled) {
-      setUploadError(kind === "image" ? "当前模型不支持上传图片" : kind === "video" ? "当前模型不支持上传视频" : kind === "audio" ? "当前模型不支持上传音频" : "当前模型不支持上传文件");
+      showLocalTip(kind === "image" ? "当前模型不支持上传图片" : kind === "video" ? "当前模型不支持上传视频" : kind === "audio" ? "当前模型不支持上传音频" : "当前模型不支持上传文件");
       return;
     }
-    const accepted = files.filter((file) => {
+    const tips = new Set<string>();
+    const accepted: Array<{ file: File; media?: { durationSeconds?: number; dimensions?: { width: number; height: number } } }> = [];
+    let acceptedCount = (node.data.uploads ?? []).filter((item) => item.kind === kind).length;
+    let acceptedDuration = kind === "video" || kind === "audio" ? (node.data.uploads ?? []).filter((item) => item.kind === kind).reduce((sum, upload) => sum + getWorkflowUploadDuration(upload), 0) : 0;
+
+    for (const file of files) {
       const detectedKind = file.type.startsWith("image/") ? "image" : file.type.startsWith("video/") ? "video" : file.type.startsWith("audio/") ? "audio" : getUploadKindFromFileName(file.name);
       const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
-      return detectedKind === kind && kindRule.formats.includes(extension) && file.size <= kindRule.maxSizeMb * 1024 * 1024;
-    });
+
+      if (detectedKind !== kind) {
+        tips.add("没有符合当前类型和格式限制的文件");
+        continue;
+      }
+      if (!kindRule.formats.includes(extension)) {
+        tips.add(kind === "image" ? "当前模型不支持该图片格式" : kind === "video" ? "当前模型不支持该视频格式" : kind === "audio" ? "当前模型不支持该音频格式" : "当前模型不支持该文件格式");
+        continue;
+      }
+      if (file.size > kindRule.maxSizeMb * 1024 * 1024) {
+        tips.add(kind === "image" ? `当前模型支持的单张图片最大为 ${kindRule.maxSizeMb}MB` : kind === "video" ? `当前模型支持的单个视频最大为 ${kindRule.maxSizeMb}MB` : kind === "audio" ? `当前模型支持的单个音频最大为 ${kindRule.maxSizeMb}MB` : `当前模型支持的单个文件最大为 ${kindRule.maxSizeMb}MB`);
+        continue;
+      }
+      if (acceptedCount >= kindRule.maxCount) {
+        tips.add(kind === "image" ? `当前模型最多支持 ${kindRule.maxCount} 张参考图，不能上传更多图片` : kind === "video" ? `当前模型最多支持 ${kindRule.maxCount} 个参考视频` : kind === "audio" ? `当前模型最多支持 ${kindRule.maxCount} 个参考音频` : `当前类型最多支持 ${kindRule.maxCount} 个文件`);
+        continue;
+      }
+
+      if (kind === "video" || kind === "audio") {
+        try {
+          const media = await readWorkflowMediaFileMetadata(file, kind);
+          const durationError = validateWorkflowMediaDuration(kind === "video" ? "视频" : "音频", media.durationSeconds, kindRule);
+          const dimensionError = kind === "video" ? validateWorkflowReferenceVideoDimensions(media.dimensions) : undefined;
+          const nextDuration = acceptedDuration + (media.durationSeconds ?? 0);
+          if (durationError) tips.add(durationError);
+          else if (dimensionError) tips.add(dimensionError);
+          else if (kindRule.maxTotalSeconds !== undefined && nextDuration > kindRule.maxTotalSeconds + MEDIA_DURATION_EPSILON_SECONDS) tips.add(kind === "video" ? `参考视频总时长不能超过 ${kindRule.maxTotalSeconds} 秒` : `参考音频总时长不能超过 ${kindRule.maxTotalSeconds} 秒`);
+          else {
+            accepted.push({ file, media });
+            acceptedCount += 1;
+            acceptedDuration = nextDuration;
+          }
+        } catch (error) {
+          tips.add(toUserErrorMessage(error, kind === "video" ? "视频信息读取失败" : "音频信息读取失败"));
+        }
+        continue;
+      }
+
+      accepted.push({ file });
+      acceptedCount += 1;
+    }
+
+    if (tips.size > 0) showLocalTip(Array.from(tips)[0]);
     if (accepted.length === 0) {
-      setUploadError("没有符合当前类型和格式限制的文件");
+      if (tips.size === 0) showLocalTip("没有符合当前类型和格式限制的文件");
       return;
     }
-    const currentCount = (node.data.uploads ?? []).filter((item) => item.kind === kind).length;
-    const nextFiles = accepted.slice(0, Math.max(0, kindRule.maxCount - currentCount));
-    if (nextFiles.length === 0) {
-      setUploadError(`当前类型最多支持 ${kindRule.maxCount} 个文件`);
-      return;
-    }
-    const uploadItems = nextFiles.map((file): WorkflowUploadItem => ({ id: createId("workflow_upload"), kind, name: file.name, previewUrl: kind === "image" || kind === "video" ? URL.createObjectURL(file) : undefined, status: "uploading", progress: 8 }));
+    const uploadItems = accepted.map(({ file, media }): WorkflowUploadItem => ({ id: createId("workflow_upload"), kind, name: file.name, previewUrl: kind === "image" || kind === "video" ? URL.createObjectURL(file) : undefined, status: "uploading", progress: 8, dimensions: media?.dimensions, durationSeconds: media?.durationSeconds }));
     updateUploads((uploads) => [...uploads, ...uploadItems]);
-    nextFiles.forEach((file, index) => {
+    accepted.forEach(({ file, media }, index) => {
       const item = uploadItems[index];
       if (!item) return;
       if (kind === "document") {
@@ -2687,93 +3522,111 @@ function WorkflowPromptBox({ node, value, placeholder, onChange, children, runni
         return;
       }
 
-      const uploadPromise = kind === "image" ? uploadWorkflowImage(file) : uploadWorkflowFile(file, kind as Exclude<WorkflowUploadKind, "image">);
-      window.setTimeout(() => {
-        updateUploads((uploads) => uploads.map((upload) => upload.id === item.id && upload.status === "uploading" ? { ...upload, progress: 42 } : upload));
-      }, 250);
-      window.setTimeout(() => {
-        updateUploads((uploads) => uploads.map((upload) => upload.id === item.id && upload.status === "uploading" ? { ...upload, progress: 78 } : upload));
-      }, 900);
+      const setUploadProgress = (progress: number) => updateUploads((uploads) => uploads.map((upload) => upload.id === item.id && upload.status === "uploading" ? { ...upload, progress } : upload));
+      const uploadPromise = kind === "image" ? uploadWorkflowImage(file, setUploadProgress) : uploadWorkflowFile(file, kind as Exclude<WorkflowUploadKind, "image">);
+      if (kind !== "image") {
+        window.setTimeout(() => setUploadProgress(42), 250);
+        window.setTimeout(() => setUploadProgress(78), 900);
+      }
       void uploadPromise.then((url) => {
-        updateUploads((uploads) => uploads.map((upload) => upload.id === item.id ? { ...upload, url, status: "ready", progress: 100 } : upload));
+        if (item.previewUrl?.startsWith("blob:")) URL.revokeObjectURL(item.previewUrl);
+        updateUploads((uploads) => uploads.map((upload) => upload.id === item.id ? { ...upload, url, previewUrl: undefined, status: "ready", progress: 100, dimensions: media?.dimensions ?? upload.dimensions, durationSeconds: media?.durationSeconds ?? upload.durationSeconds } : upload));
       }).catch((error) => {
         updateUploads((uploads) => uploads.map((upload) => upload.id === item.id ? { ...upload, status: "error", progress: 100, error: toUserErrorMessage(error, "上传失败") } : upload));
       });
     });
   };
   const validReferenceNames = useMemo(() => new Set([...runtime.referenceAssets.map((asset) => asset.name), ...(node.data.uploads ?? []).filter((upload) => upload.status === "ready").map(getWorkflowUploadReferenceName)]), [node.data.uploads, runtime.referenceAssets]);
-  const referenceGroups = workflowReferenceGroupOrder.map((groupType) => ({
-    type: groupType,
-    label: runtime.referenceAssets.find((asset) => asset.groupType === groupType)?.groupLabel ?? (groupType === "character_image" ? "角色图片" : groupType === "scene_image" ? "场景图片" : groupType === "shot_image" ? "分镜图片" : "上传图片"),
-    assets: runtime.referenceAssets.filter((asset) => asset.groupType === groupType && (!activeAtQuery?.query || asset.name.includes(activeAtQuery.query))),
-  }));
+  const referenceGroups = runtime.referenceAssets.reduce<{ type: string; label: string; assets: WorkflowReferenceAsset[] }[]>((groups, asset) => {
+    const matched = !activeAtQuery?.query || asset.name.includes(activeAtQuery.query);
+    const group = groups.find((item) => item.type === asset.groupType);
+    if (group) {
+      if (matched) group.assets.push(asset);
+      return groups;
+    }
+    groups.push({ type: asset.groupType, label: asset.groupLabel, assets: matched ? [asset] : [] });
+    return groups;
+  }, []);
   const activeReferenceGroup = referenceGroups.find((group) => group.type === referenceGroupType && group.assets.length > 0) ?? referenceGroups.find((group) => group.assets.length > 0) ?? referenceGroups[0];
   const isReferenceAssetsLoading = runtime.referenceAssetsLoadStatus === "loading";
   const isWaitingForMentionReferences = value.includes("@") && (runtime.referenceAssetsLoadStatus === "idle" || runtime.referenceAssetsLoadStatus === "loading");
+  const closeMenusIfOutsideMenu = (target: EventTarget | null) => {
+    if (!(target as HTMLElement | null)?.closest("[data-workflow-menu]")) closeWorkflowPopups();
+  };
 
   return (
     <div
       className="relative z-20 rounded-[26px] border-2 border-[#f1f2f2] bg-white/78 px-4 py-4 shadow-none backdrop-blur-[18px] transition focus-within:border-white/70 focus-within:shadow-[0_10px_32px_rgba(0,0,0,0.12)]"
-      onPointerDownCapture={(event) => { if (!(event.target as HTMLElement).closest("[data-workflow-menu]")) closeWorkflowPopups(); }}
+      onPointerDownCapture={(event) => closeMenusIfOutsideMenu(event.target)}
+      onClickCapture={(event) => closeMenusIfOutsideMenu(event.target)}
+      onFocusCapture={(event) => closeMenusIfOutsideMenu(event.target)}
     >
+      {localTip ? <div className="pointer-events-none absolute bottom-full left-1/2 z-[10000] mb-3 -translate-x-1/2"><WorkflowInputToast message={localTip.message} exiting={localTip.exiting} /></div> : null}
       <div className="mb-2 flex min-h-[76px] flex-wrap items-start gap-2 px-0.5">
-        {uploadButtons.filter(({ kind }) => uploadRule[kind].enabled).map(({ label, icon: Icon, ariaLabel, kind }) => (
+        {!useSlotUploadLayout ? visibleUploadButtons.map(({ label, icon: Icon, ariaLabel, kind, hideCount, multiple = true }) => (
           <label key={label} style={{ backgroundColor: "#ededed" }} className="workflow-upload-chip flex h-[70px] w-[64px] shrink-0 cursor-pointer flex-col items-center justify-center gap-1.5 rounded-[16px] text-[#a7a7a7] transition" aria-label={ariaLabel} title={getWorkflowUploadAccept(uploadRule, kind)}>
-            <input type="file" hidden multiple accept={getWorkflowUploadAccept(uploadRule, kind)} onChange={(event) => { handleUploadFiles(kind, Array.from(event.target.files ?? [])); event.target.value = ""; }} />
+            <input type="file" hidden multiple={multiple} accept={getWorkflowUploadAccept(uploadRule, kind)} onChange={(event) => { void handleUploadFiles(kind, Array.from(event.target.files ?? [])); event.target.value = ""; }} />
             <Icon className="h-4.5 w-4.5" aria-hidden="true" />
             <span className="text-[12px] leading-none">{label}</span>
+            {hideCount ? null : <span className="text-[10px] leading-none text-[#b5b5b5]">1-{uploadRule[kind].maxCount}</span>}
           </label>
-        ))}
-        {(node.data.uploads ?? []).map((upload) => {
+        )) : null}
+        {uploads.map((upload) => {
           const referenceName = getWorkflowUploadReferenceName(upload);
           const canInsert = upload.status === "ready";
-          const mediaSrc = upload.previewUrl ?? upload.url;
+          const mediaSrc = getWorkflowUploadMediaSrc(upload);
           const isVisual = upload.kind === "image" || upload.kind === "video";
 
           return (
-            <div key={upload.id} className={isVisual ? "group relative h-[70px] w-[70px] shrink-0 overflow-hidden rounded-[16px] border border-[#e5e5e5] bg-[#f7f7f7]" : "group relative flex h-[70px] w-[132px] shrink-0 items-center gap-2 overflow-hidden rounded-[16px] bg-[#ededed] px-3 text-left text-[#777777]"}>
-              {isVisual ? (
+            <div key={upload.id} className="group relative h-[70px] w-[64px] shrink-0 overflow-visible">
+              <div className={`relative h-full w-full overflow-hidden rounded-[16px] border ${isVisual ? "border-[#e5e5e5] bg-[#f7f7f7]" : "border-[#e1e1e1] bg-white text-[#777777]"}`}>
+                {isVisual ? (
                 mediaSrc ? upload.kind === "video" ? (
-                  <video src={mediaSrc} className="h-full w-full object-cover" muted playsInline preload="metadata" />
+                  <>
+                    <video src={mediaSrc} className="h-full w-full object-cover" muted playsInline preload="metadata" />
+                    <div className="pointer-events-none absolute left-1/2 top-1/2 z-10 flex h-7 w-7 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-black/58 text-white shadow-[0_4px_12px_rgba(0,0,0,0.22)]">
+                      <span className="ml-0.5 h-0 w-0 border-y-[6px] border-l-[9px] border-y-transparent border-l-current" />
+                    </div>
+                  </>
                 ) : (
                   // eslint-disable-next-line @next/next/no-img-element
-                  <img src={mediaSrc} alt={upload.name} className="h-full w-full object-cover" />
+                  <WorkflowHoverImagePreview src={upload.url ?? mediaSrc} alt={upload.name} wrapperClassName="block h-full w-full"><img src={mediaSrc} alt={upload.name} className="h-full w-full object-cover" /></WorkflowHoverImagePreview>
                 ) : <div className="flex h-full w-full items-center justify-center text-[#b5b5b5]"><WorkflowUploadIcon kind={upload.kind} /></div>
               ) : (
-                <>
-                  <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[8px] bg-white/80 text-[#777777] ring-1 ring-black/5">
+                <div className="flex h-full w-full items-center justify-center pb-[18px]">
+                  <div className="flex h-9 w-9 shrink-0 items-center justify-center text-[#8a8a8a] [&>svg]:h-6 [&>svg]:w-6">
                     <WorkflowUploadIcon kind={upload.kind} />
                   </div>
-                  <div className="min-w-0 flex-1 pr-4">
-                    <button type="button" disabled={!canInsert} onClick={() => insertReferenceText(referenceName)} className="block w-full truncate text-left text-[12px] font-medium leading-4 text-[#333333] disabled:cursor-not-allowed disabled:text-[#999999]">
-                      {canInsert ? `@${referenceName}` : upload.status === "error" ? "上传失败" : "上传中..."}
-                    </button>
-                    <div className="mt-0.5 truncate text-[10px] leading-3 text-[#999999]">{upload.name}</div>
-                  </div>
-                </>
-              )}
-              <button type="button" onClick={(event) => { event.stopPropagation(); removeUpload(upload.id); }} className="absolute right-1 top-1 z-30 flex h-5 w-5 items-center justify-center rounded-full bg-black/55 text-white transition hover:bg-black/70" aria-label="移除上传文件">
-                <RiCloseLine className="h-3 w-3" aria-hidden="true" />
+                </div>
+                )}
+              <button type="button" disabled={!canInsert} onClick={() => insertReferenceText(referenceName)} className={`absolute inset-x-0 bottom-0 z-10 block truncate px-1.5 pb-0.5 pt-4 text-left font-medium leading-4 transition disabled:cursor-not-allowed disabled:opacity-75 ${isVisual ? "bg-gradient-to-t from-black/75 to-transparent text-white" : "text-[#555555]"}`}>
+                <span className="text-[10px] leading-4">{canInsert ? `@${referenceName}` : upload.status === "error" ? "上传失败" : "上传中..."}</span>
               </button>
-              {isVisual ? (
-                <button type="button" disabled={!canInsert} onClick={() => insertReferenceText(referenceName)} className="absolute inset-x-0 bottom-0 z-10 block truncate bg-gradient-to-t from-black/75 to-transparent px-1.5 pb-0.5 pt-4 text-left font-medium leading-4 text-white transition disabled:cursor-not-allowed disabled:opacity-75">
-                  <span className="text-[10px] leading-4">{canInsert ? `@${referenceName}` : upload.status === "error" ? "上传失败" : "上传中..."}</span>
-                </button>
-              ) : null}
               {upload.status === "uploading" ? <WorkflowUploadProgressOverlay progress={upload.progress} /> : null}
               {upload.status === "error" && isVisual ? <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/58 px-2 text-center text-[12px] font-semibold text-white">上传失败</div> : null}
+              </div>
+              <button type="button" onClick={(event) => { event.stopPropagation(); removeUpload(upload.id); }} className="absolute right-[-5px] top-[-5px] z-30 flex h-[22px] w-[22px] items-center justify-center rounded-full bg-black text-white transition hover:bg-black" aria-label="移除上传文件">
+                <RiCloseLine className="h-4 w-4 stroke-[1.5]" aria-hidden="true" />
+              </button>
             </div>
           );
         })}
+        {useSlotUploadLayout ? visibleUploadButtons.map(({ label, icon: Icon, ariaLabel, kind, hideCount, multiple = true }) => (
+          <label key={label} style={{ backgroundColor: "#ededed" }} className="workflow-upload-chip flex h-[70px] w-[64px] shrink-0 cursor-pointer flex-col items-center justify-center gap-1.5 rounded-[16px] text-[#a7a7a7] transition" aria-label={ariaLabel} title={getWorkflowUploadAccept(uploadRule, kind)}>
+            <input type="file" hidden multiple={multiple} accept={getWorkflowUploadAccept(uploadRule, kind)} onChange={(event) => { void handleUploadFiles(kind, Array.from(event.target.files ?? [])); event.target.value = ""; }} />
+            <Icon className="h-4.5 w-4.5" aria-hidden="true" />
+            <span className="text-[12px] leading-none">{label}</span>
+            {hideCount ? null : <span className="text-[10px] leading-none text-[#b5b5b5]">1-{uploadRule[kind].maxCount}</span>}
+          </label>
+        )) : null}
       </div>
-      {uploadError ? <div className="mb-2 px-2 text-[12px] leading-5 text-red-500">{uploadError}</div> : null}
       {isWaitingForMentionReferences ? (
         <div className="flex min-h-[52px] items-center gap-2 px-2 py-1 text-[13px] leading-6 text-[#8a8a8a]" style={{ font: "14px / 24px var(--font-geist-sans), Arial, Helvetica, sans-serif" }}>
           <RiLoader4Line className="h-4 w-4 animate-spin text-[#367cee]" aria-hidden="true" />
           <span>加载引用资产...</span>
         </div>
       ) : (
-        <WorkflowMentionEditor value={value} placeholder={placeholder} running={running} validReferences={validReferenceNames} focusRequest={focusRequest} onChange={onChange} onRun={onRun} onPasteImages={(files) => handleUploadFiles("image", files)} onLimit={() => setUploadError("最多输入2000字")} onCursorChange={setCursorOffset} onAtTrigger={(query) => { if (Date.now() < suppressAtTriggerUntilRef.current) return; runtime.onLoadReferenceAssets?.(); setActiveAtQuery(query); setIsReferenceMenuOpen(true); }} onAtClose={() => { setActiveAtQuery(null); setIsReferenceMenuOpen(false); }} />
+        <WorkflowMentionEditor value={value} placeholder={placeholder} running={running} maxHeight={maxPromptHeight} validReferences={validReferenceNames} focusRequest={focusRequest} onChange={onChange} onRun={runFromPromptBox} onPasteImages={(files) => { void handleUploadFiles("image", files); }} onLimit={() => showLocalTip("最多输入2000字")} onCursorChange={setCursorOffset} onAtTrigger={(query) => { if (Date.now() < suppressAtTriggerUntilRef.current) return; runtime.onLoadReferenceAssets?.(); setActiveAtQuery(query); setIsReferenceMenuOpen(true); }} onAtClose={() => { setActiveAtQuery(null); setIsReferenceMenuOpen(false); }} />
       )}
       <div className="mt-3 flex min-w-0 flex-nowrap items-center justify-between gap-3 pb-0.5">
         <div className="flex min-w-0 flex-1 flex-nowrap items-center gap-2 text-[12px]">
@@ -2801,7 +3654,7 @@ function WorkflowPromptBox({ node, value, placeholder, onChange, children, runni
                     <button key={asset.id} type="button" onClick={(event) => { event.preventDefault(); event.stopPropagation(); insertAssetReference(asset); }} className="flex h-12 w-full items-center gap-3 rounded-[8px] px-2 text-left transition hover:bg-[#f5f5f5]">
                       <div className="h-8 w-8 shrink-0 overflow-hidden rounded-[8px] bg-[#eeeeee]">
                         {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img src={asset.thumbnailUrl ?? asset.url} alt={asset.name} className="h-full w-full object-cover" />
+                        <WorkflowHoverImagePreview src={asset.url} alt={asset.name} wrapperClassName="block h-full w-full"><img src={asset.thumbnailUrl ?? asset.url} alt={asset.name} className="h-full w-full object-cover" /></WorkflowHoverImagePreview>
                       </div>
                       <div className="min-w-0">
                         <div className="truncate text-[13px] font-medium text-[#222222]">@{asset.name}</div>
@@ -2815,7 +3668,8 @@ function WorkflowPromptBox({ node, value, placeholder, onChange, children, runni
           </div>
           {children}
         </div>
-        <button type="button" disabled={running || !value.trim()} onClick={onRun} className="inline-flex h-9 w-9 shrink-0 items-center justify-center whitespace-nowrap rounded-[10px] bg-[#111111] text-white transition hover:bg-[#000000] disabled:cursor-not-allowed disabled:bg-[#d7d7d7] disabled:text-white" aria-label="生成">
+        {showVideoReferenceModeMenu ? <WorkflowVideoReferenceModeMenu value={selectedVideoReferenceMode} onChange={changeVideoReferenceMode} /> : null}
+        <button type="button" disabled={!canRun} onClick={runFromPromptBox} className="inline-flex h-9 w-9 shrink-0 items-center justify-center whitespace-nowrap rounded-[10px] bg-[#111111] text-white transition hover:bg-[#000000] disabled:cursor-not-allowed disabled:bg-[#d7d7d7] disabled:text-white" aria-label="生成">
           {running ? <RiLoader4Line className="h-4 w-4 animate-spin" /> : <RiArrowUpLine className="h-4 w-4" />}
         </button>
       </div>
@@ -2850,7 +3704,14 @@ function WorkflowSettingsMenuSingle({ mode, model, ratio, resolution, ratios, re
 
 function WorkflowDurationMenuSingle({ value, options, onChange }: { value: string; options: string[]; onChange: (value: string) => void }) {
   const { open, setOpen, toggle } = useWorkflowMenuOpen();
-  return <div data-workflow-menu className="relative" onPointerDown={(event) => event.stopPropagation()}><button type="button" onClick={toggle} className={`${workflowToolButtonClassName} ${open ? "yinzao-tool-button-active" : ""}`}><RiTimeLine className="h-[18px] w-[18px] shrink-0 text-[#777777]" /><span className="font-medium text-[#777777]">{value}</span><RiArrowDownSLine className="h-3.5 w-3.5 shrink-0 text-[#8a8a8a]" /></button>{open ? <div className="absolute bottom-full left-0 z-[10000] mb-2 max-h-[420px] min-w-[180px] overflow-y-auto rounded-[12px] bg-white p-2 shadow-[0_18px_40px_rgba(0,0,0,0.12)]"><div className="px-2 pb-2 text-[12px] font-medium text-[#a0a0a0]">视频时长</div>{options.map((option) => <button key={option} type="button" onClick={() => { onChange(option); setOpen(false); }} className={option === value ? "flex h-10 w-full items-center justify-between whitespace-nowrap rounded-[8px] bg-[#f5f5f5] px-3 text-left text-[14px] font-medium text-[#111111]" : "flex h-10 w-full items-center justify-between whitespace-nowrap rounded-[8px] px-3 text-left text-[14px] text-[#555555] hover:bg-[#f7f7f7]"}><span>{option}</span>{option === value ? <RiCheckLine className="h-[18px] w-[18px] text-[#111111]" /> : null}</button>)}</div> : null}</div>;
+  const sortedOptions = sortWorkflowDurationOptions(options);
+  return <div data-workflow-menu className="relative" onPointerDown={(event) => event.stopPropagation()}><button type="button" onClick={toggle} className={`${workflowToolButtonClassName} ${open ? "yinzao-tool-button-active" : ""}`}><RiTimeLine className="h-[18px] w-[18px] shrink-0 text-[#777777]" /><span className="font-medium text-[#777777]">{value}</span><RiArrowDownSLine className="h-3.5 w-3.5 shrink-0 text-[#8a8a8a]" /></button>{open ? <div className="absolute bottom-full left-0 z-[10000] mb-2 max-h-[420px] min-w-[180px] overflow-y-auto rounded-[12px] bg-white p-2 shadow-[0_18px_40px_rgba(0,0,0,0.12)]"><div className="px-2 pb-2 text-[12px] font-medium text-[#a0a0a0]">视频时长</div>{sortedOptions.map((option) => <button key={option} type="button" onClick={() => { onChange(option); setOpen(false); }} className={option === value ? "flex h-10 w-full items-center justify-between whitespace-nowrap rounded-[8px] bg-[#f5f5f5] px-3 text-left text-[14px] font-medium text-[#111111]" : "flex h-10 w-full items-center justify-between whitespace-nowrap rounded-[8px] px-3 text-left text-[14px] text-[#555555] hover:bg-[#f7f7f7]"}><span className="flex items-center gap-2"><RiTimeLine className="h-[17px] w-[17px] shrink-0 text-[#777777]" /><span>{option}</span></span>{option === value ? <RiCheckLine className="h-[18px] w-[18px] text-[#111111]" /> : null}</button>)}</div> : null}</div>;
+}
+
+function WorkflowVideoReferenceModeMenu({ value, onChange }: { value: WorkflowVideoReferenceMode; onChange: (value: WorkflowVideoReferenceMode) => void }) {
+  const { open, setOpen, toggle } = useWorkflowMenuOpen();
+  const SelectedIcon = workflowVideoReferenceModeOptions.find((option) => option.value === value)?.icon ?? RiImageCircleLine;
+  return <div data-workflow-menu className="relative" onPointerDown={(event) => event.stopPropagation()}><button type="button" onClick={toggle} className={`${workflowToolButtonClassName} ${open ? "yinzao-tool-button-active" : ""}`}><SelectedIcon className="h-[18px] w-[18px] shrink-0 text-[#777777]" /><span className="font-medium text-[#777777]">{getWorkflowVideoReferenceModeLabel(value)}</span><RiArrowDownSLine className="h-3.5 w-3.5 shrink-0 text-[#8a8a8a]" /></button>{open ? <div className="absolute bottom-full right-0 z-[10000] mb-2 min-w-[180px] rounded-[12px] bg-white p-2 shadow-[0_18px_40px_rgba(0,0,0,0.12)]"><div className="px-2 pb-2 text-[12px] font-medium text-[#a0a0a0]">参考模式</div>{workflowVideoReferenceModeOptions.map((option) => { const OptionIcon = option.icon; return <button key={option.value} type="button" onClick={() => { onChange(option.value); setOpen(false); }} className={option.value === value ? "flex h-10 w-full items-center justify-between whitespace-nowrap rounded-[8px] bg-[#f5f5f5] px-3 text-left text-[14px] font-medium text-[#111111]" : "flex h-10 w-full items-center justify-between whitespace-nowrap rounded-[8px] px-3 text-left text-[14px] text-[#555555] hover:bg-[#f7f7f7]"}><span className="flex items-center gap-2"><OptionIcon className="h-[18px] w-[18px] shrink-0 text-[#777777]" /><span>{option.label}</span></span>{option.value === value ? <RiCheckLine className="h-[18px] w-[18px] text-[#111111]" /> : null}</button>; })}</div> : null}</div>;
 }
 function WorkflowSettingsMenuV2({ mode, model, ratio, resolution, ratios, resolutions, onChange, className = "" }: { mode: "image" | "video"; model?: ModelName; ratio: string; resolution: string; ratios: string[]; resolutions: string[]; onChange: (patch: { ratio?: string; resolution?: string }) => void; className?: string }) {
   const [open, setOpen] = useState(false);
@@ -2876,5 +3737,5 @@ function CompactResolutionIcon({ option, mode }: { option?: string; mode: "image
 function WorkflowModelMenu({ value, options, title, onChange, className = "" }: { value: ModelName; options: readonly (ConversationModel | GenerationModel)[]; title: string; onChange: (value: ModelName) => void; className?: string }) { const [open, setOpen] = useState(false); const SelectedIcon = getGenerationModelIcon(value); const selectedLabel = getModelLabel(options, value); const selectedGold = isGoldGenerationModel(value); return <div className={`relative min-w-0 ${className}`} onPointerDown={(event) => event.stopPropagation()}><button type="button" onClick={() => setOpen((current) => !current)} className={`${workflowToolButtonClassName} ${open ? "yinzao-tool-button-active" : ""} w-full max-w-none justify-start whitespace-nowrap`}><span className="flex min-w-0 flex-nowrap items-center gap-2">{SelectedIcon ? <SelectedIcon className="h-[18px] w-[18px] shrink-0 text-[#777777]" /> : <AiGenerate3dIcon />}<span className={`min-w-0 truncate whitespace-nowrap font-medium ${selectedGold ? "text-[#b8860b]" : "text-[#777777]"}`}>{selectedLabel}</span><RiArrowDownSLine className="h-3.5 w-3.5 shrink-0 text-[#8a8a8a]" /></span></button>{open ? <div className="absolute bottom-full left-0 z-[10000] mb-2 w-[300px] rounded-[12px] bg-white p-2 shadow-[0_18px_40px_rgba(0,0,0,0.12)]"><div className="px-2 pb-2 text-[12px] font-medium text-[#a0a0a0]">{title}</div>{options.map((option) => { const ModelIcon = getGenerationModelIcon(option.id); const selected = option.id === value; const gold = isGoldGenerationModel(option.id); return <button key={option.id} type="button" onClick={() => { onChange(option.id as ModelName); setOpen(false); }} className={selected ? "my-[3px] flex h-11 w-full items-center justify-between rounded-[8px] bg-[#f5f5f5] px-3 text-left text-[14px] font-medium text-[#111111]" : "my-[3px] flex h-11 w-full items-center justify-between rounded-[8px] px-3 text-left text-[14px] text-[#555555] hover:bg-[#f7f7f7]"}><span className="flex min-w-0 items-center gap-2">{ModelIcon ? <ModelIcon className="h-4.5 w-4.5 shrink-0 text-[#555555]" /> : <AiGenerate3dIcon className="h-4.5 w-4.5 shrink-0 text-[#555555]" />}<span className={`min-w-0 truncate text-[13px] ${gold ? "text-[#b8860b]" : ""}`}>{option.label}</span></span>{selected ? <RiCheckLine className="ml-2 h-[18px] w-[18px] shrink-0 text-[#111111]" /> : null}</button>; })}</div> : null}</div>; }
 function WorkflowSettingsMenu({ mode, ratio, resolution, ratios, resolutions, onChange, className = "" }: { mode: "image" | "video"; ratio: string; resolution: string; ratios: string[]; resolutions: string[]; onChange: (patch: { ratio?: string; resolution?: string }) => void; className?: string }) { const [open, setOpen] = useState(false); const isSmartSettings = mode === "image" && ratio === "智能比例"; const resolutionGridClassName = mode === "video" ? "gap-1.5 px-1.5" : "gap-2 px-2"; return <div className={`relative ${className}`} onPointerDown={(event) => event.stopPropagation()}><button type="button" onClick={() => setOpen((current) => !current)} className={`relative ${workflowToolButtonClassName} ${open ? "yinzao-tool-button-active" : ""} pl-10`}><span className="flex min-w-0 flex-nowrap items-center gap-2"><span className="font-medium text-[#777777]">{ratio} /</span><span className="font-medium text-[#777777]">{resolution}</span><RiArrowDownSLine className="h-3.5 w-3.5 shrink-0 text-[#8a8a8a]" /></span><span className="absolute left-3.5 top-1/2 -translate-y-1/2"><RatioOptionIcon option={ratio} /></span></button>{open ? <div className="absolute bottom-full left-0 z-[10000] mb-2 w-[min(420px,calc(100vw-40px))] rounded-[12px] bg-white p-5 shadow-[0_18px_40px_rgba(0,0,0,0.12)]"><div className="pb-2 text-[13px] font-medium text-[#a0a0a0]">选择比例</div><div className="mt-2 grid auto-cols-fr grid-flow-col gap-1 rounded-[12px] bg-[#f6f6f6] px-1.5 py-1">{ratios.map((option) => <button key={option} type="button" onClick={() => onChange({ ratio: option })} className={option === ratio ? "flex h-[58px] min-w-0 flex-col items-center justify-center gap-1 rounded-[10px] bg-white px-1 text-[#111111] shadow-[0_2px_10px_rgba(0,0,0,0.06)]" : "flex h-[58px] min-w-0 flex-col items-center justify-center gap-1 rounded-[10px] px-1 text-[#555555] transition hover:bg-white/80"}><RatioOptionIcon option={option} /><span className="text-[13px] font-medium leading-none">{option === "智能比例" ? "智能" : option}</span></button>)}</div><div className="mt-4 text-[13px] font-medium text-[#a0a0a0]">选择分辨率</div><div className={`mt-2 grid ${resolutionGridClassName} rounded-[12px] bg-[#f6f6f6] py-1 ${resolutions.length === 1 ? "grid-cols-1" : resolutions.length === 2 ? "grid-cols-2" : resolutions.length === 3 ? "grid-cols-3" : "grid-cols-4"} ${isSmartSettings ? "opacity-45" : ""}`}>{resolutions.map((option) => <button key={option} type="button" disabled={isSmartSettings} onClick={() => onChange({ resolution: option })} className={option === resolution ? "flex h-[56px] items-center justify-center gap-2 rounded-[10px] bg-white px-2 text-[#111111] shadow-[0_2px_10px_rgba(0,0,0,0.06)] disabled:cursor-not-allowed" : "flex h-[56px] items-center justify-center gap-2 rounded-[10px] px-2 text-[#666666] transition hover:bg-white/80 disabled:cursor-not-allowed disabled:hover:bg-transparent"}><CompactResolutionIcon option={option} mode={mode} /><span className="whitespace-nowrap text-[13px] font-medium leading-none">{option}</span></button>)}</div></div> : null}</div>; }
 function WorkflowDurationMenu({ value, options, onChange }: { value: string; options: string[]; onChange: (value: string) => void }) { const [open, setOpen] = useState(false); return <div className="relative" onPointerDown={(event) => event.stopPropagation()}><button type="button" onClick={() => setOpen((current) => !current)} className={`${workflowToolButtonClassName} ${open ? "yinzao-tool-button-active" : ""}`}><RiTimeLine className="h-[18px] w-[18px] shrink-0 text-[#777777]" /><span className="font-medium text-[#777777]">{value}</span><RiArrowDownSLine className="h-3.5 w-3.5 shrink-0 text-[#8a8a8a]" /></button>{open ? <div className="absolute bottom-full left-0 z-[10000] mb-2 max-h-[420px] min-w-[180px] overflow-y-auto rounded-[12px] bg-white p-2 shadow-[0_18px_40px_rgba(0,0,0,0.12)]"><div className="px-2 pb-2 text-[12px] font-medium text-[#a0a0a0]">视频时长</div>{options.map((option) => <button key={option} type="button" onClick={() => { onChange(option); setOpen(false); }} className={option === value ? "flex h-10 w-full items-center justify-between whitespace-nowrap rounded-[8px] bg-[#f5f5f5] px-3 text-left text-[14px] font-medium text-[#111111]" : "flex h-10 w-full items-center justify-between whitespace-nowrap rounded-[8px] px-3 text-left text-[14px] text-[#555555] hover:bg-[#f7f7f7]"}><span>{option}</span>{option === value ? <RiCheckLine className="h-[18px] w-[18px] text-[#111111]" /> : null}</button>)}</div> : null}</div>; }
-function ImageNodeEditor({ node, modelOptions, onChange, onRun }: { node: WorkflowNode; modelOptions: WorkflowModelOptions; onChange: (nodeId: string, patch: Partial<WorkflowNodeData>) => void; onRun: () => void }) { const model = modelOptions.imageModels.some((item) => item.id === node.data.model) ? node.data.model ?? DEFAULT_IMAGE_MODEL : (modelOptions.imageModels[0]?.id as ModelName | undefined) ?? DEFAULT_IMAGE_MODEL; const supportedResolutions = getSupportedImageResolutions(model); const ratio = imageRatioOptions.includes(node.data.ratio ?? "") ? node.data.ratio as string : "16:9"; return <div className="space-y-2"><WorkflowPromptBox node={node} value={node.data.prompt ?? ""} placeholder="输入图片生成提示词；也可以连接文本节点。" onChange={(value) => onChange(node.id, { prompt: value })} running={node.data.isRunning} onRun={onRun}><WorkflowModelMenuSingle value={model} options={modelOptions.imageModels} title="选择模型" onChange={(value) => onChange(node.id, { model: value, ratio, resolution: normalizeImageResolutionForModel(value, node.data.resolution) })} className="w-[190px] shrink-0" /><WorkflowSettingsMenuSingle mode="image" model={model} ratio={ratio} resolution={node.data.resolution ?? supportedResolutions[0]} ratios={imageRatioOptions} resolutions={supportedResolutions} onChange={(patch) => onChange(node.id, patch)} className="shrink-0" /></WorkflowPromptBox>{node.data.error ? <div className="px-1 text-[12px] leading-5 text-red-500">{node.data.error}</div> : null}</div>; }
-function VideoNodeEditor({ node, modelOptions, onChange, onRun }: { node: WorkflowNode; modelOptions: WorkflowModelOptions; onChange: (nodeId: string, patch: Partial<WorkflowNodeData>) => void; onRun: () => void }) { const model = modelOptions.videoModels.some((item) => item.id === node.data.model) ? node.data.model ?? DEFAULT_VIDEO_MODEL : (modelOptions.videoModels[0]?.id as ModelName | undefined) ?? DEFAULT_VIDEO_MODEL; const supportedResolutions = getSupportedVideoResolutions(model); const resolution = normalizeVideoResolutionForModel(model, node.data.resolution); const supportedRatios = getSupportedVideoRatios(model, resolution); const ratio = (supportedRatios as readonly string[]).includes(node.data.ratio ?? "") ? node.data.ratio as string : supportedRatios[0]; const durationOptions = modelOptions.videoModels.find((item) => item.id === model)?.durations ?? fallbackVideoDurationOptions; return <div className="space-y-2"><WorkflowPromptBox node={node} value={node.data.prompt ?? ""} placeholder="输入视频生成提示词；也可以连接文本或图片节点。" onChange={(value) => onChange(node.id, { prompt: value })} running={node.data.isRunning} onRun={onRun}><WorkflowModelMenuSingle value={model} options={modelOptions.videoModels} title="选择模型" onChange={(value) => { const nextResolution = normalizeVideoResolutionForModel(value, node.data.resolution); onChange(node.id, { model: value, resolution: nextResolution, ratio: normalizeVideoRatioForModel(value, ratio, nextResolution), duration: value === DEFAULT_WORKFLOW_VIDEO_MODEL ? "8秒" : modelOptions.videoModels.find((item) => item.id === value)?.durations?.[0] ?? "5秒" }); }} className="w-[190px] shrink-0" /><WorkflowSettingsMenuSingle mode="video" model={model} ratio={ratio} resolution={resolution} ratios={supportedRatios} resolutions={supportedResolutions} onChange={(patch) => onChange(node.id, patch)} className="shrink-0" /><WorkflowDurationMenuSingle value={node.data.duration ?? durationOptions[0]} options={durationOptions} onChange={(value) => onChange(node.id, { duration: value })} /></WorkflowPromptBox>{node.data.error ? <div className="px-1 text-[12px] leading-5 text-red-500">{node.data.error}</div> : null}</div>; }
+function ImageNodeEditor({ node, modelOptions, promptMaxHeight, onChange, onRun }: { node: WorkflowNode; modelOptions: WorkflowModelOptions; promptMaxHeight?: number; onChange: (nodeId: string, patch: Partial<WorkflowNodeData>) => void; onRun: () => void }) { const model = modelOptions.imageModels.some((item) => item.id === node.data.model) ? node.data.model ?? DEFAULT_IMAGE_MODEL : (modelOptions.imageModels[0]?.id as ModelName | undefined) ?? DEFAULT_IMAGE_MODEL; const supportedResolutions = getSupportedImageResolutions(model); const ratio = imageRatioOptions.includes(node.data.ratio ?? "") ? node.data.ratio as string : "16:9"; return <div className="space-y-2"><WorkflowPromptBox node={node} value={node.data.prompt ?? ""} placeholder="输入图片生成提示词；也可以连接文本节点。" maxPromptHeight={promptMaxHeight} onChange={(value) => onChange(node.id, { prompt: value })} running={node.data.isRunning} onRun={onRun}><WorkflowModelMenuSingle value={model} options={modelOptions.imageModels} title="选择模型" onChange={(value) => onChange(node.id, { model: value, ratio, resolution: normalizeImageResolutionForModel(value, node.data.resolution), ...pruneWorkflowUploadsForModel(node, value) })} className="w-[190px] shrink-0" /><WorkflowSettingsMenuSingle mode="image" model={model} ratio={ratio} resolution={node.data.resolution ?? supportedResolutions[0]} ratios={imageRatioOptions} resolutions={supportedResolutions} onChange={(patch) => onChange(node.id, patch)} className="shrink-0" /></WorkflowPromptBox></div>; }
+function VideoNodeEditor({ node, modelOptions, promptMaxHeight, onChange, onRun }: { node: WorkflowNode; modelOptions: WorkflowModelOptions; promptMaxHeight?: number; onChange: (nodeId: string, patch: Partial<WorkflowNodeData>) => void; onRun: () => void }) { const model = modelOptions.videoModels.some((item) => item.id === node.data.model) ? node.data.model ?? DEFAULT_VIDEO_MODEL : (modelOptions.videoModels[0]?.id as ModelName | undefined) ?? DEFAULT_VIDEO_MODEL; const supportedResolutions = getSupportedVideoResolutions(model); const resolution = normalizeVideoResolutionForModel(model, node.data.resolution); const supportedRatios = getSupportedVideoRatios(model, resolution); const ratio = (supportedRatios as readonly string[]).includes(node.data.ratio ?? "") ? node.data.ratio as string : supportedRatios[0]; const durationOptions = modelOptions.videoModels.find((item) => item.id === model)?.durations ?? fallbackVideoDurationOptions; return <div className="space-y-2"><WorkflowPromptBox node={node} value={node.data.prompt ?? ""} placeholder="输入视频生成提示词；也可以连接文本或图片节点。" maxPromptHeight={promptMaxHeight} onChange={(value) => onChange(node.id, { prompt: value })} running={node.data.isRunning} onRun={onRun}><WorkflowModelMenuSingle value={model} options={modelOptions.videoModels} title="选择模型" onChange={(value) => { const nextResolution = normalizeVideoResolutionForModel(value, node.data.resolution); onChange(node.id, { model: value, resolution: nextResolution, ratio: normalizeVideoRatioForModel(value, ratio, nextResolution), duration: value === DEFAULT_WORKFLOW_VIDEO_MODEL ? "8秒" : modelOptions.videoModels.find((item) => item.id === value)?.durations?.[0] ?? "5秒" }); }} className="w-[190px] shrink-0" /><WorkflowSettingsMenuSingle mode="video" model={model} ratio={ratio} resolution={resolution} ratios={supportedRatios} resolutions={supportedResolutions} onChange={(patch) => onChange(node.id, patch)} className="shrink-0" /><WorkflowDurationMenuSingle value={node.data.duration ?? durationOptions[0]} options={durationOptions} onChange={(value) => onChange(node.id, { duration: value })} /></WorkflowPromptBox></div>; }

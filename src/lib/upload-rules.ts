@@ -25,7 +25,21 @@ export type UploadRuleContext = {
   mode: UploadRuleMode;
   modelId?: string;
   transportMode?: UploadTransportMode;
+  videoReferenceMode?: "reference" | "first_frame" | "first_last_frame";
 };
+
+export type UploadRuleCountOverride = {
+  enabled: boolean;
+  maxCount: number;
+};
+
+export type UploadRuleOverrides = Record<string, Partial<Record<UploadKind, UploadRuleCountOverride>>>;
+
+export const BYTEPLUS_SEEDANCE_UPLOAD_RULE_KEYS = {
+  reference: "byteplus:video.seedance:reference",
+  firstFrame: "byteplus:video.seedance:first_frame",
+  firstLastFrame: "byteplus:video.seedance:first_last_frame",
+} as const;
 
 const commonImageFormats = ["jpg", "jpeg", "png", "webp"];
 const bytePlusImageFormats = ["jpg", "jpeg", "png", "webp", "bmp", "tiff", "tif", "gif", "heic", "heif"];
@@ -63,7 +77,31 @@ function isVeoVideoModel(modelId?: string) {
   return modelId === "google/veo-3.1";
 }
 
-export function getUploadRule(context: UploadRuleContext): UploadRule {
+export function getUploadRuleOverrideKey(context: UploadRuleContext) {
+  if (context.mode === "agent" || context.mode === "general") return "chat";
+  if (context.mode === "video" && isBytePlusVideoModel(context.modelId)) {
+    if (context.videoReferenceMode === "first_last_frame") return BYTEPLUS_SEEDANCE_UPLOAD_RULE_KEYS.firstLastFrame;
+    if (context.videoReferenceMode === "first_frame") return BYTEPLUS_SEEDANCE_UPLOAD_RULE_KEYS.firstFrame;
+    return BYTEPLUS_SEEDANCE_UPLOAD_RULE_KEYS.reference;
+  }
+  return context.modelId || context.mode;
+}
+
+function applyUploadRuleOverrides(rule: UploadRule, context: UploadRuleContext, overrides?: UploadRuleOverrides): UploadRule {
+  const override = overrides?.[getUploadRuleOverrideKey(context)];
+  if (!override) return rule;
+
+  const next: UploadRule = { ...rule };
+  for (const kind of ["image", "document", "video", "audio"] as const) {
+    const kindOverride = override[kind];
+    if (!kindOverride || !rule[kind].enabled) continue;
+    const maxCount = Math.max(0, Math.min(99, Math.floor(kindOverride.maxCount)));
+    next[kind] = { ...rule[kind], enabled: kindOverride.enabled && maxCount > 0, maxCount: kindOverride.enabled ? maxCount : 0 };
+  }
+  return next;
+}
+
+function getBaseUploadRule(context: UploadRuleContext): UploadRule {
   const transportMode = context.transportMode ?? "local-base64";
   const bytePlusLocalImageMax = transportMode === "server-url" ? 14 : 6;
 
@@ -83,16 +121,19 @@ export function getUploadRule(context: UploadRuleContext): UploadRule {
 
     return makeRule({
       image: kindRule({ enabled: true, maxCount: 3, maxSizeMb: 8, formats: commonImageFormats }),
-      document: context.modelId === "openai/gpt-5.4-image-2" ? kindRule({ enabled: true, maxCount: 1, maxSizeMb: 10, formats: documentFormats }) : disabledRule,
     });
   }
 
   if (context.mode === "video") {
     if (isBytePlusVideoModel(context.modelId)) {
-      return makeRule({
-        image: kindRule({ enabled: true, maxCount: 9, maxSizeMb: 30, formats: bytePlusImageFormats }),
+      const imageMaxCount = context.videoReferenceMode === "first_last_frame" ? 2 : context.videoReferenceMode === "first_frame" ? 1 : 9;
+      const referenceMediaRule = context.videoReferenceMode === "first_frame" || context.videoReferenceMode === "first_last_frame" ? {} : {
         video: kindRule({ enabled: true, maxCount: 3, maxSizeMb: 50, formats: ["mp4", "mov"], minSeconds: 2, maxSeconds: 15, maxTotalSeconds: 15, requiresServerUrl: true }),
         audio: kindRule({ enabled: true, maxCount: 3, maxSizeMb: 15, formats: ["mp3", "wav"], minSeconds: 2, maxSeconds: 15, maxTotalSeconds: 15, requiresServerUrl: true }),
+      };
+      return makeRule({
+        image: kindRule({ enabled: true, maxCount: imageMaxCount, maxSizeMb: 30, formats: bytePlusImageFormats }),
+        ...referenceMediaRule,
       });
     }
 
@@ -104,12 +145,16 @@ export function getUploadRule(context: UploadRuleContext): UploadRule {
   return makeRule({ image: kindRule({ enabled: true, maxCount: 3, maxSizeMb: 8, formats: commonImageFormats }) });
 }
 
-export function getAllowedImageCount(context: UploadRuleContext) {
-  return getUploadRule(context).image.maxCount;
+export function getUploadRule(context: UploadRuleContext, overrides?: UploadRuleOverrides): UploadRule {
+  return applyUploadRuleOverrides(getBaseUploadRule(context), context, overrides);
 }
 
-export function getAllowedDocumentCount(context: UploadRuleContext) {
-  return getUploadRule(context).document.maxCount;
+export function getAllowedImageCount(context: UploadRuleContext, overrides?: UploadRuleOverrides) {
+  return getUploadRule(context, overrides).image.maxCount;
+}
+
+export function getAllowedDocumentCount(context: UploadRuleContext, overrides?: UploadRuleOverrides) {
+  return getUploadRule(context, overrides).document.maxCount;
 }
 
 export function getUploadAcceptValue(rule: UploadRule) {
@@ -143,8 +188,8 @@ export function getUploadKindFromFileName(name: string): UploadKind | "unsupport
   return "unsupported";
 }
 
-export function validateReferenceImageCount(context: UploadRuleContext, count: number) {
-  const maxCount = getAllowedImageCount(context);
+export function validateReferenceImageCount(context: UploadRuleContext, count: number, overrides?: UploadRuleOverrides) {
+  const maxCount = getAllowedImageCount(context, overrides);
   if (count > maxCount) return `当前模型最多支持 ${maxCount} 张参考图，不能上传更多图片`;
   return undefined;
 }

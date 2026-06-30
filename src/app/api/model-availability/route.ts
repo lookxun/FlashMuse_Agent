@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { ADVANCED_CHAT_MODEL, DEFAULT_CHAT_MODEL, bytePlusVideoGenerationModels, frontendConversationModels, frontendImageGenerationModels, videoGenerationModels } from "@/lib/models";
-import { getModelProviderPreference, isAgentImageModelEnabled, isAgentVideoModelEnabled, isAssetImageModelEnabled, isConversationImageModelEnabled, isConversationVideoModelEnabled, isGeneralTextModelEnabled, isTextModelEnabled } from "@/lib/system-settings";
+import { getModelProviderPreference, getUploadRuleOverrides, isAgentImageModelEnabled, isAgentVideoModelEnabled, isAssetImageModelEnabled, isConversationImageModelEnabled, isConversationVideoModelEnabled, isGeneralTextModelEnabled, isTextModelEnabled } from "@/lib/system-settings";
 
 export const runtime = "nodejs";
 
@@ -18,5 +18,6 @@ export async function GET() {
     videoModels: [...videoGenerationModels, ...bytePlusVideoGenerationModels].filter((model) => isConversationVideoModelEnabled(model.id)).map((model) => model.id),
     agentImageModels: frontendImageGenerationModels.filter((model) => isAgentImageModelEnabled(model.id)).map((model) => model.id),
     agentVideoModels: [...videoGenerationModels, ...bytePlusVideoGenerationModels].filter((model) => isAgentVideoModelEnabled(model.id)).map((model) => model.id),
+    uploadRuleOverrides: getUploadRuleOverrides(),
   });
 }

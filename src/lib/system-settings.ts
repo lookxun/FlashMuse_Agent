@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import type { UploadKind, UploadRuleOverrides } from "@/lib/upload-rules";
 
 export const BYTEPLUS_CONVERSATION_IMAGE_MODEL_KEYS: Record<string, string> = {
   "byteplus:conversation-image.seedream-4-5": "conversation-image.seedream-4-5",
@@ -27,6 +28,7 @@ export const BYTEPLUS_AGENT_VIDEO_MODEL_KEYS: Record<string, string> = {
 };
 
 const ENV_PATH = join(process.cwd(), ".env.local");
+const uploadKinds: UploadKind[] = ["document", "image", "video", "audio"];
 
 export type AdminSystemSettings = {
   openRouterApiKey: string;
@@ -250,6 +252,46 @@ function formatEnvValue(value: string) {
   if (!value) return "";
   if (/\s|#|"|'/.test(value)) return JSON.stringify(value);
   return value;
+}
+
+function sanitizeUploadRuleOverrides(value: unknown): UploadRuleOverrides {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const result: UploadRuleOverrides = {};
+  for (const [modelKey, rawRule] of Object.entries(value as Record<string, unknown>)) {
+    if (!modelKey || !rawRule || typeof rawRule !== "object" || Array.isArray(rawRule)) continue;
+    const nextRule: Partial<Record<UploadKind, { enabled: boolean; maxCount: number }>> = {};
+    for (const kind of uploadKinds) {
+      const rawKindRule = (rawRule as Record<string, unknown>)[kind];
+      if (!rawKindRule || typeof rawKindRule !== "object" || Array.isArray(rawKindRule)) continue;
+      const rawMaxCount = Number((rawKindRule as Record<string, unknown>).maxCount);
+      const maxCount = Number.isFinite(rawMaxCount) ? Math.max(0, Math.min(99, Math.floor(rawMaxCount))) : 0;
+      nextRule[kind] = { enabled: Boolean((rawKindRule as Record<string, unknown>).enabled), maxCount };
+    }
+    if (Object.keys(nextRule).length > 0) result[modelKey] = nextRule;
+  }
+  return result;
+}
+
+export function getUploadRuleOverrides() {
+  return sanitizeUploadRuleOverrides(getJsonEnvValue<UploadRuleOverrides>("UPLOAD_RULE_OVERRIDES", {}));
+}
+
+export async function updateUploadRuleOverrides(overrides: UploadRuleOverrides) {
+  const sanitized = sanitizeUploadRuleOverrides(overrides);
+  const nextValue = formatEnvValue(JSON.stringify(sanitized));
+  let seen = false;
+  const nextLines = getLocalEnvLines().map((line) => {
+    const match = line.match(/^([A-Za-z_][A-Za-z0-9_]*)=/);
+    if (match?.[1] !== "UPLOAD_RULE_OVERRIDES") return line;
+    seen = true;
+    return `UPLOAD_RULE_OVERRIDES=${nextValue}`;
+  });
+  if (!seen) nextLines.push(`UPLOAD_RULE_OVERRIDES=${nextValue}`);
+
+  await mkdir(dirname(ENV_PATH), { recursive: true });
+  await writeFile(ENV_PATH, `${nextLines.join("\n").replace(/\n+$/, "")}\n`, "utf8");
+  process.env.UPLOAD_RULE_OVERRIDES = JSON.stringify(sanitized);
+  return sanitized;
 }
 
 export async function updateAdminSystemSettings(settings: AdminSystemSettings) {
