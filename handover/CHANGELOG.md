@@ -1,8 +1,8 @@
 # Current Handover Changelog
 
-## 2026-07-03 FULL DEPLOY: Workflow Entry OPENED, 24h Session Timeout, Multi-Connect, Recycle-Bin Count Fix, Workspace SSR Panel Fix (DEPLOYED + PUSHED)
+## 2026-07-03 FULL DEPLOY: 24h Session Timeout + Admin/Recycle/Workspace Fixes DEPLOYED; Workflow Entry OPENED then RE-DISABLED (tldraw license blocker); PUSHED
 
-Reply style: concise/direct Chinese. This session deployed ALL previously-undeployed local source to production, OPENED the online workflow entry, changed the session idle-timeout to 24h in production, verified, and pushed to GitHub.
+Reply style: concise/direct Chinese. This session deployed ALL previously-undeployed local source to production, opened the online workflow entry, changed the session idle-timeout to 24h, verified, pushed to GitHub — then RE-DISABLED the workflow entry the same session because tldraw has no production license (see CRITICAL section below). Everything except the workflow entry flag stays live.
 
 ### What shipped
 - OPENED workflow entry online: appended `NEXT_PUBLIC_WORKFLOW_MODE_ENABLED=true` to production `/var/www/flashmuse/.env.local` BEFORE the build (it is a build-time NEXT_PUBLIC var). Verified: built `.next/static` no longer contains `暂未开放`; entry button title now conditional (`工作流模式` when enabled). Sidebar entry now shows a green `NEW` pill.
@@ -22,6 +22,21 @@ Reply style: concise/direct Chinese. This session deployed ALL previously-undepl
 - Server `npx tsc --noEmit` passed; `/usr/local/bin/deploy-flashmuse-production.sh` (build + PM2 restart/save + Ali sync) passed with only existing Turbopack/NFT warnings; PM2 `flashmuse` online.
 - Post-deploy: `/workspace` 200, `/admin` 200, `/api/model-availability` 200.
 - Note: production `.env.local` still has TWO `DATABASE_URL` lines (second malformed with leading space); use the FIRST for prisma. No migration needed this session (no schema change).
+
+### CRITICAL POST-DEPLOY: workflow entry RE-DISABLED same session (tldraw license blocker)
+- After opening, users reported workflow nodes appear on switch then DISAPPEAR after a moment; browser console spammed: `No tldraw license key provided! A license is required for production deployments.` This is tldraw's UNLICENSED production degradation (async license check hides/obscures canvas content). It only surfaced now because this was the FIRST time the workflow ran on a real production build (entry was always disabled before).
+- ACTION TAKEN: set `NEXT_PUBLIC_WORKFLOW_MODE_ENABLED=false` in prod `.env.local` and rebuilt via the deploy script. Verified built JS now contains `暂未开放` (count 2) → entry disabled again. `/workspace` 200, PM2 online. The 24h session-timeout change was KEPT (still live). Everything else from this deploy (admin surfacing, video billing guard, recycle-bin count fix, `/workspace` client-only render, preview thumbnail filter, workflow code itself) stays deployed; only the ENTRY flag is off.
+- So the flat 24h auth timeout, admin changes, recycle-bin fix, workspace SSR fix, etc. are LIVE in production; only the workflow ENTRY is closed again.
+
+### IMPORTANT CORRECTION — workflow canvas uses ORIGINAL images, not thumbnails
+- Earlier in this session the assistant wrongly claimed the workflow canvas shows thumbnails. WRONG. `ImageDisplayCard` (workflow-tldraw-canvas-inner.tsx ~4281) renders `<img src={displayUrl ?? getStaticMediaUrl(url) ...}>` where `displayUrl` = `getStaticMediaUrl(imageUrl)` (~2058) = the FULL ORIGINAL image (host rewrite only, NOT a thumbnail). Thumbnails (`getMediaThumbnailUrl`) are only used in the LEFT layer panel rows. The canvas intentionally shows originals so users can zoom to full sharpness. This is a hard product requirement from the user.
+
+### DECISION PENDING (user is thinking) — tldraw license vs license-free canvas
+- User will NOT keep paying-blocked tldraw disabled forever; needs a path to reopen workflow. Two options discussed:
+  1. Buy a tldraw commercial `licenseKey` (also has cheaper hobby/startup tiers) → pass to `<Tldraw licenseKey="...">` → removes watermark + degradation → re-enable entry (flip flag + rebuild). Lowest effort/risk; keeps tldraw's strong large-canvas performance.
+  2. Migrate the canvas engine to a license-free library. Assistant evaluated: React Flow (`@xyflow/react`, MIT) is the best fit (purpose-built node+edge editor; built-in pan/zoom, custom React-component nodes, edges, connection handles, multi-select, MiniMap/Background/Controls). Business logic (upload rules, generation, prompts, credits, persistence, `WorkflowCanvasState`) is canvas-agnostic and reusable; only the canvas layer (~30-40% of the 5250-line file) needs rewrite: node render, edges + mid-line scissors disconnect, the multi-select connect handle, coordinate transforms + the "selected-node input box overlay", export SVG/PNG (needs `html-to-image`), keyboard/lock/hide, and swapping tldraw store/sideEffects sync for React Flow `onNodesChange/onEdgesChange`. Rough estimate 3-5 focused days.
+- KEY UNRESOLVED RISK for option 2: PERFORMANCE. The user chose tldraw specifically because it renders HUNDREDS of ORIGINAL full-res images with no lag (via viewport culling = only visible shapes mounted/decoded + signals = only changed shapes re-render). React Flow has `onlyRenderVisibleElements` (culling) and can memoize node components, so it CAN approximate this, but with large original images and frequent zoom/pan it is NOT guaranteed to match tldraw and MUST be benchmarked. Assistant proposed (user deferred) a React Flow spike loading ~150-300 REAL ORIGINAL images with culling + memoized nodes to measure drag/zoom/pan FPS vs tldraw BEFORE committing to migration.
+- NEXT AI: do not start the migration or buy anything until the user decides. If user says "benchmark", build the React Flow original-image spike first. If user says "buy license", the reopen is just: set `NEXT_PUBLIC_WORKFLOW_MODE_ENABLED=true` + add `licenseKey` prop + rebuild.
 
 ## 2026-07-03 Production Image Rate-Limit Hotfix (DEPLOYED) + Local Admin Workflow Surfacing, Video Billing Hardening, Admin Read Optimizations
 
