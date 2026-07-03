@@ -12,6 +12,7 @@ import { AdminServerInfoPanel } from "./admin-server-info-panel";
 import { AdminSystemSettingsPanel } from "./admin-system-settings-panel";
 import { AdminUploadRulesPanel } from "./admin-upload-rules-panel";
 import { AdminUsersPanel, type AdminConversation, type AdminConversationMessage, type AdminMediaItem, type AdminUserRow } from "./admin-users-panel";
+import { AdminGptImageThumbnail } from "./admin-gpt-image-thumbnail";
 import { getCreditSettings } from "@/lib/credits";
 import { getAdminSystemSettings, getUploadRuleOverrides } from "@/lib/system-settings";
 import type { IconType } from "react-icons";
@@ -19,7 +20,7 @@ import { RiDashboardLine, RiFileList3Line, RiListSettingsLine, RiServerLine, RiS
 
 export const dynamic = "force-dynamic";
 
-type AdminTab = "overview" | "users" | "credits" | "records" | "settings" | "upload-rules" | "server";
+type AdminTab = "overview" | "users" | "credits" | "records" | "settings" | "upload-rules" | "gpt-image-optimization" | "server";
 
 const adminNavItems: Array<{ key: AdminTab; label: string; icon: IconType }> = [
   { key: "overview", label: "概览", icon: RiDashboardLine },
@@ -28,12 +29,13 @@ const adminNavItems: Array<{ key: AdminTab; label: string; icon: IconType }> = [
   { key: "records", label: "生成记录", icon: RiFileList3Line },
   { key: "settings", label: "系统设置", icon: RiSettingsLine },
   { key: "upload-rules", label: "上传规则", icon: RiListSettingsLine },
+  { key: "gpt-image-optimization", label: "GPT生图优化", icon: RiFileList3Line },
   { key: "server", label: "服务器信息", icon: RiServerLine },
 ];
 
 function getAdminTab(value: string | string[] | undefined): AdminTab {
   const tab = Array.isArray(value) ? value[0] : value;
-  if (tab === "users" || tab === "credits" || tab === "records" || tab === "settings" || tab === "upload-rules" || tab === "server") return tab;
+  if (tab === "users" || tab === "credits" || tab === "records" || tab === "settings" || tab === "upload-rules" || tab === "gpt-image-optimization" || tab === "server") return tab;
   return "overview";
 }
 
@@ -1198,6 +1200,88 @@ function OverviewPillGrid({ title, items }: { title: string; items: RankItem[] }
   );
 }
 
+type AdminGptImageOptimizationCase = {
+  id: string;
+  attemptsUsed: number;
+  originalPrompt: string;
+  optimizedPrompt: string;
+  imageUrl: string;
+  sourceModel: string;
+  optimizerModel: string;
+  mediaName: string;
+  parameterLine: string;
+  createdAt: Date;
+  user: { email: string; userId: string };
+};
+
+type GptImagePromptOptimizationCaseRow = {
+  id: string;
+  attemptsUsed: number;
+  originalPrompt: string;
+  optimizedPrompt: string;
+  imageUrl: string;
+  sourceModel: string;
+  optimizerModel: string;
+  createdAt: Date;
+  user: { id: string; email: string };
+  mediaSystemName: string | null;
+  mediaInitialName: string | null;
+  mediaCurrentName: string | null;
+  mediaModel: string | null;
+  mediaRatio: string | null;
+  mediaResolution: string | null;
+  mediaImageSize: string | null;
+  mediaWidth: number | null;
+  mediaHeight: number | null;
+  mediaPreviewMeta: unknown;
+  mediaGenerationSettings: unknown;
+};
+
+function getGptImageOptimizationParameterLine(item: GptImagePromptOptimizationCaseRow & { userId: string; email: string }) {
+  const previewMeta = isRecord(item.mediaPreviewMeta) ? item.mediaPreviewMeta : undefined;
+  const generationSettings = isRecord(item.mediaGenerationSettings) ? item.mediaGenerationSettings : undefined;
+  const model = getModelLabel("image", item.mediaModel || item.sourceModel);
+  const ratio = item.mediaRatio || getString(previewMeta?.ratio) || getString(generationSettings?.ratio) || "-";
+  const resolution = item.mediaResolution || getString(previewMeta?.resolution) || getString(generationSettings?.resolution) || "-";
+  const size = item.mediaWidth && item.mediaHeight ? `${item.mediaWidth} × ${item.mediaHeight}` : item.mediaImageSize || getString(previewMeta?.sizeText) || "-";
+  return [model, ratio, resolution, size].filter((value) => value && value !== "-").join(" / ") || "-";
+}
+
+function AdminGptImageOptimizationPanel({ cases }: { cases: AdminGptImageOptimizationCase[] }) {
+  return (
+    <>
+      <div className="mb-6">
+        <h1 className="text-[24px] font-semibold tracking-[-0.03em]">GPT生图优化</h1>
+        <div className="mt-2 text-[12px] leading-5 text-[#888888]">记录工作流 GPT-5.4 Image 2 安全改写重试后成功的案例。预览页和媒体表保存真实成功生图提示词。</div>
+      </div>
+      <section className="min-w-[1180px] overflow-visible rounded-[10px] border border-[#eeeeee] bg-white text-[13px] shadow-[0_10px_28px_rgba(0,0,0,0.04)]">
+        <div className="grid grid-cols-[80px_360px_360px_250px_130px] rounded-t-[10px] border-b border-[#eeeeee] bg-[#fafafa] text-[12px] font-medium text-[#777777]">
+          <div className="px-4 py-3">尝试次数</div>
+          <div className="px-4 py-3">原提示词</div>
+          <div className="px-4 py-3">AI成功提示词</div>
+          <div className="px-4 py-3">信息</div>
+          <div className="px-4 py-3">缩略图</div>
+        </div>
+        {cases.length > 0 ? cases.map((item) => (
+          <div key={item.id} className="grid grid-cols-[80px_360px_360px_250px_130px] border-b border-[#f2f2f2] align-top text-[12px] leading-5 text-[#444444] last:border-b-0">
+            <div className="px-4 py-4 font-semibold text-[#111111]">{item.attemptsUsed} 次</div>
+            <div className="whitespace-pre-wrap break-words px-4 py-4 text-[#333333]">{item.originalPrompt}</div>
+            <div className="whitespace-pre-wrap break-words px-4 py-4 text-[#111111]">{item.optimizedPrompt}</div>
+            <div className="px-4 py-4">
+              <div className="break-words text-[12px] font-semibold text-[#222222]">{item.mediaName}</div>
+              <div className="mt-1 break-words text-[11px] text-[#777777]">{item.parameterLine}</div>
+              <div className="mt-2 text-[11px] text-[#888888]">{formatDate(item.createdAt)}</div>
+              <div className="mt-1 text-[11px] text-[#aaaaaa]">{item.user.email} / {item.user.userId}</div>
+              <div className="mt-1 text-[11px] text-[#aaaaaa]">改写：{item.optimizerModel}</div>
+            </div>
+            <div className="px-4 py-4"><AdminGptImageThumbnail imageUrl={item.imageUrl} /></div>
+          </div>
+        )) : <div className="px-5 py-8 text-center text-[13px] text-[#999999]">暂无成功案例</div>}
+      </section>
+    </>
+  );
+}
+
 function PageHeader({ title }: { title: string }) {
   return (
     <div className="mb-12 flex items-center justify-between gap-4">
@@ -1234,6 +1318,27 @@ export default async function AdminPage({ searchParams }: { searchParams?: Promi
     return (
       <AdminShell adminEmail={currentAdminEmail} activeTab={activeTab}>
         <AdminUploadRulesPanel initialUploadRuleOverrides={getUploadRuleOverrides()} />
+      </AdminShell>
+    );
+  }
+
+  if (activeTab === "gpt-image-optimization") {
+    const cases = await prisma.$queryRaw<Array<GptImagePromptOptimizationCaseRow & { userId: string; email: string }>>`SELECT c."id", c."attemptsUsed", c."originalPrompt", c."optimizedPrompt", c."imageUrl", c."sourceModel", c."optimizerModel", c."createdAt", c."userId", u."email", m."systemName" AS "mediaSystemName", m."initialName" AS "mediaInitialName", uas."currentName" AS "mediaCurrentName", m."model" AS "mediaModel", m."ratio" AS "mediaRatio", m."resolution" AS "mediaResolution", m."imageSize" AS "mediaImageSize", m."width" AS "mediaWidth", m."height" AS "mediaHeight", m."previewMeta" AS "mediaPreviewMeta", m."generationSettings" AS "mediaGenerationSettings" FROM "GptImagePromptOptimizationCase" c INNER JOIN "User" u ON u."id" = c."userId" LEFT JOIN "MediaAsset" m ON m."id" = c."mediaAssetId" OR (m."userId" = c."userId" AND m."normalizedUrl" = regexp_replace(split_part(split_part(c."imageUrl", '?', 1), '#', 1), '^https?://[^/]+', '')) LEFT JOIN "UserAssetState" uas ON uas."userId" = c."userId" AND uas."mediaAssetId" = m."id" ORDER BY c."createdAt" DESC LIMIT 200`;
+    return (
+      <AdminShell adminEmail={currentAdminEmail} activeTab={activeTab}>
+        <AdminGptImageOptimizationPanel cases={cases.map((item) => ({
+          id: item.id,
+          attemptsUsed: item.attemptsUsed,
+          originalPrompt: item.originalPrompt,
+          optimizedPrompt: item.optimizedPrompt,
+          imageUrl: item.imageUrl,
+          sourceModel: item.sourceModel,
+          optimizerModel: item.optimizerModel,
+          mediaName: formatAdminMediaName(item.mediaSystemName ?? item.mediaInitialName ?? undefined, item.mediaCurrentName ?? undefined, "图片生成"),
+          parameterLine: getGptImageOptimizationParameterLine(item),
+          createdAt: item.createdAt,
+          user: { email: item.email, userId: item.userId },
+        }))} />
       </AdminShell>
     );
   }

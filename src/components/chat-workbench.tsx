@@ -646,6 +646,7 @@ const legacyMediaUrlReplacements = new Map([
 const staticAssetBaseUrl = (process.env.NEXT_PUBLIC_STATIC_BASE_URL ?? "").replace(/\/$/, "");
 const uploadApiBaseUrl = (process.env.NEXT_PUBLIC_UPLOAD_BASE_URL ?? "").replace(/\/$/, "");
 const primaryAppBaseUrl = (process.env.NEXT_PUBLIC_PRIMARY_BASE_URL ?? "").replace(/\/$/, "");
+const defaultProductionUploadApiBaseUrl = "https://api.venusface.com";
 const MALAYSIA_WORKSPACE_URL = "https://main.venusface.com/workspace";
 const ALI_WORKSPACE_URL = "https://ali.venusface.com/workspace";
 const mediaThumbnailVersion = "thumb256-20260606";
@@ -723,6 +724,21 @@ function shouldUseStaticAssetBaseUrl() {
   }
 
   return true;
+}
+
+function getUploadApiBaseUrl() {
+  if (uploadApiBaseUrl) return uploadApiBaseUrl;
+  if (typeof window === "undefined") return "";
+  const hostname = window.location.hostname;
+  if (hostname === "localhost" || hostname === "127.0.0.1") return "";
+  if (hostname === "api.venusface.com") return "";
+  if (hostname.endsWith(".venusface.com") || hostname === "101.37.129.164" || hostname === "101.47.19.109") return defaultProductionUploadApiBaseUrl;
+  return "";
+}
+
+function getUploadApiUrl(path: string) {
+  const baseUrl = getUploadApiBaseUrl();
+  return baseUrl ? `${baseUrl}${path}` : path;
 }
 
 function getStaticMediaUrl(url: string | undefined, version?: string) {
@@ -3845,6 +3861,16 @@ function getReferencedAssets(text: string, assets: AssetItem[]) {
   return assets.filter((asset) => mentions.has(asset.name) && !isVideoAsset(asset));
 }
 
+function getMentionedAssets(text: string, assets: AssetItem[]) {
+  const mentionNames = getMentionNames(text);
+  const mentionedAssets: AssetItem[] = [];
+  mentionNames.forEach((name) => {
+    const asset = assets.find((item) => item.name === name);
+    if (asset && !mentionedAssets.some((item) => normalizeMediaUrlForMatch(item.url) === normalizeMediaUrlForMatch(asset.url))) mentionedAssets.push(asset);
+  });
+  return mentionedAssets;
+}
+
 function getMentionNames(text: string) {
   return [...text.matchAll(/@([^@\s，。！？；;、]+)/g)].map((match) => match[1]);
 }
@@ -3860,6 +3886,13 @@ function getAtQueryAtCursor(text: string, cursorOffset: number) {
     query: match[1] ?? "",
     cursor,
   };
+}
+
+function getAtQueryAtCursorForReferences(text: string, cursorOffset: number, validReferences: Set<string>) {
+  const query = getAtQueryAtCursor(text, cursorOffset);
+  if (!query) return null;
+  if (query.query && validReferences.has(query.query)) return null;
+  return query;
 }
 
 function getUploadedImageReferenceName(image: UploadedImage, images: UploadedImage[]) {
@@ -4093,7 +4126,7 @@ function reportClientDiagnostic(message: string, detail?: unknown) {
 }
 
 async function getDirectUploadToken() {
-  if (!uploadApiBaseUrl) return "";
+  if (!getUploadApiBaseUrl()) return "";
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), 20 * 1000);
   try {
@@ -4118,22 +4151,33 @@ async function uploadDocumentFileAsset(file: File, options: { conversationId?: s
   return data.url;
 }
 
-async function uploadTemporaryAssetImage(file: File, onProgress?: (progress: number) => void, signal?: AbortSignal, forceReencode = false) {
+async function uploadTemporaryAssetImageOnce(file: File, onProgress?: (progress: number) => void, signal?: AbortSignal, forceReencode = false) {
   const formData = new FormData();
   formData.append("image", file, file.name);
   if (forceReencode) formData.append("forceReencode", "1");
-  const uploadUrl = "/api/asset-upload-temp";
+  const uploadUrl = getUploadApiUrl("/api/asset-upload-temp");
   onProgress?.(8);
-  const token = "";
+  const token = await getDirectUploadToken();
   onProgress?.(12);
   const data = await uploadFormDataWithProgress<{ token?: string; error?: string }>(uploadUrl, formData, onProgress, token, signal);
   if (!data.token) throw new Error(data.error || "图片上传失败");
   return data.token;
 }
 
+async function uploadTemporaryAssetImage(file: File, onProgress?: (progress: number) => void, signal?: AbortSignal, forceReencode = false) {
+  try {
+    return await uploadTemporaryAssetImageOnce(file, onProgress, signal, forceReencode);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (forceReencode || !message.includes("转码")) throw error;
+    onProgress?.(8);
+    return uploadTemporaryAssetImageOnce(file, onProgress, signal, true);
+  }
+}
+
 async function commitTemporaryAssetImage(tempToken: string) {
-  const uploadUrl = "/api/asset-upload-temp";
-  const token = "";
+  const uploadUrl = getUploadApiUrl("/api/asset-upload-temp");
+  const token = await getDirectUploadToken();
   const response = await fetch(uploadUrl, {
     method: "PATCH",
     headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
@@ -4146,8 +4190,8 @@ async function commitTemporaryAssetImage(tempToken: string) {
 
 async function deleteTemporaryAssetImages(tempTokens: string[]) {
   if (tempTokens.length === 0) return;
-  const uploadUrl = "/api/asset-upload-temp";
-  const token = "";
+  const uploadUrl = getUploadApiUrl("/api/asset-upload-temp");
+  const token = await getDirectUploadToken();
   await fetch(uploadUrl, {
     method: "DELETE",
     headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
@@ -4171,6 +4215,25 @@ function toUploadedAssetReference(asset: Pick<AssetItem, "name" | "url">): Uploa
     referenceName: asset.name,
     url: asset.url,
     source: "asset",
+  };
+}
+
+function toUploadedFileAssetReference(asset: AssetItem): UploadedDocumentFile | undefined {
+  const extension = getFileExtension(asset.name) || getFileExtension(asset.url);
+  const mediaKind = isVideoAsset(asset) ? "video" : isAudioAsset(asset) ? "audio" : readableDocumentExtensions.includes(extension) ? "document" : undefined;
+  if (!mediaKind) return undefined;
+  return {
+    id: createClientId(),
+    name: asset.name,
+    storageName: asset.url,
+    size: 0,
+    extension,
+    mediaKind,
+    url: asset.url,
+    uploadStatus: "ready",
+    uploadProgress: 100,
+    status: "ready",
+    progress: 100,
   };
 }
 
@@ -5260,12 +5323,12 @@ function PlainMentionEditor({
     onChange(nextValue);
     if (options?.syncDom || rawValue !== nextValue) syncEditor(nextValue, nextCaretOffset);
 
-    if (getAtQueryAtCursor(nextValue, nextCaretOffset)) {
+    if (getAtQueryAtCursorForReferences(nextValue, nextCaretOffset, validReferences)) {
       onAtTrigger();
     } else {
       onAtClose();
     }
-  }, [disabled, onAtClose, onAtTrigger, onChange, onCursorChange, onLimit, syncEditor]);
+  }, [disabled, onAtClose, onAtTrigger, onChange, onCursorChange, onLimit, syncEditor, validReferences]);
 
   const syncCursorFromDom = useCallback(() => {
     if (disabled) return;
@@ -5275,12 +5338,12 @@ function PlainMentionEditor({
     if (!element) return;
     const cursorOffset = getSelectionTextOffset(element);
     onCursorChange(cursorOffset);
-    if (getAtQueryAtCursor(getEditableText(element), cursorOffset)) {
+    if (getAtQueryAtCursorForReferences(getEditableText(element), cursorOffset, validReferences)) {
       onAtTrigger();
     } else {
       onAtClose();
     }
-  }, [disabled, editorRef, onAtClose, onAtTrigger, onCursorChange]);
+  }, [disabled, editorRef, onAtClose, onAtTrigger, onCursorChange, validReferences]);
 
   useEffect(() => {
     const element = editorRef.current;
@@ -6094,6 +6157,20 @@ async function readJson<T>(response: Response): Promise<T & { error?: ApiError }
   return data;
 }
 
+function isAbortLikeError(error: unknown) {
+  return error instanceof DOMException && error.name === "AbortError";
+}
+
+function isTransientVideoPollStatus(status: number) {
+  return status === 408 || status === 409 || status === 425 || status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
+}
+
+function getApiErrorMessageWithCode(data: { error?: string | { message?: string }; errorCode?: string }, fallback: string) {
+  const rawError = typeof data.error === "string" ? data.error : data.error?.message;
+  const codedError = data.errorCode && rawError && !/^\(B_\d+\)/.test(rawError) ? `(${data.errorCode}) ${rawError}` : rawError;
+  return codedError ?? fallback;
+}
+
 function resultErrorMessage(results: PromiseSettledResult<unknown>[]) {
   const rejected = results.find((result) => result.status === "rejected");
   if (!rejected) return undefined;
@@ -6491,7 +6568,17 @@ async function readFileAsAssetUploadItem(file: File) {
 }
 
 function getFileExtension(fileName: string) {
-  return fileName.split(".").pop()?.toLowerCase() ?? "";
+  const cleanName = fileName.split("?")[0]?.split("#")[0]?.split(/[\\/]/).pop() ?? "";
+  const dotIndex = cleanName.lastIndexOf(".");
+  return dotIndex >= 0 && dotIndex < cleanName.length - 1 ? cleanName.slice(dotIndex + 1).toLowerCase() : "";
+}
+
+function getMimeFileExtension(mimeType: string) {
+  const subtype = mimeType.split(";")[0]?.split("/")[1]?.toLowerCase() ?? "";
+  if (subtype === "jpg") return "jpeg";
+  if (subtype === "quicktime") return "mov";
+  if (subtype === "mpeg") return "mp3";
+  return subtype;
 }
 
 function isReadableDocumentFile(file: File | string) {
@@ -7071,6 +7158,7 @@ export function ChatWorkbench() {
   const currentMaxReferenceImages = currentUploadRule.image.maxCount;
   const uploadAcceptValue = useMemo(() => getUploadAcceptValue(currentUploadRule), [currentUploadRule]);
   const supportedUploadTypeLabel = useMemo(() => getSupportedUploadTypeLabel(currentUploadRule), [currentUploadRule]);
+  const workflowUploadNodeTypeLabel = "图片 jpg/jpeg/png/webp（≤5MB）；视频 mp4/mov（≤50MB，2-15秒）；音频 mp3/wav（≤15MB，2-15秒）；文本 txt（≤2000字）";
   const selectedGenerationModelLabel = mode === "image" || mode === "video" ? getGenerationModelLabel(mode, selectedGenerationModel) : "";
   const currentDurationOptions = getVideoDurationOptions(selectedGenerationModels.video);
   const selectedVideoDuration = currentDurationOptions.includes(selectedDurations.video) ? selectedDurations.video : currentDurationOptions[0];
@@ -8273,6 +8361,36 @@ export function ChatWorkbench() {
     if (value !== nextValue) showInputTip("最多输入2000字");
     setSessions((current) => current.map((session) => (session.id === activeSessionId ? { ...session, draftInput: nextValue, updatedAt: Date.now() } : session)));
   }, [activeSessionId, showInputTip]);
+
+  const setActiveDraftInputWithMentionCards = useCallback((value: string) => {
+    const nextValue = Array.from(value).slice(0, MAX_DRAFT_INPUT_LENGTH).join("");
+    if (value !== nextValue) showInputTip("最多输入2000字");
+    const mentionedAssets = getMentionedAssets(nextValue, assets);
+    const mentionedConversationImages = getMentionNames(nextValue)
+      .map((name) => activeConversationImageReferences.find((reference) => reference.name === name))
+      .filter((reference): reference is ImageReference => Boolean(reference))
+      .map((reference) => ({ id: createClientId(), name: reference.name, referenceName: reference.name, url: reference.url, source: "asset" as const }));
+    const mentionedImages = [...mentionedAssets.filter((asset) => !isVideoAsset(asset) && !isAudioAsset(asset)).map(toUploadedAssetReference), ...mentionedConversationImages];
+    const mentionedFiles = mentionedAssets.map(toUploadedFileAssetReference).filter((file): file is UploadedDocumentFile => Boolean(file));
+
+    setSessions((current) => current.map((session) => {
+      if (session.id !== activeSessionId) return session;
+      const existingImages = session.uploadedImages ?? [];
+      const existingFiles = session.uploadedFiles ?? [];
+      const maxImages = currentUploadRule.image.maxCount;
+      const nextImages = [...existingImages];
+      mentionedImages.forEach((image) => {
+        if (nextImages.length >= maxImages || nextImages.some((item) => normalizeMediaUrlForMatch(item.url) === normalizeMediaUrlForMatch(image.url))) return;
+        nextImages.push(image);
+      });
+      const nextFiles = [...existingFiles];
+      mentionedFiles.forEach((file) => {
+        if (nextFiles.some((item) => normalizeMediaUrlForMatch(getUploadedMediaFileUrl(item) || getUploadedFileStorageValue(item)) === normalizeMediaUrlForMatch(file.url ?? file.storageName))) return;
+        nextFiles.push(file);
+      });
+      return { ...session, draftInput: nextValue, uploadedImages: nextImages, uploadedFiles: nextFiles, updatedAt: Date.now() };
+    }));
+  }, [activeConversationImageReferences, activeSessionId, assets, currentUploadRule.image.maxCount, showInputTip]);
 
   const addSessionUsage = useCallback((sessionId: string, usage?: UsageMeta) => {
     if (!usage) return;
@@ -10571,6 +10689,25 @@ export function ChatWorkbench() {
                       mediaSystemNames: { ...(message.mediaSystemNames ?? {}), ...mediaSystemNames },
                       pendingImageCount: Math.max(0, (message.pendingImageCount ?? (message.retryingFailedImageIndexes?.length ? 0 : 1)) - pendingCompleteCount),
                       failedImageCount: message.retryingFailedImageIndexes?.length ? Math.max(0, (message.failedImageCount ?? 1) - pendingCompleteCount) : message.failedImageCount,
+                      error: (() => {
+                        const nextFailedCount = message.retryingFailedImageIndexes?.length ? Math.max(0, (message.failedImageCount ?? 1) - pendingCompleteCount) : (message.failedImageCount ?? 0);
+                        return nextFailedCount > 0 ? message.error : undefined;
+                      })(),
+                      mediaErrorReasons: (() => {
+                        const currentReasons = message.mediaErrorReasons ?? [];
+                        if (currentReasons.length === 0) return undefined;
+                        const nextFailedCount = message.retryingFailedImageIndexes?.length ? Math.max(0, (message.failedImageCount ?? 1) - pendingCompleteCount) : (message.failedImageCount ?? 0);
+                        if (nextFailedCount <= 0) return undefined;
+                        if (!message.retryingFailedImageIndexes?.length) return currentReasons;
+                        const removeIndexes = new Set<number>();
+                        if (retryFailedIndex !== undefined) {
+                          removeIndexes.add(retryFailedIndex);
+                        } else {
+                          message.retryingFailedImageIndexes.slice(0, pendingCompleteCount).forEach((index) => removeIndexes.add(index));
+                        }
+                        const nextReasons = currentReasons.filter((_, index) => !removeIndexes.has(index));
+                        return nextReasons.length > 0 ? nextReasons : undefined;
+                      })(),
                       retryingFailedImageIndexes: message.retryingFailedImageIndexes?.slice(pendingCompleteCount),
                       retryingFailedImageStartedAt: message.retryingFailedImageIndexes?.slice(pendingCompleteCount).reduce<Record<number, number>>((next, index) => ({ ...next, [index]: message.retryingFailedImageStartedAt?.[index] ?? Date.now() }), {}),
                       mode: "image",
@@ -10670,7 +10807,7 @@ export function ChatWorkbench() {
                   pendingImageCount: 0,
                   failedImageCount: Math.max(message.failedImageCount ?? 0, failureCount),
                   imageResultSlots: finalizedSlots,
-                  mediaErrorReasons: payload.mediaErrorReasons ?? message.mediaErrorReasons,
+                  mediaErrorReasons: failureCount > 0 ? payload.mediaErrorReasons ?? message.mediaErrorReasons : undefined,
                   retryingFailedImageIndexes: undefined,
                   retryingFailedImageStartedAt: undefined,
                 };
@@ -10700,6 +10837,19 @@ export function ChatWorkbench() {
                       mediaSystemNames: mediaSystemName ? { ...(message.mediaSystemNames ?? {}), [videoUrl]: mediaSystemName } : message.mediaSystemNames,
                       pendingVideoCount: Math.max(0, (message.pendingVideoCount ?? (message.retryingFailedVideoIndexes?.length ? 0 : 1)) - 1),
                       failedVideoCount: message.retryingFailedVideoIndexes?.length ? Math.max(0, (message.failedVideoCount ?? 1) - 1) : message.failedVideoCount,
+                      error: (() => {
+                        const nextFailedCount = message.retryingFailedVideoIndexes?.length ? Math.max(0, (message.failedVideoCount ?? 1) - 1) : (message.failedVideoCount ?? 0);
+                        return nextFailedCount > 0 ? message.error : undefined;
+                      })(),
+                      mediaErrorReasons: (() => {
+                        const currentReasons = message.mediaErrorReasons ?? [];
+                        if (currentReasons.length === 0) return undefined;
+                        const nextFailedCount = message.retryingFailedVideoIndexes?.length ? Math.max(0, (message.failedVideoCount ?? 1) - 1) : (message.failedVideoCount ?? 0);
+                        if (nextFailedCount <= 0) return undefined;
+                        const retryIndex = message.retryingFailedVideoIndexes?.[0];
+                        const nextReasons = retryIndex === undefined ? currentReasons : currentReasons.filter((_, index) => index !== retryIndex);
+                        return nextReasons.length > 0 ? nextReasons : undefined;
+                      })(),
                       retryingFailedVideoIndexes: message.retryingFailedVideoIndexes?.slice(1),
                       retryingFailedVideoStartedAt: message.retryingFailedVideoIndexes?.slice(1).reduce<Record<number, number>>((next, index) => ({ ...next, [index]: message.retryingFailedVideoStartedAt?.[index] ?? Date.now() }), {}),
                       mode: "video",
@@ -10915,7 +11065,7 @@ export function ChatWorkbench() {
     }
   }, [assets, workspaceStorageMode]);
 
-  const addWorkflowGeneratedAssets = useCallback((workflowId: string, nodeId: string, media: { kind: "image" | "video"; urls: string[]; posterUrl?: string; sourcePrompt: string; model?: ModelName; ratio?: string; resolution?: string; duration?: string; dimensions?: Record<string, ImageDimensions>; durationSeconds?: Record<string, number> }) => {
+  const addWorkflowGeneratedAssets = useCallback((workflowId: string, nodeId: string, media: { kind: "image" | "video"; urls: string[]; posterUrl?: string; sourcePrompt: string; model?: ModelName; ratio?: string; resolution?: string; duration?: string; dimensions?: Record<string, ImageDimensions>; durationSeconds?: Record<string, number>; promptOptimization?: { originalPrompt: string; optimizedPrompt: string; attemptsUsed: number; optimizerModel: string } }) => {
     const cleanUrls = media.urls.filter((url) => url && !url.startsWith("data:"));
     if (cleanUrls.length === 0) return;
     const workflow = workflowItems.find((item) => item.id === workflowId);
@@ -11000,6 +11150,7 @@ export function ChatWorkbench() {
             dimensions: item.dimensions,
             durationSeconds: item.durationSeconds,
             sourcePrompt: media.sourcePrompt,
+            sourceDetail: media.promptOptimization ? JSON.stringify({ promptOptimization: media.promptOptimization }) : undefined,
             promptSource: "generated",
             workflowId,
             workflowNodeId: nodeId,
@@ -11007,6 +11158,22 @@ export function ChatWorkbench() {
             settings: { ratio: media.ratio, resolution: media.resolution, duration: media.duration },
           }),
         }).then(() => loadWorkspaceAssets(true, media.kind === "video" ? "workflow_videos" : "workflow_images", 0, "auto")).catch((error) => console.warn("[media-assets] failed to persist workflow generated asset", error));
+        if (media.kind === "image" && media.promptOptimization) {
+          void fetch("/api/workflow-prompt-optimization/cases", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              workflowId,
+              workflowNodeId: nodeId,
+              imageUrl: item.url,
+              sourceModel: media.model,
+              optimizerModel: media.promptOptimization.optimizerModel,
+              attemptsUsed: media.promptOptimization.attemptsUsed,
+              originalPrompt: media.promptOptimization.originalPrompt,
+              optimizedPrompt: media.promptOptimization.optimizedPrompt,
+            }),
+          }).catch((error) => console.warn("[prompt-optimization] failed to record case", error));
+        }
       });
     }
   }, [assets, loadWorkspaceAssets, workflowItems, workspaceStorageMode]);
@@ -11471,20 +11638,36 @@ export function ChatWorkbench() {
           pollAttempt += 1;
           const pollInterval = i < FAST_VIDEO_POLL_ATTEMPTS ? FAST_VIDEO_POLL_INTERVAL_MS : SLOW_VIDEO_POLL_INTERVAL_MS;
           await new Promise((resolve) => setTimeout(resolve, pollInterval));
-          const pollResponse = await fetch("/api/video", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            signal: abortController.signal,
-            body: JSON.stringify({ taskId, model: pendingRequest.model, conversationId: sessionId, conversationTitle, requestId: videoRequestId, usage: pendingVideoUsage }),
-          });
-
-          const pollData = await readJson<{
+          let pollData: {
             status?: string;
             content?: { video_url?: string; poster_url?: string };
             error?: { message?: string } | string;
+            errorCode?: string;
             usage?: UsageMeta;
             credit?: CreditMeta;
-          }>(pollResponse);
+          };
+          let pollResponse: Response;
+          try {
+            pollResponse = await fetch("/api/video", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              signal: abortController.signal,
+              body: JSON.stringify({ taskId, model: pendingRequest.model, conversationId: sessionId, conversationTitle, requestId: videoRequestId, usage: pendingVideoUsage }),
+            });
+          } catch (error) {
+            if (abortController.signal.aborted || stoppedRequestIdsRef.current.has(pendingRequest.id) || isAbortLikeError(error)) throw error;
+            updateAssistantMessageByRequestId(sessionId, pendingRequest.id, { statusText: videoStatusLabels.running });
+            setSessions((current) => current.map((session) => session.id === sessionId ? { ...session, updatedAt: Date.now(), videoTask: { taskId: taskId ?? "", status: "running" } } : session));
+            continue;
+          }
+
+          if (!pollResponse.ok && isTransientVideoPollStatus(pollResponse.status)) {
+            updateAssistantMessageByRequestId(sessionId, pendingRequest.id, { statusText: videoStatusLabels.running });
+            setSessions((current) => current.map((session) => session.id === sessionId ? { ...session, updatedAt: Date.now(), videoTask: { taskId: taskId ?? "", status: "running" } } : session));
+            continue;
+          }
+
+          pollData = await readJson<typeof pollData>(pollResponse);
 
           const status = (pollData.status ?? "running").toLowerCase();
           const statusText = videoStatusLabels[status] ?? `视频状态：${status}`;
@@ -11538,7 +11721,7 @@ export function ChatWorkbench() {
               videoUsageRecorded = Boolean(pollData.usage);
             }
 
-            const errorMessage = typeof pollData.error === "string" ? pollData.error : pollData.error?.message;
+            const errorMessage = getApiErrorMessageWithCode({ error: pollData.error, errorCode: pollData.errorCode }, videoStatusLabels[status] ?? GENERIC_MEDIA_ERROR_MESSAGE);
             throw new Error(errorMessage ?? videoStatusLabels[status]);
           }
           }
@@ -11575,7 +11758,7 @@ export function ChatWorkbench() {
           statusText: failureCount > 0 && successCount === 0 ? "视频生成失败" : videoStatusLabels.succeeded,
           pendingVideoCount: 0,
           error: failureCount > 0 ? (successCount > 0 ? mediaFailureMessage(results, failureCount, GENERIC_MEDIA_ERROR_MESSAGE) : resultErrorMessage(results) ?? GENERIC_MEDIA_ERROR_MESSAGE) : undefined,
-          mediaErrorReasons: failureReasons.length > 0 ? failureReasons : undefined,
+          mediaErrorReasons: failureCount > 0 && failureReasons.length > 0 ? failureReasons : undefined,
           mode: pendingRequest.mode,
           generationMeta: {
             mode: "video",
@@ -12201,7 +12384,7 @@ export function ChatWorkbench() {
 
   const copyPrompt = useCallback(async (message: Message) => {
     try {
-      setActiveDraftInput(message.content);
+      setActiveDraftInputWithMentionCards(message.content);
       requestAnimationFrame(() => editorRef.current?.focus());
       setCopyFeedback({ messageId: message.id, state: "success" });
     } catch {
@@ -12215,7 +12398,7 @@ export function ChatWorkbench() {
       setCopyFeedback((current) => (current?.messageId === message.id ? null : current));
       copyFeedbackTimerRef.current = null;
     }, 1000);
-  }, [setActiveDraftInput]);
+  }, [setActiveDraftInputWithMentionCards]);
 
   const regenerateMessage = (message: Message) => {
     if (!activeSession || (message.generationMeta?.agentGenerated ? false : activeHasMaxPendingRequests)) return;
@@ -12532,7 +12715,7 @@ export function ChatWorkbench() {
 
     for (const file of files) {
       const kind = file.type.startsWith("image/") ? "image" : file.type.startsWith("video/") ? "video" : file.type.startsWith("audio/") ? "audio" : getUploadKindFromFileName(file.name || file.type);
-      const extension = getFileExtension(file.name) || file.type.split("/")[1]?.toLowerCase() || "";
+      const extension = getFileExtension(file.name) || getMimeFileExtension(file.type);
 
       if (kind === "image") {
         if (!currentUploadRule.image.enabled) {
@@ -12760,6 +12943,7 @@ export function ChatWorkbench() {
     event.preventDefault();
     event.stopPropagation();
     clearDragUploadOverlay();
+    if (activePanel === "workflow") return;
     const files = Array.from(event.dataTransfer.files ?? []);
     if (files.length > 0) void addFilesToInput(files);
   };
@@ -14006,9 +14190,9 @@ export function ChatWorkbench() {
                 <div className="mb-4 flex h-[76px] w-[76px] items-center justify-center rounded-full border-2 border-[#75d06a] bg-transparent text-[#75d06a]">
                   <RiArrowDownFill className="h-[48px] w-[48px]" aria-hidden="true" />
                 </div>
-                <div className="text-[18px] font-semibold text-[#111111]">在此处拖放文件</div>
+                <div className="text-[18px] font-semibold text-[#111111]">{activePanel === "workflow" ? "拖放到画布上传节点" : "在此处拖放文件"}</div>
                 <div className="mt-3 max-w-[420px] text-[13px] leading-6 text-[#8a8a8a]">
-                  文件类型：{supportedUploadTypeLabel}
+                  文件类型：{activePanel === "workflow" ? workflowUploadNodeTypeLabel : supportedUploadTypeLabel}
                 </div>
               </div>
             </div>
@@ -14104,9 +14288,8 @@ export function ChatWorkbench() {
                   ]}
                   referenceAssetsLoadStatus={assetsLoadStatus}
                   onLoadReferenceAssets={() => { void loadMentionAssetFilters(); }}
-                  onExternalFilesDrop={(files) => {
+                  onExternalFilesDrop={() => {
                     clearDragUploadOverlay();
-                    void addFilesToInput(files);
                   }}
                   enabledTextModelIds={enabledAgentChatModelIds}
                   textModelProviders={agentChatModelProviders}
@@ -14118,7 +14301,7 @@ export function ChatWorkbench() {
                     const poster = posterUrl ?? getLocalVideoPosterUrl(url);
                     return poster ? getMediaThumbnailUrl(poster) : undefined;
                   }}
-                  onGeneratedMedia={(media) => addWorkflowGeneratedAssets(activeWorkflow.id, media.nodeId, { kind: media.kind, urls: media.urls, posterUrl: media.posterUrl, sourcePrompt: media.sourcePrompt, model: media.model, ratio: media.ratio, resolution: media.resolution, duration: media.duration, dimensions: media.dimensions })}
+                  onGeneratedMedia={(media) => addWorkflowGeneratedAssets(activeWorkflow.id, media.nodeId, { kind: media.kind, urls: media.urls, posterUrl: media.posterUrl, sourcePrompt: media.sourcePrompt, model: media.model, ratio: media.ratio, resolution: media.resolution, duration: media.duration, dimensions: media.dimensions, promptOptimization: media.promptOptimization })}
                   onShowTip={showInputTip}
                   onPreviewMedia={(media) => {
                     const existingAsset = assets.find((asset) => isWorkflowAsset(asset) && normalizeMediaUrlForMatch(asset.url) === normalizeMediaUrlForMatch(media.url));
@@ -14276,7 +14459,8 @@ export function ChatWorkbench() {
                 const mediaErrorReasonCount = normalizedMediaErrorReasons.length;
                 const preferredMediaErrorIndex = Math.max(0, normalizedMediaErrorReasons.findIndex((reason) => !isGenericMediaReason(reason)));
                 const selectedMediaErrorIndex = mediaErrorReasonCount > 0 ? Math.min(mediaErrorPageIndexes[message.id] ?? preferredMediaErrorIndex, mediaErrorReasonCount - 1) : 0;
-                const mediaErrorText = allImageFailuresRetrying || allVideoFailuresRetrying ? undefined : normalizedMediaErrorReasons[selectedMediaErrorIndex] ?? normalizeMediaErrorText(message.error, message.mode) ?? (message.mode === "image" && imagePendingCount === 0 && imageFailedCount > 0 ? GENERIC_MEDIA_ERROR_MESSAGE : message.mode === "video" && videoPendingCount === 0 && videoFailedCount > 0 ? GENERIC_MEDIA_ERROR_MESSAGE : undefined);
+                const hasVisibleMediaFailure = (message.mode === "image" && imageFailedCount > 0) || (message.mode === "video" && videoFailedCount > 0);
+                const mediaErrorText = !hasVisibleMediaFailure || allImageFailuresRetrying || allVideoFailuresRetrying ? undefined : normalizedMediaErrorReasons[selectedMediaErrorIndex] ?? normalizeMediaErrorText(message.error, message.mode) ?? (message.mode === "image" && imagePendingCount === 0 && imageFailedCount > 0 ? GENERIC_MEDIA_ERROR_MESSAGE : message.mode === "video" && videoPendingCount === 0 && videoFailedCount > 0 ? GENERIC_MEDIA_ERROR_MESSAGE : undefined);
                 const isActiveVideoPending = activeMessagePendingRequest?.mode === "video" && videoPendingCount > 0 && !message.error;
                 const isActiveImagePending = activeMessagePendingRequest?.mode === "image" && imagePendingCount > 0;
                 const isActiveMediaPending = isActiveVideoPending || isActiveImagePending;
@@ -14404,7 +14588,7 @@ export function ChatWorkbench() {
                         expanded={Boolean(agentPromptExpandedIds[message.id])}
                         onToggle={() => setAgentPromptExpandedIds((current) => ({ ...current, [message.id]: !current[message.id] }))}
                         onUsePrompt={(prompt) => {
-                          setActiveDraftInput(prompt);
+                          setActiveDraftInputWithMentionCards(prompt);
                           requestAnimationFrame(() => editorRef.current?.focus());
                         }}
                         onPrevious={() => setAgentPromptPageIndex(agentPromptPageIndex - 1)}
@@ -15914,7 +16098,7 @@ export function ChatWorkbench() {
                     {previewHasUsablePrompt ? (
                       <button type="button" disabled={isReversePromptingPreview} onClick={() => {
                         if (!previewAsset.sourcePrompt.trim()) return;
-                        setActiveDraftInput(previewAsset.sourcePrompt);
+                        setActiveDraftInputWithMentionCards(previewAsset.sourcePrompt);
                         setActivePanel("chat");
                         setPreviewAsset(null);
                         requestAnimationFrame(() => editorRef.current?.focus());

@@ -176,7 +176,9 @@ export function getSupportedUploadTypeLabel(rule: UploadRule) {
 }
 
 export function getFileExtension(name: string) {
-  return name.split(".").pop()?.toLowerCase() ?? "";
+  const cleanName = name.split("?")[0]?.split("#")[0]?.split(/[\\/]/).pop() ?? "";
+  const dotIndex = cleanName.lastIndexOf(".");
+  return dotIndex >= 0 && dotIndex < cleanName.length - 1 ? cleanName.slice(dotIndex + 1).toLowerCase() : "";
 }
 
 export function getUploadKindFromFileName(name: string): UploadKind | "unsupported" {

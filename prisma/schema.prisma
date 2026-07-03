@@ -39,6 +39,7 @@ model User {
   creditLedgers              CreditLedger[]
   mediaAssets                MediaAsset[]
   userAssetStates            UserAssetState[]
+  gptImagePromptOptimizationCases GptImagePromptOptimizationCase[]
 }
 
 model CreditSetting {
@@ -197,6 +198,30 @@ model UserAssetState {
   @@index([userId, currentCategory, deletedAt, sortOrder])
   @@index([userId, deletedAt, updatedAt])
   @@index([userId, hiddenAt])
+}
+
+model GptImagePromptOptimizationCase {
+  id              String   @id @default(cuid())
+  userId          String
+  workflowId      String?
+  workflowNodeId  String?
+  mediaAssetId    String?
+  imageUrl        String
+  thumbnailUrl    String?
+  sourceModel     String
+  optimizerModel  String
+  attemptsUsed    Int
+  originalPrompt  String
+  optimizedPrompt String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([workflowId])
+  @@index([workflowNodeId])
+  @@index([mediaAssetId])
+  @@index([sourceModel, createdAt])
 }
 
 model WorkspaceSession {

@@ -13,7 +13,8 @@ Read in this order:
 5. `05-next-actions.md`
 6. `06-memo-tasks.md`
 7. `07-remote-video-url-debug.md`
-8. `CHANGELOG.md`
+8. `08-gpt-image-prompt-optimization.md`
+9. `CHANGELOG.md`
 
 Project path: `E:\project\FlashMuse_Agent`
 

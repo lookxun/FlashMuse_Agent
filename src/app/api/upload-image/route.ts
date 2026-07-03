@@ -7,6 +7,10 @@ import { getBearerToken, verifyUploadToken } from "@/lib/upload-token";
 const allowedUploadOrigins = new Set([
   "http://101.37.129.164",
   "http://101.47.19.109",
+  "https://ali.venusface.com",
+  "https://static.venusface.com",
+  "https://main.venusface.com",
+  "https://api.venusface.com",
   "http://localhost:3000",
   "http://127.0.0.1:3000",
   ...(process.env.UPLOAD_CORS_ORIGINS ?? "").split(",").map((item) => item.trim()).filter(Boolean),

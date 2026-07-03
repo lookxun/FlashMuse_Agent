@@ -772,6 +772,70 @@ export async function sendToOpenRouter(request: ChatRequest): Promise<ChatRespon
   };
 }
 
+function parseOptimizedPromptText(text: string) {
+  const jsonText = text.match(/\{[\s\S]*\}/)?.[0];
+  if (jsonText) {
+    try {
+      const data = JSON.parse(jsonText) as { prompt?: unknown; optimizedPrompt?: unknown };
+      const prompt = typeof data.optimizedPrompt === "string" ? data.optimizedPrompt : typeof data.prompt === "string" ? data.prompt : "";
+      if (prompt.trim()) return cleanModelText(prompt);
+    } catch {}
+  }
+  return cleanModelText(text).replace(/^```(?:json)?/i, "").replace(/```$/i, "").trim();
+}
+
+export async function rewriteGptImagePromptForSafety(request: { originalPrompt: string; failureReason?: string; previousPrompts?: string[]; attemptIndex?: number; maxAttempts?: number; insights?: string; requestId?: string }) {
+  const optimizerModels = ["openai/gpt-5.5", "openai/gpt-5.4", "byteplus:chat.seed-2-0-pro"];
+  const previousPrompts = [...new Set((request.previousPrompts ?? []).map((item) => item.trim()).filter(Boolean))].slice(-30);
+  const originalPrompt = request.originalPrompt.trim();
+  const failureReason = request.failureReason?.trim() || "模型拒绝生成或没有返回图片。";
+  const attemptIndex = Math.max(1, Math.floor(request.attemptIndex ?? 1));
+  const maxAttempts = Math.max(attemptIndex, Math.floor(request.maxAttempts ?? attemptIndex));
+  const systemPrompt = "你是闪念的合规图片提示词改写助手。你的任务不是绕过审核，而是把用户正常创作需求改写成更符合图片模型安全要求的版本。只返回严格 JSON，不要解释。";
+  const userPrompt = [
+    `原提示词：${originalPrompt}`,
+    `模型失败原因：${failureReason}`,
+    `当前是第 ${attemptIndex} 次尝试，最多 ${maxAttempts} 次。`,
+    previousPrompts.length > 0 ? `已经尝试过的提示词，不能重复或近似重复：\n${previousPrompts.map((item, index) => `${index + 1}. ${item}`).join("\n")}` : "已经尝试过的提示词：无。",
+    request.insights?.trim() ? `历史成功经验摘要：\n${request.insights.trim()}` : "历史成功经验摘要：暂无。",
+    "改写规则：",
+    "1. 必须保留所有 @资产名 或 @引用名，字符必须原样保留。",
+    "2. 这是最小补丁改写，不是重新优化提示词。必须在用户原句基础上少量增补，不能大幅改写句子结构、场景、动作、道具或服装。",
+    "3. 每次只改一小处或加一小段短语。第1次尝试只能加 4-12 个中文字符左右的安全短语，例如“穿日常连衣裙”“穿着得体”“自然生活照”。",
+    "4. 后续尝试才可以逐步增加少量约束，但仍要尽量短。不要一次性加入大量成年人、非性感、非暴露、自然光、咖啡厅、甜点等完整重写描述。",
+    "5. 必须尽量让参考图继续生效，尤其保留参考图的人脸、发型、服装颜色、材质、款式、风格和整体轮廓。不要把服装改成另一个款式。",
+    "6. 如果需要降低风险，只做最小保守化处理，例如在原句中补“日常”“得体”“保守版”等词；不要替换人物、不要改原创人物、不要改成完全不同的安全方案。",
+    "7. 如果模型失败原因建议改成完全不同的人物、原创面孔、不同场景，只能作为最后很靠后的尝试；当前优先保留原参考图和原意。",
+    "8. 不要写规避、绕过、通过审核、逃避安全策略等表达。",
+    "9. 输出必须是中文图片提示词，不能输出解释、标题、列表或 Markdown。",
+    "返回 JSON：{\"optimizedPrompt\":\"改写后的完整提示词\"}",
+  ].join("\n");
+
+  let lastError: unknown;
+  for (const model of optimizerModels) {
+    try {
+      const mode = model === "byteplus:chat.seed-2-0-pro" ? "general" : "image";
+      const providerConfig = getTextProviderConfig(model, mode as ChatRequest["mode"]);
+      const body = {
+        model: providerConfig.model,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userPrompt },
+        ],
+        temperature: Math.min(0.85, 0.35 + attemptIndex * 0.08),
+      };
+      const data = await postChatCompletion(providerConfig.url, providerConfig.headers, body, "提示词安全改写失败", { requestId: request.requestId, mode: "gpt-image-prompt-optimization", provider: providerConfig.provider, model: providerConfig.model });
+      const optimizedPrompt = parseOptimizedPromptText(data.choices?.[0]?.message?.content ?? "");
+      if (!optimizedPrompt) throw new Error("改写模型没有返回提示词");
+      const usage = await getUsageMeta(data, providerConfig.provider === "openrouter" ? model : providerConfig.model, providerConfig.provider === "openrouter");
+      return { optimizedPrompt, optimizerModel: model, responseModel: data.model, usage };
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error("提示词安全改写失败");
+}
+
 function parseIntentClassification(text: string): IntentClassification {
   const jsonText = text.match(/\{[\s\S]*\}/)?.[0] ?? text;
 

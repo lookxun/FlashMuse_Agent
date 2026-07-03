@@ -83,7 +83,7 @@ function summarizeVideoReferencesForLog(references: string[], mode?: VideoRefere
 
 function isBytePlusHumanReferenceError(value: unknown) {
   const message = value instanceof Error ? value.message : typeof value === "string" ? value : JSON.stringify(value ?? "");
-  return /inputimagesensitivecontentdetected|privacyinformation|input image.*real person|real person|privacy information|真人|隐私/i.test(message) && !/output|copyright|版权/i.test(message);
+  return /input(?:image|video|audio)?sensitivecontentdetected|privacyinformation|input (?:image|video|audio).*real person|real person|privacy information|真人|隐私/i.test(message) && !/output|copyright|版权/i.test(message);
 }
 
 function normalizeMediaUrlForMatch(value: string) {
@@ -147,11 +147,11 @@ async function getBytePlusReferenceFailure(userId: string | undefined, reference
   return undefined;
 }
 
-async function resolveBytePlusVideoReferenceImages(userId: string | undefined, model: string | undefined, referenceImages: string[], assets?: Record<string, unknown>[]) {
-  if (!userId || !isBytePlusVideoModel(model) || referenceImages.length === 0) return referenceImages;
+async function resolveBytePlusReviewedReferences(userId: string | undefined, model: string | undefined, references: string[], assets?: Record<string, unknown>[]) {
+  if (!userId || !isBytePlusVideoModel(model) || references.length === 0) return references;
 
   const workspaceAssets = assets ?? await getWorkspaceAssets(userId);
-  if (workspaceAssets.length === 0) return referenceImages;
+  if (workspaceAssets.length === 0) return references;
 
   const assetIdByUrl = new Map<string, string>();
   for (const record of workspaceAssets) {
@@ -163,7 +163,7 @@ async function resolveBytePlusVideoReferenceImages(userId: string | undefined, m
   }
 
   let replacedCount = 0;
-  const nextReferences = referenceImages.map((url) => {
+  const nextReferences = references.map((url) => {
     if (url.startsWith("asset://")) return url;
     const assetId = assetIdByUrl.get(normalizeMediaUrlForMatch(url));
     if (!assetId) return url;
@@ -172,7 +172,7 @@ async function resolveBytePlusVideoReferenceImages(userId: string | undefined, m
   });
 
   if (replacedCount > 0) {
-    logVideoTiming("BytePlus asset references applied", { model, referenceCount: referenceImages.length, replacedCount });
+    logVideoTiming("BytePlus asset references applied", { model, referenceCount: references.length, replacedCount });
   }
 
   return nextReferences;
@@ -236,9 +236,25 @@ type AutoBytePlusAssetReviewItem = {
   error?: string;
 };
 
-async function autoReviewBytePlusVideoReferences(input: { userId: string | undefined; model: string | undefined; referenceImages: string[]; requestId?: string; referenceMode?: VideoReferenceMode; settings?: unknown; conversationId?: string; conversationTitle?: string }) {
-  const { userId, model, referenceImages, requestId, referenceMode, settings, conversationId, conversationTitle } = input;
-  if (!userId || !isBytePlusVideoModel(model) || referenceImages.length === 0) return undefined;
+type BytePlusReviewReferenceKind = "image" | "video" | "audio";
+type BytePlusReviewReference = { url: string; kind: BytePlusReviewReferenceKind; role: string };
+
+function getBytePlusAssetType(kind: BytePlusReviewReferenceKind) {
+  return kind === "video" ? "Video" : kind === "audio" ? "Audio" : "Image";
+}
+
+function summarizeReviewReferences(references: BytePlusReviewReference[]) {
+  return references.map((reference, index) => summarizeVideoReference(reference.url, index, reference.role));
+}
+
+async function autoReviewBytePlusVideoReferences(input: { userId: string | undefined; model: string | undefined; referenceImages: string[]; referenceVideos: string[]; referenceAudios: string[]; requestId?: string; referenceMode?: VideoReferenceMode; settings?: unknown; conversationId?: string; conversationTitle?: string }) {
+  const { userId, model, referenceImages, referenceVideos, referenceAudios, requestId, referenceMode, settings, conversationId, conversationTitle } = input;
+  const reviewReferences: BytePlusReviewReference[] = [
+    ...referenceImages.map((url, index) => ({ url, kind: "image" as const, role: getBytePlusReferenceRole(index, referenceMode) })),
+    ...referenceVideos.map((url) => ({ url, kind: "video" as const, role: "reference_video" })),
+    ...referenceAudios.map((url) => ({ url, kind: "audio" as const, role: "reference_audio" })),
+  ].filter((reference) => Boolean(reference.url));
+  if (!userId || !isBytePlusVideoModel(model) || reviewReferences.length === 0) return undefined;
 
   void appendVideoDiagnosticsLog({
     event: "byteplus-auto-review-start",
@@ -248,9 +264,9 @@ async function autoReviewBytePlusVideoReferences(input: { userId: string | undef
     model,
     provider: "byteplus",
     referenceMode,
-    referenceCount: referenceImages.length,
+    referenceCount: reviewReferences.length,
     settings,
-    references: summarizeVideoReferencesForLog(referenceImages, referenceMode),
+    references: summarizeReviewReferences(reviewReferences),
   });
 
   const workspaceAssets = await getWorkspaceAssets(userId);
@@ -260,13 +276,14 @@ async function autoReviewBytePlusVideoReferences(input: { userId: string | undef
     if (url) assetByUrl.set(url, record);
   }
   const updates: AutoBytePlusAssetReviewItem[] = [];
-  const references: string[] = [];
+  const references: BytePlusReviewReference[] = [];
   let triggered = false;
 
-  for (const reference of referenceImages) {
+  for (const referenceItem of reviewReferences) {
+    const reference = referenceItem.url;
     if (!reference || reference.startsWith("asset://")) {
-      void appendVideoDiagnosticsLog({ event: "byteplus-auto-review-skip-asset-reference", requestId, model, provider: "byteplus", referenceMode, references: [summarizeVideoReference(reference, references.length, getBytePlusReferenceRole(references.length, referenceMode))] });
-      references.push(reference);
+      void appendVideoDiagnosticsLog({ event: "byteplus-auto-review-skip-asset-reference", requestId, model, provider: "byteplus", referenceMode, references: [summarizeVideoReference(reference, references.length, referenceItem.role)] });
+      references.push(referenceItem);
       continue;
     }
 
@@ -278,13 +295,13 @@ async function autoReviewBytePlusVideoReferences(input: { userId: string | undef
     const previousAttempts = parseBytePlusReviewError(previousReviewError).attempts;
 
     if (assetId && status === "Active") {
-      void appendVideoDiagnosticsLog({ event: "byteplus-auto-review-reuse-active-asset", requestId, model, provider: "byteplus", referenceMode, references: [{ ...summarizeVideoReference(reference, references.length, getBytePlusReferenceRole(references.length, referenceMode)), status, assetId }] });
-      references.push(`asset://${assetId}`);
+      void appendVideoDiagnosticsLog({ event: "byteplus-auto-review-reuse-active-asset", requestId, model, provider: "byteplus", referenceMode, references: [{ ...summarizeVideoReference(reference, references.length, referenceItem.role), status, assetId }] });
+      references.push({ ...referenceItem, url: `asset://${assetId}` });
       continue;
     }
 
     if (assetId && status === "Failed" && previousAttempts >= MAX_BYTEPLUS_REFERENCE_REVIEW_ATTEMPTS) {
-      throw new Error(parseBytePlusReviewError(previousReviewError).message || "参考图审核未通过，无法作为该视频模型的真人参考图使用。");
+      throw new Error(parseBytePlusReviewError(previousReviewError).message || "参考素材审核未通过，无法作为该视频模型的真人参考素材使用。");
     }
 
     if (status === "Failed") {
@@ -298,17 +315,17 @@ async function autoReviewBytePlusVideoReferences(input: { userId: string | undef
       let publicUrl = "";
       try {
         publicUrl = await toReviewablePublicAssetUrl(reference, userId);
-        if (!publicUrl) throw new Error("参考图不是可审核的公网图片地址。");
-        void appendVideoDiagnosticsLog({ event: "byteplus-auto-review-public-url-resolved", requestId, model, provider: "byteplus", referenceMode, references: [summarizeVideoReference(publicUrl, references.length, getBytePlusReferenceRole(references.length, referenceMode))] });
+        if (!publicUrl) throw new Error("参考素材不是可审核的公网地址。");
+        void appendVideoDiagnosticsLog({ event: "byteplus-auto-review-public-url-resolved", requestId, model, provider: "byteplus", referenceMode, references: [summarizeVideoReference(publicUrl, references.length, referenceItem.role)] });
       } catch (error) {
-        void appendVideoDiagnosticsLog({ event: "byteplus-auto-review-public-url-failed", requestId, model, provider: "byteplus", referenceMode, references: [{ ...summarizeVideoReference(reference, references.length, getBytePlusReferenceRole(references.length, referenceMode)), error }] });
+        void appendVideoDiagnosticsLog({ event: "byteplus-auto-review-public-url-failed", requestId, model, provider: "byteplus", referenceMode, references: [{ ...summarizeVideoReference(reference, references.length, referenceItem.role), error }] });
         throw error;
       }
-      const created = await createBytePlusAsset({ url: publicUrl, name: matchedAsset ? getAssetString(matchedAsset, "name") || "FlashMuse reference" : "FlashMuse reference", assetType: "Image", moderationStrategy: "Skip" });
+      const created = await createBytePlusAsset({ url: publicUrl, name: matchedAsset ? getAssetString(matchedAsset, "name") || "FlashMuse reference" : "FlashMuse reference", assetType: getBytePlusAssetType(referenceItem.kind), moderationStrategy: "Skip" });
       assetId = created.id;
       groupId = created.groupId;
       status = "Processing";
-      void appendVideoDiagnosticsLog({ event: "byteplus-auto-review-asset-created", requestId, model, provider: "byteplus", referenceMode, references: [{ ...summarizeVideoReference(reference, references.length, getBytePlusReferenceRole(references.length, referenceMode)), status, assetId }] });
+      void appendVideoDiagnosticsLog({ event: "byteplus-auto-review-asset-created", requestId, model, provider: "byteplus", referenceMode, references: [{ ...summarizeVideoReference(reference, references.length, referenceItem.role), status, assetId }] });
     }
 
     let activeAsset: Awaited<ReturnType<typeof waitForBytePlusAssetActive>>;
@@ -318,13 +335,13 @@ async function autoReviewBytePlusVideoReferences(input: { userId: string | undef
       const failureMessage = error instanceof Error ? error.message : String(error);
       const failedUpdate: AutoBytePlusAssetReviewItem = { url: reference, assetId, groupId, status: "Failed", error: formatBytePlusReviewError(failureMessage, previousAttempts + 1) };
       await patchWorkspaceBytePlusAssets(userId, [failedUpdate]).catch((patchError) => logVideoTiming("BytePlus failed asset patch failed", { error: patchError instanceof Error ? patchError.message : String(patchError) }));
-      void appendVideoDiagnosticsLog({ event: "byteplus-auto-review-asset-failed", requestId, model, provider: "byteplus", referenceMode, references: [{ ...summarizeVideoReference(reference, references.length, getBytePlusReferenceRole(references.length, referenceMode)), status, assetId, error }] });
+      void appendVideoDiagnosticsLog({ event: "byteplus-auto-review-asset-failed", requestId, model, provider: "byteplus", referenceMode, references: [{ ...summarizeVideoReference(reference, references.length, referenceItem.role), status, assetId, error }] });
       throw error;
     }
     const update: AutoBytePlusAssetReviewItem = { url: reference, assetId, groupId: groupId || activeAsset.GroupId, status: "Active" };
     updates.push(update);
-    references.push(`asset://${assetId}`);
-    void appendVideoDiagnosticsLog({ event: "byteplus-auto-review-asset-active", requestId, model, provider: "byteplus", referenceMode, references: [{ ...summarizeVideoReference(reference, references.length - 1, getBytePlusReferenceRole(references.length - 1, referenceMode)), status: "Active", assetId }] });
+    references.push({ ...referenceItem, url: `asset://${assetId}` });
+    void appendVideoDiagnosticsLog({ event: "byteplus-auto-review-asset-active", requestId, model, provider: "byteplus", referenceMode, references: [{ ...summarizeVideoReference(reference, references.length - 1, referenceItem.role), status: "Active", assetId }] });
   }
 
   if (!triggered) return undefined;
@@ -337,13 +354,18 @@ async function autoReviewBytePlusVideoReferences(input: { userId: string | undef
     model,
     provider: "byteplus",
     referenceMode,
-    referenceCount: referenceImages.length,
-    assetReferenceCount: references.filter((url) => url.startsWith("asset://")).length,
+    referenceCount: reviewReferences.length,
+    assetReferenceCount: references.filter((reference) => reference.url.startsWith("asset://")).length,
     settings,
-    references: summarizeVideoReferencesForLog(references, referenceMode),
+    references: summarizeReviewReferences(references),
     autoReview: { updateCount: updates.length },
   });
-  return { references, updates };
+  return {
+    referenceImages: references.filter((reference) => reference.kind === "image").map((reference) => reference.url),
+    referenceVideos: references.filter((reference) => reference.kind === "video").map((reference) => reference.url),
+    referenceAudios: references.filter((reference) => reference.kind === "audio").map((reference) => reference.url),
+    updates,
+  };
 }
 
 function getBytePlusProviderKey(modelId: string | undefined, source: string | undefined) {
@@ -696,7 +718,9 @@ export async function POST(request: Request) {
       const codedError = await createCodedApiError(new Error(existingReferenceFailure.error), GENERIC_MEDIA_ERROR_MESSAGE, "byteplus reference asset review failed");
       return NextResponse.json(codedError, { status: 502 });
     }
-    const modelReferenceImages = await resolveBytePlusVideoReferenceImages(user?.id, body.model, effectiveReferenceImages);
+    const modelReferenceImages = await resolveBytePlusReviewedReferences(user?.id, body.model, effectiveReferenceImages);
+    const modelReferenceVideos = await resolveBytePlusReviewedReferences(user?.id, body.model, referenceVideos);
+    const modelReferenceAudios = await resolveBytePlusReviewedReferences(user?.id, body.model, referenceAudios);
     if (isBytePlusVideoModel(body.model)) {
       void appendVideoDiagnosticsLog({
         event: "byteplus-create-request",
@@ -706,15 +730,19 @@ export async function POST(request: Request) {
         model: body.model,
         provider: "byteplus",
         referenceMode: body.referenceMode,
-        referenceCount: referenceImages.length,
-        assetReferenceCount: modelReferenceImages.filter((url) => url.startsWith("asset://")).length,
+        referenceCount: effectiveReferenceImages.length + referenceVideos.length + referenceAudios.length,
+        assetReferenceCount: [...modelReferenceImages, ...modelReferenceVideos, ...modelReferenceAudios].filter((url) => url.startsWith("asset://")).length,
         settings: body.settings,
         promptLength: prompt.length,
-        references: summarizeVideoReferencesForLog(modelReferenceImages, body.referenceMode),
+        references: [
+          ...summarizeVideoReferencesForLog(modelReferenceImages, body.referenceMode),
+          ...modelReferenceVideos.map((url, index) => summarizeVideoReference(url, index, "reference_video")),
+          ...modelReferenceAudios.map((url, index) => summarizeVideoReference(url, index, "reference_audio")),
+        ],
         extra: {
           creditSource,
           autoBytePlusAssetReview: Boolean(body.autoBytePlusAssetReview),
-          originalReferenceCount: referenceImages.length,
+          originalReferenceCount: referenceImages.length + referenceVideos.length + referenceAudios.length,
           ignoredReferenceCount: Math.max(0, referenceImages.length - effectiveReferenceImages.length),
         },
       });
@@ -724,9 +752,9 @@ export async function POST(request: Request) {
     let autoBytePlusAssetReview: Awaited<ReturnType<typeof autoReviewBytePlusVideoReferences>> | undefined;
     let task: Awaited<ReturnType<typeof createOpenRouterVideoTask>>;
     try {
-      task = await createOpenRouterVideoTask(prompt, modelReferenceImages, body.settings, body.model, { bytePlusProviderKey: getBytePlusProviderKey(body.model, creditSource), referenceMode: body.referenceMode, referenceVideos, referenceAudios, requestId: body.requestId });
+      task = await createOpenRouterVideoTask(prompt, modelReferenceImages, body.settings, body.model, { bytePlusProviderKey: getBytePlusProviderKey(body.model, creditSource), referenceMode: body.referenceMode, referenceVideos: modelReferenceVideos, referenceAudios: modelReferenceAudios, requestId: body.requestId });
     } catch (error) {
-      if (!isBytePlusHumanReferenceError(error) || referenceImages.length === 0) throw error;
+      if (!isBytePlusHumanReferenceError(error) || (effectiveReferenceImages.length === 0 && referenceVideos.length === 0 && referenceAudios.length === 0)) throw error;
       void appendVideoDiagnosticsLog({
         event: "byteplus-create-human-reference-error",
         requestId: body.requestId,
@@ -735,17 +763,21 @@ export async function POST(request: Request) {
         model: body.model,
         provider: "byteplus",
         referenceMode: body.referenceMode,
-        referenceCount: effectiveReferenceImages.length,
+        referenceCount: effectiveReferenceImages.length + referenceVideos.length + referenceAudios.length,
         settings: body.settings,
-        references: summarizeVideoReferencesForLog(modelReferenceImages, body.referenceMode),
+        references: [
+          ...summarizeVideoReferencesForLog(modelReferenceImages, body.referenceMode),
+          ...modelReferenceVideos.map((url, index) => summarizeVideoReference(url, index, "reference_video")),
+          ...modelReferenceAudios.map((url, index) => summarizeVideoReference(url, index, "reference_audio")),
+        ],
         error,
         extra: { autoReviewRequested: Boolean(body.autoBytePlusAssetReview) },
       });
       if (!body.autoBytePlusAssetReview) return NextResponse.json({ status: "reviewing", autoBytePlusAssetReview: { triggered: true } });
-      logVideoTiming("BytePlus human reference auto review started", { model: body.model, requestId: body.requestId, referenceCount: referenceImages.length });
-      autoBytePlusAssetReview = await autoReviewBytePlusVideoReferences({ userId: user?.id, model: body.model, referenceImages: effectiveReferenceImages, requestId: body.requestId, referenceMode: body.referenceMode, settings: body.settings, conversationId: body.conversationId, conversationTitle: body.conversationTitle });
+      logVideoTiming("BytePlus human reference auto review started", { model: body.model, requestId: body.requestId, referenceCount: effectiveReferenceImages.length + referenceVideos.length + referenceAudios.length });
+      autoBytePlusAssetReview = await autoReviewBytePlusVideoReferences({ userId: user?.id, model: body.model, referenceImages: effectiveReferenceImages, referenceVideos, referenceAudios, requestId: body.requestId, referenceMode: body.referenceMode, settings: body.settings, conversationId: body.conversationId, conversationTitle: body.conversationTitle });
       if (!autoBytePlusAssetReview) throw error;
-      task = await createOpenRouterVideoTask(prompt, autoBytePlusAssetReview.references, body.settings, body.model, { bytePlusProviderKey: getBytePlusProviderKey(body.model, creditSource), referenceMode: body.referenceMode, referenceVideos, referenceAudios, requestId: body.requestId });
+      task = await createOpenRouterVideoTask(prompt, autoBytePlusAssetReview.referenceImages, body.settings, body.model, { bytePlusProviderKey: getBytePlusProviderKey(body.model, creditSource), referenceMode: body.referenceMode, referenceVideos: autoBytePlusAssetReview.referenceVideos, referenceAudios: autoBytePlusAssetReview.referenceAudios, requestId: body.requestId });
       logVideoTiming("BytePlus human reference auto review completed", { model: body.model, requestId: body.requestId, reviewedCount: autoBytePlusAssetReview.updates.length });
     }
     const createDoneAt = Date.now();
@@ -761,18 +793,22 @@ export async function POST(request: Request) {
           model: body.model,
           provider: "byteplus",
           referenceMode: body.referenceMode,
-          referenceCount: effectiveReferenceImages.length,
+          referenceCount: effectiveReferenceImages.length + referenceVideos.length + referenceAudios.length,
           settings: body.settings,
-          references: summarizeVideoReferencesForLog(modelReferenceImages, body.referenceMode),
+          references: [
+            ...summarizeVideoReferencesForLog(modelReferenceImages, body.referenceMode),
+            ...modelReferenceVideos.map((url, index) => summarizeVideoReference(url, index, "reference_video")),
+            ...modelReferenceAudios.map((url, index) => summarizeVideoReference(url, index, "reference_audio")),
+          ],
           error: videoError,
         });
       }
-      if (isBytePlusHumanReferenceError(videoError) && referenceImages.length > 0) {
+      if (isBytePlusHumanReferenceError(videoError) && (effectiveReferenceImages.length > 0 || referenceVideos.length > 0 || referenceAudios.length > 0)) {
         if (!body.autoBytePlusAssetReview) return NextResponse.json({ status: "reviewing", autoBytePlusAssetReview: { triggered: true } });
-        logVideoTiming("BytePlus human reference auto review started", { model: body.model, requestId: body.requestId, referenceCount: referenceImages.length });
-        autoBytePlusAssetReview = await autoReviewBytePlusVideoReferences({ userId: user?.id, model: body.model, referenceImages: effectiveReferenceImages, requestId: body.requestId, referenceMode: body.referenceMode, settings: body.settings, conversationId: body.conversationId, conversationTitle: body.conversationTitle });
+        logVideoTiming("BytePlus human reference auto review started", { model: body.model, requestId: body.requestId, referenceCount: effectiveReferenceImages.length + referenceVideos.length + referenceAudios.length });
+        autoBytePlusAssetReview = await autoReviewBytePlusVideoReferences({ userId: user?.id, model: body.model, referenceImages: effectiveReferenceImages, referenceVideos, referenceAudios, requestId: body.requestId, referenceMode: body.referenceMode, settings: body.settings, conversationId: body.conversationId, conversationTitle: body.conversationTitle });
         if (autoBytePlusAssetReview) {
-          task = await createOpenRouterVideoTask(prompt, autoBytePlusAssetReview.references, body.settings, body.model, { bytePlusProviderKey: getBytePlusProviderKey(body.model, creditSource), referenceMode: body.referenceMode, referenceVideos, referenceAudios, requestId: body.requestId });
+          task = await createOpenRouterVideoTask(prompt, autoBytePlusAssetReview.referenceImages, body.settings, body.model, { bytePlusProviderKey: getBytePlusProviderKey(body.model, creditSource), referenceMode: body.referenceMode, referenceVideos: autoBytePlusAssetReview.referenceVideos, referenceAudios: autoBytePlusAssetReview.referenceAudios, requestId: body.requestId });
           logVideoTiming("BytePlus human reference auto review completed", { model: body.model, requestId: body.requestId, reviewedCount: autoBytePlusAssetReview.updates.length });
         }
       }
@@ -787,9 +823,13 @@ export async function POST(request: Request) {
           model: body.model,
           provider: "byteplus",
           referenceMode: body.referenceMode,
-          referenceCount: effectiveReferenceImages.length,
+          referenceCount: effectiveReferenceImages.length + referenceVideos.length + referenceAudios.length,
           settings: body.settings,
-          references: summarizeVideoReferencesForLog(autoBytePlusAssetReview?.references ?? modelReferenceImages, body.referenceMode),
+          references: [
+            ...summarizeVideoReferencesForLog(autoBytePlusAssetReview?.referenceImages ?? modelReferenceImages, body.referenceMode),
+            ...(autoBytePlusAssetReview?.referenceVideos ?? modelReferenceVideos).map((url, index) => summarizeVideoReference(url, index, "reference_video")),
+            ...(autoBytePlusAssetReview?.referenceAudios ?? modelReferenceAudios).map((url, index) => summarizeVideoReference(url, index, "reference_audio")),
+          ],
           autoReview: autoBytePlusAssetReview ? { updateCount: autoBytePlusAssetReview.updates.length } : undefined,
           error: retryVideoError,
         });
@@ -858,8 +898,8 @@ export async function POST(request: Request) {
         resolution: body.settings?.resolution,
         duration: body.settings?.duration,
         referenceMode: body.referenceMode,
-        referenceCount: modelReferenceImages.length,
-        assetReferenceCount: modelReferenceImages.filter((url) => url.startsWith("asset://")).length,
+        referenceCount: modelReferenceImages.length + modelReferenceVideos.length + modelReferenceAudios.length,
+        assetReferenceCount: [...modelReferenceImages, ...modelReferenceVideos, ...modelReferenceAudios].filter((url) => url.startsWith("asset://")).length,
       });
       void appendVideoDiagnosticsLog({
         event: "byteplus-create-success",
@@ -870,11 +910,15 @@ export async function POST(request: Request) {
         provider: "byteplus",
         taskId: id,
         referenceMode: body.referenceMode,
-        referenceCount: modelReferenceImages.length,
-        assetReferenceCount: modelReferenceImages.filter((url) => url.startsWith("asset://")).length,
+        referenceCount: modelReferenceImages.length + modelReferenceVideos.length + modelReferenceAudios.length,
+        assetReferenceCount: [...modelReferenceImages, ...modelReferenceVideos, ...modelReferenceAudios].filter((url) => url.startsWith("asset://")).length,
         settings: body.settings,
         promptLength: prompt.length,
-        references: summarizeVideoReferencesForLog(modelReferenceImages, body.referenceMode),
+        references: [
+          ...summarizeVideoReferencesForLog(modelReferenceImages, body.referenceMode),
+          ...modelReferenceVideos.map((url, index) => summarizeVideoReference(url, index, "reference_video")),
+          ...modelReferenceAudios.map((url, index) => summarizeVideoReference(url, index, "reference_audio")),
+        ],
         autoReview: autoBytePlusAssetReview ? { updateCount: autoBytePlusAssetReview.updates.length } : undefined,
         extra: { createMs: createDoneAt - createStartedAt },
       });

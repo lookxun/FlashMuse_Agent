@@ -85,3 +85,9 @@ What to do later: if the user wants consistent character voice, evaluate dedicat
 Temporary reason: not part of the current MVP priority, and workflow mode remains disabled in production.
 
 What to do later: design a workflow like song generation or upload -> Agent splits MV shots -> video models generate shots -> ffmpeg or equivalent combines video with audio.
+
+### [ ] M014 GPT Image Prompt Optimization Phase 2
+
+Temporary reason: first version is now local-only and should be tested online/local in workflow mode before expanding. The first version records successful GPT-5.4 Image 2 safety rewrite cases but does not yet analyze them automatically.
+
+What to do later: after enough successful cases accumulate, add automatic success-case analysis, store a rolling analysis report, feed that report into future rewrite prompts, add success/cost/latency statistics, and consider copying the feature from workflow image nodes to conversation-flow image generation. See `handover/08-gpt-image-prompt-optimization.md`.

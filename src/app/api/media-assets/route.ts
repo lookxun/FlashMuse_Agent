@@ -17,7 +17,7 @@ function mediaTypeFromUrl(url: string) {
 }
 
 function currentCategoryFromBody(value: unknown) {
-  return typeof value === "string" && ["character_image", "scene_image", "shot_image", "conversation_images", "conversation_uploads", "conversation_videos", "conversation_upload_videos", "conversation_upload_audios", "conversation_upload_documents", "conversation_upload_files", "workflow_images", "workflow_uploads", "workflow_videos"].includes(value) ? value : "conversation_images";
+  return typeof value === "string" && ["character_image", "scene_image", "shot_image", "conversation_images", "conversation_uploads", "conversation_videos", "conversation_upload_videos", "conversation_upload_audios", "conversation_upload_documents", "conversation_upload_files", "workflow_images", "workflow_uploads", "workflow_videos", "workflow_upload_images", "workflow_upload_videos", "workflow_upload_audios", "workflow_upload_documents"].includes(value) ? value : "conversation_images";
 }
 
 function sourceKindFromCategory(category: string, mediaType: string, promptSource: string | undefined) {
@@ -143,7 +143,7 @@ export async function GET(request: Request) {
 
   const assets = rows.map((row) => {
     const media = row.mediaAsset;
-    const isWorkflowCategory = row.currentCategory === "workflow_images" || row.currentCategory === "workflow_uploads" || row.currentCategory === "workflow_videos";
+    const isWorkflowCategory = row.currentCategory === "workflow_images" || row.currentCategory === "workflow_uploads" || row.currentCategory === "workflow_videos" || row.currentCategory.startsWith("workflow_upload_");
     const promptSource = media.reversePrompt && media.reversePrompt !== "上传图片" ? "reverse" : row.currentCategory === "workflow_uploads" || media.sourceKind.includes("upload") ? "upload" : media.promptSource || "generated";
     return {
       id: row.id,
@@ -230,6 +230,9 @@ export async function POST(request: Request) {
     ? await getWorkflowNodeSourcePrompt(user.id, typeof body.workflowId === "string" ? body.workflowId : undefined, typeof body.workflowNodeId === "string" ? body.workflowNodeId : undefined)
     : undefined;
   const sourcePrompt = isInvalidSourcePrompt(bodySourcePrompt) ? workflowNodeSourcePrompt : bodySourcePrompt;
+  const originalFileName = typeof body.originalFileName === "string" && body.originalFileName.trim() ? body.originalFileName.trim() : undefined;
+  const mimeType = typeof body.mimeType === "string" && body.mimeType.trim() ? body.mimeType.trim() : undefined;
+  const fileSize = typeof body.fileSize === "number" && Number.isFinite(body.fileSize) && body.fileSize > 0 ? Math.floor(body.fileSize) : undefined;
 
   const media = await prisma.mediaAsset.upsert({
     where: { userId_normalizedUrl: { userId: user.id, normalizedUrl } },
@@ -255,6 +258,9 @@ export async function POST(request: Request) {
       width,
       height,
       durationSeconds,
+      mimeType,
+      fileSize,
+      originalFileName,
       systemName: persistName,
       initialName: persistName,
       initialCategory: currentCategory,
@@ -287,6 +293,9 @@ export async function POST(request: Request) {
       width,
       height,
       durationSeconds,
+      mimeType,
+      fileSize,
+      originalFileName,
       systemName: persistName,
       initialName: persistName,
       initialCategory: currentCategory,
@@ -340,7 +349,7 @@ export async function POST(request: Request) {
 
 function stateCategoryFromBody(value: unknown, mediaUrl: string) {
   if (value === "conversation_image") return /\/generated\/(?:users\/[^/]+\/)?upload_image\//.test(mediaUrl) ? "conversation_uploads" : "conversation_images";
-  return typeof value === "string" && ["character_image", "scene_image", "shot_image", "conversation_images", "conversation_uploads", "conversation_videos", "conversation_upload_videos", "conversation_upload_audios", "conversation_upload_documents", "conversation_upload_files", "workflow_images", "workflow_uploads", "workflow_videos"].includes(value) ? value : undefined;
+  return typeof value === "string" && ["character_image", "scene_image", "shot_image", "conversation_images", "conversation_uploads", "conversation_videos", "conversation_upload_videos", "conversation_upload_audios", "conversation_upload_documents", "conversation_upload_files", "workflow_images", "workflow_uploads", "workflow_videos", "workflow_upload_images", "workflow_upload_videos", "workflow_upload_audios", "workflow_upload_documents"].includes(value) ? value : undefined;
 }
 
 export async function PATCH(request: Request) {
