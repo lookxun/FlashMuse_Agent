@@ -11,6 +11,8 @@ Last checked: 2026-07-03 China time.
 - All user deletes are soft deletes. Do not physically delete generated files or database records unless the user explicitly changes this product rule.
 - Workflow mode is now OPEN in production (2026-07-03): `NEXT_PUBLIC_WORKFLOW_MODE_ENABLED=true` in prod `.env.local`. The entry is live for users. tldraw is running without a purchased license key — revisit tldraw commercial licensing.
 
+- 2026-07-03 UPDATE: workflow entry was OPENED then RE-DISABLED the same day. When enabled on the production build, tldraw (no commercial license) degraded — nodes appeared then disappeared, console spammed "No tldraw license key provided! A license is required for production deployments." Set `NEXT_PUBLIC_WORKFLOW_MODE_ENABLED=false` in prod `.env.local` and rebuilt; entry is disabled again (built JS contains `暂未开放`). Production workflow MUST stay disabled until a tldraw commercial `licenseKey` is purchased and passed to `<Tldraw licenseKey=...>`. The 24h session-timeout change stays in effect.
+
 ## Latest Real Work
 
 ## Latest 2026-07-03 FULL DEPLOY — Workflow Entry OPENED Online + 24h Session Timeout (DEPLOYED + PUSHED)
