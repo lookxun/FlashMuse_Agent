@@ -2146,7 +2146,7 @@ function WorkflowSelectedNodeOverlay() {
   const mediaName = getWorkflowNodeMediaName(node);
   const title = node.kind === "text" ? (node.title === "上传文本" ? "上传文本（双击进入编辑模式）" : "文本输入（双击进入编辑模式）") : node.title.startsWith("上传") ? node.title : [getNodeLabel(node.kind), mediaName].filter(Boolean).join(" ");
   const paramParts = getWorkflowNodeParamParts(node);
-  const showEditor = (node.kind === "image" || node.kind === "video") && !hasWorkflowNodeResult(node) && !node.data.isRunning;
+  const showEditor = (node.kind === "image" || node.kind === "video") && !hasWorkflowNodeResult(node) && !node.data.isRunning && node.data.uploadProgress === undefined;
   const screenNodeWidth = shape.props.w * zoom;
   const screenNodeHeight = shape.props.h * zoom;
   const maxParamWidth = Math.max(0, screenNodeWidth - estimateTitleTextWidth(title));
@@ -3620,7 +3620,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
           <WorkflowToolMenu activeTool={activeCanvasTool} onChange={setCanvasTool} />
         </div>
         </div>
-        {stateRef.current.nodes.length === 0 ? <div className="pointer-events-none absolute left-1/2 top-1/2 z-10 flex -translate-x-1/2 -translate-y-1/2 flex-col items-center text-center"><div className="mb-3 flex h-14 w-14 items-center justify-center rounded-2xl border border-[#e5e5e5] bg-white text-[#367cee] shadow-[0_10px_30px_rgba(15,23,42,0.08)]"><RiImageAiLine className="h-7 w-7" /></div><div className="text-[16px] font-semibold text-[#111111]">从一个节点开始</div><div className="mt-2 text-[13px] text-[#8a8a8a]">文本输入、图片、视频节点都走同一套工作流链路。</div><button type="button" onClick={() => addNode("text")} className="pointer-events-auto mt-5 inline-flex h-10 items-center gap-2 rounded-full bg-[#367cee] px-4 text-[13px] font-semibold text-white transition hover:bg-[#286fe0]"><RiAddLine className="h-4 w-4" /> 添加文本输入</button></div> : null}
+        {stateRef.current.nodes.length === 0 ? <div className="pointer-events-none absolute left-1/2 top-1/2 z-10 flex -translate-x-1/2 -translate-y-1/2 flex-col items-center text-center"><div className="text-[22px] font-semibold text-[#8a8a8a]">从一个节点开始</div><div className="pointer-events-auto mt-6 flex flex-row items-stretch gap-4"><button type="button" onClick={() => addNode("text")} className="inline-flex h-14 items-center gap-2.5 rounded-[10px] bg-[#111111] px-7 text-[15px] font-semibold text-white transition hover:bg-[#252525]"><RiTextBlock className="h-5 w-5 shrink-0" /> 文字输入</button><button type="button" onClick={() => addNode("image")} className="inline-flex h-14 items-center gap-2.5 rounded-[10px] bg-[#111111] px-7 text-[15px] font-semibold text-white transition hover:bg-[#252525]"><RiImageAiLine className="h-5 w-5 shrink-0" /> 图片节点</button><button type="button" onClick={() => addNode("video")} className="inline-flex h-14 items-center gap-2.5 rounded-[10px] bg-[#111111] px-7 text-[15px] font-semibold text-white transition hover:bg-[#252525]"><RiFilmAiLine className="h-5 w-5 shrink-0" /> 视频节点</button><button type="button" onClick={() => uploadNodeInputRef.current?.click()} className="inline-flex h-14 items-center gap-2.5 rounded-[10px] bg-[#111111] px-7 text-[15px] font-semibold text-white transition hover:bg-[#252525]"><RiUpload2Line className="h-5 w-5 shrink-0" /> 上传节点</button></div></div> : null}
       </div>
     </WorkflowRuntimeContext.Provider>
   );

@@ -535,6 +535,7 @@ type WorkflowItem = {
   nextVideoNumber?: number;
   deletedAt?: number;
   usageSummary?: UsageSummary;
+  generatedMediaCounts?: { images: number; videos: number };
   canvas?: WorkflowCanvasState;
 };
 
@@ -2002,6 +2003,7 @@ function getWorkflowMediaCounts(workflow?: WorkflowItem | null) {
   const videoUrls = new Set<string>();
 
   for (const node of workflow?.canvas?.nodes ?? []) {
+    if (node.title?.startsWith("上传")) continue;
     node.data.images?.filter(Boolean).forEach((url) => imageUrls.add(normalizeMediaUrlForMatch(url)));
     if (node.data.videoUrl) videoUrls.add(normalizeMediaUrlForMatch(node.data.videoUrl));
   }
@@ -3107,6 +3109,20 @@ function getWorkflowTextSnapshot(canvas?: WorkflowCanvasState) {
   return JSON.stringify((canvas?.nodes ?? [])
     .filter((node) => node.kind === "text")
     .map((node) => ({ id: node.id, text: node.data.text ?? "", prompt: node.data.prompt ?? "", outputText: node.data.outputText ?? "" })));
+}
+
+function getWorkflowMeaningfulSnapshot(canvas?: WorkflowCanvasState) {
+  if (!canvas) return "";
+  const nodes = (canvas.nodes ?? []).map((node) => {
+    const { visualSize: _visualSize, ...restData } = node.data ?? {};
+    return { ...node, data: restData };
+  });
+  return JSON.stringify({
+    nodes,
+    edges: canvas.edges ?? [],
+    historicalTextNodes: canvas.historicalTextNodes ?? [],
+    historicalMediaNodes: canvas.historicalMediaNodes ?? [],
+  });
 }
 
 function ensureWorkflowItems(items: WorkflowItem[]) {
@@ -10427,7 +10443,8 @@ export function ChatWorkbench() {
         setNextWorkflowNumber(result.nextWorkflowNumber);
       }
       const textChanged = getWorkflowTextSnapshot(target.canvas) !== getWorkflowTextSnapshot(canvas);
-      const next = current.map((item) => item.id === workflowId ? { ...item, workflowCode, title, canvas, updatedAt: Date.now() } : item);
+      const meaningfulChanged = getWorkflowMeaningfulSnapshot(target.canvas) !== getWorkflowMeaningfulSnapshot(canvas);
+      const next = current.map((item) => item.id === workflowId ? { ...item, workflowCode, title, canvas, updatedAt: meaningfulChanged ? Date.now() : (item.updatedAt ?? Date.now()) } : item);
       if (textChanged && workspaceStorageMode === "user") {
         if (workflowTextSaveTimerRef.current !== null) window.clearTimeout(workflowTextSaveTimerRef.current);
         const payload: WorkspaceStatePayload = {
@@ -11094,6 +11111,7 @@ export function ChatWorkbench() {
     if (cleanUrls.length === 0) return;
     const workflow = workflowItems.find((item) => item.id === workflowId);
     if (!workflow) return;
+    const newlyGeneratedCount = media.silent ? 0 : cleanUrls.filter((url) => !assets.some((asset) => isWorkflowAsset(asset) && normalizeMediaUrlForMatch(asset.url) === normalizeMediaUrlForMatch(url))).length;
     if (!media.silent) notifyGenerationCompleteOnce(`workflow:${nodeId}:${cleanUrls[0]}`, media.kind === "video" ? "视频生成已完成" : "图片生成已完成");
     const reserved = reserveWorkflowMediaSystemNamesForItems(workflowItems, assets, workflowId, media.kind, cleanUrls);
     if (reserved.workflows !== workflowItems) {
@@ -11122,8 +11140,13 @@ export function ChatWorkbench() {
     const systemNamesByUrl = Object.fromEntries(items.map((item) => [item.url, item.name]));
     setWorkflowItems((current) => current.map((workflow) => {
       if (workflow.id !== workflowId || !workflow.canvas?.nodes?.length) return workflow;
+      const prevCounts = workflow.generatedMediaCounts ?? getWorkflowMediaCounts(workflow);
+      const nextCounts = workflow.generatedMediaCounts
+        ? { images: prevCounts.images + (media.kind === "image" ? newlyGeneratedCount : 0), videos: prevCounts.videos + (media.kind === "video" ? newlyGeneratedCount : 0) }
+        : prevCounts;
       return {
         ...workflow,
+        generatedMediaCounts: nextCounts,
         canvas: {
           ...workflow.canvas,
           nodes: workflow.canvas.nodes.map((node) => node.id === nodeId ? { ...node, data: { ...node.data, mediaSystemNames: { ...(node.data.mediaSystemNames ?? {}), ...systemNamesByUrl } } } : node),
@@ -14370,7 +14393,7 @@ export function ChatWorkbench() {
                     <ReminderToast reminder={inputReminder} />
                   </div>
                 ) : null}
-                <UsageSummaryButton summary={activeWorkflow.usageSummary} mediaCounts={getWorkflowMediaCounts(activeWorkflow)} className="absolute right-4 top-4 z-30" />
+                <UsageSummaryButton summary={activeWorkflow.usageSummary} mediaCounts={activeWorkflow.generatedMediaCounts ?? getWorkflowMediaCounts(activeWorkflow)} className="absolute right-4 top-4 z-30" />
               </>
             ) : (
               <div className="relative flex h-full min-h-full items-center justify-center bg-[#f3f3f3] bg-[linear-gradient(to_right,#d8d8d8_1px,transparent_1px),linear-gradient(to_bottom,#d8d8d8_1px,transparent_1px),linear-gradient(to_right,#e9e9e9_1px,transparent_1px),linear-gradient(to_bottom,#e9e9e9_1px,transparent_1px)] bg-[size:120px_120px,120px_120px,24px_24px,24px_24px] text-center">
