@@ -288,7 +288,7 @@ function isAssetFilterKey(value: unknown): value is AssetFilterKey {
 
 function getAssetPageWhere(userId: string, filter: AssetFilterKey): Prisma.UserAssetStateWhereInput {
   const visible: Prisma.UserAssetStateWhereInput = { userId, hiddenAt: null, mediaAsset: { archivedAt: null } };
-  if (filter === "trash") return { ...visible, deletedAt: { not: null } };
+  if (filter === "trash") return { ...visible, deletedAt: { not: null }, OR: [{ purgeAt: null }, { purgeAt: { gt: new Date() } }] };
   if (["character_image", "scene_image", "shot_image"].includes(filter)) return { ...visible, deletedAt: null, currentCategory: filter };
   if (filter === "workflow_uploads") return { ...visible, deletedAt: null, currentCategory: "workflow_uploads" };
   if (filter === "workflow_videos") return { ...visible, deletedAt: null, currentCategory: "workflow_videos" };
@@ -364,9 +364,11 @@ async function getAssetCounts(userId: string) {
     },
   });
   const counts: Record<string, number> = { character_image: 0, scene_image: 0, shot_image: 0, trash: 0, conversation_images: 0, conversation_uploads: 0, conversation_videos: 0, workflow_images: 0, workflow_uploads: 0, workflow_videos: 0, asset_generation: 0, conversation: 0, workflow: 0 };
+  const now = Date.now();
   for (const row of rows.filter((item) => isVisiblePersistedMediaUrl(item.mediaAsset.url))) {
     const asset = mediaStateToLegacyAsset(row);
     if (asset.type === "trash" || asset.deletedAt) {
+      if (asset.purgeAt && asset.purgeAt <= now) continue;
       counts.trash += 1;
       continue;
     }

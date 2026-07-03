@@ -535,6 +535,14 @@ export async function POST(request: Request) {
 
     const taskId = body.taskId?.trim();
     const prompt = body.prompt?.trim();
+    const requestId = body.requestId?.trim();
+
+    // Hardening: requestId is the stable per-generation credit-dedup key. Without it, the charge
+    // path would silently fall back to taskId, risking a double-charge if create/poll requests for
+    // the same generation are inconsistent about sending requestId. All real callers always send it.
+    if (!requestId) {
+      return NextResponse.json({ status: "failed", error: { message: "缺少 requestId，无法安全计费。" }, errorCode: "MISSING_REQUEST_ID" }, { status: 400 });
+    }
 
     if (taskId) {
       const startedAt = Date.now();
@@ -618,7 +626,7 @@ export async function POST(request: Request) {
         await upsertVideoManifestEntry({ taskId, prompt: body.prompt ?? "", localVideoUrl: saveJob?.localUrl ?? videoUrl, remoteVideoUrl: videoUrl, posterUrl: saveJob?.posterUrl });
 
         const usage = withBytePlusVideoUsd(getUsageMeta(task) ?? body.usage, body.model, body.settings);
-        const credit = user ? await chargeCredits(user.id, "video", usage, { conversationId: body.conversationId, conversationTitle: body.conversationTitle, requestId: body.requestId ?? taskId, label: "视频生成", model: body.model, videoCount: 1, metadata: { ...body.metadata, settings: body.settings, ratio: body.settings?.ratio, resolution: body.settings?.resolution, duration: body.settings?.duration, originalPrompt: body.prompt, mediaUrls: [saveJob?.localUrl ?? videoUrl], remoteMediaUrls: [videoUrl], posterUrl: saveJob?.posterUrl, delivered: true, savedLocal: saveJob?.status === "saved", localSaveStatus: saveJob?.status ?? "pending", mediaSaveJobId: saveJob?.id } }) : undefined;
+        const credit = user ? await chargeCredits(user.id, "video", usage, { conversationId: body.conversationId, conversationTitle: body.conversationTitle, requestId, label: "视频生成", model: body.model, videoCount: 1, metadata: { ...body.metadata, settings: body.settings, ratio: body.settings?.ratio, resolution: body.settings?.resolution, duration: body.settings?.duration, originalPrompt: body.prompt, mediaUrls: [saveJob?.localUrl ?? videoUrl], remoteMediaUrls: [videoUrl], posterUrl: saveJob?.posterUrl, delivered: true, savedLocal: saveJob?.status === "saved", localSaveStatus: saveJob?.status ?? "pending", mediaSaveJobId: saveJob?.id } }) : undefined;
         void appendGenerationDiagnosticsLog({ event: "video-route-poll-completed", requestId: body.requestId ?? taskId, conversationId: body.conversationId, conversationTitle: body.conversationTitle, userId: user?.id, mode: "video", provider: isBytePlusVideoModel(body.model) ? "byteplus" : "openrouter", model: body.model, taskId, settings: body.settings, prompt: body.prompt, references: [summarizeGeneratedReference(videoUrl, 0, "remote_video")], durationMs: Date.now() - startedAt, extra: { status, saveJob, credit } });
 
         return NextResponse.json({

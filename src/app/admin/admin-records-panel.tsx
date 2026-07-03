@@ -15,6 +15,8 @@ export type AdminRecordSummary = {
   avatarUrl: string | null;
   conversationCount: number;
   conversationDeletedCount: number;
+  workflowCount: number;
+  workflowDeletedCount: number;
   imageGenerationCount: number;
   imageGenerationDeletedCount: number;
   videoGenerationCount: number;
@@ -60,14 +62,6 @@ function RecordUserAvatar({ user }: { user: AdminRecordSummary }) {
       {initial}
     </div>
   );
-}
-
-function conversationUploadItems(creditUser: AdminCreditUser | undefined, kind: "image" | "file") {
-  return (creditUser?.conversationCreditDetails ?? []).flatMap((conversation) => conversation.mediaItems.filter((item) => item.isUploadRecord && item.kind === kind));
-}
-
-function assetUploadItems(creditUser: AdminCreditUser | undefined) {
-  return (creditUser?.assetGenerationCreditDetails ?? []).flatMap((category) => category.items.filter((item) => item.isUploadRecord && item.kind === "image"));
 }
 
 function makeUploadCategory(id: string, title: string, items: AdminCreditFlowItem[]): AdminCreditCategoryDetail[] {
@@ -140,20 +134,48 @@ function workspaceAssetGeneratedImageItems(user: AdminUserRow, creditUser: Admin
   return user.assetMediaItems.filter((item) => item.type === "image" && !item.isUploadedAsset).map((item, index) => mediaItemToFlowItem(item, index, creditLookup));
 }
 
-function makeUploadCategories(creditUser: AdminCreditUser | undefined) {
-  return [
-    makeUploadCategory("conversation-upload-images", "对话流上传图片列表", conversationUploadItems(creditUser, "image"))[0],
-    makeUploadCategory("conversation-upload-files", "对话流上传文件列表", conversationUploadItems(creditUser, "file"))[0],
-    makeUploadCategory("asset-upload-images", "资产库上传图片列表", assetUploadItems(creditUser))[0],
-  ];
-}
-
 function makeGeneratedCategories(user: AdminUserRow, creditUser: AdminCreditUser | undefined) {
   return [
     makeUploadCategory("conversation-generated-images", "对话流生成图片列表", workspaceConversationGeneratedItems(user, creditUser, "image"))[0],
     makeUploadCategory("conversation-generated-videos", "对话流生成视频列表", workspaceConversationGeneratedItems(user, creditUser, "video"))[0],
     makeUploadCategory("asset-generated-images", "资产库生成图片列表", workspaceAssetGeneratedImageItems(user, creditUser))[0],
   ];
+}
+
+function uploadRecordToFlowItem(record: NonNullable<AdminUserRow["uploadRecords"]>[number]): AdminCreditFlowItem {
+  const kindLabel = record.kind === "image" ? "上传图片" : record.kind === "video" ? "上传视频" : record.kind === "audio" ? "上传音频" : "上传文档";
+  return {
+    id: record.id,
+    requestId: record.id,
+    kind: record.kind === "image" ? "image" : record.kind === "video" ? "video" : "file",
+    systemName: record.name || kindLabel,
+    displayName: record.name || kindLabel,
+    url: record.url,
+    status: "success",
+    errorText: record.isDeleted ? "用户已删除" : undefined,
+    deletedAtLabel: record.deletedAtLabel,
+    credits: 0,
+    totalTokens: 0,
+    usd: 0,
+    cny: 0,
+    count: 1,
+    model: "-",
+    parameters: kindLabel,
+    isUploadRecord: true,
+    createdAtLabel: record.createdAtLabel ?? "-",
+    createdAtTs: record.createdAtTs ?? 0,
+  };
+}
+
+function makeAllUploadCategories(user: AdminUserRow | undefined) {
+  const records = user?.uploadRecords ?? [];
+  const byKind = (kind: "image" | "video" | "audio" | "document") => records.filter((record) => record.kind === kind).map(uploadRecordToFlowItem);
+  return [
+    { id: "upload-images", title: "上传图片列表", totalCredits: 0, totalUsd: 0, totalCny: 0, items: byKind("image") },
+    { id: "upload-videos", title: "上传视频列表", totalCredits: 0, totalUsd: 0, totalCny: 0, items: byKind("video") },
+    { id: "upload-audios", title: "上传音频列表", totalCredits: 0, totalUsd: 0, totalCny: 0, items: byKind("audio") },
+    { id: "upload-documents", title: "上传文档列表", totalCredits: 0, totalUsd: 0, totalCny: 0, items: byKind("document") },
+  ] as AdminCreditCategoryDetail[];
 }
 
 export function AdminRecordsPanel({ summaries }: { summaries: AdminRecordSummary[] }) {
@@ -164,7 +186,7 @@ export function AdminRecordsPanel({ summaries }: { summaries: AdminRecordSummary
   const [loadingUserIds, setLoadingUserIds] = useState<Set<string>>(() => new Set());
   const [detailErrors, setDetailErrors] = useState<Record<string, string>>({});
   const [historyUser, setHistoryUser] = useState<AdminUserRow | null>(null);
-  const [mediaDialog, setMediaDialog] = useState<{ user: AdminUserRow; mediaType: "image" | "upload_image" | "video" | "asset_image" } | null>(null);
+  const [mediaDialog, setMediaDialog] = useState<{ user: AdminUserRow; mediaType: "image" | "upload_image" | "video" | "asset_image" | "workflow_image" | "workflow_video" } | null>(null);
   const [creditFlowUser, setCreditFlowUser] = useState<AdminCreditUser | null>(null);
   const [assetCreditUser, setAssetCreditUser] = useState<AdminCreditUser | null>(null);
   const [promptToolUser, setPromptToolUser] = useState<AdminCreditUser | null>(null);
@@ -187,17 +209,16 @@ export function AdminRecordsPanel({ summaries }: { summaries: AdminRecordSummary
   const rangeEnd = Math.min(safePage * PAGE_SIZE, filteredRows.length);
   const stats = {
     conversations: rows.reduce((sum, row) => sum + row.conversationCount, 0),
+    workflows: rows.reduce((sum, row) => sum + row.workflowCount, 0),
     images: rows.reduce((sum, row) => sum + row.imageGenerationCount, 0),
     videos: rows.reduce((sum, row) => sum + row.videoGenerationCount, 0),
-    uploadImages: rows.reduce((sum, row) => sum + row.uploadImageCount, 0),
-    uploadFiles: rows.reduce((sum, row) => sum + row.uploadFileCount, 0),
   };
   const isDetailLoading = loadingUserIds.size > 0;
 
-  const fetchUserDetail = async (userId: string, mode: "records" | "full") => {
+  const fetchUserDetail = async (userId: string, mode: "records" | "full" | "media") => {
     const cached = getCachedAdminDetail<AdminRecordDetail>(userId, mode);
     if (cached) return cached;
-    const response = await fetch(`/admin/api/records/user-detail?userId=${encodeURIComponent(userId)}${mode === "records" ? "&mode=records" : ""}`);
+    const response = await fetch(`/admin/api/records/user-detail?userId=${encodeURIComponent(userId)}${mode === "full" ? "" : `&mode=${mode}`}`);
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(typeof payload.error === "string" ? payload.error : "加载失败");
     const detail = payload.detail as AdminRecordDetail;
@@ -286,6 +307,29 @@ export function AdminRecordsPanel({ summaries }: { summaries: AdminRecordSummary
     }
   };
 
+  const loadMediaDetailForDialog = async (userId: string, title: string) => {
+    setLoadingUserIds((current) => new Set(current).add(userId));
+    setLoadingDialogTitle(title);
+    setDetailErrors((current) => {
+      const next = { ...current };
+      delete next[userId];
+      return next;
+    });
+    try {
+      return await fetchUserDetail(userId, "media");
+    } catch (error) {
+      setDetailErrors((current) => ({ ...current, [userId]: error instanceof Error ? error.message : "加载失败" }));
+      return undefined;
+    } finally {
+      setLoadingUserIds((current) => {
+        const next = new Set(current);
+        next.delete(userId);
+        return next;
+      });
+      setLoadingDialogTitle(null);
+    }
+  };
+
   const toggleExpandedUser = (userId: string) => {
     if (isDetailLoading && !loadingUserIds.has(userId)) return;
     setExpandedUserIds((current) => {
@@ -300,22 +344,22 @@ export function AdminRecordsPanel({ summaries }: { summaries: AdminRecordSummary
     });
   };
 
-  const openUploadDialog = async (userId: string, initialCategoryId: string) => {
-    const detail = await loadFullDetailForDialog(userId, "正在加载上传记录...");
-    if (!detail) return;
-    setUploadDialog({ user: detail.creditUser, categories: makeUploadCategories(detail.creditUser), initialCategoryId });
-  };
-
   const openGeneratedListDialog = async (userId: string, initialCategoryId: string) => {
     const detail = await loadFullDetailForDialog(userId, "正在加载生成列表...");
     if (!detail) return;
     setGeneratedListDialog({ user: detail.creditUser, categories: makeGeneratedCategories(detail.user, detail.creditUser), initialCategoryId });
   };
 
-  const openMediaDialogForUser = async (userId: string, mediaType: "image" | "upload_image" | "video" | "asset_image") => {
-    const detail = await loadFullDetailForDialog(userId, "正在加载媒体列表...");
+  const openMediaDialogForUser = async (userId: string, mediaType: "image" | "upload_image" | "video" | "asset_image" | "workflow_image" | "workflow_video") => {
+    const detail = await loadMediaDetailForDialog(userId, "正在加载媒体列表...");
     if (!detail) return;
     setMediaDialog({ user: detail.user, mediaType });
+  };
+
+  const openAllUploadDialog = async (userId: string, initialCategoryId: string) => {
+    const detail = await loadMediaDetailForDialog(userId, "正在加载上传记录...");
+    if (!detail) return;
+    setUploadDialog({ user: detail.creditUser, categories: makeAllUploadCategories(detail.user), initialCategoryId });
   };
 
   const openCreditDialogForUser = async (userId: string, type: "conversation" | "asset" | "prompt") => {
@@ -336,12 +380,11 @@ export function AdminRecordsPanel({ summaries }: { summaries: AdminRecordSummary
         </div>
       </div>
 
-      <div className="grid grid-cols-5 gap-4">
+      <div className="grid grid-cols-4 gap-4">
         <SmallStat label="历史对话总数" value={formatNumber(stats.conversations)} tone="blue" />
+        <SmallStat label="工作流总数" value={formatNumber(stats.workflows)} tone="blue" />
         <SmallStat label="图片生成总数" value={formatNumber(stats.images)} />
         <SmallStat label="视频生成总数" value={formatNumber(stats.videos)} />
-        <SmallStat label="上传图片总数" value={formatNumber(stats.uploadImages)} />
-        <SmallStat label="上传文件总数" value={formatNumber(stats.uploadFiles)} />
       </div>
 
       <section className="mt-3 min-w-[1180px] overflow-hidden rounded-[10px] border border-[#eeeeee] bg-white shadow-[0_10px_28px_rgba(0,0,0,0.04)]">
@@ -352,10 +395,9 @@ export function AdminRecordsPanel({ summaries }: { summaries: AdminRecordSummary
               <th className="w-[135px] border-b border-[#eeeeee] py-3 pl-2 pr-3 font-medium">ID号</th>
               <th className="w-[290px] border-b border-[#eeeeee] px-4 py-3 font-medium">用户</th>
               <th className="w-[152px] border-b border-[#eeeeee] px-4 py-3 text-left font-medium">历史对话</th>
+              <th className="w-[152px] border-b border-[#eeeeee] px-4 py-3 text-left font-medium">工作流</th>
               <th className="w-[152px] border-b border-[#eeeeee] px-4 py-3 text-left font-medium">图片生成</th>
-              <th className="w-[152px] border-b border-[#eeeeee] px-4 py-3 text-left font-medium">视频生成</th>
-              <th className="w-[152px] border-b border-[#eeeeee] px-4 py-3 text-left font-medium">上传图片</th>
-              <th className="w-[152px] border-b border-[#eeeeee] py-3 pl-4 pr-8 text-left font-medium">上传文件</th>
+              <th className="w-[152px] border-b border-[#eeeeee] py-3 pl-4 pr-8 text-left font-medium">视频生成</th>
             </tr>
           </thead>
           <tbody>
@@ -367,18 +409,12 @@ export function AdminRecordsPanel({ summaries }: { summaries: AdminRecordSummary
               const isLoading = loadingUserIds.has(summary.id);
               const error = detailErrors[summary.id];
               const isRowDisabled = isDetailLoading && !isLoading;
-              const conversationImages = isExpanded ? conversationUploadItems(creditUser, "image") : [];
-              const conversationFiles = isExpanded ? conversationUploadItems(creditUser, "file") : [];
-              const assetImages = isExpanded ? assetUploadItems(creditUser) : [];
               const generatedConversationImages = isExpanded && user ? workspaceConversationGeneratedItems(user, creditUser, "image") : [];
               const generatedConversationVideos = isExpanded && user ? workspaceConversationGeneratedItems(user, creditUser, "video") : [];
               const generatedAssetImages = isExpanded && user ? workspaceAssetGeneratedImageItems(user, creditUser) : [];
               const conversationImageTotal = user?.conversationImageCount ?? generatedConversationImages.length;
               const conversationVideoTotal = user?.conversationVideoCount ?? generatedConversationVideos.length;
               const assetImageTotal = user?.assetImageCount ?? generatedAssetImages.length;
-              const conversationUploadImageTotal = user?.conversationUploadImageCount ?? conversationImages.length;
-              const conversationUploadFileTotal = user?.conversationUploadFileCount ?? conversationFiles.length;
-              const assetUploadImageTotal = user?.assetUploadImageCount ?? assetImages.length;
               return (
                 <Fragment key={summary.id}>
                   <tr onClick={() => toggleExpandedUser(summary.id)} className={`text-[#333333] transition ${isRowDisabled ? "cursor-not-allowed opacity-55" : "cursor-pointer hover:bg-[#fcfcfc]"}`}>
@@ -398,14 +434,13 @@ export function AdminRecordsPanel({ summaries }: { summaries: AdminRecordSummary
                       </div>
                     </td>
                     <td className="border-b border-[#f2f2f2] px-4 py-3 text-left font-medium"><CountWithDeleted total={summary.conversationCount} deleted={summary.conversationDeletedCount} /></td>
+                    <td className="border-b border-[#f2f2f2] px-4 py-3 text-left font-medium"><CountWithDeleted total={summary.workflowCount} deleted={summary.workflowDeletedCount} /></td>
                     <td className="border-b border-[#f2f2f2] px-4 py-3 text-left font-medium"><CountWithDeleted total={summary.imageGenerationCount} deleted={summary.imageGenerationDeletedCount} /></td>
-                    <td className="border-b border-[#f2f2f2] px-4 py-3 text-left font-medium"><CountWithDeleted total={summary.videoGenerationCount} deleted={summary.videoGenerationDeletedCount} /></td>
-                    <td className="border-b border-[#f2f2f2] px-4 py-3 text-left font-medium"><CountWithDeleted total={summary.uploadImageCount} deleted={summary.uploadImageDeletedCount} /></td>
-                    <td className="border-b border-[#f2f2f2] py-3 pl-4 pr-8 text-left font-medium"><CountWithDeleted total={summary.uploadFileCount} deleted={summary.uploadFileDeletedCount} /></td>
+                    <td className="border-b border-[#f2f2f2] py-3 pl-4 pr-8 text-left font-medium"><CountWithDeleted total={summary.videoGenerationCount} deleted={summary.videoGenerationDeletedCount} /></td>
                   </tr>
                   {isExpanded ? (
                     <tr className="bg-[#fbfbfb]">
-                      <td colSpan={8} className="border-b border-[#f2f2f2] px-4 py-4">
+                      <td colSpan={7} className="border-b border-[#f2f2f2] px-4 py-4">
                         {!detail ? error ? <div className="px-3 py-5 text-center text-[13px] text-red-500">加载失败：{error}</div> : isLoading ? <AdminDetailLoading label="正在加载详细记录..." /> : <AdminDetailLoading label="正在准备详细记录..." /> : (
                         <div className="grid grid-cols-4 gap-[5px] px-1 py-1 text-left">
                           <div className="space-y-px">
@@ -414,14 +449,18 @@ export function AdminRecordsPanel({ summaries }: { summaries: AdminRecordSummary
                           </div>
                           <div className="space-y-px">
                             <DetailItem label="资产库图片" value={formatNumber(assetImageTotal)} onClick={() => void openMediaDialogForUser(user.id, "asset_image")} />
+                            <DetailItem label="上传图片" value={formatNumber(user.uploadImageCount ?? 0)} onClick={() => void openAllUploadDialog(user.id, "upload-images")} />
+                            <DetailItem label="上传视频" value={formatNumber(user.uploadVideoCount ?? 0)} onClick={() => void openAllUploadDialog(user.id, "upload-videos")} />
+                            <DetailItem label="上传音频" value={formatNumber(user.uploadAudioCount ?? 0)} onClick={() => void openAllUploadDialog(user.id, "upload-audios")} />
+                            <DetailItem label="上传文档" value={formatNumber(user.uploadDocumentCount ?? 0)} onClick={() => void openAllUploadDialog(user.id, "upload-documents")} />
                           </div>
                           <div className="space-y-px">
                             <DetailItem label="对话流图片" value={formatNumber(conversationImageTotal)} onClick={() => void openMediaDialogForUser(user.id, "image")} />
                             <DetailItem label="对话流视频" value={formatNumber(conversationVideoTotal)} onClick={() => void openMediaDialogForUser(user.id, "video")} />
                           </div>
                           <div className="space-y-px">
-                            <DetailItem label="工作流图片" value="0" />
-                            <DetailItem label="工作流视频" value="0" />
+                            <DetailItem label="工作流图片" value={formatNumber(user.workflowImageCount ?? 0)} onClick={() => void openMediaDialogForUser(user.id, "workflow_image")} />
+                            <DetailItem label="工作流视频" value={formatNumber(user.workflowVideoCount ?? 0)} onClick={() => void openMediaDialogForUser(user.id, "workflow_video")} />
                           </div>
                         </div>
                         )}
@@ -431,7 +470,7 @@ export function AdminRecordsPanel({ summaries }: { summaries: AdminRecordSummary
                 </Fragment>
               );
             })}
-            {pagedRows.length === 0 ? <tr><td colSpan={8} className="px-4 py-12 text-center text-[13px] text-[#999999]">暂无生成记录</td></tr> : null}
+            {pagedRows.length === 0 ? <tr><td colSpan={7} className="px-4 py-12 text-center text-[13px] text-[#999999]">暂无生成记录</td></tr> : null}
           </tbody>
         </table>
       </section>

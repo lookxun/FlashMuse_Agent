@@ -186,6 +186,8 @@ function getCreditLedgerReason(kind: string, label: string | null, metadata: unk
   if (creditSource === "shot_image_generation") return "资产库_分镜图片";
   if (creditSource === "image_prompt_reverse") return "图片反推提示词";
   if (creditSource === "prompt_optimization") return "优化提示词";
+  if (creditSource === "workflow_image_generation") return "工作流图片生成";
+  if (creditSource === "workflow_video_generation") return "工作流视频生成";
 
   if (kind === "text") return label || "对话/规划";
   if (kind === "image") return "对话流图片生成";
@@ -1454,9 +1456,11 @@ export default async function AdminPage({ searchParams }: { searchParams?: Promi
         conversationConsumedCredits: 0,
         assetGenerationConsumedCredits: 0,
         promptToolConsumedCredits: 0,
+        workflowConsumedCredits: 0,
         conversationCreditDetails: [],
         assetGenerationCreditDetails: [],
         promptToolCreditDetails: [],
+        workflowCreditDetails: [],
         currentCreditDetails: [],
         lastActiveLabel: ledgers[0] ? formatShortDate(ledgers[0].createdAt) : "-",
       };
@@ -1483,6 +1487,7 @@ export default async function AdminPage({ searchParams }: { searchParams?: Promi
           workspaceSessions: { orderBy: { updatedAt: "desc" }, select: { sessionId: true, title: true, updatedAt: true, deletedAt: true, messagesJson: true, summaryJson: true, usageSummary: true, memorySummary: true } },
           workspaceMessages: { orderBy: { createdAt: "asc" }, select: { sessionId: true, messageJson: true, createdAt: true } },
           userAssetStates: { where: { hiddenAt: null, mediaAsset: { archivedAt: null } }, include: { mediaAsset: true }, orderBy: { updatedAt: "desc" } },
+          workspaceWorkflows: { select: { deletedAt: true } },
         },
       }),
       prisma.creditLedger.findMany({ where: { direction: "consume" }, orderBy: { createdAt: "desc" }, select: { userId: true, createdAt: true } }),
@@ -1504,6 +1509,8 @@ export default async function AdminPage({ searchParams }: { searchParams?: Promi
         avatarUrl: user.avatarUrl,
         conversationCount: recordSummary.conversationCount,
         conversationDeletedCount: recordSummary.conversationDeletedCount,
+        workflowCount: user.workspaceWorkflows.filter((workflow) => !workflow.deletedAt).length,
+        workflowDeletedCount: user.workspaceWorkflows.filter((workflow) => Boolean(workflow.deletedAt)).length,
         imageGenerationCount: Math.max(user.generatedImageCount, mediaSummary.imageGenerationCount, recordSummary.imageGenerationCount),
         imageGenerationDeletedCount: mediaSummary.imageGenerationDeletedCount,
         videoGenerationCount: Math.max(user.generatedVideoCount, mediaSummary.videoGenerationCount, recordSummary.videoGenerationCount),
@@ -1928,6 +1935,7 @@ export default async function AdminPage({ searchParams }: { searchParams?: Promi
       conversationConsumedCredits: userConversationConsumeMap.get(user.id) ?? 0,
       assetGenerationConsumedCredits: userAssetGenerationConsumeMap.get(user.id) ?? 0,
       promptToolConsumedCredits: userPromptToolConsumeMap.get(user.id) ?? 0,
+      workflowConsumedCredits: 0,
       conversationCreditDetails: [...conversationCreditDetails, ...deletedConversationCreditDetails],
       assetGenerationCreditDetails: Array.from(assetGenerationDetailMap.values())
         .sort((left, right) => ["character", "scene", "shot"].indexOf(left.id) - ["character", "scene", "shot"].indexOf(right.id))
@@ -1935,6 +1943,7 @@ export default async function AdminPage({ searchParams }: { searchParams?: Promi
       promptToolCreditDetails: Array.from(userPromptToolCreditDetailMap.get(user.id)?.values() ?? [])
         .sort((left, right) => ["reverse", "optimization"].indexOf(left.id) - ["reverse", "optimization"].indexOf(right.id))
         .map((detail) => ({ ...detail, items: [...detail.items].sort((left, right) => right.createdAtTs - left.createdAtTs) })),
+      workflowCreditDetails: [],
       currentCreditDetails: userCreditBalanceDetailMap.get(user.id) ?? [],
       lastActiveLabel: lastActiveAt ? formatShortDate(lastActiveAt) : "-",
     };

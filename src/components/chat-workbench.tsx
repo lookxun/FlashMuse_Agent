@@ -3081,6 +3081,16 @@ function createWorkflowItem(items: WorkflowItem[]): WorkflowItem {
   };
 }
 
+function createNumberedWorkflowItem(items: WorkflowItem[]): WorkflowItem {
+  const createdAt = Date.now();
+  return {
+    id: createClientId(),
+    title: getNextWorkflowTitle(items),
+    createdAt,
+    updatedAt: createdAt,
+  };
+}
+
 function isUntitledWorkflow(item: WorkflowItem) {
   return !item.deletedAt && item.title === "新工作流";
 }
@@ -3100,7 +3110,7 @@ function getWorkflowTextSnapshot(canvas?: WorkflowCanvasState) {
 }
 
 function ensureWorkflowItems(items: WorkflowItem[]) {
-  return items.some((item) => !isDeletedWorkflow(item)) ? items : [createWorkflowItem([]), ...items];
+  return items.some((item) => !isDeletedWorkflow(item)) ? items : [createNumberedWorkflowItem(items), ...items];
 }
 
 function keepSingleUntitledWorkflow(items: WorkflowItem[]) {
@@ -7579,6 +7589,14 @@ export function ChatWorkbench() {
   }, [sessions]);
   const visibleAssetUploadSlots = normalizeAssetUploadSlots(assetUploadSlots, getDefaultAssetUploadType(assetFilter));
   const previewMediaOptions = useMemo(() => {
+    const isAssetLibraryPreview = Boolean(previewAsset && assets.some((asset) => asset.id === previewAsset.id));
+    if (isAssetLibraryPreview && activePanel === "assets") {
+      return assets.filter((asset) => {
+        if (isAssetTrashExpired(asset, timerNow)) return false;
+        return isAssetInFilter(asset, assetFilter);
+      }).map(getCanonicalPreviewAsset);
+    }
+
     if (previewAsset?.librarySource === "workflow") {
       const workflowId = previewAsset.workflowId || previewAsset.sessionId;
       const workflow = workflowItems.find((item) => item.id === workflowId);
@@ -7596,14 +7614,6 @@ export function ChatWorkbench() {
           return [...imageItems, ...videoItem];
         });
       }
-    }
-
-    const isAssetLibraryPreview = Boolean(previewAsset && assets.some((asset) => asset.id === previewAsset.id));
-    if (isAssetLibraryPreview) {
-      return assets.filter((asset) => {
-        if (isAssetTrashExpired(asset, timerNow)) return false;
-        return isAssetInFilter(asset, assetFilter);
-      }).map(getCanonicalPreviewAsset);
     }
 
     return messages.flatMap((message) => {
@@ -7637,7 +7647,7 @@ export function ChatWorkbench() {
 
       return [...imageItems, ...videoItem];
     });
-  }, [activeSessionIdValue, assetFilter, assets, getCanonicalMediaName, getCanonicalPreviewAsset, getWorkflowPreviewAsset, messages, previewAsset, timerNow, workflowItems]);
+  }, [activePanel, activeSessionIdValue, assetFilter, assets, getCanonicalMediaName, getCanonicalPreviewAsset, getWorkflowPreviewAsset, messages, previewAsset, timerNow, workflowItems]);
   const enrichAssetPreviewMeta = getCanonicalPreviewAsset;
   const previewAssetId = previewAsset?.id;
   const previewDisplayMeta = previewAsset ? enrichAssetPreviewMeta(previewAsset).previewMeta : undefined;
@@ -8898,6 +8908,15 @@ export function ChatWorkbench() {
     if (loadedWorkflowAssetIdsRef.current.has(activeWorkflow.id)) return;
     void loadWorkflowAssets(activeWorkflow.id);
   }, [activePanel, activeWorkflow?.id, loadWorkflowAssets, workspaceStorageMode]);
+
+  useEffect(() => {
+    if (!isLoaded || workspaceStorageMode === "loading") return;
+    if (activePanel !== "workflow") return;
+    if (workflowItems.some((item) => !isDeletedWorkflow(item))) return;
+    const workflow = createNumberedWorkflowItem(workflowItems);
+    setWorkflowItems((current) => (current.some((item) => !isDeletedWorkflow(item)) ? current : [workflow, ...current]));
+    setActiveWorkflowId((current) => current || workflow.id);
+  }, [activePanel, isLoaded, workflowItems, workspaceStorageMode]);
 
   useEffect(() => {
     let cancelled = false;
@@ -10376,6 +10395,11 @@ export function ChatWorkbench() {
 
   const deleteWorkflow = (workflowId: string) => {
     setOpenWorkflowMenuId("");
+    const activeWorkflowCount = workflowItems.filter((item) => !isDeletedWorkflow(item)).length;
+    if (activeWorkflowCount <= 1) {
+      showInputTip("至少保留一个工作流，无法删除");
+      return;
+    }
     setWorkflowItems((current) => {
       const deletedAt = Date.now();
       const next = ensureWorkflowItems(current.map((item) => item.id === workflowId ? { ...item, deletedAt, updatedAt: deletedAt } : item));
@@ -11065,11 +11089,12 @@ export function ChatWorkbench() {
     }
   }, [assets, workspaceStorageMode]);
 
-  const addWorkflowGeneratedAssets = useCallback((workflowId: string, nodeId: string, media: { kind: "image" | "video"; urls: string[]; posterUrl?: string; sourcePrompt: string; model?: ModelName; ratio?: string; resolution?: string; duration?: string; dimensions?: Record<string, ImageDimensions>; durationSeconds?: Record<string, number>; promptOptimization?: { originalPrompt: string; optimizedPrompt: string; attemptsUsed: number; optimizerModel: string } }) => {
+  const addWorkflowGeneratedAssets = useCallback((workflowId: string, nodeId: string, media: { kind: "image" | "video"; urls: string[]; posterUrl?: string; sourcePrompt: string; model?: ModelName; ratio?: string; resolution?: string; duration?: string; dimensions?: Record<string, ImageDimensions>; durationSeconds?: Record<string, number>; silent?: boolean; promptOptimization?: { originalPrompt: string; optimizedPrompt: string; attemptsUsed: number; optimizerModel: string } }) => {
     const cleanUrls = media.urls.filter((url) => url && !url.startsWith("data:"));
     if (cleanUrls.length === 0) return;
     const workflow = workflowItems.find((item) => item.id === workflowId);
     if (!workflow) return;
+    if (!media.silent) notifyGenerationCompleteOnce(`workflow:${nodeId}:${cleanUrls[0]}`, media.kind === "video" ? "视频生成已完成" : "图片生成已完成");
     const reserved = reserveWorkflowMediaSystemNamesForItems(workflowItems, assets, workflowId, media.kind, cleanUrls);
     if (reserved.workflows !== workflowItems) {
       const reservedWorkflow = reserved.workflows.find((item) => item.id === workflowId);
@@ -11176,7 +11201,7 @@ export function ChatWorkbench() {
         }
       });
     }
-  }, [assets, loadWorkspaceAssets, workflowItems, workspaceStorageMode]);
+  }, [assets, loadWorkspaceAssets, notifyGenerationCompleteOnce, workflowItems, workspaceStorageMode]);
 
   const reserveMediaSystemNames = useCallback((sessionId: string, mode: WorkMode, urls: string[]) => {
     const cleanUrls = urls.filter((url) => url && !url.startsWith("data:"));
@@ -13531,9 +13556,9 @@ export function ChatWorkbench() {
             {!isSidebarCollapsed ? <span className="text-[13px] leading-[1.2]">对话模式</span> : null}
             {activePanel !== "chat" && hasAnyConversationRunning ? <span className={isSidebarCollapsed ? "absolute ml-7 mt-7 flex w-4 shrink-0 justify-end" : "ml-auto flex w-7 shrink-0 justify-end"}><HaloPulseIndicator /></span> : null}
           </button>
-          <button type="button" disabled={!WORKFLOW_MODE_ENABLED} onClick={enterWorkflowPanel} className={!WORKFLOW_MODE_ENABLED ? isSidebarCollapsed ? "relative flex h-10 w-10 cursor-not-allowed items-center justify-center rounded-lg font-medium text-[#b0b0b0]" : "flex h-10 w-full cursor-not-allowed items-center gap-2 rounded-lg px-3 text-left font-medium text-[#b0b0b0]" : isSidebarCollapsed ? activePanel === "workflow" ? "relative flex h-10 w-10 items-center justify-center rounded-lg bg-[#ececec] font-medium text-[#111111]" : "relative flex h-10 w-10 items-center justify-center rounded-lg font-medium text-[#555555] transition hover:bg-[#ececec]" : activePanel === "workflow" ? "flex h-10 w-full items-center gap-2 rounded-lg bg-[#ececec] px-3 text-left font-medium text-[#111111]" : "flex h-10 w-full items-center gap-2 rounded-lg px-3 text-left font-medium text-[#555555] transition hover:bg-[#ececec]"} title="工作流模式暂未开放" aria-label="工作流模式暂未开放">
+          <button type="button" disabled={!WORKFLOW_MODE_ENABLED} onClick={enterWorkflowPanel} className={!WORKFLOW_MODE_ENABLED ? isSidebarCollapsed ? "relative flex h-10 w-10 cursor-not-allowed items-center justify-center rounded-lg font-medium text-[#b0b0b0]" : "flex h-10 w-full cursor-not-allowed items-center gap-2 rounded-lg px-3 text-left font-medium text-[#b0b0b0]" : isSidebarCollapsed ? activePanel === "workflow" ? "relative flex h-10 w-10 items-center justify-center rounded-lg bg-[#ececec] font-medium text-[#111111]" : "relative flex h-10 w-10 items-center justify-center rounded-lg font-medium text-[#555555] transition hover:bg-[#ececec]" : activePanel === "workflow" ? "flex h-10 w-full items-center gap-2 rounded-lg bg-[#ececec] px-3 text-left font-medium text-[#111111]" : "flex h-10 w-full items-center gap-2 rounded-lg px-3 text-left font-medium text-[#555555] transition hover:bg-[#ececec]"} title={WORKFLOW_MODE_ENABLED ? "工作流模式" : "工作流模式暂未开放"} aria-label={WORKFLOW_MODE_ENABLED ? "工作流模式" : "工作流模式暂未开放"}>
             {activePanel === "workflow" && WORKFLOW_MODE_ENABLED ? <RiGitMergeLine className="h-5 w-5 shrink-0 text-[#111111]" aria-hidden="true" /> : <RiGitPullRequestLine className={!WORKFLOW_MODE_ENABLED ? "h-5 w-5 shrink-0 text-[#b0b0b0]" : "h-5 w-5 shrink-0 text-[#555555]"} aria-hidden="true" />}
-            {!isSidebarCollapsed ? <span className="text-[13px] leading-[1.2]">工作流模式</span> : null}
+            {!isSidebarCollapsed ? <span className="flex items-center gap-1.5 text-[13px] leading-[1.2]">工作流模式<span className="rounded-full bg-[#2fbf4f] px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white">NEW</span></span> : null}
             {!isSidebarCollapsed && !WORKFLOW_MODE_ENABLED ? <span className="ml-auto rounded-full bg-white px-2 py-0.5 text-[11px] text-[#9a9a9a] ring-1 ring-[#e3e3e3]">未开放</span> : null}
           </button>
           <button type="button" onClick={() => {
@@ -14301,7 +14326,7 @@ export function ChatWorkbench() {
                     const poster = posterUrl ?? getLocalVideoPosterUrl(url);
                     return poster ? getMediaThumbnailUrl(poster) : undefined;
                   }}
-                  onGeneratedMedia={(media) => addWorkflowGeneratedAssets(activeWorkflow.id, media.nodeId, { kind: media.kind, urls: media.urls, posterUrl: media.posterUrl, sourcePrompt: media.sourcePrompt, model: media.model, ratio: media.ratio, resolution: media.resolution, duration: media.duration, dimensions: media.dimensions, promptOptimization: media.promptOptimization })}
+                  onGeneratedMedia={(media) => addWorkflowGeneratedAssets(activeWorkflow.id, media.nodeId, { kind: media.kind, urls: media.urls, posterUrl: media.posterUrl, sourcePrompt: media.sourcePrompt, model: media.model, ratio: media.ratio, resolution: media.resolution, duration: media.duration, dimensions: media.dimensions, silent: media.silent, promptOptimization: media.promptOptimization })}
                   onShowTip={showInputTip}
                   onPreviewMedia={(media) => {
                     const existingAsset = assets.find((asset) => isWorkflowAsset(asset) && normalizeMediaUrlForMatch(asset.url) === normalizeMediaUrlForMatch(media.url));
@@ -14352,13 +14377,6 @@ export function ChatWorkbench() {
                 <button type="button" onClick={toggleSidebarVisibility} className="absolute left-4 top-3 flex h-8 w-8 items-center justify-center rounded-md text-[#5c626b] transition hover:bg-black/5 hover:text-[#30343a]" aria-label={isSidebarVisible ? "隐藏左侧栏" : "显示左侧栏"} title={isSidebarVisible ? "隐藏左侧栏" : "显示左侧栏"}>
                   {isSidebarVisible ? <RiLayoutLeft2Line className="h-[22px] w-[22px]" aria-hidden="true" /> : <RiLayoutLeftLine className="h-[22px] w-[22px]" aria-hidden="true" />}
                 </button>
-                <div className="rounded-[16px] border border-[#e5e5e5] bg-white/90 px-8 py-7 shadow-[0_14px_40px_rgba(15,23,42,0.08)] backdrop-blur">
-                  <div className="text-[17px] font-semibold text-[#111111]">还没有工作流</div>
-                  <div className="mt-2 text-[13px] text-[#8a8a8a]">先新建一个工作流，再添加文本和图片节点。</div>
-                  <button type="button" onClick={startNewWorkflow} className="mt-5 inline-flex h-10 items-center gap-2 rounded-full bg-[#367cee] px-4 text-[13px] font-semibold text-white transition hover:bg-[#286fe0]">
-                    <RiAddLine className="h-4 w-4" aria-hidden="true" /> 新建工作流
-                  </button>
-                </div>
               </div>
             )
           ) : isActiveSessionLoading ? (

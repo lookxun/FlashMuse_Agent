@@ -1023,7 +1023,7 @@ function getImageRequestConfig(model: string, settings?: ImageGenerationOptions[
 }
 
 function isTransientImageError(message: string) {
-  return /Internal Server Error|Unexpected end of JSON input|响应解析失败|响应不完整|平台响应不完整|\b500\b|\b502\b|\b503\b|\b504\b/i.test(message);
+  return /Internal Server Error|Unexpected end of JSON input|响应解析失败|响应不完整|平台响应不完整|\b500\b|\b502\b|\b503\b|\b504\b|tokens per min|\bTPM\b|Request too large for|rate limit|rate_limit|too many requests|\b429\b/i.test(message);
 }
 
 function isImageConfigError(message: string) {

@@ -7,7 +7,7 @@ import { prisma } from "@/lib/prisma";
 const scrypt = promisify(scryptCallback);
 
 export const authCookieName = "flashmuse-session";
-const sessionMaxAgeSeconds = process.env.NODE_ENV === "development" ? 24 * 60 * 60 : 60 * 60;
+const sessionMaxAgeSeconds = 24 * 60 * 60;
 const authSecret = process.env.AUTH_SECRET || "flashmuse-local-dev-secret-change-me";
 const forceInsecureAuthCookie = process.env.FORCE_INSECURE_AUTH_COOKIE === "true";
 const authCookieDomain = process.env.AUTH_COOKIE_DOMAIN?.trim() || undefined;

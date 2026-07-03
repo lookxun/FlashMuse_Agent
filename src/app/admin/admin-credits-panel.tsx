@@ -54,9 +54,11 @@ export type AdminCreditUser = {
   conversationConsumedCredits: number;
   assetGenerationConsumedCredits: number;
   promptToolConsumedCredits: number;
+  workflowConsumedCredits: number;
   conversationCreditDetails: AdminCreditConversationDetail[];
   assetGenerationCreditDetails: AdminCreditCategoryDetail[];
   promptToolCreditDetails: AdminCreditCategoryDetail[];
+  workflowCreditDetails: AdminCreditConversationDetail[];
   currentCreditDetails: AdminCreditBalanceItem[];
   lastActiveLabel: string;
 };
@@ -339,10 +341,11 @@ function CreditDetailChildItem({ label, value, marker, onClick }: { label: strin
   return <CreditDetailItem label={label} value={value} marker={marker} onClick={onClick} />;
 }
 
-export function CreditFlowDialog({ user, onClose }: { user: AdminCreditUser; onClose: () => void }) {
+export function CreditFlowDialog({ user, onClose, label = "对话流", details }: { user: AdminCreditUser; onClose: () => void; label?: string; details?: AdminCreditConversationDetail[] }) {
   useBodyScrollLock(true);
 
-  const conversations = useMemo(() => [...user.conversationCreditDetails].sort((left, right) => (right.updatedAtTs ?? 0) - (left.updatedAtTs ?? 0)), [user.conversationCreditDetails]);
+  const sourceDetails = details ?? user.conversationCreditDetails;
+  const conversations = useMemo(() => [...sourceDetails].sort((left, right) => (right.updatedAtTs ?? 0) - (left.updatedAtTs ?? 0)), [sourceDetails]);
   const [activeConversationId, setActiveConversationId] = useState(() => conversations[0]?.id ?? "");
   const activeConversation = conversations.find((item) => item.id === activeConversationId) ?? conversations[0];
   const displayName = user.nickname || user.userEmail;
@@ -351,8 +354,8 @@ export function CreditFlowDialog({ user, onClose }: { user: AdminCreditUser; onC
     <div className="fixed inset-0 z-50 flex items-center justify-center overscroll-contain bg-black/42 px-8 py-8 backdrop-blur-[4px]">
       <div className="flex h-[min(820px,calc(100vh-64px))] w-[min(1180px,calc(100vw-64px))] flex-col overflow-hidden rounded-[10px] bg-white shadow-[0_24px_80px_rgba(0,0,0,0.22)]">
         <header className="relative flex h-[60px] shrink-0 items-center border-b border-[#eeeeee] px-6 pr-14">
-          <div className="truncate text-[14px] font-semibold text-[#111111]">{displayName}对话流消耗积分详细</div>
-          <button type="button" onClick={onClose} className="absolute right-4 top-1/2 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-[9px] text-[#777777] transition hover:bg-[#f2f2f2] hover:text-[#111111]" aria-label="关闭对话流消耗积分详细">
+          <div className="truncate text-[14px] font-semibold text-[#111111]">{displayName}{label}消耗积分详细</div>
+          <button type="button" onClick={onClose} className="absolute right-4 top-1/2 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-[9px] text-[#777777] transition hover:bg-[#f2f2f2] hover:text-[#111111]" aria-label={`关闭${label}消耗积分详细`}>
             <RiCloseLine className="h-5 w-5" />
           </button>
         </header>
@@ -369,11 +372,11 @@ export function CreditFlowDialog({ user, onClose }: { user: AdminCreditUser; onC
                 >
                   <div className="truncate text-[13px] font-medium">
                     {conversation.isDeleted ? <span className="mr-1 text-red-500">用户已删除</span> : null}
-                    <span>【{conversation.conversationCode || "--"}】{conversation.title || "新对话"}</span>
+                    <span>{conversation.conversationCode ? `【${conversation.conversationCode}】` : ""}{conversation.title || (label === "工作流" ? "新工作流" : "新对话")}</span>
                   </div>
                   {activeConversation?.id === conversation.id ? <div className="mt-1 truncate text-[11px] text-[#999999]">{conversation.updatedAtLabel}</div> : null}
                 </button>
-              )) : <div className="pt-8 text-center text-[13px] text-[#999999]">暂无对话流积分</div>}
+              )) : <div className="pt-8 text-center text-[13px] text-[#999999]">暂无{label}积分</div>}
             </div>
           </aside>
 
@@ -394,16 +397,16 @@ export function CreditFlowDialog({ user, onClose }: { user: AdminCreditUser; onC
                       <div className="px-4 py-3 text-right">折算人民币</div>
                     </div>
                     <div className="divide-y divide-[#eeeeee]">
-                      <CreditFlowRow label="对话积分" credits={activeConversation.chatCredits} expectedCredits={activeConversation.chatExpectedCredits} usd={activeConversation.chatUsd ?? 0} cny={activeConversation.chatCny ?? 0} isChargeDisabled={activeConversation.chatChargeDisabled} />
-                      <CreditFlowRow label="规划积分" credits={activeConversation.planCredits} expectedCredits={activeConversation.planExpectedCredits} usd={activeConversation.planUsd ?? 0} cny={activeConversation.planCny ?? 0} isChargeDisabled={activeConversation.planChargeDisabled} />
+                      {label !== "工作流" ? <CreditFlowRow label="对话积分" credits={activeConversation.chatCredits} expectedCredits={activeConversation.chatExpectedCredits} usd={activeConversation.chatUsd ?? 0} cny={activeConversation.chatCny ?? 0} isChargeDisabled={activeConversation.chatChargeDisabled} /> : null}
+                      {label !== "工作流" ? <CreditFlowRow label="规划积分" credits={activeConversation.planCredits} expectedCredits={activeConversation.planExpectedCredits} usd={activeConversation.planUsd ?? 0} cny={activeConversation.planCny ?? 0} isChargeDisabled={activeConversation.planChargeDisabled} /> : null}
                       {activeConversation.mediaItems.map((item) => (
                         <CreditFlowRow key={item.id} label={item.displayName} mediaName={item.mediaName} credits={item.credits} expectedCredits={item.expectedCredits} usd={item.usd} cny={item.cny} meta={formatMetaWithTime(item.parameters, item.createdAtLabel)} errorText={item.errorText} deletedAtLabel={item.deletedAtLabel} mediaUrl={item.url} mediaKind={item.kind} status={item.status} isUploadRecord={item.isUploadRecord} isChargeDisabled={item.isChargeDisabled} isCreditMissing={item.isCreditMissing} isCostUnavailable={item.isCostUnavailable} isReversePrompt={item.isReversePrompt} promptText={item.promptText} promptConstraints={item.promptConstraints} />
                       ))}
-                      {activeConversation.mediaItems.length === 0 ? <div className="px-4 py-8 text-center text-[13px] text-[#999999]">该对话暂无图片或视频积分</div> : null}
+                      {activeConversation.mediaItems.length === 0 ? <div className="px-4 py-8 text-center text-[13px] text-[#999999]">{label === "工作流" ? "该工作流暂无图片或视频积分" : "该对话暂无图片或视频积分"}</div> : null}
                     </div>
                   </div>
                 </div>
-              ) : <div className="pt-20 text-center text-[13px] text-[#999999]">暂无对话流积分</div>}
+              ) : <div className="pt-20 text-center text-[13px] text-[#999999]">暂无{label}积分</div>}
             </div>
           </section>
         </div>
@@ -628,6 +631,7 @@ export function AdminCreditsPanel({ settings, stats, rows }: { settings: AdminCr
   const [detailErrors, setDetailErrors] = useState<Record<string, string>>({});
   const [currentCreditDialogUser, setCurrentCreditDialogUser] = useState<AdminCreditUser | null>(null);
   const [creditFlowDialogUser, setCreditFlowDialogUser] = useState<AdminCreditUser | null>(null);
+  const [workflowFlowDialogUser, setWorkflowFlowDialogUser] = useState<AdminCreditUser | null>(null);
   const [assetGenerationDialogUser, setAssetGenerationDialogUser] = useState<AdminCreditUser | null>(null);
   const [promptToolDialogUser, setPromptToolDialogUser] = useState<AdminCreditUser | null>(null);
   const [loadingDialogTitle, setLoadingDialogTitle] = useState<string | null>(null);
@@ -638,7 +642,7 @@ export function AdminCreditsPanel({ settings, stats, rows }: { settings: AdminCr
 
   const loadUserDetail = async (userId: string) => {
     if (detailsByUserId[userId] || loadingUserIds.has(userId)) return;
-    const cached = getCachedAdminDetail<{ creditUser: AdminCreditUser }>(userId, "records");
+    const cached = getCachedAdminDetail<{ creditUser: AdminCreditUser }>(userId, "credits") ?? getCachedAdminDetail<{ creditUser: AdminCreditUser }>(userId, "records") ?? getCachedAdminDetail<{ creditUser: AdminCreditUser }>(userId, "full");
     if (cached?.creditUser) {
       setDetailsByUserId((current) => ({ ...current, [userId]: cached.creditUser }));
       return;
@@ -650,10 +654,10 @@ export function AdminCreditsPanel({ settings, stats, rows }: { settings: AdminCr
       return next;
     });
     try {
-      const response = await fetch(`/admin/api/records/user-detail?userId=${encodeURIComponent(userId)}&mode=records`);
+      const response = await fetch(`/admin/api/records/user-detail?userId=${encodeURIComponent(userId)}&mode=credits`);
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(typeof payload.error === "string" ? payload.error : "加载失败");
-      setCachedAdminDetail(userId, "records", payload.detail);
+      setCachedAdminDetail(userId, "credits", payload.detail);
       setDetailsByUserId((current) => ({ ...current, [userId]: payload.detail.creditUser as AdminCreditUser }));
     } catch (error) {
       setDetailErrors((current) => ({ ...current, [userId]: error instanceof Error ? error.message : "加载失败" }));
@@ -699,13 +703,14 @@ export function AdminCreditsPanel({ settings, stats, rows }: { settings: AdminCr
     }
   };
 
-  const openCreditDialog = async (userId: string, type: "current" | "conversation" | "asset" | "prompt") => {
+  const openCreditDialog = async (userId: string, type: "current" | "conversation" | "asset" | "prompt" | "workflow") => {
     const detail = await loadFullCreditDetailForDialog(userId, type === "current" ? "正在加载当前积分明细..." : "正在加载积分明细...");
     if (!detail) return;
     if (type === "current") setCurrentCreditDialogUser(detail);
     if (type === "conversation") setCreditFlowDialogUser(detail);
     if (type === "asset") setAssetGenerationDialogUser(detail);
     if (type === "prompt") setPromptToolDialogUser(detail);
+    if (type === "workflow") setWorkflowFlowDialogUser(detail);
   };
 
   const toggleExpandedUser = (userId: string) => {
@@ -929,6 +934,7 @@ export function AdminCreditsPanel({ settings, stats, rows }: { settings: AdminCr
                           <div className="space-y-px">
                             <CreditDetailItem label="已消耗积分" value={`-${detailRow.consumedCredits.toLocaleString("en-US")}`} />
                             <CreditDetailChildItem marker="dash" label="对话流消耗积分详细" value={`-${detailRow.conversationConsumedCredits.toLocaleString("en-US")}`} onClick={() => void openCreditDialog(detailRow.id, "conversation")} />
+                            <CreditDetailChildItem marker="dash" label="工作流消耗积分详细" value={`-${(detailRow.workflowConsumedCredits ?? 0).toLocaleString("en-US")}`} onClick={() => void openCreditDialog(detailRow.id, "workflow")} />
                             <CreditDetailChildItem marker="dash" label="资产库消耗积分详细" value={`-${detailRow.assetGenerationConsumedCredits.toLocaleString("en-US")}`} onClick={() => void openCreditDialog(detailRow.id, "asset")} />
                             <CreditDetailChildItem marker="dash" label="反推/优化提示词消耗积分详细" value={`-${detailRow.promptToolConsumedCredits.toLocaleString("en-US")}`} onClick={() => void openCreditDialog(detailRow.id, "prompt")} />
                           </div>
@@ -983,6 +989,7 @@ export function AdminCreditsPanel({ settings, stats, rows }: { settings: AdminCr
       ) : null}
       {currentCreditDialogUser ? <CurrentCreditDialog user={currentCreditDialogUser} onClose={() => setCurrentCreditDialogUser(null)} /> : null}
       {creditFlowDialogUser ? <CreditFlowDialog user={creditFlowDialogUser} onClose={() => setCreditFlowDialogUser(null)} /> : null}
+      {workflowFlowDialogUser ? <CreditFlowDialog user={workflowFlowDialogUser} label="工作流" details={workflowFlowDialogUser.workflowCreditDetails} onClose={() => setWorkflowFlowDialogUser(null)} /> : null}
       {assetGenerationDialogUser ? <CreditCategoryDialog title="资产库消耗积分详细" user={assetGenerationDialogUser} categories={assetGenerationDialogUser.assetGenerationCreditDetails} onClose={() => setAssetGenerationDialogUser(null)} /> : null}
       {promptToolDialogUser ? <CreditCategoryDialog title="反推/优化提示词消耗积分详细" user={promptToolDialogUser} categories={promptToolDialogUser.promptToolCreditDetails} onClose={() => setPromptToolDialogUser(null)} /> : null}
       {loadingDialogTitle ? <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/42 px-8 py-8 backdrop-blur-[4px]"><div className="w-[360px] rounded-[12px] bg-white shadow-[0_24px_80px_rgba(0,0,0,0.22)]"><AdminDetailLoading label={loadingDialogTitle} /></div></div> : null}

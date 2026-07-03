@@ -4,7 +4,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { createPortal } from "react-dom";
 import { BaseBoxShapeUtil, BindingUtil, CubicBezier2d, HTMLContainer, Mat, Rectangle2d, SVGContainer, SelectionForegroundOverlayUtil, ShapeUtil, T, Tldraw, Vec, createShapeId, defaultBindingUtils, defaultOverlayUtils, defaultShapeUtils, resizeBox, useActions, useEditor, useValue, vecModelValidator, type Editor, type IndexKey, type RecordProps, type TLBinding, type TLComponents, type TLHandle, type TLHandleDragInfo, type TLResizeInfo, type TLShape, type TLShapeId, type TLUiOverrides, type TldrawOptions, type VecModel } from "tldraw";
 import { type IconType } from "react-icons";
-import { RiAddLine, RiArrowDownSLine, RiArrowUpLine, RiBringForward, RiBringToFront, RiCheckLine, RiCheckboxBlankCircleLine, RiCheckboxMultipleLine, RiClipboardLine, RiCloseLine, RiCursorLine, RiDeleteBinLine, RiDownloadLine, RiEmotionSadLine, RiExportLine, RiEyeLine, RiEyeOffLine, RiFileCodeLine, RiFileCopy2Line, RiFileCopyLine, RiFileImageLine, RiFileTextLine, RiFilmAiLine, RiFocus3Line, RiGoogleFill, RiHand, RiHistoryLine, RiImage2Line, RiImageAiLine, RiImageCircleLine, RiImageLine, RiInformation2Line, RiLayoutLeft2Line, RiLayoutLeftLine, RiLoader4Line, RiLockLine, RiLockUnlockLine, RiMore2Line, RiMultiImageLine, RiNodeTree, RiOpenaiFill, RiPlayLargeFill, RiResetLeftLine, RiRoadMapLine, RiScissorsCutLine, RiSendBackward, RiSendToBack, RiShining2Line, RiStackLine, RiTBoxLine, RiTextBlock, RiTextSnippet, RiTimeLine, RiTiktokFill, RiUpload2Line, RiVideoLine, RiVideoOnLine, RiVoiceprintLine, RiZoomInLine, RiZoomOutLine } from "react-icons/ri";
+import { RiAddLine, RiArrowDownSLine, RiArrowUpLine, RiBringForward, RiBringToFront, RiCheckLine, RiCheckboxBlankCircleLine, RiCheckboxMultipleLine, RiClipboardLine, RiCloseLine, RiCursorLine, RiDeleteBinLine, RiDownloadLine, RiEmotionSadLine, RiExportLine, RiEyeLine, RiEyeOffLine, RiFileCodeLine, RiFileCopy2Line, RiFileCopyLine, RiFileImageLine, RiFileTextLine, RiFilmAiLine, RiFocus3Line, RiGoogleFill, RiHand, RiHistoryLine, RiImage2Line, RiImageAiLine, RiImageCircleLine, RiImageLine, RiInformation2Line, RiLayoutLeft2Line, RiLayoutLeftLine, RiLoader4Line, RiLockLine, RiLockUnlockLine, RiMoreLine, RiMultiImageLine, RiNodeTree, RiOpenaiFill, RiPlayLargeFill, RiResetLeftLine, RiRoadMapLine, RiScissorsCutLine, RiSendBackward, RiSendToBack, RiShining2Line, RiStackLine, RiTBoxLine, RiTextBlock, RiTextSnippet, RiTimeLine, RiTiktokFill, RiUpload2Line, RiVideoLine, RiVideoOnLine, RiVoiceprintLine, RiZoomInLine, RiZoomOutLine } from "react-icons/ri";
 import { BytePlusIcon } from "@/components/byteplus-icon";
 import { DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, bytePlusVideoGenerationModels, frontendConversationModels, frontendImageGenerationModels, getExpectedImageDimensions, getExpectedVideoDimensions, getSupportedImageResolutions, getSupportedVideoRatios, getSupportedVideoResolutions, imageGenerationModels, normalizeImageResolutionForModel, normalizeVideoRatioForModel, normalizeVideoResolutionForModel, videoGenerationModels, type ConversationModel, type GenerationModel, type ModelName } from "@/lib/models";
 import { GENERIC_MEDIA_ERROR_MESSAGE, toUserErrorMessage } from "@/lib/error-message";
@@ -86,6 +86,7 @@ export type WorkflowCanvasState = {
   edges: WorkflowEdge[];
   viewport?: { x: number; y: number; zoom: number };
   historicalTextNodes?: WorkflowNode[];
+  historicalMediaNodes?: WorkflowNode[];
 };
 
 const workflowUploadApiBaseUrl = (process.env.NEXT_PUBLIC_UPLOAD_BASE_URL ?? "").replace(/\/$/, "");
@@ -128,7 +129,7 @@ type WorkflowCanvasProps = {
   onChange: (next: WorkflowCanvasState) => void;
   workflowTitle: string;
   onCredit?: (credit?: CreditResult) => void;
-  onGeneratedMedia?: (media: { nodeId: string; kind: "image" | "video"; urls: string[]; posterUrl?: string; sourcePrompt: string; model?: ModelName; ratio?: string; resolution?: string; duration?: string; dimensions?: Record<string, { width: number; height: number }>; durationSeconds?: Record<string, number>; promptOptimization?: { originalPrompt: string; optimizedPrompt: string; attemptsUsed: number; optimizerModel: string } }) => void;
+  onGeneratedMedia?: (media: { nodeId: string; kind: "image" | "video"; urls: string[]; posterUrl?: string; sourcePrompt: string; model?: ModelName; ratio?: string; resolution?: string; duration?: string; dimensions?: Record<string, { width: number; height: number }>; durationSeconds?: Record<string, number>; silent?: boolean; promptOptimization?: { originalPrompt: string; optimizedPrompt: string; attemptsUsed: number; optimizerModel: string } }) => void;
   onPreviewMedia?: (media: { nodeId: string; kind: "image" | "video"; url: string; posterUrl?: string; name: string; sourcePrompt?: string; model?: ModelName; ratio?: string; resolution?: string; duration?: string; dimensions?: { width: number; height: number } }) => void;
   onShowTip?: (message: string) => void;
   getImageDisplayUrl?: (url: string) => string;
@@ -1247,6 +1248,11 @@ function focusWorkflowNodeInViewport(editor: Editor, node: WorkflowNode) {
   editor.zoomToBounds({ x: node.x, y: node.y, w: size.w, h: size.h }, { targetZoom: zoom, inset: 0, animation: { duration: 180 } });
 }
 
+function centerWorkflowNodeInViewport(editor: Editor, node: WorkflowNode) {
+  const size = getWorkflowNodeVisualSize(node);
+  editor.centerOnPoint({ x: node.x + size.w / 2, y: node.y + size.h / 2 }, { animation: { duration: 180 } });
+}
+
 function zoomToWorkflowNodes(editor: Editor, nodes: WorkflowNode[]) {
   const shapes = editor.getCurrentPageShapes().filter((shape): shape is WorkflowNodeShape => shape.type === "workflow_node");
   const shapeBounds = shapes.map((shape) => editor.getShapePageBounds(shape)).filter((bounds): bounds is NonNullable<typeof bounds> => Boolean(bounds));
@@ -1330,7 +1336,24 @@ function normalizeState(value?: WorkflowCanvasState): WorkflowCanvasState {
       return [...items, normalizedNode];
     }, [])
     : undefined;
-  return { nodes, edges, viewport, historicalTextNodes };
+  const historicalMediaNodes = Array.isArray(value.historicalMediaNodes)
+    ? value.historicalMediaNodes.reduce<WorkflowNode[]>((items, node) => {
+      if (!node || (node.kind !== "image" && node.kind !== "video")) return items;
+      const url = getWorkflowNodeHistoricalMediaUrl(node);
+      if (!url) return items;
+      const normalizedNode = {
+        ...node,
+        title: typeof node.title === "string" && node.title.trim() ? node.title : getNodeLabel(node.kind),
+        x: Number.isFinite(node.x) ? node.x : 160,
+        y: Number.isFinite(node.y) ? node.y : 120,
+        data: { ...getDefaultNodeData(node.kind), ...(node.data && typeof node.data === "object" ? node.data : {}) },
+      };
+      const key = normalizeWorkflowMediaUrl(url);
+      if (!key || items.some((item) => normalizeWorkflowMediaUrl(getWorkflowNodeHistoricalMediaUrl(item) ?? "") === key)) return items;
+      return [...items, normalizedNode];
+    }, [])
+    : undefined;
+  return { nodes, edges, viewport, historicalTextNodes, historicalMediaNodes };
 }
 
 function getWorkflowTextNodeContent(node: WorkflowNode) {
@@ -1355,6 +1378,33 @@ function addHistoricalTextNodes(state: WorkflowCanvasState, nodes: WorkflowNode[
   const additionKeys = new Set(additions.map(normalizeWorkflowHistoricalTextContent));
   const nextHistorical = [...additions, ...existing.filter((node) => !additionKeys.has(normalizeWorkflowHistoricalTextContent(node)))].slice(0, 80);
   return { ...state, historicalTextNodes: nextHistorical };
+}
+
+function getWorkflowNodeHistoricalMediaUrl(node: WorkflowNode): string | undefined {
+  if (node.kind === "image") return node.data.images?.[0];
+  if (node.kind === "video") return node.data.videoUrl;
+  return undefined;
+}
+
+function addHistoricalMediaNodes(state: WorkflowCanvasState, nodes: WorkflowNode[]) {
+  const existing = state.historicalMediaNodes ?? [];
+  const existingKeys = new Set(existing.map((node) => normalizeWorkflowMediaUrl(getWorkflowNodeHistoricalMediaUrl(node) ?? "")).filter(Boolean));
+  const seen = new Set<string>();
+  const additions = nodes.filter((node) => {
+    const url = getWorkflowNodeHistoricalMediaUrl(node);
+    if (!url) return false;
+    const key = normalizeWorkflowMediaUrl(url);
+    if (!key || seen.has(key) || existingKeys.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).map((node) => ({ ...node }));
+  if (additions.length === 0) return state;
+  const nextHistorical = [...additions, ...existing].slice(0, 80);
+  return { ...state, historicalMediaNodes: nextHistorical };
+}
+
+function addHistoricalNodes(state: WorkflowCanvasState, nodes: WorkflowNode[]) {
+  return addHistoricalMediaNodes(addHistoricalTextNodes(state, nodes), nodes);
 }
 
 function stateKey(value: WorkflowCanvasState) {
@@ -1717,6 +1767,7 @@ type WorkflowRuntime = {
   selectedNodeId: string;
   connectingFrom: string;
   connectingTo: string;
+  multiConnectSources: string[];
   connectionPointer?: { x: number; y: number };
   modelOptions: WorkflowModelOptions;
   workflowTitle: string;
@@ -1727,6 +1778,7 @@ type WorkflowRuntime = {
   setConnectingFrom: (nodeId: string) => void;
   beginConnectionDrag: (nodeId: string, event: ReactPointerEvent) => void;
   beginInputConnectionDrag: (nodeId: string, event: ReactPointerEvent) => void;
+  beginMultiConnectionDrag: (sourceIds: string[], event: ReactPointerEvent) => void;
   runImageNode: (node: WorkflowNode) => void;
   runGptImageOptimizationRetry: (node: WorkflowNode, maxAttempts: number) => void;
   runVideoNode: (node: WorkflowNode) => void;
@@ -2008,7 +2060,7 @@ function WorkflowShapeComponent({ shape }: { shape: WorkflowNodeShape }) {
   const imageMediaName = imageUrl ? node.data.mediaSystemNames?.[imageUrl] ?? "图片生成" : "图片生成";
   const videoMediaName = node.data.videoUrl ? node.data.mediaSystemNames?.[node.data.videoUrl] ?? "视频生成" : "视频生成";
   const showOutputPort = ((isSelected || isHovered || keepPortVisible) && !runtime.connectingFrom || Boolean(runtime.connectingTo)) && canWorkflowNodeOutput(node);
-  const showInputPort = (isSelected || isHovered || keepPortVisible || Boolean(runtime.connectingFrom)) && canWorkflowNodeInput(node);
+  const showInputPort = (isSelected || isHovered || keepPortVisible || Boolean(runtime.connectingFrom) || runtime.multiConnectSources.length > 0) && canWorkflowNodeInput(node);
 
   useEffect(() => () => {
     if (portHoverTimerRef.current !== null) window.clearTimeout(portHoverTimerRef.current);
@@ -2032,7 +2084,7 @@ function WorkflowShapeComponent({ shape }: { shape: WorkflowNodeShape }) {
         {node.kind === "audio" ? <AudioDisplayCard node={node} selected={isSelected} height={shape.props.h} /> : null}
         {node.data.uploadProgress !== undefined && node.kind !== "audio" ? <UploadingNodeOverlay progress={node.data.uploadProgress} height={shape.props.h} /> : null}
         {showOutputPort ? <NodePort side="right" onPointerEnter={holdPortVisible} onPointerLeave={releasePortVisibleSoon} onPointerDown={(event) => runtime.beginConnectionDrag(node.id, event)} /> : null}
-        {showInputPort ? <NodePort side="left" active={Boolean(runtime.connectingFrom && runtime.connectingFrom !== node.id)} onPointerEnter={holdPortVisible} onPointerLeave={releasePortVisibleSoon} onPointerDown={(event) => runtime.beginInputConnectionDrag(node.id, event)} /> : null}
+        {showInputPort ? <NodePort side="left" active={Boolean((runtime.connectingFrom && runtime.connectingFrom !== node.id) || (runtime.multiConnectSources.length > 0 && !runtime.multiConnectSources.includes(node.id)))} onPointerEnter={holdPortVisible} onPointerLeave={releasePortVisibleSoon} onPointerDown={(event) => runtime.beginInputConnectionDrag(node.id, event)} /> : null}
       </div>
     </HTMLContainer>
   );
@@ -2226,7 +2278,7 @@ function WorkflowCustomContextMenu({ menu, onClose, onAddNode, onUploadNode, onU
         <>
           <button type="button" onClick={() => runAddNode("text")} className={itemClassName}>{menuLabel(RiTextBlock, "插入文本节点")}<span className="text-[11px] text-[#999999]">T</span></button>
           <button type="button" onClick={() => runAddNode("image")} className={itemClassName}>{menuLabel(RiImageAiLine, "插入图片节点")}<span className="text-[11px] text-[#999999]">I</span></button>
-          <button type="button" onClick={() => runAddNode("video")} className={itemClassName}>{menuLabel(RiFilmAiLine, "插入视频节点")}<span className="text-[11px] text-[#999999]">V</span></button>
+          <button type="button" onClick={() => runAddNode("video")} className={itemClassName}>{menuLabel(RiFilmAiLine, "插入视频节点")}<span className="text-[11px] text-[#999999]">D</span></button>
           <button type="button" onClick={runUploadNode} className={itemClassName}>{menuLabel(RiUpload2Line, "上传文件")}</button>
           {separator}
           <button type="button" onClick={() => { editor.zoomIn(); onClose(); }} className={itemClassName}>{menuLabel(RiZoomInLine, "画布放大")}<span className="text-[11px] text-[#999999]">Ctrl +</span></button>
@@ -2292,10 +2344,12 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
   const wasBrushingRef = useRef(false);
   const activeCanvasToolRef = useRef<"select" | "hand">("select");
   const recentActionNodeIdsRef = useRef<string[]>([]);
+  const lastHandledDropStampRef = useRef(-1);
   const uploadNodeInputRef = useRef<HTMLInputElement | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState("");
   const [connectingFrom, setConnectingFrom] = useState("");
   const [connectingTo, setConnectingTo] = useState("");
+  const [multiConnectSources, setMultiConnectSources] = useState<string[]>([]);
   const [connectionPointer, setConnectionPointer] = useState<{ x: number; y: number } | undefined>();
   const [activeCanvasTool, setActiveCanvasToolState] = useState<"select" | "hand">("select");
   const [editorTick, setEditorTick] = useState(0);
@@ -2334,13 +2388,14 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     const nodeIds = new Set(nodes.map((node) => node.id));
     const current = stateRef.current;
     const missingNodes = current.nodes.filter((node) => !nodeIds.has(node.id));
-    const withHistoricalText = addHistoricalTextNodes(current, missingNodes);
+    const withHistorical = addHistoricalNodes(current, missingNodes);
     const camera = editor.getCamera();
     return {
       nodes,
       edges: current.edges.filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target)),
       viewport: { x: camera.x, y: camera.y, zoom: camera.z },
-      historicalTextNodes: withHistoricalText.historicalTextNodes,
+      historicalTextNodes: withHistorical.historicalTextNodes,
+      historicalMediaNodes: withHistorical.historicalMediaNodes,
     };
   }, []);
 
@@ -2512,7 +2567,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
         return;
       }
       if (shape.type !== "workflow_node") return;
-      stateRef.current = addHistoricalTextNodes(stateRef.current, [(shape as WorkflowNodeShape).props.node]);
+      stateRef.current = addHistoricalNodes(stateRef.current, [(shape as WorkflowNodeShape).props.node]);
       syncAfterTldrawAction();
     });
     const unlistenBindingCreate = editor.sideEffects.registerAfterCreateHandler("binding", (binding) => {
@@ -2827,6 +2882,24 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     return node.id;
   }, [updateState]);
 
+  const duplicateWorkflowNodeToCanvas = useCallback((sourceNode: WorkflowNode, pagePoint?: { x: number; y: number }) => {
+    const current = stateRef.current;
+    const size = getWorkflowNodeVisualSize(sourceNode);
+    const position = pagePoint
+      ? { x: pagePoint.x - size.w / 2, y: pagePoint.y - size.h / 2 }
+      : findNonOverlappingNodePosition(current.nodes, size, sourceNode);
+    const node: WorkflowNode = { ...sourceNode, id: createId("workflow_node"), x: position.x, y: position.y, data: { ...sourceNode.data } };
+    recentActionNodeIdsRef.current = [node.id, ...recentActionNodeIdsRef.current].slice(0, 20);
+    updateState((state) => ({ ...state, nodes: [...state.nodes, node] }));
+    window.requestAnimationFrame(() => {
+      const editor = editorRef.current;
+      if (!editor) return;
+      editor.select(getShapeId(node.id));
+      focusWorkflowNodeInViewport(editor, node);
+    });
+    return node.id;
+  }, [updateState]);
+
   const uploadFilesAsConnectedNodes = useCallback((targetNodeId: string, files: File[]) => {
     if (files.length === 0) return;
     const run = async () => {
@@ -2854,10 +2927,10 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     void run();
   }, [findExistingUploadNodeForFile, handleUploadNodeFile, onShowTip, restoreWorkflowAssetToCanvas, selectAndFocusUploadedNodes, updateState, workflowAssets]);
 
-  const restoreHistoricalTextNodeToCanvas = useCallback((historicalNode: WorkflowNode) => {
+  const restoreHistoricalTextNodeToCanvas = useCallback((historicalNode: WorkflowNode, pagePoint?: { x: number; y: number }) => {
     const current = stateRef.current;
     const size = getWorkflowNodeVisualSize(historicalNode);
-    const position = findNonOverlappingNodePosition(current.nodes, size, current.nodes[current.nodes.length - 1]);
+    const position = pagePoint ? { x: pagePoint.x - size.w / 2, y: pagePoint.y - size.h / 2 } : findNonOverlappingNodePosition(current.nodes, size, current.nodes[current.nodes.length - 1]);
     const node = { ...historicalNode, id: createId("workflow_node"), x: position.x, y: position.y };
     updateState((state) => ({
       ...state,
@@ -2874,6 +2947,28 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
 
   const deleteHistoricalTextNode = useCallback((historicalNode: WorkflowNode) => {
     updateState((state) => ({ ...state, historicalTextNodes: (state.historicalTextNodes ?? []).filter((item) => item.id !== historicalNode.id) }));
+  }, [updateState]);
+
+  const restoreHistoricalMediaNode = useCallback((historicalNode: WorkflowNode, pagePoint?: { x: number; y: number }) => {
+    const current = stateRef.current;
+    const size = getWorkflowNodeVisualSize(historicalNode);
+    const position = pagePoint ? { x: pagePoint.x - size.w / 2, y: pagePoint.y - size.h / 2 } : findNonOverlappingNodePosition(current.nodes, size, current.nodes[current.nodes.length - 1]);
+    const node = { ...historicalNode, id: createId("workflow_node"), x: position.x, y: position.y };
+    updateState((state) => ({
+      ...state,
+      nodes: [...state.nodes, node],
+      historicalMediaNodes: (state.historicalMediaNodes ?? []).filter((item) => item.id !== historicalNode.id),
+    }));
+    window.requestAnimationFrame(() => {
+      const editor = editorRef.current;
+      if (!editor) return;
+      editor.select(getShapeId(node.id));
+      focusWorkflowNodeInViewport(editor, node);
+    });
+  }, [updateState]);
+
+  const deleteHistoricalMediaNode = useCallback((historicalNode: WorkflowNode) => {
+    updateState((state) => ({ ...state, historicalMediaNodes: (state.historicalMediaNodes ?? []).filter((item) => item.id !== historicalNode.id) }));
   }, [updateState]);
 
   const deleteHistoricalWorkflowAsset = useCallback((asset: WorkflowAssetSummary) => {
@@ -2907,6 +3002,9 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
   }, []);
 
   const handleWorkflowAssetDrop = useCallback((event: ReactDragEvent<HTMLDivElement>) => {
+    if ((event.target as HTMLElement | null)?.closest(".workflow-layer-panel")) return;
+    if (event.timeStamp - lastHandledDropStampRef.current < 200) return;
+    lastHandledDropStampRef.current = event.timeStamp;
     if (event.dataTransfer.types.includes("Files")) {
       event.preventDefault();
       event.stopPropagation();
@@ -2917,15 +3015,39 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
       }
       return;
     }
+    const editor = editorRef.current;
+    const getPagePoint = () => editor?.screenToPage({ x: event.clientX, y: event.clientY });
+    const duplicateNodeId = event.dataTransfer.getData("application/x-flashmuse-workflow-node");
+    if (duplicateNodeId) {
+      const node = stateRef.current.nodes.find((item) => item.id === duplicateNodeId);
+      if (!node) return;
+      event.preventDefault();
+      duplicateWorkflowNodeToCanvas(node, getPagePoint());
+      return;
+    }
+    const historyMediaId = event.dataTransfer.getData("application/x-flashmuse-workflow-history-media");
+    if (historyMediaId) {
+      const node = (stateRef.current.historicalMediaNodes ?? []).find((item) => item.id === historyMediaId);
+      if (!node) return;
+      event.preventDefault();
+      restoreHistoricalMediaNode(node, getPagePoint());
+      return;
+    }
+    const historyTextId = event.dataTransfer.getData("application/x-flashmuse-workflow-history-text");
+    if (historyTextId) {
+      const node = (stateRef.current.historicalTextNodes ?? []).find((item) => item.id === historyTextId);
+      if (!node) return;
+      event.preventDefault();
+      restoreHistoricalTextNodeToCanvas(node, getPagePoint());
+      return;
+    }
     const assetId = event.dataTransfer.getData("application/x-flashmuse-workflow-asset") || event.dataTransfer.getData("text/plain");
     if (!assetId) return;
     const asset = workflowAssets.find((item) => item.id === assetId);
     if (!asset) return;
     event.preventDefault();
-    const editor = editorRef.current;
-    const pagePoint = editor?.screenToPage({ x: event.clientX, y: event.clientY });
-    restoreWorkflowAssetToCanvas(asset, pagePoint);
-  }, [handleUploadNodeFiles, onExternalFilesDrop, restoreWorkflowAssetToCanvas, workflowAssets]);
+    restoreWorkflowAssetToCanvas(asset, getPagePoint());
+  }, [duplicateWorkflowNodeToCanvas, handleUploadNodeFiles, onExternalFilesDrop, restoreHistoricalMediaNode, restoreHistoricalTextNodeToCanvas, restoreWorkflowAssetToCanvas, workflowAssets]);
 
   const handleWorkflowContextMenu = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
     const editor = editorRef.current;
@@ -2984,7 +3106,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     recentActionNodeIdsRef.current = recentActionNodeIdsRef.current.filter((id) => id !== nodeId);
     updateState((current) => {
       const deletedNodes = current.nodes.filter((node) => node.id === nodeId);
-      const withHistory = addHistoricalTextNodes(current, deletedNodes);
+      const withHistory = addHistoricalNodes(current, deletedNodes);
       return { ...withHistory, nodes: withHistory.nodes.filter((node) => node.id !== nodeId), edges: withHistory.edges.filter((edge) => edge.source !== nodeId && edge.target !== nodeId) };
     });
     if (connectingFrom === nodeId) setConnectingFrom("");
@@ -3014,7 +3136,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
       const deleting = new Set(selectedNodeIds);
       updateState((current) => {
         const deletedNodes = current.nodes.filter((node) => deleting.has(node.id));
-        const withHistory = addHistoricalTextNodes(current, deletedNodes);
+        const withHistory = addHistoricalNodes(current, deletedNodes);
         return { ...withHistory, nodes: withHistory.nodes.filter((node) => !deleting.has(node.id)), edges: withHistory.edges.filter((edge) => !deleting.has(edge.source) && !deleting.has(edge.target)) };
       });
       if (selectedNodeIds.includes(connectingFrom)) setConnectingFrom("");
@@ -3050,10 +3172,14 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
         setContextMenu(null);
         return;
       }
-      if (!event.ctrlKey && !event.metaKey && !event.altKey && (key === "t" || key === "i" || key === "v")) {
+      if (!event.ctrlKey && !event.metaKey && !event.altKey && (key === "t" || key === "i" || key === "d")) {
         event.preventDefault();
         addNode(key === "t" ? "text" : key === "i" ? "image" : "video");
         setContextMenu(null);
+        return;
+      }
+      if (!event.ctrlKey && !event.metaKey && !event.altKey && key === "v") {
+        setCanvasTool("select");
         return;
       }
       if (!event.ctrlKey && !event.metaKey && !event.altKey && key === "h") {
@@ -3137,6 +3263,94 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     window.addEventListener("pointermove", handlePointerMove, true);
     window.addEventListener("pointerup", handlePointerUp, true);
   }, [onShowTip, updateState, uploadRuleOverrides]);
+
+  const showMultiConnectTips = useCallback((messages: string[]) => {
+    messages.forEach((message) => onShowTip?.(message));
+  }, [onShowTip]);
+
+  const connectMultipleSourcesToTarget = useCallback((sourceIds: string[], targetId: string) => {
+    const current = stateRef.current;
+    const target = current.nodes.find((node) => node.id === targetId);
+    if (!target) return;
+    if (!canWorkflowNodeInput(target)) {
+      onShowTip?.("目标节点不是可输入的空图片/视频节点");
+      return;
+    }
+    // Layer 1: keep only selected nodes that actually have output content (drop empty generation nodes).
+    const outputSources = sourceIds
+      .filter((id) => id !== targetId)
+      .map((id) => current.nodes.find((node) => node.id === id))
+      .filter((node): node is WorkflowNode => Boolean(node) && canWorkflowNodeOutput(node as WorkflowNode));
+    if (outputSources.length === 0) {
+      onShowTip?.("选中的节点没有可连接的内容");
+      return;
+    }
+    // Shuffle media sources so that when the target count limit is reached, the discarded ones are random.
+    const shuffled = [...outputSources];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+    const workingEdges = [...current.edges];
+    const newEdges: WorkflowEdge[] = [];
+    let typeRejected = false;
+    let countRejected = false;
+    for (const source of shuffled) {
+      const stateForCheck = { ...current, edges: workingEdges };
+      const baseError = getWorkflowConnectionError(source, target, workingEdges);
+      if (baseError) {
+        if (baseError.includes("类型")) typeRejected = true;
+        // duplicate / cycle / self are silently skipped
+        continue;
+      }
+      const textError = validateWorkflowConnectionTextLimit(source, target, stateForCheck);
+      if (textError) {
+        countRejected = true;
+        continue;
+      }
+      const uploadError = validateWorkflowConnectionUploadRules(source, target, stateForCheck, uploadRuleOverrides);
+      if (uploadError) {
+        if (uploadError.includes("不支持")) typeRejected = true;
+        else countRejected = true;
+        continue;
+      }
+      const edge = { id: createId("workflow_edge"), source: source.id, target: targetId };
+      workingEdges.push(edge);
+      newEdges.push(edge);
+    }
+    if (newEdges.length > 0) updateState((state) => ({ ...state, edges: [...state.edges, ...newEdges] }));
+    const messages: string[] = [];
+    if (typeRejected) messages.push("部分节点类型不被目标支持，已跳过");
+    if (countRejected) messages.push("超出目标可接收的数量，已随机舍弃多余的连接");
+    if (newEdges.length === 0 && messages.length === 0) messages.push("没有可连接到该节点的选中节点");
+    showMultiConnectTips(messages);
+  }, [onShowTip, showMultiConnectTips, updateState, uploadRuleOverrides]);
+
+  const beginMultiConnectionDrag = useCallback((sourceIds: string[], event: ReactPointerEvent) => {
+    const current = stateRef.current;
+    const outputSources = sourceIds.filter((id) => {
+      const node = current.nodes.find((item) => item.id === id);
+      return node ? canWorkflowNodeOutput(node) : false;
+    });
+    if (outputSources.length === 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setMultiConnectSources(outputSources);
+    setConnectionPointer({ x: event.clientX, y: event.clientY });
+    const handlePointerMove = (moveEvent: PointerEvent) => setConnectionPointer({ x: moveEvent.clientX, y: moveEvent.clientY });
+    const handlePointerUp = (upEvent: PointerEvent) => {
+      window.removeEventListener("pointermove", handlePointerMove, true);
+      window.removeEventListener("pointerup", handlePointerUp, true);
+      const targetElement = document.elementFromPoint(upEvent.clientX, upEvent.clientY) as HTMLElement | null;
+      const targetNodeId = targetElement?.closest<HTMLElement>("[data-workflow-node-id]")?.dataset.workflowNodeId;
+      setConnectionPointer(undefined);
+      if (targetNodeId) connectMultipleSourcesToTarget(outputSources, targetNodeId);
+      setMultiConnectSources([]);
+    };
+    window.addEventListener("pointermove", handlePointerMove, true);
+    window.addEventListener("pointerup", handlePointerUp, true);
+  }, [connectMultipleSourcesToTarget]);
+
 
   const getIncomingNodes = useCallback((nodeId: string) => stateRef.current.edges.filter((edge) => edge.target === nodeId).map((edge) => stateRef.current.nodes.find((node) => node.id === edge.source)).filter(Boolean) as WorkflowNode[], []);
   const getConnectedInputUploads = useCallback((nodeId: string) => getWorkflowConnectedInputUploads(stateRef.current, nodeId), []);
@@ -3369,19 +3583,20 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     }
   }, [getEnabledVideoModel, getInputText, getPromptReferenceUrls, getReferenceImages, getReferenceMediaUrls, onShowTip, pollVideoNode, updateNode, uploadRuleOverrides, workflowId, workflowTitle]);
 
-  const runtime = useMemo<WorkflowRuntime>(() => ({ selectedNodeId, connectingFrom, connectingTo, connectionPointer, modelOptions, workflowTitle, updateNode, deleteNode, disconnectNodes, connectTo, setConnectingFrom, beginConnectionDrag, beginInputConnectionDrag, runImageNode: (node) => void runImageNode(node), runGptImageOptimizationRetry: (node, maxAttempts) => void runGptImageOptimizationRetry(node, maxAttempts), runVideoNode: (node) => void runVideoNode(node), onGeneratedMedia, onShowTip, markNodeAction, onPreviewMedia, getImageDisplayUrl, getVideoPosterDisplayUrl, referenceAssets, referenceAssetsLoadStatus, onLoadReferenceAssets, uploadRuleOverrides, getConnectedInputUploads, getInputTextLength, uploadFilesAsConnectedNodes }), [beginConnectionDrag, beginInputConnectionDrag, connectTo, connectingFrom, connectingTo, connectionPointer, deleteNode, disconnectNodes, getConnectedInputUploads, getImageDisplayUrl, getInputTextLength, getVideoPosterDisplayUrl, markNodeAction, modelOptions, onGeneratedMedia, onLoadReferenceAssets, onPreviewMedia, onShowTip, referenceAssets, referenceAssetsLoadStatus, runGptImageOptimizationRetry, runImageNode, runVideoNode, selectedNodeId, updateNode, uploadFilesAsConnectedNodes, uploadRuleOverrides, workflowTitle]);
+  const runtime = useMemo<WorkflowRuntime>(() => ({ selectedNodeId, connectingFrom, connectingTo, multiConnectSources, connectionPointer, modelOptions, workflowTitle, updateNode, deleteNode, disconnectNodes, connectTo, setConnectingFrom, beginConnectionDrag, beginInputConnectionDrag, beginMultiConnectionDrag, runImageNode: (node) => void runImageNode(node), runGptImageOptimizationRetry: (node, maxAttempts) => void runGptImageOptimizationRetry(node, maxAttempts), runVideoNode: (node) => void runVideoNode(node), onGeneratedMedia, onShowTip, markNodeAction, onPreviewMedia, getImageDisplayUrl, getVideoPosterDisplayUrl, referenceAssets, referenceAssetsLoadStatus, onLoadReferenceAssets, uploadRuleOverrides, getConnectedInputUploads, getInputTextLength, uploadFilesAsConnectedNodes }), [beginConnectionDrag, beginInputConnectionDrag, beginMultiConnectionDrag, connectTo, connectingFrom, connectingTo, multiConnectSources, connectionPointer, deleteNode, disconnectNodes, getConnectedInputUploads, getImageDisplayUrl, getInputTextLength, getVideoPosterDisplayUrl, markNodeAction, modelOptions, onGeneratedMedia, onLoadReferenceAssets, onPreviewMedia, onShowTip, referenceAssets, referenceAssetsLoadStatus, runGptImageOptimizationRetry, runImageNode, runVideoNode, selectedNodeId, updateNode, uploadFilesAsConnectedNodes, uploadRuleOverrides, workflowTitle]);
 
   return (
     <WorkflowRuntimeContext.Provider value={runtime}>
-        <div className="relative h-full min-h-full overflow-hidden bg-[#cccccc] text-[#111111] workflow-tldraw-shell workflow-lovart-skin" style={{ "--workflow-canvas-bg": canvasBackground } as CSSProperties} onContextMenu={handleWorkflowContextMenu} onPointerDownCapture={handleWorkflowPointerDownCapture} onDragOverCapture={(event) => { if (event.dataTransfer.types.includes("application/x-flashmuse-workflow-asset") || event.dataTransfer.types.includes("Files")) { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; } }} onDropCapture={handleWorkflowAssetDrop}>
+        <div className="relative h-full min-h-full overflow-hidden bg-[#cccccc] text-[#111111] workflow-tldraw-shell workflow-lovart-skin" style={{ "--workflow-canvas-bg": canvasBackground } as CSSProperties} onContextMenu={handleWorkflowContextMenu} onPointerDownCapture={handleWorkflowPointerDownCapture} onDragOverCapture={(event) => { const types = event.dataTransfer.types; if (types.includes("application/x-flashmuse-workflow-asset") || types.includes("application/x-flashmuse-workflow-node") || types.includes("application/x-flashmuse-workflow-history-media") || types.includes("application/x-flashmuse-workflow-history-text") || types.includes("Files")) { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; } }} onDropCapture={handleWorkflowAssetDrop}>
         <style>{`.workflow-tldraw-shell .tl-watermark_SEE-LICENSE,.workflow-tldraw-shell [data-testid="tl-watermark-unlicensed"],.workflow-tldraw-shell [data-testid="tl-watermark-licensed"]{display:none!important;visibility:hidden!important;opacity:0!important;pointer-events:none!important;width:0!important;height:0!important;}.workflow-tldraw-shell .yinzao-tool-button-active+div{opacity:.9!important;backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);}`}</style>
         <Tldraw hideUi shapeUtils={workflowShapeUtils} bindingUtils={workflowBindingUtils} overlayUtils={workflowOverlayUtils} components={workflowTldrawComponents} overrides={workflowTldrawOverrides} options={workflowTldrawOptions} getShapeVisibility={getWorkflowShapeVisibility} onMount={handleMount} licenseKey="">
           <WorkflowCanvasStatusControls state={stateRef.current} tick={editorTick} canvasBackground={canvasBackground} onCanvasBackgroundChange={setCanvasBackground} isLayerPanelOpen={isLayerPanelOpen} onToggleLayerPanel={() => setIsLayerPanelOpen((current) => !current)} />
           <WorkflowSelectedNodeOverlay />
+          <WorkflowMultiConnectHandle onBeginDrag={beginMultiConnectionDrag} isDragging={multiConnectSources.length > 0} />
           <WorkflowCustomContextMenu menu={contextMenu} onClose={() => setContextMenu(null)} onAddNode={addNode} onUploadNode={() => uploadNodeInputRef.current?.click()} onUsePrompt={addNodeFromPrompt} />
         </Tldraw>
-        <WorkflowDraftConnectionOverlay editor={editorRef.current} state={stateRef.current} tick={editorTick} connectingFrom={connectingFrom} connectingTo={connectingTo} connectionPointer={connectionPointer} />
-        {isLayerPanelOpen ? <WorkflowLayerPanel state={stateRef.current} workflowAssets={workflowAssets} selectedNodeId={selectedNodeId} getImageDisplayUrl={getImageDisplayUrl} getVideoPosterDisplayUrl={getVideoPosterDisplayUrl} onClose={() => setIsLayerPanelOpen(false)} onSelectNode={(nodeId, focus) => { const editor = editorRef.current; const node = stateRef.current.nodes.find((item) => item.id === nodeId); if (!editor || !node || node.data.isHidden) return; editor.select(getShapeId(nodeId)); if (focus) focusWorkflowNodeInViewport(editor, node); }} onReorderNode={reorderWorkflowNodeLayer} onRestoreAsset={restoreWorkflowAssetToCanvas} onRestoreTextNode={restoreHistoricalTextNodeToCanvas} onDeleteHistoricalTextNode={deleteHistoricalTextNode} onDeleteHistoricalAsset={deleteHistoricalWorkflowAsset} onToggleNodeLock={toggleWorkflowNodeLock} onToggleNodeHidden={toggleWorkflowNodeHidden} /> : null}
+        <WorkflowDraftConnectionOverlay editor={editorRef.current} state={stateRef.current} tick={editorTick} connectingFrom={connectingFrom} connectingTo={connectingTo} multiConnectSources={multiConnectSources} connectionPointer={connectionPointer} />
+        {isLayerPanelOpen ? <WorkflowLayerPanel state={stateRef.current} workflowAssets={workflowAssets} selectedNodeId={selectedNodeId} getImageDisplayUrl={getImageDisplayUrl} getVideoPosterDisplayUrl={getVideoPosterDisplayUrl} onClose={() => setIsLayerPanelOpen(false)} onSelectNode={(nodeId, focus) => { const editor = editorRef.current; const node = stateRef.current.nodes.find((item) => item.id === nodeId); if (!editor || !node || node.data.isHidden) return; editor.select(getShapeId(nodeId)); if (focus) focusWorkflowNodeInViewport(editor, node); else centerWorkflowNodeInViewport(editor, node); }} onReorderNode={reorderWorkflowNodeLayer} onRestoreAsset={restoreWorkflowAssetToCanvas} onRestoreTextNode={restoreHistoricalTextNodeToCanvas} onDeleteHistoricalTextNode={deleteHistoricalTextNode} onRestoreMediaNode={restoreHistoricalMediaNode} onDeleteMediaNode={deleteHistoricalMediaNode} onDeleteHistoricalAsset={deleteHistoricalWorkflowAsset} onToggleNodeLock={toggleWorkflowNodeLock} onToggleNodeHidden={toggleWorkflowNodeHidden} /> : null}
         <div className="pointer-events-auto absolute left-4 top-3 z-20 flex items-center gap-2 text-[#5c626b]">
           {onToggleLeftSidebar ? (
             <button type="button" onClick={onToggleLeftSidebar} className="flex h-8 w-8 items-center justify-center rounded-md text-[#5c626b] transition hover:bg-black/5 hover:text-[#30343a]" aria-label={leftSidebarVisible ? "隐藏左侧栏" : "显示左侧栏"} title={leftSidebarVisible ? "隐藏左侧栏" : "显示左侧栏"}>
@@ -3390,18 +3605,18 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
           ) : null}
           <div className="max-w-[260px] truncate text-[13px] font-semibold text-[#5c626b]">{workflowTitle || "Untitled"}</div>
         </div>
-        {connectingFrom || connectingTo ? <div className="absolute left-1/2 top-4 z-20 -translate-x-1/2 rounded-full bg-[#111111] px-4 py-2 text-[12px] font-medium text-white shadow-lg">拖到可连接节点完成连接<button type="button" onClick={() => { setConnectingFrom(""); setConnectingTo(""); setConnectionPointer(undefined); }} className="ml-3 text-white/70 hover:text-white">取消</button></div> : null}
+        {connectingFrom || connectingTo || multiConnectSources.length > 0 ? <div className="absolute left-1/2 top-4 z-20 -translate-x-1/2 rounded-full bg-[#111111] px-4 py-2 text-[12px] font-medium text-white shadow-lg">拖到可连接节点完成连接<button type="button" onClick={() => { setConnectingFrom(""); setConnectingTo(""); setMultiConnectSources([]); setConnectionPointer(undefined); }} className="ml-3 text-white/70 hover:text-white">取消</button></div> : null}
         <div className="pointer-events-none absolute inset-x-0 bottom-3 z-20 flex justify-center">
         <div className="lovart-workflow-dock pointer-events-auto flex items-center gap-1 rounded-[14px] border border-white/72 bg-white/92 p-1.5 shadow-[0_16px_34px_rgba(0,0,0,0.16)] backdrop-blur-[16px]">
-          <button type="button" onClick={() => addNode("text")} className="flex h-9 w-9 items-center justify-center rounded-[10px] text-[#30343a] outline-none hover:bg-[#f0f0f0]" title="文本输入"><RiTextBlock className="h-5 w-5 shrink-0" /></button>
-          <button type="button" onClick={() => addNode("image")} className="flex h-9 w-9 items-center justify-center rounded-[10px] text-[#30343a] outline-none hover:bg-[#f0f0f0]" title="图片节点"><RiImageAiLine className="h-5 w-5 shrink-0" /></button>
-          <button type="button" onClick={() => addNode("video")} className="flex h-9 w-9 items-center justify-center rounded-[10px] text-[#30343a] outline-none hover:bg-[#f0f0f0]" title="视频节点"><RiFilmAiLine className="h-5 w-5 shrink-0" /></button>
+          <WorkflowDockButton label="文本输入" shortcut="T" onClick={() => addNode("text")}><RiTextBlock className="h-5 w-5 shrink-0" /></WorkflowDockButton>
+          <WorkflowDockButton label="图片节点" shortcut="I" onClick={() => addNode("image")}><RiImageAiLine className="h-5 w-5 shrink-0" /></WorkflowDockButton>
+          <WorkflowDockButton label="视频节点" shortcut="D" onClick={() => addNode("video")}><RiFilmAiLine className="h-5 w-5 shrink-0" /></WorkflowDockButton>
           <input ref={uploadNodeInputRef} type="file" hidden multiple accept="image/*,video/*,audio/*,.txt,text/plain" onChange={(event) => { void handleUploadNodeFiles(Array.from(event.target.files ?? [])); event.target.value = ""; }} />
-          <button type="button" onClick={() => uploadNodeInputRef.current?.click()} className="flex h-9 w-9 items-center justify-center rounded-[10px] text-[#30343a] outline-none hover:bg-[#f0f0f0]" title="上传节点"><RiUpload2Line className="h-5 w-5 shrink-0" /></button>
+          <WorkflowDockButton label="上传节点" onClick={() => uploadNodeInputRef.current?.click()}><RiUpload2Line className="h-5 w-5 shrink-0" /></WorkflowDockButton>
           <div className="mx-1 h-5 w-px bg-[#e5e5e5]" />
-          <button type="button" onClick={() => editorRef.current?.zoomOut()} className="flex h-9 w-9 items-center justify-center rounded-[10px] text-[#30343a] outline-none hover:bg-[#f0f0f0]" title="缩小"><RiZoomOutLine className="h-5 w-5 shrink-0" /></button>
-          <button type="button" onClick={() => editorRef.current?.zoomIn()} className="flex h-9 w-9 items-center justify-center rounded-[10px] text-[#30343a] outline-none hover:bg-[#f0f0f0]" title="放大"><RiZoomInLine className="h-5 w-5 shrink-0" /></button>
-          <button type="button" onClick={() => { const editor = editorRef.current; if (editor) zoomToSelectedOrWorkflowNodes(editor, stateRef.current.nodes); }} className="flex h-9 w-9 items-center justify-center rounded-[10px] text-[#30343a] outline-none hover:bg-[#f0f0f0]" title="定位节点"><RiFocus3Line className="h-5 w-5 shrink-0" /></button>
+          <WorkflowDockButton label="缩小" shortcut="Ctrl -" onClick={() => editorRef.current?.zoomOut()}><RiZoomOutLine className="h-5 w-5 shrink-0" /></WorkflowDockButton>
+          <WorkflowDockButton label="放大" shortcut="Ctrl +" onClick={() => editorRef.current?.zoomIn()}><RiZoomInLine className="h-5 w-5 shrink-0" /></WorkflowDockButton>
+          <WorkflowDockButton label="定位节点" shortcut="Shift 1" onClick={() => { const editor = editorRef.current; if (editor) zoomToSelectedOrWorkflowNodes(editor, stateRef.current.nodes); }}><RiFocus3Line className="h-5 w-5 shrink-0" /></WorkflowDockButton>
           <WorkflowToolMenu activeTool={activeCanvasTool} onChange={setCanvasTool} />
         </div>
         </div>
@@ -3409,6 +3624,28 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
       </div>
     </WorkflowRuntimeContext.Provider>
   );
+}
+
+function WorkflowHoverTip({ label, shortcut }: { label: string; shortcut?: string }) {
+  return (
+    <span className="pointer-events-none absolute bottom-full left-1/2 z-[10001] mb-2 hidden -translate-x-1/2 items-center whitespace-nowrap rounded-[8px] bg-[#1f2329] px-2.5 py-1.5 text-[12px] font-medium text-white shadow-[0_8px_20px_rgba(0,0,0,0.24)] group-hover:flex">
+      {label}{shortcut ? <span className="ml-2 text-white/45">{shortcut}</span> : null}
+    </span>
+  );
+}
+
+function WorkflowTipButton({ label, shortcut, onClick, className, children, wrapperClassName = "" }: { label: string; shortcut?: string; onClick: () => void; className: string; children: ReactNode; wrapperClassName?: string }) {
+  const [suppressed, setSuppressed] = useState(false);
+  return (
+    <div className={`group relative flex ${wrapperClassName}`} onPointerLeave={() => setSuppressed(false)}>
+      <button type="button" onClick={() => { setSuppressed(true); onClick(); }} aria-label={label} className={className}>{children}</button>
+      {suppressed ? null : <WorkflowHoverTip label={label} shortcut={shortcut} />}
+    </div>
+  );
+}
+
+function WorkflowDockButton({ label, shortcut, onClick, children }: { label: string; shortcut?: string; onClick: () => void; children: ReactNode }) {
+  return <WorkflowTipButton label={label} shortcut={shortcut} onClick={onClick} className="flex h-9 w-9 items-center justify-center rounded-[10px] text-[#30343a] outline-none hover:bg-[#f0f0f0]">{children}</WorkflowTipButton>;
 }
 
 function normalizeWorkflowMediaUrl(url: string) {
@@ -3442,7 +3679,7 @@ function WorkflowCanvasStatusControls({ state, tick, canvasBackground, onCanvasB
   return (
     <div ref={rootRef} className="pointer-events-auto absolute bottom-[5px] left-5 z-20 flex items-center gap-0.5 text-[12px] font-medium text-[#5c626b]">
       <div className="relative">
-        <button type="button" onClick={() => setOpenPanel((current) => current === "background" ? "" : "background")} className="flex h-[30px] w-[30px] items-center justify-center rounded-md text-[#5c626b] hover:bg-black/5" aria-label="画布背景" title="画布背景"><RiCheckboxBlankCircleLine className="h-4 w-4" /></button>
+        <WorkflowTipButton label="画布背景" onClick={() => setOpenPanel((current) => current === "background" ? "" : "background")} className="flex h-[30px] w-[30px] items-center justify-center rounded-md text-[#5c626b] hover:bg-black/5"><RiCheckboxBlankCircleLine className="h-4 w-4" /></WorkflowTipButton>
         {openPanel === "background" ? (
           <div className="absolute bottom-7 left-0 w-[176px] rounded-[12px] border border-black/8 bg-white p-2 text-[#333333] shadow-[0_12px_30px_rgba(0,0,0,0.14)]">
             <div className="px-2 pb-2 text-[12px] font-semibold text-[#111111]">画布背景</div>
@@ -3460,9 +3697,9 @@ function WorkflowCanvasStatusControls({ state, tick, canvasBackground, onCanvasB
           </div>
         ) : null}
       </div>
-      <button type="button" onClick={() => { setOpenPanel(""); onToggleLayerPanel(); }} className={`flex h-[30px] w-[30px] items-center justify-center rounded-md text-[#5c626b] hover:bg-black/5 ${isLayerPanelOpen ? "bg-black/5" : ""}`} aria-label="图层" title="图层"><RiStackLine className="h-4 w-4" /></button>
+      <WorkflowTipButton label="图层" onClick={() => { setOpenPanel(""); onToggleLayerPanel(); }} className={`flex h-[30px] w-[30px] items-center justify-center rounded-md text-[#5c626b] hover:bg-black/5 ${isLayerPanelOpen ? "bg-black/5" : ""}`}><RiStackLine className="h-4 w-4" /></WorkflowTipButton>
       <div className="relative">
-        <button type="button" onClick={() => setOpenPanel((current) => current === "minimap" ? "" : "minimap")} className="flex h-[30px] w-[30px] items-center justify-center rounded-md text-[#5c626b] hover:bg-black/5" aria-label="小地图" title="小地图"><RiRoadMapLine className="h-4 w-4" /></button>
+        <WorkflowTipButton label="小地图" onClick={() => setOpenPanel((current) => current === "minimap" ? "" : "minimap")} className="flex h-[30px] w-[30px] items-center justify-center rounded-md text-[#5c626b] hover:bg-black/5"><RiRoadMapLine className="h-4 w-4" /></WorkflowTipButton>
         {openPanel === "minimap" ? (
           <div className="absolute bottom-7 left-0 overflow-hidden rounded-[10px] bg-white p-1 shadow-[0_12px_30px_rgba(0,0,0,0.16)]">
             <WorkflowMiniMap editor={editor} state={state} />
@@ -3471,7 +3708,7 @@ function WorkflowCanvasStatusControls({ state, tick, canvasBackground, onCanvasB
       </div>
       <span className="mx-1 h-3 w-px bg-black/12" />
       <div className="relative">
-        <button type="button" onClick={() => setOpenPanel((current) => current === "zoom" ? "" : "zoom")} className="flex h-[30px] min-w-11 items-center justify-center rounded-md px-1.5 text-[12px] font-medium text-[#5c626b] hover:bg-black/5" aria-label="缩放菜单" title="缩放菜单">{zoomPercent}%</button>
+        <WorkflowTipButton label="缩放" onClick={() => setOpenPanel((current) => current === "zoom" ? "" : "zoom")} className="flex h-[30px] min-w-11 items-center justify-center rounded-md px-1.5 text-[12px] font-medium text-[#5c626b] hover:bg-black/5">{zoomPercent}%</WorkflowTipButton>
         {openPanel === "zoom" ? <WorkflowZoomMenu editor={editor} state={state} onClose={() => setOpenPanel("")} /> : null}
       </div>
     </div>
@@ -3563,7 +3800,7 @@ function WorkflowMiniMap({ editor, state }: { editor: Editor; state: WorkflowCan
   );
 }
 
-function WorkflowLayerPanel({ state, workflowAssets, selectedNodeId, getImageDisplayUrl, getVideoPosterDisplayUrl, onClose, onSelectNode, onReorderNode, onRestoreAsset, onRestoreTextNode, onDeleteHistoricalTextNode, onDeleteHistoricalAsset, onToggleNodeLock, onToggleNodeHidden }: { state: WorkflowCanvasState; workflowAssets: WorkflowAssetSummary[]; selectedNodeId: string; getImageDisplayUrl?: (url: string) => string; getVideoPosterDisplayUrl?: (url: string, posterUrl?: string) => string | undefined; onClose: () => void; onSelectNode: (nodeId: string, focus?: boolean) => void; onReorderNode: (dragNodeId: string, targetNodeId: string, position: "before" | "after") => void; onRestoreAsset: (asset: WorkflowAssetSummary) => void; onRestoreTextNode: (node: WorkflowNode) => void; onDeleteHistoricalTextNode: (node: WorkflowNode) => void; onDeleteHistoricalAsset: (asset: WorkflowAssetSummary) => void; onToggleNodeLock: (nodeId: string) => void; onToggleNodeHidden: (nodeId: string) => void }) {
+function WorkflowLayerPanel({ state, workflowAssets, selectedNodeId, getImageDisplayUrl, getVideoPosterDisplayUrl, onClose, onSelectNode, onReorderNode, onRestoreAsset, onRestoreTextNode, onDeleteHistoricalTextNode, onRestoreMediaNode, onDeleteMediaNode, onDeleteHistoricalAsset, onToggleNodeLock, onToggleNodeHidden }: { state: WorkflowCanvasState; workflowAssets: WorkflowAssetSummary[]; selectedNodeId: string; getImageDisplayUrl?: (url: string) => string; getVideoPosterDisplayUrl?: (url: string, posterUrl?: string) => string | undefined; onClose: () => void; onSelectNode: (nodeId: string, focus?: boolean) => void; onReorderNode: (dragNodeId: string, targetNodeId: string, position: "before" | "after") => void; onRestoreAsset: (asset: WorkflowAssetSummary) => void; onRestoreTextNode: (node: WorkflowNode) => void; onDeleteHistoricalTextNode: (node: WorkflowNode) => void; onRestoreMediaNode: (node: WorkflowNode) => void; onDeleteMediaNode: (node: WorkflowNode) => void; onDeleteHistoricalAsset: (asset: WorkflowAssetSummary) => void; onToggleNodeLock: (nodeId: string) => void; onToggleNodeHidden: (nodeId: string) => void }) {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const [dropIndicator, setDropIndicator] = useState<{ nodeId: string; position: "before" | "after" } | null>(null);
   const [isHistoryExpanded, setIsHistoryExpanded] = useState(true);
@@ -3580,12 +3817,33 @@ function WorkflowLayerPanel({ state, workflowAssets, selectedNodeId, getImageDis
   });
   const historicalAssets = workflowAssets.filter((asset) => !deletedHistoricalAssetIds.has(asset.id) && !currentMediaUrls.has(normalizeWorkflowMediaUrl(asset.url)));
   const historicalTextNodes = state.historicalTextNodes ?? [];
-  const hasHistory = historicalTextNodes.length > 0 || historicalAssets.length > 0;
+  const historicalAssetUrls = new Set(historicalAssets.map((asset) => normalizeWorkflowMediaUrl(asset.url)));
+  const historicalMediaNodeEntries = (state.historicalMediaNodes ?? []).reduce<Array<{ node: WorkflowNode; asset: WorkflowAssetSummary }>>((items, node) => {
+    const url = getWorkflowNodeHistoricalMediaUrl(node);
+    if (!url) return items;
+    const key = normalizeWorkflowMediaUrl(url);
+    if (!key || currentMediaUrls.has(key) || historicalAssetUrls.has(key) || items.some((item) => normalizeWorkflowMediaUrl(item.asset.url) === key)) return items;
+    const asset: WorkflowAssetSummary = {
+      id: node.id,
+      name: node.data.mediaSystemNames?.[url] ?? (node.kind === "video" ? "视频" : "图片"),
+      url,
+      posterUrl: node.data.posterUrl,
+      kind: node.kind === "video" ? "video" : "image",
+      nodeId: node.id,
+      sourcePrompt: node.data.prompt,
+      ratio: node.data.ratio,
+      resolution: node.data.resolution,
+      duration: node.data.duration,
+      dimensions: node.kind === "video" ? node.data.videoDimensions : node.data.imageDimensions?.[url],
+    };
+    return [...items, { node, asset }];
+  }, []);
+  const hasHistory = historicalTextNodes.length > 0 || historicalAssets.length > 0 || historicalMediaNodeEntries.length > 0;
   const historyContentHeight = Math.max(0, historyHeight - 44);
 
   const startLayerDrag = (event: ReactDragEvent<HTMLElement>, nodeId: string) => {
     event.dataTransfer.setData("application/x-flashmuse-workflow-node", nodeId);
-    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.effectAllowed = "copyMove";
   };
   const updateLayerDropIndicator = (event: ReactDragEvent<HTMLElement>, targetNodeId: string) => {
     if (!event.dataTransfer.types.includes("application/x-flashmuse-workflow-node")) return;
@@ -3642,9 +3900,9 @@ function WorkflowLayerPanel({ state, workflowAssets, selectedNodeId, getImageDis
         <div className="mb-3 flex h-8 items-center justify-between text-[12px] text-[#9aa3af]">
           <div className="flex items-center gap-2">
             <RiHistoryLine className="h-5 w-5" />
-            <span>历史记录</span>
+            <span>已删除的节点</span>
           </div>
-          <button type="button" onClick={() => setIsHistoryExpanded((current) => !current)} className="flex h-7 w-7 items-center justify-center rounded-md text-[#555555] transition hover:bg-[#f2f2f2]" aria-label={isHistoryExpanded ? "收起历史记录" : "展开历史记录"} title={isHistoryExpanded ? "收起历史记录" : "展开历史记录"}>
+          <button type="button" onClick={() => setIsHistoryExpanded((current) => !current)} className="flex h-7 w-7 items-center justify-center rounded-md text-[#555555] transition hover:bg-[#f2f2f2]" aria-label={isHistoryExpanded ? "收起已删除的节点" : "展开已删除的节点"} title={isHistoryExpanded ? "收起已删除的节点" : "展开已删除的节点"}>
             <RiArrowDownSLine className={`h-4 w-4 transition-transform ${isHistoryExpanded ? "" : "-rotate-90"}`} />
           </button>
         </div>
@@ -3652,6 +3910,7 @@ function WorkflowLayerPanel({ state, workflowAssets, selectedNodeId, getImageDis
           <div className="overflow-y-auto pr-1" style={{ height: historyContentHeight }}>
             <div className="ml-5 space-y-1">
               {historicalTextNodes.map((node) => <WorkflowHistoricalTextLayerRow key={node.id} node={node} onRestore={() => onRestoreTextNode(node)} onDelete={() => onDeleteHistoricalTextNode(node)} />)}
+              {historicalMediaNodeEntries.map(({ node, asset }) => <WorkflowAssetLayerRow key={node.id} asset={asset} getImageDisplayUrl={getImageDisplayUrl} getVideoPosterDisplayUrl={getVideoPosterDisplayUrl} compact dragType="application/x-flashmuse-workflow-history-media" onRestore={() => onRestoreMediaNode(node)} onDelete={() => onDeleteMediaNode(node)} />)}
               {historicalAssets.map((asset) => <WorkflowAssetLayerRow key={asset.id} asset={asset} getImageDisplayUrl={getImageDisplayUrl} getVideoPosterDisplayUrl={getVideoPosterDisplayUrl} compact onRestore={() => onRestoreAsset(asset)} onDelete={() => deleteHistoricalAsset(asset)} />)}
             </div>
           </div>
@@ -3662,13 +3921,13 @@ function WorkflowLayerPanel({ state, workflowAssets, selectedNodeId, getImageDis
               <RiImageAiLine className="h-6 w-6" />
               <RiFilmAiLine className="h-6 w-6" />
             </div>
-            <div className="mt-2 text-[13px]">暂无历史记录</div>
+            <div className="mt-2 text-[13px]">暂无已删除的节点</div>
             <div className="mt-1 text-[13px] text-[#aeb4bd]">删除后的节点在这里</div>
           </div>
         ) : null}
       </div>
       {isHistoryExpanded ? (
-        <div role="separator" aria-label="调整历史记录高度" onPointerDown={startHistoryResize} className="group relative z-20 h-px shrink-0 cursor-row-resize bg-[#d0d5dd] transition hover:bg-[#98a2b3]" title="拖动调整历史记录高度">
+        <div role="separator" aria-label="调整已删除的节点高度" onPointerDown={startHistoryResize} className="group relative z-20 h-px shrink-0 cursor-row-resize bg-[#d0d5dd] transition hover:bg-[#98a2b3]" title="拖动调整已删除的节点高度">
           <div className="absolute left-0 right-0 top-0 h-[10px] bg-transparent" />
           <div className="absolute left-1/2 top-1/2 h-1.5 w-5 -translate-x-1/2 -translate-y-1/2 rounded-full border border-[#c7ccd4] bg-white transition group-hover:border-[#98a2b3] group-hover:bg-[#f7f7f7]" />
         </div>
@@ -3714,29 +3973,35 @@ function getWorkflowLayerNodeLabel(node: WorkflowNode) {
 }
 
 function WorkflowHistoricalTextLayerRow({ node, onRestore, onDelete }: { node: WorkflowNode; onRestore: () => void; onDelete: () => void }) {
-  const [menuOpen, setMenuOpen] = useState(false);
+  const { open, toggle, close, containerRef } = useWorkflowRowMenu();
   return (
-    <div className="group relative flex h-9 cursor-pointer items-center gap-2 rounded-lg px-2 text-[12px] text-[#6b7280] hover:bg-[#f3f4f6]">
+    <div draggable onDragStart={(event) => { event.dataTransfer.setData("application/x-flashmuse-workflow-history-text", node.id); event.dataTransfer.effectAllowed = "copy"; }} className="group relative flex h-9 cursor-grab items-center gap-2 rounded-lg px-2 text-[12px] text-[#6b7280] hover:bg-[#f3f4f6] active:cursor-grabbing">
       <span className="flex h-5 w-5 shrink-0 items-center justify-center text-[#6b7280]"><RiTextBlock className="h-4.5 w-4.5" /></span>
       <span className="min-w-0 flex-1 truncate text-[#111111]">{getWorkflowLayerNodeLabel(node)}</span>
-      <button type="button" onClick={(event) => { event.stopPropagation(); setMenuOpen((current) => !current); }} className="hidden h-7 w-7 shrink-0 items-center justify-center rounded-md text-[#6b7280] hover:bg-[#e8ebef] group-hover:flex" aria-label="历史文本菜单"><RiMore2Line className="h-4 w-4" /></button>
-      {menuOpen ? <WorkflowHistoryRowMenu onRestore={onRestore} onDelete={onDelete} onClose={() => setMenuOpen(false)} /> : null}
+      <span ref={containerRef} className="contents">
+        <button type="button" onClick={(event) => { event.stopPropagation(); toggle(); }} className="hidden h-7 w-7 shrink-0 items-center justify-center rounded-md text-[#6b7280] hover:bg-[#e8ebef] group-hover:flex" aria-label="历史文本菜单"><RiMoreLine className="h-4 w-4" /></button>
+        {open ? <WorkflowHistoryRowMenu onRestore={onRestore} onDelete={onDelete} onClose={close} /> : null}
+      </span>
     </div>
   );
 }
 
-function WorkflowAssetLayerRow({ asset, getImageDisplayUrl, getVideoPosterDisplayUrl, compact, onRestore, onDelete, onSelect, onFocus, selected, isLocked, isHidden, onToggleLock, onToggleHidden }: { asset: WorkflowAssetSummary; getImageDisplayUrl?: (url: string) => string; getVideoPosterDisplayUrl?: (url: string, posterUrl?: string) => string | undefined; compact?: boolean; onRestore?: () => void; onDelete?: () => void; onSelect?: () => void; onFocus?: () => void; selected?: boolean; isLocked?: boolean; isHidden?: boolean; onToggleLock?: () => void; onToggleHidden?: () => void }) {
-  const [menuOpen, setMenuOpen] = useState(false);
+function WorkflowAssetLayerRow({ asset, getImageDisplayUrl, getVideoPosterDisplayUrl, compact, onRestore, onDelete, onSelect, onFocus, selected, isLocked, isHidden, onToggleLock, onToggleHidden, dragType }: { asset: WorkflowAssetSummary; getImageDisplayUrl?: (url: string) => string; getVideoPosterDisplayUrl?: (url: string, posterUrl?: string) => string | undefined; compact?: boolean; onRestore?: () => void; onDelete?: () => void; onSelect?: () => void; onFocus?: () => void; selected?: boolean; isLocked?: boolean; isHidden?: boolean; onToggleLock?: () => void; onToggleHidden?: () => void; dragType?: string }) {
+  const { open, toggle, close, containerRef } = useWorkflowRowMenu();
   const previewUrl = asset.kind === "video" ? getVideoPosterDisplayUrl?.(asset.url, asset.posterUrl) : getImageDisplayUrl?.(asset.url);
   return (
-    <div draggable={Boolean(onRestore)} onClick={onSelect} onDoubleClick={onFocus} onDragStart={(event) => { if (!onRestore) return; event.dataTransfer.setData("application/x-flashmuse-workflow-asset", asset.id); event.dataTransfer.setData("text/plain", asset.id); event.dataTransfer.effectAllowed = "copy"; }} className={`group relative flex items-center gap-2 rounded-lg px-2 text-[12px] text-[#6b7280] ${compact ? "h-9" : "h-10"} ${onRestore ? "cursor-grab hover:bg-[#f3f4f6] active:cursor-grabbing" : onSelect ? "cursor-pointer hover:bg-[#f3f4f6]" : ""} ${selected ? "bg-[#eef1f4]" : ""}`}>
+    <div draggable={Boolean(onRestore)} onClick={onSelect} onDoubleClick={onFocus} onDragStart={(event) => { if (!onRestore) return; const key = dragType ?? "application/x-flashmuse-workflow-asset"; event.dataTransfer.setData(key, asset.id); if (key === "application/x-flashmuse-workflow-asset") event.dataTransfer.setData("text/plain", asset.id); event.dataTransfer.effectAllowed = "copy"; }} className={`group relative flex items-center gap-2 rounded-lg px-2 text-[12px] text-[#6b7280] ${compact ? "h-9" : "h-10"} ${onRestore ? "cursor-grab hover:bg-[#f3f4f6] active:cursor-grabbing" : onSelect ? "cursor-pointer hover:bg-[#f3f4f6]" : ""} ${selected ? "bg-[#eef1f4]" : ""}`}>
       <span className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-md border border-[#dfe3e8] bg-[#f8fafc] text-[#5c626b]">
         {previewUrl ? <WorkflowHoverImagePreview src={asset.kind === "image" ? asset.url : previewUrl} alt={asset.name} wrapperClassName="block h-full w-full"><img src={previewUrl} alt="" className="h-full w-full object-cover" draggable={false} /></WorkflowHoverImagePreview> : asset.kind === "video" ? <RiVideoLine className="h-4 w-4" /> : <RiImageAiLine className="h-4 w-4" />}
       </span>
       <span className={`min-w-0 flex-1 truncate ${asset.url ? "text-[#111111]" : ""}`}>{asset.name}</span>
       {onToggleLock && onToggleHidden ? <WorkflowLayerRowControls isLocked={Boolean(isLocked)} isHidden={Boolean(isHidden)} onToggleLock={onToggleLock} onToggleHidden={onToggleHidden} /> : null}
-      {onRestore ? <button type="button" onClick={(event) => { event.stopPropagation(); setMenuOpen((current) => !current); }} onPointerDown={(event) => event.stopPropagation()} className="hidden h-7 w-7 shrink-0 items-center justify-center rounded-md text-[#6b7280] hover:bg-[#e8ebef] group-hover:flex" aria-label="历史资产菜单"><RiMore2Line className="h-4 w-4" /></button> : null}
-      {menuOpen && onRestore && onDelete ? <WorkflowHistoryRowMenu onRestore={onRestore} onDelete={onDelete} onClose={() => setMenuOpen(false)} /> : null}
+      {onRestore ? (
+        <span ref={containerRef} className="contents">
+          <button type="button" onClick={(event) => { event.stopPropagation(); toggle(); }} onPointerDown={(event) => event.stopPropagation()} className="hidden h-7 w-7 shrink-0 items-center justify-center rounded-md text-[#6b7280] hover:bg-[#e8ebef] group-hover:flex" aria-label="历史资产菜单"><RiMoreLine className="h-4 w-4" /></button>
+          {open && onDelete ? <WorkflowHistoryRowMenu onRestore={onRestore} onDelete={onDelete} onClose={close} /> : null}
+        </span>
+      ) : null}
     </div>
   );
 }
@@ -3787,7 +4052,7 @@ function WorkflowToolMenu({ activeTool, onChange }: { activeTool: "select" | "ha
           {options.map((item) => {
             const ItemIcon = item.icon;
             return (
-              <button key={item.value} type="button" onClick={() => { onChange(item.value); setOpen(false); }} className={`flex h-9 w-full items-center gap-2 rounded-[8px] px-2 text-left text-[13px] font-medium hover:bg-[#eeeeee] ${activeTool === item.value ? "bg-[#eeeeee]" : ""}`}>
+              <button key={item.value} type="button" onClick={() => { onChange(item.value); setOpen(false); }} className="flex h-9 w-full items-center gap-2 rounded-[8px] px-2 text-left text-[13px] font-medium hover:bg-[#eeeeee]">
                 <ItemIcon className="h-4 w-4 text-[#30343a]" />
                 <span className="flex-1">{item.label}</span>
                 <span className="text-[12px] font-normal text-[#b4b4b4]">{item.shortcut}</span>
@@ -3800,9 +4065,9 @@ function WorkflowToolMenu({ activeTool, onChange }: { activeTool: "select" | "ha
   );
 }
 
-function WorkflowDraftConnectionOverlay({ editor, state, tick, connectingFrom, connectingTo, connectionPointer }: { editor: Editor | null; state: WorkflowCanvasState; tick: number; connectingFrom?: string; connectingTo?: string; connectionPointer?: { x: number; y: number } }) {
+function WorkflowDraftConnectionOverlay({ editor, state, tick, connectingFrom, connectingTo, multiConnectSources, connectionPointer }: { editor: Editor | null; state: WorkflowCanvasState; tick: number; connectingFrom?: string; connectingTo?: string; multiConnectSources?: string[]; connectionPointer?: { x: number; y: number } }) {
   void tick;
-  if (!editor || (!connectingFrom && !connectingTo) || !connectionPointer) return null;
+  if (!editor || (!connectingFrom && !connectingTo && !(multiConnectSources && multiConnectSources.length > 0)) || !connectionPointer) return null;
   const nodeById = new Map(state.nodes.map((node) => [node.id, node]));
   const container = editor.getContainer().getBoundingClientRect();
   const pagePointToOverlayPoint = (point: { x: number; y: number }) => {
@@ -3833,6 +4098,13 @@ function WorkflowDraftConnectionOverlay({ editor, state, tick, connectingFrom, c
   };
   return <svg className="pointer-events-none absolute inset-0 z-[40] h-full w-full overflow-visible">{(() => {
     const pointer = { x: connectionPointer.x - container.left, y: connectionPointer.y - container.top };
+    if (multiConnectSources && multiConnectSources.length > 0) {
+      return multiConnectSources.map((sourceId) => {
+        const source = nodeById.get(sourceId);
+        if (!source) return null;
+        return renderPath(`workflow-multi-connection-${sourceId}`, pagePointToOverlayPoint(getOutputPortPagePoint(source)), pointer);
+      });
+    }
     const source = connectingFrom ? nodeById.get(connectingFrom) : undefined;
     if (source) {
       const a = pagePointToOverlayPoint(getOutputPortPagePoint(source));
@@ -3844,6 +4116,49 @@ function WorkflowDraftConnectionOverlay({ editor, state, tick, connectingFrom, c
     const b = pagePointToOverlayPoint(getInputPortPagePoint(target));
     return renderPath("workflow-temp-connection", a, b);
   })()}</svg>;
+}
+
+function WorkflowMultiConnectHandle({ onBeginDrag, isDragging }: { onBeginDrag: (sourceIds: string[], event: ReactPointerEvent) => void; isDragging: boolean }) {
+  const editor = useEditor();
+  const info = useValue("workflow-multi-connect-handle", () => {
+    const selectedShapeIds = editor.getSelectedShapeIds();
+    const nodeShapes = selectedShapeIds
+      .map((id) => editor.getShape(id))
+      .filter((shape): shape is WorkflowNodeShape => Boolean(shape) && shape!.type === "workflow_node");
+    if (nodeShapes.length < 2) return null;
+    const outputSourceIds = nodeShapes.filter((shape) => canWorkflowNodeOutput(shape.props.node)).map((shape) => shape.props.node.id);
+    if (outputSourceIds.length === 0) return null;
+    let maxRight = -Infinity;
+    let top = Infinity;
+    let bottom = -Infinity;
+    for (const shape of nodeShapes) {
+      const size = getWorkflowNodeVisualSize(shape.props.node);
+      maxRight = Math.max(maxRight, shape.x + size.w);
+      top = Math.min(top, shape.y);
+      bottom = Math.max(bottom, shape.y + size.h);
+    }
+    const point = editor.pageToViewport({ x: maxRight, y: (top + bottom) / 2 });
+    return { point, outputSourceIds };
+  }, [editor]);
+
+  if (!info) return null;
+  const size = 36;
+  return (
+    <div className="pointer-events-none absolute z-[45] overflow-visible" style={{ left: info.point.x, top: info.point.y }}>
+      <div className="absolute -translate-y-1/2" style={{ left: 18, top: 0 }}>
+        <button
+          type="button"
+          onPointerDown={(event) => { event.stopPropagation(); onBeginDrag(info.outputSourceIds, event); }}
+          className={`pointer-events-auto flex items-center justify-center rounded-full border-[4px] border-[#168cff] bg-white shadow-[0_4px_14px_rgba(22,140,255,0.35)] transition ${isDragging ? "ring-2 ring-[#168cff]/25" : ""} cursor-crosshair hover:bg-[#f0f8ff]`}
+          style={{ width: size, height: size }}
+          title="连接所有选中节点"
+        >
+          <span className="rounded-full bg-[#168cff]" style={{ width: size * 0.5, height: size * 0.5 }} />
+          <span className="sr-only">连接所有选中节点</span>
+        </button>
+      </div>
+    </div>
+  );
 }
 
 function NodePort({ side, active, onPointerDown, onPointerEnter, onPointerLeave }: { side: "left" | "right"; active?: boolean; onPointerDown?: (event: ReactPointerEvent<HTMLButtonElement>) => void; onPointerEnter?: () => void; onPointerLeave?: () => void }) {
@@ -3998,6 +4313,7 @@ function WorkflowInlineVideo({ node, url, onSelect }: { node: WorkflowNode; url:
       duration: node.data.duration,
       dimensions: dimensions ? { [url]: dimensions } : undefined,
       durationSeconds: durationSeconds ? { [url]: durationSeconds } : undefined,
+      silent: true,
     });
   };
 
@@ -4864,6 +5180,20 @@ function useWorkflowMenuOpen() {
   }, []);
   const toggle = () => { const shouldOpen = !open; closeWorkflowPopups(); setOpen(shouldOpen); };
   return { open, setOpen, toggle };
+}
+function useWorkflowRowMenu() {
+  const { open, setOpen, toggle } = useWorkflowMenuOpen();
+  const containerRef = useRef<HTMLSpanElement | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    const handle = (event: PointerEvent) => {
+      if (!containerRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    window.addEventListener("pointerdown", handle, true);
+    return () => window.removeEventListener("pointerdown", handle, true);
+  }, [open, setOpen]);
+  const close = () => setOpen(false);
+  return { open, toggle, close, containerRef };
 }
 
 function WorkflowModelMenuSingle({ value, options, title, onChange, className = "", getIcon }: { value: ModelName; options: readonly (ConversationModel | GenerationModel)[]; title: string; onChange: (value: ModelName) => void; className?: string; getIcon?: (modelId: string) => typeof BytePlusIcon | typeof RiOpenaiFill | typeof RiGoogleFill | typeof RiTiktokFill | null }) {

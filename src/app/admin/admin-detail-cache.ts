@@ -1,6 +1,6 @@
 "use client";
 
-type AdminDetailMode = "records" | "full";
+type AdminDetailMode = "records" | "full" | "media" | "credits";
 
 type AdminDetailCacheEntry = Partial<Record<AdminDetailMode, unknown>>;
 
