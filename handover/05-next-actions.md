@@ -13,7 +13,17 @@
 
 ## Highest Priority
 
-### 2026-07-03 END-OF-SESSION STATE (read this first)
+### 2026-07-04 END-OF-SESSION STATE (read this first)
+
+- PRODUCTION NOW: workflow entry is OPEN and WORKING (`NEXT_PUBLIC_WORKFLOW_MODE_ENABLED=true`). The "nodes appear then vanish after 5s" blocker is FIXED. Latest commit pushed to GitHub: `65737fa`. Everything from this session is deployed to Malaysia prod + Ali AND pushed.
+- THE FIX was a tldraw 5.1.1 LICENSE GATE bypass via `patch-package` (`patches/@tldraw+editor+5.1.1.patch` sets `shouldHideEditorAfterDelay` → `return false`; `postinstall: patch-package` auto-reapplies). NO license was purchased. User decision: internal-only tool, technical bypass is acceptable. See CHANGELOG top + 01-current-status for the full root-cause writeup.
+- IF YOU RUN `npm install` / clone fresh: the `postinstall` hook applies the patch automatically. If you UPGRADE tldraw past 5.1.1, the patch will fail to apply — regenerate it (edit `node_modules/@tldraw/editor/**/LicenseProvider.*` `shouldHideEditorAfterDelay` to `return false`, then `npx patch-package @tldraw/editor`).
+- FOR FUTURE PUBLIC/COMMERCIAL launch (not internal): the license bypass is a licensing violation for commercial use. Revisit then — buy a tldraw license (`<Tldraw licenseKey>` or `NEXT_PUBLIC_TLDRAW_LICENSE_KEY`) or migrate to React Flow. The React Flow evaluation/perf-spike notes from 2026-07-03 (below) still apply if you migrate.
+- Browser-retest the 2026-07-04 workflow fixes online (entry is OPEN now): (1) open a workflow with generated media, wait >5s — canvas stays visible, nodes don't vanish; (2) upload an image node — while the loading bar shows, clicking the node does NOT open the bottom input box; (3) new empty workflow shows the 4-button start UI (文字输入/图片节点/视频节点/上传节点); (4) just selecting/opening a workflow does NOT bump it to the top of the list — only real edits do; (5) top-right usage panel image/video counts exclude uploads, match the generation credits, and do NOT decrease when you delete a generated node (cumulative). Regenerate to confirm counts increment.
+- KNOWN/BY-DESIGN: conversation-flow usage counts (`getSessionMediaCounts`) are still message-derived (not cumulative) — only workflow counts were made cumulative this session. Revisit only if the user asks.
+
+### 2026-07-03 STATE (superseded by 2026-07-04 above; kept for context)
+
 
 - PRODUCTION NOW: full source deployed + pushed to GitHub (commits `8fc55c4` then handover `f85e258`). LIVE in prod: flat 24h session timeout (auth + admin), all admin 生成记录/积分管理/用户管理 changes, `/api/video` MISSING_REQUEST_ID guard, recycle-bin trash count fix, `/workspace` client-only render (no chat flash), workflow preview thumbnail filter, and the workflow code itself. Production `.env.local` `NEXT_PUBLIC_WORKFLOW_MODE_ENABLED=false` — workflow ENTRY is CLOSED (built JS contains `暂未开放`).
 - WHY workflow closed: on first real production run, tldraw with NO commercial license degraded — nodes appear then disappear, console spams "No tldraw license key provided! A license is required for production deployments." Re-disabled via flag + rebuild. See CHANGELOG top entry.

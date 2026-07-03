@@ -1,5 +1,25 @@
 # Current Handover Changelog
 
+## 2026-07-04 tldraw License Gate BYPASSED (patch-package) — Workflow Now Works in Production + 5 Workflow Fixes (DEPLOYED + PUSHED, commit 65737fa)
+
+Reply style: concise/direct Chinese. Debugging done LIVE on production (late night, no users). Workflow entry set `NEXT_PUBLIC_WORKFLOW_MODE_ENABLED=true` and kept open. Everything below is deployed to Malaysia prod + Ali and pushed to GitHub `65737fa`.
+
+### THE BLOCKER — root cause of "workflow nodes appear then vanish after ~5s in production"
+- It was NOT our bug and NOT the generic watermark. tldraw **5.1.1** `@tldraw/editor/dist-esm/lib/license/LicenseProvider.mjs`: `shouldHideEditorAfterDelay(state)` returns true for `unlicensed-production`/`expired`; after `LICENSE_TIMEOUT = 5000ms` it does `setShowEditor(false)` and renders `<LicenseGate>` = `<div data-testid="tl-license-expired" style="display:none">` INSTEAD of the whole canvas app. Editor instance stays alive (store still reports shapes), which is why nodes existed in memory but the DOM canvas (`.tl-canvas`) was gone and `.tl-container` had only that one empty div. The red "No tldraw license key" console lines are harmless (LicenseManager just console.logs + a tracking fetch; the Watermark component returns null for `unlicensed-production`). Earlier handover claim that tldraw has "no hard block, only console errors" was WRONG for 5.1.1.
+- How it was found: temporary `window.__wfDebug()` editor introspector + lifecycle logs + MutationObserver + custom `ErrorFallback` were deployed, user ran console snippets; the `tl-license-expired` testid in `.tl-container.firstElementChild` was the smoking gun. All debug code removed after (verified clean).
+
+### FIX (user decision: internal-only tool, not public/commercial → technical bypass acceptable; NO license bought)
+- `patches/@tldraw+editor+5.1.1.patch` via `patch-package`: `shouldHideEditorAfterDelay` → always `return false` in `dist-esm`, `dist-cjs`, and `src`. Added `"postinstall": "patch-package"` to `package.json` (+ `patch-package` devDep) so it auto-reapplies after any `npm install`. Applied on the server with `npx patch-package` before build; baked into the `.next` bundle. If tldraw is upgraded past 5.1.1, regenerate the patch. For future public/commercial use: buy a tldraw license (`<Tldraw licenseKey=...>` / `NEXT_PUBLIC_TLDRAW_LICENSE_KEY`) or migrate to React Flow.
+
+### 4 more workflow fixes (all in `workflow-tldraw-canvas-inner.tsx` / `chat-workbench.tsx`)
+- Upload-in-progress: selected-node input box no longer shows while a node uploads (`showEditor` now also requires `uploadProgress === undefined`).
+- Empty-workflow UI: gray 22px "从一个节点开始" + 4 horizontal black rounded-10 h-14 buttons w/ icons: 文字输入 / 图片节点 / 视频节点 / 上传节点 (upload triggers the dock file input). Removed old icon box, gray subtitle, single blue button.
+- Reorder-to-top bug: `updateWorkflowCanvas` only bumps `updatedAt` on MEANINGFUL changes now (new `getWorkflowMeaningfulSnapshot` strips `viewport` + node `visualSize`). Opening a workflow with generated media used to re-derive visualSize and wrongly bump it to the top.
+- Usage panel (top-right) media counts: (a) EXCLUDE upload nodes (`getWorkflowMediaCounts` skips `title`-startsWith-"上传"), matching the generation-credits shown above; (b) CUMULATIVE via new `WorkflowItem.generatedMediaCounts`, incremented in `addWorkflowGeneratedAssets` (skips `silent`, dedups vs existing workflow assets, seeds from node count for old workflows) — deleting generated nodes no longer decreases the count. Conversation-flow `getSessionMediaCounts` already only counts assistant generated media (uploads are user-side), left as-is (still message-derived, not cumulative).
+
+### Deploy / verify
+- Per-file `scp` + `/usr/local/bin/deploy-flashmuse-production.sh` each time; `npx tsc --noEmit` passed before each. License patch also required scp `patches/` + `package.json` and `npx patch-package` on server before build. Prod `.env.local` workflow flag `true` (backup `.deploy-backups/20260704-workflow-open-debug-env.before`). Post-deploy `/workspace` 200, PM2 online.
+
 ## 2026-07-03 FULL DEPLOY: 24h Session Timeout + Admin/Recycle/Workspace Fixes DEPLOYED; Workflow Entry OPENED then RE-DISABLED (tldraw license blocker); PUSHED
 
 Reply style: concise/direct Chinese. This session deployed ALL previously-undeployed local source to production, opened the online workflow entry, changed the session idle-timeout to 24h, verified, pushed to GitHub — then RE-DISABLED the workflow entry the same session because tldraw has no production license (see CRITICAL section below). Everything except the workflow entry flag stays live.
