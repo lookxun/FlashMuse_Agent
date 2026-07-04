@@ -442,6 +442,27 @@ function getFastCreditSummary(ledgers: any[], creditsPerCny: number) {
   return summary;
 }
 
+// Records-mode only needs the columns used by getFastMediaSummary. Using an explicit `select`
+// (instead of `include: { mediaAsset: true }`) avoids fetching the heavy JSON columns
+// (mediaAsset.previewMeta / generationSettings and UserAssetState.legacyAssetJson) for every row,
+// which is the main reason expanding a big-table row was slow.
+const RECORDS_ASSET_STATE_SELECT = {
+  currentCategory: true,
+  hiddenAt: true,
+  currentName: true,
+  mediaAsset: { select: { url: true, archivedAt: true, mediaType: true, sourceKind: true, systemName: true, initialName: true, workspaceKind: true } },
+} as const;
+
+// Media/full modes render full media lists, so they need more columns — but still exclude the
+// heavy unused JSON columns (previewMeta / generationSettings / legacyAssetJson).
+const DETAIL_ASSET_STATE_SELECT = {
+  currentCategory: true,
+  hiddenAt: true,
+  currentName: true,
+  deletedAt: true,
+  mediaAsset: { select: { id: true, url: true, archivedAt: true, mediaType: true, sourceKind: true, workspaceKind: true, systemName: true, initialName: true, originalFileName: true, mimeType: true, reversePrompt: true, sourcePrompt: true, sourceDetail: true, model: true, ratio: true, resolution: true, videoDuration: true, width: true, height: true, imageSize: true, requestId: true, conversationId: true, firstSeenAt: true, createdAt: true } },
+} as const;
+
 export async function GET(request: Request) {
   const email = await getCurrentAdminEmail();
   if (!email || !isAdminEmail(email)) return NextResponse.json({ error: "无权限" }, { status: 403 });
@@ -495,7 +516,7 @@ export async function GET(request: Request) {
     ? prisma.user.findUnique({
       where: { id: userId },
       include: {
-        userAssetStates: { where: { hiddenAt: null, mediaAsset: { archivedAt: null } }, include: { mediaAsset: true }, orderBy: { updatedAt: "desc" } },
+        userAssetStates: { where: { hiddenAt: null, mediaAsset: { archivedAt: null } }, select: DETAIL_ASSET_STATE_SELECT, orderBy: { updatedAt: "desc" } },
         sessions: { orderBy: { lastSeenAt: "desc" }, take: 1, select: { lastSeenAt: true } },
         _count: { select: { sessions: true, workspaceWorkflows: { where: { deletedAt: null } } } },
       },
@@ -506,7 +527,7 @@ export async function GET(request: Request) {
       include: {
         workspace: { select: { updatedAt: true } },
         workspaceSessions: { orderBy: { updatedAt: "desc" }, select: { sessionId: true, title: true, updatedAt: true, deletedAt: true, summaryJson: true, usageSummary: true, memorySummary: true } },
-        userAssetStates: { where: { hiddenAt: null, mediaAsset: { archivedAt: null } }, include: { mediaAsset: true }, orderBy: { updatedAt: "desc" } },
+        userAssetStates: { where: { hiddenAt: null, mediaAsset: { archivedAt: null } }, select: RECORDS_ASSET_STATE_SELECT, orderBy: { updatedAt: "desc" } },
         sessions: { orderBy: { lastSeenAt: "desc" }, take: 1, select: { lastSeenAt: true } },
         _count: { select: { sessions: true, workspaceWorkflows: { where: { deletedAt: null } } } },
       },
@@ -517,7 +538,7 @@ export async function GET(request: Request) {
         workspace: { select: { state: true, updatedAt: true } },
         workspaceSessions: { orderBy: { updatedAt: "desc" }, select: { sessionId: true, title: true, updatedAt: true, deletedAt: true, messagesJson: true, summaryJson: true, usageSummary: true, memorySummary: true } },
         workspaceMessages: { orderBy: { createdAt: "asc" }, select: { sessionId: true, messageJson: true, createdAt: true } },
-        userAssetStates: { where: { hiddenAt: null, mediaAsset: { archivedAt: null } }, include: { mediaAsset: true }, orderBy: { updatedAt: "desc" } },
+        userAssetStates: { where: { hiddenAt: null, mediaAsset: { archivedAt: null } }, select: DETAIL_ASSET_STATE_SELECT, orderBy: { updatedAt: "desc" } },
         sessions: { orderBy: { lastSeenAt: "desc" }, take: 1, select: { lastSeenAt: true } },
         _count: { select: { sessions: true, workspaceWorkflows: { where: { deletedAt: null } } } },
       },

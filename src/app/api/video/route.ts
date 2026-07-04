@@ -14,6 +14,7 @@ import { appendUploadRuleFeedbackLog } from "@/lib/upload-rule-feedback-log";
 import { appendVideoDiagnosticsLog, summarizeVideoReference } from "@/lib/video-diagnostics-log";
 import { appendGenerationDiagnosticsLog, summarizeGeneratedReference } from "@/lib/generation-diagnostics-log";
 import { createBytePlusAsset, getBytePlusAsset } from "@/lib/byteplus-assets";
+import { recordGenerationEvent } from "@/lib/analytics-events";
 import { Prisma } from "@prisma/client";
 
 type UsageMeta = {
@@ -568,6 +569,7 @@ export async function POST(request: Request) {
         }
         const codedError = await createCodedApiError(new Error(videoError), GENERIC_MEDIA_ERROR_MESSAGE, "video task polling failed");
         void appendGenerationDiagnosticsLog({ event: "video-route-poll-failed", requestId: body.requestId ?? taskId, conversationId: body.conversationId, conversationTitle: body.conversationTitle, mode: "video", provider: isBytePlusVideoModel(body.model) ? "byteplus" : "openrouter", model: body.model, taskId, settings: body.settings, durationMs: Date.now() - startedAt, error: videoError, upstream: task, extra: { errorCode: codedError.errorCode, userError: codedError.error } });
+        void recordGenerationEvent({ userId: (await getCurrentUser())?.id, requestId, kind: "video", creditSource: body.metadata?.creditSource, model: body.model, provider: isBytePlusVideoModel(body.model) ? "byteplus" : "openrouter", status: "failed", failureReason: codedError.error, failureCode: codedError.errorCode });
         return NextResponse.json({ ...task, status: "failed", error: { message: codedError.error }, errorCode: codedError.errorCode });
       }
 
@@ -628,6 +630,7 @@ export async function POST(request: Request) {
         const usage = withBytePlusVideoUsd(getUsageMeta(task) ?? body.usage, body.model, body.settings);
         const credit = user ? await chargeCredits(user.id, "video", usage, { conversationId: body.conversationId, conversationTitle: body.conversationTitle, requestId, label: "视频生成", model: body.model, videoCount: 1, metadata: { ...body.metadata, settings: body.settings, ratio: body.settings?.ratio, resolution: body.settings?.resolution, duration: body.settings?.duration, originalPrompt: body.prompt, mediaUrls: [saveJob?.localUrl ?? videoUrl], remoteMediaUrls: [videoUrl], posterUrl: saveJob?.posterUrl, delivered: true, savedLocal: saveJob?.status === "saved", localSaveStatus: saveJob?.status ?? "pending", mediaSaveJobId: saveJob?.id } }) : undefined;
         void appendGenerationDiagnosticsLog({ event: "video-route-poll-completed", requestId: body.requestId ?? taskId, conversationId: body.conversationId, conversationTitle: body.conversationTitle, userId: user?.id, mode: "video", provider: isBytePlusVideoModel(body.model) ? "byteplus" : "openrouter", model: body.model, taskId, settings: body.settings, prompt: body.prompt, references: [summarizeGeneratedReference(videoUrl, 0, "remote_video")], durationMs: Date.now() - startedAt, extra: { status, saveJob, credit } });
+        void recordGenerationEvent({ userId: user?.id, requestId, kind: "video", creditSource: body.metadata?.creditSource, model: body.model, provider: isBytePlusVideoModel(body.model) ? "byteplus" : "openrouter", status: "success" });
 
         return NextResponse.json({
           ...task,
@@ -661,6 +664,7 @@ export async function POST(request: Request) {
         }
         const codedError = await createCodedApiError(new Error("视频平台返回已完成，但没有返回视频地址。"), GENERIC_MEDIA_ERROR_MESSAGE, "video task completed without url");
         void appendGenerationDiagnosticsLog({ event: "video-route-completed-without-url", requestId: body.requestId ?? taskId, conversationId: body.conversationId, conversationTitle: body.conversationTitle, mode: "video", provider: isBytePlusVideoModel(body.model) ? "byteplus" : "openrouter", model: body.model, taskId, settings: body.settings, durationMs: Date.now() - startedAt, error: codedError.error, upstream: task });
+        void recordGenerationEvent({ requestId, kind: "video", creditSource: body.metadata?.creditSource, model: body.model, provider: isBytePlusVideoModel(body.model) ? "byteplus" : "openrouter", status: "failed", failureReason: codedError.error, failureCode: codedError.errorCode });
         return NextResponse.json({ ...codedError, raw: task }, { status: 502 });
       }
 
@@ -870,6 +874,7 @@ export async function POST(request: Request) {
       }
       const codedError = await createCodedApiError(new Error(retryVideoError), GENERIC_MEDIA_ERROR_MESSAGE, "video task create failed");
       void appendGenerationDiagnosticsLog({ event: "video-route-create-returned-error", requestId: body.requestId, conversationId: body.conversationId, conversationTitle: body.conversationTitle, userId: user?.id, mode: "video", provider: isBytePlusVideoModel(body.model) ? "byteplus" : "openrouter", model: body.model, prompt, settings: body.settings, durationMs: Date.now() - routeStartedAt, error: retryVideoError, upstream: task, extra: { errorCode: codedError.errorCode, userError: codedError.error } });
+      void recordGenerationEvent({ userId: user?.id, requestId, kind: "video", creditSource, model: body.model, provider: isBytePlusVideoModel(body.model) ? "byteplus" : "openrouter", status: "failed", failureReason: codedError.error, failureCode: codedError.errorCode, referenceImageCount: referenceImages.length, referenceVideoCount: referenceVideos.length, referenceAudioCount: referenceAudios.length });
       return NextResponse.json({ ...codedError, raw: task }, { status: 502 });
     }
 
@@ -892,6 +897,7 @@ export async function POST(request: Request) {
       }
       const codedError = await createCodedApiError(new Error("Missing video task id"), GENERIC_MEDIA_ERROR_MESSAGE, "video task id missing");
       void appendGenerationDiagnosticsLog({ event: "video-route-create-missing-task-id", requestId: body.requestId, conversationId: body.conversationId, conversationTitle: body.conversationTitle, userId: user?.id, mode: "video", provider: isBytePlusVideoModel(body.model) ? "byteplus" : "openrouter", model: body.model, prompt, settings: body.settings, durationMs: Date.now() - routeStartedAt, error: codedError.error, upstream: task });
+      void recordGenerationEvent({ userId: user?.id, requestId, kind: "video", creditSource, model: body.model, provider: isBytePlusVideoModel(body.model) ? "byteplus" : "openrouter", status: "failed", failureReason: codedError.error, failureCode: codedError.errorCode, referenceImageCount: referenceImages.length, referenceVideoCount: referenceVideos.length, referenceAudioCount: referenceAudios.length });
       return NextResponse.json({ ...codedError, raw: task }, { status: 502 });
     }
 
@@ -967,6 +973,10 @@ export async function POST(request: Request) {
     }
     const codedError = await createCodedApiError(error, GENERIC_MEDIA_ERROR_MESSAGE, "video request failed");
     void appendGenerationDiagnosticsLog({ event: "video-route-failed", requestId: body?.requestId ?? body?.taskId, conversationId: body?.conversationId, conversationTitle: body?.conversationTitle, mode: "video", provider: isBytePlusVideoModel(body?.model) ? "byteplus" : "openrouter", model: body?.model, taskId: body?.taskId, prompt: body?.prompt, settings: body?.settings, references: Array.isArray(body?.referenceImages) ? body.referenceImages.map((url, index) => summarizeGeneratedReference(url, index, getBytePlusReferenceRole(index, body?.referenceMode))) : undefined, durationMs: Date.now() - routeStartedAt, error, extra: { errorCode: codedError.errorCode, userError: codedError.error, referenceImageCount } });
+    // 仅在创建阶段(无 taskId)记录失败；轮询阶段(有 taskId)多为可恢复的瞬时网络错误，不计入失败率。
+    if (body && !body.taskId && body.requestId) {
+      void recordGenerationEvent({ requestId: body.requestId, kind: "video", creditSource: body.metadata?.creditSource, model: body.model, provider: isBytePlusVideoModel(body.model) ? "byteplus" : "openrouter", status: "failed", failureReason: codedError.error, failureCode: codedError.errorCode, referenceImageCount, referenceVideoCount: Array.isArray(body.referenceVideos) ? body.referenceVideos.length : 0, referenceAudioCount: Array.isArray(body.referenceAudios) ? body.referenceAudios.length : 0 });
+    }
     return NextResponse.json(codedError, { status: 500 });
   }
 }

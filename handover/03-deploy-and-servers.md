@@ -1,5 +1,39 @@
 # Deploy And Servers
 
+## HOW TO DEPLOY — FOLLOW THIS, DO NOT ASK THE USER
+
+You already have everything needed to deploy. Do not tell the user you "can't deploy" or ask how — the SSH key, server IP, and process are all here.
+
+- SSH key: `E:\project\【2】server\马来西亚服务器\ByteplusVPS.pem`. Server: `root@101.47.19.109`. Project: `/var/www/flashmuse`. PM2 app: `flashmuse`. Deploy script: `/usr/local/bin/deploy-flashmuse-production.sh` (runs build + PM2 restart + PM2 save + Ali `_next/static` sync).
+- First-connection host key: this machine may not have the server in known_hosts. Use `-o StrictHostKeyChecking=accept-new` on the first ssh/scp (do NOT ssh to `main.venusface.com` — that is the web domain, the DEPLOY host is the IP `101.47.19.109`).
+
+CRITICAL Windows/PowerShell rule (this is what trips you up):
+- Do NOT inline complex bash (nested quotes, `sed`, `$'...'`, `${var%...}`) through a PowerShell here-string into `ssh`. PowerShell + ssh mangles the quoting and bash dies with `unexpected EOF` / `unknown option to s`.
+- INSTEAD: write the server-side bash to a local `.sh` file (use the Write tool), `scp` it to `/tmp/xxx.sh`, then run `ssh ... "sed -i 's/\r$//' /tmp/xxx.sh && bash /tmp/xxx.sh"`. The `sed 's/\r$//'` strips Windows CRLF (otherwise bash fails on `$'\r'`). This ALWAYS works. Simple one-liners (curl, pm2 status, ls, md5sum) are fine inline.
+
+DATABASE_URL on the server (needed only for schema changes). `.env.local` has TWO `DATABASE_URL` lines; the SECOND is malformed. Extract the FIRST with cut+tr (NO sed — sed quoting breaks over ssh):
+```bash
+val=$(grep -E '^DATABASE_URL=' .env.local | head -1 | cut -d= -f2- | tr -d '"' | tr -d '\r')
+export DATABASE_URL="$val"
+```
+
+Full deploy sequence (verified working 2026-07-05):
+1. LOCAL: `git status --short` (confirm only intended files changed); `npx tsc --noEmit` and `npm run build` must pass.
+2. LOCAL: make source tarball (exclude heavy/secret dirs):
+   `tar --exclude=node_modules --exclude=.next --exclude=.git --exclude=.runtime --exclude=.deploy-backups --exclude=./public --exclude=.env --exclude=.env.local --exclude="*.pem" -czf <tmp>\flashmuse-deploy.tgz .`
+   then `scp -i <key> -o StrictHostKeyChecking=accept-new <tmp>\flashmuse-deploy.tgz root@101.47.19.109:/tmp/flashmuse-deploy.tgz` and verify with `ssh ... "md5sum /tmp/flashmuse-deploy.tgz"`.
+3. SERVER (inline is OK for these): backup + before-snapshot:
+   `cd /var/www/flashmuse && mkdir -p .deploy-backups/<LABEL> && tar --exclude=node_modules --exclude=.next --exclude=.git --exclude=.runtime --exclude=.deploy-backups --exclude=./public -czf .deploy-backups/<LABEL>/source-before-deploy.tgz . && node .runtime/deploy-checks/prod-deploy-snapshot.mjs snapshot <LABEL>-before`
+4. SERVER: extract: `cd /var/www/flashmuse && tar -xzf /tmp/flashmuse-deploy.tgz`.
+5. SERVER (ONLY if prisma schema changed): via a scp'd `.sh` file — set DATABASE_URL (above), then `npx prisma migrate deploy` then `npx prisma generate`. Migration MUST run BEFORE the build.
+6. SERVER: `/usr/local/bin/deploy-flashmuse-production.sh` (via scp'd `.sh` file, since it is long-running and you want clean output).
+7. SERVER: after-snapshot + compare + HTTP checks:
+   `node .runtime/deploy-checks/prod-deploy-snapshot.mjs snapshot <LABEL>-after`
+   `node .runtime/deploy-checks/prod-deploy-snapshot.mjs compare .runtime/deploy-checks/<LABEL>-before.json .runtime/deploy-checks/<LABEL>-after.json` (expect `ok:true`; `stableMissing`/`fallbackUsers` must stay 0)
+   `curl -s -o /dev/null -w "%{http_code}" https://main.venusface.com/workspace` (200), same for `/admin` and `https://api.venusface.com/api/model-availability`.
+8. Risk rule (see Deployment Rules below): low-impact = deploy directly then report; risky (migrations / user-facing generation / auth / credits / media persistence) = the user's standing instruction is that deploying is fine after local verification + snapshot guard; still back up first and run the snapshot compare.
+
+
 ## Malaysia Main Server
 
 - Role: main Next.js app, API, PostgreSQL, generated media source.
@@ -12,7 +46,7 @@
 
 Current notes:
 
-- `/var/www/flashmuse` did not show a usable Git worktree during rebuild, so Git status on the server is not reliable.
+- Latest 2026-07-05 (later session) deploy: asset-library + admin-detail PERFORMANCE optimization (compute-only, no functional change). Full-source snapshot (tarball md5 `01164cebbfecbd725de12ac26f563dc9`; note the first scp truncated — always md5-verify both sides and re-scp on mismatch). NO new Prisma migration (schema already matched prod), so migrate/generate were skipped. Backup `.deploy-backups/20260705-perf-asset-admin/source-before-deploy.tgz`. Guard snapshots `.runtime/deploy-checks/20260705-perf-before.json` / `20260705-perf-after.json`, compare `ok:true` (assetListHash `0deb19ceea43c596` unchanged, stableMissing/fallbackUsers 0). Deploy script build OK, PM2 online, Ali synced. Post-deploy: `/workspace` `/admin` `/api/model-availability` `ali.venusface.com/workspace` all 200. Committed+pushed to GitHub (this commit also pushed the earlier-but-unpushed 2026-07-05 admin-overview/analytics work).
 - Source file hashes for key local files matched the Malaysia server deployment during rebuild.
 - PM2 was online during rebuild.
 - Recent deployment backup names included `20260620202220-asset-dedupe-ui-fix`.

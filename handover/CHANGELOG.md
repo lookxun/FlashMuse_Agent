@@ -1,5 +1,51 @@
 # Current Handover Changelog
 
+## 2026-07-05 (later session) Asset Library + Admin Detail Performance Optimization (DEPLOYED + PUSHED)
+
+Reply style: concise/direct Chinese. User report: 资产库打开非常卡/半天才显示/有时拉不出显示0/要刷新多次/部分图片或视频封面显示不出来; AND 后台右侧大表(生成记录/用户管理/积分管理)展开行详情也很卡。User clarified: 主服务器在马来(模型国内不可访问), 所有用户走阿里镜像域名(ali.venusface.com); 要求剔除网络原因、纯代码优化, 且资产库功能/内容千万不要改动, 只解决卡。All changes are compute-only optimizations that keep the API output shape/content identical.
+
+### Diagnosis (root causes, NOT network)
+- Asset library真正的接口是 `GET /api/workspace-state?assetsOnly=1` (NOT `/api/media-assets`, which is workflow-only). Server (Malaysia, 2 CPU / 3.8G) was idle at check time; DB has 3604 MediaAsset rows, heaviest user 571 assets.
+- Bottleneck #1 (main): `isVisiblePersistedMediaUrl` did a SYNC `existsSync` disk stat PER asset row, on THREE hot paths (counts loop, page filter, full-list filter). A 571-asset user = ~1100+ blocking stats per open (list pass + counts pass), stalling the Node event loop → "卡/半天才出". Multiple users opening at once compounded it.
+- Bottleneck #2: fake pagination — `findMany` had NO `take/skip`; all rows (incl. big `previewMeta` JSON) fetched then JS-filtered/sorted/sliced. Every scroll-more re-fetched the whole category.
+- Bottleneck #3: `getAssetCounts` re-fetched ALL rows WITH `previewMeta` every request and built full objects, running in parallel with the page query = two full passes.
+- Bottleneck #4 ("显示0/刷新多次"): counts and list used independent existsSync results; when they disagreed (count>0 but list filtered to empty) the frontend `needsCurrentFilter` (chat-workbench.tsx ~8932) looped re-fetching forever showing 0.
+- "部分封面显示不出来": CDN users get static thumbnail URLs `/generated/.../image-thumbnails/x.jpg` that may not be generated/synced yet (thumbnails are lazily made by `/api/media-thumbnail` on Malaysia only) → 404 with no fallback.
+- Admin big-table row expand calls `GET /admin/api/records/user-detail` `mode=records` which used `include: { mediaAsset: true }` (ALL 40+ MediaAsset columns incl. `previewMeta`/`generationSettings` JSON + `UserAssetState.legacyAssetJson`) with NO pagination, for records mode that only needs `getFastMediaSummary` counts. Same over-select in `media`/`full` modes. Admin does NOT use existsSync (so its slowness was purely over-select, not disk IO).
+
+### What shipped (4 edits, content/behavior identical, faster)
+1. `src/app/api/workspace-state/route.ts`: added `cachedFileExists()` (module Map; positive TTL 1h since files are soft-deleted only/never physically removed, negative TTL 15s so newly-synced files reappear). `isVisiblePersistedMediaUrl` now uses it → removes the per-row blocking stat storm AND makes counts+list share one cache (kills the #4 refetch loop cause).
+2. `src/app/api/workspace-state/route.ts`: `getAssetCounts` rewritten to select only `currentCategory/deletedAt/purgeAt/mediaAsset.url` (dropped `previewMeta` + all display-only columns) and inline the classification (no `mediaStateToLegacyAsset` object build). Count results identical. Removed now-unused `isLegacyVideoAsset`/`isLegacyUploadedAsset` helpers.
+3. `src/components/chat-workbench.tsx`: new `AssetThumbnailImage` component (uses render-time prev-src reset pattern, NOT useEffect setState). Asset-grid thumbnails (job result, video poster, image) now fall back to the full original media URL (`getStaticMediaUrl(...)`) on load error → fixes "部分图片/封面显示不出来". Purely additive (only triggers on error).
+4. `src/app/admin/api/records/user-detail/route.ts`: replaced 3× `include: { mediaAsset: true }` with explicit `select`. `RECORDS_ASSET_STATE_SELECT` (minimal, for the big-table row expand) + `DETAIL_ASSET_STATE_SELECT` (media/full modes, keeps all rendered fields but drops `previewMeta`/`generationSettings`/`legacyAssetJson`). Every consumed field was verified present. Output identical.
+
+### NOT changed (intentionally, to bound risk)
+- Kept the JS-side pagination/sorting in workspace-state (sortOrder can override firstSeenAt order, so DB take/skip would risk wrong pages — and existsSync caching already removed the real bottleneck).
+- Did NOT add DB indexes (existing UserAssetState/MediaAsset indexes already cover these where clauses; `url contains` LIKE is within an already-index-narrowed per-user/category set).
+- Did NOT add a select to `creditLedger.findMany` (its heavy field `metadata` is needed anyway; marginal gain).
+
+### Deploy record
+- This deploy ALSO carried the previously-deployed-but-unpushed 2026-07-05 admin-overview/analytics work (full-source snapshot; that work was already live on prod). NO new Prisma migration in this session (schema unchanged from what prod already had; `20260705000000_analytics_events` already applied), so migrate/generate were skipped.
+- Source tarball md5 `01164cebbfecbd725de12ac26f563dc9` → `/tmp/flashmuse-deploy.tgz` (re-uploaded once after a truncated first scp; verify md5 both sides). Backup `.deploy-backups/20260705-perf-asset-admin/source-before-deploy.tgz`. Snapshots `.runtime/deploy-checks/20260705-perf-before.json` / `20260705-perf-after.json`, compare `ok:true` (no diffs, `assetListHash=0deb19ceea43c596` unchanged, stableMissing/fallbackUsers 0). Deploy script: build OK, PM2 online, Ali `_next/static` synced. Post: `/workspace` `/admin` 200, `/api/model-availability` 200, `ali.venusface.com/workspace` 200.
+- Local verify before deploy: `npx tsc --noEmit` clean, `npm run build` passed. (eslint on the two big files still shows PRE-EXISTING `no-explicit-any`/`no-unused-vars` + react-hooks errors unrelated to this work; build does not gate on them.)
+- Committed + pushed to GitHub together with the 2026-07-05 admin overview/analytics work.
+
+## 2026-07-05 Admin Overview Rebuilt (real data) + Analytics Instrumentation + Conversation Cumulative Media Count (DEPLOYED, NOT yet pushed to GitHub)
+
+Reply style: concise/direct Chinese. Deployed to Malaysia prod (101.47.19.109) + Ali via full source snapshot + `deploy-flashmuse-production.sh`. Prisma migration applied on server first. NOT committed/pushed to GitHub yet (user only asked to deploy).
+
+### What shipped
+- NEW analytics埋点 tables `GenerationEvent` (image/video 生成成功/失败/时长/失败原因/moderation/参考素材数) + `UploadEvent` (上传成功/失败/超时/转码). Migration `prisma/migrations/20260705000000_analytics_events`. Writes via `src/lib/analytics-events.ts` (raw SQL, fire-and-forget, wrapped in try/catch — NEVER breaks generation/upload). Wired into `src/app/api/image/route.ts` (success/empty/catch), `src/app/api/video/route.ts` (poll-success / poll-error / completed-without-url / create-error / missing-id / create-stage outer-catch only, NOT poll transient), `src/app/api/asset-upload-temp/route.ts` (POST success/fail). Video success does NOT record reference counts (poll body lacks them) — reference-usage stat is image-dominant by design.
+- Admin 概览 FULLY REBUILT with REAL data. Old overview branch + ~60 overview-only helper functions/components DELETED from `src/app/admin/page.tsx`. New `src/lib/admin-overview.ts` `getAdminOverviewData()` aggregates existing tables (User/Session/CreditLedger/MediaAsset/WorkspaceSession/WorkspaceWorkflow/GptImagePromptOptimizationCase) + new analytics tables (queries wrapped in `safeRows` so missing tables don't crash the page). `src/app/admin/admin-overview-2.tsx` is now the presentational component receiving `data` prop; it renders as the DEFAULT 概览 tab (the temporary 概览2 nav entry was removed).
+- New overview content (运营/产品视角): KPI cards (注册/DAU·WAU·MAU/在线/成本; 累计生成图片·视频 with 对话流/工作流 split; 消耗积分; 成功率; 对话数/工作流数; 今日生成 split); 趋势分析 (活跃·新增 / 成本 / 生成图片 / 生成视频, image·video 对话流vs工作流 grouped bars, with a 今日/7日/30日/全部 range toggle that ONLY controls the 4 trend charts); 运营与产品分析 (功能使用分布, 模型调用占比, 生成成功率, 用户留存 次日/3/7/30, 转化漏斗, 人均指标, 积分健康度, 工作流采纳率, 新老用户占比, 对话生成模式占比, 参考素材使用, 上传成功率, 重试与安全改写[GPT改写案例数], 审核拦截细分, 生成平均时长, 成本Top模型, 计费异常, 模型调用次数[调用/失败 红色], 失败原因[全部], Top活跃/消耗用户).
+- NOTE on new-tracking metrics (成功率/上传成功率/生成时长/审核拦截/失败原因/模型失败次数/参考素材): these only have data from 2026-07-05 onward (埋点 start). They show "暂无数据/上线后统计" until events accumulate. Historical counts (累计生成图片/视频, trends) come from MediaAsset so they are populated immediately.
+- Conversation top-right usage panel media counts are now CUMULATIVE (只增不减) like workflow: `WorkSession.generatedMediaCounts` in `chat-workbench.tsx`, incremented on image/video generation success (`addSessionGeneratedMediaCount`), seeded from derived count for old sessions, persisted via summaryJson (no backend change). Deleting messages no longer lowers the count.
+
+### Deploy record
+- Source tarball md5 `c75795f7b6132c483a6cbd49739ab3e4` → `/tmp/flashmuse-deploy.tgz`. Backup `.deploy-backups/20260705-overview-analytics/source-before-deploy.tgz`. Snapshots `20260705-before/after-overview-analytics.json`, compare `ok:true` (no diffs, assetListHash unchanged). Server: `npx prisma migrate deploy` applied `20260705000000_analytics_events` (used FIRST DATABASE_URL line), `npx prisma generate`, then deploy script (build OK, PM2 online, Ali synced). Post: `/workspace` `/admin` 200, `/api/model-availability` 200. No analytics/overview errors in PM2 logs.
+- Local verify before deploy: `npx tsc --noEmit` clean, `eslint` 0 errors, `npm run build` passed.
+- DONE: this work was committed + pushed to GitHub in the 2026-07-05 (later session) perf commit. Still browser-verify the admin 概览 renders for a logged-in admin, and that GenerationEvent/UploadEvent fill in after generating a few images/videos.
+
 ## 2026-07-04 tldraw License Gate BYPASSED (patch-package) — Workflow Now Works in Production + 5 Workflow Fixes (DEPLOYED + PUSHED, commit 65737fa)
 
 Reply style: concise/direct Chinese. Debugging done LIVE on production (late night, no users). Workflow entry set `NEXT_PUBLIC_WORKFLOW_MODE_ENABLED=true` and kept open. Everything below is deployed to Malaysia prod + Ali and pushed to GitHub `65737fa`.

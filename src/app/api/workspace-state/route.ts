@@ -299,82 +299,63 @@ function getAssetPageWhere(userId: string, filter: AssetFilterKey): Prisma.UserA
   return { ...visible, deletedAt: null, currentCategory: "conversation_images", NOT: { mediaAsset: { url: { contains: "/upload_image/" } } } };
 }
 
-function isLegacyVideoAsset(asset: ReturnType<typeof mediaStateToLegacyAsset>) {
-  return asset.type === "shot_video" || /\.(mp4|webm|mov)(\?|$)/i.test(asset.url);
-}
+// Cached file-existence check.
+// Persisted media files are soft-deleted only (never physically removed per product rule),
+// so a positive result is stable and can be cached for a long time. A missing file is usually
+// a not-yet-synced/new file, so negatives are re-checked soon. Caching removes the per-row
+// synchronous disk stat that previously blocked the event loop on every asset-library request,
+// and guarantees the counts pass and the page pass see identical existence results.
+const mediaExistsCache = new Map<string, { exists: boolean; expires: number }>();
+const MEDIA_EXISTS_POSITIVE_TTL_MS = 60 * 60 * 1000;
+const MEDIA_EXISTS_NEGATIVE_TTL_MS = 15 * 1000;
 
-function isLegacyUploadedAsset(asset: ReturnType<typeof mediaStateToLegacyAsset>) {
-  return /\/generated\/(?:users\/[^/]+\/)?upload_image\//.test(asset.url);
+function cachedFileExists(absolutePath: string) {
+  const now = Date.now();
+  const cached = mediaExistsCache.get(absolutePath);
+  if (cached && cached.expires > now) return cached.exists;
+  const exists = existsSync(absolutePath);
+  mediaExistsCache.set(absolutePath, { exists, expires: now + (exists ? MEDIA_EXISTS_POSITIVE_TTL_MS : MEDIA_EXISTS_NEGATIVE_TTL_MS) });
+  return exists;
 }
 
 function isVisiblePersistedMediaUrl(url: string) {
   const ownGenerated = url.match(OWN_GENERATED_HOST_RE);
   const generatedPath = ownGenerated ? url.slice(url.indexOf("/generated/")) : url;
   if (/^https?:\/\//i.test(url) && !ownGenerated) return false;
-  if (generatedPath.startsWith("/generated/")) return existsSync(join(process.cwd(), "public", generatedPath.replace(/^\//, "")));
+  if (generatedPath.startsWith("/generated/")) return cachedFileExists(join(process.cwd(), "public", generatedPath.replace(/^\//, "")));
   return true;
 }
 
+// Lightweight counting query: only the columns needed to classify each asset are selected.
+// The heavy JSON `previewMeta` field and other display-only columns are deliberately excluded,
+// and the per-row `mediaStateToLegacyAsset` object build is inlined, so counting stays cheap
+// even for users with many assets. The classification result is identical to the previous
+// full-object version.
 async function getAssetCounts(userId: string) {
   const rows = await prisma.userAssetState.findMany({
     where: { userId, hiddenAt: null, mediaAsset: { archivedAt: null } },
     select: {
-      id: true,
-      sortOrder: true,
-      currentName: true,
       currentCategory: true,
-      previousCategory: true,
       deletedAt: true,
       purgeAt: true,
-      bytePlusAssetId: true,
-      bytePlusAssetGroupId: true,
-      bytePlusAssetStatus: true,
-      bytePlusAssetError: true,
-      bytePlusAssetUpdatedAt: true,
-      mediaAsset: {
-        select: {
-          id: true,
-          mediaType: true,
-          url: true,
-          posterUrl: true,
-          thumbnailUrl: true,
-          sourceKind: true,
-          sourcePrompt: true,
-          promptSource: true,
-          reversePrompt: true,
-          previewMeta: true,
-          model: true,
-          ratio: true,
-          resolution: true,
-          imageSize: true,
-          videoDuration: true,
-          width: true,
-          height: true,
-          conversationId: true,
-          messageId: true,
-          createdAt: true,
-          firstSeenAt: true,
-          systemName: true,
-          initialName: true,
-          legacyLibrarySource: true,
-          workflowId: true,
-          workflowNodeId: true,
-        },
-      },
+      mediaAsset: { select: { url: true } },
     },
   });
   const counts: Record<string, number> = { character_image: 0, scene_image: 0, shot_image: 0, trash: 0, conversation_images: 0, conversation_uploads: 0, conversation_videos: 0, workflow_images: 0, workflow_uploads: 0, workflow_videos: 0, asset_generation: 0, conversation: 0, workflow: 0 };
   const now = Date.now();
-  for (const row of rows.filter((item) => isVisiblePersistedMediaUrl(item.mediaAsset.url))) {
-    const asset = mediaStateToLegacyAsset(row);
-    if (asset.type === "trash" || asset.deletedAt) {
-      if (asset.purgeAt && asset.purgeAt <= now) continue;
+  for (const row of rows) {
+    const url = row.mediaAsset.url;
+    if (!isVisiblePersistedMediaUrl(url)) continue;
+    const isDeleted = Boolean(row.deletedAt);
+    const type = categoryToLegacyType(isDeleted ? "trash" : row.currentCategory);
+    if (type === "trash" || isDeleted) {
+      if (row.purgeAt && row.purgeAt.getTime() <= now) continue;
       counts.trash += 1;
       continue;
     }
-    if (asset.librarySource === "asset_generation") {
+    if (type === "character_image" || type === "scene_image" || type === "shot_image") {
       counts.asset_generation += 1;
-      counts[asset.type] = (counts[asset.type] ?? 0) + 1;
+      counts[type] = (counts[type] ?? 0) + 1;
       continue;
     }
     if (row.currentCategory === "workflow_images" || row.currentCategory === "workflow_uploads" || row.currentCategory === "workflow_videos") {
@@ -383,8 +364,10 @@ async function getAssetCounts(userId: string) {
       continue;
     }
     counts.conversation += 1;
-    if (row.currentCategory === "conversation_videos" || isLegacyVideoAsset(asset)) counts.conversation_videos += 1;
-    else if (row.currentCategory === "conversation_uploads" || isLegacyUploadedAsset(asset)) counts.conversation_uploads += 1;
+    const isVideo = type === "shot_video" || /\.(mp4|webm|mov)(\?|$)/i.test(url);
+    const isUpload = /\/generated\/(?:users\/[^/]+\/)?upload_image\//.test(url);
+    if (row.currentCategory === "conversation_videos" || isVideo) counts.conversation_videos += 1;
+    else if (row.currentCategory === "conversation_uploads" || isUpload) counts.conversation_uploads += 1;
     else counts.conversation_images += 1;
   }
   return counts;

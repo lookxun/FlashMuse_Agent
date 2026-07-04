@@ -10,6 +10,7 @@ import { validateReferenceImageCount } from "@/lib/upload-rules";
 import type { Prisma } from "@prisma/client";
 import { appendUploadRuleFeedbackLog } from "@/lib/upload-rule-feedback-log";
 import { appendGenerationDiagnosticsLog, summarizeGeneratedReference } from "@/lib/generation-diagnostics-log";
+import { recordGenerationEvent } from "@/lib/analytics-events";
 
 function getRequestedImageCount(value: unknown) {
   const count = typeof value === "number" ? value : typeof value === "string" ? Number(value) : 1;
@@ -165,6 +166,7 @@ export async function POST(request: Request) {
         error: codedError.error,
         extra: { requestedImageCount, providerReturnedImageCount },
       });
+      void recordGenerationEvent({ userId: user?.id, requestId: body.requestId, kind: "image", creditSource, model: body.model, provider: body.model?.startsWith("byteplus:") ? "byteplus" : "openrouter", status: "failed", failureReason: codedError.error, failureCode: codedError.errorCode, durationMs: Date.now() - routeStartedAt, referenceImageCount: referenceImages.length });
       return NextResponse.json(codedError, { status: 502 });
     }
     const billableImageCount = deliveredImages.length;
@@ -184,6 +186,7 @@ export async function POST(request: Request) {
       durationMs: Date.now() - routeStartedAt,
       extra: { requestedImageCount, returnedImageCount: deliveredImages.length, providerReturnedImageCount, billableImageCount, deliveredImages: deliveredImages.map((url, index) => summarizeGeneratedReference(url, index)), dimensions: deliveredImageDimensions, credit },
     });
+    void recordGenerationEvent({ userId: user?.id, requestId: body.requestId, kind: "image", creditSource, model: body.model, provider: body.model?.startsWith("byteplus:") ? "byteplus" : "openrouter", status: "success", durationMs: Date.now() - routeStartedAt, referenceImageCount: referenceImages.length });
     return NextResponse.json({ ...withChargedUsage(result, credit), images: deliveredImages, imageDimensions: deliveredImageDimensions, requestedImageCount, returnedImageCount: deliveredImages.length, providerReturnedImageCount, billableImageCount, credit });
   } catch (error) {
     const referenceImageCount = Array.isArray(body?.referenceImages) ? body.referenceImages.length : 0;
@@ -216,6 +219,7 @@ export async function POST(request: Request) {
       error,
       extra: { errorCode: codedError.errorCode, userError: codedError.error, referenceImageCount },
     });
+    void recordGenerationEvent({ requestId: body?.requestId, kind: "image", creditSource: getCreditSource(body?.metadata), model: body?.model, provider: body?.model?.startsWith("byteplus:") ? "byteplus" : "openrouter", status: "failed", failureReason: codedError.error, failureCode: codedError.errorCode, durationMs: Date.now() - routeStartedAt, referenceImageCount });
     return NextResponse.json(codedError, { status: 500 });
   }
 }

@@ -13,6 +13,23 @@
 
 ## Highest Priority
 
+### 2026-07-05 (later session) END-OF-SESSION STATE (read this first)
+
+- DEPLOYED to prod + Ali AND PUSHED to GitHub: asset-library + admin-detail performance optimizations (compute-only, no functional/content change). This same commit ALSO pushed the earlier 2026-07-05 admin-overview/analytics work that was previously live-but-unpushed. So GitHub is now in sync with prod.
+- FILES this session: `src/app/api/workspace-state/route.ts` (cachedFileExists + lightweight getAssetCounts), `src/components/chat-workbench.tsx` (AssetThumbnailImage fallback), `src/app/admin/api/records/user-detail/route.ts` (include→select, drop big JSON columns). See CHANGELOG top entry + 01-current-status for full root-cause detail.
+- BROWSER-VERIFY (the reported symptoms should be gone): (1) 资产库打开应明显变快、不再卡半天、不再莫名显示0/反复刷新，尤其是资产多的用户(如 ID_686996 有571个); (2) 个别缩略图/视频封面缺失时应自动回退显示原图而不是破图; (3) 后台大表(生成记录/用户管理/积分管理)展开行详情应明显变快。
+- IF asset library shows WRONG content after this change: the cache assumes files are never physically deleted (product rule). If a file is ever truly removed, it may still show for up to 1h (positive TTL). Adjust `MEDIA_EXISTS_POSITIVE_TTL_MS` in `workspace-state/route.ts` if needed. Counts and list now share the cache so they stay consistent.
+- FURTHER perf ideas NOT done (only if still slow after this): real DB pagination in workspace-state (careful: sortOrder overrides firstSeenAt ordering); serve `/generated/image-thumbnails` statically via Nginx instead of Node `/api/media-thumbnail`; pre-generate thumbnails at asset creation so CDN static thumbnail URLs never 404; DB indexes if EXPLAIN shows scans.
+
+### 2026-07-05 END-OF-SESSION STATE (earlier session — now superseded, kept for context)
+
+- DEPLOYED to prod + Ali this session (full-source-snapshot deploy, migration applied on server): (1) admin 概览 fully rebuilt with REAL data + new analytics埋点 tables, (2) conversation top-right usage media counts made cumulative. See CHANGELOG top + 01-current-status for full detail, and 03-deploy-and-servers "HOW TO DEPLOY" for the exact commands.
+- NOW pushed to GitHub (in the 2026-07-05 later-session perf commit). GitHub is in sync with prod. Run `npx tsc --noEmit` before any future commit.
+- Browser-verify (admin login) that the new 概览 renders and numbers look sane. Historical-capable cards (累计生成图片/视频 + 对话流/工作流 split, 生成趋势, 对话/工作流总数, 积分健康度, 留存, 漏斗, Top用户, 模型调用占比, 功能使用) should have data immediately. New-埋点 cards (生成成功率, 上传成功率, 生成平均时长, 审核拦截细分, 失败原因, 模型调用次数的失败列, 参考素材使用) will read 0/"暂无数据" until events from 2026-07-05+ accumulate — generate a few images/videos and re-check that GenerationEvent/UploadEvent fill in.
+- KNOWN by-design limits of the埋点: video SUCCESS rows do not carry reference counts (poll body lacks them) so 参考素材使用 is image-dominant; failure/latency/upload/moderation metrics are post-2026-07-05 only. If the user wants video reference-usage or true end-to-end video latency, that needs create→poll correlation (persist ref counts + create time keyed by requestId) — not built yet.
+- If admin 概览 ever errors: `getAdminOverviewData` in `src/lib/admin-overview.ts`; new-table queries are wrapped in `safeRows()` (return [] on missing table), existing-table queries are not — check those first.
+
+
 ### 2026-07-04 END-OF-SESSION STATE (read this first)
 
 - PRODUCTION NOW: workflow entry is OPEN and WORKING (`NEXT_PUBLIC_WORKFLOW_MODE_ENABLED=true`). The "nodes appear then vanish after 5s" blocker is FIXED. Latest commit pushed to GitHub: `65737fa`. Everything from this session is deployed to Malaysia prod + Ali AND pushed.

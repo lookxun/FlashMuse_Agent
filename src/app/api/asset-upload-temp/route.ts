@@ -5,6 +5,7 @@ import { commitTemporaryUploadedImage, deleteTemporaryUploadedImage, saveTempora
 import { toUserErrorMessage } from "@/lib/error-message";
 import { getBearerToken, verifyUploadToken } from "@/lib/upload-token";
 import { appendUploadDiagnosticsLog } from "@/lib/upload-diagnostics-log";
+import { recordUploadEvent } from "@/lib/analytics-events";
 
 const allowedUploadOrigins = new Set([
   "http://101.37.129.164",
@@ -69,11 +70,13 @@ export async function POST(request: Request) {
     void appendUploadDiagnosticsLog({ event: "asset-upload-temp-post-file-received", requestId, userId, fileName, mimeType, fileSize, forceReencode, durationMs: Date.now() - startedAt });
     const result = await saveTemporaryUploadedImageBuffer(Buffer.from(await file.arrayBuffer()), mimeType, { userId, forceReencode, diagnostics: { requestId, fileName, fileSize } });
     void appendUploadDiagnosticsLog({ event: "asset-upload-temp-post-success", requestId, userId, fileName, mimeType, fileSize, forceReencode, token: result.token, status: 200, durationMs: Date.now() - startedAt });
+    void recordUploadEvent({ userId, kind: "image", status: "success", bytes: fileSize });
     return NextResponse.json(result, { headers });
   } catch (error) {
     const message = toUserErrorMessage(error, "图片上传失败，请稍后再试。");
     console.error("[upload] asset-upload-temp post failed", { requestId, userId, fileName, mimeType, fileSize, forceReencode, error });
     void appendUploadDiagnosticsLog({ event: "asset-upload-temp-post-failed", requestId, userId, fileName, mimeType, fileSize, forceReencode, status: 500, durationMs: Date.now() - startedAt, error, extra: { userMessage: message } });
+    void recordUploadEvent({ userId, kind: "image", status: "failed", reason: /转码|reencode/i.test(message) ? "reencode" : /超时|timeout/i.test(message) ? "timeout" : "other", bytes: fileSize });
     return NextResponse.json({ error: message }, { status: 500, headers });
   }
 }

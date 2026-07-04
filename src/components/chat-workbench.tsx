@@ -422,6 +422,7 @@ type WorkSession = {
   pendingRequest?: PendingGeneration | null;
   pendingRequests?: PendingGeneration[];
   usageSummary?: UsageSummary;
+  generatedMediaCounts?: { images: number; videos: number };
   memorySummary?: SessionMemorySummary;
   deletedAt?: number;
   messagesLoaded?: boolean;
@@ -1197,6 +1198,34 @@ function getAssetCardImageUrl(asset: Pick<AssetItem, "url" | "thumbnailUrl" | "p
 
 function getAssetCardPosterUrl(asset: Pick<AssetItem, "url" | "posterUrl">) {
   return asset.posterUrl ?? getLocalVideoPosterUrl(asset.url);
+}
+
+// Thumbnail image with graceful fallback. When the (usually CDN-served, possibly not-yet-synced)
+// thumbnail fails to load, it falls back to the full original media URL so the asset card still
+// shows an image instead of a broken/blank tile. Purely additive: only triggers on load error.
+function AssetThumbnailImage({ thumbnailSrc, fallbackSrc, alt, className, style }: { thumbnailSrc: string; fallbackSrc?: string; alt: string; className?: string; style?: CSSProperties }) {
+  const [useFallback, setUseFallback] = useState(false);
+  const [trackedSrc, setTrackedSrc] = useState(thumbnailSrc);
+  if (trackedSrc !== thumbnailSrc) {
+    setTrackedSrc(thumbnailSrc);
+    setUseFallback(false);
+  }
+  const src = useFallback && fallbackSrc ? fallbackSrc : thumbnailSrc;
+  return (
+    <Image
+      src={src}
+      alt={alt}
+      width={240}
+      height={240}
+      loading="lazy"
+      unoptimized
+      className={className}
+      style={style}
+      onError={() => {
+        if (!useFallback && fallbackSrc && fallbackSrc !== thumbnailSrc) setUseFallback(true);
+      }}
+    />
+  );
 }
 const MIN_TYPING_DURATION_MS = 1000;
 const MAX_TYPING_DURATION_MS = 8000;
@@ -5771,7 +5800,7 @@ function AssetManagementPanel({
         return (
           <div key={job.id} className="group relative aspect-square overflow-visible bg-[#f4f4f4]">
             <button type="button" onClick={() => { if (asset) onPreview(asset); }} className="block h-full w-full overflow-hidden bg-[#f4f4f4] text-left">
-              <Image src={getMediaThumbnailUrl(job.result.url)} alt={name} width={240} height={240} loading="lazy" unoptimized className="h-full w-full object-cover" style={{ width: "100%", height: "100%" }} />
+              <AssetThumbnailImage thumbnailSrc={getMediaThumbnailUrl(job.result.url)} fallbackSrc={getStaticMediaUrl(job.result.url)} alt={name} className="h-full w-full object-cover" style={{ width: "100%", height: "100%" }} />
             </button>
             <div className="absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-black/75 to-transparent" />
             {asset ? (
@@ -5866,9 +5895,9 @@ function AssetManagementPanel({
         <div key={asset.id} className={variant === "video-row" ? "group relative aspect-video overflow-visible bg-[#f4f4f4]" : "group relative aspect-square overflow-visible bg-[#f4f4f4]"}>
           <button type="button" onClick={() => onPreview(asset)} className="block h-full w-full overflow-hidden bg-[#f4f4f4] text-left">
             {isVideoAsset(asset) ? (
-              assetCardPosterUrl ? <Image src={getMediaThumbnailUrl(assetCardPosterUrl)} alt={asset.name} width={240} height={240} loading="lazy" unoptimized className="h-full w-full object-cover" style={{ width: "100%", height: "100%" }} /> : <div className="flex h-full w-full items-center justify-center bg-[#ededed] text-[#8a8a8a]"><RiFilmLine className="h-8 w-8" aria-hidden="true" /></div>
+              assetCardPosterUrl ? <AssetThumbnailImage thumbnailSrc={getMediaThumbnailUrl(assetCardPosterUrl)} fallbackSrc={getStaticMediaUrl(assetCardPosterUrl)} alt={asset.name} className="h-full w-full object-cover" style={{ width: "100%", height: "100%" }} /> : <div className="flex h-full w-full items-center justify-center bg-[#ededed] text-[#8a8a8a]"><RiFilmLine className="h-8 w-8" aria-hidden="true" /></div>
             ) : (
-              <Image src={getAssetCardImageUrl(asset)} alt={asset.name} width={240} height={240} loading="lazy" unoptimized className="h-full w-full object-cover" style={{ width: "100%", height: "100%" }} />
+              <AssetThumbnailImage thumbnailSrc={getAssetCardImageUrl(asset)} fallbackSrc={getStaticMediaUrl(asset.url)} alt={asset.name} className="h-full w-full object-cover" style={{ width: "100%", height: "100%" }} />
             )}
           </button>
           {isVideoAsset(asset) ? (
@@ -8426,6 +8455,20 @@ export function ChatWorkbench() {
         if (session.id !== sessionId) return session;
         const nextUsage = addUsageSummary(session.usageSummary, usage);
         return nextUsage ? { ...session, usageSummary: nextUsage } : session;
+      }),
+    );
+  }, []);
+
+  const addSessionGeneratedMediaCount = useCallback((sessionId: string, images: number, videos: number) => {
+    if (images <= 0 && videos <= 0) return;
+    setSessions((current) =>
+      current.map((session) => {
+        if (session.id !== sessionId) return session;
+        const prev = session.generatedMediaCounts ?? getSessionMediaCounts(session);
+        const next = session.generatedMediaCounts
+          ? { images: prev.images + Math.max(0, images), videos: prev.videos + Math.max(0, videos) }
+          : prev;
+        return { ...session, generatedMediaCounts: next };
       }),
     );
   }, []);
@@ -11579,6 +11622,7 @@ export function ChatWorkbench() {
                 const imagePromptDetails = itemPromptDetail ? Object.fromEntries(resultImages.map((url) => [url, itemPromptDetail])) : {};
                 appendImagesToAssistantMessage(sessionId, pendingRequest.id, resultImages, resultDimensions, 1, imagePrompts, mediaSystemNames, pendingRequest.retryFailedIndex, pendingRequest.retryFailedIndex ?? index, imagePromptDetails);
                 addGeneratedAssets(sessionId, pendingRequest.mode, itemPrompt, resultImages, undefined, pendingRequest.assetTargetType, contextText, mediaSystemNames, {}, imagePromptDetails);
+                addSessionGeneratedMediaCount(sessionId, resultImages.length, 0);
                 notifyGenerationCompleteOnce(pendingRequest.id, "图片生成已完成");
                 return resultImages;
               } catch (error) {
@@ -11759,6 +11803,7 @@ export function ChatWorkbench() {
             const mediaSystemNames = reserveMediaSystemNames(sessionId, "video", [pollData.content.video_url]);
             appendVideoToAssistantMessage(sessionId, pendingRequest.id, pollData.content.video_url, videoPrompt, mediaSystemNames[pollData.content.video_url], pollData.content.poster_url, promptDetail);
             addGeneratedAssets(sessionId, pendingRequest.mode, videoPrompt, [pollData.content.video_url], undefined, pendingRequest.assetTargetType, pendingRequest.messages.map((message) => message.content).join("\n"), mediaSystemNames, pollData.content.poster_url ? { [pollData.content.video_url]: pollData.content.poster_url } : {}, promptDetail ? { [pollData.content.video_url]: promptDetail } : {});
+            addSessionGeneratedMediaCount(sessionId, 0, 1);
             notifyGenerationCompleteOnce(pendingRequest.id, "视频生成已完成");
             return pollData.content.video_url;
           }
@@ -11850,7 +11895,7 @@ export function ChatWorkbench() {
       requestAbortControllersRef.current.delete(pendingRequest.id);
       stoppedRequestIdsRef.current.delete(pendingRequest.id);
     }
-  }, [addGeneratedAssets, addSessionUsage, agentModelTier, appendAssistantMessage, appendImagesToAssistantMessage, appendSystemMessage, appendVideoToAssistantMessage, applyBytePlusAssetUpdatesByUrl, applyCreditResult, autoSaveHistory, clearPendingRequest, enabledAgentGenerationModelIds, ensureSessionMemorySummary, feedbackLogs, finalizeAssistantImageFailures, markAssistantImageFailure, markAssistantVideoFailure, notifyGenerationCompleteOnce, reserveMediaSystemNames, selectedGenerationModels, selectedModel, sessions, updateAssistantMessageByRequestId, updatePendingRequest]);
+  }, [addGeneratedAssets, addSessionUsage, addSessionGeneratedMediaCount, agentModelTier, appendAssistantMessage, appendImagesToAssistantMessage, appendSystemMessage, appendVideoToAssistantMessage, applyBytePlusAssetUpdatesByUrl, applyCreditResult, autoSaveHistory, clearPendingRequest, enabledAgentGenerationModelIds, ensureSessionMemorySummary, feedbackLogs, finalizeAssistantImageFailures, markAssistantImageFailure, markAssistantVideoFailure, notifyGenerationCompleteOnce, reserveMediaSystemNames, selectedGenerationModels, selectedModel, sessions, updateAssistantMessageByRequestId, updatePendingRequest]);
 
   useEffect(() => {
     if (!isLoaded) return;
@@ -14227,7 +14272,7 @@ export function ChatWorkbench() {
             ) : null}
           </div>
 
-          {activePanel === "chat" ? <UsageSummaryButton summary={activeSession?.usageSummary} mediaCounts={getSessionMediaCounts(activeSession)} /> : null}
+          {activePanel === "chat" ? <UsageSummaryButton summary={activeSession?.usageSummary} mediaCounts={activeSession?.generatedMediaCounts ?? getSessionMediaCounts(activeSession)} /> : null}
 
         </div> : null}
 

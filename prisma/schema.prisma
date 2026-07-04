@@ -286,6 +286,44 @@ model WorkspaceMessage {
   @@index([userId, createdAt])
 }
 
+model GenerationEvent {
+  id                  String   @id @default(cuid())
+  userId              String?
+  requestId           String?
+  kind                String
+  source              String   @default("conversation")
+  model               String?
+  provider            String?
+  status              String
+  failureReason       String?
+  failureCode         String?
+  moderation          Boolean  @default(false)
+  durationMs          Int?
+  referenceImageCount Int      @default(0)
+  referenceVideoCount Int      @default(0)
+  referenceAudioCount Int      @default(0)
+  createdAt           DateTime @default(now())
+
+  @@unique([requestId, kind])
+  @@index([createdAt])
+  @@index([kind, status, createdAt])
+  @@index([model, createdAt])
+  @@index([source, createdAt])
+}
+
+model UploadEvent {
+  id        String   @id @default(cuid())
+  userId    String?
+  kind      String   @default("image")
+  status    String
+  reason    String?
+  bytes     Int?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([status, createdAt])
+}
+
 model EmailVerificationCode {
   id         String    @id @default(cuid())
   email      String
