@@ -1,5 +1,10 @@
 # Current Handover Changelog
 
+## 2026-07-05 (later session) Workflow Empty-State Start Buttons Keep Width (DEPLOYED + PUSHED)
+
+- Fix: the empty-workflow "从一个节点开始" 4 buttons (文字输入/图片节点/视频节点/上传节点) collapsed when the browser narrowed, squeezing the labels into vertical text. In `src/components/workflow-tldraw-canvas-inner.tsx` (~line 3623) each button now has `shrink-0 whitespace-nowrap` (keep full width + horizontal text) and the row is `flex-wrap justify-center` (wraps to next line on very narrow instead of overflowing off-screen).
+- Deploy: full-source snapshot (tarball md5 `11ee0a5b24e19ce01e3e13926f2586bd`), backup `.deploy-backups/20260705-workflow-start-buttons/`, no migration. Deploy script build OK, PM2 online, Ali synced, `/workspace` + `ali.venusface.com/workspace` 200. `npx tsc --noEmit` + `npm run build` passed. Committed + pushed to GitHub.
+
 ## 2026-07-05 (later session) Asset Library + Admin Detail Performance Optimization (DEPLOYED + PUSHED)
 
 Reply style: concise/direct Chinese. User report: 资产库打开非常卡/半天才显示/有时拉不出显示0/要刷新多次/部分图片或视频封面显示不出来; AND 后台右侧大表(生成记录/用户管理/积分管理)展开行详情也很卡。User clarified: 主服务器在马来(模型国内不可访问), 所有用户走阿里镜像域名(ali.venusface.com); 要求剔除网络原因、纯代码优化, 且资产库功能/内容千万不要改动, 只解决卡。All changes are compute-only optimizations that keep the API output shape/content identical.
