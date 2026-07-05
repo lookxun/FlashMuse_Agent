@@ -1119,7 +1119,7 @@ function isConversationAsset(asset: AssetItem) {
 }
 
 function isMentionGroupAsset(asset: AssetItem, groupType: MentionAssetGroupType) {
-  if (isUnhostedRemoteAssetUrl(asset.url)) return false;
+  if (isUnhostedRemoteAssetUrl(asset.url) || isNonDisplayableFileAsset(asset.url)) return false;
   if (asset.type === "trash" || asset.deletedAt || isVideoAsset(asset)) return false;
   if (groupType === "conversation_upload") return isConversationUploadedAsset(asset);
   return asset.type === groupType && isAssetGenerationAsset(asset);
@@ -3741,7 +3741,7 @@ function isConversationUploadedAsset(asset: AssetItem) {
 }
 
 function isAssetInFilter(asset: AssetItem, filter: AssetFilter) {
-  if (isUnhostedRemoteAssetUrl(asset.url)) return false;
+  if (isUnhostedRemoteAssetUrl(asset.url) || isNonDisplayableFileAsset(asset.url)) return false;
   if (filter !== "trash" && (asset.type === "trash" || asset.deletedAt)) return false;
   if (filter === "trash") return asset.type === "trash" || Boolean(asset.deletedAt);
   if (filter === "conversation_images") return isConversationAsset(asset) && !isVideoAsset(asset) && !isConversationUploadedAsset(asset);
@@ -4536,6 +4536,18 @@ function isVideoAsset(asset: Pick<AssetItem, "type" | "url">) {
 
 function isAudioAsset(asset: Pick<AssetItem, "url">) {
   return /\.(mp3|wav)(\?|$)/i.test(asset.url);
+}
+
+// Uploaded audio/documents are stored under the `/generated/.../files/` directory (often with a
+// generic `.bin` extension, so extension-based audio detection misses them). Images live under
+// `/upload_image/` or `/images/`; videos have a video extension. Anything under `/files/` that is
+// NOT a video is audio/document and must never appear in the asset library or @-mention, which
+// only show images and videos (product rule 1). This is what caused uploaded .mp3 (stored as .bin)
+// to render as broken image cards in 上传图片.
+function isNonDisplayableFileAsset(url: string | undefined) {
+  if (typeof url !== "string") return false;
+  if (!/\/generated\/(?:users\/[^/]+\/)?files\//.test(url)) return false;
+  return !/\.(mp4|webm|mov|m4v)(\?|#|$)/i.test(url);
 }
 
 function getAssetCategoryTargets(asset: Pick<AssetItem, "type" | "url">): AssetCategoryTarget[] {
