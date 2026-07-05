@@ -42,7 +42,9 @@ type WorkflowCanvasProps = {
   workflowAssets?: Array<{ id: string; name: string; url: string; posterUrl?: string; kind: "image" | "video"; nodeId?: string; sourcePrompt?: string; ratio?: string; resolution?: string; duration?: string; dimensions?: { width: number; height: number } }>;
   referenceAssets?: Array<{ id: string; name: string; url: string; thumbnailUrl?: string; groupType: string; groupLabel: string }>;
   referenceAssetsLoadStatus?: "idle" | "loading" | "loaded" | "failed";
+  referenceAssetCounts?: Record<string, number>;
   onLoadReferenceAssets?: () => void;
+  onLoadMoreReferenceAssets?: (groupType: string, loadedCount: number) => void;
   onExternalFilesDrop?: (files: File[]) => void;
 };
 

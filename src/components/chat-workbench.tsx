@@ -1080,6 +1080,14 @@ const mentionAssetTypeLabels: Record<MentionAssetGroupType, string> = {
   shot_image: "分镜图片",
   conversation_upload: "上传图片",
 };
+// Maps an @-mention group to the server `assetCounts` key so the popup can show the SAME real
+// total as the asset-library sidebar (instead of only the locally-loaded, page-capped count).
+const mentionGroupToAssetCountKey: Record<MentionAssetGroupType, string> = {
+  character_image: "character_image",
+  scene_image: "scene_image",
+  shot_image: "shot_image",
+  conversation_upload: "conversation_uploads",
+};
 const assetCategoryTargetIcons: Record<AssetCategoryTarget, typeof RiImageLine> = {
   character_image: RiAccountBoxLine,
   scene_image: RiLandscapeLine,
@@ -6945,6 +6953,7 @@ export function ChatWorkbench() {
   const [assetLoadingReason, setAssetLoadingReason] = useState<"" | "initial" | "scroll" | "auto">("");
   const [loadedAssetFilters, setLoadedAssetFilters] = useState<Partial<Record<AssetFilter, boolean>>>({});
   const [assetCounts, setAssetCounts] = useState<Record<string, number>>({});
+  const [mentionLoadingMore, setMentionLoadingMore] = useState(false);
   const [assetsHasMore, setAssetsHasMore] = useState(false);
   const [assetsNextOffset, setAssetsNextOffset] = useState(0);
   const [assetScrollTopByFilter, setAssetScrollTopByFilter] = useState<Partial<Record<AssetFilter, number>>>(() => initialWorkspaceUiStateRef.current?.assetScrollTopByFilter ?? {});
@@ -8930,6 +8939,30 @@ export function ChatWorkbench() {
       showInputTip("资产引用加载失败，请稍后重试");
     }
   }, [assets, assetsLoadStatus, loadedAssetFilters, showInputTip]);
+
+  // Scroll-load more assets for one @-mention group so the popup list can grow past the initial
+  // page (matching what the asset library shows). Best-effort: failures are ignored silently.
+  const loadMoreMentionGroup = useCallback(async (groupType: MentionAssetGroupType, loadedCount: number) => {
+    if (mentionLoadingMore) return;
+    const filter: AssetFilter = groupType === "conversation_upload" ? "conversation_uploads" : groupType;
+    setMentionLoadingMore(true);
+    try {
+      const { data } = await fetchJsonWithRetry<{ state?: WorkspaceStatePayload | null }>(`/api/workspace-state?assetsOnly=1&assetFilter=${encodeURIComponent(filter)}&assetOffset=${loadedCount}&assetLimit=30`, { cache: "no-store" }, 2, 45_000);
+      const state = data.state ?? {};
+      const nextAssets = Array.isArray(state.assets)
+        ? applyAssetGenerationSystemNames(applySessionMediaSystemNamesToAssets(normalizeStoredAssets(state.assets).map((asset) => replaceAssetMediaUrls(asset, legacyMediaUrlReplacements)), sessionsRef.current))
+        : [];
+      if (state.assetCounts && typeof state.assetCounts === "object") setAssetCounts(state.assetCounts);
+      setAssets((current) => {
+        const existingKeys = new Set(current.map(getAssetIdentityKey));
+        return [...current, ...nextAssets.filter((asset) => !existingKeys.has(getAssetIdentityKey(asset)))];
+      });
+    } catch {
+      // ignore; scroll-load is best-effort
+    } finally {
+      setMentionLoadingMore(false);
+    }
+  }, [mentionLoadingMore]);
 
   const loadWorkflowAssets = useCallback(async (workflowId: string) => {
     if (!workflowId) return;
@@ -14380,7 +14413,9 @@ export function ChatWorkbench() {
                     ...assets.filter((asset) => isAssetInFilter(asset, "conversation_uploads")).map((asset) => ({ id: asset.id, name: asset.name, url: asset.url, thumbnailUrl: getMediaThumbnailUrl(asset.url), groupType: "conversation_upload", groupLabel: mentionAssetTypeLabels.conversation_upload })),
                   ]}
                   referenceAssetsLoadStatus={assetsLoadStatus}
+                  referenceAssetCounts={{ character_image: Number(assetCounts.character_image ?? 0), scene_image: Number(assetCounts.scene_image ?? 0), shot_image: Number(assetCounts.shot_image ?? 0), conversation_upload: Number(assetCounts.conversation_uploads ?? 0) }}
                   onLoadReferenceAssets={() => { void loadMentionAssetFilters(); }}
+                  onLoadMoreReferenceAssets={(groupType, loadedCount) => { void loadMoreMentionGroup(groupType as MentionAssetGroupType, loadedCount); }}
                   onExternalFilesDrop={() => {
                     clearDragUploadOverlay();
                   }}
@@ -15043,13 +15078,14 @@ export function ChatWorkbench() {
                 </div>
               ) : null}
               {isAtAssetMenuOpen && (hasAtAssetOptions || assetsLoadStatus === "loading") ? (
-                <div onClick={(event) => event.stopPropagation()} className="absolute bottom-full left-2 z-50 mb-4 max-h-80 w-[380px] overflow-y-auto rounded-[12px] bg-white p-2 shadow-[0_18px_44px_rgba(0,0,0,0.14)]">
+                <div onClick={(event) => event.stopPropagation()} onScroll={(event) => { const el = event.currentTarget; if (!atAssetSearch && activeAtAssetGroup && el.scrollTop + el.clientHeight >= el.scrollHeight - 48) { const serverCount = Number(assetCounts[mentionGroupToAssetCountKey[activeAtAssetGroup.type]]); if (Number.isFinite(serverCount) && activeAtAssetGroup.assets.length < serverCount) void loadMoreMentionGroup(activeAtAssetGroup.type, activeAtAssetGroup.assets.length); } }} className="absolute bottom-full left-2 z-50 mb-4 max-h-80 w-[380px] overflow-y-auto rounded-[12px] bg-white p-2 shadow-[0_18px_44px_rgba(0,0,0,0.14)]">
                   <div className="px-2 pb-2 text-[12px] text-[#8a8a8a]">引用资产</div>
                   {assetsLoadStatus === "loading" ? <div className="flex min-h-[180px] items-center justify-center gap-2 text-[13px] font-medium text-[#367cee]"><LoadingSpinner size={18} /><span>加载中...</span></div> : null}
                   {assetsLoadStatus !== "loading" ? <>
                   <div className="mb-2 flex flex-nowrap gap-1.5 px-1">
                     {atAssetGroups.map((group) => {
-                      const count = group.assets.length;
+                      const serverCount = Number(assetCounts[mentionGroupToAssetCountKey[group.type]]);
+                      const count = Number.isFinite(serverCount) ? Math.max(serverCount, group.assets.length) : group.assets.length;
                       const isActive = activeAtAssetGroup?.type === group.type;
 
                       return (
@@ -15074,7 +15110,7 @@ export function ChatWorkbench() {
                       </div>
                       <div className="min-w-0">
                         <div className="truncate text-[13px] font-medium text-[#222222]">@{asset.name}</div>
-                        <div className="text-[11px] text-[#999999]">{assetTypeLabels[asset.type]}</div>
+                        <div className="text-[11px] text-[#999999]">{activeAtAssetGroup ? mentionAssetTypeLabels[activeAtAssetGroup.type] : ""}</div>
                       </div>
                     </button>
                   ))}
@@ -15427,13 +15463,14 @@ export function ChatWorkbench() {
                       </button>
                     </div>
                     {isCharacterAtAssetMenuOpen && (hasCharacterAtAssetOptions || assetsLoadStatus === "loading") && !isCharacterGenerateInputDisabled ? (
-                      <div onClick={(event) => event.stopPropagation()} className="absolute right-0 top-10 z-[90] max-h-80 w-[380px] overflow-y-auto rounded-[12px] bg-white p-2 shadow-[0_18px_44px_rgba(0,0,0,0.14)]">
+                      <div onClick={(event) => event.stopPropagation()} onScroll={(event) => { const el = event.currentTarget; if (!characterAtAssetSearch && activeCharacterAtAssetGroup && el.scrollTop + el.clientHeight >= el.scrollHeight - 48) { const serverCount = Number(assetCounts[mentionGroupToAssetCountKey[activeCharacterAtAssetGroup.type]]); if (Number.isFinite(serverCount) && activeCharacterAtAssetGroup.assets.length < serverCount) void loadMoreMentionGroup(activeCharacterAtAssetGroup.type, activeCharacterAtAssetGroup.assets.length); } }} className="absolute right-0 top-10 z-[90] max-h-80 w-[380px] overflow-y-auto rounded-[12px] bg-white p-2 shadow-[0_18px_44px_rgba(0,0,0,0.14)]">
                         <div className="px-2 pb-2 text-[12px] text-[#8a8a8a]">引用资产</div>
                         {assetsLoadStatus === "loading" ? <div className="flex min-h-[180px] items-center justify-center gap-2 text-[13px] font-medium text-[#367cee]"><LoadingSpinner size={18} /><span>加载中...</span></div> : null}
                         {assetsLoadStatus !== "loading" ? <>
                         <div className="mb-2 flex flex-nowrap gap-1.5 px-1">
                           {characterAtAssetGroups.map((group) => {
-                            const count = group.assets.length;
+                            const serverCount = Number(assetCounts[mentionGroupToAssetCountKey[group.type]]);
+                            const count = Number.isFinite(serverCount) ? Math.max(serverCount, group.assets.length) : group.assets.length;
                             const isActive = activeCharacterAtAssetGroup?.type === group.type;
 
                             return (
@@ -15452,7 +15489,7 @@ export function ChatWorkbench() {
                             </div>
                             <div className="min-w-0">
                               <div className="truncate text-[13px] font-medium text-[#222222]">@{asset.name}</div>
-                              <div className="text-[11px] text-[#999999]">{assetTypeLabels[asset.type]}</div>
+                              <div className="text-[11px] text-[#999999]">{activeCharacterAtAssetGroup ? mentionAssetTypeLabels[activeCharacterAtAssetGroup.type] : ""}</div>
                             </div>
                           </button>
                         ))}

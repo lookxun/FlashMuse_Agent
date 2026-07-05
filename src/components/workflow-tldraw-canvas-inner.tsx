@@ -144,7 +144,9 @@ type WorkflowCanvasProps = {
   workflowAssets?: WorkflowAssetSummary[];
   referenceAssets?: WorkflowReferenceAsset[];
   referenceAssetsLoadStatus?: "idle" | "loading" | "loaded" | "failed";
+  referenceAssetCounts?: Record<string, number>;
   onLoadReferenceAssets?: () => void;
+  onLoadMoreReferenceAssets?: (groupType: string, loadedCount: number) => void;
   onExternalFilesDrop?: (files: File[]) => void;
 };
 
@@ -1790,7 +1792,9 @@ type WorkflowRuntime = {
   getVideoPosterDisplayUrl?: (url: string, posterUrl?: string) => string | undefined;
   referenceAssets: WorkflowReferenceAsset[];
   referenceAssetsLoadStatus: "idle" | "loading" | "loaded" | "failed";
+  referenceAssetCounts?: Record<string, number>;
   onLoadReferenceAssets?: () => void;
+  onLoadMoreReferenceAssets?: (groupType: string, loadedCount: number) => void;
   uploadRuleOverrides?: UploadRuleOverrides;
   getConnectedInputUploads: (nodeId: string) => WorkflowUploadItem[];
   getInputTextLength: (nodeId: string) => number;
@@ -2329,7 +2333,7 @@ function WorkflowCustomContextMenu({ menu, onClose, onAddNode, onUploadNode, onU
   );
 }
 
-export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onCredit, onGeneratedMedia, onPreviewMedia, onShowTip, getImageDisplayUrl, getVideoPosterDisplayUrl, enabledTextModelIds, textModelProviders = {}, enabledImageModelIds, enabledVideoModelIds, uploadRuleOverrides, leftSidebarVisible = true, onToggleLeftSidebar, workflowAssets = [], referenceAssets = [], referenceAssetsLoadStatus = "idle", onLoadReferenceAssets, onExternalFilesDrop }: WorkflowCanvasProps) {
+export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onCredit, onGeneratedMedia, onPreviewMedia, onShowTip, getImageDisplayUrl, getVideoPosterDisplayUrl, enabledTextModelIds, textModelProviders = {}, enabledImageModelIds, enabledVideoModelIds, uploadRuleOverrides, leftSidebarVisible = true, onToggleLeftSidebar, workflowAssets = [], referenceAssets = [], referenceAssetsLoadStatus = "idle", referenceAssetCounts, onLoadReferenceAssets, onLoadMoreReferenceAssets, onExternalFilesDrop }: WorkflowCanvasProps) {
   const editorRef = useRef<Editor | null>(null);
   const stateRef = useRef(normalizeState(value));
   const loadedWorkflowIdRef = useRef(workflowId);
@@ -3583,7 +3587,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     }
   }, [getEnabledVideoModel, getInputText, getPromptReferenceUrls, getReferenceImages, getReferenceMediaUrls, onShowTip, pollVideoNode, updateNode, uploadRuleOverrides, workflowId, workflowTitle]);
 
-  const runtime = useMemo<WorkflowRuntime>(() => ({ selectedNodeId, connectingFrom, connectingTo, multiConnectSources, connectionPointer, modelOptions, workflowTitle, updateNode, deleteNode, disconnectNodes, connectTo, setConnectingFrom, beginConnectionDrag, beginInputConnectionDrag, beginMultiConnectionDrag, runImageNode: (node) => void runImageNode(node), runGptImageOptimizationRetry: (node, maxAttempts) => void runGptImageOptimizationRetry(node, maxAttempts), runVideoNode: (node) => void runVideoNode(node), onGeneratedMedia, onShowTip, markNodeAction, onPreviewMedia, getImageDisplayUrl, getVideoPosterDisplayUrl, referenceAssets, referenceAssetsLoadStatus, onLoadReferenceAssets, uploadRuleOverrides, getConnectedInputUploads, getInputTextLength, uploadFilesAsConnectedNodes }), [beginConnectionDrag, beginInputConnectionDrag, beginMultiConnectionDrag, connectTo, connectingFrom, connectingTo, multiConnectSources, connectionPointer, deleteNode, disconnectNodes, getConnectedInputUploads, getImageDisplayUrl, getInputTextLength, getVideoPosterDisplayUrl, markNodeAction, modelOptions, onGeneratedMedia, onLoadReferenceAssets, onPreviewMedia, onShowTip, referenceAssets, referenceAssetsLoadStatus, runGptImageOptimizationRetry, runImageNode, runVideoNode, selectedNodeId, updateNode, uploadFilesAsConnectedNodes, uploadRuleOverrides, workflowTitle]);
+  const runtime = useMemo<WorkflowRuntime>(() => ({ selectedNodeId, connectingFrom, connectingTo, multiConnectSources, connectionPointer, modelOptions, workflowTitle, updateNode, deleteNode, disconnectNodes, connectTo, setConnectingFrom, beginConnectionDrag, beginInputConnectionDrag, beginMultiConnectionDrag, runImageNode: (node) => void runImageNode(node), runGptImageOptimizationRetry: (node, maxAttempts) => void runGptImageOptimizationRetry(node, maxAttempts), runVideoNode: (node) => void runVideoNode(node), onGeneratedMedia, onShowTip, markNodeAction, onPreviewMedia, getImageDisplayUrl, getVideoPosterDisplayUrl, referenceAssets, referenceAssetsLoadStatus, referenceAssetCounts, onLoadReferenceAssets, onLoadMoreReferenceAssets, uploadRuleOverrides, getConnectedInputUploads, getInputTextLength, uploadFilesAsConnectedNodes }), [beginConnectionDrag, beginInputConnectionDrag, beginMultiConnectionDrag, connectTo, connectingFrom, connectingTo, multiConnectSources, connectionPointer, deleteNode, disconnectNodes, getConnectedInputUploads, getImageDisplayUrl, getInputTextLength, getVideoPosterDisplayUrl, markNodeAction, modelOptions, onGeneratedMedia, onLoadReferenceAssets, onLoadMoreReferenceAssets, onPreviewMedia, onShowTip, referenceAssets, referenceAssetsLoadStatus, referenceAssetCounts, runGptImageOptimizationRetry, runImageNode, runVideoNode, selectedNodeId, updateNode, uploadFilesAsConnectedNodes, uploadRuleOverrides, workflowTitle]);
 
   return (
     <WorkflowRuntimeContext.Provider value={runtime}>
@@ -5129,13 +5133,14 @@ function WorkflowPromptBox({ node, value, placeholder, maxPromptHeight, onChange
               <span className="text-[15px] font-semibold leading-none">@</span>
             </button>
             {isReferenceMenuOpen ? (
-              <div className="absolute bottom-full left-0 z-[10000] mb-2 max-h-80 w-[380px] overflow-y-auto rounded-[12px] bg-white p-2 text-left shadow-[0_18px_44px_rgba(0,0,0,0.14)]">
+              <div onScroll={(event) => { const el = event.currentTarget; if (!activeAtQuery?.query && activeReferenceGroup && el.scrollTop + el.clientHeight >= el.scrollHeight - 48) { const serverCount = Number(runtime.referenceAssetCounts?.[activeReferenceGroup.type]); if (Number.isFinite(serverCount) && activeReferenceGroup.assets.length < serverCount) runtime.onLoadMoreReferenceAssets?.(activeReferenceGroup.type, activeReferenceGroup.assets.length); } }} className="absolute bottom-full left-0 z-[10000] mb-2 max-h-80 w-[380px] overflow-y-auto rounded-[12px] bg-white p-2 text-left shadow-[0_18px_44px_rgba(0,0,0,0.14)]">
                 <div className="px-2 pb-2 text-[12px] text-[#8a8a8a]">引用资产</div>
                 {isReferenceAssetsLoading ? <div className="flex min-h-[180px] items-center justify-center gap-2 text-[13px] font-medium text-[#367cee]"><RiLoader4Line className="h-[18px] w-[18px] animate-spin" /><span>加载中...</span></div> : null}
                 {!isReferenceAssetsLoading ? <>
                   <div className="mb-2 flex flex-nowrap gap-1.5 px-1">
                     {referenceGroups.map((group) => {
-                      const count = group.assets.length;
+                      const serverCount = Number(runtime.referenceAssetCounts?.[group.type]);
+                      const count = Number.isFinite(serverCount) ? Math.max(serverCount, group.assets.length) : group.assets.length;
                       const isActive = activeReferenceGroup?.type === group.type;
                       return (
                         <button key={group.type} type="button" disabled={count === 0} onClick={() => setReferenceGroupType(group.type)} className={isActive ? "h-7 shrink-0 whitespace-nowrap rounded-[8px] bg-[#111111] px-2 text-[12px] font-medium text-white disabled:cursor-not-allowed disabled:opacity-40" : "h-7 shrink-0 whitespace-nowrap rounded-[8px] bg-[#f4f4f4] px-2 text-[12px] font-medium text-[#666666] transition hover:bg-[#ececec] disabled:cursor-not-allowed disabled:opacity-40"}>
