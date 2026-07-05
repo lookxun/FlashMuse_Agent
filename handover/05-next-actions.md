@@ -13,7 +13,16 @@
 
 ## Highest Priority
 
-### 2026-07-05 (later session) END-OF-SESSION STATE (read this first)
+### 2026-07-05 (LATEST session) END-OF-SESSION STATE (read this first)
+
+- DEPLOYED to prod + Ali AND PUSHED to GitHub. Latest commit `55d427d`. Work: asset-library ↔ @引用资产 popup alignment (real counts, scroll-load, correct upload label) + FIX for uploaded audio (.bin) wrongly rendered as broken image cards in 上传图片. GitHub in sync with prod.
+- FILES this session: `src/components/chat-workbench.tsx` (mentionGroupToAssetCountKey, loadMoreMentionGroup + onScroll, group-label sub-title, `isUnhostedRemoteAssetUrl`, `isNonDisplayableFileAsset`), `src/components/workflow-tldraw-canvas-inner.tsx` + `workflow-tldraw-canvas.tsx` (referenceAssetCounts / onLoadMoreReferenceAssets). `src/app/api/workspace-state/route.ts` was touched then REVERTED (see correction below) — it is back to its pre-session state.
+- ⚠️ CORRECTION baked in: an early attempt to relax `isVisiblePersistedMediaUrl` (skip local existsSync) was WRONG and reverted (commit 847aaa7). Keep the existsSync gate + mediaExistsCache. And LOCAL dev DB user `ID_779117` ≠ PROD user `ID_636611` for `12424740@qq.com` — use prod userId when querying prod.
+- BROWSER-VERIFY on ali.venusface.com (hard-refresh Ctrl+Shift+R, then switch to workflow and back to 资产库): (1) the 3 blank cards (demo audio) are GONE from 上传图片; (2) 上传图片 count (23) unchanged; (3) @引用资产 popup (conversation AND workflow) counts+content match the four library categories, scroll loads more; (4) 上传图片 gray sub-label shows "上传图片" not "待分类".
+- IF another "broken card" is reported: get the real `<img>` src via Console `document.querySelectorAll('img').forEach(i=>{if(!i.complete||i.naturalWidth===0)console.log(i.currentSrc||i.src)})` (user must type `allow pasting` first). Then check: is it a `/files/` non-video (audio/doc → should be excluded by `isNonDisplayableFileAsset`), an expired remote URL (excluded by `isUnhostedRemoteAssetUrl`), or a real `/generated/` file missing on Ali (check curl on ali vs main)?
+- NOT done (low impact): unify client `isConversationUploadedAsset` vs server conversation_uploads predicate (edge: promptSource=upload but non-/upload_image/). Counts use server truth so numbers already match.
+
+### 2026-07-05 (later session) END-OF-SESSION STATE (superseded by the entry above; kept for context)
 
 - DEPLOYED to prod + Ali AND PUSHED to GitHub: asset-library + admin-detail performance optimizations (compute-only, no functional/content change). This same commit ALSO pushed the earlier 2026-07-05 admin-overview/analytics work that was previously live-but-unpushed. So GitHub is now in sync with prod.
 - FILES this session: `src/app/api/workspace-state/route.ts` (cachedFileExists + lightweight getAssetCounts), `src/components/chat-workbench.tsx` (AssetThumbnailImage fallback), `src/app/admin/api/records/user-detail/route.ts` (include→select, drop big JSON columns). See CHANGELOG top entry + 01-current-status for full root-cause detail.

@@ -1,6 +1,36 @@
 # Current Handover Changelog
 
-## 2026-07-05 (later session) @引用资产弹窗与资产库对齐 + 停止本机 existsSync 隐藏有效媒体 (DEPLOYED + PUSHED)
+## 2026-07-05 (latest session, FINAL state) 资产库/@弹窗对齐 + 音频误显破图修复 (DEPLOYED + PUSHED)
+
+Reply style: concise/direct Chinese. 这一整段 session 做了资产库与@引用资产弹窗的规则对齐，并抓出并修复了"上传图片里三张空白破卡"的真正根因。经历了几次迭代和一次自我纠错（下方"重要纠错"必读）。全部已部署到马来生产+阿里镜像，并推送 GitHub。最终相关提交：`c7cd22b`(对齐) → `847aaa7`(回退existsSync放宽+隐藏过期远程URL) → `55d427d`(排除音频/文档误显)。
+
+### 用户的资产库6条规则（务必遵守）
+(1) 库只显示图片和视频; (2) 角色/场景/分镜可在库内直接生成; (3) 上传图片分类可直传，对话流+工作流上传的图都进这里; (4) 四类(角色/场景/分镜/上传图片)=@引用资产，无论对话流还是工作流@出来的弹窗，数量+内容必须和这四类当前显示一模一样; (5) 对话流/工作流资产里的图可移动到@引用资产分类(已实现); (6) 库显示用户所有生成+上传的图/视频，除回收站。合规核对：1/2/3/5/6 已符合；4 本次修复。
+
+### 已实现的对齐修复（commit c7cd22b，仍有效）
+1. `src/components/chat-workbench.tsx` 对话流两个@弹窗：灰字子标签由 `assetTypeLabels[asset.type]`("待分类")改为分组分类标签("上传图片")，与工作流弹窗一致；分组计数改用服务器真实 `assetCounts`(新增 `mentionGroupToAssetCountKey`；count=Math.max(服务器数,已加载数))；新增 `loadMoreMentionGroup` + 两弹窗 `onScroll` 滚动到底自动加载更多(无按钮)。
+2. `workflow-tldraw-canvas-inner.tsx` + `workflow-tldraw-canvas.tsx`：新增 `referenceAssetCounts` / `onLoadMoreReferenceAssets` 贯穿 props→runtime，工作流@弹窗计数用真实总数+滚动加载，与对话流一致。
+
+### ⚠️ 重要纠错（避免下一个AI重蹈覆辙）
+- c7cd22b 里我曾把 `src/app/api/workspace-state/route.ts` 的 `isVisiblePersistedMediaUrl` 放宽为"自有 /generated/ 一律可见、不做本机 existsSync"。**这是错的，已在 847aaa7 完全回退**（该文件现与放宽前一致：保留 existsSync 门禁 + mediaExistsCache 缓存）。原门禁是对的、应保留：它正确隐藏"文件不存在"的孤儿。放宽反而会让孤儿显示成破卡。
+- 我一度把**本地开发库(localhost)**和**生产库**搞混：本地 `12424740@qq.com` = `ID_779117`，但**生产**该邮箱 = `ID_636611`。查生产数据时务必用生产真实 userId。生产 DB 连接见 03-deploy "DATABASE_URL" 说明（.env.local 第一行）。
+
+### 真正根因 + 最终修复（commit 55d427d）
+- 用户报"上传图片里三张空白破卡 image_1/2/3_d0，切工作流会冒出来，计数不含它们"。逐层排查生产：会话消息JSON、`/api/media-assets?workflowId`、上传分类、全站资产、遗留 `UserWorkspaceState.state.assets` **全都没有对应失效资产**；全站2825行**0个文件缺失孤儿**，其它账号也无此问题。
+- 让用户在浏览器 Console 跑 `document.querySelectorAll('img').forEach(i=>{if(!i.complete||i.naturalWidth===0)console.log(i.currentSrc||i.src)})` 拿到真实 src：`/generated/users/ID_636611/files/xxx-demo_happy.bin` 等3个。
+- DB查证：它们是**上传的音频**(`demo_happy/english/chinese.mp3`，`mediaType=audio`，`currentCategory=conversation_upload_audios`，存成`.bin`，`promptSource="upload"`，`sourceKind=workflow_upload`)。客户端 `isConversationUploadedAsset` 只排除视频、**没排除音频**，见 `promptSource==="upload"` 就当"上传图片"塞进图片网格→破图。已有的 `isAudioAsset` 只认 `.mp3/.wav`，但文件存成 `.bin` 所以漏检。切工作流时 `/api/media-assets?workflowId` 把这些工作流上传音频拉进客户端 `assets`，故"切工作流才出现"。违反规则1。
+- FIX（`chat-workbench.tsx`）：新增 `isNonDisplayableFileAsset(url)` = `/generated/.../files/` 目录下**非视频**(非.mp4/.webm/.mov/.m4v)文件即音频/文档；在 `isAssetInFilter` 和 `isMentionGroupAsset` 开头全局排除。上传视频(`/files/*.mp4`)不受影响仍在视频分类显示。同时保留 847aaa7 里新增的 `isUnhostedRemoteAssetUrl`(排除过期远程临时链接如 Volces TOS/OpenRouter，镜像服务器 `isVisiblePersistedMediaUrl` 行为)。
+
+### 未做（低影响，留给后续）
+- 前端 `isConversationUploadedAsset` 与服务器 `getAssetPageWhere("conversation_uploads")` 的精确口径统一未做（promptSource=upload 但非 /upload_image/ 路径的极端边缘图列表归类可能微差）；因计数已取服务器真值、与库一致，不影响数量对齐。
+
+### 部署记录
+- 三次部署都是全量源码快照(无 Prisma schema 变更，migrate/generate跳过)，本地 `npx tsc --noEmit`+`npm run build` 通过(build 偶发 google 字体拉取网络失败，重试即过)。备份 `.deploy-backups/20260705-asset-mention-align/`、`/20260705-hide-stale-remote-assets/`、`/20260705-hide-audio-uploads/`。每次 prod-deploy-snapshot compare 均 `ok:true`(无diff, stableMissing/fallbackUsers 0)。`/workspace` `/admin` `/api/model-availability` `ali.venusface.com/workspace` 全 200。GitHub 已同步到 `55d427d`。
+- 部署瞬间出现过一次 `ChunkLoadError`(旧客户端引用新chunk)，属正常过渡态，强刷即恢复；已 curl 验证新 chunk 在 main/ali/static 三处均 200。
+
+---
+
+## 2026-07-05 (later session) @引用资产弹窗与资产库对齐 + 停止本机 existsSync 隐藏有效媒体 (DEPLOYED + PUSHED) [注：本条中的 existsSync 放宽已被上面的 847aaa7 回退]
 
 Reply style: concise/direct Chinese. User rules recap for 资产库/@引用资产: (1) 库只显示图片和视频; (2) 角色/场景/分镜可在库内直接生成; (3) 上传图片分类可直传，对话流+工作流上传的图都进这里; (4) 上述四类(角色/场景/分镜/上传图片)=@引用资产，无论对话流还是工作流@出来的弹窗，数量+内容必须和这四类当前显示一模一样; (5) 对话流/工作流资产里的图可移动到@引用资产分类(已实现); (6) 库显示用户所有生成+上传的图/视频，除回收站。
 
