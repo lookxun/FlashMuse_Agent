@@ -1,5 +1,18 @@
 # Next Actions
 
+## Highest Priority
+
+### 2026-07-06 END-OF-SESSION STATE (read this first)
+
+- DEPLOYED to prod+Ali AND PUSHED to GitHub. 最新 commit `aad3461`。全部为**工作流**功能/修复，仅改 3 个文件(`workflow-tldraw-canvas-inner.tsx`, `workflow-tldraw-canvas.tsx`, `chat-workbench.tsx`)，无 schema 变更。备份 `.deploy-backups/20260706-workflow-asset-import/`；快照 `20260706-workflow-asset-import-before/after.json` compare `ok:true`。详见 CHANGELOG 顶部条目。
+- BROWSER-VERIFY(ali.venusface.com 硬刷新 Ctrl+Shift+R，工作流入口已开放):
+  1. **从资产库导入**：dock「从本地上传」后有「从资产库导入」按钮；空白右键菜单、空工作流按钮组也有。点开→弹窗左分类tab带图标(角色/场景/分镜/上传/对话流生成图片视频/工作流生成图片视频)、右侧五列直角缩略图、下拉流式加载、勾选多选(蓝描边和勾选同时出现)。多选含图片+视频确定→画布一行五张不重叠、聚焦；导入的**生成**类显示"图片/视频生成+文件名"、右键使用提示词可用；**上传**类显示"上传图片/视频"、只显示尺寸、使用提示词置灰；显示完整原图+真实原图尺寸(不裁切)；重复导入同图出现多个节点。
+  2. **视频轮询恢复**：工作流生成视频拿到 taskId 后刷新页面→节点恢复等待卡并继续轮询、最终出视频(不再永久卡等待)。
+  3. **不置顶**：打开含视频的工作流(02/04)不置顶；刷新后顺序不变；做一次真实编辑(移动/改文本/生成/连线)才置顶。
+  4. **视频时长**：video_2_d0 加载后右上角显示真实"5秒"(不再 8秒)。
+- KNOWN/未做(低优先)：(a) 导入弹窗视频缩略图依赖 poster/`getLocalVideoPosterUrl`，个别无 poster 的视频格子显示"无预览"(可点选仍能导入)。(b) 导入的生成类节点因资产库无 model id，右上角参数不含模型名(只有比例/分辨率/时长/尺寸)——与图层恢复行为一致，如需模型名要另存 model。(c) 之前遗留：积分弹窗首开仍走 `mode=full`(见更早条目)、客户端 `isConversationUploadedAsset` 与服务器 conversation_uploads 口径统一 仍未做。
+- 教训：改源码一律用 edit 工具；上线以 `tsc --noEmit`+`npm run build` 为准(eslint 不 gate)；工作流"有意义快照"新增字段时，凡是**自动回填/派生**的字段务必加进 `getWorkflowMeaningfulSnapshot` 的剔除列表，否则会导致打开即置顶。
+
 ## Do First
 
 1. Use `E:\project\FlashMuse_Agent` as the only current local project root. It is the original `AI-Video-Assistant` directory renamed on 2026-06-26, not the smaller temporary copy.

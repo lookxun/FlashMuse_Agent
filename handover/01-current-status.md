@@ -1,6 +1,14 @@
 # Current Status
 
-Last checked: 2026-07-04 China time.
+Last checked: 2026-07-06 China time.
+
+## Latest 2026-07-06 — 工作流：从资产库导入 + 视频轮询恢复 + 多项修复 (DEPLOYED prod+Ali + PUSHED, commit aad3461)
+
+- Reply style: 简洁直接中文. 全 session 都是**本地工作流**功能与修复，最后一次性部署+推 GitHub。仅改 3 个文件(`workflow-tldraw-canvas-inner.tsx`, `workflow-tldraw-canvas.tsx`, `chat-workbench.tsx`)，无 schema 变更。快照 compare `ok:true`(assetListHash `3a057badbe5d3daa` 未变)，四个域名全 200。详见 CHANGELOG 顶部。
+- 新功能「从资产库导入」：dock/右键/空工作流三入口(图标 RiExportFill)→ 弹窗(左分类tab带图标、右缩略图 grid-cols-5 直角、勾选多选蓝描边、下拉流式每屏30、只读缩略图)→ 确定把选中图片/视频拉进画布。**导入不生成/不落库/不扣积分/不写埋点**，只引用已有 URL，所以后台生成记录/积分统计不受影响、对话流与工作流生成不会混。按 `origin`(生成/上传)还原节点样式；`allowDuplicate` 允许重复导入同图；一行五张网格不重叠；确定时 `new Image()` 量原图真实尺寸(previewMeta 尺寸不可信)。
+- 工作流视频轮询：部署/刷新打断后**自动恢复轮询**(对齐对话流)。加 `videoRequestId` 持久化 + `resumeInterruptedVideoNodes` effect，进入工作流扫描 `isRunning&&taskId` 的视频节点续轮询。
+- 修复「点击工作流置顶」(02/04 反复出现，含刷新)：根因是打开含视频工作流时 `mediaSystemNames`/videoDimensions 等自动回填让"有意义快照"变化 → bump updatedAt → 持久化。`getWorkflowMeaningfulSnapshot` 现剔除所有运行时/派生字段(visualSize/videoDimensions/durationSeconds/videoCurrentTime/imageDimensions/isRunning/taskId/videoRequestId/startedAt/uploadProgress/error/mediaSystemNames/posterUrl)，只有真实编辑才置顶。
+- 视频右上角时长改用真实 `durationSeconds`(加载回填)显示，老数据自愈；上传/导入的媒体右键"使用提示词"置灰；「上传节点」改名「从本地上传」；工具栏/右键菜单加分隔线。
 ## What Is Current
 
 - The app is a deployed internal MVP for chat-based image and video generation.

@@ -1,5 +1,36 @@
 # Current Handover Changelog
 
+## 2026-07-06 工作流：从资产库导入 + 视频轮询恢复 + 若干修复 (DEPLOYED + PUSHED, commit aad3461)
+
+Reply style: concise/direct Chinese. 本 session 全部为**本地工作流**功能与修复，最后一次性部署到马来 prod(101.47.19.109)+阿里、推送 GitHub。仅改 3 个文件：`src/components/workflow-tldraw-canvas-inner.tsx`、`src/components/workflow-tldraw-canvas.tsx`、`src/components/chat-workbench.tsx`。**无 Prisma schema 变更**（跳过 migrate/generate）。备份 `.deploy-backups/20260706-workflow-asset-import/`；快照 `20260706-workflow-asset-import-before/after.json` compare `ok:true`（assetListHash `3a057badbe5d3daa` 未变，stableMissing/fallbackUsers 均 0）；`/workspace` `/admin` `/api/model-availability` `ali.venusface.com/workspace` 全 200。
+
+### 1. 工作流"使用提示词"按上传/生成区分（防误操作）
+- `WorkflowCustomContextMenu`：图片/视频节点右键「使用提示词」按钮始终显示，但**上传的**媒体节点置灰不可点（`disabled`）。判定用 `isUploadedMediaNode = node.title?.startsWith("上传")`。生成的节点(标题"图片生成/视频生成")仍可用。原因：上传的没有提示词，置灰减少误操作。
+
+### 2. 工作流视频轮询：部署/刷新打断后自动恢复（对齐对话流）
+- 现象确认：页面开着时被部署 502/网络中断，工作流 `pollVideoNode` 本来就会继续轮询(瞬时错误 continue)——这部分没问题。**缺口在刷新/重载后不恢复**：节点持久化了 `isRunning:true`+`taskId` 却没有任何逻辑重启轮询，一直卡等待卡（对话流有 resume 效果、工作流没有）。
+- 修复(`workflow-tldraw-canvas-inner.tsx`)：`WorkflowNodeData` 加 `videoRequestId`；`runVideoNode` 生成任务时持久化 requestId（成功/超时/失败时清除，避免重生成 requestId 冲突丢计费）。新增 `resumeInterruptedVideoNodes` + 一个依赖 `workflowId` 的 effect(进入/切换工作流 1.5s 后)：扫描 `isRunning&&taskId&&无videoUrl/error` 的视频节点，用持久化 taskId+videoRequestId **直接续轮询**(不重建任务)，`resumingVideoNodesRef` 去重。保留 `videoAbsoluteMaxPollAttempts`(60min)兜底，恢复后重新计时。
+
+### 3. 新功能：从资产库导入到画布
+- 三个入口：dock 工具栏「从本地上传」后加「从资产库导入」(图标 `RiExportFill`)、空白画布右键菜单、空工作流"从一个节点开始"按钮组。均通过新 prop `onOpenAssetImport` 触发。
+- 弹窗(在 `chat-workbench.tsx`)：左侧分类 tab(带资产库同款图标+同字号：角色/场景/分镜图片、上传图片、对话流生成图片/视频、工作流生成图片/视频；**排除回收站/音频/文档**)，右侧缩略图网格(`grid-cols-5 gap-3 aspect-square` **直角** `object-cover`，与资产库一致)，每格右上角勾选框+选中蓝描边(用 `selected` 条件渲染的 `absolute inset-0 border-2` 覆盖层，和勾选**同一次渲染出现/消失**，不用 outline 避免滞后)。多选、底部已选计数+取消/确定(确定按钮 `px-12` 加宽)。
+- 数据源：弹窗**独立** state(`assetImportItemsByFilter/Paging/Counts/Selected`)，独立 fetch `/api/workspace-state?assetsOnly=1&assetFilter=..&assetOffset=..&assetLimit=30`(每次一屏、下拉流式加载)，**只读缩略图**(图片 `getMediaThumbnailUrl`、视频 poster)，不动主资产库分页。
+- 落画布(`restoreWorkflowAssetToCanvas` 复用+扩展)：**不生成、不落库、不扣积分、不写埋点**，只加节点引用库里已有 URL。加 `origin`字段按生成/上传还原：生成→标题"图片生成/视频生成"+sourcePrompt(使用提示词可用、右上角参数)；上传→标题"上传图片/视频"+`prompt:"上传图片"`(只显示尺寸、使用提示词置灰)。origin 判定用资产库同款：`isUploadedAssetUrl||promptSource==="upload"||isUploadPromptPlaceholder`(不能只看 promptSource，有上传图 promptSource 不是"upload")。加 `allowDuplicate` 选项(导入 effect 传 true)→ 重复导入同图生成多个独立节点(和画布复制副本一致)。
+- 多张不重叠：导入 effect 用 `{skipFocus:true}` 逐个落节点后，用 `updateState` 统一按**一行五张**网格重排(放已有内容下方、列对齐)，再选中+聚焦整批。
+- 原图尺寸修复：`previewMeta` 尺寸对上传/部分生成资产**不可信**(有张"200拷贝"是正方形却显示 2734x1536 半张)。改为选中不再取 previewMeta 的 dimensions/ratio；**确定导入时一律 `new Image()` 加载原图量真实 naturalWidth/Height** 作为节点尺寸，比例交给 restore 从真实尺寸推导。视频尺寸仍由 `onLoadedMetadata` 回填。
+
+### 4. 点击工作流置顶 bug（做实，之前反复）
+- 根因：列表按 `updatedAt` 倒序；打开含视频的工作流(02/04)时，视频 `onLoadedMetadata` 回填触发 `addWorkflowGeneratedAssets` 写/改节点 `mediaSystemNames`，与 `emitEditorState` 时序竞争使 `getWorkflowMeaningfulSnapshot` 差异 → `updateWorkflowCanvas` bump `updatedAt` → 被防抖全量保存**持久化** → 刷新仍置顶。
+- 修复(`chat-workbench.tsx` `getWorkflowMeaningfulSnapshot`)：从"有意义快照"剔除所有运行时/自动派生字段 `visualSize、videoDimensions、durationSeconds、videoCurrentTime、imageDimensions、isRunning、taskId、videoRequestId、startedAt、uploadProgress、error、mediaSystemNames、posterUrl`(node 和 historicalMediaNodes 都处理)。只有真实编辑(增删/移动节点、文本、模型、比例、媒体URL、连线)才置顶。
+
+### 5. 视频时长显示用真实时长
+- 现象："video_2_d0"实际 5 秒右上角显示 8 秒(迁移老数据 `node.data.duration` 设置值存错)。生成代码本身没错(`runVideoNode` 用节点选的 duration 设置传给 API)。
+- 修复(`getWorkflowNodeParamParts`)：视频右上角时长**优先用真实 `durationSeconds`**(视频加载时 `onLoadedMetadata` 回填)四舍五入显示，无则回退设置值。未来准确、老数据加载后自愈。
+
+### 6. 文案/分隔
+- 「上传节点」全部改名「从本地上传」(dock 按钮、右键菜单原"上传文件"、空工作流按钮)。
+- dock 工具栏前三节点(文本/图片/视频)与后两个(从本地上传/从资产库导入)间加竖线；右键菜单插入视频节点与从本地上传间加横线。
+
 ## 2026-07-05 (最新 session) 后台媒体详情弹窗 按类分页 + 流式加载 性能优化 (DEPLOYED + PUSHED, commit f5bc38b)
 
 Reply style: concise/direct Chinese. 用户反馈：后台大表(用户管理/生成记录/积分管理)展开后"点开详情"仍很卡——点「所有生成图片」要读很久，关掉再点「所有生成视频」秒出（说明一次把多类一起读了），且缩略图/原图加载不全。要求：只考虑代码优化(不管网速)，点哪个只读哪个、单类太多就先读10张、下拉再流式加载(和前端资产库右侧一样)。已全部实现、部署到马来prod+阿里、推送 GitHub。相关文件全部 admin-only，不影响用户端 workspace/资产数据。
