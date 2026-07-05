@@ -341,6 +341,23 @@ function CreditDetailChildItem({ label, value, marker, onClick }: { label: strin
   return <CreditDetailItem label={label} value={value} marker={marker} onClick={onClick} />;
 }
 
+// Incremental rendering for the media-heavy credit/upload tables: render only a batch of rows and
+// reveal more as the user scrolls, so we don't fire hundreds of thumbnail requests at once (which
+// made these dialogs feel slow / show half-loaded thumbnails). Count is derived during render and
+// resets to the batch size whenever the active list key changes.
+const REVEAL_BATCH = 24;
+
+function useRevealOnScroll(activeKey: string, total: number) {
+  const [state, setState] = useState({ key: activeKey, count: REVEAL_BATCH });
+  const count = state.key === activeKey ? state.count : REVEAL_BATCH;
+  const onScroll = (event: { currentTarget: HTMLDivElement }) => {
+    const node = event.currentTarget;
+    if (count >= total) return;
+    if (node.scrollTop + node.clientHeight >= node.scrollHeight - 240) setState({ key: activeKey, count: Math.min(total, count + REVEAL_BATCH) });
+  };
+  return { count, onScroll, hasMore: count < total };
+}
+
 export function CreditFlowDialog({ user, onClose, label = "对话流", details }: { user: AdminCreditUser; onClose: () => void; label?: string; details?: AdminCreditConversationDetail[] }) {
   useBodyScrollLock(true);
 
@@ -349,6 +366,7 @@ export function CreditFlowDialog({ user, onClose, label = "对话流", details }
   const [activeConversationId, setActiveConversationId] = useState(() => conversations[0]?.id ?? "");
   const activeConversation = conversations.find((item) => item.id === activeConversationId) ?? conversations[0];
   const displayName = user.nickname || user.userEmail;
+  const reveal = useRevealOnScroll(activeConversation?.id ?? "", activeConversation?.mediaItems.length ?? 0);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center overscroll-contain bg-black/42 px-8 py-8 backdrop-blur-[4px]">
@@ -381,7 +399,7 @@ export function CreditFlowDialog({ user, onClose, label = "对话流", details }
           </aside>
 
           <section className="flex min-w-0 flex-1 flex-col bg-white">
-            <div className="min-h-0 flex-1 overflow-y-auto bg-white px-8 py-6">
+            <div onScroll={reveal.onScroll} className="min-h-0 flex-1 overflow-y-auto bg-white px-8 py-6">
               {activeConversation ? (
                 <div className="mx-auto max-w-[920px]">
                   {activeConversation.isDeleted ? <div className="mb-2 text-center text-[12px] leading-5 text-red-500">用户已删除{activeConversation.deletedAtLabel ? ` ${activeConversation.deletedAtLabel}` : ""}</div> : null}
@@ -399,10 +417,11 @@ export function CreditFlowDialog({ user, onClose, label = "对话流", details }
                     <div className="divide-y divide-[#eeeeee]">
                       {label !== "工作流" ? <CreditFlowRow label="对话积分" credits={activeConversation.chatCredits} expectedCredits={activeConversation.chatExpectedCredits} usd={activeConversation.chatUsd ?? 0} cny={activeConversation.chatCny ?? 0} isChargeDisabled={activeConversation.chatChargeDisabled} /> : null}
                       {label !== "工作流" ? <CreditFlowRow label="规划积分" credits={activeConversation.planCredits} expectedCredits={activeConversation.planExpectedCredits} usd={activeConversation.planUsd ?? 0} cny={activeConversation.planCny ?? 0} isChargeDisabled={activeConversation.planChargeDisabled} /> : null}
-                      {activeConversation.mediaItems.map((item) => (
+                      {activeConversation.mediaItems.slice(0, reveal.count).map((item) => (
                         <CreditFlowRow key={item.id} label={item.displayName} mediaName={item.mediaName} credits={item.credits} expectedCredits={item.expectedCredits} usd={item.usd} cny={item.cny} meta={formatMetaWithTime(item.parameters, item.createdAtLabel)} errorText={item.errorText} deletedAtLabel={item.deletedAtLabel} mediaUrl={item.url} mediaKind={item.kind} status={item.status} isUploadRecord={item.isUploadRecord} isChargeDisabled={item.isChargeDisabled} isCreditMissing={item.isCreditMissing} isCostUnavailable={item.isCostUnavailable} isReversePrompt={item.isReversePrompt} promptText={item.promptText} promptConstraints={item.promptConstraints} />
                       ))}
                       {activeConversation.mediaItems.length === 0 ? <div className="px-4 py-8 text-center text-[13px] text-[#999999]">{label === "工作流" ? "该工作流暂无图片或视频积分" : "该对话暂无图片或视频积分"}</div> : null}
+                      {reveal.hasMore ? <div className="px-4 py-3 text-center text-[12px] text-[#999999]">下拉加载更多（{activeConversation.mediaItems.length - reveal.count}）</div> : null}
                     </div>
                   </div>
                 </div>
@@ -442,14 +461,14 @@ function CreditFlowRow({ label, mediaName, credits, expectedCredits, usd, cny, m
               {isDeleted ? <div className="absolute left-1 top-1 z-10 rounded-[3px] bg-red-500 px-1 py-0.5 text-[9px] font-medium leading-none text-white">已删除</div> : null}
               {getLocalVideoPosterUrl(mediaUrl) ? (
                 // eslint-disable-next-line @next/next/no-img-element
-                <img src={getAdminMediaThumbnailUrl(getLocalVideoPosterUrl(mediaUrl) ?? mediaUrl)} onError={(event) => fallbackAdminImageToOriginal(event.currentTarget, mediaUrl)} alt={label} className="h-full w-full object-cover" />
-              ) : <video src={getAdminMediaSourceUrl(mediaUrl)} className="h-full w-full object-cover" muted />}
+                <img src={getAdminMediaThumbnailUrl(getLocalVideoPosterUrl(mediaUrl) ?? mediaUrl)} onError={(event) => fallbackAdminImageToOriginal(event.currentTarget, mediaUrl)} alt={label} loading="lazy" className="h-full w-full object-cover" />
+              ) : <video src={getAdminMediaSourceUrl(mediaUrl)} className="h-full w-full object-cover" muted preload="metadata" />}
             </div>
           ) : (
             <AdminHoverImagePreview src={mediaUrl} alt={label} wrapperClassName="relative flex h-12 w-16 shrink-0 items-center justify-center overflow-hidden rounded-[6px] bg-[#e8e8e8]">
               {isDeleted ? <div className="absolute left-1 top-1 z-10 rounded-[3px] bg-red-500 px-1 py-0.5 text-[9px] font-medium leading-none text-white">已删除</div> : null}
               {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={getAdminMediaThumbnailUrl(mediaUrl)} onError={(event) => fallbackAdminImageToOriginal(event.currentTarget, mediaUrl)} alt={label} className="h-full w-full object-cover" />
+              <img src={getAdminMediaThumbnailUrl(mediaUrl)} onError={(event) => fallbackAdminImageToOriginal(event.currentTarget, mediaUrl)} alt={label} loading="lazy" className="h-full w-full object-cover" />
             </AdminHoverImagePreview>
           )
         ) : status === "failed" ? (
@@ -508,6 +527,7 @@ export function CreditCategoryDialog({ title, user, categories, initialCategoryI
   const [activeCategoryId, setActiveCategoryId] = useState(() => initialCategoryId && categories.some((item) => item.id === initialCategoryId) ? initialCategoryId : categories[0]?.id ?? "");
   const activeCategory = categories.find((item) => item.id === activeCategoryId) ?? categories[0];
   const displayName = user.nickname || user.userEmail;
+  const reveal = useRevealOnScroll(activeCategory?.id ?? "", activeCategory?.items.length ?? 0);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center overscroll-contain bg-black/42 px-8 py-8 backdrop-blur-[4px]">
@@ -536,7 +556,7 @@ export function CreditCategoryDialog({ title, user, categories, initialCategoryI
           </aside>
 
           <section className="flex min-w-0 flex-1 flex-col bg-white">
-            <div className="min-h-0 flex-1 overflow-y-auto bg-white px-8 py-6">
+            <div onScroll={reveal.onScroll} className="min-h-0 flex-1 overflow-y-auto bg-white px-8 py-6">
               {activeCategory ? (
                 <div className="mx-auto max-w-[920px]">
                   <div className="mb-3 flex items-center justify-between gap-4 text-[13px] text-[#777777]">
@@ -550,10 +570,11 @@ export function CreditCategoryDialog({ title, user, categories, initialCategoryI
                       {showPromptCopyColumn ? <div className="px-4 py-3 text-right">复制提示词</div> : <><div className="px-4 py-3 text-right">消耗美元</div><div className="px-4 py-3 text-right">折算人民币</div></>}
                     </div>
                     <div className="divide-y divide-[#eeeeee]">
-                      {activeCategory.items.map((item) => (
+                      {activeCategory.items.slice(0, reveal.count).map((item) => (
                         <CreditFlowRow key={item.id} label={item.displayName} mediaName={item.mediaName} credits={item.credits} expectedCredits={item.expectedCredits} usd={item.usd} cny={item.cny} meta={formatMetaWithTime(item.parameters, item.createdAtLabel)} errorText={item.errorText} deletedAtLabel={item.deletedAtLabel} mediaUrl={item.url} mediaKind={item.kind} status={item.status} isUploadRecord={item.isUploadRecord} isChargeDisabled={item.isChargeDisabled} isCreditMissing={item.isCreditMissing} isCostUnavailable={item.isCostUnavailable} isReversePrompt={item.isReversePrompt} promptText={item.promptText} promptConstraints={item.promptConstraints} showPromptCopyColumn={showPromptCopyColumn} />
                       ))}
                       {activeCategory.items.length === 0 ? <div className="px-4 py-8 text-center text-[13px] text-[#999999]">当前分类暂无积分明细</div> : null}
+                      {reveal.hasMore ? <div className="px-4 py-3 text-center text-[12px] text-[#999999]">下拉加载更多（{activeCategory.items.length - reveal.count}）</div> : null}
                     </div>
                   </div>
                 </div>

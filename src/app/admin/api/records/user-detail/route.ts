@@ -236,18 +236,26 @@ function isVideoPosterLikeMedia(url: string, name: string, mediaType: string) {
   return mediaType !== "video" && (/\/video-posters\//.test(normalizeMediaUrlForAdmin(url)) || /^video_/i.test(name));
 }
 
+const MEDIA_ASSET_CATEGORIES = new Set(["character_image", "scene_image", "shot_image"]);
+
+// Single source of truth for which "scope" (bucket) an asset row belongs to. Precedence matches
+// getFastMediaSummary (workflow before asset) so the paginated list length stays consistent with
+// the counts shown on the collapsed row. Scopes are otherwise disjoint.
+function getAssetScope(category: string, workspaceKind: string, sourceKind: string): "conversation" | "asset" | "workflow" | null {
+  const isWorkflowGenerated = (workspaceKind === "workflow" || category.startsWith("workflow_")) && !category.includes("upload") && !sourceKind.includes("upload");
+  if (isWorkflowGenerated) return "workflow";
+  if (MEDIA_ASSET_CATEGORIES.has(category)) return "asset";
+  if ((category === "conversation_images" || category === "conversation_uploads" || category === "conversation_videos") && workspaceKind !== "workflow") return "conversation";
+  return null;
+}
+
 function getMediaAssetItems(assetStates: any[], scope: "conversation" | "asset" | "workflow"): AdminMediaItem[] {
-  const assetCategories = new Set(["character_image", "scene_image", "shot_image"]);
   return assetStates.flatMap((state, index): AdminMediaItem[] => {
     const media = state?.mediaAsset;
     if (!media?.url || media.archivedAt || state.hiddenAt) return [];
     const category = getString(state.currentCategory);
-    const isAssetCategory = assetCategories.has(category);
-    const isConversationCategory = (category === "conversation_images" || category === "conversation_uploads" || category === "conversation_videos") && getString(media.workspaceKind) !== "workflow";
-    const isWorkflowGeneratedCategory = (getString(media.workspaceKind) === "workflow" || category.startsWith("workflow_")) && !category.includes("upload") && !getString(media.sourceKind).includes("upload");
-    if (scope === "asset" && !isAssetCategory) return [];
-    if (scope === "conversation" && !isConversationCategory) return [];
-    if (scope === "workflow" && !isWorkflowGeneratedCategory) return [];
+    if (getAssetScope(category, getString(media.workspaceKind), getString(media.sourceKind)) !== scope) return [];
+    const isAssetCategory = scope === "asset";
 
     const systemName = getString(media.systemName) || getString(media.initialName);
     const currentName = getString(state.currentName);
@@ -463,6 +471,61 @@ const DETAIL_ASSET_STATE_SELECT = {
   mediaAsset: { select: { id: true, url: true, archivedAt: true, mediaType: true, sourceKind: true, workspaceKind: true, systemName: true, initialName: true, originalFileName: true, mimeType: true, reversePrompt: true, sourcePrompt: true, sourceDetail: true, model: true, ratio: true, resolution: true, videoDuration: true, width: true, height: true, imageSize: true, requestId: true, conversationId: true, firstSeenAt: true, createdAt: true } },
 } as const;
 
+// Light select for the paginated media dialog: only the columns needed to classify a row and sort
+// it. Deliberately excludes every heavy column (sourceDetail / reversePrompt / sourcePrompt /
+// previewMeta / legacyAssetJson) so classifying ALL of a user's rows stays cheap; the heavy detail
+// columns are then fetched only for the ~10 rows on the requested page.
+const LIGHT_SCOPE_SELECT = {
+  id: true,
+  currentCategory: true,
+  currentName: true,
+  mediaAsset: { select: { url: true, mediaType: true, sourceKind: true, workspaceKind: true, systemName: true, initialName: true, firstSeenAt: true, createdAt: true } },
+} as const;
+
+type LightClassifiedRow = { id: string; scope: "conversation" | "asset" | "workflow"; type: "image" | "video"; category: string; isUploadedAsset: boolean; createdAtTs: number };
+
+// Light select for the uploads-only dialog: just the columns buildUploadRecords / classifyUploadKind
+// read, so we never fetch the heavy prompt / sourceDetail / JSON columns for upload lists.
+const UPLOAD_RECORD_SELECT = {
+  currentCategory: true,
+  currentName: true,
+  hiddenAt: true,
+  deletedAt: true,
+  mediaAsset: { select: { id: true, url: true, originalFileName: true, archivedAt: true, systemName: true, initialName: true, mediaType: true, sourceKind: true, mimeType: true, width: true, height: true, imageSize: true, firstSeenAt: true, createdAt: true } },
+} as const;
+
+function classifyLightRow(state: any): LightClassifiedRow | null {
+  const media = state?.mediaAsset;
+  if (!media?.url) return null;
+  const category = getString(state.currentCategory);
+  const sourceKind = getString(media.sourceKind);
+  const workspaceKind = getString(media.workspaceKind);
+  const scope = getAssetScope(category, workspaceKind, sourceKind);
+  if (!scope) return null;
+  const type = media.mediaType === "video" || isAdminVideoUrl(media.url) ? "video" : "image";
+  const systemName = getString(media.systemName) || getString(media.initialName);
+  const currentName = getString(state.currentName);
+  const displayName = formatAdminMediaName(systemName, currentName && currentName !== systemName ? currentName : undefined, "媒体");
+  if ((scope === "conversation" || scope === "workflow") && isVideoPosterLikeMedia(media.url, displayName, getString(media.mediaType))) return null;
+  const isUploadedAsset = category === "conversation_uploads" || sourceKind.includes("upload");
+  const createdAtTs = media.firstSeenAt instanceof Date ? media.firstSeenAt.getTime() : media.createdAt instanceof Date ? media.createdAt.getTime() : 0;
+  return { id: getString(state.id), scope, type, category, isUploadedAsset, createdAtTs };
+}
+
+function matchesMediaType(row: LightClassifiedRow, mediaType: string, assetType: string): boolean {
+  switch (mediaType) {
+    case "image": return row.scope === "conversation" && row.type === "image" && !row.isUploadedAsset;
+    case "video": return row.scope === "conversation" && row.type === "video" && !row.isUploadedAsset;
+    case "upload_image": return row.scope === "conversation" && row.type === "image" && row.isUploadedAsset;
+    case "workflow_image": return row.scope === "workflow" && row.type === "image";
+    case "workflow_video": return row.scope === "workflow" && row.type === "video";
+    case "asset_image": return row.scope === "asset" && row.type === "image" && row.category === assetType;
+    case "all_image": return row.type === "image" && !row.isUploadedAsset;
+    case "all_video": return row.type === "video" && !row.isUploadedAsset && (row.scope === "conversation" || row.scope === "workflow");
+    default: return false;
+  }
+}
+
 export async function GET(request: Request) {
   const email = await getCurrentAdminEmail();
   if (!email || !isAdminEmail(email)) return NextResponse.json({ error: "无权限" }, { status: 403 });
@@ -510,6 +573,79 @@ export async function GET(request: Request) {
       lastActiveLabel: ledgers[0] ? formatShortDate(ledgers[0].createdAt) : "-",
     };
     return NextResponse.json({ detail: { creditUser } });
+  }
+
+  // Paginated per-category media list for the admin media dialog. Loads ONLY the requested
+  // category, and only ~limit rows of heavy detail per request, streamed as the user scrolls.
+  if (mode === "media-page") {
+    const mediaType = searchParams.get("mediaType") ?? "";
+    const assetType = searchParams.get("assetType") ?? "character_image";
+    const offset = Math.max(0, Number.parseInt(searchParams.get("offset") ?? "0", 10) || 0);
+    const limit = Math.min(60, Math.max(1, Number.parseInt(searchParams.get("limit") ?? "12", 10) || 12));
+
+    const lightStates = await prisma.userAssetState.findMany({
+      where: { userId, hiddenAt: null, mediaAsset: { archivedAt: null } },
+      select: LIGHT_SCOPE_SELECT,
+    });
+    const matches = lightStates
+      .map(classifyLightRow)
+      .filter((row): row is LightClassifiedRow => row !== null && matchesMediaType(row, mediaType, assetType))
+      .sort((left, right) => right.createdAtTs - left.createdAtTs);
+    const total = matches.length;
+    const pageIds = matches.slice(offset, offset + limit).map((row) => row.id);
+
+    if (pageIds.length === 0) return NextResponse.json({ detail: { items: [], total } });
+
+    const pageStates = await prisma.userAssetState.findMany({ where: { id: { in: pageIds } }, select: DETAIL_ASSET_STATE_SELECT });
+    const built = [
+      ...getMediaAssetItems(pageStates, "conversation"),
+      ...getMediaAssetItems(pageStates, "asset"),
+      ...getMediaAssetItems(pageStates, "workflow"),
+    ].sort((left, right) => (right.createdAtTs ?? 0) - (left.createdAtTs ?? 0));
+    return NextResponse.json({ detail: { items: built, total } });
+  }
+
+  // Uploads-only mode for the "上传记录" dialog: reads a light asset-state select and builds ONLY
+  // upload records (no generated-media arrays, no workspace messages / ledger).
+  if (mode === "uploads") {
+    const [userRow, assetStates] = await Promise.all([
+      prisma.user.findUnique({ where: { id: userId }, select: { id: true, email: true, nickname: true, avatarUrl: true } }),
+      prisma.userAssetState.findMany({ where: { userId, hiddenAt: null, mediaAsset: { archivedAt: null } }, select: UPLOAD_RECORD_SELECT }),
+    ]);
+    if (!userRow) return NextResponse.json({ error: "用户不存在" }, { status: 404 });
+    const uploadRecords = buildUploadRecords(assetStates);
+    const detailUser = {
+      uploadRecords,
+      uploadImageCount: uploadRecords.filter((item) => item.kind === "image").length,
+      uploadVideoCount: uploadRecords.filter((item) => item.kind === "video").length,
+      uploadAudioCount: uploadRecords.filter((item) => item.kind === "audio").length,
+      uploadDocumentCount: uploadRecords.filter((item) => item.kind === "document").length,
+    } as unknown as AdminUserRow;
+    const creditUser = {
+      id: userRow.id,
+      userEmail: userRow.email,
+      nickname: userRow.nickname,
+      avatarUrl: userRow.avatarUrl,
+      currentCredits: 0,
+      giftedCredits: 0,
+      signupGiftedCredits: 0,
+      adminAdjustedGiftedCredits: 0,
+      consumedCredits: 0,
+      consumedTokens: 0,
+      consumedUsd: 0,
+      consumedCny: 0,
+      conversationConsumedCredits: 0,
+      assetGenerationConsumedCredits: 0,
+      promptToolConsumedCredits: 0,
+      workflowConsumedCredits: 0,
+      conversationCreditDetails: [],
+      assetGenerationCreditDetails: [],
+      promptToolCreditDetails: [],
+      workflowCreditDetails: [],
+      currentCreditDetails: [],
+      lastActiveLabel: "-",
+    } as AdminCreditUser;
+    return NextResponse.json({ detail: { user: detailUser, creditUser } });
   }
 
   const userQuery = isMediaMode

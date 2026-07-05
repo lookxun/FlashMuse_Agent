@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useMemo, useState, useTransition } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { RiArrowDownSLine, RiArrowRightSLine, RiCloseLine, RiQuillPenAiLine, RiSearchLine } from "react-icons/ri";
 import { useBodyScrollLock } from "@/components/use-body-scroll-lock";
 import { AdminHoverImagePreview } from "./admin-hover-image-preview";
@@ -258,30 +258,67 @@ export function AdminHistoryDialog({ user, onClose }: { user: AdminUserRow; onCl
   );
 }
 
-export function AdminMediaDialog({ user, mediaType, onClose }: { user: AdminUserRow; mediaType: "image" | "upload_image" | "video" | "asset_image" | "workflow_image" | "workflow_video" | "all_image" | "all_video"; onClose: () => void }) {
+export type AdminMediaDialogType = "image" | "upload_image" | "video" | "asset_image" | "workflow_image" | "workflow_video" | "all_image" | "all_video";
+
+const MEDIA_DIALOG_PAGE_SIZE = 12;
+
+export function AdminMediaDialog({ userId, userLabel, mediaType, onClose }: { userId: string; userLabel: string; mediaType: AdminMediaDialogType; onClose: () => void }) {
   useBodyScrollLock(true);
 
   const [assetFilter, setAssetFilter] = useState<"character_image" | "scene_image" | "shot_image">("character_image");
   const isAssetImage = mediaType === "asset_image";
-  const isWorkflow = mediaType === "workflow_image" || mediaType === "workflow_video";
-  const isAll = mediaType === "all_image" || mediaType === "all_video";
-  const allKind = mediaType === "all_video" ? "video" : "image";
-  const mediaItems = isAssetImage
-    ? user.assetMediaItems.filter((item) => item.assetType === assetFilter)
-    : isAll
-      ? [
-          ...user.mediaItems.filter((item) => item.type === allKind && !item.isUploadedAsset),
-          ...(user.workflowMediaItems ?? []).filter((item) => item.type === allKind),
-          ...(allKind === "image" ? user.assetMediaItems.filter((item) => item.type === "image" && !item.isUploadedAsset) : []),
-        ].sort((left, right) => (right.createdAtTs ?? 0) - (left.createdAtTs ?? 0))
-      : isWorkflow
-        ? (user.workflowMediaItems ?? []).filter((item) => item.type === (mediaType === "workflow_video" ? "video" : "image"))
-        : mediaType === "upload_image"
-          ? user.mediaItems.filter((item) => item.type === "image" && item.isUploadedAsset)
-          : user.mediaItems.filter((item) => item.type === mediaType && !item.isUploadedAsset);
-  const [activeMediaId, setActiveMediaId] = useState(() => mediaItems[0]?.id ?? "");
-  const activeMedia = mediaItems.find((item) => item.id === activeMediaId) ?? mediaItems[0];
-  const title = `${user.nickname || user.email}${isAssetImage ? "资产库图片" : mediaType === "all_image" ? "所有生成图片" : mediaType === "all_video" ? "所有生成视频" : mediaType === "workflow_image" ? "工作流图片" : mediaType === "workflow_video" ? "工作流视频" : mediaType === "upload_image" ? "对话流上传图片" : mediaType === "image" ? "对话流图片" : "对话流视频"}`;
+  const [items, setItems] = useState<AdminMediaItem[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [activeMediaId, setActiveMediaId] = useState("");
+  const loadingRef = useRef(false);
+
+  const loadPage = useCallback(async (offset: number, reset: boolean) => {
+    if (!reset && loadingRef.current) return;
+    loadingRef.current = true;
+    await Promise.resolve();
+    if (reset) {
+      setItems([]);
+      setTotal(0);
+      setActiveMediaId("");
+    }
+    setLoading(true);
+    try {
+      const params = new URLSearchParams({ userId, mode: "media-page", mediaType, offset: String(offset), limit: String(MEDIA_DIALOG_PAGE_SIZE) });
+      if (isAssetImage) params.set("assetType", assetFilter);
+      const response = await fetch(`/admin/api/records/user-detail?${params.toString()}`);
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(typeof payload.error === "string" ? payload.error : "加载失败");
+      const nextItems = (payload.detail?.items ?? []) as AdminMediaItem[];
+      const nextTotal = Number(payload.detail?.total ?? 0);
+      setTotal(nextTotal);
+      setItems((current) => {
+        if (offset === 0) return nextItems;
+        const seen = new Set(current.map((item) => item.id));
+        return [...current, ...nextItems.filter((item) => !seen.has(item.id))];
+      });
+      setLoadError(null);
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : "加载失败");
+    } finally {
+      loadingRef.current = false;
+      setLoading(false);
+    }
+  }, [userId, mediaType, isAssetImage, assetFilter]);
+
+  useEffect(() => {
+    void loadPage(0, true);
+  }, [loadPage]);
+
+  const handleScroll = (event: React.UIEvent<HTMLDivElement>) => {
+    const node = event.currentTarget;
+    if (loadingRef.current || items.length >= total) return;
+    if (node.scrollTop + node.clientHeight >= node.scrollHeight - 160) void loadPage(items.length, false);
+  };
+
+  const activeMedia = items.find((item) => item.id === activeMediaId) ?? items[0];
+  const title = `${userLabel}${isAssetImage ? "资产库图片" : mediaType === "all_image" ? "所有生成图片" : mediaType === "all_video" ? "所有生成视频" : mediaType === "workflow_image" ? "工作流图片" : mediaType === "workflow_video" ? "工作流视频" : mediaType === "upload_image" ? "对话流上传图片" : mediaType === "image" ? "对话流图片" : "对话流视频"}`;
   const activeMediaName = activeMedia?.name || activeMedia?.systemName || (activeMedia?.type === "video" ? "视频" : "图片");
   const assetFilterItems: Array<{ key: "character_image" | "scene_image" | "shot_image"; label: string }> = [
     { key: "character_image", label: "角色" },
@@ -357,7 +394,9 @@ export function AdminMediaDialog({ user, mediaType, onClose }: { user: AdminUser
                     </div>
                   </div>
                 </div>
-              ) : <div className="pt-20 text-center text-[13px] text-[#999999]">暂无{mediaType === "video" || mediaType === "workflow_video" || mediaType === "all_video" ? "视频" : "图片"}</div>}
+              ) : (
+                <div className="pt-20 text-center text-[13px] text-[#999999]">{loading ? "加载中..." : loadError ? loadError : `暂无${mediaType === "video" || mediaType === "workflow_video" || mediaType === "all_video" ? "视频" : "图片"}`}</div>
+              )}
             </div>
           </section>
 
@@ -380,9 +419,9 @@ export function AdminMediaDialog({ user, mediaType, onClose }: { user: AdminUser
                   ))}
                 </div>
               </div>
-            ) : <div className="mb-4 shrink-0 truncate pr-4 text-[13px] font-semibold text-[#111111]">{mediaType === "upload_image" ? "上传图片" : mediaType === "all_video" ? "所有生成视频" : mediaType === "all_image" ? "所有生成图片" : mediaType === "workflow_video" ? "工作流视频" : mediaType === "workflow_image" ? "工作流图片" : mediaType === "video" ? "生成视频" : "生成图片"}列表</div>}
-            <div className="min-h-0 flex-1 space-y-2 overflow-y-auto pb-4 pr-2">
-              {mediaItems.map((item, index) => (
+            ) : <div className="mb-4 shrink-0 truncate pr-4 text-[13px] font-semibold text-[#111111]">{mediaType === "upload_image" ? "上传图片" : mediaType === "all_video" ? "所有生成视频" : mediaType === "all_image" ? "所有生成图片" : mediaType === "workflow_video" ? "工作流视频" : mediaType === "workflow_image" ? "工作流图片" : mediaType === "video" ? "生成视频" : "生成图片"}列表{total > 0 ? `（${total}）` : ""}</div>}
+            <div onScroll={handleScroll} className="min-h-0 flex-1 space-y-2 overflow-y-auto pb-4 pr-2">
+              {items.map((item, index) => (
                 <button
                   key={item.id}
                   type="button"
@@ -392,12 +431,12 @@ export function AdminMediaDialog({ user, mediaType, onClose }: { user: AdminUser
                   <div className="relative flex h-[118px] items-center justify-center bg-[#eeeeee]">
                     {item.type === "image" ? (
                       // eslint-disable-next-line @next/next/no-img-element
-                        <img src={getAdminMediaThumbnailUrl(item.url)} onError={(event) => fallbackAdminImageToOriginal(event.currentTarget, item.url)} alt="图片缩略图" className="h-full w-full object-contain" />
+                        <img src={getAdminMediaThumbnailUrl(item.url)} onError={(event) => fallbackAdminImageToOriginal(event.currentTarget, item.url)} alt="图片缩略图" loading="lazy" className="h-full w-full object-contain" />
                     ) : (
                       getLocalVideoPosterUrl(item.url) ? (
                         // eslint-disable-next-line @next/next/no-img-element
-                        <img src={getAdminMediaThumbnailUrl(getLocalVideoPosterUrl(item.url) ?? item.url)} onError={(event) => fallbackAdminImageToOriginal(event.currentTarget, item.url)} alt="视频封面" className="h-full w-full object-cover" />
-                      ) : <video src={getAdminMediaSourceUrl(item.url)} className="h-full w-full object-cover" muted />
+                        <img src={getAdminMediaThumbnailUrl(getLocalVideoPosterUrl(item.url) ?? item.url)} onError={(event) => fallbackAdminImageToOriginal(event.currentTarget, item.url)} alt="视频封面" loading="lazy" className="h-full w-full object-cover" />
+                      ) : <video src={getAdminMediaSourceUrl(item.url)} className="h-full w-full object-cover" muted preload="metadata" />
                     )}
                     {item.isDeleted ? <div className="absolute left-1.5 top-1.5 z-10 rounded-[4px] bg-red-500 px-1.5 py-0.5 text-[11px] font-medium leading-none text-white">已删除</div> : null}
                     <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent px-2 pb-1.5 pt-8 text-left text-[11px] font-medium text-white">
@@ -406,6 +445,7 @@ export function AdminMediaDialog({ user, mediaType, onClose }: { user: AdminUser
                   </div>
                 </button>
               ))}
+              {loading ? <div className="py-3 text-center text-[12px] text-[#999999]">加载中...</div> : items.length < total ? <div className="py-3 text-center text-[12px] text-[#bbbbbb]">下拉加载更多</div> : null}
             </div>
           </aside>
         </div>
@@ -562,7 +602,7 @@ export function AdminUsersPanel({ users, stats }: { users: AdminUserRow[]; stats
   const [loadingUserIds, setLoadingUserIds] = useState<Set<string>>(() => new Set());
   const [detailErrors, setDetailErrors] = useState<Record<string, string>>({});
   const [historyUser, setHistoryUser] = useState<AdminUserRow | null>(null);
-  const [mediaDialog, setMediaDialog] = useState<{ user: AdminUserRow; mediaType: "image" | "upload_image" | "video" | "asset_image" | "workflow_image" | "workflow_video" | "all_image" | "all_video" } | null>(null);
+  const [mediaDialog, setMediaDialog] = useState<{ userId: string; userLabel: string; mediaType: AdminMediaDialogType } | null>(null);
   const [loadingDialogTitle, setLoadingDialogTitle] = useState<string | null>(null);
   const isDetailLoading = loadingUserIds.size > 0;
 
@@ -655,34 +695,8 @@ export function AdminUsersPanel({ users, stats }: { users: AdminUserRow[]; stats
     }
   }
 
-  async function openMediaDialogForUser(userId: string, mediaType: "image" | "upload_image" | "video" | "asset_image" | "workflow_image" | "workflow_video" | "all_image" | "all_video") {
-    const cachedMedia = getCachedAdminDetail<{ user: AdminUserRow }>(userId, "media")?.user ?? getCachedAdminDetail<{ user: AdminUserRow }>(userId, "full")?.user;
-    if (cachedMedia && (cachedMedia.mediaItems.length > 0 || cachedMedia.assetMediaItems.length > 0 || (cachedMedia.workflowMediaItems?.length ?? 0) > 0)) {
-      setMediaDialog({ user: cachedMedia, mediaType });
-      return;
-    }
-
-    setLoadingUserIds((current) => new Set(current).add(userId));
-    setLoadingDialogTitle("正在加载媒体列表...");
-    setDetailErrors((current) => {
-      const next = { ...current };
-      delete next[userId];
-      return next;
-    });
-
-    try {
-      const detail = await fetchUserDetail(userId, "media");
-      setMediaDialog({ user: detail, mediaType });
-    } catch (error) {
-      setDetailErrors((current) => ({ ...current, [userId]: error instanceof Error ? error.message : "加载失败" }));
-    } finally {
-      setLoadingUserIds((current) => {
-        const next = new Set(current);
-        next.delete(userId);
-        return next;
-      });
-      setLoadingDialogTitle(null);
-    }
+  function openMediaDialogForUser(userId: string, userLabel: string, mediaType: AdminMediaDialogType) {
+    setMediaDialog({ userId, userLabel, mediaType });
   }
 
   function toggleExpandedUser(userId: string) {
@@ -876,8 +890,8 @@ export function AdminUsersPanel({ users, stats }: { users: AdminUserRow[]; stats
                               <div className="space-y-px">
                                 <DetailItem label="历史对话" value={formatNumber(expandedUser.conversationCount)} onClick={() => void openHistoryDialog(expandedUser.id)} />
                                 <DetailItem label="历史工作流" value={formatNumber(expandedUser.workflowCount ?? 0)} />
-                                <DetailItem label="所有生成图片" value={formatNumber((expandedUser.conversationImageCount ?? 0) + (expandedUser.workflowImageCount ?? 0) + (expandedUser.assetGeneratedImageCount ?? 0))} onClick={() => void openMediaDialogForUser(expandedUser.id, "all_image")} />
-                                <DetailItem label="所有生成视频" value={formatNumber((expandedUser.conversationVideoCount ?? 0) + (expandedUser.workflowVideoCount ?? 0))} onClick={() => void openMediaDialogForUser(expandedUser.id, "all_video")} />
+                                <DetailItem label="所有生成图片" value={formatNumber((expandedUser.conversationImageCount ?? 0) + (expandedUser.workflowImageCount ?? 0) + (expandedUser.assetGeneratedImageCount ?? 0))} onClick={() => openMediaDialogForUser(expandedUser.id, expandedUser.nickname || expandedUser.email, "all_image")} />
+                                <DetailItem label="所有生成视频" value={formatNumber((expandedUser.conversationVideoCount ?? 0) + (expandedUser.workflowVideoCount ?? 0))} onClick={() => openMediaDialogForUser(expandedUser.id, expandedUser.nickname || expandedUser.email, "all_video")} />
                               </div>
                               <div className="space-y-px">
                                 <DetailItem label="积分" value={formatNumber(expandedUser.credits)} />
@@ -923,7 +937,7 @@ export function AdminUsersPanel({ users, stats }: { users: AdminUserRow[]; stats
       </div>
 
       {historyUser ? <AdminHistoryDialog user={historyUser} onClose={() => setHistoryUser(null)} /> : null}
-      {mediaDialog ? <AdminMediaDialog user={mediaDialog.user} mediaType={mediaDialog.mediaType} onClose={() => setMediaDialog(null)} /> : null}
+      {mediaDialog ? <AdminMediaDialog userId={mediaDialog.userId} userLabel={mediaDialog.userLabel} mediaType={mediaDialog.mediaType} onClose={() => setMediaDialog(null)} /> : null}
       {loadingDialogTitle ? <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/42 px-8 py-8 backdrop-blur-[4px]"><div className="w-[360px] rounded-[12px] bg-white shadow-[0_24px_80px_rgba(0,0,0,0.22)]"><AdminDetailLoading label={loadingDialogTitle} /></div></div> : null}
     </>
   );

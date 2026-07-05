@@ -3,7 +3,7 @@
 import { Fragment, useMemo, useState } from "react";
 import { RiArrowDownSLine, RiArrowRightSLine, RiSearchLine } from "react-icons/ri";
 import { getCachedAdminDetail, setCachedAdminDetail } from "./admin-detail-cache";
-import { AdminDetailLoading, AdminHistoryDialog, AdminMediaDialog, DetailItem, SmallStat, type AdminMediaItem, type AdminUserRow } from "./admin-users-panel";
+import { AdminDetailLoading, AdminHistoryDialog, AdminMediaDialog, DetailItem, SmallStat, type AdminMediaDialogType, type AdminMediaItem, type AdminUserRow } from "./admin-users-panel";
 import { CreditCategoryDialog, CreditFlowDialog, type AdminCreditCategoryDetail, type AdminCreditFlowItem, type AdminCreditUser } from "./admin-credits-panel";
 
 const PAGE_SIZE = 15;
@@ -186,7 +186,7 @@ export function AdminRecordsPanel({ summaries }: { summaries: AdminRecordSummary
   const [loadingUserIds, setLoadingUserIds] = useState<Set<string>>(() => new Set());
   const [detailErrors, setDetailErrors] = useState<Record<string, string>>({});
   const [historyUser, setHistoryUser] = useState<AdminUserRow | null>(null);
-  const [mediaDialog, setMediaDialog] = useState<{ user: AdminUserRow; mediaType: "image" | "upload_image" | "video" | "asset_image" | "workflow_image" | "workflow_video" } | null>(null);
+  const [mediaDialog, setMediaDialog] = useState<{ userId: string; userLabel: string; mediaType: AdminMediaDialogType } | null>(null);
   const [creditFlowUser, setCreditFlowUser] = useState<AdminCreditUser | null>(null);
   const [assetCreditUser, setAssetCreditUser] = useState<AdminCreditUser | null>(null);
   const [promptToolUser, setPromptToolUser] = useState<AdminCreditUser | null>(null);
@@ -316,7 +316,10 @@ export function AdminRecordsPanel({ summaries }: { summaries: AdminRecordSummary
       return next;
     });
     try {
-      return await fetchUserDetail(userId, "media");
+      const response = await fetch(`/admin/api/records/user-detail?userId=${encodeURIComponent(userId)}&mode=uploads`);
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(typeof payload.error === "string" ? payload.error : "加载失败");
+      return payload.detail as AdminRecordDetail;
     } catch (error) {
       setDetailErrors((current) => ({ ...current, [userId]: error instanceof Error ? error.message : "加载失败" }));
       return undefined;
@@ -350,10 +353,8 @@ export function AdminRecordsPanel({ summaries }: { summaries: AdminRecordSummary
     setGeneratedListDialog({ user: detail.creditUser, categories: makeGeneratedCategories(detail.user, detail.creditUser), initialCategoryId });
   };
 
-  const openMediaDialogForUser = async (userId: string, mediaType: "image" | "upload_image" | "video" | "asset_image" | "workflow_image" | "workflow_video") => {
-    const detail = await loadMediaDetailForDialog(userId, "正在加载媒体列表...");
-    if (!detail) return;
-    setMediaDialog({ user: detail.user, mediaType });
+  const openMediaDialogForUser = (userId: string, userLabel: string, mediaType: AdminMediaDialogType) => {
+    setMediaDialog({ userId, userLabel, mediaType });
   };
 
   const openAllUploadDialog = async (userId: string, initialCategoryId: string) => {
@@ -448,19 +449,19 @@ export function AdminRecordsPanel({ summaries }: { summaries: AdminRecordSummary
                             <DetailItem label="工作区保存" value={user.workspaceSaved ? user.workspaceUpdatedAtLabel : "未保存"} />
                           </div>
                           <div className="space-y-px">
-                            <DetailItem label="资产库图片" value={formatNumber(assetImageTotal)} onClick={() => void openMediaDialogForUser(user.id, "asset_image")} />
+                            <DetailItem label="资产库图片" value={formatNumber(assetImageTotal)} onClick={() => openMediaDialogForUser(user.id, user.nickname || user.email, "asset_image")} />
                             <DetailItem label="上传图片" value={formatNumber(user.uploadImageCount ?? 0)} onClick={() => void openAllUploadDialog(user.id, "upload-images")} />
                             <DetailItem label="上传视频" value={formatNumber(user.uploadVideoCount ?? 0)} onClick={() => void openAllUploadDialog(user.id, "upload-videos")} />
                             <DetailItem label="上传音频" value={formatNumber(user.uploadAudioCount ?? 0)} onClick={() => void openAllUploadDialog(user.id, "upload-audios")} />
                             <DetailItem label="上传文档" value={formatNumber(user.uploadDocumentCount ?? 0)} onClick={() => void openAllUploadDialog(user.id, "upload-documents")} />
                           </div>
                           <div className="space-y-px">
-                            <DetailItem label="对话流图片" value={formatNumber(conversationImageTotal)} onClick={() => void openMediaDialogForUser(user.id, "image")} />
-                            <DetailItem label="对话流视频" value={formatNumber(conversationVideoTotal)} onClick={() => void openMediaDialogForUser(user.id, "video")} />
+                            <DetailItem label="对话流图片" value={formatNumber(conversationImageTotal)} onClick={() => openMediaDialogForUser(user.id, user.nickname || user.email, "image")} />
+                            <DetailItem label="对话流视频" value={formatNumber(conversationVideoTotal)} onClick={() => openMediaDialogForUser(user.id, user.nickname || user.email, "video")} />
                           </div>
                           <div className="space-y-px">
-                            <DetailItem label="工作流图片" value={formatNumber(user.workflowImageCount ?? 0)} onClick={() => void openMediaDialogForUser(user.id, "workflow_image")} />
-                            <DetailItem label="工作流视频" value={formatNumber(user.workflowVideoCount ?? 0)} onClick={() => void openMediaDialogForUser(user.id, "workflow_video")} />
+                            <DetailItem label="工作流图片" value={formatNumber(user.workflowImageCount ?? 0)} onClick={() => openMediaDialogForUser(user.id, user.nickname || user.email, "workflow_image")} />
+                            <DetailItem label="工作流视频" value={formatNumber(user.workflowVideoCount ?? 0)} onClick={() => openMediaDialogForUser(user.id, user.nickname || user.email, "workflow_video")} />
                           </div>
                         </div>
                         )}
@@ -485,7 +486,7 @@ export function AdminRecordsPanel({ summaries }: { summaries: AdminRecordSummary
       </div>
 
       {historyUser ? <AdminHistoryDialog user={historyUser} onClose={() => setHistoryUser(null)} /> : null}
-      {mediaDialog ? <AdminMediaDialog user={mediaDialog.user} mediaType={mediaDialog.mediaType} onClose={() => setMediaDialog(null)} /> : null}
+      {mediaDialog ? <AdminMediaDialog userId={mediaDialog.userId} userLabel={mediaDialog.userLabel} mediaType={mediaDialog.mediaType} onClose={() => setMediaDialog(null)} /> : null}
       {creditFlowUser ? <CreditFlowDialog user={creditFlowUser} onClose={() => setCreditFlowUser(null)} /> : null}
       {assetCreditUser ? <CreditCategoryDialog title="资产库消耗积分详细" user={assetCreditUser} categories={assetCreditUser.assetGenerationCreditDetails} onClose={() => setAssetCreditUser(null)} /> : null}
       {promptToolUser ? <CreditCategoryDialog title="反推/优化提示词消耗积分详细" user={promptToolUser} categories={promptToolUser.promptToolCreditDetails} onClose={() => setPromptToolUser(null)} /> : null}
