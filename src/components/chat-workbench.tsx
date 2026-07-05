@@ -881,6 +881,17 @@ function isRemoteMediaUrl(url: string | undefined): url is string {
   return typeof url === "string" && /^https?:\/\//i.test(url);
 }
 
+const OWN_GENERATED_HOST_URL_RE = /^https?:\/\/(101\.47\.19\.109|101\.37\.129\.164|main\.venusface\.com|api\.venusface\.com|ali\.venusface\.com|static\.venusface\.com)\/generated\//i;
+// A remote provider/temporary media URL (BytePlus/Volces TOS-signed, OpenRouter content, etc.)
+// that is NOT one of our own re-hosted /generated/ assets. These links expire and 404. The asset
+// library and @-mention are meant to show only re-hosted local media (this mirrors the server's
+// isVisiblePersistedMediaUrl gate, which already never returns such URLs). Client-derived phantom
+// assets that still carry these stale URLs (e.g. from old migrated conversation JSON) must NOT
+// appear in the library/mention as broken/empty cards.
+function isUnhostedRemoteAssetUrl(url: string | undefined) {
+  return isRemoteMediaUrl(url) && !(typeof url === "string" && OWN_GENERATED_HOST_URL_RE.test(url));
+}
+
 function getVideoPlaybackUrl(url: string | undefined) {
   if (!url) return url;
   if (isRemoteMediaUrl(url)) return url;
@@ -1108,6 +1119,7 @@ function isConversationAsset(asset: AssetItem) {
 }
 
 function isMentionGroupAsset(asset: AssetItem, groupType: MentionAssetGroupType) {
+  if (isUnhostedRemoteAssetUrl(asset.url)) return false;
   if (asset.type === "trash" || asset.deletedAt || isVideoAsset(asset)) return false;
   if (groupType === "conversation_upload") return isConversationUploadedAsset(asset);
   return asset.type === groupType && isAssetGenerationAsset(asset);
@@ -3729,6 +3741,7 @@ function isConversationUploadedAsset(asset: AssetItem) {
 }
 
 function isAssetInFilter(asset: AssetItem, filter: AssetFilter) {
+  if (isUnhostedRemoteAssetUrl(asset.url)) return false;
   if (filter !== "trash" && (asset.type === "trash" || asset.deletedAt)) return false;
   if (filter === "trash") return asset.type === "trash" || Boolean(asset.deletedAt);
   if (filter === "conversation_images") return isConversationAsset(asset) && !isVideoAsset(asset) && !isConversationUploadedAsset(asset);

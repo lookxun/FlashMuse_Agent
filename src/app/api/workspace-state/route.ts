@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { getCurrentUser, jsonError } from "@/lib/auth";
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
@@ -297,21 +299,30 @@ function getAssetPageWhere(userId: string, filter: AssetFilterKey): Prisma.UserA
   return { ...visible, deletedAt: null, currentCategory: "conversation_images", NOT: { mediaAsset: { url: { contains: "/upload_image/" } } } };
 }
 
-// Visibility rule for persisted media URLs.
-// Own `/generated/` assets are ALWAYS visible, regardless of whether the file happens to be
-// present on THIS node's local disk. Rationale:
-//   - Files are soft-deleted only (never physically removed per product rule), so a DB row
-//     always corresponds to a real asset that should be shown (rule 6).
-//   - In the multi-host setup (Malaysia app server + Ali/CDN + upload host), a file may live on
-//     a different host pending rsync, so a local `existsSync` is not authoritative.
-// A previous version stat'd the local disk per row and hid any asset whose file was not present
-// locally. That caused valid assets (esp. workflow-uploaded / newly-synced ones) to vanish and
-// produced intermittent "count shows 0, must refresh several times" loops. The client already
-// falls back to the original media URL when a thumbnail is missing, so genuinely-orphaned files
-// degrade gracefully instead of disappearing.
+// Cached file-existence check.
+// Persisted media files are soft-deleted only (never physically removed per product rule),
+// so a positive result is stable and can be cached for a long time. A missing file is usually
+// a not-yet-synced/new file, so negatives are re-checked soon. Caching removes the per-row
+// synchronous disk stat that previously blocked the event loop on every asset-library request,
+// and guarantees the counts pass and the page pass see identical existence results.
+const mediaExistsCache = new Map<string, { exists: boolean; expires: number }>();
+const MEDIA_EXISTS_POSITIVE_TTL_MS = 60 * 60 * 1000;
+const MEDIA_EXISTS_NEGATIVE_TTL_MS = 15 * 1000;
+
+function cachedFileExists(absolutePath: string) {
+  const now = Date.now();
+  const cached = mediaExistsCache.get(absolutePath);
+  if (cached && cached.expires > now) return cached.exists;
+  const exists = existsSync(absolutePath);
+  mediaExistsCache.set(absolutePath, { exists, expires: now + (exists ? MEDIA_EXISTS_POSITIVE_TTL_MS : MEDIA_EXISTS_NEGATIVE_TTL_MS) });
+  return exists;
+}
+
 function isVisiblePersistedMediaUrl(url: string) {
   const ownGenerated = url.match(OWN_GENERATED_HOST_RE);
+  const generatedPath = ownGenerated ? url.slice(url.indexOf("/generated/")) : url;
   if (/^https?:\/\//i.test(url) && !ownGenerated) return false;
+  if (generatedPath.startsWith("/generated/")) return cachedFileExists(join(process.cwd(), "public", generatedPath.replace(/^\//, "")));
   return true;
 }
 
