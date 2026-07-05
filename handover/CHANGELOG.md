@@ -1,5 +1,28 @@
 # Current Handover Changelog
 
+## 2026-07-05 (later session) @引用资产弹窗与资产库对齐 + 停止本机 existsSync 隐藏有效媒体 (DEPLOYED + PUSHED)
+
+Reply style: concise/direct Chinese. User rules recap for 资产库/@引用资产: (1) 库只显示图片和视频; (2) 角色/场景/分镜可在库内直接生成; (3) 上传图片分类可直传，对话流+工作流上传的图都进这里; (4) 上述四类(角色/场景/分镜/上传图片)=@引用资产，无论对话流还是工作流@出来的弹窗，数量+内容必须和这四类当前显示一模一样; (5) 对话流/工作流资产里的图可移动到@引用资产分类(已实现); (6) 库显示用户所有生成+上传的图/视频，除回收站。
+
+合规核对结论: 规则1/2/3/5/6 已符合; 规则4 之前不符合(三处不一致); 另有一个由 2026-07-05 早先性能优化引入的 existsSync 可见性门禁导致"资产切工作流再回来读不出/显示0/反复刷新"的假阴性。本次全部修复并部署+推送。
+
+关于用户报的三张图: `image_1_d0/2_d0/3_d0` 经查本地库其实是**对话流生成图**(conversation_images, workspaceKind=conversation, workflowId=null)，且 thumbnailUrl=null，不是工作流上传。真正元凶是 existsSync 门禁假阴性 + 空缩略图现算路径脆弱。
+
+### 改动 (4文件)
+1. `src/app/api/workspace-state/route.ts`: 放宽 `isVisiblePersistedMediaUrl`——自有 `/generated/` 资产一律可见，不再按本机磁盘 existsSync 硬过滤(删除 cachedFileExists/mediaExistsCache/TTL/existsSync+join导入)。符合规则6，消除"显示0/反复刷新/切回消失"的假阴性(多主机: 文件可能在上传主机/CDN待同步; 且文件只软删不物删)。缩略图缺失交给客户端回退原图。顺带彻底去掉磁盘stat开销。
+2. `src/components/chat-workbench.tsx` (对话流两个@弹窗): (a) 灰字子标签由 `assetTypeLabels[asset.type]`("待分类")改为分组分类标签("上传图片")，与工作流弹窗一致; (b) 分组计数改用服务器真实 `assetCounts`(新增 `mentionGroupToAssetCountKey` 映射; count=Math.max(服务器数, 已加载数))，与资产库侧边栏一致; (c) 新增 `loadMoreMentionGroup` + 两弹窗 `onScroll` 滚动到底自动加载更多(无按钮)。
+3. `src/components/workflow-tldraw-canvas-inner.tsx` + `workflow-tldraw-canvas.tsx`: 新增 `referenceAssetCounts` / `onLoadMoreReferenceAssets` 贯穿 props→runtime，工作流@弹窗计数用真实总数、滚动加载更多，与对话流弹窗一模一样。
+
+### 未做(低影响高风险)
+- 前端 `isConversationUploadedAsset` 与服务器 conversation_uploads 精确口径统一未做; 因计数已取服务器真值、与库一致，只有极端边缘图(promptSource=upload 但非 /upload_image/ 路径)列表归类可能微差，不影响数量对齐和用户规则。
+
+### 部署记录
+- 4文件源码改动，无 Prisma schema 变更(migrate/generate 跳过)。本地 `npx tsc --noEmit` + `npm run build` 通过。
+- 全量源码快照部署 (tarball md5 `cbc9db5bf708638b798bf0e3aabdd5f2`)。备份 `.deploy-backups/20260705-asset-mention-align/source-before-deploy.tgz`。Guard 快照 `.runtime/deploy-checks/20260705-asset-mention-align-before/after.json`，compare `ok:true` (无diff, assetListHash `1fee45ba443f60bc` 未变, stableMissing/fallbackUsers 0)。deploy 脚本 build OK, PM2 online, Ali `_next/static` 同步。
+- Post: `/workspace` `/admin` `/api/model-availability` `ali.venusface.com/workspace` 全 200。
+- 已提交+推送 GitHub: commit `c7cd22b`。GitHub=生产同步。
+
+
 ## 2026-07-05 (later session) Workflow Empty-State Start Buttons Keep Width (DEPLOYED + PUSHED)
 
 - Fix: the empty-workflow "从一个节点开始" 4 buttons (文字输入/图片节点/视频节点/上传节点) collapsed when the browser narrowed, squeezing the labels into vertical text. In `src/components/workflow-tldraw-canvas-inner.tsx` (~line 3623) each button now has `shrink-0 whitespace-nowrap` (keep full width + horizontal text) and the row is `flex-wrap justify-center` (wraps to next line on very narrow instead of overflowing off-screen).
