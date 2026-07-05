@@ -228,8 +228,10 @@ type AssetItem = {
   deletedAt?: number;
   purgeAt?: number;
 };
-
 type UploadableImageAssetType = "character_image" | "scene_image" | "shot_image";
+
+type WorkflowImportAsset = { id: string; name: string; url: string; posterUrl?: string; kind: "image" | "video"; sourcePrompt?: string; model?: ModelName; ratio?: string; resolution?: string; duration?: string; dimensions?: { width: number; height: number }; origin?: "generated" | "upload" };
+
 type AssetGenerationImageType = "character_image" | "scene_image" | "shot_image";
 type AssetGenerateRatio = "single" | "three-view" | "scene-grid";
 
@@ -1091,6 +1093,17 @@ const mentionAssetTypeLabels: Record<MentionAssetGroupType, string> = {
   shot_image: "分镜图片",
   conversation_upload: "上传图片",
 };
+// Category tabs shown in the workflow "从资产库导入" dialog (images + videos only, no recycle bin/audio/docs).
+const ASSET_IMPORT_CATEGORIES: { label: string; value: AssetFilter; icon: typeof RiImageLine }[] = [
+  { label: "角色图片", value: "character_image", icon: RiAccountBoxLine },
+  { label: "场景图片", value: "scene_image", icon: RiLandscapeLine },
+  { label: "分镜图片", value: "shot_image", icon: RiMultiImageLine },
+  { label: "上传图片", value: "conversation_uploads", icon: ImageUploadLineIcon },
+  { label: "对话流生成图片", value: "conversation_images", icon: RiImageAiLine },
+  { label: "对话流生成视频", value: "conversation_videos", icon: RiFilmAiLine },
+  { label: "工作流生成图片", value: "workflow_images", icon: RiImageAiLine },
+  { label: "工作流生成视频", value: "workflow_videos", icon: RiFilmAiLine },
+];
 // Maps an @-mention group to the server `assetCounts` key so the popup can show the SAME real
 // total as the asset-library sidebar (instead of only the locally-loaded, page-capped count).
 const mentionGroupToAssetCountKey: Record<MentionAssetGroupType, string> = {
@@ -3162,15 +3175,24 @@ function getWorkflowTextSnapshot(canvas?: WorkflowCanvasState) {
 
 function getWorkflowMeaningfulSnapshot(canvas?: WorkflowCanvasState) {
   if (!canvas) return "";
-  const nodes = (canvas.nodes ?? []).map((node) => {
-    const { visualSize: _visualSize, ...restData } = node.data ?? {};
-    return { ...node, data: restData };
-  });
+  // Only user-meaningful content should count toward "changed" (which bumps the workflow to the top of
+  // the list). Strip runtime/auto-derived fields that get populated just by OPENING a workflow — e.g. a
+  // video backfills videoDimensions/durationSeconds on load, images backfill imageDimensions, playback
+  // updates videoCurrentTime, generation writes isRunning/taskId/etc, and media naming backfill updates
+  // mediaSystemNames/posterUrl. Including any of those made media workflows (工作流_02 / _04) jump to the
+  // top on mere open/refresh. Genuine edits still reorder via nodes/edges/text/model/media-url/position.
+  const stripKeys = ["visualSize", "videoDimensions", "durationSeconds", "videoCurrentTime", "imageDimensions", "isRunning", "taskId", "videoRequestId", "startedAt", "uploadProgress", "error", "mediaSystemNames", "posterUrl"] as const;
+  const stripData = (data?: WorkflowNode["data"]) => {
+    const rest: Record<string, unknown> = { ...(data ?? {}) };
+    for (const key of stripKeys) delete rest[key];
+    return rest;
+  };
+  const stripNode = (node: WorkflowNode) => ({ ...node, data: stripData(node.data) });
   return JSON.stringify({
-    nodes,
+    nodes: (canvas.nodes ?? []).map(stripNode),
     edges: canvas.edges ?? [],
     historicalTextNodes: canvas.historicalTextNodes ?? [],
-    historicalMediaNodes: canvas.historicalMediaNodes ?? [],
+    historicalMediaNodes: (canvas.historicalMediaNodes ?? []).map(stripNode),
   });
 }
 
@@ -6978,6 +7000,13 @@ export function ChatWorkbench() {
   const [assetLoadingReason, setAssetLoadingReason] = useState<"" | "initial" | "scroll" | "auto">("");
   const [loadedAssetFilters, setLoadedAssetFilters] = useState<Partial<Record<AssetFilter, boolean>>>({});
   const [assetCounts, setAssetCounts] = useState<Record<string, number>>({});
+  const [assetImportOpen, setAssetImportOpen] = useState(false);
+  const [assetImportFilter, setAssetImportFilter] = useState<AssetFilter>("character_image");
+  const [assetImportItemsByFilter, setAssetImportItemsByFilter] = useState<Partial<Record<AssetFilter, AssetItem[]>>>({});
+  const [assetImportPaging, setAssetImportPaging] = useState<Partial<Record<AssetFilter, { hasMore: boolean; nextOffset: number; loading: boolean }>>>({});
+  const [assetImportCounts, setAssetImportCounts] = useState<Record<string, number>>({});
+  const [assetImportSelected, setAssetImportSelected] = useState<Record<string, WorkflowImportAsset>>({});
+  const [assetsToImport, setAssetsToImport] = useState<WorkflowImportAsset[]>([]);
   const [mentionLoadingMore, setMentionLoadingMore] = useState(false);
   const [assetsHasMore, setAssetsHasMore] = useState(false);
   const [assetsNextOffset, setAssetsNextOffset] = useState(0);
@@ -8934,6 +8963,89 @@ export function ChatWorkbench() {
       showInputTip("资产库加载失败，请稍后重试");
     }
   }, [assetFilter, assets, assetsLoadStatus, loadedAssetFilters, showInputTip]);
+
+  const loadAssetImportPage = useCallback(async (filter: AssetFilter, offset = 0) => {
+    setAssetImportPaging((current) => ({ ...current, [filter]: { hasMore: current[filter]?.hasMore ?? false, nextOffset: current[filter]?.nextOffset ?? 0, loading: true } }));
+    try {
+      const { data } = await fetchJsonWithRetry<{ state?: WorkspaceStatePayload | null }>(`/api/workspace-state?assetsOnly=1&assetFilter=${encodeURIComponent(filter)}&assetOffset=${offset}&assetLimit=30`, { cache: "no-store" }, 2, 45_000);
+      const state = data.state ?? {};
+      const nextAssets = Array.isArray(state.assets)
+        ? applyAssetGenerationSystemNames(applySessionMediaSystemNamesToAssets(normalizeStoredAssets(state.assets).map((asset) => replaceAssetMediaUrls(asset, legacyMediaUrlReplacements)), sessionsRef.current))
+        : [];
+      setAssetImportItemsByFilter((current) => {
+        const prev = offset > 0 ? current[filter] ?? [] : [];
+        const existingKeys = new Set(prev.map(getAssetIdentityKey));
+        return { ...current, [filter]: [...prev, ...nextAssets.filter((asset) => !existingKeys.has(getAssetIdentityKey(asset)))] };
+      });
+      if (state.assetCounts && typeof state.assetCounts === "object") setAssetImportCounts((current) => ({ ...current, ...state.assetCounts }));
+      setAssetImportPaging((current) => ({ ...current, [filter]: { hasMore: Boolean(state.assetsHasMore), nextOffset: Math.floor(Number(state.assetsNextOffset ?? offset + nextAssets.length)), loading: false } }));
+    } catch {
+      setAssetImportPaging((current) => ({ ...current, [filter]: { hasMore: false, nextOffset: current[filter]?.nextOffset ?? 0, loading: false } }));
+      showInputTip("资产加载失败，请稍后重试");
+    }
+  }, [showInputTip]);
+
+  const openAssetImportDialog = useCallback(() => {
+    setAssetImportSelected({});
+    setAssetImportFilter("character_image");
+    setAssetImportOpen(true);
+    setAssetImportItemsByFilter((current) => {
+      if (!current.character_image) void loadAssetImportPage("character_image", 0);
+      return current;
+    });
+  }, [loadAssetImportPage]);
+
+  const selectAssetImportFilter = useCallback((filter: AssetFilter) => {
+    setAssetImportFilter(filter);
+    setAssetImportItemsByFilter((current) => {
+      if (!current[filter]) void loadAssetImportPage(filter, 0);
+      return current;
+    });
+  }, [loadAssetImportPage]);
+
+  const toggleAssetImportSelection = useCallback((asset: AssetItem) => {
+    setAssetImportSelected((current) => {
+      const key = normalizeMediaUrlForMatch(asset.url);
+      if (current[key]) {
+        const next = { ...current };
+        delete next[key];
+        return next;
+      }
+      const item: WorkflowImportAsset = {
+        id: asset.id,
+        name: asset.systemName || asset.name,
+        url: asset.url,
+        posterUrl: asset.posterUrl,
+        kind: isVideoAsset(asset) ? "video" : "image",
+        sourcePrompt: asset.sourcePrompt,
+        resolution: asset.previewMeta?.resolution,
+        duration: asset.previewMeta?.duration,
+        origin: (isUploadedAssetUrl(asset.url) || asset.promptSource === "upload" || isUploadPromptPlaceholder(asset.sourcePrompt)) ? "upload" : "generated",
+      };
+      return { ...current, [key]: item };
+    });
+  }, []);
+
+  const confirmAssetImport = useCallback(async () => {
+    const selected = Object.values(assetImportSelected);
+    setAssetImportOpen(false);
+    setAssetImportSelected({});
+    if (selected.length === 0) return;
+    // Measure the ORIGINAL image so the imported node shows the true original size (and its box
+    // aspect matches the image, so it is not cropped). Videos backfill their real size on load.
+    const measureOriginal = (url: string) => new Promise<{ width: number; height: number } | undefined>((resolve) => {
+      const image = new window.Image();
+      image.onload = () => resolve(image.naturalWidth > 0 && image.naturalHeight > 0 ? { width: image.naturalWidth, height: image.naturalHeight } : undefined);
+      image.onerror = () => resolve(undefined);
+      image.src = getStaticMediaUrl(url) ?? url;
+    });
+    const enriched = await Promise.all(selected.map(async (item) => {
+      if (item.kind !== "image") return item;
+      const dims = await measureOriginal(item.url);
+      return dims ? { ...item, dimensions: dims } : item;
+    }));
+    setAssetsToImport(enriched);
+  }, [assetImportSelected]);
 
   const loadMentionAssetFilters = useCallback(async () => {
     const filters: AssetFilter[] = ["character_image", "scene_image", "shot_image", "conversation_uploads"];
@@ -14444,6 +14556,9 @@ export function ChatWorkbench() {
                   onExternalFilesDrop={() => {
                     clearDragUploadOverlay();
                   }}
+                  onOpenAssetImport={openAssetImportDialog}
+                  assetsToImport={assetsToImport}
+                  onAssetsImported={() => setAssetsToImport([])}
                   enabledTextModelIds={enabledAgentChatModelIds}
                   textModelProviders={agentChatModelProviders}
                   enabledImageModelIds={enabledGenerationModelIds.image}
@@ -14499,6 +14614,71 @@ export function ChatWorkbench() {
                   </div>
                 ) : null}
                 <UsageSummaryButton summary={activeWorkflow.usageSummary} mediaCounts={activeWorkflow.generatedMediaCounts ?? getWorkflowMediaCounts(activeWorkflow)} className="absolute right-4 top-4 z-30" />
+                {assetImportOpen ? (
+                  <div className="fixed inset-0 z-[10050] flex items-center justify-center bg-black/40" onClick={() => setAssetImportOpen(false)}>
+                    <div className="flex h-[80vh] w-[1080px] max-w-[94vw] flex-col overflow-hidden rounded-[16px] bg-white shadow-2xl" onClick={(event) => event.stopPropagation()}>
+                      <div className="flex items-center justify-between border-b border-[#eee] px-5 py-3.5">
+                        <div className="text-[15px] font-semibold text-[#111]">从资产库导入</div>
+                        <button type="button" onClick={() => setAssetImportOpen(false)} className="flex h-8 w-8 items-center justify-center rounded-md text-[#888] hover:bg-[#f2f2f2]"><RiCloseLine className="h-5 w-5" /></button>
+                      </div>
+                      <div className="flex min-h-0 flex-1">
+                        <div className="w-[220px] shrink-0 space-y-0.5 overflow-y-auto border-r border-[#eee] p-2">
+                          {ASSET_IMPORT_CATEGORIES.map((cat) => {
+                            const isActive = assetImportFilter === cat.value;
+                            const count = assetImportCounts[cat.value] ?? 0;
+                            const CategoryIcon = cat.icon;
+                            return (
+                              <button key={cat.value} type="button" onClick={() => selectAssetImportFilter(cat.value)} className={isActive ? "flex h-9 w-full items-center rounded-lg bg-[#ececec] px-3 text-left" : "flex h-9 w-full items-center rounded-lg px-3 text-left transition hover:bg-[#ececec]"} title={cat.label}>
+                                <CategoryIcon className="mr-2 h-5 w-5 shrink-0 text-[#777777]" aria-hidden="true" />
+                                <span className={isActive ? "min-w-0 flex-1 truncate text-[13px] font-medium text-[#111111]" : "min-w-0 flex-1 truncate text-[13px] font-medium text-[#333333]"}>{cat.label}</span>
+                                <span className="ml-auto w-10 shrink-0 text-right text-[12px] text-[#9a9a9a]">{count}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                        <div className="min-h-0 flex-1 overflow-y-auto p-4" onScroll={(event) => {
+                          const el = event.currentTarget;
+                          const paging = assetImportPaging[assetImportFilter];
+                          if (paging && paging.hasMore && !paging.loading && el.scrollHeight - el.scrollTop - el.clientHeight < 300) void loadAssetImportPage(assetImportFilter, paging.nextOffset);
+                        }}>
+                          {(() => {
+                            const items = assetImportItemsByFilter[assetImportFilter] ?? [];
+                            const loading = assetImportPaging[assetImportFilter]?.loading;
+                            if (items.length === 0) return <div className="flex h-full items-center justify-center text-[13px] text-[#999]">{loading ? "加载中…" : "暂无资产"}</div>;
+                            return (
+                              <div className="grid w-full grid-cols-5 gap-3">
+                                {items.map((asset) => {
+                                  const key = normalizeMediaUrlForMatch(asset.url);
+                                  const selected = Boolean(assetImportSelected[key]);
+                                  const isVideo = isVideoAsset(asset);
+                                  const localPoster = getLocalVideoPosterUrl(asset.url);
+                                  const poster = isVideo ? (asset.posterUrl ? getMediaThumbnailUrl(asset.posterUrl) : localPoster ? getMediaThumbnailUrl(localPoster) : undefined) : getMediaThumbnailUrl(asset.url);
+                                  return (
+                                    <button key={asset.id} type="button" onClick={() => toggleAssetImportSelection(asset)} className="group relative aspect-square overflow-hidden bg-[#f4f4f4] text-left">
+                                      {poster ? <img src={poster} alt={asset.systemName || asset.name} draggable={false} className="h-full w-full object-cover" /> : <div className="flex h-full w-full items-center justify-center text-[12px] text-[#aaa]">无预览</div>}
+                                      {isVideo ? <span className="pointer-events-none absolute left-2 top-2 rounded bg-black/55 px-1 py-0.5 text-[10px] text-white">视频</span> : null}
+                                      <span className={`absolute right-2 top-2 flex h-5 w-5 items-center justify-center rounded-full border ${selected ? "border-[#2f80ed] bg-[#2f80ed] text-white" : "border-white bg-black/25 text-transparent"}`}><RiCheckLine className="h-3.5 w-3.5" /></span>
+                                      {selected ? <span className="pointer-events-none absolute inset-0 border-2 border-[#2f80ed]" /> : null}
+                                      <div className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-black/75 to-transparent" />
+                                      <span className="pointer-events-none absolute bottom-2 left-2 max-w-[calc(100%-16px)] truncate text-[13px] font-medium leading-none text-white">@{asset.systemName || asset.name}</span>
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            );
+                          })()}
+                        </div>
+                      </div>
+                      <div className="flex items-center justify-between border-t border-[#eee] px-5 py-3">
+                        <div className="text-[12px] text-[#888]">已选 {Object.keys(assetImportSelected).length} 项</div>
+                        <div className="flex items-center gap-2">
+                          <button type="button" onClick={() => setAssetImportOpen(false)} className="rounded-lg border border-[#ddd] px-4 py-2 text-[13px] text-[#444] hover:bg-[#f5f5f5]">取消</button>
+                          <button type="button" onClick={() => { void confirmAssetImport(); }} disabled={Object.keys(assetImportSelected).length === 0} className="rounded-lg bg-[#111] px-12 py-2 text-[13px] font-medium text-white hover:bg-[#252525] disabled:opacity-40">确定</button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
               </>
             ) : (
               <div className="relative flex h-full min-h-full items-center justify-center bg-[#f3f3f3] bg-[linear-gradient(to_right,#d8d8d8_1px,transparent_1px),linear-gradient(to_bottom,#d8d8d8_1px,transparent_1px),linear-gradient(to_right,#e9e9e9_1px,transparent_1px),linear-gradient(to_bottom,#e9e9e9_1px,transparent_1px)] bg-[size:120px_120px,120px_120px,24px_24px,24px_24px] text-center">

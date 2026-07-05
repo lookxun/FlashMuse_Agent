@@ -46,6 +46,9 @@ type WorkflowCanvasProps = {
   onLoadReferenceAssets?: () => void;
   onLoadMoreReferenceAssets?: (groupType: string, loadedCount: number) => void;
   onExternalFilesDrop?: (files: File[]) => void;
+  onOpenAssetImport?: () => void;
+  assetsToImport?: Array<{ id: string; name: string; url: string; posterUrl?: string; kind: "image" | "video"; sourcePrompt?: string; model?: ModelName; ratio?: string; resolution?: string; duration?: string; dimensions?: { width: number; height: number }; origin?: "generated" | "upload" }>;
+  onAssetsImported?: () => void;
 };
 
 export const WorkflowCanvas = dynamic<WorkflowCanvasProps>(

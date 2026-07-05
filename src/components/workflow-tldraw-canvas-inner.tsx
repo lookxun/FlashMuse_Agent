@@ -4,7 +4,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { createPortal } from "react-dom";
 import { BaseBoxShapeUtil, BindingUtil, CubicBezier2d, HTMLContainer, Mat, Rectangle2d, SVGContainer, SelectionForegroundOverlayUtil, ShapeUtil, T, Tldraw, Vec, createShapeId, defaultBindingUtils, defaultOverlayUtils, defaultShapeUtils, resizeBox, useActions, useEditor, useValue, vecModelValidator, type Editor, type IndexKey, type RecordProps, type TLBinding, type TLComponents, type TLHandle, type TLHandleDragInfo, type TLResizeInfo, type TLShape, type TLShapeId, type TLUiOverrides, type TldrawOptions, type VecModel } from "tldraw";
 import { type IconType } from "react-icons";
-import { RiAddLine, RiArrowDownSLine, RiArrowUpLine, RiBringForward, RiBringToFront, RiCheckLine, RiCheckboxBlankCircleLine, RiCheckboxMultipleLine, RiClipboardLine, RiCloseLine, RiCursorLine, RiDeleteBinLine, RiDownloadLine, RiEmotionSadLine, RiExportLine, RiEyeLine, RiEyeOffLine, RiFileCodeLine, RiFileCopy2Line, RiFileCopyLine, RiFileImageLine, RiFileTextLine, RiFilmAiLine, RiFocus3Line, RiGoogleFill, RiHand, RiHistoryLine, RiImage2Line, RiImageAiLine, RiImageCircleLine, RiImageLine, RiInformation2Line, RiLayoutLeft2Line, RiLayoutLeftLine, RiLoader4Line, RiLockLine, RiLockUnlockLine, RiMoreLine, RiMultiImageLine, RiNodeTree, RiOpenaiFill, RiPlayLargeFill, RiResetLeftLine, RiRoadMapLine, RiScissorsCutLine, RiSendBackward, RiSendToBack, RiShining2Line, RiStackLine, RiTBoxLine, RiTextBlock, RiTextSnippet, RiTimeLine, RiTiktokFill, RiUpload2Line, RiVideoLine, RiVideoOnLine, RiVoiceprintLine, RiZoomInLine, RiZoomOutLine } from "react-icons/ri";
+import { RiAddLine, RiArrowDownSLine, RiArrowUpLine, RiBringForward, RiBringToFront, RiCheckLine, RiCheckboxBlankCircleLine, RiCheckboxMultipleLine, RiClipboardLine, RiCloseLine, RiCursorLine, RiDeleteBinLine, RiDownloadLine, RiEmotionSadLine, RiExportFill, RiExportLine, RiEyeLine, RiEyeOffLine, RiFileCodeLine, RiFileCopy2Line, RiFileCopyLine, RiFileImageLine, RiFileTextLine, RiFilmAiLine, RiFocus3Line, RiGoogleFill, RiHand, RiHistoryLine, RiImage2Line, RiImageAiLine, RiImageCircleLine, RiImageLine, RiInformation2Line, RiLayoutLeft2Line, RiLayoutLeftLine, RiLoader4Line, RiLockLine, RiLockUnlockLine, RiMoreLine, RiMultiImageLine, RiNodeTree, RiOpenaiFill, RiPlayLargeFill, RiResetLeftLine, RiRoadMapLine, RiScissorsCutLine, RiSendBackward, RiSendToBack, RiShining2Line, RiStackLine, RiTBoxLine, RiTextBlock, RiTextSnippet, RiTimeLine, RiTiktokFill, RiUpload2Line, RiVideoLine, RiVideoOnLine, RiVoiceprintLine, RiZoomInLine, RiZoomOutLine } from "react-icons/ri";
 import { BytePlusIcon } from "@/components/byteplus-icon";
 import { DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, bytePlusVideoGenerationModels, frontendConversationModels, frontendImageGenerationModels, getExpectedImageDimensions, getExpectedVideoDimensions, getSupportedImageResolutions, getSupportedVideoRatios, getSupportedVideoResolutions, imageGenerationModels, normalizeImageResolutionForModel, normalizeVideoRatioForModel, normalizeVideoResolutionForModel, videoGenerationModels, type ConversationModel, type GenerationModel, type ModelName } from "@/lib/models";
 import { GENERIC_MEDIA_ERROR_MESSAGE, toUserErrorMessage } from "@/lib/error-message";
@@ -38,6 +38,7 @@ export type WorkflowNodeData = {
   isRunning?: boolean;
   uploadProgress?: number;
   taskId?: string;
+  videoRequestId?: string;
   startedAt?: number;
   uploads?: WorkflowUploadItem[];
   gptImageOptimizationOriginalPrompt?: string;
@@ -148,6 +149,9 @@ type WorkflowCanvasProps = {
   onLoadReferenceAssets?: () => void;
   onLoadMoreReferenceAssets?: (groupType: string, loadedCount: number) => void;
   onExternalFilesDrop?: (files: File[]) => void;
+  onOpenAssetImport?: () => void;
+  assetsToImport?: WorkflowAssetSummary[];
+  onAssetsImported?: () => void;
 };
 
 type WorkflowAssetSummary = {
@@ -158,10 +162,12 @@ type WorkflowAssetSummary = {
   kind: "image" | "video";
   nodeId?: string;
   sourcePrompt?: string;
+  model?: ModelName;
   ratio?: string;
   resolution?: string;
   duration?: string;
   dimensions?: { width: number; height: number };
+  origin?: "generated" | "upload";
 };
 
 type WorkflowReferenceAsset = {
@@ -1065,7 +1071,12 @@ function getWorkflowNodeParamParts(node: WorkflowNode) {
   const modelOptions = node.kind === "text" ? frontendConversationModels : node.kind === "image" ? frontendImageGenerationModels : workflowVideoModels;
   const modelLabel = node.data.model ? getModelLabel(modelOptions, node.data.model) : "";
   if (node.kind === "text") return { modelLabel: "", ratio: "", resolution: "", duration: "", sizeText };
-  return { modelLabel, ratio: node.data.ratio ?? "", resolution: node.data.resolution ?? "", duration: node.kind === "video" ? node.data.duration ?? "" : "", sizeText };
+  // Prefer the REAL video length (backfilled from the loaded file via onLoadedMetadata) over the
+  // requested duration setting, so the label is always accurate and self-heals mismatched/migrated data.
+  const durationText = node.kind === "video"
+    ? (typeof node.data.durationSeconds === "number" && node.data.durationSeconds > 0 ? `${Math.round(node.data.durationSeconds)}秒` : node.data.duration ?? "")
+    : "";
+  return { modelLabel, ratio: node.data.ratio ?? "", resolution: node.data.resolution ?? "", duration: durationText, sizeText };
 }
 
 function estimateParamTextWidth(text: string) {
@@ -2201,7 +2212,7 @@ function WorkflowSelectedNodeOverlay() {
 
 type WorkflowContextMenuState = { x: number; y: number; pagePoint?: { x: number; y: number }; isBlankCanvas?: boolean } | null;
 
-function WorkflowCustomContextMenu({ menu, onClose, onAddNode, onUploadNode, onUsePrompt }: { menu: WorkflowContextMenuState; onClose: () => void; onAddNode: (kind: WorkflowNodeKind, pagePoint?: { x: number; y: number }) => void; onUploadNode: () => void; onUsePrompt: (node: WorkflowNode) => void }) {
+function WorkflowCustomContextMenu({ menu, onClose, onAddNode, onUploadNode, onImportAsset, onUsePrompt }: { menu: WorkflowContextMenuState; onClose: () => void; onAddNode: (kind: WorkflowNodeKind, pagePoint?: { x: number; y: number }) => void; onUploadNode: () => void; onImportAsset?: () => void; onUsePrompt: (node: WorkflowNode) => void }) {
   const editor = useEditor();
   const actions = useActions();
   const selectedShapeIds = useValue("workflow-context-menu-selected", () => editor.getSelectedShapeIds(), [editor]);
@@ -2222,6 +2233,7 @@ function WorkflowCustomContextMenu({ menu, onClose, onAddNode, onUploadNode, onU
   const showImageItems = Boolean(selectedWorkflowNode?.kind === "image" && selectedWorkflowNode.data.images?.[0]);
   const showVideoItems = Boolean(selectedWorkflowNode?.kind === "video" && selectedWorkflowNode.data.videoUrl);
   const showNodeSpecificItems = showTextItems || showImageItems || showVideoItems;
+  const isUploadedMediaNode = Boolean(selectedWorkflowNode?.title?.startsWith("上传"));
 
   const runAction = (actionId: string) => {
     const action = actions[actionId];
@@ -2236,6 +2248,10 @@ function WorkflowCustomContextMenu({ menu, onClose, onAddNode, onUploadNode, onU
   const runUploadNode = () => {
     onClose();
     onUploadNode();
+  };
+  const runImportAsset = () => {
+    onClose();
+    onImportAsset?.();
   };
   const runDownload = () => {
     const selectedWorkflowNodes = editor.getSelectedShapes().filter((shape): shape is WorkflowNodeShape => shape.type === "workflow_node").map((shape) => shape.props.node);
@@ -2283,7 +2299,9 @@ function WorkflowCustomContextMenu({ menu, onClose, onAddNode, onUploadNode, onU
           <button type="button" onClick={() => runAddNode("text")} className={itemClassName}>{menuLabel(RiTextBlock, "插入文本节点")}<span className="text-[11px] text-[#999999]">T</span></button>
           <button type="button" onClick={() => runAddNode("image")} className={itemClassName}>{menuLabel(RiImageAiLine, "插入图片节点")}<span className="text-[11px] text-[#999999]">I</span></button>
           <button type="button" onClick={() => runAddNode("video")} className={itemClassName}>{menuLabel(RiFilmAiLine, "插入视频节点")}<span className="text-[11px] text-[#999999]">D</span></button>
-          <button type="button" onClick={runUploadNode} className={itemClassName}>{menuLabel(RiUpload2Line, "上传文件")}</button>
+          {separator}
+          <button type="button" onClick={runUploadNode} className={itemClassName}>{menuLabel(RiUpload2Line, "从本地上传")}</button>
+          {onImportAsset ? <button type="button" onClick={runImportAsset} className={itemClassName}>{menuLabel(RiExportFill, "从资产库导入")}</button> : null}
           {separator}
           <button type="button" onClick={() => { editor.zoomIn(); onClose(); }} className={itemClassName}>{menuLabel(RiZoomInLine, "画布放大")}<span className="text-[11px] text-[#999999]">Ctrl +</span></button>
           <button type="button" onClick={() => { editor.zoomOut(); onClose(); }} className={itemClassName}>{menuLabel(RiZoomOutLine, "画布缩小")}<span className="text-[11px] text-[#999999]">Ctrl -</span></button>
@@ -2305,7 +2323,7 @@ function WorkflowCustomContextMenu({ menu, onClose, onAddNode, onUploadNode, onU
       {showSelectionActions ? <button type="button" onClick={() => runAction("send-to-back")} className={itemClassName}>{menuLabel(RiSendToBack, "置于底层")}</button> : null}
       {showNodeSpecificItems ? separator : null}
       {showTextItems ? <button type="button" onClick={() => runNodeTask(copyWorkflowTextNode)} className={itemClassName}>{menuLabel(RiFileTextLine, "复制文字")}</button> : null}
-      {showImageItems || showVideoItems ? <button type="button" onClick={runUsePrompt} className={itemClassName}>{menuLabel(RiTBoxLine, "使用提示词")}</button> : null}
+      {showImageItems || showVideoItems ? <button type="button" onClick={runUsePrompt} disabled={isUploadedMediaNode} className={itemClassName}>{menuLabel(RiTBoxLine, "使用提示词")}</button> : null}
       {showImageItems ? (
         <div className="group relative">
           <button type="button" className={itemClassName}>{menuLabel(RiExportLine, "导出")}<span className="text-[16px] leading-none text-[#999999]">›</span></button>
@@ -2333,11 +2351,12 @@ function WorkflowCustomContextMenu({ menu, onClose, onAddNode, onUploadNode, onU
   );
 }
 
-export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onCredit, onGeneratedMedia, onPreviewMedia, onShowTip, getImageDisplayUrl, getVideoPosterDisplayUrl, enabledTextModelIds, textModelProviders = {}, enabledImageModelIds, enabledVideoModelIds, uploadRuleOverrides, leftSidebarVisible = true, onToggleLeftSidebar, workflowAssets = [], referenceAssets = [], referenceAssetsLoadStatus = "idle", referenceAssetCounts, onLoadReferenceAssets, onLoadMoreReferenceAssets, onExternalFilesDrop }: WorkflowCanvasProps) {
+export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onCredit, onGeneratedMedia, onPreviewMedia, onShowTip, getImageDisplayUrl, getVideoPosterDisplayUrl, enabledTextModelIds, textModelProviders = {}, enabledImageModelIds, enabledVideoModelIds, uploadRuleOverrides, leftSidebarVisible = true, onToggleLeftSidebar, workflowAssets = [], referenceAssets = [], referenceAssetsLoadStatus = "idle", referenceAssetCounts, onLoadReferenceAssets, onLoadMoreReferenceAssets, onExternalFilesDrop, onOpenAssetImport, assetsToImport, onAssetsImported }: WorkflowCanvasProps) {
   const editorRef = useRef<Editor | null>(null);
   const stateRef = useRef(normalizeState(value));
   const loadedWorkflowIdRef = useRef(workflowId);
   const pollMountedRef = useRef(true);
+  const resumingVideoNodesRef = useRef<Set<string>>(new Set());
   const lastExternalKeyRef = useRef(stateKey(stateRef.current));
   const lastEmittedKeyRef = useRef("");
   const loadingRef = useRef(false);
@@ -2835,21 +2854,24 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     });
   }, []);
 
-  const restoreWorkflowAssetToCanvas = useCallback((asset: WorkflowAssetSummary, pagePoint?: { x: number; y: number }, targetNodeId?: string) => {
+  const restoreWorkflowAssetToCanvas = useCallback((asset: WorkflowAssetSummary, pagePoint?: { x: number; y: number }, targetNodeId?: string, options?: { skipFocus?: boolean; allowDuplicate?: boolean }) => {
     const current = stateRef.current;
-    const existingNode = current.nodes.find((node) => [...(node.data.images ?? []), ...(node.data.videoUrl ? [node.data.videoUrl] : [])].some((url) => normalizeWorkflowMediaUrl(url) === normalizeWorkflowMediaUrl(asset.url)));
+    const existingNode = options?.allowDuplicate ? undefined : current.nodes.find((node) => [...(node.data.images ?? []), ...(node.data.videoUrl ? [node.data.videoUrl] : [])].some((url) => normalizeWorkflowMediaUrl(url) === normalizeWorkflowMediaUrl(asset.url)));
     if (existingNode) {
       if (targetNodeId && !current.edges.some((edge) => edge.source === existingNode.id && edge.target === targetNodeId)) updateState((state) => ({ ...state, edges: [...state.edges, { id: createId("workflow_edge"), source: existingNode.id, target: targetNodeId }] }));
       return existingNode.id;
     }
     const kind: WorkflowNodeKind = asset.kind;
     const defaultData = getDefaultNodeData(kind);
+    const isUpload = asset.origin === "upload";
+    const uploadTitle = kind === "image" ? "上传图片" : "上传视频";
     const data: WorkflowNodeData = kind === "image"
       ? {
         ...defaultData,
-        prompt: asset.sourcePrompt ?? defaultData.prompt,
+        prompt: isUpload ? "上传图片" : asset.sourcePrompt ?? defaultData.prompt,
+        model: isUpload ? undefined : asset.model,
         ratio: normalizeWorkflowImageRatio(asset.ratio, asset.dimensions),
-        resolution: asset.resolution ?? defaultData.resolution,
+        resolution: isUpload ? defaultData.resolution : asset.resolution ?? defaultData.resolution,
         images: [asset.url],
         imageDimensions: asset.dimensions ? { [asset.url]: asset.dimensions } : undefined,
         mediaSystemNames: { [asset.url]: asset.name },
@@ -2857,17 +2879,19 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
       }
       : {
         ...defaultData,
-        prompt: asset.sourcePrompt ?? defaultData.prompt,
+        prompt: isUpload ? "上传视频" : asset.sourcePrompt ?? defaultData.prompt,
+        model: isUpload ? undefined : asset.model,
         ratio: asset.ratio ?? defaultData.ratio,
-        resolution: asset.resolution ?? defaultData.resolution,
-        duration: asset.duration ?? defaultData.duration,
+        resolution: isUpload ? defaultData.resolution : asset.resolution ?? defaultData.resolution,
+        duration: isUpload ? defaultData.duration : asset.duration ?? defaultData.duration,
         videoUrl: asset.url,
         posterUrl: asset.posterUrl,
+        videoDimensions: asset.dimensions,
         videoCurrentTime: 0,
         mediaSystemNames: { [asset.url]: asset.name },
         visualSize: undefined,
       };
-    const draftNode: WorkflowNode = { id: createId("workflow_node"), kind, title: getNodeLabel(kind), x: 0, y: 0, data };
+    const draftNode: WorkflowNode = { id: createId("workflow_node"), kind, title: isUpload ? uploadTitle : getNodeLabel(kind), x: 0, y: 0, data };
     const size = getWorkflowNodeVisualSize(draftNode);
     const target = targetNodeId ? current.nodes.find((node) => node.id === targetNodeId) : undefined;
     const position = pagePoint
@@ -2876,13 +2900,15 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     const node = { ...draftNode, x: position.x, y: position.y };
     recentActionNodeIdsRef.current = [node.id, ...recentActionNodeIdsRef.current].slice(0, 20);
     updateState((state) => ({ ...state, nodes: [...state.nodes, node], edges: targetNodeId ? [...state.edges, { id: createId("workflow_edge"), source: node.id, target: targetNodeId }] : state.edges }));
-    window.requestAnimationFrame(() => {
-      const editor = editorRef.current;
-      if (!editor) return;
-      const shapeId = getShapeId(node.id);
-      editor.select(shapeId);
-      focusWorkflowNodeInViewport(editor, node);
-    });
+    if (!options?.skipFocus) {
+      window.requestAnimationFrame(() => {
+        const editor = editorRef.current;
+        if (!editor) return;
+        const shapeId = getShapeId(node.id);
+        editor.select(shapeId);
+        focusWorkflowNodeInViewport(editor, node);
+      });
+    }
     return node.id;
   }, [updateState]);
 
@@ -3529,14 +3555,14 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
       if (isVideoDoneStatus(pollData.status) && videoUrl) {
         const posterUrl = getPosterUrlFromResponse(pollData);
         const chargedUsage = pollData.usage ?? usage;
-        updateNode(node.id, { prompt, videoUrl, posterUrl, videoCurrentTime: 0, visualSize: undefined, isRunning: false, error: undefined, taskId: undefined });
+        updateNode(node.id, { prompt, videoUrl, posterUrl, videoCurrentTime: 0, visualSize: undefined, isRunning: false, error: undefined, taskId: undefined, videoRequestId: undefined });
         updateState((state) => ({ ...state, edges: state.edges.filter((edge) => edge.target !== node.id) }));
         onGeneratedMedia?.({ nodeId: node.id, kind: "video", urls: [videoUrl], posterUrl, sourcePrompt: prompt, model, ratio: settings.ratio, resolution: settings.resolution, duration: settings.duration });
         onCredit?.({ ...pollData.credit, usage: chargedUsage });
         return;
       }
       if (attempt >= videoAbsoluteMaxPollAttempts) {
-        updateNode(node.id, { isRunning: false, error: "视频生成等待超时，请稍后在历史记录中查看或重试。", taskId: undefined });
+        updateNode(node.id, { isRunning: false, error: "视频生成等待超时，请稍后在历史记录中查看或重试。", taskId: undefined, videoRequestId: undefined });
         return;
       }
       if (attempt >= videoMaxPollAttempts) updateNode(node.id, { isRunning: true, error: undefined, taskId });
@@ -3560,7 +3586,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     const resolution = normalizeVideoResolutionForModel(model, node.data.resolution);
     const settings = { ratio: normalizeVideoRatioForModel(model, node.data.ratio, resolution), resolution, duration: node.data.duration ?? workflowVideoModels.find((item) => item.id === model)?.durations?.[0] ?? "5秒" };
     const requestId = createId("workflow_video");
-    updateNode(node.id, { isRunning: true, error: undefined, videoUrl: undefined, posterUrl: undefined, videoCurrentTime: undefined, visualSize: undefined, startedAt: Date.now() });
+    updateNode(node.id, { isRunning: true, error: undefined, videoUrl: undefined, posterUrl: undefined, videoCurrentTime: undefined, visualSize: undefined, startedAt: Date.now(), videoRequestId: requestId });
     try {
       const allReferenceImages = [...getReferenceImages(node.id), ...getPromptReferenceUrls(prompt, node, "image")].filter((url, index, array) => array.indexOf(url) === index);
       const referenceImages = isWorkflowBytePlusSeedanceVideoModel(model) ? getWorkflowEffectiveBytePlusVideoReferenceItems(allReferenceImages, videoReferenceMode) : allReferenceImages;
@@ -3583,9 +3609,87 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
       updateNode(node.id, { taskId });
       await pollVideoNode(node, taskId, modelPrompt, model, settings, requestId, createData.usage);
     } catch (error) {
-      updateNode(node.id, { isRunning: false, error: toUserErrorMessage(error, GENERIC_MEDIA_ERROR_MESSAGE), taskId: undefined });
+      updateNode(node.id, { isRunning: false, error: toUserErrorMessage(error, GENERIC_MEDIA_ERROR_MESSAGE), taskId: undefined, videoRequestId: undefined });
     }
   }, [getEnabledVideoModel, getInputText, getPromptReferenceUrls, getReferenceImages, getReferenceMediaUrls, onShowTip, pollVideoNode, updateNode, uploadRuleOverrides, workflowId, workflowTitle]);
+
+  // Resume polling for video nodes that were still generating when the page was closed / the server was
+  // redeployed (mirrors the conversation-flow recovery). Without this, a reloaded workflow keeps the node's
+  // persisted isRunning/taskId but never polls again, so the node is stuck on the waiting card forever even
+  // though the upstream model is still running. We reuse the persisted taskId + videoRequestId so no new task
+  // is created and billing dedup stays correct.
+  const resumeInterruptedVideoNodes = useCallback(() => {
+    if (!pollMountedRef.current) return;
+    const currentWorkflowId = workflowId;
+    for (const node of stateRef.current.nodes) {
+      if (node.kind !== "video") continue;
+      const taskId = node.data.taskId;
+      if (!node.data.isRunning || !taskId || node.data.videoUrl || node.data.error) continue;
+      const resumeKey = `${currentWorkflowId}:${node.id}:${taskId}`;
+      if (resumingVideoNodesRef.current.has(resumeKey)) continue;
+      resumingVideoNodesRef.current.add(resumeKey);
+      const model = getEnabledVideoModel(node.data.model);
+      const resolution = normalizeVideoResolutionForModel(model, node.data.resolution);
+      const settings = { ratio: normalizeVideoRatioForModel(model, node.data.ratio, resolution), resolution, duration: node.data.duration ?? workflowVideoModels.find((item) => item.id === model)?.durations?.[0] ?? "5秒" };
+      const requestId = node.data.videoRequestId ?? createId("workflow_video");
+      const prompt = node.data.prompt?.trim() ?? "";
+      void pollVideoNode(node, taskId, prompt, model, settings, requestId)
+        .catch((error) => updateNode(node.id, { isRunning: false, error: toUserErrorMessage(error, GENERIC_MEDIA_ERROR_MESSAGE), taskId: undefined, videoRequestId: undefined }))
+        .finally(() => resumingVideoNodesRef.current.delete(resumeKey));
+    }
+  }, [getEnabledVideoModel, pollVideoNode, updateNode, workflowId]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => resumeInterruptedVideoNodes(), 1500);
+    return () => window.clearTimeout(timer);
+  }, [workflowId, resumeInterruptedVideoNodes]);
+
+  const importingAssetsRef = useRef(false);
+  useEffect(() => {
+    if (!assetsToImport || assetsToImport.length === 0) return;
+    if (importingAssetsRef.current) return;
+    importingAssetsRef.current = true;
+    const addedIds: string[] = [];
+    for (const asset of assetsToImport) {
+      const id = restoreWorkflowAssetToCanvas(asset, undefined, undefined, { skipFocus: true, allowDuplicate: true });
+      if (id) addedIds.push(id);
+    }
+    // Lay imported nodes out in a neat 5-per-row grid (placed below any existing content) so
+    // multiple imports never overlap each other.
+    updateState((state) => {
+      const imported = addedIds.map((id) => state.nodes.find((node) => node.id === id)).filter((node): node is WorkflowNode => Boolean(node));
+      if (imported.length === 0) return state;
+      const sizes = new Map(imported.map((node) => [node.id, getWorkflowNodeVisualSize(node)]));
+      const cellW = Math.max(...imported.map((node) => sizes.get(node.id)!.w));
+      const others = state.nodes.filter((node) => !addedIds.includes(node.id));
+      const originX = 160;
+      const originY = others.length > 0 ? Math.max(...others.map((node) => node.y + getWorkflowNodeVisualSize(node).h)) + WORKFLOW_NODE_GAP : 120;
+      const cols = 5;
+      const positions = new Map<string, { x: number; y: number }>();
+      let rowY = originY;
+      for (let i = 0; i < imported.length; i += cols) {
+        const row = imported.slice(i, i + cols);
+        const rowH = Math.max(...row.map((node) => sizes.get(node.id)!.h));
+        row.forEach((node, col) => {
+          const size = sizes.get(node.id)!;
+          positions.set(node.id, { x: originX + col * (cellW + WORKFLOW_NODE_GAP) + (cellW - size.w) / 2, y: rowY });
+        });
+        rowY += rowH + WORKFLOW_NODE_GAP;
+      }
+      return { ...state, nodes: state.nodes.map((node) => positions.has(node.id) ? { ...node, x: positions.get(node.id)!.x, y: positions.get(node.id)!.y } : node) };
+    });
+    window.requestAnimationFrame(() => {
+      const editor = editorRef.current;
+      if (editor && addedIds.length > 0) {
+        const nodes = stateRef.current.nodes.filter((node) => addedIds.includes(node.id));
+        editor.select(...addedIds.map((nodeId) => getShapeId(nodeId)));
+        if (nodes.length === 1) focusWorkflowNodeInViewport(editor, nodes[0]);
+        else zoomToWorkflowNodes(editor, nodes);
+      }
+    });
+    onAssetsImported?.();
+    importingAssetsRef.current = false;
+  }, [assetsToImport, restoreWorkflowAssetToCanvas, updateState, onAssetsImported]);
 
   const runtime = useMemo<WorkflowRuntime>(() => ({ selectedNodeId, connectingFrom, connectingTo, multiConnectSources, connectionPointer, modelOptions, workflowTitle, updateNode, deleteNode, disconnectNodes, connectTo, setConnectingFrom, beginConnectionDrag, beginInputConnectionDrag, beginMultiConnectionDrag, runImageNode: (node) => void runImageNode(node), runGptImageOptimizationRetry: (node, maxAttempts) => void runGptImageOptimizationRetry(node, maxAttempts), runVideoNode: (node) => void runVideoNode(node), onGeneratedMedia, onShowTip, markNodeAction, onPreviewMedia, getImageDisplayUrl, getVideoPosterDisplayUrl, referenceAssets, referenceAssetsLoadStatus, referenceAssetCounts, onLoadReferenceAssets, onLoadMoreReferenceAssets, uploadRuleOverrides, getConnectedInputUploads, getInputTextLength, uploadFilesAsConnectedNodes }), [beginConnectionDrag, beginInputConnectionDrag, beginMultiConnectionDrag, connectTo, connectingFrom, connectingTo, multiConnectSources, connectionPointer, deleteNode, disconnectNodes, getConnectedInputUploads, getImageDisplayUrl, getInputTextLength, getVideoPosterDisplayUrl, markNodeAction, modelOptions, onGeneratedMedia, onLoadReferenceAssets, onLoadMoreReferenceAssets, onPreviewMedia, onShowTip, referenceAssets, referenceAssetsLoadStatus, referenceAssetCounts, runGptImageOptimizationRetry, runImageNode, runVideoNode, selectedNodeId, updateNode, uploadFilesAsConnectedNodes, uploadRuleOverrides, workflowTitle]);
 
@@ -3597,7 +3701,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
           <WorkflowCanvasStatusControls state={stateRef.current} tick={editorTick} canvasBackground={canvasBackground} onCanvasBackgroundChange={setCanvasBackground} isLayerPanelOpen={isLayerPanelOpen} onToggleLayerPanel={() => setIsLayerPanelOpen((current) => !current)} />
           <WorkflowSelectedNodeOverlay />
           <WorkflowMultiConnectHandle onBeginDrag={beginMultiConnectionDrag} isDragging={multiConnectSources.length > 0} />
-          <WorkflowCustomContextMenu menu={contextMenu} onClose={() => setContextMenu(null)} onAddNode={addNode} onUploadNode={() => uploadNodeInputRef.current?.click()} onUsePrompt={addNodeFromPrompt} />
+          <WorkflowCustomContextMenu menu={contextMenu} onClose={() => setContextMenu(null)} onAddNode={addNode} onUploadNode={() => uploadNodeInputRef.current?.click()} onImportAsset={onOpenAssetImport} onUsePrompt={addNodeFromPrompt} />
         </Tldraw>
         <WorkflowDraftConnectionOverlay editor={editorRef.current} state={stateRef.current} tick={editorTick} connectingFrom={connectingFrom} connectingTo={connectingTo} multiConnectSources={multiConnectSources} connectionPointer={connectionPointer} />
         {isLayerPanelOpen ? <WorkflowLayerPanel state={stateRef.current} workflowAssets={workflowAssets} selectedNodeId={selectedNodeId} getImageDisplayUrl={getImageDisplayUrl} getVideoPosterDisplayUrl={getVideoPosterDisplayUrl} onClose={() => setIsLayerPanelOpen(false)} onSelectNode={(nodeId, focus) => { const editor = editorRef.current; const node = stateRef.current.nodes.find((item) => item.id === nodeId); if (!editor || !node || node.data.isHidden) return; editor.select(getShapeId(nodeId)); if (focus) focusWorkflowNodeInViewport(editor, node); else centerWorkflowNodeInViewport(editor, node); }} onReorderNode={reorderWorkflowNodeLayer} onRestoreAsset={restoreWorkflowAssetToCanvas} onRestoreTextNode={restoreHistoricalTextNodeToCanvas} onDeleteHistoricalTextNode={deleteHistoricalTextNode} onRestoreMediaNode={restoreHistoricalMediaNode} onDeleteMediaNode={deleteHistoricalMediaNode} onDeleteHistoricalAsset={deleteHistoricalWorkflowAsset} onToggleNodeLock={toggleWorkflowNodeLock} onToggleNodeHidden={toggleWorkflowNodeHidden} /> : null}
@@ -3615,8 +3719,10 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
           <WorkflowDockButton label="文本输入" shortcut="T" onClick={() => addNode("text")}><RiTextBlock className="h-5 w-5 shrink-0" /></WorkflowDockButton>
           <WorkflowDockButton label="图片节点" shortcut="I" onClick={() => addNode("image")}><RiImageAiLine className="h-5 w-5 shrink-0" /></WorkflowDockButton>
           <WorkflowDockButton label="视频节点" shortcut="D" onClick={() => addNode("video")}><RiFilmAiLine className="h-5 w-5 shrink-0" /></WorkflowDockButton>
+          <div className="mx-1 h-5 w-px bg-[#e5e5e5]" />
           <input ref={uploadNodeInputRef} type="file" hidden multiple accept="image/*,video/*,audio/*,.txt,text/plain" onChange={(event) => { void handleUploadNodeFiles(Array.from(event.target.files ?? [])); event.target.value = ""; }} />
-          <WorkflowDockButton label="上传节点" onClick={() => uploadNodeInputRef.current?.click()}><RiUpload2Line className="h-5 w-5 shrink-0" /></WorkflowDockButton>
+          <WorkflowDockButton label="从本地上传" onClick={() => uploadNodeInputRef.current?.click()}><RiUpload2Line className="h-5 w-5 shrink-0" /></WorkflowDockButton>
+          {onOpenAssetImport ? <WorkflowDockButton label="从资产库导入" onClick={() => onOpenAssetImport()}><RiExportFill className="h-5 w-5 shrink-0" /></WorkflowDockButton> : null}
           <div className="mx-1 h-5 w-px bg-[#e5e5e5]" />
           <WorkflowDockButton label="缩小" shortcut="Ctrl -" onClick={() => editorRef.current?.zoomOut()}><RiZoomOutLine className="h-5 w-5 shrink-0" /></WorkflowDockButton>
           <WorkflowDockButton label="放大" shortcut="Ctrl +" onClick={() => editorRef.current?.zoomIn()}><RiZoomInLine className="h-5 w-5 shrink-0" /></WorkflowDockButton>
@@ -3624,7 +3730,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
           <WorkflowToolMenu activeTool={activeCanvasTool} onChange={setCanvasTool} />
         </div>
         </div>
-        {stateRef.current.nodes.length === 0 ? <div className="pointer-events-none absolute left-1/2 top-1/2 z-10 flex -translate-x-1/2 -translate-y-1/2 flex-col items-center text-center"><div className="text-[22px] font-semibold text-[#8a8a8a]">从一个节点开始</div><div className="pointer-events-auto mt-6 flex flex-row flex-wrap items-stretch justify-center gap-4"><button type="button" onClick={() => addNode("text")} className="inline-flex h-14 shrink-0 items-center gap-2.5 whitespace-nowrap rounded-[10px] bg-[#111111] px-7 text-[15px] font-semibold text-white transition hover:bg-[#252525]"><RiTextBlock className="h-5 w-5 shrink-0" /> 文字输入</button><button type="button" onClick={() => addNode("image")} className="inline-flex h-14 shrink-0 items-center gap-2.5 whitespace-nowrap rounded-[10px] bg-[#111111] px-7 text-[15px] font-semibold text-white transition hover:bg-[#252525]"><RiImageAiLine className="h-5 w-5 shrink-0" /> 图片节点</button><button type="button" onClick={() => addNode("video")} className="inline-flex h-14 shrink-0 items-center gap-2.5 whitespace-nowrap rounded-[10px] bg-[#111111] px-7 text-[15px] font-semibold text-white transition hover:bg-[#252525]"><RiFilmAiLine className="h-5 w-5 shrink-0" /> 视频节点</button><button type="button" onClick={() => uploadNodeInputRef.current?.click()} className="inline-flex h-14 shrink-0 items-center gap-2.5 whitespace-nowrap rounded-[10px] bg-[#111111] px-7 text-[15px] font-semibold text-white transition hover:bg-[#252525]"><RiUpload2Line className="h-5 w-5 shrink-0" /> 上传节点</button></div></div> : null}
+        {stateRef.current.nodes.length === 0 ? <div className="pointer-events-none absolute left-1/2 top-1/2 z-10 flex -translate-x-1/2 -translate-y-1/2 flex-col items-center text-center"><div className="text-[22px] font-semibold text-[#8a8a8a]">从一个节点开始</div><div className="pointer-events-auto mt-6 flex flex-row flex-wrap items-stretch justify-center gap-4"><button type="button" onClick={() => addNode("text")} className="inline-flex h-14 shrink-0 items-center gap-2.5 whitespace-nowrap rounded-[10px] bg-[#111111] px-7 text-[15px] font-semibold text-white transition hover:bg-[#252525]"><RiTextBlock className="h-5 w-5 shrink-0" /> 文字输入</button><button type="button" onClick={() => addNode("image")} className="inline-flex h-14 shrink-0 items-center gap-2.5 whitespace-nowrap rounded-[10px] bg-[#111111] px-7 text-[15px] font-semibold text-white transition hover:bg-[#252525]"><RiImageAiLine className="h-5 w-5 shrink-0" /> 图片节点</button><button type="button" onClick={() => addNode("video")} className="inline-flex h-14 shrink-0 items-center gap-2.5 whitespace-nowrap rounded-[10px] bg-[#111111] px-7 text-[15px] font-semibold text-white transition hover:bg-[#252525]"><RiFilmAiLine className="h-5 w-5 shrink-0" /> 视频节点</button><button type="button" onClick={() => uploadNodeInputRef.current?.click()} className="inline-flex h-14 shrink-0 items-center gap-2.5 whitespace-nowrap rounded-[10px] bg-[#111111] px-7 text-[15px] font-semibold text-white transition hover:bg-[#252525]"><RiUpload2Line className="h-5 w-5 shrink-0" /> 从本地上传</button>{onOpenAssetImport ? <button type="button" onClick={() => onOpenAssetImport()} className="inline-flex h-14 shrink-0 items-center gap-2.5 whitespace-nowrap rounded-[10px] bg-[#111111] px-7 text-[15px] font-semibold text-white transition hover:bg-[#252525]"><RiExportFill className="h-5 w-5 shrink-0" /> 从资产库导入</button> : null}</div></div> : null}
       </div>
     </WorkflowRuntimeContext.Provider>
   );
