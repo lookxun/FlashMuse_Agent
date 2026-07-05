@@ -1,5 +1,36 @@
 # Current Handover Changelog
 
+## 2026-07-05 (最新 session) 后台媒体详情弹窗 按类分页 + 流式加载 性能优化 (DEPLOYED + PUSHED, commit f5bc38b)
+
+Reply style: concise/direct Chinese. 用户反馈：后台大表(用户管理/生成记录/积分管理)展开后"点开详情"仍很卡——点「所有生成图片」要读很久，关掉再点「所有生成视频」秒出（说明一次把多类一起读了），且缩略图/原图加载不全。要求：只考虑代码优化(不管网速)，点哪个只读哪个、单类太多就先读10张、下拉再流式加载(和前端资产库右侧一样)。已全部实现、部署到马来prod+阿里、推送 GitHub。相关文件全部 admin-only，不影响用户端 workspace/资产数据。
+
+### 根因
+- `GET /admin/api/records/user-detail?mode=media`(媒体弹窗)一次性读该用户**全部** `userAssetState`(DETAIL 重字段含 sourceDetail/prompt 等)，并构建 conversation/asset/workflow/upload 四个数组全量返回。所以第一次点任意媒体弹窗就把四类全读了；再点别的类因整包已被 `admin-detail-cache` 缓存所以秒出。
+- 弹窗 `AdminMediaDialog`(在 `admin-users-panel.tsx`)把该类**全部**缩略图一次性渲染 → 几百张 `<img>` 同时请求 → 显示不全/慢。
+- 积分管理 `CreditFlowDialog`/`CreditCategoryDialog` 和生成记录「上传记录」弹窗同理：一次渲染整个对话/分类下的全部媒体行+缩略图；且积分弹窗走最重的 `mode=full`(读 workspaceMessages 全量消息)。
+
+### 后端改动 (`src/app/admin/api/records/user-detail/route.ts`)
+1. 抽出**共享分类器** `getAssetScope(category, workspaceKind, sourceKind)` → "conversation"|"asset"|"workflow"|null，精度对齐 `getFastMediaSummary`(workflow 优先于 asset，保证分页列表长度和折叠行显示的计数一致)。`getMediaAssetItems` 改用它(单一 rowScope，原来三个独立布尔判断)。
+2. 新增 `mode=media-page`(参数 `mediaType`/`assetType`/`offset`/`limit`，默认 limit=12)。两步查询：(a) `LIGHT_SCOPE_SELECT` 只取分类+排序所需轻字段(无 sourceDetail/prompt/JSON)扫全部行 → `classifyLightRow`+`matchesMediaType` 过滤+按 createdAtTs 倒序 → 得 total 和当前页的 stateId 列表；(b) 仅对当页 ≤limit 行用 `DETAIL_ASSET_STATE_SELECT` 拉重字段，跑 `getMediaAssetItems` 三 scope 构建 → 返回 `{items,total}`。`matchesMediaType` 覆盖 image/video/upload_image/workflow_image/workflow_video/asset_image(按 assetType 子类)/all_image/all_video，口径与旧客户端过滤一致。
+3. 新增轻量 `mode=uploads`(给生成记录「上传记录」弹窗)：只用 `UPLOAD_RECORD_SELECT`(buildUploadRecords/classifyUploadKind 所需字段)构建上传记录，不再连带读生成媒体数组；返回 `{user:{uploadRecords+四类count}, creditUser:{空}}`。
+
+### 前端改动
+- `admin-users-panel.tsx` `AdminMediaDialog`：改为**自加载+滚动分页**。props 由 `user: AdminUserRow` 改为 `{userId, userLabel, mediaType}`。`loadPage(offset,reset)` 拉 `mode=media-page`；`useEffect` 触发首页；`onScroll`(用 `event.currentTarget`，不用 ref)到底加载下一页；显示"加载中/下拉加载更多"；标题旁显示总数。缩略图加 `loading="lazy"`、视频 `preload="metadata"`。**为过 React19 严格 lint**：不返回 ref、reset 放进 loadPage 且首行 `await Promise.resolve()`(否则 `react-hooks/set-state-in-effect` 报错，但注意该 eslint error 不 gate build——见下)。
+- `admin-users-panel.tsx` `openMediaDialogForUser(userId,userLabel,mediaType)` 改为直接 setState 打开弹窗(不再预拉 media)；两个 DetailItem onClick 传 `expandedUser.nickname||email`。
+- `admin-records-panel.tsx`：`openMediaDialogForUser` 同样只 setState(传 `user.nickname||email`)；`loadMediaDetailForDialog` 改为直接 fetch `mode=uploads`(供上传记录弹窗)；导入 `AdminMediaDialogType`。生成记录里对话流/工作流/资产 图片视频弹窗现全部走新分页 `AdminMediaDialog`。
+- `admin-credits-panel.tsx`：新增 `useRevealOnScroll(activeKey,total)`(count 在 render 期派生、切 key 自动重置为 REVEAL_BATCH=24，`onScroll` 用 `event.currentTarget`——lint 干净)。`CreditFlowDialog`(对话流/工作流)和 `CreditCategoryDialog`(资产/反推优化/上传记录) 改为分批渲染(先24行、下拉到底显示"下拉加载更多(剩余数)")。缩略图 `loading="lazy"`、视频 `preload="metadata"`。
+
+### 关键坑记录
+- **PowerShell `Get-Content -Raw | Set-Content -NoNewline` 会破坏文件编码**(把 admin-credits-panel.tsx 变成"binary"，中文乱码、tsc全红)。当时用 `git checkout -- <file>` 还原后改用 `edit` 工具重做。**以后改文件一律用 edit 工具，别用 PowerShell 文本替换写回源码。**
+- 本仓库 `npx eslint` 会报大量 `@typescript-eslint/no-explicit-any`(route.ts 里 `any[]` 本就是历史写法)和 `react-hooks/set-state-in-effect`(effect 里 fetch 前 setState) 的 **error**，但这些**不 gate `next build`**(Next 16 build 默认不跑 eslint；next.config 无 eslint.ignoreDuringBuilds)。**判定能否上线以 `npx tsc --noEmit` + `npm run build` 为准**，两者本次均通过。
+
+### 未做（低影响 / 有风险未动，留给后续）
+- 积分管理弹窗**首次打开**仍走 `mode=full`(读 workspaceMessages 全量) → 首开可能仍偏慢。没动它的后端取数，因为积分是"最重要别弄坏"模块，改口径(比如只读 ledger + 轻量资产富化、跳过 workspace 消息富化)有丢"无 ledger 记录的媒体行"的风险。若用户实测首开仍慢，再单独做一个 credits 专用轻量接口并仔细验证。
+- 前端 `isConversationUploadedAsset` vs 服务器 conversation_uploads 精确口径统一(上条 session 遗留)仍未做。
+
+### 部署记录
+- 全量源码快照(无 Prisma schema 变更，migrate/generate 跳过)。本地 `npx tsc --noEmit` + `npm run build` 通过。tarball md5 `c42cb68bc5cb18181f9d50c6b93b3d0f`(两端一致)。备份 `.deploy-backups/20260705-admin-media-pagination/source-before-deploy.tgz`。快照 `.runtime/deploy-checks/20260705-admin-media-before/after.json`，compare `ok:true`(无diff, assetListHash `c626460d0ab1da0d` 未变, stableMissing/fallbackUsers 0)。`/usr/local/bin/deploy-flashmuse-production.sh` build OK、PM2 online、Ali `_next/static` 同步。`/workspace` `/admin` `/api/model-availability` `ali.venusface.com/workspace` 全 200。GitHub 已推 `f5bc38b`。
+
 ## 2026-07-05 (latest session, FINAL state) 资产库/@弹窗对齐 + 音频误显破图修复 (DEPLOYED + PUSHED)
 
 Reply style: concise/direct Chinese. 这一整段 session 做了资产库与@引用资产弹窗的规则对齐，并抓出并修复了"上传图片里三张空白破卡"的真正根因。经历了几次迭代和一次自我纠错（下方"重要纠错"必读）。全部已部署到马来生产+阿里镜像，并推送 GitHub。最终相关提交：`c7cd22b`(对齐) → `847aaa7`(回退existsSync放宽+隐藏过期远程URL) → `55d427d`(排除音频/文档误显)。

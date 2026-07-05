@@ -15,6 +15,16 @@ Last checked: 2026-07-04 China time.
 
 ## Latest Real Work
 
+## Latest 2026-07-05 (最新 session) — 后台媒体详情弹窗 按类分页 + 流式加载 性能优化 (DEPLOYED + PUSHED, commit f5bc38b)
+
+- Reply style: 简洁直接中文. 用户反馈后台大表(用户管理/生成记录/积分管理)展开后"点开详情"仍卡：点「所有生成图片」读很久、关掉点「所有生成视频」秒出(说明一次把多类一起读了)，缩略图/原图加载不全。要求：只做代码优化，点哪个只读哪个、单类太多先读少量、下拉流式加载(同前端资产库右侧)。全部实现并部署 prod+Ali、推 GitHub。均 admin-only，不动用户端数据。
+- ROOT CAUSE: `GET /admin/api/records/user-detail?mode=media` 一次读该用户全部 `userAssetState`(重字段)并构建 conversation/asset/workflow/upload 四数组全量返回(第一次点就全读，第二类因整包被 `admin-detail-cache` 缓存才秒出)；`AdminMediaDialog` 一次渲染全部缩略图(几百 img 并发)；积分/上传弹窗同理且积分走最重 `mode=full`(读全量 workspaceMessages)。
+- 后端 `src/app/admin/api/records/user-detail/route.ts`: (1) 抽出共享 `getAssetScope()` 分类器(精度对齐 getFastMediaSummary，workflow>asset)，getMediaAssetItems 改用它。(2) 新增 `mode=media-page`(mediaType/assetType/offset/limit=12)：先用 `LIGHT_SCOPE_SELECT` 轻字段扫全行分类+排序得 total+当页 id，再仅对当页 ≤limit 行拉 DETAIL 重字段构建，返回 `{items,total}`。(3) 新增轻量 `mode=uploads`(只 `UPLOAD_RECORD_SELECT` 构建上传记录，供生成记录「上传记录」弹窗)。
+- 前端: `AdminMediaDialog`(admin-users-panel.tsx) 改为自加载+滚动分页(props 变为 userId/userLabel/mediaType；loadPage/onScroll用 event.currentTarget；缩略图 lazy)；`openMediaDialogForUser` 两处(users+records)改为直接 setState 打开(传 nickname||email)；records `loadMediaDetailForDialog` 改 fetch `mode=uploads`；credits 面板新增 `useRevealOnScroll`，`CreditFlowDialog`/`CreditCategoryDialog` 分批渲染(24/批+下拉加载更多)。生成记录的对话流/工作流/资产 图片视频弹窗现全走新分页组件。
+- 坑: PowerShell `Get-Content -Raw|Set-Content -NoNewline` 破坏了 credits 面板文件编码(变 binary/乱码)，`git checkout --` 还原后改用 edit 工具重做 → **改源码一律用 edit 工具**。`npx eslint` 会报一堆 `no-explicit-any`(历史写法)和 `react-hooks/set-state-in-effect` 的 error，但**不 gate `next build`**(Next16 build 不跑 eslint) → 判定以 `tsc --noEmit`+`npm run build` 为准，本次均过。
+- NOT done(留给后续): 积分弹窗**首开**仍走 `mode=full`(读全量消息)可能偏慢——没动其取数逻辑(积分"最重要别弄坏"，改口径有丢"无 ledger 媒体行"风险)；若实测首开仍慢再单独做 credits 轻量接口并仔细验证。前端 `isConversationUploadedAsset` vs 服务器口径统一(旧遗留)仍未做。
+- 部署: 全量源码快照(无 schema 变更)。备份 `.deploy-backups/20260705-admin-media-pagination/`；快照 `20260705-admin-media-before/after.json` compare `ok:true`(assetListHash `c626460d0ab1da0d` 未变, stableMissing/fallbackUsers 0)；`/workspace` `/admin` `/api/model-availability` `ali.venusface.com/workspace` 全 200。GitHub `f5bc38b`。
+
 ## Latest 2026-07-05 (latest session) — Asset Library / @引用资产 Alignment + Uploaded-Audio-Shown-As-Broken-Image FIX (DEPLOYED + PUSHED, final commit 55d427d)
 
 - Reply style: concise/direct Chinese. Full session, several iterations + one self-correction (READ the correction below). All deployed to Malaysia prod + Ali and pushed to GitHub. Commits: `c7cd22b`(alignment) → `847aaa7`(revert existsSync relaxation + hide stale remote URLs) → `55d427d`(exclude audio/documents). See CHANGELOG top for full detail.

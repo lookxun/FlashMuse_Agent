@@ -13,7 +13,16 @@
 
 ## Highest Priority
 
-### 2026-07-05 (LATEST session) END-OF-SESSION STATE (read this first)
+### 2026-07-05 (最新 session) END-OF-SESSION STATE (read this first)
+
+- DEPLOYED to prod+Ali AND PUSHED to GitHub. 最新 commit `f5bc38b`。内容：后台三大表(用户管理/生成记录/积分管理)的"点开详情"媒体弹窗做了 **按类分页 + 下拉流式加载** 性能优化(点哪个只读哪个、先读少量、滚动加载)。全部 admin-only，未动用户端 workspace/资产数据。GitHub 与 prod 同步。
+- FILES: `src/app/admin/api/records/user-detail/route.ts`(新 `mode=media-page` 分页 + 轻量 `mode=uploads` + 共享 `getAssetScope` 分类器)、`src/app/admin/admin-users-panel.tsx`(`AdminMediaDialog` 自加载分页，props 改为 userId/userLabel/mediaType)、`src/app/admin/admin-records-panel.tsx`(改用 uploads 模式、传 label)、`src/app/admin/admin-credits-panel.tsx`(`useRevealOnScroll` + 两表格弹窗分批渲染)。详见 CHANGELOG 顶部条目。
+- BROWSER-VERIFY(后台 ali.venusface.com，Ctrl+Shift+R 硬刷新): (1) 用户管理展开→点「所有生成图片」只加载图片、先 12 张、下拉流式加载；关掉点「所有生成视频」只加载视频，互不干扰；数量(标题旁)与折叠行计数一致。(2) 生成记录 对话流/工作流/资产 图片视频 + 上传记录 弹窗同样分批加载。(3) 积分管理各明细弹窗缩略图不再一次性全加载，下拉出现"下拉加载更多(剩余数)"。缩略图缺失应自动回退原图，视频用封面。
+- 若某类分页列表**数量对不上**折叠行显示的计数：口径在 `getAssetScope`(route.ts)与 `matchesMediaType`；分页 total 用轻扫全行同一分类器算，理论与计数一致；折叠行计数来自 `getFastMediaSummary`(workflow 优先 asset)——两者已对齐，若不一致先查这两处口径。
+- KNOWN/未做: 积分弹窗**首次打开**仍走 `mode=full`(读全量 workspaceMessages)，首开可能偏慢；本次没动其取数(积分"最重要别弄坏"，改口径有丢"无 ledger 记录媒体行"风险)。若用户实测首开仍慢，再单独做 credits 专用轻量接口(只读 ledger + 轻量资产富化)并仔细验证 totals/明细不变。
+- 教训(务必遵守): (a) **改源码一律用 edit 工具**，不要用 PowerShell `Get-Content -Raw|Set-Content` 之类文本替换写回——本次它破坏了 credits 文件编码(变 binary/中文乱码)，靠 `git checkout --` 才救回。(b) 本仓库 `npx eslint` 会报大量 `no-explicit-any`(历史写法) 和 `react-hooks/set-state-in-effect` 的 **error，但不 gate `next build`**；能否上线以 `npx tsc --noEmit` + `npm run build` 为准。
+
+### 2026-07-05 (asset-mention session) END-OF-SESSION STATE
 
 - DEPLOYED to prod + Ali AND PUSHED to GitHub. Latest commit `55d427d`. Work: asset-library ↔ @引用资产 popup alignment (real counts, scroll-load, correct upload label) + FIX for uploaded audio (.bin) wrongly rendered as broken image cards in 上传图片. GitHub in sync with prod.
 - FILES this session: `src/components/chat-workbench.tsx` (mentionGroupToAssetCountKey, loadMoreMentionGroup + onScroll, group-label sub-title, `isUnhostedRemoteAssetUrl`, `isNonDisplayableFileAsset`), `src/components/workflow-tldraw-canvas-inner.tsx` + `workflow-tldraw-canvas.tsx` (referenceAssetCounts / onLoadMoreReferenceAssets). `src/app/api/workspace-state/route.ts` was touched then REVERTED (see correction below) — it is back to its pre-session state.
