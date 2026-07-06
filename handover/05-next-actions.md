@@ -2,7 +2,39 @@
 
 ## Highest Priority
 
-### 2026-07-06 END-OF-SESSION STATE (read this first)
+### 2026-07-06 (最新 session) END-OF-SESSION STATE (read this first)
+
+- **DEPLOYED prod+Ali AND PUSHED GitHub**。本 session 结束时按用户要求把攒的批次一起推了(包含上一个 later session 未推的 `video/route.ts` 去掉审核上限、命名统一等所有本地改动 + 本 session 5 项)。推送后 prod=GitHub=本地。下一个 AI：若继续改，先 `git status --short`/`diff`，`npx tsc --noEmit`+`npm run build`，再窄部署。
+- 本 session 5 项(详见 CHANGELOG 顶部 + 01-current-status)：
+  1. **B_373 文案**：`toUserErrorMessage` 幂等化(Case3 正则补中文自匹配)，修复输出音频审核被误判成"参考图未过审"。
+  2. **对话流"使用提示词"**：按 `message.imageReferences`+`message.uploadedFiles` 真实还原图/视频/音频/文档卡(不再只靠@提及)。
+  3. **工作流"使用提示词"**：新增 `generationUploads` 快照(生成成功时存 uploads+连线引用)，`addNodeFromPrompt` 还原它+`videoReferenceMode`。
+  4. **工作流视频 prompt**：成功回写干净 `prompt`(非带 hint 的 modelPrompt)。仅新生成生效，老节点历史未回改。
+  5. **参考 hint 统一+意图化**：`src/lib/reference-hint.ts` `buildReferenceHint`，逐张按"@图前是否有参考词"判绝对/松参考。
+- **BROWSER-VERIFY(ali 硬刷新 Ctrl+Shift+R)**：
+  1. B_373 那类(输出音频审核失败)：红字应是 Case3"参考图已过审、成品视频/音频被拒…去除背景音乐/不要原声"，**不是** Case2 换参考图。
+  2. 对话流：找含引用图+上传视频/音频/文档的生成消息，点"使用提示词"→ 提示词+图+视频/音频/文档缩略图全回输入框。
+  3. 工作流：连图/视频/音频到节点→生成成功(边自动断)→ 右键"使用提示词"→新节点带回提示词+所有连线参考卡且能再生成；Seedance 首帧/首尾帧模式也带回。
+  4. 工作流视频节点"使用提示词"不再出现"参考图顺序：…必须分别保留…"那段(新生成的视频)。
+  5. 意图 hint：`功夫大师@角色图 跳舞，动作运镜参考@某视频` 生成时——角色图应被保留、视频只作动作运镜参考(观察是否更贴合意图)。
+- **KNOWN/局限**：意图 hint 是启发式(基于@提及前的关键词)，没被@提及的上传参考图无法判意图默认绝对；如需更准可升级为显式"参考图用途"菜单(方案C，之前讨论过，契合团队弃用关键词推断 Seedance 的先例)。工作流视频老节点的 data.prompt 仍含旧 hint(未回改历史)。
+
+### 2026-07-06 (later session) END-OF-SESSION STATE (superseded above — 已随本 session 一起推 GitHub)
+
+- **DEPLOYED prod+Ali, GitHub 未推(攒批次)**。改了 `error-message.ts`、`app/api/video/route.ts`、`components/chat-workbench.tsx`、`components/workflow-tldraw-canvas-inner.tsx`。备份：`.deploy-backups/20260706-review-error-message`、`-review-lock-message`、`-review-lock-names`、`-remove-review-limit`、`-asset-naming`、`-unified-naming`。DB 补了 2 行(见下)。
+- **下一个 AI 首要：GitHub 尚未推送**。本 session + 上一 session(aad3461 之后)的所有本地改动都还没推。等用户说"推"时：`git status --short`/`diff`/`log`，`npx tsc --noEmit`，再 commit+push。prod 领先 GitHub。
+- **火山审核报错**：`error-message.ts` 按 input/output 关键字分流成 Case2(输入/参考图未过审→建议换图) 和 Case3(输出视频/音频未过审→可重试/改词、音频去背景音乐)。
+- **审核次数上限已彻底去掉(A)**：`video/route.ts` 删了 `getBytePlusReferenceFailure` 短路 + auto-review 的 `attempts>=MAX` throw + 该函数本身。同一参考图**每次重试都重新送审、无上限**。对话流+工作流共用后端，两流都覆盖。前端 `runVideoNode` 仍发 `referenceImageNames`(后端现忽略，无害)。
+- **命名统一规则(务必遵守)**：终身ID=`MediaAsset.initialName`(出生写库永不变)；改名=`UserAssetState.currentName`；显示 `改名||终身ID`，同一图按URL处处同名；后台两名 `/` 隔开。资产库新生成图 = `asset_N_role/scene/storyboard`(每用户全局计数，`getNextAssetGenerationName`)。`applyAssetGenerationSystemNames` 已改 no-op(禁止再按下标重排)。工作流有校准 effect 按URL把节点 `mediaSystemNames` 对齐库名(含改名)。
+- **⚠️ 血泪教训**：工作流命名校准 effect 初版依赖了父组件 inline `.map` 新建数组派生的 useMemo(Map) → 每渲染新引用 → effect 无限循环 → 工作流页崩溃("This page couldn't load")。已用**稳定内容签名字符串 + 差异守卫**修复。**任何 workflow effect 的依赖都不要用 `workflowAssets`/`referenceAssets` 等 inline prop 数组或其派生引用。**
+- **DB 补数据**：仅 2 张 character_image(initialName/currentName 全空)补为 `asset_legacy_<mediaId8>_role`。老图其余未动(数字可能从"当前排位"变"存库终身ID值"，用户接受"数字不重要统一才重要")。
+- **③ 已验证无泄漏**(removeUpload/disconnectNodes 都正确)，无需改。
+- **BROWSER-VERIFY(ali 硬刷新 Ctrl+Shift+R)**：(1) 工作流能正常打开(不再崩)。(2) 同一张图在 资产库/对话流预览/输入框缩略图/画布节点/后台 名字一致；资产库改名后各处同步。(3) 新生成的角色/场景/分镜图显示 `asset_N_role/scene/storyboard`。(4) 视频参考图审核失败后可无限重试(每次重新送审)，红字 Case2；输出审核失败红字 Case3。
+
+### ④ 待办(用户押后，下次谈) — 对话流"让它动起来"自动带最近图
+- `chat-workbench.tsx` `getRecentReferenceImages`(约4903) + `isReferencingRecentImage`(约4898)：提示词含 `这张图/让它动起来/参考图/首帧` 等词且无@无上传时，**自动带上最近消息的图**去生成(无缩略图、无@)。用户要求先做完命名再谈：保留此隐式行为，还是要求必须有@/缩略图才带图。工作流无此逻辑。
+
+### 2026-07-06 END-OF-SESSION STATE (earlier session — superseded above, kept for context)
 
 - DEPLOYED to prod+Ali AND PUSHED to GitHub. 最新 commit `aad3461`。全部为**工作流**功能/修复，仅改 3 个文件(`workflow-tldraw-canvas-inner.tsx`, `workflow-tldraw-canvas.tsx`, `chat-workbench.tsx`)，无 schema 变更。备份 `.deploy-backups/20260706-workflow-asset-import/`；快照 `20260706-workflow-asset-import-before/after.json` compare `ok:true`。详见 CHANGELOG 顶部条目。
 - BROWSER-VERIFY(ali.venusface.com 硬刷新 Ctrl+Shift+R，工作流入口已开放):

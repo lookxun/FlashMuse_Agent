@@ -96,6 +96,7 @@ import {
 } from "react-icons/ri";
 import { ADVANCED_CHAT_MODEL, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, bytePlusVideoGenerationModels, frontendConversationModels, frontendImageGenerationModels, getExpectedImageDimensions, getExpectedVideoDimensions, getImageQualityBadgeLabel, getImageResolutionLabel, getSupportedImageResolutions, getSupportedVideoRatios, getSupportedVideoResolutions, imageGenerationModels, isNonStandardVideoSize, normalizeImageResolutionForModel, normalizeVideoRatioForModel, normalizeVideoResolutionForModel, videoGenerationModels, type ConversationModel, type GenerationModel, type ModelName } from "@/lib/models";
 import { toUserErrorMessage } from "@/lib/error-message";
+import { buildReferenceHint } from "@/lib/reference-hint";
 import { useBodyScrollLock } from "@/components/use-body-scroll-lock";
 import { BytePlusIcon } from "@/components/byteplus-icon";
 import { WorkflowCanvas, type WorkflowCanvasState, type WorkflowNode } from "@/components/workflow-tldraw-canvas";
@@ -3940,10 +3941,21 @@ function getAssetBaseName(type: AssetType, sourcePrompt: string, assets: AssetIt
   return subjectName || getNextNumberedBase(mode === "video" ? "video" : "image", assets);
 }
 
+// Permanent birth-name scheme for asset-library generated media (used from deploy onward).
+// Format: asset_{N}_{role|scene|storyboard}. N is a per-user counter that is unique across ALL
+// asset-generation images (any type), so the same file never gets two numbers. Once assigned it is
+// stored on the MediaAsset and NEVER recomputed (see applyAssetGenerationSystemNames). Legacy assets
+// keep their old 角色N/场景N/分镜N names untouched.
+const ASSET_GENERATION_NAME_PATTERN = /^asset_(\d+)_(?:role|scene|storyboard)$/;
 function getNextAssetGenerationName(type: AssetGenerationImageType, assets: AssetItem[]) {
-  const prefix = type === "scene_image" ? "场景" : type === "shot_image" ? "分镜" : "角色";
-  const assetGenerationAssets = assets.filter((asset) => asset.librarySource === "asset_generation" && asset.type === type);
-  return getNextNumberedBase(prefix, assetGenerationAssets, 1);
+  const suffix = type === "scene_image" ? "scene" : type === "shot_image" ? "storyboard" : "role";
+  let maxNumber = 0;
+  for (const asset of assets) {
+    if (asset.librarySource !== "asset_generation") continue;
+    const match = ASSET_GENERATION_NAME_PATTERN.exec(asset.systemName ?? "") ?? ASSET_GENERATION_NAME_PATTERN.exec(asset.name ?? "");
+    if (match) maxNumber = Math.max(maxNumber, Number(match[1]));
+  }
+  return `asset_${maxNumber + 1}_${suffix}`;
 }
 
 // Kept for legacy asset naming rules if generated asset categories become active again.
@@ -4381,10 +4393,8 @@ function getOrderedExplicitImageReferences(text: string, assets: AssetItem[], up
   return references;
 }
 
-function getReferenceHint(references: ImageReference[]) {
-  if (references.length === 0) return "";
-
-  return `参考图顺序：${references.map((_, index) => `参考图${index + 1}`).join("，")}。生成时必须分别保留这些参考图对应的主体、人物特征、服装和场景关系，不要把人物或场景替换成无关内容。`;
+function getReferenceHint(references: ImageReference[], prompt = "") {
+  return buildReferenceHint(prompt, references.map((reference) => reference.name));
 }
 
 function replaceMentionNamesForModelPrompt(prompt: string, references?: ImageReference[]) {
@@ -4826,24 +4836,11 @@ function reserveWorkflowMediaSystemNamesForItems(workflows: WorkflowItem[], asse
 }
 
 function applyAssetGenerationSystemNames(assets: AssetItem[]) {
-  const systemNames = new Map<string, string>();
-
-  assetGenerationTypes.forEach((type) => {
-    const prefix = type === "scene_image" ? "场景" : type === "shot_image" ? "分镜" : "角色";
-    assets
-      .filter((asset) => asset.librarySource === "asset_generation" && asset.type === type && !isUploadPromptPlaceholder(asset.sourcePrompt))
-      .sort((a, b) => a.createdAt - b.createdAt)
-      .forEach((asset, index) => {
-        systemNames.set(asset.id, `${prefix}${index + 1}`);
-      });
-  });
-
-  return assets.map((asset) => {
-    const systemName = systemNames.get(asset.id);
-    if (!systemName) return asset;
-    const userName = asset.userName || (asset.systemName && asset.name !== asset.systemName ? asset.name : undefined);
-    return { ...asset, name: userName || systemName, systemName, userName };
-  });
+  // Names are permanent IDs stored in the DB (MediaAsset.initialName/systemName) and displayed as
+  // `userRename || 终身id` (already resolved server-side into asset.name/systemName). We must NOT
+  // recompute a sort-index name here: that made the same file renumber and diverge across
+  // library / conversation / workflow. Display everywhere now reads the stored name by URL.
+  return assets;
 }
 
 function extractAssetsFromSessions(sessions: WorkSession[], existingAssets: AssetItem[]) {
@@ -8480,7 +8477,7 @@ export function ChatWorkbench() {
     setSessions((current) => current.map((session) => (session.id === activeSessionId ? { ...session, draftInput: nextValue, updatedAt: Date.now() } : session)));
   }, [activeSessionId, showInputTip]);
 
-  const setActiveDraftInputWithMentionCards = useCallback((value: string) => {
+  const setActiveDraftInputWithMentionCards = useCallback((value: string, restore?: { images?: UploadedImage[]; files?: UploadedDocumentFile[] }) => {
     const nextValue = Array.from(value).slice(0, MAX_DRAFT_INPUT_LENGTH).join("");
     if (value !== nextValue) showInputTip("最多输入2000字");
     const mentionedAssets = getMentionedAssets(nextValue, assets);
@@ -8490,6 +8487,9 @@ export function ChatWorkbench() {
       .map((reference) => ({ id: createClientId(), name: reference.name, referenceName: reference.name, url: reference.url, source: "asset" as const }));
     const mentionedImages = [...mentionedAssets.filter((asset) => !isVideoAsset(asset) && !isAudioAsset(asset)).map(toUploadedAssetReference), ...mentionedConversationImages];
     const mentionedFiles = mentionedAssets.map(toUploadedFileAssetReference).filter((file): file is UploadedDocumentFile => Boolean(file));
+    // Restore items (from the source message's real attachments) take priority over re-derived @-mentions.
+    const restoreImages = restore?.images ?? [];
+    const restoreFiles = restore?.files ?? [];
 
     setSessions((current) => current.map((session) => {
       if (session.id !== activeSessionId) return session;
@@ -8497,12 +8497,12 @@ export function ChatWorkbench() {
       const existingFiles = session.uploadedFiles ?? [];
       const maxImages = currentUploadRule.image.maxCount;
       const nextImages = [...existingImages];
-      mentionedImages.forEach((image) => {
+      [...restoreImages, ...mentionedImages].forEach((image) => {
         if (nextImages.length >= maxImages || nextImages.some((item) => normalizeMediaUrlForMatch(item.url) === normalizeMediaUrlForMatch(image.url))) return;
         nextImages.push(image);
       });
       const nextFiles = [...existingFiles];
-      mentionedFiles.forEach((file) => {
+      [...restoreFiles, ...mentionedFiles].forEach((file) => {
         if (nextFiles.some((item) => normalizeMediaUrlForMatch(getUploadedMediaFileUrl(item) || getUploadedFileStorageValue(item)) === normalizeMediaUrlForMatch(file.url ?? file.storageName))) return;
         nextFiles.push(file);
       });
@@ -12360,7 +12360,7 @@ export function ChatWorkbench() {
         messages: payloadMessages,
         referenceImages: referenceImages.length > 0 ? referenceImages : undefined,
         imageReferences: displayImageReferences.length > 0 ? displayImageReferences : undefined,
-        referenceHint: getReferenceHint(namedImageReferences),
+        referenceHint: getReferenceHint(namedImageReferences, text),
         needsIntentResolution: true,
         sourceText: text,
       };
@@ -12403,7 +12403,7 @@ export function ChatWorkbench() {
         referenceImages: referenceImages.length > 0 ? referenceImages : undefined,
         imageReferences: displayImageReferences.length > 0 ? displayImageReferences : undefined,
         sourceText: text,
-        referenceHint: getReferenceHint(namedImageReferences),
+        referenceHint: getReferenceHint(namedImageReferences, text),
         selectedMediaModels: {
           image: generalModelsForSubmit.image,
           video: generalModelsForSubmit.video,
@@ -12467,7 +12467,7 @@ export function ChatWorkbench() {
       referenceAudios: generationMode === "video" && referenceAudios.length > 0 ? referenceAudios : undefined,
       videoReferenceMode: directVideoReferenceMode,
       imageReferences: effectiveDisplayImageReferences.length > 0 ? effectiveDisplayImageReferences : undefined,
-      referenceHint: getReferenceHint(effectiveDisplayImageReferences),
+      referenceHint: getReferenceHint(effectiveDisplayImageReferences, text),
       agentGenerated: isAgentAutoGeneration,
       agentDisplayText,
       settings: agentSettings ?? {
@@ -12647,7 +12647,19 @@ export function ChatWorkbench() {
 
   const copyPrompt = useCallback(async (message: Message) => {
     try {
-      setActiveDraftInputWithMentionCards(message.content);
+      // Restore the exact media the user generated with (images/videos/audio/documents),
+      // not just what can be re-derived from @-mentions against the asset library.
+      const messages = activeSession?.messages ?? [];
+      const messageIndex = messages.findIndex((item) => item.id === message.id);
+      const previousUserMessage = messageIndex >= 0 ? [...messages.slice(0, messageIndex)].reverse().find((item) => item.role === "user") : undefined;
+      const restoreImages = (message.imageReferences ?? [])
+        .filter((reference) => Boolean(reference.url))
+        .map((reference) => toUploadedAssetReference({ name: reference.name, url: reference.url }));
+      const sourceFiles = (message.uploadedFiles?.length ? message.uploadedFiles : previousUserMessage?.uploadedFiles) ?? [];
+      const restoreFiles = sourceFiles
+        .filter((file): file is UploadedDocumentFile => typeof file !== "string" && Boolean(file.url ?? file.storageName))
+        .map((file) => ({ ...file, id: createClientId() }));
+      setActiveDraftInputWithMentionCards(message.content, { images: restoreImages, files: restoreFiles });
       requestAnimationFrame(() => editorRef.current?.focus());
       setCopyFeedback({ messageId: message.id, state: "success" });
     } catch {
@@ -12661,7 +12673,7 @@ export function ChatWorkbench() {
       setCopyFeedback((current) => (current?.messageId === message.id ? null : current));
       copyFeedbackTimerRef.current = null;
     }, 1000);
-  }, [setActiveDraftInputWithMentionCards]);
+  }, [activeSession, setActiveDraftInputWithMentionCards]);
 
   const regenerateMessage = (message: Message) => {
     if (!activeSession || (message.generationMeta?.agentGenerated ? false : activeHasMaxPendingRequests)) return;
@@ -12724,7 +12736,7 @@ export function ChatWorkbench() {
       referenceAudios: generationMode === "video" && replayReferenceAudios.length > 0 ? replayReferenceAudios : undefined,
       videoReferenceMode: replayVideoReferenceMode,
       imageReferences: effectiveReplayImageReferences && effectiveReplayImageReferences.length > 0 ? effectiveReplayImageReferences : undefined,
-      referenceHint: effectiveReplayImageReferences && effectiveReplayImageReferences.length > 0 ? getReferenceHint(effectiveReplayImageReferences) : undefined,
+      referenceHint: effectiveReplayImageReferences && effectiveReplayImageReferences.length > 0 ? getReferenceHint(effectiveReplayImageReferences, replayPrompt) : undefined,
       assetTargetType: replayMeta?.assetTargetType,
       agentGenerated: replayMeta?.agentGenerated,
       agentDisplayText: replayMeta?.agentGenerated ? message.content : undefined,
@@ -12797,7 +12809,7 @@ export function ChatWorkbench() {
       referenceVideos: meta.mode === "video" && retryReferenceVideos.length > 0 ? retryReferenceVideos : undefined,
       referenceAudios: meta.mode === "video" && retryReferenceAudios.length > 0 ? retryReferenceAudios : undefined,
       imageReferences: message.imageReferences,
-      referenceHint: message.imageReferences?.length ? getReferenceHint(message.imageReferences) : undefined,
+      referenceHint: message.imageReferences?.length ? getReferenceHint(message.imageReferences, prompt) : undefined,
       assetTargetType: meta.assetTargetType,
       agentGenerated: meta.agentGenerated,
       agentDisplayText: meta.agentGenerated ? message.content : undefined,
@@ -13503,7 +13515,7 @@ export function ChatWorkbench() {
       showInputTip(`当前模型最多支持 ${assetGenerateMaxReferenceImages} 张参考图，不能上传更多图片`);
       return;
     }
-    const referenceHint = getReferenceHint(references);
+    const referenceHint = getReferenceHint(references, rawPrompt);
     const ruleText = isShotGeneration ? getShotGenerationRuleText(characterGenerateStyle, characterGenerateRatio, characterGenerateModel) : isSceneGeneration ? getSceneGenerationRuleText(characterGenerateStyle, characterGenerateRatio, characterGenerateModel) : getCharacterGenerationRuleText(characterGenerateRatio, characterGenerateStyle, characterGenerateModel);
     const styledPrompt = enforceAssetGenerateStylePrompt(rawPrompt, characterGenerateStyle);
     const prompt = [ruleText, referenceHint, `${isShotGeneration ? "用户分镜提示词" : isSceneGeneration ? "用户场景提示词" : "用户角色提示词"}：${styledPrompt}`].filter(Boolean).join("\n\n");
@@ -14914,7 +14926,14 @@ export function ChatWorkbench() {
                         expanded={Boolean(agentPromptExpandedIds[message.id])}
                         onToggle={() => setAgentPromptExpandedIds((current) => ({ ...current, [message.id]: !current[message.id] }))}
                         onUsePrompt={(prompt) => {
-                          setActiveDraftInputWithMentionCards(prompt);
+                          const restoreImages = (message.imageReferences ?? [])
+                            .filter((reference) => Boolean(reference.url))
+                            .map((reference) => toUploadedAssetReference({ name: reference.name, url: reference.url }));
+                          const sourceFiles = (message.uploadedFiles?.length ? message.uploadedFiles : previousUserMessageForMedia?.uploadedFiles) ?? [];
+                          const restoreFiles = sourceFiles
+                            .filter((file): file is UploadedDocumentFile => typeof file !== "string" && Boolean(file.url ?? file.storageName))
+                            .map((file) => ({ ...file, id: createClientId() }));
+                          setActiveDraftInputWithMentionCards(prompt, { images: restoreImages, files: restoreFiles });
                           requestAnimationFrame(() => editorRef.current?.focus());
                         }}
                         onPrevious={() => setAgentPromptPageIndex(agentPromptPageIndex - 1)}

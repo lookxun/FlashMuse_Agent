@@ -2,6 +2,25 @@
 
 Last checked: 2026-07-06 China time.
 
+## Latest 2026-07-06 (最新 session) — B_373文案幂等 + 使用提示词原样还原 + 视频存干净prompt + 参考hint统一并按意图判定 (DEPLOYED prod+Ali + **PUSHED GitHub**)
+
+- Reply style 简洁直接中文. 全 session 窄部署(单文件 scp+部署脚本)到 prod+Ali，每次 md5 校验+三域名200。**session 末尾把攒的批次一起推 GitHub**(含上个 session 未推的 `video/route.ts` 去掉审核上限、全平台命名统一等)。改动：`error-message.ts`、`chat-workbench.tsx`、`workflow-tldraw-canvas-inner.tsx`、新增 `reference-hint.ts`。详见 CHANGELOG 顶部 5 条。
+- **B_373 幂等修复**：`toUserErrorMessage` 不幂等 → 后端已翻 Case3 中文串被前端二次翻译误判成 Case2。Case3 正则补 `参考图已过审|成品(?:视频|音频).*(?:敏感|版权)`。教训：翻译函数要幂等。
+- **对话流"使用提示词"原样还原**：改为按消息真实附件(`message.imageReferences`+`message.uploadedFiles`)还原图/视频/音频/文档卡，不再只靠@提及重推导。`setActiveDraftInputWithMentionCards` 加 `restore` 参；`copyPrompt`+Agent面板接入。
+- **工作流"使用提示词"带回连线引用**：生成成功时把 `uploads`+连线引用快照进新字段 `generationUploads`(不动 data.uploads)，`addNodeFromPrompt` 用它还原+补 `videoReferenceMode`。因成功时会删入边、连线引用原本会丢。
+- **工作流视频存干净 prompt**：视频成功回写 `data.prompt`/`sourcePrompt` 由带 hint 的 `modelPrompt` 改为干净 `prompt`(创建仍用 modelPrompt)。只对新生成生效。
+- **参考 hint 统一+意图化**：新建 `src/lib/reference-hint.ts` `buildReferenceHint`，两端共用。逐张判定：@图前同句含"参考/参照/借鉴…"=松参考(可自由发挥)，否则绝对保留。全绝对/全参考/混合三态文案。
+
+## Latest 2026-07-06 (later session) — 火山审核报错细分 + 去掉审核次数上限 + 全平台命名统一 (DEPLOYED prod+Ali, **GitHub 未推**)
+
+- Reply style 简洁直接中文. 本 session 多次窄部署 prod+Ali，**GitHub 全程未推**(用户要求攒批)。改了 `error-message.ts`、`video/route.ts`、`chat-workbench.tsx`、`workflow-tldraw-canvas-inner.tsx`。详见 CHANGELOG 顶部。
+- **火山审核报错细分**：`error-message.ts` 按 input/output 分流 → Case2 输入/参考图审核未过(建议换图)、Case3 输出视频/音频审核未过(可重试/改词、音频提示去背景音乐)。
+- **去掉审核次数上限(A)**：删 `getBytePlusReferenceFailure` 短路 + auto-review `attempts>=3` 拦截。同一参考图**每次重试都重新送审、无上限**(重试可能过审，已实证)。对话流+工作流共用 `/api/video` → **两流都覆盖**。
+- **全平台命名统一**：终身ID(`initialName`)出生即定写库永不变；改名存 `currentName`；显示 `改名||终身ID`，同一图按URL处处同名。新资产库生成图命名 `asset_N_role/scene/storyboard`(每用户全局计数)。停掉 `applyAssetGenerationSystemNames` 的下标重排(三名bug根因)。工作流加校准 effect 把节点 `mediaSystemNames` 按URL对齐库名(含改名同步)。补了 2 张空名老图。
+- **⚠️ 已修复的崩溃**：命名校准 effect 初版用 inline 新数组派生的 Map 作依赖 → 每渲染 updateState 无限循环 → 工作流页崩("This page couldn't load")。已改为稳定内容签名字符串依赖 + 差异守卫。**教训：effect 依赖不可用父组件 inline 数组/对象引用。**
+- **③ 引用发送**验证无泄漏(removeUpload/disconnectNodes 都正确)，无需改。
+- **④ 对话流"让它动起来/这张图"自动带最近图(无@无缩略图)**：仍未处理，用户押后(见 05-next-actions)。
+
 ## Latest 2026-07-06 — 工作流：从资产库导入 + 视频轮询恢复 + 多项修复 (DEPLOYED prod+Ali + PUSHED, commit aad3461)
 
 - Reply style: 简洁直接中文. 全 session 都是**本地工作流**功能与修复，最后一次性部署+推 GitHub。仅改 3 个文件(`workflow-tldraw-canvas-inner.tsx`, `workflow-tldraw-canvas.tsx`, `chat-workbench.tsx`)，无 schema 变更。快照 compare `ok:true`(assetListHash `3a057badbe5d3daa` 未变)，四个域名全 200。详见 CHANGELOG 顶部。

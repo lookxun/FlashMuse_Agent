@@ -127,27 +127,6 @@ async function getWorkspaceAssets(userId: string | undefined) {
   }));
 }
 
-async function getBytePlusReferenceFailure(userId: string | undefined, referenceImages: string[]) {
-  if (!userId || referenceImages.length === 0) return undefined;
-  const assets = await getWorkspaceAssets(userId);
-  const byUrl = new Map<string, Record<string, unknown>>();
-  for (const record of assets) {
-    const url = getAssetString(record, "url") || getAssetString(record, "normalizedUrl");
-    if (url) byUrl.set(normalizeMediaUrlForMatch(url), record);
-  }
-  for (const reference of referenceImages) {
-    const record = byUrl.get(normalizeMediaUrlForMatch(reference));
-    if (!record) continue;
-    const status = getAssetString(record, "bytePlusAssetStatus");
-    const error = getAssetString(record, "bytePlusAssetError");
-    if (status === "Failed") {
-      const parsed = parseBytePlusReviewError(error);
-      if (parsed.attempts >= MAX_BYTEPLUS_REFERENCE_REVIEW_ATTEMPTS) return { reference, error: parsed.message || "参考图审核未通过，无法作为该视频模型的真人参考图使用。" };
-    }
-  }
-  return undefined;
-}
-
 async function resolveBytePlusReviewedReferences(userId: string | undefined, model: string | undefined, references: string[], assets?: Record<string, unknown>[]) {
   if (!userId || !isBytePlusVideoModel(model) || references.length === 0) return references;
 
@@ -299,10 +278,6 @@ async function autoReviewBytePlusVideoReferences(input: { userId: string | undef
       void appendVideoDiagnosticsLog({ event: "byteplus-auto-review-reuse-active-asset", requestId, model, provider: "byteplus", referenceMode, references: [{ ...summarizeVideoReference(reference, references.length, referenceItem.role), status, assetId }] });
       references.push({ ...referenceItem, url: `asset://${assetId}` });
       continue;
-    }
-
-    if (assetId && status === "Failed" && previousAttempts >= MAX_BYTEPLUS_REFERENCE_REVIEW_ATTEMPTS) {
-      throw new Error(parseBytePlusReviewError(previousReviewError).message || "参考素材审核未通过，无法作为该视频模型的真人参考素材使用。");
     }
 
     if (status === "Failed") {
@@ -504,6 +479,7 @@ export async function POST(request: Request) {
     model?: string;
     taskId?: string;
     referenceImages?: string[];
+    referenceImageNames?: string[];
     referenceVideos?: string[];
     referenceAudios?: string[];
     settings?: { ratio?: string; resolution?: string; duration?: string };
@@ -522,6 +498,7 @@ export async function POST(request: Request) {
       model?: string;
       taskId?: string;
       referenceImages?: string[];
+      referenceImageNames?: string[];
       referenceVideos?: string[];
       referenceAudios?: string[];
       settings?: { ratio?: string; resolution?: string; duration?: string };
@@ -725,11 +702,6 @@ export async function POST(request: Request) {
       extra: { referenceMode, creditSource, referenceImageCount: referenceImages.length, referenceVideoCount: referenceVideos.length, referenceAudioCount: referenceAudios.length },
     });
     const effectiveReferenceImages = isBytePlusVideoModel(body.model) ? getBytePlusEffectiveReferenceImages(referenceImages, body.referenceMode) : referenceImages;
-    const existingReferenceFailure = isBytePlusVideoModel(body.model) ? await getBytePlusReferenceFailure(user?.id, effectiveReferenceImages) : undefined;
-    if (existingReferenceFailure) {
-      const codedError = await createCodedApiError(new Error(existingReferenceFailure.error), GENERIC_MEDIA_ERROR_MESSAGE, "byteplus reference asset review failed");
-      return NextResponse.json(codedError, { status: 502 });
-    }
     const modelReferenceImages = await resolveBytePlusReviewedReferences(user?.id, body.model, effectiveReferenceImages);
     const modelReferenceVideos = await resolveBytePlusReviewedReferences(user?.id, body.model, referenceVideos);
     const modelReferenceAudios = await resolveBytePlusReviewedReferences(user?.id, body.model, referenceAudios);

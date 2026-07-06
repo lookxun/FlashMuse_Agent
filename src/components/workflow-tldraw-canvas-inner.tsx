@@ -8,6 +8,7 @@ import { RiAddLine, RiArrowDownSLine, RiArrowUpLine, RiBringForward, RiBringToFr
 import { BytePlusIcon } from "@/components/byteplus-icon";
 import { DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, bytePlusVideoGenerationModels, frontendConversationModels, frontendImageGenerationModels, getExpectedImageDimensions, getExpectedVideoDimensions, getSupportedImageResolutions, getSupportedVideoRatios, getSupportedVideoResolutions, imageGenerationModels, normalizeImageResolutionForModel, normalizeVideoRatioForModel, normalizeVideoResolutionForModel, videoGenerationModels, type ConversationModel, type GenerationModel, type ModelName } from "@/lib/models";
 import { GENERIC_MEDIA_ERROR_MESSAGE, toUserErrorMessage } from "@/lib/error-message";
+import { buildReferenceHint } from "@/lib/reference-hint";
 import { sanitizeModelOutputText } from "@/lib/text-cleanup";
 import { getUploadKindFromFileName, getUploadRule, type UploadKind, type UploadKindRule, type UploadRule, type UploadRuleOverrides } from "@/lib/upload-rules";
 
@@ -41,6 +42,9 @@ export type WorkflowNodeData = {
   videoRequestId?: string;
   startedAt?: number;
   uploads?: WorkflowUploadItem[];
+  // Full reference set (own uploads + connected-node references) captured at generation time,
+  // so "使用提示词" can restore every reference even after success removes the incoming edges.
+  generationUploads?: WorkflowUploadItem[];
   gptImageOptimizationOriginalPrompt?: string;
   gptImageOptimizationSuccessfulPrompt?: string;
   gptImageOptimizationAttemptsUsed?: number;
@@ -385,13 +389,8 @@ function getWorkflowBytePlusVideoReferenceLimitHint(mode?: WorkflowVideoReferenc
   return "融合模式最多使用九张参考图";
 }
 
-function getWorkflowReferenceHint(referenceCount: number) {
-  if (referenceCount <= 0) return "";
-  return `参考图顺序：${Array.from({ length: referenceCount }, (_, index) => `参考图${index + 1}`).join("，")}。生成时必须分别保留这些参考图对应的主体、人物特征、服装和场景关系，不要把人物或场景替换成无关内容。`;
-}
-
-function appendWorkflowReferenceHint(prompt: string, referenceCount: number) {
-  const hint = getWorkflowReferenceHint(referenceCount);
+function appendWorkflowReferenceHint(prompt: string, referenceNames: Array<string | undefined>) {
+  const hint = buildReferenceHint(prompt, referenceNames);
   return hint ? `${prompt}\n\n${hint}` : prompt;
 }
 
@@ -863,6 +862,16 @@ function getWorkflowConnectedInputUploads(state: WorkflowCanvasState, nodeId: st
     });
   });
   return mergeWorkflowUploadItems(uploads);
+}
+
+function getWorkflowGenerationUploadSnapshot(state: WorkflowCanvasState, node: WorkflowNode): WorkflowUploadItem[] {
+  const connectedUploads = getWorkflowConnectedInputUploads(state, node.id);
+  return mergeWorkflowUploadItems([...(node.data.uploads ?? []), ...connectedUploads])
+    .filter((upload) => upload.status === "ready" && Boolean(upload.url))
+    .map((upload) => {
+      const { readonlySource: _readonlySource, sourceNodeId: _sourceNodeId, ...rest } = upload;
+      return { ...rest, status: "ready" as const };
+    });
 }
 
 function validateWorkflowConnectionUploadRules(source: WorkflowNode, target: WorkflowNode, state: WorkflowCanvasState, overrides?: UploadRuleOverrides) {
@@ -2733,7 +2742,11 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
       ratio: sourceNode.data.ratio ?? defaultData.ratio,
       resolution: sourceNode.data.resolution ?? defaultData.resolution,
       duration: kind === "video" ? sourceNode.data.duration ?? defaultData.duration : undefined,
-      uploads: sourceNode.data.uploads?.map((upload) => ({ ...upload, id: createId("workflow_upload") })),
+      videoReferenceMode: kind === "video" ? sourceNode.data.videoReferenceMode : undefined,
+      uploads: (sourceNode.data.generationUploads ?? sourceNode.data.uploads)?.map((upload) => {
+        const { readonlySource: _readonlySource, sourceNodeId: _sourceNodeId, ...rest } = upload;
+        return { ...rest, id: createId("workflow_upload"), status: "ready" as const };
+      }),
     };
     const draftNode: WorkflowNode = { id: createId("workflow_node"), kind, title: getNodeLabel(kind), x: 0, y: 0, data };
     const size = getWorkflowNodeVisualSize(draftNode);
@@ -3391,6 +3404,16 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     for (const source of getIncomingNodes(nodeId)) for (const url of source.data.images ?? []) if (url && !urls.includes(url)) urls.push(url);
     return urls;
   }, [getIncomingNodes]);
+  // Resolve the display names for reference-image URLs (connected node names, asset-library names, or
+  // uploaded-card names), matching how they appear as @mentions in the prompt. Used to classify each
+  // reference as absolute vs "参考" (loose) when building the reference hint.
+  const getReferenceImageNames = useCallback((node: WorkflowNode, urls: string[]) => {
+    const nameByUrl = new Map<string, string>();
+    for (const source of getIncomingNodes(node.id)) for (const url of source.data.images ?? []) if (url && source.data.mediaSystemNames?.[url]) nameByUrl.set(url, source.data.mediaSystemNames[url]);
+    for (const asset of referenceAssets) if (asset.url && asset.name) nameByUrl.set(asset.url, asset.name);
+    for (const upload of node.data.uploads ?? []) if (upload.url && upload.kind === "image") nameByUrl.set(upload.url, getWorkflowUploadReferenceName(upload));
+    return urls.map((url) => nameByUrl.get(url));
+  }, [getIncomingNodes, referenceAssets]);
   const getReferenceMediaUrls = useCallback((nodeId: string, kind: "video" | "audio") => {
     const urls: string[] = [];
     for (const source of getIncomingNodes(nodeId)) {
@@ -3406,14 +3429,16 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
   const getEnabledVideoModel = useCallback((model?: ModelName) => (model && videoModels.some((item) => item.id === model) ? model : (videoModels[0]?.id as ModelName | undefined) ?? DEFAULT_VIDEO_MODEL), [videoModels]);
 
   const generateImageForNode = useCallback(async (node: WorkflowNode, input: { prompt: string; model: ModelName; settings: { ratio: string; resolution: string }; referenceImages: string[]; promptOptimization?: { originalPrompt: string; optimizedPrompt: string; attemptsUsed: number; optimizerModel: string } }) => {
-    const modelPrompt = appendWorkflowReferenceHint(input.prompt, input.referenceImages.length);
+    const modelPrompt = appendWorkflowReferenceHint(input.prompt, getReferenceImageNames(node, input.referenceImages));
     const data = await fetch("/api/image", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt: modelPrompt, model: input.model, settings: input.settings, referenceImages: input.referenceImages, count: 1, conversationId: workflowId, conversationTitle: workflowTitle, requestId: createId("workflow_image"), metadata: { creditSource: "workflow_image_generation" } }) }).then((response) => readJson<{ images?: string[]; imageDimensions?: Record<string, { width: number; height: number }>; usage?: UsageMeta; credit?: CreditResult; failureReasons?: string[] }>(response));
     const images = data.images ?? [];
     if (images.length === 0) throw new Error(data.failureReasons?.[0] ?? "图片平台没有返回图片，且没有返回可用原因。");
+    const generationUploads = getWorkflowGenerationUploadSnapshot(stateRef.current, node);
     updateNode(node.id, {
       images,
       imageDimensions: data.imageDimensions,
       prompt: input.prompt,
+      generationUploads: generationUploads.length > 0 ? generationUploads : undefined,
       visualSize: undefined,
       isRunning: false,
       error: undefined,
@@ -3429,7 +3454,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     onGeneratedMedia?.({ nodeId: node.id, kind: "image", urls: images, sourcePrompt: input.prompt, model: input.model, ratio: input.settings.ratio, resolution: input.settings.resolution, dimensions: data.imageDimensions, promptOptimization: input.promptOptimization });
     onCredit?.({ ...data.credit, usage: data.usage });
     return { images, imageDimensions: data.imageDimensions };
-  }, [onCredit, onGeneratedMedia, updateNode, updateState, workflowId, workflowTitle]);
+  }, [getReferenceImageNames, onCredit, onGeneratedMedia, updateNode, updateState, workflowId, workflowTitle]);
 
   const runImageNode = useCallback(async (node: WorkflowNode) => {
     const upstreamPrompt = getInputText(node.id);
@@ -3555,7 +3580,8 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
       if (isVideoDoneStatus(pollData.status) && videoUrl) {
         const posterUrl = getPosterUrlFromResponse(pollData);
         const chargedUsage = pollData.usage ?? usage;
-        updateNode(node.id, { prompt, videoUrl, posterUrl, videoCurrentTime: 0, visualSize: undefined, isRunning: false, error: undefined, taskId: undefined, videoRequestId: undefined });
+        const generationUploads = getWorkflowGenerationUploadSnapshot(stateRef.current, node);
+        updateNode(node.id, { prompt, videoUrl, posterUrl, videoCurrentTime: 0, generationUploads: generationUploads.length > 0 ? generationUploads : undefined, visualSize: undefined, isRunning: false, error: undefined, taskId: undefined, videoRequestId: undefined });
         updateState((state) => ({ ...state, edges: state.edges.filter((edge) => edge.target !== node.id) }));
         onGeneratedMedia?.({ nodeId: node.id, kind: "video", urls: [videoUrl], posterUrl, sourcePrompt: prompt, model, ratio: settings.ratio, resolution: settings.resolution, duration: settings.duration });
         onCredit?.({ ...pollData.credit, usage: chargedUsage });
@@ -3596,8 +3622,12 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
       if (isWorkflowBytePlusSeedanceVideoModel(model) && videoReferenceMode === "first_frame" && referenceImages.length < 1) throw new Error("首帧生视频需要至少一张参考图");
       if (isWorkflowBytePlusSeedanceVideoModel(model) && videoReferenceMode === "first_last_frame" && referenceImages.length < 2) throw new Error("首尾帧生视频需要至少两张参考图");
       if (referenceAudios.length > 0 && referenceImages.length === 0 && referenceVideos.length === 0) throw new Error("上传音频需要同时提供参考图片或参考视频");
-      const modelPrompt = appendWorkflowReferenceHint(prompt, referenceImages.length);
-      const createVideoTask = (autoBytePlusAssetReview = false) => fetch("/api/video", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt: modelPrompt, model, settings, referenceImages, referenceVideos, referenceAudios, referenceMode: videoReferenceMode, conversationId: workflowId, conversationTitle: workflowTitle, requestId, metadata: { creditSource: "workflow_video_generation" }, autoBytePlusAssetReview }) }).then((response) => readJson<VideoApiResponse>(response));
+      const modelPrompt = appendWorkflowReferenceHint(prompt, getReferenceImageNames(node, referenceImages));
+      const referenceImageNameByUrl = new Map<string, string>();
+      for (const source of getIncomingNodes(node.id)) for (const url of source.data.images ?? []) if (url && source.data.mediaSystemNames?.[url]) referenceImageNameByUrl.set(url, source.data.mediaSystemNames[url]);
+      for (const asset of referenceAssets) if (asset.url && asset.name) referenceImageNameByUrl.set(asset.url, asset.name);
+      const referenceImageNames = referenceImages.map((url) => referenceImageNameByUrl.get(url) ?? "");
+      const createVideoTask = (autoBytePlusAssetReview = false) => fetch("/api/video", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt: modelPrompt, model, settings, referenceImages, referenceImageNames, referenceVideos, referenceAudios, referenceMode: videoReferenceMode, conversationId: workflowId, conversationTitle: workflowTitle, requestId, metadata: { creditSource: "workflow_video_generation" }, autoBytePlusAssetReview }) }).then((response) => readJson<VideoApiResponse>(response));
       let createData = await createVideoTask();
       if (createData.status === "reviewing" && createData.autoBytePlusAssetReview?.triggered) {
         onShowTip?.(BYTEPLUS_AUTO_REVIEW_NOTICE);
@@ -3607,11 +3637,14 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
       const taskId = getVideoTaskId(createData);
       if (!taskId) throw new Error(getWorkflowApiErrorMessage({ error: createData.error ?? "视频平台没有返回任务编号", errorCode: createData.errorCode }, GENERIC_MEDIA_ERROR_MESSAGE));
       updateNode(node.id, { taskId });
-      await pollVideoNode(node, taskId, modelPrompt, model, settings, requestId, createData.usage);
+      // Store the clean user prompt (without the appended reference-order hint) back to the node on success,
+      // so "使用提示词" and the asset library sourcePrompt do not carry the long reference-order instruction.
+      // Task creation above already used modelPrompt; polling only needs the taskId, so the poll-body prompt is harmless.
+      await pollVideoNode(node, taskId, prompt, model, settings, requestId, createData.usage);
     } catch (error) {
       updateNode(node.id, { isRunning: false, error: toUserErrorMessage(error, GENERIC_MEDIA_ERROR_MESSAGE), taskId: undefined, videoRequestId: undefined });
     }
-  }, [getEnabledVideoModel, getInputText, getPromptReferenceUrls, getReferenceImages, getReferenceMediaUrls, onShowTip, pollVideoNode, updateNode, uploadRuleOverrides, workflowId, workflowTitle]);
+  }, [getEnabledVideoModel, getInputText, getPromptReferenceUrls, getReferenceImages, getReferenceImageNames, getReferenceMediaUrls, getIncomingNodes, referenceAssets, onShowTip, pollVideoNode, updateNode, uploadRuleOverrides, workflowId, workflowTitle]);
 
   // Resume polling for video nodes that were still generating when the page was closed / the server was
   // redeployed (mirrors the conversation-flow recovery). Without this, a reloaded workflow keeps the node's
@@ -3643,6 +3676,54 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     const timer = window.setTimeout(() => resumeInterruptedVideoNodes(), 1500);
     return () => window.clearTimeout(timer);
   }, [workflowId, resumeInterruptedVideoNodes]);
+
+  // Keep workflow node display names in sync with the canonical library name (permanent 终身id or the
+  // user's rename), resolved by URL from the asset store. Without this, a node keeps whatever name was
+  // frozen into mediaSystemNames at generation/import time and drifts from the library after a rename.
+  // mediaSystemNames is excluded from the "meaningful snapshot", so this never reorders the workflow.
+  // NOTE: workflowAssets/referenceAssets are new array instances every render, so we key the effect off
+  // a STABLE content signature (not the array/Map reference) and bail out when nothing actually changes,
+  // otherwise updateState -> onChange -> re-render would loop forever and crash the canvas.
+  const canonicalNameSignature = useMemo(() => {
+    const parts: string[] = [];
+    for (const asset of workflowAssets) if (asset.url && asset.name) parts.push(`${normalizeWorkflowMediaUrl(asset.url)}\u0000${asset.name}`);
+    for (const asset of referenceAssets) if (asset.url && asset.name) parts.push(`${normalizeWorkflowMediaUrl(asset.url)}\u0000${asset.name}`);
+    return parts.sort().join("\u0001");
+  }, [workflowAssets, referenceAssets]);
+  useEffect(() => {
+    if (!canonicalNameSignature) return;
+    const canonicalNameByUrl = new Map<string, string>();
+    for (const part of canonicalNameSignature.split("\u0001")) {
+      const sep = part.indexOf("\u0000");
+      if (sep > 0) canonicalNameByUrl.set(part.slice(0, sep), part.slice(sep + 1));
+    }
+    const needsUpdate = stateRef.current.nodes.some((node) => {
+      const names = node.data.mediaSystemNames;
+      if (!names) return false;
+      return Object.entries(names).some(([url, current]) => {
+        const canonical = canonicalNameByUrl.get(normalizeWorkflowMediaUrl(url));
+        return Boolean(canonical && canonical !== current);
+      });
+    });
+    if (!needsUpdate) return;
+    updateState((state) => {
+      let changed = false;
+      const nodes = state.nodes.map((node) => {
+        const names = node.data.mediaSystemNames;
+        if (!names) return node;
+        let nodeChanged = false;
+        const next: Record<string, string> = { ...names };
+        for (const [url, current] of Object.entries(names)) {
+          const canonical = canonicalNameByUrl.get(normalizeWorkflowMediaUrl(url));
+          if (canonical && canonical !== current) { next[url] = canonical; nodeChanged = true; }
+        }
+        if (!nodeChanged) return node;
+        changed = true;
+        return { ...node, data: { ...node.data, mediaSystemNames: next } };
+      });
+      return changed ? { ...state, nodes } : state;
+    });
+  }, [canonicalNameSignature, updateState]);
 
   const importingAssetsRef = useRef(false);
   useEffect(() => {

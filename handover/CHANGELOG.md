@@ -1,5 +1,61 @@
 # Current Handover Changelog
 
+## 2026-07-06 (最新 session) B_373文案幂等 + 使用提示词原样还原(对话流&工作流) + 视频存干净prompt + 参考hint统一并按意图逐张判定 (DEPLOYED prod+Ali, 本 session 结束时**已推 GitHub**)
+
+Reply style: 简洁直接中文. 全 session 多次窄部署(单文件 scp + `/usr/local/bin/deploy-flashmuse-production.sh`)到马来 prod(101.47.19.109)+阿里，每次都 md5 校验、三域名 200。**session 末尾按用户要求把攒的批次一起推 GitHub**(含上个 session 未推的 `video/route.ts` 等)。改动文件：`src/lib/error-message.ts`、`src/components/chat-workbench.tsx`、`src/components/workflow-tldraw-canvas-inner.tsx`、新增 `src/lib/reference-hint.ts`。诊断法：PM2 `~/.pm2/logs/flashmuse-error.log` 搜 `[B_xxx]` + `.runtime/generation-diagnostics-log.jsonl` 按 requestId。
+
+### 1. B_373 报错文案分流错误 → toUserErrorMessage 幂等化 (DEPLOYED, 备份 20260706-b373-output-review-idempotent)
+- 现象：B_373 用户看到 Case2"参考图未能通过审核，建议换参考图"，但实际是 `OutputAudioSensitiveContentDetected`(输出音频审核)，参考图没问题 → 误导。
+- 根因：`toUserErrorMessage` **不幂等**。后端已把错误翻成正确 Case3 中文串(`error-code.ts` 存计数并翻译)，前端 `chat-workbench.tsx:11998 markAssistantVideoFailure(...,toUserErrorMessage(error,...))` **又翻一遍**；Case3 正则(第31行)只认英文/"输出视频音频"，认不出自己的中文输出"成品视频/音频" → 掉进 Case2 的 `参考图.*(版权|真人|隐私)`(Case3 文案里正好有"参考图已过审…版权")→ 被重译成 Case2。
+- 修复：`error-message.ts` 第31行 Case3 正则补 `参考图已过审|成品(?:视频|音频).*(?:敏感|版权)`，二次翻译仍先命中 Case3。**教训：翻译函数要幂等，或前端别对已翻译串再翻。B码全局递增计数器存服务器 `.runtime/error-code-counter.txt`，本地日志B码与prod无关。**
+
+### 2. 对话流"使用提示词"没把上传视频/音频/文档带回输入框 (DEPLOYED, 备份 20260706-use-prompt-restore-media)
+- 现象：用户点某条生成消息的"使用提示词"，图片和文字回到输入框，但当时用的**上传视频回不来**(音频/文档同理)。
+- 根因：`copyPrompt`→`setActiveDraftInputWithMentionCards` **只靠"提示词@提及+资产库按名匹配"重推导**附件，没用消息真实记录的 `message.imageReferences`/`message.uploadedFiles`。图片恰好能@匹配到，上传视频没被@或匹配不上就丢了。
+- 修复：`setActiveDraftInputWithMentionCards` 加可选 `restore:{images,files}` 参数(优先并入，按URL去重)；`copyPrompt` 从 `message.imageReferences`(→`toUploadedAssetReference`)+`message.uploadedFiles`(拿不到回退上一条 user 消息的)克隆还原图/视频/音频/文档卡；Agent 媒体提示词面板同样处理。资产预览面板保持原样(单个 AssetItem 无附件记录，只能走@提及)。
+
+### 3. 工作流"使用提示词"没带回"连线连入"的参考图/视频/音频 (DEPLOYED, 备份 20260706-workflow-use-prompt-restore)
+- 根因：工作流生成**成功时删除该节点所有入边**(image 3428 / video 3559 `edges.filter(target!==node.id)`)，连线引用从没进 `data.uploads`；`addNodeFromPrompt` 只复制 `data.uploads` → 连线来的引用永久丢。(连线**文本**已通过 `prompt: input.prompt` 烘焙进 data.prompt，不受影响。)
+- 关键事实：工作流参考图发送不需@门槛——`getWorkflowPromptReferenceUrls`(739-742) 任何 ready 的对应类型 upload 都作参考发送。
+- 修复：新增节点字段 `generationUploads`(WorkflowNodeData)；新增 helper `getWorkflowGenerationUploadSnapshot`(合并 `data.uploads`+`getWorkflowConnectedInputUploads`，剥离 `readonlySource`/`sourceNodeId`)；图/视频**成功时**写入 `generationUploads`(不动 `data.uploads` 避免改生成节点显示；`normalizeState` 用 `{...default,...node.data}` 整体展开自动持久化)。`addNodeFromPrompt` 改用 `generationUploads ?? uploads` 还原(新id+置ready)，并补上遗漏的 `videoReferenceMode`(首帧/首尾帧)。老节点无 generationUploads 自动回退旧行为。
+
+### 4. 工作流视频"使用提示词"多出一大段"参考图顺序…"指令 (DEPLOYED, 备份 20260706-workflow-clean-video-prompt)
+- 根因：视频成功时 `pollVideoNode(node,taskId,modelPrompt,...)`(3634) 把**带 hint 的 modelPrompt** 写回 `node.data.prompt`(3558) 和资产 `sourcePrompt`(3560)。图片节点存的是干净 `input.prompt`(3416)、无此问题。对话流 hint 只在 fetch body 临时拼(`withReferenceHint`)、从不写回 → 所以对话流没这问题。
+- 修复：3634 把传给 `pollVideoNode` 的第3参由 `modelPrompt` 改成干净 `prompt`。任务**创建**仍用 modelPrompt(3624，模型照常拿到 hint)；轮询靠 taskId 定位，body prompt 不影响生成。**注意：只对修复后新生成的视频生效，改动前老视频节点 data.prompt 仍存旧 hint(历史未回改)。**
+
+### 5. 参考图 hint 统一到一处 + 按提示词意图逐张判定绝对/参考 (DEPLOYED, 备份 20260706-intent-aware-reference-hint)
+- 背景：这段"参考图顺序：…必须分别保留主体/人物/服装/场景，不要替换"是**前端硬编码固定串**(不是模型/后端加的)，只要有参考图就无脑追加，强制"绝对保留"，与"想参考/想改"意图冲突。之前是两份重复实现(chat-workbench `getReferenceHint` / workflow `getWorkflowReferenceHint`，逐字相同)；后端 `/api/image`/`/api/video` 不加任何 hint、只分配 role。
+- 统一：新建共享模块 `src/lib/reference-hint.ts` 导出 `buildReferenceHint(prompt, referenceNames)`，两端 import；删掉 `getWorkflowReferenceHint`，`chat-workbench` 的 `getReferenceHint(refs,prompt)` 改为委托。
+- 意图判定(用户定案规则)：对每个 `@图`，看它前面**同一小句**(边界=标点/换行/上一个@)内是否含 `参考/参照/借鉴/参看/仿照/模仿/参见` → **参考(松，可自由发挥)**；否则 **绝对(严格保留主体/人物/服装/场景)**。hint 三态：全绝对=原严格文案；全参考="仅作参考(动作/运镜/风格/构图),可自由发挥…"；混合="其中参考图1、2需严格保留…；参考图3仅作参考…"。例：`功夫大师@asset_1_role 跳舞，人物动作和运镜参考@下载.mp4`→ asset_1_role 绝对、下载.mp4 参考。
+- 接入：对话流 6 处 `getReferenceHint` 全传对应 prompt(`text`/`replayPrompt`/`prompt`/`rawPrompt`)；工作流新增 `getReferenceImageNames`(连线节点 mediaSystemNames + referenceAssets + node.data.uploads 按 URL 映射名字)供 `appendWorkflowReferenceHint(prompt,names)` 图/视频两路。局限：没被@提及的上传图无法判意图，默认绝对；属启发式，若要更准可升级为显式菜单(方案C)。
+
+## 2026-07-06 (later session) 火山审核报错细分 + 去掉审核次数上限 + 全平台命名统一 (DEPLOYED prod+Ali, **GitHub 未推**, 攒批次)
+
+Reply style: 简洁直接中文. 本 session 多次窄部署到马来 prod(101.47.19.109)+阿里。**GitHub 全程未推**(用户要求攒到一定量再一起推)。DB 有一次小补数据(2 行)。涉及文件：`src/lib/error-message.ts`、`src/app/api/video/route.ts`、`src/components/chat-workbench.tsx`、`src/components/workflow-tldraw-canvas-inner.tsx`。诊断/取数方法：PM2 `~/.pm2/logs/*error*.log` 搜 `[B_xxx]`；`.runtime/{video,generation}-diagnostics-log.jsonl` 按 requestId；`psql` 查库(见 03-deploy 的 DATABASE_URL 取法，注意要 `${RAW%%\?*}` 去掉 `?schema=` 否则 psql 报 invalid URI)。
+
+### 火山(BytePlus)审核机制全景(记忆)
+- 三大类 8 种错误：**输入审核**(创建阶段立即返回)=真人图片/真人视频/图片版权/视频敏感；**自动送审失败**(`byteplus reference asset review failed`)=送 BytePlus 素材库审核后仍被拒(线上全是版权)；**输出审核**(轮询阶段、有随机性)=输出视频版权/输出音频敏感/输出视频敏感。
+- 自动送审只对**真人/隐私**触发(`isBytePlusHumanReferenceError` 明确 `&& !/output|copyright|版权/`)；版权是先以真人触发送审、送审时被以版权拒。
+
+### 1. error-message.ts 审核报错细分(DEPLOYED, 备份 20260706-review-error-message)
+- 靠 **input/output 关键字**分流(error-message 只看错误串，看不到 scope)。**Case2 输入/参考图审核未过**(`input image/video ...真人/版权/敏感`、`reference-review-failed`)：`参考图未能通过平台审核（可能涉及真人、隐私或版权），可以重试，但建议更换参考图后再重试成功率更高。`。**Case3 输出审核未过**(`output video/audio ...敏感/版权`)：`参考图已过审、视频也已生成，但成品视频/音频因版权或敏感内容被平台拒绝交付。可直接重试或修改提示词重试；若是音频问题，在提示词中明确"去除背景音乐/不要原声"可提高成功率。`。纯中文自定义串会原样透传(带 B 前缀)。
+
+### 2. (已被下面的 A 覆盖删除) 曾加"锁定图列文件名"消息 + referenceImageNames
+- 备份 20260706-review-lock-message / 20260706-review-lock-names。`getBytePlusReferenceFailure` 曾改成列出所有满 3 次锁定图的文件名；前端 `runVideoNode` 曾加 `referenceImageNames` 传显示名。**后被 A 整体删掉**(后端不再有短路，前端 `referenceImageNames` 现无害留存/后端忽略)。
+
+### 3. A：完全去掉 BytePlus 审核次数上限(DEPLOYED, 备份 20260706-remove-review-limit)
+- 用户决定：重试有可能过审(已实证：角色28图首次真人拒→重试自动送审 Active→出视频)，所以**去掉 3 次锁定**。删掉 `video/route.ts` 里 `getBytePlusReferenceFailure` 短路(创建前拦截)、auto-review 里 `attempts>=MAX` 的 throw、以及 `getBytePlusReferenceFailure` 函数本身。现在同一张图**每次重试都重新送审、无上限**。`/api/video` 对话流+工作流共用 → **两个流都覆盖**。(图片无此送审)。审核失败后走 Case2 文案。
+
+### 4. 全平台命名统一(DEPLOYED, 备份 20260706-asset-naming + 20260706-unified-naming + 循环修复)
+- **规则(定案)**：每张媒体出生即定**终身ID**写库(`MediaAsset.initialName`)永不变；用户改名存另一字段(`UserAssetState.currentName`)可反复改只留最后；显示一律 `改名 || 终身ID`，**同一张图按 URL 处处同名**；后台两名用 `/` 隔开。
+- **三名 bug 根因**：`applyAssetGenerationSystemNames`(chat-workbench) 每次渲染按 createdAt 排序的**下标**重算 `角色N`(不是存的名)→ 库显示随增删漂移；工作流节点把导入/生成那刻的名**冻结**进 `mediaSystemNames` 永不同步 → 同一文件库=角色28、节点A=角色21、节点B=角色20。
+- **改**：(a) `getNextAssetGenerationName` 新出生命名 = `asset_N_role/asset_N_scene/asset_N_storyboard`，N=每用户全局唯一计数(扫已有 `asset_(\d+)_` 取 max+1)，生成即落库永久。(b) `applyAssetGenerationSystemNames` 改为 **no-op**(直接 return，停止重排；显示读库存名)。(c) 对话流本就用 `getCanonicalMediaName`(7590，先按 URL 读 `assetNameByUrl` 再回退快照)。(d) 工作流新增**校准 effect**：用 `workflowAssets`+`referenceAssets`(已带库规范名的 prop)按 URL 把节点 `mediaSystemNames` 校正成库名(改名也同步)；`mediaSystemNames` 已在 `getWorkflowMeaningfulSnapshot` 剔除列表里→不置顶。
+- **⚠️ 循环崩溃教训**：校准 effect 初版依赖 `useMemo(Map,[workflowAssets,referenceAssets])`——但这俩 prop 是父组件 inline `.map` **每渲染新数组** → Map 每次新引用 → effect 每渲染跑 `updateState`→`onChange`→重渲染→**无限循环，工作流页面崩("This page couldn't load")**。修复：effect 依赖改成**稳定内容签名字符串**(URL\0名 排序 join)，且执行前先判 `stateRef.current` 有无真实差异，无差异直接 return。**教训：effect 依赖绝不能用父组件 inline 新建的数组/对象或其派生 Map 引用。**
+- **补库**：仅 2 张 character_image 的 initialName/currentName 全空(停重排后会显示"未命名")→ 补为 `asset_legacy_<mediaId8位>_role`(MediaAsset.initialName/systemName + UserAssetState.currentName)。现全库 asset-gen 三类无空名。老图其余不改(数字可能从"当前排位"变成"存库终身ID值"——用户明确"数字不重要、统一才重要")。
+
+### 5. ③ 引用发送逻辑：验证后无需改
+- `removeUpload`(inner 5100) 清 `node.data.uploads`+去@；连线卡的 X(5243) 对 `readonlySource==="connection"` 调 `disconnectNodes`+去@。移除缩略图/断连线都会正确不再带图。用户报的"一张变两张"是当时确连了 2 条边(现只剩 1 条)，非泄漏。
+
 ## 2026-07-06 工作流：从资产库导入 + 视频轮询恢复 + 若干修复 (DEPLOYED + PUSHED, commit aad3461)
 
 Reply style: concise/direct Chinese. 本 session 全部为**本地工作流**功能与修复，最后一次性部署到马来 prod(101.47.19.109)+阿里、推送 GitHub。仅改 3 个文件：`src/components/workflow-tldraw-canvas-inner.tsx`、`src/components/workflow-tldraw-canvas.tsx`、`src/components/chat-workbench.tsx`。**无 Prisma schema 变更**（跳过 migrate/generate）。备份 `.deploy-backups/20260706-workflow-asset-import/`；快照 `20260706-workflow-asset-import-before/after.json` compare `ok:true`（assetListHash `3a057badbe5d3daa` 未变，stableMissing/fallbackUsers 均 0）；`/workspace` `/admin` `/api/model-availability` `ali.venusface.com/workspace` 全 200。
