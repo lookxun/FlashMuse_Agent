@@ -3182,7 +3182,7 @@ function getWorkflowMeaningfulSnapshot(canvas?: WorkflowCanvasState) {
   // updates videoCurrentTime, generation writes isRunning/taskId/etc, and media naming backfill updates
   // mediaSystemNames/posterUrl. Including any of those made media workflows (工作流_02 / _04) jump to the
   // top on mere open/refresh. Genuine edits still reorder via nodes/edges/text/model/media-url/position.
-  const stripKeys = ["visualSize", "videoDimensions", "durationSeconds", "videoCurrentTime", "imageDimensions", "isRunning", "taskId", "videoRequestId", "startedAt", "uploadProgress", "error", "mediaSystemNames", "posterUrl"] as const;
+  const stripKeys = ["visualSize", "videoDimensions", "durationSeconds", "videoCurrentTime", "imageDimensions", "isRunning", "taskId", "videoRequestId", "imageRequestId", "startedAt", "uploadProgress", "error", "mediaSystemNames", "posterUrl"] as const;
   const stripData = (data?: WorkflowNode["data"]) => {
     const rest: Record<string, unknown> = { ...(data ?? {}) };
     for (const key of stripKeys) delete rest[key];
@@ -4890,21 +4890,6 @@ function extractAssetsFromSessions(sessions: WorkSession[], existingAssets: Asse
   });
 
   return nextAssets.sort((a, b) => b.createdAt - a.createdAt);
-}
-
-function isReferencingRecentImage(text: string) {
-  const normalized = normalizeIntentText(text);
-  return /(这张图|这张图片|这图|刚才那张|上一张|上面那张|图中|图片里|让它|让他|让她|动起来|首帧|参考图|用这张|按这张)/.test(normalized);
-}
-
-function getRecentReferenceImages(messages: Message[], text: string) {
-  if (!isReferencingRecentImage(text)) return [];
-
-  return [...messages]
-    .reverse()
-    .flatMap((message) => message.images ?? [])
-    .filter(Boolean)
-    .slice(0, MAX_UPLOADED_IMAGES);
 }
 
 function renderInlineFormatting(text: string) {
@@ -7235,6 +7220,7 @@ export function ChatWorkbench() {
   const completedNotificationRequestIdsRef = useRef<Set<string>>(new Set());
   const dragUploadDepthRef = useRef(0);
   const workspaceSaveTimerRef = useRef<number | null>(null);
+  const flushNextWorkspaceSaveRef = useRef(false);
   const workflowTextSaveTimerRef = useRef<number | null>(null);
   const loadedWorkflowAssetIdsRef = useRef<Set<string>>(new Set());
   const userProfileSaveTimerRef = useRef<number | null>(null);
@@ -9565,7 +9551,8 @@ export function ChatWorkbench() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       }).catch(() => console.warn("用户工作区保存失败"));
-    }, 500);
+    }, flushNextWorkspaceSaveRef.current ? 0 : 500);
+    flushNextWorkspaceSaveRef.current = false;
 
     return () => {
       if (workspaceSaveTimerRef.current !== null) window.clearTimeout(workspaceSaveTimerRef.current);
@@ -10641,6 +10628,10 @@ export function ChatWorkbench() {
     });
   };
 
+  const requestImmediateWorkspaceSave = useCallback(() => {
+    flushNextWorkspaceSaveRef.current = true;
+  }, []);
+
   const updateWorkflowCanvas = useCallback((workflowId: string, canvas: WorkflowCanvasState) => {
     setWorkflowItems((current) => {
       const target = current.find((item) => item.id === workflowId);
@@ -11504,8 +11495,149 @@ export function ChatWorkbench() {
     );
   }, []);
 
+  const reconciledConversationImageJobsRef = useRef<Set<string>>(new Set());
+  const reconciledConversationVideoJobsRef = useRef<Set<string>>(new Set());
+  const [recoveryTick, setRecoveryTick] = useState(0);
+
+  // Re-run conversation media recovery when a suspended/background tab becomes visible again (close browser
+  // then reopen, switch away and back). Without this the reconcile effects below only re-run when `sessions`
+  // change, so a resumed tab could keep showing a waiting card for an already-finished backend job.
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      reconciledConversationImageJobsRef.current.clear();
+      reconciledConversationVideoJobsRef.current.clear();
+      setRecoveryTick((tick) => tick + 1);
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
+    };
+  }, []);
+
+  useEffect(() => {
+    type ConversationImageJobStatus = { requestId: string; status: string; resultUrls?: string[]; resultDimensions?: Record<string, ImageDimensions>; usage?: UsageMeta; credit?: CreditMeta; error?: string; errorCode?: string };
+    const jobsToCheck = sessions.flatMap((session) => session.messages.flatMap((message) => {
+      if (message.role !== "assistant" || message.mode !== "image" || !message.requestId || (message.pendingImageCount ?? 0) <= 0) return [];
+      const requestedCount = getRequestedImageDisplayCount(message) ?? Math.max(1, (message.images?.length ?? 0) + (message.failedImageCount ?? 0) + (message.pendingImageCount ?? 0));
+      const slots = message.imageResultSlots ?? [
+        ...(message.images ?? []).map((url) => ({ type: "image" as const, url })),
+        ...Array.from({ length: message.failedImageCount ?? 0 }).map(() => ({ type: "failed" as const })),
+        ...Array.from({ length: message.pendingImageCount ?? 0 }).map(() => ({ type: "pending" as const, startedAt: message.createdAt })),
+      ];
+      return Array.from({ length: requestedCount }).flatMap((_, index) => {
+        if (slots[index]?.type !== "pending") return [];
+        const imageRequestId = `${message.requestId}:image:${index}`;
+        const key = `${session.id}:${message.requestId}:${index}`;
+        if (reconciledConversationImageJobsRef.current.has(key)) return [];
+        return [{ key, sessionId: session.id, message, index, imageRequestId }];
+      });
+    }));
+    if (jobsToCheck.length === 0) return;
+    jobsToCheck.forEach((job) => reconciledConversationImageJobsRef.current.add(job.key));
+    let cancelled = false;
+    let timer: number | undefined;
+    const releaseKeys = () => jobsToCheck.forEach((job) => reconciledConversationImageJobsRef.current.delete(job.key));
+    const checkJobs = () => {
+      void fetch("/api/generation-status", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ requestIds: jobsToCheck.map((job) => job.imageRequestId) }) })
+        .then((response) => readJson<{ jobs?: ConversationImageJobStatus[] }>(response))
+        .then((data) => {
+        if (cancelled) return;
+        let stillRunning = false;
+        const jobByRequestId = new Map((data.jobs ?? []).map((job) => [job.requestId, job]));
+        for (const pending of jobsToCheck) {
+          const job = jobByRequestId.get(pending.imageRequestId);
+          if (!job || job.status === "queued" || job.status === "running") {
+            stillRunning = true;
+            continue;
+          }
+          reconciledConversationImageJobsRef.current.delete(pending.key);
+          if (job.status === "failed") {
+            markAssistantImageFailure(pending.sessionId, pending.message.requestId ?? "", undefined, getApiErrorMessageWithCode({ error: job.error, errorCode: job.errorCode }, GENERIC_MEDIA_ERROR_MESSAGE), pending.index);
+            continue;
+          }
+          if (job.status !== "succeeded") continue;
+          const images = Array.isArray(job.resultUrls) ? job.resultUrls.filter(Boolean) : [];
+          if (images.length === 0) {
+            markAssistantImageFailure(pending.sessionId, pending.message.requestId ?? "", undefined, GENERIC_MEDIA_ERROR_MESSAGE, pending.index);
+            continue;
+          }
+          const imageDimensions = Object.fromEntries(images.map((url) => [url, job.resultDimensions?.[url]]).filter((item): item is [string, ImageDimensions] => Boolean(item[1])));
+          const imagePrompts = Object.fromEntries(images.map((url) => [url, pending.message.content]));
+          const mediaSystemNames = reserveMediaSystemNames(pending.sessionId, "image", images);
+          addSessionUsage(pending.sessionId, job.usage);
+          applyCreditResult(pending.sessionId, job.credit);
+          appendImagesToAssistantMessage(pending.sessionId, pending.message.requestId ?? "", images, imageDimensions, 1, imagePrompts, mediaSystemNames, undefined, pending.index);
+          addSessionGeneratedMediaCount(pending.sessionId, images.length, 0);
+        }
+        if (stillRunning && !cancelled) timer = window.setTimeout(checkJobs, 3000);
+      })
+      .catch(() => { if (!cancelled) timer = window.setTimeout(checkJobs, 3000); });
+    };
+    checkJobs();
+    return () => { cancelled = true; if (timer) window.clearTimeout(timer); releaseKeys(); };
+  }, [addSessionGeneratedMediaCount, addSessionUsage, appendImagesToAssistantMessage, applyCreditResult, markAssistantImageFailure, reserveMediaSystemNames, sessions, recoveryTick]);
+
+  // Conversation-video durable recovery (mirrors the image reconcile). If a video message is still waiting
+  // (pendingVideoCount > 0) but the backend job already finished, align it to the job result / failure and
+  // keep polling while it runs — so a closed/refreshed browser never leaves a permanent waiting card.
+  useEffect(() => {
+    type ConversationVideoJobStatus = { requestId: string; status: string; resultUrls?: string[]; posterUrl?: string; usage?: UsageMeta; credit?: CreditMeta; error?: string; errorCode?: string };
+    const jobsToCheck = sessions.flatMap((session) => session.messages.flatMap((message) => {
+      if (message.role !== "assistant" || message.mode !== "video" || !message.requestId || (message.pendingVideoCount ?? 0) <= 0) return [];
+      const count = Math.max(1, message.pendingVideoCount ?? 1);
+      return Array.from({ length: count }).flatMap((_, index) => {
+        const videoRequestId = `${message.requestId}:video:${index}`;
+        const key = `${session.id}:${videoRequestId}`;
+        if (reconciledConversationVideoJobsRef.current.has(key)) return [];
+        return [{ key, sessionId: session.id, message, videoRequestId }];
+      });
+    }));
+    if (jobsToCheck.length === 0) return;
+    jobsToCheck.forEach((job) => reconciledConversationVideoJobsRef.current.add(job.key));
+    let cancelled = false;
+    let timer: number | undefined;
+    const checkJobs = () => {
+      void fetch("/api/generation-status", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ requestIds: jobsToCheck.map((job) => job.videoRequestId) }) })
+        .then((response) => readJson<{ jobs?: ConversationVideoJobStatus[] }>(response))
+        .then((data) => {
+          if (cancelled) return;
+          let stillRunning = false;
+          const jobByRequestId = new Map((data.jobs ?? []).map((job) => [job.requestId, job]));
+          for (const pending of jobsToCheck) {
+            const job = jobByRequestId.get(pending.videoRequestId);
+            if (!job || job.status === "queued" || job.status === "running") { stillRunning = true; continue; }
+            reconciledConversationVideoJobsRef.current.delete(pending.key);
+            const status = (job.status ?? "").toLowerCase();
+            if (["failed", "error", "expired"].includes(status)) {
+              addSessionUsage(pending.sessionId, job.usage);
+              markAssistantVideoFailure(pending.sessionId, pending.message.requestId ?? "", getApiErrorMessageWithCode({ error: job.error, errorCode: job.errorCode }, GENERIC_MEDIA_ERROR_MESSAGE));
+              continue;
+            }
+            if (!["succeeded", "success", "completed", "complete", "done"].includes(status)) continue;
+            const videoUrl = job.resultUrls?.find(Boolean);
+            if (!videoUrl) { markAssistantVideoFailure(pending.sessionId, pending.message.requestId ?? "", "视频生成完成但缺少视频链接"); continue; }
+            addSessionUsage(pending.sessionId, job.usage);
+            applyCreditResult(pending.sessionId, job.credit);
+            const mediaSystemNames = reserveMediaSystemNames(pending.sessionId, "video", [videoUrl]);
+            appendVideoToAssistantMessage(pending.sessionId, pending.message.requestId ?? "", videoUrl, pending.message.content, mediaSystemNames[videoUrl], job.posterUrl);
+            addGeneratedAssets(pending.sessionId, "video", pending.message.content, [videoUrl], undefined, undefined, pending.message.content, mediaSystemNames, job.posterUrl ? { [videoUrl]: job.posterUrl } : {}, {});
+            addSessionGeneratedMediaCount(pending.sessionId, 0, 1);
+          }
+          if (stillRunning && !cancelled) timer = window.setTimeout(checkJobs, 3000);
+        })
+        .catch(() => { if (!cancelled) timer = window.setTimeout(checkJobs, 3000); });
+    };
+    checkJobs();
+    return () => { cancelled = true; if (timer) window.clearTimeout(timer); jobsToCheck.forEach((job) => reconciledConversationVideoJobsRef.current.delete(job.key)); };
+  }, [addGeneratedAssets, addSessionGeneratedMediaCount, addSessionUsage, appendVideoToAssistantMessage, applyCreditResult, markAssistantVideoFailure, reserveMediaSystemNames, sessions, recoveryTick]);
+
   const runGeneration = useCallback(async (sessionId: string, pendingRequest: PendingGeneration) => {
     if (runningRequestIdsRef.current.has(pendingRequest.id)) return;
+    // 提交生成后尽快把状态落库（下一次保存改为立即），缩短"点完就关"导致状态没保存的窗口。
+    flushNextWorkspaceSaveRef.current = true;
 
     runningRequestIdsRef.current.add(pendingRequest.id);
     const abortController = new AbortController();
@@ -11724,9 +11856,33 @@ export function ChatWorkbench() {
       if (pendingRequest.mode === "image" && prompt) {
         const sourceText = pendingRequest.sourceText ?? pendingRequest.messages[pendingRequest.messages.length - 1]?.content ?? "";
         const withReferenceHint = (value: string) => pendingRequest.referenceHint ? `${value}\n\n${pendingRequest.referenceHint}` : value;
-        const createImage = async (referenceImages?: string[], promptOverride = prompt, imageRequestId?: string, requestedCount = 1) => {
+        type ConversationImageJobStatus = { requestId: string; status: string; resultUrls?: string[]; resultDimensions?: Record<string, ImageDimensions>; usage?: UsageMeta; credit?: CreditMeta; error?: string; errorCode?: string };
+        // Poll a durable backend image job. The backend worker generates/charges/writes-to-asset-library
+        // regardless of the browser; we only READ status. No timeout: only an explicit backend failure
+        // surfaces as an error. If the client disconnects, the job still finishes; on reload the persisted
+        // pending request re-runs runGeneration → resubmits (idempotent by requestId) → polls the finished job.
+        const pollConversationImageJob = async (imageRequestId: string): Promise<{ images: string[]; imageDimensions: Record<string, ImageDimensions>; usage?: UsageMeta; credit?: CreditMeta }> => {
+          while (true) {
+            if (abortController.signal.aborted) throw new DOMException("aborted", "AbortError");
+            await new Promise((resolve) => window.setTimeout(resolve, 3000));
+            if (abortController.signal.aborted) throw new DOMException("aborted", "AbortError");
+            let job: ConversationImageJobStatus | undefined;
+            try {
+              const statusResponse = await fetch("/api/generation-status", { method: "POST", headers: { "Content-Type": "application/json" }, signal: abortController.signal, body: JSON.stringify({ requestIds: [imageRequestId] }) });
+              const statusData = await readJson<{ jobs?: ConversationImageJobStatus[] }>(statusResponse);
+              job = statusData.jobs?.find((item) => item?.requestId === imageRequestId);
+            } catch (error) {
+              if (abortController.signal.aborted) throw error;
+              continue;
+            }
+            if (!job) continue;
+            if (job.status === "failed") throw new Error(getApiErrorMessageWithCode({ error: job.error, errorCode: job.errorCode }, GENERIC_MEDIA_ERROR_MESSAGE));
+            if (job.status === "succeeded") return { images: Array.isArray(job.resultUrls) ? job.resultUrls.filter(Boolean) : [], imageDimensions: job.resultDimensions ?? {}, usage: job.usage, credit: job.credit };
+          }
+        };
+        const createImage = async (referenceImages: string[] | undefined, promptOverride = prompt, imageRequestId: string, requestedCount = 1) => {
           const conversationTitle = sessions.find((session) => session.id === sessionId)?.title;
-          const imageResponse = await fetch("/api/image", {
+          const submit = await fetch("/api/image", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             signal: abortController.signal,
@@ -11739,14 +11895,18 @@ export function ChatWorkbench() {
               conversationId: sessionId,
               conversationTitle,
               requestId: imageRequestId,
+              async: true,
+              flow: "conversation",
+              sourcePrompt: promptOverride,
               metadata: pendingRequest.agentGenerated ? { creditSource: "agent_image_generation" } : undefined,
             }),
-          });
-
-            return readJson<{ images?: string[]; imageDimensions?: Record<string, ImageDimensions>; failureReasons?: string[]; usage?: UsageMeta; credit?: CreditMeta }>(imageResponse);
+          }).then((response) => readJson<{ jobId?: string; error?: string; errorCode?: string }>(response));
+          if (!submit.jobId) throw new Error(getApiErrorMessageWithCode({ error: submit.error, errorCode: submit.errorCode }, GENERIC_MEDIA_ERROR_MESSAGE));
+          const job = await pollConversationImageJob(imageRequestId);
+          return { images: job.images, imageDimensions: job.imageDimensions, failureReasons: [] as string[], usage: job.usage, credit: job.credit };
         };
 
-        const createImageWithRetry = async (promptOverride = prompt, imageRequestId?: string, requestedCount = 1) => {
+        const createImageWithRetry = async (promptOverride = prompt, imageRequestId: string, requestedCount = 1) => {
           let imageData: { images?: string[]; imageDimensions?: Record<string, ImageDimensions>; failureReasons?: string[]; usage?: UsageMeta; credit?: CreditMeta; billableImageCount?: number };
 
           try {
@@ -11759,13 +11919,13 @@ export function ChatWorkbench() {
 
             try {
               const retryImages = await compressReferenceImagesForRetry(pendingRequest.referenceImages, RETRY_IMAGE_SIDE, RETRY_IMAGE_QUALITY);
-              imageData = await createImage(retryImages, promptOverride, imageRequestId, requestedCount);
+              imageData = await createImage(retryImages, promptOverride, `${imageRequestId}:c1`, requestedCount);
             } catch (retryError) {
               const retryMessage = retryError instanceof Error ? retryError.message : "";
               if (!isRequestTooLargeError(retryMessage)) throw retryError;
 
               const finalRetryImages = await compressReferenceImagesForRetry(pendingRequest.referenceImages, FINAL_RETRY_IMAGE_SIDE, FINAL_RETRY_IMAGE_QUALITY);
-              imageData = await createImage(finalRetryImages, promptOverride, imageRequestId, requestedCount);
+              imageData = await createImage(finalRetryImages, promptOverride, `${imageRequestId}:c2`, requestedCount);
             }
           }
 
@@ -11828,7 +11988,6 @@ export function ChatWorkbench() {
         const withReferenceHint = (value: string) => pendingRequest.referenceHint ? `${value}\n\n${pendingRequest.referenceHint}` : value;
         const createAndPollVideo = async (videoPrompt: string, itemSettings: GenerationSettings | undefined, itemIndex: number, promptDetail?: PromptDetail) => {
           let taskId = itemIndex === 0 ? pendingRequest.taskId : undefined;
-          let videoUsageRecorded = false;
           let pendingVideoUsage: UsageMeta | undefined;
           const conversationTitle = sessions.find((session) => session.id === sessionId)?.title;
           const videoRequestId = `${pendingRequest.id}:video:${itemIndex}`;
@@ -11855,7 +12014,7 @@ export function ChatWorkbench() {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             signal: abortController.signal,
-            body: JSON.stringify({ prompt: withReferenceHint(modelVideoPrompt), model: pendingRequest.model, referenceImages: pendingRequest.referenceImages, referenceVideos: pendingRequest.referenceVideos, referenceAudios: pendingRequest.referenceAudios, referenceMode: pendingRequest.videoReferenceMode, settings, conversationId: sessionId, conversationTitle, requestId: videoRequestId, metadata: pendingRequest.agentGenerated ? { creditSource: "agent_video_generation" } : undefined, autoBytePlusAssetReview }),
+            body: JSON.stringify({ prompt: withReferenceHint(modelVideoPrompt), sourcePrompt: videoPrompt, model: pendingRequest.model, referenceImages: pendingRequest.referenceImages, referenceVideos: pendingRequest.referenceVideos, referenceAudios: pendingRequest.referenceAudios, referenceMode: pendingRequest.videoReferenceMode, settings, conversationId: sessionId, conversationTitle, requestId: videoRequestId, flow: "conversation", itemIndex, metadata: pendingRequest.agentGenerated ? { creditSource: "agent_video_generation" } : undefined, autoBytePlusAssetReview }),
           });
 
           let taskResponse = await createVideoTask();
@@ -11910,11 +12069,11 @@ export function ChatWorkbench() {
           };
           let pollResponse: Response;
           try {
-            pollResponse = await fetch("/api/video", {
+            pollResponse = await fetch("/api/generation-status", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               signal: abortController.signal,
-              body: JSON.stringify({ taskId, model: pendingRequest.model, conversationId: sessionId, conversationTitle, requestId: videoRequestId, usage: pendingVideoUsage }),
+              body: JSON.stringify({ requestIds: [videoRequestId] }),
             });
           } catch (error) {
             if (abortController.signal.aborted || stoppedRequestIdsRef.current.has(pendingRequest.id) || isAbortLikeError(error)) throw error;
@@ -11929,7 +12088,9 @@ export function ChatWorkbench() {
             continue;
           }
 
-          pollData = await readJson<typeof pollData>(pollResponse);
+          const statusData = await readJson<{ jobs?: Array<{ status?: string; resultUrls?: string[]; posterUrl?: string; error?: string; errorCode?: string; usage?: UsageMeta; credit?: CreditMeta }> }>(pollResponse);
+          const job = statusData.jobs?.[0];
+          pollData = job ? { status: job.status, content: { video_url: job.resultUrls?.[0], poster_url: job.posterUrl }, error: job.error, errorCode: job.errorCode, usage: job.usage, credit: job.credit } : { status: "running" };
 
           const status = (pollData.status ?? "running").toLowerCase();
           const statusText = videoStatusLabels[status] ?? `视频状态：${status}`;
@@ -11953,12 +12114,8 @@ export function ChatWorkbench() {
           );
 
           if (["succeeded", "success", "completed", "complete", "done"].includes(status)) {
-            if (!videoUsageRecorded) {
-              const finalUsage = pollData.usage ?? pendingVideoUsage;
-              addSessionUsage(sessionId, finalUsage);
-              applyCreditResult(sessionId, pollData.credit);
-              videoUsageRecorded = Boolean(finalUsage);
-            }
+            addSessionUsage(sessionId, pollData.usage ?? pendingVideoUsage);
+            applyCreditResult(sessionId, pollData.credit);
 
             if (!pollData.content?.video_url) {
               updateAssistantMessageByRequestId(sessionId, pendingRequest.id, {
@@ -11979,10 +12136,7 @@ export function ChatWorkbench() {
           }
 
           if (["failed", "error", "expired"].includes(status)) {
-            if (!videoUsageRecorded) {
-              addSessionUsage(sessionId, pollData.usage);
-              videoUsageRecorded = Boolean(pollData.usage);
-            }
+            addSessionUsage(sessionId, pollData.usage);
 
             const errorMessage = getApiErrorMessageWithCode({ error: pollData.error, errorCode: pollData.errorCode }, videoStatusLabels[status] ?? GENERIC_MEDIA_ERROR_MESSAGE);
             throw new Error(errorMessage ?? videoStatusLabels[status]);
@@ -12218,9 +12372,7 @@ export function ChatWorkbench() {
 
     const explicitImageReferences = getOrderedExplicitImageReferences(rawTextWithMediaMentions, assets, sendUploadedImages, activeConversationImageReferences);
     const uploadedImageReferences = sendUploadedImages.map((image) => ({ name: getUploadedImageReferenceName(image, sendUploadedImages), url: image.url }));
-    const recentReferenceImages = explicitImageReferences.length > 0 || uploadedImageReferences.length > 0 ? [] : getRecentReferenceImages(sessionForSend.messages, rawText);
-    const recentImageReferences = recentReferenceImages.map((url, index) => ({ name: `图片${index + 1}`, url }));
-    const sourceImageReferences = explicitImageReferences.length > 0 ? explicitImageReferences : uploadedImageReferences.length > 0 ? uploadedImageReferences : recentImageReferences;
+    const sourceImageReferences = explicitImageReferences.length > 0 ? explicitImageReferences : uploadedImageReferences;
     if (sourceImageReferences.filter((reference, index, array) => Boolean(reference.url) && array.findIndex((item) => item.url === reference.url) === index).length > currentMaxReferenceImages) {
       showInputTip(`当前模型最多支持 ${currentMaxReferenceImages} 张参考图，不能上传更多图片`);
       return;

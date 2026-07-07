@@ -11,6 +11,7 @@ import type { Prisma } from "@prisma/client";
 import { appendUploadRuleFeedbackLog } from "@/lib/upload-rule-feedback-log";
 import { appendGenerationDiagnosticsLog, summarizeGeneratedReference } from "@/lib/generation-diagnostics-log";
 import { recordGenerationEvent } from "@/lib/analytics-events";
+import { createImageJob } from "@/lib/generation-jobs";
 
 function getRequestedImageCount(value: unknown) {
   const count = typeof value === "number" ? value : typeof value === "string" ? Number(value) : 1;
@@ -83,10 +84,10 @@ function withChargedUsage<T extends { usage?: { promptTokens?: number; completio
 }
 
 export async function POST(request: Request) {
-  let body: { prompt?: string; model?: string; referenceImages?: string[]; settings?: { ratio?: string; resolution?: string }; count?: number; candidateMode?: "all" | "best"; conversationId?: string; conversationTitle?: string; requestId?: string; metadata?: Prisma.InputJsonValue } | undefined;
+  let body: { prompt?: string; model?: string; referenceImages?: string[]; settings?: { ratio?: string; resolution?: string }; count?: number; candidateMode?: "all" | "best"; conversationId?: string; conversationTitle?: string; requestId?: string; metadata?: Prisma.InputJsonValue; async?: boolean; workflowId?: string; workflowNodeId?: string; flow?: "conversation" | "workflow" } | undefined;
   const routeStartedAt = Date.now();
   try {
-    body = (await request.json()) as { prompt?: string; model?: string; referenceImages?: string[]; settings?: { ratio?: string; resolution?: string }; count?: number; candidateMode?: "all" | "best"; conversationId?: string; conversationTitle?: string; requestId?: string; metadata?: Prisma.InputJsonValue };
+    body = (await request.json()) as { prompt?: string; model?: string; referenceImages?: string[]; settings?: { ratio?: string; resolution?: string }; count?: number; candidateMode?: "all" | "best"; conversationId?: string; conversationTitle?: string; requestId?: string; metadata?: Prisma.InputJsonValue; async?: boolean; workflowId?: string; workflowNodeId?: string; flow?: "conversation" | "workflow" };
     const prompt = body.prompt?.trim();
 
     if (!prompt) {
@@ -100,6 +101,31 @@ export async function POST(request: Request) {
 
     const user = await getCurrentUser();
     await assertUserCanUseCredits(user, "image", body.metadata);
+
+    // 后端持久任务模式：建 job 立即返回 jobId，由常驻 worker 跑到底（断开/刷新/重启不影响）。
+    if (body.async) {
+      if (!user) return NextResponse.json({ error: "请先登录后再使用模型。" }, { status: 401 });
+      const requestId = body.requestId?.trim();
+      if (!requestId) return NextResponse.json({ error: "缺少 requestId" }, { status: 400 });
+      const job = await createImageJob({
+        userId: user.id,
+        requestId,
+        prompt,
+        model: body.model,
+        referenceImages,
+        settings: body.settings,
+        count: body.count,
+        candidateMode: body.candidateMode,
+        creditSource,
+        conversationId: body.conversationId,
+        conversationTitle: body.conversationTitle,
+        workflowId: body.workflowId,
+        workflowNodeId: body.workflowNodeId,
+        flow: body.flow ?? (creditSource?.startsWith("workflow_") ? "workflow" : "conversation"),
+        metadata: body.metadata,
+      });
+      return NextResponse.json({ jobId: job.id, requestId: job.requestId, status: job.status });
+    }
 
     const requestedImageCount = getRequestedImageCount(body.count);
     void appendGenerationDiagnosticsLog({

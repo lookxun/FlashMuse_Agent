@@ -1,5 +1,100 @@
 # Current Handover Changelog
 
+## 2026-07-08 (最新 session) 图片 job 化部署上线 + 视频(对话流+工作流) job 化 + 多轮恢复兜底 + 工作流2000字修复 (全部 DEPLOYED prod+Ali；GitHub 仍未推)
+
+Reply style: 简洁直接中文. 本 session 把上个 session 只在本地的"图片 job 化"**部署上线**(含 Prisma 迁移 `20260707000000_generation_jobs`)，并**完成视频 job 化**、修了一串生成恢复的坑。全部窄部署到马来 prod(101.47.19.109)+阿里。**GitHub 尚未推**(prod 领先 GitHub，本地也有未提交改动)。部署方法见 03-deploy。诊断用 `psql`(DATABASE_URL 取 .env.local 第一行，去掉 `?schema=` 即 `${val%%\?*}`，用 scp 的 .sh 文件跑，别内联)。
+
+### 0. 部署图片 job 化(上个 session 的本地改动)
+- 服务器先 `npx prisma migrate deploy` 应用 `20260707000000_generation_jobs`(GenerationJob 表)，再 build。`instrumentation.ts` 启动常驻 worker，日志见 `[generation-worker] started`。备份 `.deploy-backups/20260707-generation-jobs/`。
+
+### 1. 工作流 2000 字限制 bug 修复(独立小修，最先做)
+- 现象：不连节点能输 1936 字；连很多图不@变 1797；再加@变 1500+。用户以为在算图片文字。
+- 根因：`getWorkflowTextNodeOutput`(inner ~900) 对**非文本**连入节点也返回 `node.data.prompt`，把连入图片/视频节点的历史 prompt 也算进 2000 字。
+- 修复：非 text 节点返回 `""`。现在 2000 字只算 当前输入框 + 连入的**文本节点** + 输入框里手写的 `@名字`。不算图片画面文字/连入图视频本身。
+- 部署：窄补丁(单文件 `sed`+python 就地替换)，备份 `.deploy-backups/20260707-workflow-prompt-limit-hotfix/`。
+
+### 2. 视频 job 化(对话流+工作流)
+- 后端 `generation-jobs.ts`：新增 `createVideoJob`(创建阶段仍由 `/api/video` 做，拿到 providerTaskId 后建 job，status 直接 'running')、`runVideoJob`(轮询视频平台→**等本地存盘完成**→扣费→写资产库→落 succeeded/failed)、`claimVideoJobs`(running+providerTaskId+nextRunAt 到期才认领，lease 10min 回收)、`finalizeVideoJobAsset`(写 conversation_videos/workflow_videos，命名 video_N_d0 / video_N_wX)、`scheduleJobRetry`(轮询未终态时 8s 后重试，无超时)。抽了 getVideoUrl/getTaskStatus/getVideoErrorMessage/usage 等 helper(与 video/route.ts 同构)。
+- worker `generation-worker.ts`：tick 里图片认领后再认领视频(`claimVideoJobs`,`MAX_CONCURRENT_VIDEO=8`,`VIDEO_BATCH=4`)。
+- `/api/video`：两个创建成功返回点(普通 + auto-review 后)都调 `createVideoJob`(传 flow/workflowId/workflowNodeId/itemIndex/sourcePrompt)。body 加这些字段。
+- `/api/generation-status`：返回加 `providerTaskId`。
+- 前端 `chat-workbench.tsx createAndPollVideo`：创建后不再轮询 `/api/video`，改查 `/api/generation-status`(按 videoRequestId)；创建 body 加 flow/itemIndex/sourcePrompt；删了 `videoUsageRecorded`。
+- 前端 `workflow-tldraw-canvas-inner.tsx pollVideoNode`：轮询改查 `/api/generation-status`(按 requestId)，去掉超时;创建 body 加 flow/workflowId/workflowNodeId/sourcePrompt。
+
+### 3. ⚠️ 关键修复：视频 job 存过期远程 URL + 视频不进资产库
+- 根因：视频成功时 `enqueueRemoteAssetSave` 返回的是 pending(本地存盘异步)，worker 立刻用**远程 volces URL**(约24h过期)落 job，且 `resolvePersistableMediaAssetUrl(remote)` 拿不到本地 URL→**跳过写资产库**(违背"永不回来也进资产库")。
+- 修复(`runVideoJob`)：`enqueueRemoteAssetSave` 后 `waitForMediaSaveJob(saveJob.id, 60_000)` 等本地存盘完成，用**本地 URL** 写 job 结果 + 资产库 + manifest + 计费 metadata。
+
+### 4. 对话流兜底：pending 图片/视频消息按 job 恢复
+- 现象:12424740 生成2张图关浏览器→回来图片没恢复(job 已 succeeded 但消息还 pendingImageCount:2，pendingRequests 没可靠恢复)。
+- 修复(`chat-workbench.tsx`)：新增两个 effect(reconciledConversationImageJobsRef / VideoJobsRef)：扫 pendingImageCount/pendingVideoCount>0 的消息，按 `requestId:image:N` / `requestId:video:N` 查 `/api/generation-status`，succeeded 补回图/视频(appendImages/appendVideo + reserveMediaSystemNames + addGeneratedAssets + usage/credit)、failed 标失败、running 每 3s 继续查。
+
+### 5. 工作流兜底：图片/视频 reconcile
+- 现象:工作流节点被旧标签页覆盖回 isRunning、job 已成功却卡等待卡。
+- 修复(`workflow-tldraw-canvas-inner.tsx`)：`reconcileImageJobsFromBackend`(上个 session 已有)+ 新增 `reconcileVideoJobsFromBackend`/`applyVideoNodeJobResult`：打开工作流时查 `active:true` job，按 workflowNodeId(或 videoRequestId)对齐节点，成功补回/失败提示/运行中续轮询。
+
+### 6. ⚠️ 关键修复 B：服务端保存自愈(防旧标签页覆盖)
+- 根因:`src/lib/workspace-workflows.ts mergeWorkflowCanvasMedia` 把 `images:[]` **空数组当"有值"**，所以旧标签页(旧JS,ChunkLoadError那种)发来的空图不会被 DB 已有结果补回，且 isRunning 原样保留→反复把已成功结果覆盖成"生成中"。
+- 修复:重写 `mergeWorkflowCanvasMedia`——空数组视为缺失；保存工作流时用 **DB 已有结果** 或 **新增查询 `getSucceededWorkflowJobResults`(按 workflowId 查 succeeded job)** 补回节点 images/videoUrl/poster/dimensions；补回后清 isRunning/imageRequestId/videoRequestId/taskId/startedAt。**任何保存(即使旧标签页)都会被服务端自愈，覆盖不掉。**
+
+### 7. ⚠️ 关键修复：标签页挂起恢复不重跑恢复逻辑(本 session 最后一个坑)
+- 现象:用户"生成中关浏览器→8分钟后打开"，**视频出来了图片没出来**。DB 查证图片 job 早 succeeded 且节点已被B自愈写回图。
+- 根因:"关浏览器再打开"是标签页**挂起后恢复**(非重新加载)，workflowId 没变→打开时的一次性恢复 effect 不重跑；视频那条长轮询循环碰巧还活着所以恢复，图片无常驻循环就一直卡。
+- 修复:工作流 + 对话流都加 **visibilitychange/focus 监听**，标签页重新可见时重跑全部恢复(工作流直接调4个恢复函数；对话流清 reconciled refs + `recoveryTick` 状态触发两个 reconcile effect 重跑)。**以后关浏览器/切走再回来自动补图补视频，不用手刷。**
+
+### 手工数据修复(生产)
+- ID_271898 工作流 `c211e3cb...` 与 12424740 工作流_02 `11d9ce76...` 的卡死节点，用一次性脚本按 succeeded job 把 images/videoUrl 写回 canvasJson 并清 isRunning(脚本放 `.runtime/` 用 `DATABASE_URL` 跑，已删)。B 修复后此类不再复发。
+
+### 已知局限 / 给下一个 AI
+- **GitHub 仍未推**:prod 领先 GitHub，本地有未提交改动(见 `git status`)。用户说推时再 commit+push。
+- 视频 job **无超时**:provider 永不返回终态会一直轮询(用户要求,只有明确失败才失败)。
+- `waitForMediaSaveJob` 最多阻塞 worker 60s/条视频;`MAX_CONCURRENT_VIDEO=8` 可接受。
+- 视频创建极端情况(pendingRequests 没存住)可能重建一次 provider 任务;不会重复扣费(按 requestId 幂等)。
+- 教训:改源码一律 edit 工具;PowerShell 内联 `$()`/`grep` 会被吞,服务器脚本用 scp 的 .sh + `sed -i 's/\r$//'`;`psql` 的 URL 要去 `?schema=`。
+
+## 2026-07-07 (最新 session) 生成链路持久化改造 第一步：图片(对话流+工作流) job 化 + 后端常驻 worker + 断线/退出/重启不丢 + 发送即保存 (⚠️ 全部**本地 only**，未部署未推 GitHub；视频前端未做)
+
+Reply style: 简洁直接中文. **本 session 所有代码改动都只在本地，没有部署、没有推 GitHub。** `npx tsc --noEmit` + `npm run build` 均通过。用户本地已初步自测图片(见下"已验证")。下一个 AI：**用户明确要求你上来先把这些未部署的改动部署掉(prod+Ali)，然后立刻做视频对话流+工作流的 job 化(见 05-next-actions 最上面)。**
+
+### 背景 / 用户诉求(务必记住)
+- 原生成链路是**前端驱动**：轮询循环、"还在跑/好了没"的判断全在浏览器。图片是"一次性阻塞请求，无 taskId、无恢复"，浏览器一断/刷新/超时就丢结果甚至永久卡死(312876953 那个 bug 的根因)。视频稍好(有 taskId + 前端 resume)，但用户永不回来/服务重启时也没人推进。
+- 用户要的最终态：**"申请模型后要一直有轮询，被打断也要恢复，前端只是展示。退出/刷新/断开/多久都不影响后端，只有模型明确返回失败才显示失败卡(绝不用超时兜底)。用户退出照样在后端跑完，下次登录直接看到成功或失败。图即使永远不回来也要自动进资产库。"**
+- 关键认知(讲给用户并达成共识)：真正"纯后端、跟前端无关"的只有**资产库**(独立表，后端写)。**工作流画布节点**和**对话流消息**都是"前端保存的文档"，所以结果要"同步"回文档(打开/回来时对齐)，不是纯静态推送。工作流因可编辑、同步重；对话流只追加、同步轻。
+
+### 后端(共用，图片链路已 job 化；视频尚未接)
+- **新增表 `GenerationJob`**：migration `prisma/migrations/20260707000000_generation_jobs/`(本地已 `prisma migrate deploy` 应用)+ schema.prisma model。字段含 requestId(唯一)、kind、status(queued/running/succeeded/failed)、flow(conversation/workflow)、creditSource、model、prompt、settingsJson、referenceImages、conversationId/messageId/workflowId/workflowNodeId、itemIndex、count、providerTaskId(留给视频)、resultUrls、resultDimensions、posterUrl、usageJson、creditJson、metadataJson、extraJson、error/errorCode、attempts、leaseAt、nextRunAt、时间戳。**用 raw SQL 读写(避开 Windows prisma generate 锁，同 analytics-events 思路)。**
+- **新增 `src/lib/generation-jobs.ts`**：`createImageJob`(幂等，同 requestId 直接返回)、`getGenerationJobByRequestId`、`getGenerationJobsByRequestIds`、`getActiveGenerationJobs`(查该用户在跑+最近6h完成，供加载对齐)、`claimImageJobs`(原子 `UPDATE...RETURNING` + `FOR UPDATE SKIP LOCKED` + lease，认领 queued 并**回收 lease>10分钟的 running**=重启自愈)、`runImageJob`(调 `generateOpenRouterImage`→挑选交付→`chargeCredits`(按 requestId 幂等)→落成功/失败；空交付/异常→failed+`createCodedApiError`)、`finalizeImageJobAsset`(**成功即写资产库** MediaAsset+UserAssetState：工作流→workflow_images 名 image_N_wX(读 workflow.nextImageNumber+workflowCode，不改计数器)；对话流→conversation_images 名 image_N_d0(按该会话已生成图数量)；userRenamed=false 让前端回来可校准；同 URL upsert 不重复)。
+- **新增常驻 worker `src/lib/generation-worker.ts`** + **`instrumentation.ts`**(`register()` 里延迟4s+隔离+try/catch 启动，绝不拖垮服务器/登录)：每 2.5s `claimImageJobs`，全局并发上限 `MAX_CONCURRENT_IMAGE=6`，每批最多 `IMAGE_BATCH=3`，`void runImageJob`(不 await，多张并发)。`nudgeGenerationWorker()` 提交后立即触发一次。
+- **`/api/image` 加 `async` 模式**：`body.async===true` 时(需登录+requestId)建 job 立即返回 `{jobId,requestId,status}`；**同步老路 100% 保留未动**(向后兼容，还没迁移的调用者不受影响)。新增 body 字段 async/workflowId/workflowNodeId/flow/sourcePrompt。
+- **新增 `/api/generation-status`**(POST `{requestIds?}` 或 `{active:true}`)：只读返回该用户的 job 列表(含 kind/flow/workflowId/workflowNodeId/status/resultUrls/resultDimensions/error/credit 等)。
+
+### 前端·工作流图片(`workflow-tldraw-canvas-inner.tsx`)
+- `generateImageForNode` 改为：建 requestId 存到节点 `data.imageRequestId`(新字段)+isRunning+startedAt → POST `/api/image?async` 拿 jobId → `pollImageNode` 每 3s 查 `/api/generation-status`，succeeded 应用结果(复用 `applyImageNodeResult`：写 images/dimensions、删入边、onGeneratedMedia、onCredit、清 imageRequestId)、failed 抛错。**无超时**。
+- 新增 `resumeInterruptedImageNodes`(打开工作流时按节点 `imageRequestId` 续轮询，图片节点终于有了恢复——以前完全没有)。
+- 新增 `reconcileImageJobsFromBackend`(**兜底#2**：打开工作流时 POST `{active:true}` 取全部活跃图片 job，**按 workflowNodeId 对齐节点**，即使节点 running 状态没来得及保存也能恢复成品/失败/继续轮询)。
+- `imageRequestId` 已加入 chat-workbench `getWorkflowMeaningfulSnapshot` 的 `stripKeys` 剔除名单(不会因它导致工作流置顶)；`imagePollIntervalMs=3000`；类型 `WorkflowImageJobStatus`。
+
+### 前端·对话流图片(`chat-workbench.tsx`)
+- `runGeneration` 图片分支的 `createImage` 改为提交 `/api/image?async`(flow:"conversation",sourcePrompt=干净prompt) + `pollConversationImageJob`(每3s查状态，尊重 abort)。**完整保留**多张并行(Promise.allSettled, requestId `${pending.id}:image:${index}`)、agent 多镜、失败槽重试、appendImagesToAssistantMessage/addGeneratedAssets/usage/credit 等下游逻辑。
+- 413"请求过大"压缩重试保留：每次重试用**带后缀的 requestId**(`:c1`/`:c2`)避免和已失败 job 幂等撞车。
+- 断线恢复靠现有机制：`pendingRequests` 断线时不清(runGeneration 未走到 finally 的 clearPendingRequest)，重登时 12058 的 resume effect 重跑 runGeneration → createImage 幂等拿到**已完成的 job**→秒出结果(非重跑)。
+
+### 发送即保存(缩短"点完秒关没保存"窗口)
+- 工作区保存是 500ms 防抖(`chat-workbench.tsx:9518` effect,`workspaceSaveTimerRef`)。新增 `flushNextWorkspaceSaveRef`：为 true 时该次保存改 0ms 延迟。
+- 对话流：`runGeneration` 开头 `flushNextWorkspaceSaveRef.current=true`(其紧接的 setState 会触发保存 effect→0ms 落库)。`requestImmediateWorkspaceSave` useCallback 已备好(暂用于对话流)。
+- 工作流没穿透 prop，改用**兜底#2**(reconcileImageJobsFromBackend 按 nodeId 对齐)覆盖"状态没保存"的情况，更稳。
+
+### 已验证(用户本地自测)
+- 对话流生成 1 视频 + 4 图片，点完后**退出登录+关浏览器**，几分钟后重登：等待卡→约1-2秒图片出、3-4秒视频出。
+- 查本地 DB `GenerationJob` 表：正好 4 条 `:image:0~3` 全 `succeeded`/`flow=conversation`(证明图片走了新 job 系统、是后端跑完后秒取；**无视频 job**——视频是靠既有 taskId+resume 恢复，我没动视频)。
+
+### ⚠️ 未做 / 坑 / 给下一个 AI
+- **视频完全没接 job**：对话流(`createAndPollVideo` while 轮询在前端)、工作流(`pollVideoNode`/`resumeInterruptedVideoNodes`)都是旧的前端驱动。视频"能恢复"只因服务商持有 taskId + 前端 resume，但**用户永不回来/服务重启时后端不会自己推进视频**、也不写资产库。下次要做：把视频也 job 化(providerTaskId 存 job，worker 持续轮询到 succeeded/failed→存盘+扣费+写资产库；`/api/video` 那段脆弱的 BytePlus 真人审核创建逻辑要小心搬进 worker 或在创建后建 job)。
+- **312876953 手工恢复**：见 05/03，那张卡死图已手工补进资产库(image_1_w1)，本次 job 化根治了同类问题。
+- 本地测试用 `docker exec flashmuse-postgres psql -U flashmuse -d flashmuse -f /tmp/x.sql`(role 是 flashmuse 不是 postgres；PowerShell 里标识符双引号会被吞，务必用 .sql 文件 `-f`)。
+- 若本地登录突然"请求失败"：多半是 dev 运行时 `.next` 被破坏。停掉所有 node(`Get-Process node|Stop-Process -Force`)、删 `.next`、重新 `start-project.bat`。
+
+
 ## 2026-07-06 (最新 session) B_373文案幂等 + 使用提示词原样还原(对话流&工作流) + 视频存干净prompt + 参考hint统一并按意图逐张判定 (DEPLOYED prod+Ali, 本 session 结束时**已推 GitHub**)
 
 Reply style: 简洁直接中文. 全 session 多次窄部署(单文件 scp + `/usr/local/bin/deploy-flashmuse-production.sh`)到马来 prod(101.47.19.109)+阿里，每次都 md5 校验、三域名 200。**session 末尾按用户要求把攒的批次一起推 GitHub**(含上个 session 未推的 `video/route.ts` 等)。改动文件：`src/lib/error-message.ts`、`src/components/chat-workbench.tsx`、`src/components/workflow-tldraw-canvas-inner.tsx`、新增 `src/lib/reference-hint.ts`。诊断法：PM2 `~/.pm2/logs/flashmuse-error.log` 搜 `[B_xxx]` + `.runtime/generation-diagnostics-log.jsonl` 按 requestId。

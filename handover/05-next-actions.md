@@ -2,6 +2,52 @@
 
 ## Highest Priority
 
+### 2026-07-08 (最新 session) END-OF-SESSION STATE — 先读这条
+
+- **状态**：图片 job 化已上线;视频(对话流+工作流) job 化已完成并上线;生成恢复的多层兜底 + 工作流 2000 字修复全部 DEPLOYED prod+Ali。**GitHub 仍未推**(prod 领先 GitHub，本地有未提交改动)。
+- **下一个 AI 首要**：
+  1. 用户说"推 GitHub"时才推:先 `git status --short`/`diff`/`log`，`npx tsc --noEmit`+`npm run build`，再 commit+push。当前有 schema 变更(GenerationJob，生产已迁移)、新文件(generation-jobs/worker/instrumentation/generation-status)、以及本 session 的 workspace-workflows / video / chat-workbench / workflow-inner 改动。
+  2. 若继续做:见下"仍可优化/局限"。
+- **本 session 已做(细节见 CHANGELOG 顶部 8 条)**：图片 job 部署;工作流2000字只算文本节点;视频 job 化(createVideoJob/runVideoJob/claimVideoJobs/finalizeVideoJobAsset);视频等本地存盘再落库(修过期URL+资产库);对话流图片/视频消息级 reconcile;工作流图片/视频 reconcile;服务端保存自愈 mergeWorkflowCanvasMedia+getSucceededWorkflowJobResults;visibilitychange/focus 恢复。
+- **BROWSER-VERIFY(ali 硬刷新 Ctrl+Shift+R 先加载新JS)**：
+  1. 对话流/工作流生成图片或视频，转圈时关浏览器/切走，几分钟后回来→自动出结果(不用手刷)。
+  2. 工作流连很多图不影响 2000 字额度;2000 字只算输入框+文本节点+手写@。
+  3. 视频生成后进资产库(video_N_wX / video_N_d0)，URL 是本地 /generated/ 不是 volces 远程。
+  4. 旧标签页发"生成中"不会覆盖已成功结果(服务端自愈)。
+- **仍可优化/局限**：
+  - 视频 job 无超时(用户要求);provider 永不返回会一直轮询。
+  - `waitForMediaSaveJob` 每条视频最多阻塞 worker 60s。
+  - 视频创建极端(pendingRequests 丢失)可能重建一次 provider 任务(不重复扣费)。
+  - 多实例部署时 GenerationJob 用 DB lease 已安全,但 media-save-queue 仍是本地 JSON(见 M008)。
+- **教训**：改源码用 edit 工具;服务器脚本用 scp 的 .sh + `sed -i 's/\r$//'`,别 PowerShell 内联 `$()`/`grep`;`psql` URL 去 `?schema=`(`${val%%\?*}`);上线以 `tsc --noEmit`+`npm run build` 为准(eslint 不 gate)。
+
+### 2026-07-07 (最新 session) END-OF-SESSION STATE — 下一个 AI 上来直接按顺序做，别问
+
+**用户指令(原话意图)：下次上来先把本地未部署的改动部署掉，然后把视频的对话流+工作流也做成 job 化。读完交接文档必须完全接上、直接做。**
+
+**当前状态：本 session 全部改动都在本地，未部署 prod/Ali、未推 GitHub。** `tsc`+`build` 通过，用户本地已自测图片 OK(见 CHANGELOG 顶部"已验证")。改动文件清单：
+- 新增：`prisma/migrations/20260707000000_generation_jobs/migration.sql`、`src/lib/generation-jobs.ts`、`src/lib/generation-worker.ts`、`instrumentation.ts`、`src/app/api/generation-status/route.ts`
+- 改动：`prisma/schema.prisma`(加 GenerationJob model)、`src/app/api/image/route.ts`(加 async 分支)、`src/components/chat-workbench.tsx`(对话流图片 job 化 + flushNextWorkspaceSaveRef 发送即保存)、`src/components/workflow-tldraw-canvas-inner.tsx`(工作流图片 job 化 + resume + reconcile#2 + imageRequestId + imagePollIntervalMs + 类型)
+
+**第一步：部署本 session 图片 job 改造(有 schema 变更!)**
+1. `git status --short`/`diff`/`log`，本地 `npx tsc --noEmit` + `npm run build` 再确认。
+2. 部署流程见 03-deploy-and-servers "HOW TO DEPLOY"。**这次有 Prisma 迁移** `20260707000000_generation_jobs`，服务器上必须先 `npx prisma migrate deploy`(DATABASE_URL 取 .env.local 第一行)再 build。用全量源码快照部署(新增了多个文件)。
+3. **instrumentation.ts 会在服务器启动时拉起常驻 worker**——部署后确认 PM2 里 worker 起来了(日志 `[generation-worker] started`)、且不影响登录/workspace。生产是单 PID PM2，setInterval worker 可用。
+4. 部署前后跑 prod-deploy-snapshot 对比(assetListHash 等)，三域名 200。
+5. 部署后浏览器验证：对话流+工作流生成图片，**在图片还在转圈时**退出/刷新/关标签，回来应秒出(取已完成 job)或继续等待卡，明确失败才失败卡；永不回来图也进资产库。
+
+**第二步：视频 job 化(对话流+工作流)——用户点名要做**
+- 目标同图片：`/api/video` 创建任务后建 GenerationJob(kind=video, providerTaskId)，worker 持续轮询到 succeeded/failed→`enqueueRemoteAssetSave`存盘+`chargeCredits`扣费+写资产库(conversation_videos/workflow_videos)，退出/重启/永不回来都推进。
+- 前端两处(`chat-workbench.tsx createAndPollVideo`、`workflow-tldraw-canvas-inner.tsx pollVideoNode/resumeInterruptedVideoNodes`)改为提交拿 jobId + 订阅 `/api/generation-status` + 加载对齐(工作流按 workflowNodeId 用 reconcile 兜底、对话流按 requestId)。
+- **⚠️ 最大风险**：`/api/video` 创建分支里的 **BytePlus 真人审核往返**(`autoReviewBytePlusVideoReferences`、`status:"reviewing"` 重试、asset:// 替换)极其缠绕。方案：保留创建分支原逻辑，拿到 providerTaskId 后建/更新 job，让 worker 只负责**轮询→完成**；或把整套创建搬进 worker(更彻底但风险高)。务必先读 `src/app/api/video/route.ts` 全文再动。
+- 视频 `finalizeImageJobAsset` 的对应版本(写 conversation_videos/workflow_videos + poster)要补；命名 video_N_wX / video_N_d0。
+- 参考图片实现：worker 的 `claimVideoJobs`(status running + providerTaskId + nextRunAt 到期才轮询，间隔~5-10s，无上限时间)、`pollVideoJobOnce`(把 video/route.ts 轮询成功分支的 save+charge+manifest 抽成可复用函数，路由和 worker 共用避免两份逻辑)。
+
+**其它细节记忆(发送即保存)**：见 CHANGELOG。防抖 500ms→提交时 `flushNextWorkspaceSaveRef` 改 0ms；工作流靠 reconcile#2 兜底不依赖保存。
+
+**已验证/别重复踩**：图片 job 化本地测通(4 条 conversation image job 全 succeeded)。视频这次没动(靠既有 taskId+resume)。本地登录"请求失败"=dev 运行时 `.next` 被破坏，停 node+删 `.next`+start-project.bat。
+
+
 ### 2026-07-06 (最新 session) END-OF-SESSION STATE (read this first)
 
 - **DEPLOYED prod+Ali AND PUSHED GitHub**。本 session 结束时按用户要求把攒的批次一起推了(包含上一个 later session 未推的 `video/route.ts` 去掉审核上限、命名统一等所有本地改动 + 本 session 5 项)。推送后 prod=GitHub=本地。下一个 AI：若继续改，先 `git status --short`/`diff`，`npx tsc --noEmit`+`npm run build`，再窄部署。

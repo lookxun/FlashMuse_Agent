@@ -15,6 +15,7 @@ import { appendVideoDiagnosticsLog, summarizeVideoReference } from "@/lib/video-
 import { appendGenerationDiagnosticsLog, summarizeGeneratedReference } from "@/lib/generation-diagnostics-log";
 import { createBytePlusAsset, getBytePlusAsset } from "@/lib/byteplus-assets";
 import { recordGenerationEvent } from "@/lib/analytics-events";
+import { createVideoJob } from "@/lib/generation-jobs";
 import { Prisma } from "@prisma/client";
 
 type UsageMeta = {
@@ -490,6 +491,11 @@ export async function POST(request: Request) {
     metadata?: { creditSource?: string };
     autoBytePlusAssetReview?: boolean;
     referenceMode?: VideoReferenceMode;
+    flow?: "conversation" | "workflow";
+    workflowId?: string;
+    workflowNodeId?: string;
+    itemIndex?: number;
+    sourcePrompt?: string;
   } | undefined;
 
   try {
@@ -509,6 +515,11 @@ export async function POST(request: Request) {
       metadata?: { creditSource?: string };
       autoBytePlusAssetReview?: boolean;
       referenceMode?: VideoReferenceMode;
+      flow?: "conversation" | "workflow";
+      workflowId?: string;
+      workflowNodeId?: string;
+      itemIndex?: number;
+      sourcePrompt?: string;
     };
 
     const taskId = body.taskId?.trim();
@@ -826,6 +837,28 @@ export async function POST(request: Request) {
           return NextResponse.json({ ...codedError, raw: task }, { status: 502 });
         }
         await upsertVideoManifestEntry({ taskId: retryId, prompt, model: body.model, settings: body.settings });
+        await createVideoJob({
+          userId: user!.id,
+          requestId,
+          providerTaskId: retryId,
+          prompt,
+          model: body.model,
+          settings: body.settings,
+          referenceImages,
+          referenceVideos,
+          referenceAudios,
+          referenceMode: body.referenceMode,
+          conversationId: body.conversationId,
+          conversationTitle: body.conversationTitle,
+          workflowId: body.workflowId,
+          workflowNodeId: body.workflowNodeId,
+          itemIndex: body.itemIndex,
+          flow: body.flow ?? (body.metadata?.creditSource === "workflow_video_generation" ? "workflow" : "conversation"),
+          creditSource,
+          usage: getUsageMeta(task) as Record<string, unknown> | undefined,
+          metadata: body.metadata as Prisma.InputJsonValue | undefined,
+          extra: { cleanPrompt: body.sourcePrompt ?? prompt, autoReviewTriggered: Boolean(autoBytePlusAssetReview) },
+        });
         void appendGenerationDiagnosticsLog({ event: "video-route-create-success-after-review", requestId: body.requestId, conversationId: body.conversationId, conversationTitle: body.conversationTitle, userId: user?.id, mode: "video", provider: isBytePlusVideoModel(body.model) ? "byteplus" : "openrouter", model: body.model, taskId: retryId, prompt, settings: body.settings, durationMs: Date.now() - routeStartedAt, upstream: task, extra: { autoReviewTriggered: Boolean(autoBytePlusAssetReview), usage: getUsageMeta(task) } });
         return NextResponse.json({ ...task, id: retryId, job_id: getCreateTaskId(task), usage: getUsageMeta(task), autoBytePlusAssetReview: autoBytePlusAssetReview ? { triggered: true, assets: autoBytePlusAssetReview.updates } : undefined });
       }
@@ -874,6 +907,28 @@ export async function POST(request: Request) {
     }
 
     await upsertVideoManifestEntry({ taskId: id, prompt, model: body.model, settings: body.settings });
+    await createVideoJob({
+      userId: user!.id,
+      requestId,
+      providerTaskId: id,
+      prompt,
+      model: body.model,
+      settings: body.settings,
+      referenceImages,
+      referenceVideos,
+      referenceAudios,
+      referenceMode: body.referenceMode,
+      conversationId: body.conversationId,
+      conversationTitle: body.conversationTitle,
+      workflowId: body.workflowId,
+      workflowNodeId: body.workflowNodeId,
+      itemIndex: body.itemIndex,
+      flow: body.flow ?? (body.metadata?.creditSource === "workflow_video_generation" ? "workflow" : "conversation"),
+      creditSource,
+      usage: getUsageMeta(task) as Record<string, unknown> | undefined,
+      metadata: body.metadata as Prisma.InputJsonValue | undefined,
+      extra: { cleanPrompt: body.sourcePrompt ?? prompt, autoReviewTriggered: Boolean(autoBytePlusAssetReview) },
+    });
 
     if (isBytePlusVideoModel(body.model)) {
       logVideoTiming("BytePlus created", {

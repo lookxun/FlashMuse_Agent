@@ -1,6 +1,30 @@
 # Current Status
 
-Last checked: 2026-07-06 China time.
+Last checked: 2026-07-08 China time.
+
+## Latest 2026-07-08 (最新 session) — 图片 job 化上线 + 视频 job 化 + 生成恢复多层兜底 + 工作流2000字修复 (全部 DEPLOYED prod+Ali；GitHub 未推)
+
+- Reply style 简洁直接中文. 本 session 把上个 session 只在本地的图片 job 化**部署上线**(应用了 Prisma 迁移 `20260707000000_generation_jobs`)，并**完成视频(对话流+工作流) job 化**，再修了一串生成恢复的坑。**GitHub 仍未推**(prod 领先 GitHub，本地有未提交改动)。详见 CHANGELOG 顶部 8 条。
+- **现在完整链路(务必记住)**：
+  - 图片(对话流+工作流)：前端 `/api/image?async` 建 job→worker 生成/挑图/扣费/写资产库/落状态→前端查 `/api/generation-status` 展示。
+  - 视频(对话流+工作流)：`/api/video` 负责创建(含 BytePlus 真人审核)拿 providerTaskId→建 `GenerationJob(kind=video)`→worker 轮询平台→**等本地存盘完成**→扣费/写资产库/落状态→前端查 `/api/generation-status`。
+  - 断线/刷新/退出/重启不丢；只有平台明确失败才失败卡，视频无超时。
+- **本 session 关键修复(3 个根因级)**：
+  1. **视频 job 存过期远程 URL + 视频不进资产库** → `runVideoJob` 加 `waitForMediaSaveJob` 等本地存盘完成再落库。
+  2. **服务端保存自愈(B)** → `mergeWorkflowCanvasMedia` 原来把 `images:[]` 当有值，旧标签页空图覆盖已成功结果;现在空数组视为缺失+用 DB/succeeded job 补回+清 isRunning。**旧标签页再也覆盖不掉。**
+  3. **标签页挂起恢复不重跑恢复** → 工作流+对话流加 visibilitychange/focus 监听，重新可见时重跑全部恢复。这是"关浏览器→回来视频出了图片没出"的真根因。
+- **恢复兜底全景**：对话流图片/视频按 `requestId:image|video:N` 消息级 reconcile;工作流图片/视频按 workflowNodeId reconcile;三者都在打开时 + 标签页可见时触发。
+- 手工修复过 ID_271898 `c211e3cb` 与 12424740 工作流_02 `11d9ce76` 的卡死节点(按 job 写回 canvasJson)。B 修复后不再复发。
+- 部署健康:build EXIT=0，main/admin/api/ali 全 200，PM2 online，`[generation-worker] started`。
+
+## Latest 2026-07-07 (最新 session) — 生成链路持久化改造 第一步：图片(对话流+工作流) job 化 (⚠️ 本地 only，未部署未推 GitHub；视频未做)
+
+- Reply style 简洁直接中文. **本 session 全部改动仅在本地**：新增 `GenerationJob` 表 + 常驻后端 worker + `/api/generation-status`，把**图片**生成(对话流+工作流)改成"后端持久任务"：提交建 job 立即返回 jobId → worker 后台调模型/挑图/扣费/**写资产库**/落状态 → 前端只轮询状态展示。断开/刷新/退出/服务重启都不影响后端跑完，只有模型明确失败才失败卡(无超时兜底)，永不回来图也进资产库。`tsc`+`build` 通过，用户本地自测图片 OK(4 条 conversation image job 全 succeeded)。
+- 新增文件：`prisma/migrations/20260707000000_generation_jobs/`、`src/lib/generation-jobs.ts`、`src/lib/generation-worker.ts`、`instrumentation.ts`、`src/app/api/generation-status/route.ts`。改动：`schema.prisma`、`api/image/route.ts`(async 分支)、`chat-workbench.tsx`、`workflow-tldraw-canvas-inner.tsx`。详见 CHANGELOG 顶部。
+- **视频还是旧的前端驱动(未 job 化)**：能恢复只因服务商持 taskId + 前端 resume，但用户永不回来/重启时后端不推进、不写库。**下一个 AI 首要任务：先部署本地这批(有 Prisma 迁移)，再把视频对话流+工作流也 job 化。** 见 05-next-actions 最上。
+- 也加了"发送即保存"(工作区 500ms 防抖在提交生成时改 0ms `flushNextWorkspaceSaveRef`)缩短"点完秒关没保存"窗口；工作流用 reconcile(按 workflowNodeId 从后端对齐) 兜底不依赖保存。
+- 手工恢复了 312876953@qq.com 一张卡死的工作流图(GPT-5.4 2K 改图，生成成功但前端断连卡死)→补进资产库 `image_1_w1`(MediaAsset+UserAssetState)。此类问题已被本次图片 job 化根治。
+
 
 ## Latest 2026-07-06 (最新 session) — B_373文案幂等 + 使用提示词原样还原 + 视频存干净prompt + 参考hint统一并按意图判定 (DEPLOYED prod+Ali + **PUSHED GitHub**)
 

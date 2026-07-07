@@ -40,6 +40,7 @@ export type WorkflowNodeData = {
   uploadProgress?: number;
   taskId?: string;
   videoRequestId?: string;
+  imageRequestId?: string;
   startedAt?: number;
   uploads?: WorkflowUploadItem[];
   // Full reference set (own uploads + connected-node references) captured at generation time,
@@ -266,6 +267,24 @@ const workflowVideoModels = [...videoGenerationModels, ...bytePlusVideoGeneratio
 const videoPollIntervalMs = 10_000;
 const videoMaxPollAttempts = 90;
 const videoAbsoluteMaxPollAttempts = 360;
+const imagePollIntervalMs = 3_000;
+
+type WorkflowImageJobStatus = {
+  requestId: string;
+  status: "queued" | "running" | "succeeded" | "failed";
+  kind?: string;
+  flow?: string;
+  prompt?: string;
+  workflowId?: string;
+  workflowNodeId?: string;
+  resultUrls?: string[];
+  resultDimensions?: Record<string, { width: number; height: number }>;
+  usage?: UsageMeta;
+  credit?: CreditResult;
+  error?: string;
+  errorCode?: string;
+};
+type WorkflowVideoJobStatus = WorkflowImageJobStatus & { posterUrl?: string; providerTaskId?: string };
 const MAX_WORKFLOW_PROMPT_LENGTH = 2000;
 const DEFAULT_WORKFLOW_IMAGE_MODEL = "byteplus:conversation-image.seedream-4-5";
 const DEFAULT_WORKFLOW_VIDEO_MODEL = "byteplus:video.seedance-2-0";
@@ -881,7 +900,7 @@ function validateWorkflowConnectionUploadRules(source: WorkflowNode, target: Wor
 }
 
 function getWorkflowTextNodeOutput(node: WorkflowNode) {
-  return node.kind === "text" ? node.data.text?.trim() || node.data.prompt?.trim() || node.data.outputText?.trim() || "" : node.data.prompt?.trim() ?? "";
+  return node.kind === "text" ? node.data.text?.trim() || node.data.prompt?.trim() || node.data.outputText?.trim() || "" : "";
 }
 
 function validateWorkflowConnectionTextLimit(source: WorkflowNode, target: WorkflowNode, state: WorkflowCanvasState) {
@@ -2366,6 +2385,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
   const loadedWorkflowIdRef = useRef(workflowId);
   const pollMountedRef = useRef(true);
   const resumingVideoNodesRef = useRef<Set<string>>(new Set());
+  const resumingImageNodesRef = useRef<Set<string>>(new Set());
   const lastExternalKeyRef = useRef(stateKey(stateRef.current));
   const lastEmittedKeyRef = useRef("");
   const loadingRef = useRef(false);
@@ -3428,20 +3448,18 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
   const getEnabledImageModel = useCallback((model?: ModelName) => (model && imageModels.some((item) => item.id === model) ? model : (imageModels[0]?.id as ModelName | undefined) ?? DEFAULT_IMAGE_MODEL), [imageModels]);
   const getEnabledVideoModel = useCallback((model?: ModelName) => (model && videoModels.some((item) => item.id === model) ? model : (videoModels[0]?.id as ModelName | undefined) ?? DEFAULT_VIDEO_MODEL), [videoModels]);
 
-  const generateImageForNode = useCallback(async (node: WorkflowNode, input: { prompt: string; model: ModelName; settings: { ratio: string; resolution: string }; referenceImages: string[]; promptOptimization?: { originalPrompt: string; optimizedPrompt: string; attemptsUsed: number; optimizerModel: string } }) => {
-    const modelPrompt = appendWorkflowReferenceHint(input.prompt, getReferenceImageNames(node, input.referenceImages));
-    const data = await fetch("/api/image", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt: modelPrompt, model: input.model, settings: input.settings, referenceImages: input.referenceImages, count: 1, conversationId: workflowId, conversationTitle: workflowTitle, requestId: createId("workflow_image"), metadata: { creditSource: "workflow_image_generation" } }) }).then((response) => readJson<{ images?: string[]; imageDimensions?: Record<string, { width: number; height: number }>; usage?: UsageMeta; credit?: CreditResult; failureReasons?: string[] }>(response));
-    const images = data.images ?? [];
-    if (images.length === 0) throw new Error(data.failureReasons?.[0] ?? "图片平台没有返回图片，且没有返回可用原因。");
+  const applyImageNodeResult = useCallback((node: WorkflowNode, input: { prompt: string; model: ModelName; settings: { ratio: string; resolution: string }; promptOptimization?: { originalPrompt: string; optimizedPrompt: string; attemptsUsed: number; optimizerModel: string } }, images: string[], imageDimensions: Record<string, { width: number; height: number }> | undefined, credit: CreditResult | undefined, usage: UsageMeta | undefined) => {
     const generationUploads = getWorkflowGenerationUploadSnapshot(stateRef.current, node);
     updateNode(node.id, {
       images,
-      imageDimensions: data.imageDimensions,
+      imageDimensions,
       prompt: input.prompt,
       generationUploads: generationUploads.length > 0 ? generationUploads : undefined,
       visualSize: undefined,
       isRunning: false,
       error: undefined,
+      imageRequestId: undefined,
+      startedAt: undefined,
       ...(input.promptOptimization ? {
         gptImageOptimizationOriginalPrompt: input.promptOptimization.originalPrompt,
         gptImageOptimizationSuccessfulPrompt: input.promptOptimization.optimizedPrompt,
@@ -3451,10 +3469,45 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
       } : {}),
     });
     updateState((state) => ({ ...state, edges: state.edges.filter((edge) => edge.target !== node.id) }));
-    onGeneratedMedia?.({ nodeId: node.id, kind: "image", urls: images, sourcePrompt: input.prompt, model: input.model, ratio: input.settings.ratio, resolution: input.settings.resolution, dimensions: data.imageDimensions, promptOptimization: input.promptOptimization });
-    onCredit?.({ ...data.credit, usage: data.usage });
-    return { images, imageDimensions: data.imageDimensions };
-  }, [getReferenceImageNames, onCredit, onGeneratedMedia, updateNode, updateState, workflowId, workflowTitle]);
+    onGeneratedMedia?.({ nodeId: node.id, kind: "image", urls: images, sourcePrompt: input.prompt, model: input.model, ratio: input.settings.ratio, resolution: input.settings.resolution, dimensions: imageDimensions, promptOptimization: input.promptOptimization });
+    onCredit?.({ ...credit, usage });
+  }, [onCredit, onGeneratedMedia, updateNode, updateState]);
+
+  // Poll a durable backend image job to completion. The backend worker generates/charges/saves regardless
+  // of the browser; here we only READ status and reflect it. No timeout: we wait as long as it takes, and
+  // only an explicit backend failure (job.status === "failed") surfaces a failed card.
+  const pollImageNode = useCallback(async (node: WorkflowNode, requestId: string, input: { prompt: string; model: ModelName; settings: { ratio: string; resolution: string }; promptOptimization?: { originalPrompt: string; optimizedPrompt: string; attemptsUsed: number; optimizerModel: string } }): Promise<{ images: string[]; imageDimensions?: Record<string, { width: number; height: number }> } | undefined> => {
+    while (true) {
+      await new Promise((resolve) => window.setTimeout(resolve, imagePollIntervalMs));
+      if (!pollMountedRef.current || loadedWorkflowIdRef.current !== workflowId) return undefined;
+      let job: WorkflowImageJobStatus | undefined;
+      try {
+        const statusResponse = await fetch("/api/generation-status", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ requestIds: [requestId] }) });
+        const statusData = await readJson<{ jobs?: WorkflowImageJobStatus[] }>(statusResponse);
+        job = statusData.jobs?.find((item) => item.requestId === requestId);
+      } catch {
+        continue;
+      }
+      if (!job) continue;
+      if (job.status === "failed") throw new Error(getWorkflowApiErrorMessage({ error: job.error, errorCode: job.errorCode }, GENERIC_MEDIA_ERROR_MESSAGE));
+      if (job.status === "succeeded") {
+        const images = Array.isArray(job.resultUrls) ? job.resultUrls.filter(Boolean) : [];
+        if (images.length === 0) throw new Error("图片平台没有返回图片，且没有返回可用原因。");
+        applyImageNodeResult(node, input, images, job.resultDimensions, job.credit, job.usage);
+        return { images, imageDimensions: job.resultDimensions };
+      }
+      // queued / running: keep waiting card, ensure node stays in running state.
+    }
+  }, [applyImageNodeResult, workflowId]);
+
+  const generateImageForNode = useCallback(async (node: WorkflowNode, input: { prompt: string; model: ModelName; settings: { ratio: string; resolution: string }; referenceImages: string[]; promptOptimization?: { originalPrompt: string; optimizedPrompt: string; attemptsUsed: number; optimizerModel: string } }) => {
+    const modelPrompt = appendWorkflowReferenceHint(input.prompt, getReferenceImageNames(node, input.referenceImages));
+    const requestId = createId("workflow_image");
+    updateNode(node.id, { isRunning: true, error: undefined, images: [], visualSize: undefined, startedAt: Date.now(), imageRequestId: requestId });
+    const submit = await fetch("/api/image", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt: modelPrompt, model: input.model, settings: input.settings, referenceImages: input.referenceImages, count: 1, conversationId: workflowId, conversationTitle: workflowTitle, requestId, async: true, workflowId, workflowNodeId: node.id, flow: "workflow", metadata: { creditSource: "workflow_image_generation" } }) }).then((response) => readJson<{ jobId?: string; error?: string; errorCode?: string }>(response));
+    if (!submit.jobId) throw new Error(getWorkflowApiErrorMessage({ error: submit.error, errorCode: submit.errorCode }, GENERIC_MEDIA_ERROR_MESSAGE));
+    return pollImageNode(node, requestId, input);
+  }, [getReferenceImageNames, pollImageNode, updateNode, workflowId, workflowTitle]);
 
   const runImageNode = useCallback(async (node: WorkflowNode) => {
     const upstreamPrompt = getInputText(node.id);
@@ -3476,7 +3529,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
       const referenceImages = [...getReferenceImages(node.id), ...getPromptReferenceUrls(prompt, node, "image")].filter((url, index, array) => array.indexOf(url) === index);
       await generateImageForNode(node, { prompt, model, settings, referenceImages });
     } catch (error) {
-      updateNode(node.id, { isRunning: false, error: toUserErrorMessage(error, GENERIC_MEDIA_ERROR_MESSAGE) });
+      updateNode(node.id, { isRunning: false, error: toUserErrorMessage(error, GENERIC_MEDIA_ERROR_MESSAGE), imageRequestId: undefined });
     }
   }, [generateImageForNode, getEnabledImageModel, getInputText, getPromptReferenceUrls, getReferenceImages, onShowTip, updateNode, uploadRuleOverrides]);
 
@@ -3550,7 +3603,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     } catch (error) {
       lastError = toUserErrorMessage(error, GENERIC_MEDIA_ERROR_MESSAGE);
     }
-    updateNode(node.id, { isRunning: false, error: lastError || "AI 改写重试仍未成功，请调整提示词后再试。", gptImageOptimizationAttemptPrompts: attemptedPrompts, gptImageOptimizationOriginalPrompt: originalOwnPrompt });
+    updateNode(node.id, { isRunning: false, error: lastError || "AI 改写重试仍未成功，请调整提示词后再试。", gptImageOptimizationAttemptPrompts: attemptedPrompts, gptImageOptimizationOriginalPrompt: originalOwnPrompt, imageRequestId: undefined });
   }, [generateImageForNode, getEnabledImageModel, getInputText, getPromptReferenceUrls, getReferenceImages, onCredit, updateNode, uploadRuleOverrides, workflowId, workflowTitle]);
 
   const pollVideoNode = useCallback(async (node: WorkflowNode, taskId: string, prompt: string, model: ModelName, settings: { ratio?: string; resolution?: string; duration?: string }, requestId: string, initialUsage?: UsageMeta) => {
@@ -3563,7 +3616,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
       let pollData: VideoApiResponse;
       let pollResponse: Response;
       try {
-        pollResponse = await fetch("/api/video", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ taskId, prompt, model, settings, conversationId: workflowId, conversationTitle: workflowTitle, requestId, usage, metadata: { creditSource: "workflow_video_generation" } }) });
+        pollResponse = await fetch("/api/generation-status", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ requestIds: [requestId] }) });
       } catch (error) {
         updateNode(node.id, { isRunning: true, error: undefined, taskId });
         continue;
@@ -3572,7 +3625,9 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
         updateNode(node.id, { isRunning: true, error: undefined, taskId });
         continue;
       }
-      pollData = await readJson<VideoApiResponse>(pollResponse);
+      const statusData = await readJson<{ jobs?: Array<{ status?: string; resultUrls?: string[]; posterUrl?: string; error?: string; errorCode?: string; usage?: UsageMeta; credit?: CreditResult }> }>(pollResponse);
+      const job = statusData.jobs?.[0];
+      pollData = job ? { status: job.status, content: { video_url: job.resultUrls?.[0], poster_url: job.posterUrl }, error: job.error, errorCode: job.errorCode, usage: job.usage, credit: job.credit } as VideoApiResponse : { status: "running" } as VideoApiResponse;
       usage = pollData.usage ?? usage;
       const pollError = getWorkflowApiErrorMessage({ error: pollData.error, errorCode: pollData.errorCode }, GENERIC_MEDIA_ERROR_MESSAGE);
       if (pollData.status === "failed" || pollData.error) throw new Error(pollError);
@@ -3587,10 +3642,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
         onCredit?.({ ...pollData.credit, usage: chargedUsage });
         return;
       }
-      if (attempt >= videoAbsoluteMaxPollAttempts) {
-        updateNode(node.id, { isRunning: false, error: "视频生成等待超时，请稍后在历史记录中查看或重试。", taskId: undefined, videoRequestId: undefined });
-        return;
-      }
+      // No timeout: backend worker owns the provider polling and only explicit provider failure fails.
       if (attempt >= videoMaxPollAttempts) updateNode(node.id, { isRunning: true, error: undefined, taskId });
     }
   }, [onCredit, onGeneratedMedia, updateNode, updateState, workflowId, workflowTitle]);
@@ -3627,7 +3679,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
       for (const source of getIncomingNodes(node.id)) for (const url of source.data.images ?? []) if (url && source.data.mediaSystemNames?.[url]) referenceImageNameByUrl.set(url, source.data.mediaSystemNames[url]);
       for (const asset of referenceAssets) if (asset.url && asset.name) referenceImageNameByUrl.set(asset.url, asset.name);
       const referenceImageNames = referenceImages.map((url) => referenceImageNameByUrl.get(url) ?? "");
-      const createVideoTask = (autoBytePlusAssetReview = false) => fetch("/api/video", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt: modelPrompt, model, settings, referenceImages, referenceImageNames, referenceVideos, referenceAudios, referenceMode: videoReferenceMode, conversationId: workflowId, conversationTitle: workflowTitle, requestId, metadata: { creditSource: "workflow_video_generation" }, autoBytePlusAssetReview }) }).then((response) => readJson<VideoApiResponse>(response));
+      const createVideoTask = (autoBytePlusAssetReview = false) => fetch("/api/video", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt: modelPrompt, sourcePrompt: prompt, model, settings, referenceImages, referenceImageNames, referenceVideos, referenceAudios, referenceMode: videoReferenceMode, conversationId: workflowId, conversationTitle: workflowTitle, requestId, flow: "workflow", workflowId, workflowNodeId: node.id, metadata: { creditSource: "workflow_video_generation" }, autoBytePlusAssetReview }) }).then((response) => readJson<VideoApiResponse>(response));
       let createData = await createVideoTask();
       if (createData.status === "reviewing" && createData.autoBytePlusAssetReview?.triggered) {
         onShowTip?.(BYTEPLUS_AUTO_REVIEW_NOTICE);
@@ -3645,6 +3697,25 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
       updateNode(node.id, { isRunning: false, error: toUserErrorMessage(error, GENERIC_MEDIA_ERROR_MESSAGE), taskId: undefined, videoRequestId: undefined });
     }
   }, [getEnabledVideoModel, getInputText, getPromptReferenceUrls, getReferenceImages, getReferenceImageNames, getReferenceMediaUrls, getIncomingNodes, referenceAssets, onShowTip, pollVideoNode, updateNode, uploadRuleOverrides, workflowId, workflowTitle]);
+
+  // Signature of the currently-loaded nodes that still look "in progress" (running, no result yet, no error).
+  // The recovery effects below depend on this INSTEAD of a fixed timer, so they re-run the moment the async
+  // workspace state actually finishes loading into the canvas (nodes present) rather than guessing a delay.
+  // This removes the race where an early one-shot reconcile fired before nodes loaded, missed, and never
+  // retried — which made an already-finished image sit on the waiting card until the slow server self-heal.
+  const pendingRecoverySignature = useMemo(() => {
+    const nodes = Array.isArray(value?.nodes) ? value.nodes : [];
+    const parts: string[] = [];
+    for (const node of nodes) {
+      const data = node?.data ?? {};
+      if (node?.kind === "image" && data.isRunning && !data.error && (data.images?.length ?? 0) === 0) {
+        parts.push(`i:${node.id}:${data.imageRequestId ?? ""}`);
+      } else if (node?.kind === "video" && data.isRunning && !data.error && !data.videoUrl) {
+        parts.push(`v:${node.id}:${data.taskId ?? ""}:${data.videoRequestId ?? ""}`);
+      }
+    }
+    return parts.sort().join("|");
+  }, [value]);
 
   // Resume polling for video nodes that were still generating when the page was closed / the server was
   // redeployed (mirrors the conversation-flow recovery). Without this, a reloaded workflow keeps the node's
@@ -3673,9 +3744,158 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
   }, [getEnabledVideoModel, pollVideoNode, updateNode, workflowId]);
 
   useEffect(() => {
-    const timer = window.setTimeout(() => resumeInterruptedVideoNodes(), 1500);
+    const timer = window.setTimeout(() => resumeInterruptedVideoNodes(), 300);
     return () => window.clearTimeout(timer);
-  }, [workflowId, resumeInterruptedVideoNodes]);
+  }, [workflowId, pendingRecoverySignature, resumeInterruptedVideoNodes]);
+
+  // Resume polling for image nodes interrupted by page close / refresh / redeploy. The backend job keeps
+  // generating regardless; here we just re-attach a status poller so the node shows the result (or an
+  // explicit failure) once done. Image generation previously had NO recovery, so an interrupted node was
+  // stuck on the waiting card forever even though the backend had finished.
+  const resumeInterruptedImageNodes = useCallback(() => {
+    if (!pollMountedRef.current) return;
+    const currentWorkflowId = workflowId;
+    for (const node of stateRef.current.nodes) {
+      if (node.kind !== "image") continue;
+      const requestId = node.data.imageRequestId;
+      if (!node.data.isRunning || !requestId || (node.data.images?.length ?? 0) > 0 || node.data.error) continue;
+      const resumeKey = `${currentWorkflowId}:${node.id}:${requestId}`;
+      if (resumingImageNodesRef.current.has(resumeKey)) continue;
+      resumingImageNodesRef.current.add(resumeKey);
+      const model = getEnabledImageModel(node.data.model);
+      const imageRatio = imageRatioOptions.includes(node.data.ratio ?? "") ? node.data.ratio ?? "16:9" : "16:9";
+      const settings = { ratio: imageRatio, resolution: node.data.resolution ?? normalizeImageResolutionForModel(model, getSupportedImageResolutions(model)[0]) };
+      const input = { prompt: node.data.prompt?.trim() ?? "", model, settings };
+      void pollImageNode(node, requestId, input)
+        .catch((error) => updateNode(node.id, { isRunning: false, error: toUserErrorMessage(error, GENERIC_MEDIA_ERROR_MESSAGE), imageRequestId: undefined }))
+        .finally(() => resumingImageNodesRef.current.delete(resumeKey));
+    }
+  }, [getEnabledImageModel, pollImageNode, updateNode, workflowId]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => resumeInterruptedImageNodes(), 300);
+    return () => window.clearTimeout(timer);
+  }, [workflowId, pendingRecoverySignature, resumeInterruptedImageNodes]);
+
+  // Robust fallback (#2): on open, ask the backend for all active/recent image jobs and align the canvas
+  // nodes by workflowNodeId — WITHOUT relying on the node's persisted running-state. This covers the edge
+  // where the user closed so fast the node's isRunning/imageRequestId hadn't been saved yet: the backend
+  // job still knows which node it belongs to, so we can still show the result / failure / keep polling.
+  const reconcileImageJobsFromBackend = useCallback(async () => {
+    if (!pollMountedRef.current) return;
+    const currentWorkflowId = workflowId;
+    let jobs: WorkflowImageJobStatus[] | undefined;
+    try {
+      const response = await fetch("/api/generation-status", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ active: true }) });
+      const data = await readJson<{ jobs?: WorkflowImageJobStatus[] }>(response);
+      jobs = data.jobs;
+    } catch {
+      return;
+    }
+    if (!jobs || !pollMountedRef.current || loadedWorkflowIdRef.current !== currentWorkflowId) return;
+    for (const job of jobs) {
+      if (job.kind !== "image" || (job.workflowId && job.workflowId !== currentWorkflowId) || !job.workflowNodeId) continue;
+      const node = stateRef.current.nodes.find((item) => item.id === job.workflowNodeId);
+      if (!node || node.kind !== "image" || (node.data.images?.length ?? 0) > 0) continue;
+      const model = getEnabledImageModel(node.data.model);
+      const imageRatio = imageRatioOptions.includes(node.data.ratio ?? "") ? node.data.ratio ?? "16:9" : "16:9";
+      const settings = { ratio: imageRatio, resolution: node.data.resolution ?? normalizeImageResolutionForModel(model, getSupportedImageResolutions(model)[0]) };
+      const input = { prompt: node.data.prompt?.trim() ?? "", model, settings };
+      if (job.status === "succeeded") {
+        const images = job.resultUrls?.filter(Boolean) ?? [];
+        if (images.length > 0) applyImageNodeResult(node, input, images, job.resultDimensions, job.credit, job.usage);
+      } else if (job.status === "failed") {
+        if (node.data.error) continue;
+        updateNode(node.id, { isRunning: false, error: getWorkflowApiErrorMessage({ error: job.error, errorCode: job.errorCode }, GENERIC_MEDIA_ERROR_MESSAGE), imageRequestId: undefined });
+      } else {
+        const resumeKey = `${currentWorkflowId}:${node.id}:${job.requestId}`;
+        if (resumingImageNodesRef.current.has(resumeKey)) continue;
+        resumingImageNodesRef.current.add(resumeKey);
+        updateNode(node.id, { isRunning: true, error: undefined, imageRequestId: job.requestId });
+        void pollImageNode(node, job.requestId, input)
+          .catch((error) => updateNode(node.id, { isRunning: false, error: toUserErrorMessage(error, GENERIC_MEDIA_ERROR_MESSAGE), imageRequestId: undefined }))
+          .finally(() => resumingImageNodesRef.current.delete(resumeKey));
+      }
+    }
+  }, [applyImageNodeResult, getEnabledImageModel, pollImageNode, updateNode, workflowId]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => reconcileImageJobsFromBackend(), 400);
+    return () => window.clearTimeout(timer);
+  }, [workflowId, pendingRecoverySignature, reconcileImageJobsFromBackend]);
+
+  const applyVideoNodeJobResult = useCallback((node: WorkflowNode, job: WorkflowVideoJobStatus, model: ModelName, settings: { ratio?: string; resolution?: string; duration?: string }) => {
+    const videoUrl = job.resultUrls?.find(Boolean);
+    if (!videoUrl) return false;
+    const prompt = node.data.prompt?.trim() ?? job.prompt ?? "";
+    const generationUploads = getWorkflowGenerationUploadSnapshot(stateRef.current, node);
+    updateNode(node.id, { prompt, videoUrl, posterUrl: job.posterUrl, videoCurrentTime: 0, generationUploads: generationUploads.length > 0 ? generationUploads : undefined, visualSize: undefined, isRunning: false, error: undefined, taskId: undefined, videoRequestId: undefined });
+    updateState((state) => ({ ...state, edges: state.edges.filter((edge) => edge.target !== node.id) }));
+    onGeneratedMedia?.({ nodeId: node.id, kind: "video", urls: [videoUrl], posterUrl: job.posterUrl, sourcePrompt: prompt, model, ratio: settings.ratio, resolution: settings.resolution, duration: settings.duration });
+    onCredit?.({ ...job.credit, usage: job.usage });
+    return true;
+  }, [onCredit, onGeneratedMedia, updateNode, updateState]);
+
+  const reconcileVideoJobsFromBackend = useCallback(async () => {
+    if (!pollMountedRef.current) return;
+    const currentWorkflowId = workflowId;
+    let jobs: WorkflowVideoJobStatus[] | undefined;
+    try {
+      const response = await fetch("/api/generation-status", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ active: true }) });
+      const data = await readJson<{ jobs?: WorkflowVideoJobStatus[] }>(response);
+      jobs = data.jobs;
+    } catch {
+      return;
+    }
+    if (!jobs || !pollMountedRef.current || loadedWorkflowIdRef.current !== currentWorkflowId) return;
+    for (const node of stateRef.current.nodes) {
+      if (node.kind !== "video" || node.data.videoUrl) continue;
+      const job = jobs.find((item) => item.kind === "video" && (item.workflowId === currentWorkflowId || !item.workflowId) && (item.workflowNodeId === node.id || item.requestId === node.data.videoRequestId));
+      if (!job) continue;
+      const model = getEnabledVideoModel(node.data.model);
+      const resolution = normalizeVideoResolutionForModel(model, node.data.resolution);
+      const settings = { ratio: normalizeVideoRatioForModel(model, node.data.ratio, resolution), resolution, duration: node.data.duration ?? workflowVideoModels.find((item) => item.id === model)?.durations?.[0] ?? "5秒" };
+      if (job.status === "succeeded") {
+        applyVideoNodeJobResult(node, job, model, settings);
+      } else if (job.status === "failed") {
+        if (!node.data.error) updateNode(node.id, { isRunning: false, error: getWorkflowApiErrorMessage({ error: job.error, errorCode: job.errorCode }, GENERIC_MEDIA_ERROR_MESSAGE), taskId: undefined, videoRequestId: undefined });
+      } else {
+        const taskId = node.data.taskId || job.providerTaskId;
+        if (!taskId) continue;
+        const resumeKey = `${currentWorkflowId}:${node.id}:${job.requestId}`;
+        if (resumingVideoNodesRef.current.has(resumeKey)) continue;
+        resumingVideoNodesRef.current.add(resumeKey);
+        updateNode(node.id, { isRunning: true, error: undefined, taskId, videoRequestId: job.requestId });
+        void pollVideoNode(node, taskId, node.data.prompt?.trim() ?? "", model, settings, job.requestId)
+          .catch((error) => updateNode(node.id, { isRunning: false, error: toUserErrorMessage(error, GENERIC_MEDIA_ERROR_MESSAGE), taskId: undefined, videoRequestId: undefined }))
+          .finally(() => resumingVideoNodesRef.current.delete(resumeKey));
+      }
+    }
+  }, [applyVideoNodeJobResult, getEnabledVideoModel, pollVideoNode, updateNode, workflowId]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => reconcileVideoJobsFromBackend(), 400);
+    return () => window.clearTimeout(timer);
+  }, [workflowId, pendingRecoverySignature, reconcileVideoJobsFromBackend]);
+
+  // When a suspended/background tab becomes visible again (e.g. user closed the browser then reopened, or
+  // switched away and back), the mount-time recovery effects do NOT re-fire because workflowId is unchanged.
+  // Re-run all recovery paths on visibility so a finished backend job is reflected without a full reload.
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      resumeInterruptedImageNodes();
+      resumeInterruptedVideoNodes();
+      void reconcileImageJobsFromBackend();
+      void reconcileVideoJobsFromBackend();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onVisible);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onVisible);
+    };
+  }, [resumeInterruptedImageNodes, resumeInterruptedVideoNodes, reconcileImageJobsFromBackend, reconcileVideoJobsFromBackend]);
 
   // Keep workflow node display names in sync with the canonical library name (permanent 终身id or the
   // user's rename), resolved by URL from the asset store. Without this, a node keeps whatever name was
