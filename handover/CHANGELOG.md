@@ -1,5 +1,35 @@
 # Current Handover Changelog
 
+## 2026-07-08 (later session) 工作流恢复时序 bug 修复(图片恢复慢1分钟) + 推 GitHub (DEPLOYED prod+Ali + PUSHED GitHub `8866940`)
+
+Reply style: 简洁直接中文. 本 session 修了一个工作流断线重连恢复的**时序竞态 bug**，窄部署单文件到 prod+Ali，并把上个 session 攒下的所有本地改动**一起推了 GitHub**。现在 prod=GitHub=本地三方同步。
+
+### 用户报的现象
+- 工作流_06 里一个视频+一个图片，点生成后立刻关浏览器，20 分钟后回来：先看到两个等待卡，~5 秒视频出来，但图片过了 ~1 分钟才出来。两个后端其实都早就完成了，都走断线重连恢复，但图片恢复慢得离谱。
+
+### 根因(时序竞态)
+- 工作流的 4 个恢复入口(`resumeInterruptedImageNodes`/`resumeInterruptedVideoNodes`/`reconcileImageJobsFromBackend`/`reconcileVideoJobsFromBackend`)原来靠**挂载后固定延时 setTimeout 各跑一次**(图片 resume 1800ms / 图片 reconcile 2200ms / 视频 resume 1500ms / 视频 reconcile 2400ms)。
+- reconcile 靠 `stateRef.current.nodes` 里有对应节点才能对齐(找不到节点就 `continue` 跳过，**不重试**)。但节点数据(`value` prop)是父组件异步从 workspace-state 拉回来的，落地大约在 2200–2400ms 之间。
+- 于是纯赌运气：视频 reconcile 在 2400ms 跑，刚好赶上节点加载好→命中→~5 秒出；图片 reconcile 在 2200ms 跑，节点还没加载好→扑空→**放弃且不重试**。图片最后只能靠**服务端保存自愈**(`mergeWorkflowCanvasMedia`/`getSucceededWorkflowJobResults`)在下次 workspace 保存/重载周期才补回→就是那 ~1 分钟。
+- 顺带发现视频 reconcile 的 workflowId 匹配比图片宽松(视频允许 workflowId 为空也匹配)。
+
+### 修复(纯前端，单文件 `src/components/workflow-tldraw-canvas-inner.tsx`)
+- 新增 `pendingRecoverySignature` (useMemo，从 `value.nodes` 派生)：把当前"仍在转圈(isRunning、无结果、无 error)"的图片/视频节点的 `id`+requestId/taskId 拼成签名字符串。
+- 4 个恢复 effect 的依赖从 `[workflowId, cb]` 改为 `[workflowId, pendingRecoverySignature, cb]`，setTimeout 延时全部缩短到 300–400ms。**效果：节点真加载出来(签名变化)那一刻立刻触发恢复，不再瞎掐固定时间、扑空即弃。**
+- 图片 reconcile 的匹配条件放宽到与视频一致：`(job.workflowId && job.workflowId !== currentWorkflowId)` 才跳过(允许 workflowId 为空)。
+- **保留原有的持续重问兜底**(用户确认无需改):reconcile/resume 认领到"仍在跑"的任务后会启动 `pollImageNode`(每 3s，:3499)/`pollVideoNode`(每 10s，:3631)的 `while(true)` 循环，一直重问到成功或明确失败，无超时。
+
+### 对话流为什么没改(已确认不需要)
+- `chat-workbench.tsx` 的对话流恢复 effect(图片 :11520 / 视频 :11586)**本来就依赖 `sessions`**(数据驱动)：消息一加载就自动跑、立即查一次、running 时每 3s 重查、visibilitychange/focus 重跑(recoveryTick)。这正是我这次把工作流改成的样子。对话流没有工作流那个"固定延时跑一次"的 bug。
+
+### 部署 + GitHub
+- 窄部署:scp 单文件到 `/tmp`(md5 校验一致 `aaaadda266b5737c7565e85addfadb7f`)→ 备份 `.deploy-backups/20260708-workflow-recovery-timing/` → 替换 → `/usr/local/bin/deploy-flashmuse-production.sh`(build EXIT=0，PM2 online，Ali 同步)。四域名 main/admin/api/ali 全 200，`[generation-worker] started`。
+- 删掉工作树里上个 session 的调试残留 `dbg-wf02b.sh`(未提交)。
+- `npx tsc --noEmit` 通过。commit `8866940`("Durable generation jobs: image+video job-ization ... + workflow recovery triggered on node load")，14 文件，push 成功 `3404815..8866940 main`。**这一推把上个 session 攒的全部本地改动(GenerationJob schema+迁移、generation-jobs/worker/instrumentation/generation-status 新文件、image/video/chat-workbench/workspace-workflows 改动)连同本次恢复修复一起推了。现在 prod=GitHub=本地。**
+
+### 教训
+- 恢复逻辑不要用"挂载后固定延时"赌数据是否已加载——要**数据驱动**(依赖加载出的状态签名)。对话流早就写对了(依赖 sessions)，工作流当初写错成固定 setTimeout。
+
 ## 2026-07-08 (最新 session) 图片 job 化部署上线 + 视频(对话流+工作流) job 化 + 多轮恢复兜底 + 工作流2000字修复 (全部 DEPLOYED prod+Ali；GitHub 仍未推)
 
 Reply style: 简洁直接中文. 本 session 把上个 session 只在本地的"图片 job 化"**部署上线**(含 Prisma 迁移 `20260707000000_generation_jobs`)，并**完成视频 job 化**、修了一串生成恢复的坑。全部窄部署到马来 prod(101.47.19.109)+阿里。**GitHub 尚未推**(prod 领先 GitHub，本地也有未提交改动)。部署方法见 03-deploy。诊断用 `psql`(DATABASE_URL 取 .env.local 第一行，去掉 `?schema=` 即 `${val%%\?*}`，用 scp 的 .sh 文件跑，别内联)。

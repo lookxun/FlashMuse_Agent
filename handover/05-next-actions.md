@@ -2,7 +2,20 @@
 
 ## Highest Priority
 
-### 2026-07-08 (最新 session) END-OF-SESSION STATE — 先读这条
+### 2026-07-08 (later session) END-OF-SESSION STATE — 先读这条
+
+- **状态**:全部同步。工作流恢复时序 bug 已修并 DEPLOYED prod+Ali，且**已 PUSHED GitHub `8866940`**。现在 **prod=GitHub=本地** 三方一致，工作树干净(除后续 handover 提交)。
+- **本 session 做了什么**:修工作流断线重连恢复的时序竞态(图片恢复慢1分钟)。根因是 4 个恢复 effect 用"挂载后固定延时跑一次"赌节点是否已加载，图片扑空即弃。改成数据驱动:新增 `pendingRecoverySignature`(从 `value.nodes` 里仍在转圈的节点派生)，恢复 effect 依赖它触发。单文件 `workflow-tldraw-canvas-inner.tsx`。详见 CHANGELOG 顶部 + 01-current-status。
+- **BROWSER-VERIFY**(ali 硬刷):工作流生成图/视频转圈时关浏览器，几分钟回来→两者都应几秒内恢复。**这条待用户实测确认**(修复已上线但用户尚未回报测试结果)。
+- **下一个 AI 若继续**:见下方"仍可优化/局限"。改动先 `git status`/`diff`，`tsc`+`build`，窄部署，风险高的先跟用户说。
+- **仍可优化/局限**(沿用上个 session，仍适用):
+  - 视频 poll 恢复后重问间隔是 10s(`videoPollIntervalMs`)、图片 3s(`imagePollIntervalMs`);用户确认无需改短。
+  - 视频 job 无超时(用户要求);provider 永不返回会一直轮询。
+  - `waitForMediaSaveJob` 每条视频最多阻塞 worker 60s。
+  - 多实例部署时 GenerationJob 用 DB lease 已安全，但 media-save-queue 仍是本地 JSON(见 M008)。
+- **教训**:恢复逻辑要数据驱动(依赖加载出的状态签名)，别用固定延时赌数据到没到;改源码用 edit 工具;服务器脚本用 scp 的 .sh + `sed -i 's/\r$//'`;上线以 `tsc --noEmit`+`npm run build` 为准。
+
+### 2026-07-08 (最新 session) END-OF-SESSION STATE — (superseded by above，已随本次一起推 GitHub)
 
 - **状态**：图片 job 化已上线;视频(对话流+工作流) job 化已完成并上线;生成恢复的多层兜底 + 工作流 2000 字修复全部 DEPLOYED prod+Ali。**GitHub 仍未推**(prod 领先 GitHub，本地有未提交改动)。
 - **下一个 AI 首要**：

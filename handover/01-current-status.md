@@ -2,7 +2,17 @@
 
 Last checked: 2026-07-08 China time.
 
-## Latest 2026-07-08 (最新 session) — 图片 job 化上线 + 视频 job 化 + 生成恢复多层兜底 + 工作流2000字修复 (全部 DEPLOYED prod+Ali；GitHub 未推)
+## Latest 2026-07-08 (later session) — 工作流恢复时序 bug 修复 + 推 GitHub (DEPLOYED prod+Ali + **PUSHED GitHub `8866940`**)
+
+- Reply style 简洁直接中文. 本 session 只做一件事:修工作流断线重连恢复的**时序竞态 bug**(用户报"关浏览器20分钟后回来，视频5秒恢复但图片要等1分钟")，窄部署单文件，并把上个 session 攒的所有本地改动**一起推了 GitHub**。现在 **prod=GitHub=本地** 三方同步。
+- **根因**:工作流 4 个恢复入口靠"挂载后固定延时(1500-2400ms)各跑一次" reconcile，靠 `stateRef.current.nodes` 有节点才能对齐、找不到就跳过不重试。但节点数据(`value` prop)是异步从 workspace-state 拉回、约 2200-2400ms 才落地——纯赌运气。视频 reconcile 2400ms 赶上→5秒出;图片 reconcile 2200ms 扑空→放弃→只能等**服务端保存自愈**下次周期补回→1分钟。
+- **修复**(纯前端单文件 `workflow-tldraw-canvas-inner.tsx`):新增 `pendingRecoverySignature`(useMemo，从 `value.nodes` 里"仍在转圈"节点派生签名)，4 个恢复 effect 改成**依赖这个签名**触发(节点一加载出来就立刻恢复)，setTimeout 缩到 300-400ms;图片 reconcile 的 workflowId 匹配放宽到与视频一致。**持续重问兜底本就存在**(pollImageNode 每3s / pollVideoNode 每10s 的 while 循环，用户确认无需改)。
+- **对话流没改也不需要**:`chat-workbench.tsx` 对话流恢复 effect 本来就依赖 `sessions`(数据驱动)、消息一加载就跑、running 每3s重查、visibilitychange 重跑——这正是我把工作流改成的样子。工作流当初写错成固定 setTimeout 才有这 bug。
+- 部署:窄部署单文件(md5校验)，备份 `.deploy-backups/20260708-workflow-recovery-timing/`，build EXIT=0，四域名全200，worker started。删了调试残留 `dbg-wf02b.sh`。`tsc` 通过。commit `8866940` push 成功(14文件，含上个 session 全部 job 化改动 + 本次修复)。
+- **BROWSER-VERIFY(ali 硬刷 Ctrl+Shift+R)**:工作流生成图片/视频转圈时关浏览器，几分钟后回来→图片和视频**都应在几秒内**恢复(不再有图片等1分钟)。
+- **教训**:恢复逻辑要**数据驱动**(依赖加载出的状态签名)，别用"挂载后固定延时"赌数据是否已加载。
+
+## Latest 2026-07-08 (earlier session) — 图片 job 化上线 + 视频 job 化 + 生成恢复多层兜底 + 工作流2000字修复 (全部 DEPLOYED prod+Ali；GitHub 未推)
 
 - Reply style 简洁直接中文. 本 session 把上个 session 只在本地的图片 job 化**部署上线**(应用了 Prisma 迁移 `20260707000000_generation_jobs`)，并**完成视频(对话流+工作流) job 化**，再修了一串生成恢复的坑。**GitHub 仍未推**(prod 领先 GitHub，本地有未提交改动)。详见 CHANGELOG 顶部 8 条。
 - **现在完整链路(务必记住)**：
