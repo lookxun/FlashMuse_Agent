@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ChangeEvent, type CSSProperties, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactElement, type ReactNode, type SyntheticEvent } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ChangeEvent, type CSSProperties, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type MutableRefObject, type PointerEvent as ReactPointerEvent, type ReactElement, type ReactNode, type SyntheticEvent } from "react";
 import { createPortal } from "react-dom";
 import { BaseBoxShapeUtil, BindingUtil, CubicBezier2d, HTMLContainer, Mat, Rectangle2d, SVGContainer, SelectionForegroundOverlayUtil, ShapeUtil, T, Tldraw, Vec, createShapeId, defaultBindingUtils, defaultOverlayUtils, defaultShapeUtils, resizeBox, useActions, useEditor, useValue, vecModelValidator, type Editor, type IndexKey, type RecordProps, type TLBinding, type TLComponents, type TLHandle, type TLHandleDragInfo, type TLResizeInfo, type TLShape, type TLShapeId, type TLUiOverrides, type TldrawOptions, type VecModel } from "tldraw";
 import { type IconType } from "react-icons";
@@ -5107,8 +5107,12 @@ function WorkflowUploadIcon({ kind }: { kind: WorkflowUploadKind }) {
   return <RiImageLine className="h-5 w-5" aria-hidden="true" />;
 }
 
-function WorkflowMentionEditor({ value, placeholder, running, maxHeight = 500, maxLength = MAX_WORKFLOW_PROMPT_LENGTH, validReferences, focusRequest, onChange, onRun, onPasteImages, onLimit, onCursorChange, onAtTrigger, onAtClose }: { value: string; placeholder: string; running?: boolean; maxHeight?: number; maxLength?: number; validReferences: Set<string>; focusRequest?: { offset: number; key: number }; onChange: (value: string) => void; onRun: () => void; onPasteImages: (files: File[]) => void; onLimit: () => void; onCursorChange: (offset: number) => void; onAtTrigger: (query: { index: number; query: string; cursor: number }) => void; onAtClose: () => void }) {
+function WorkflowMentionEditor({ value, placeholder, running, maxHeight = 500, maxLength = MAX_WORKFLOW_PROMPT_LENGTH, validReferences, focusRequest, externalEditorRef, onChange, onRun, onPasteImages, onLimit, onCursorChange, onAtTrigger, onAtClose }: { value: string; placeholder: string; running?: boolean; maxHeight?: number; maxLength?: number; validReferences: Set<string>; focusRequest?: { offset: number; key: number }; externalEditorRef?: MutableRefObject<HTMLDivElement | null>; onChange: (value: string) => void; onRun: () => void; onPasteImages: (files: File[]) => void; onLimit: () => void; onCursorChange: (offset: number) => void; onAtTrigger: (query: { index: number; query: string; cursor: number }) => void; onAtClose: () => void }) {
   const editorRef = useRef<HTMLDivElement | null>(null);
+  const setEditorRef = useCallback((el: HTMLDivElement | null) => {
+    editorRef.current = el;
+    if (externalEditorRef) externalEditorRef.current = el;
+  }, [externalEditorRef]);
   const isComposingRef = useRef(false);
   const scrollSnapshotRef = useRef<{ wasAtBottom: boolean; scrollTop: number } | null>(null);
   const handledFocusRequestKeyRef = useRef<number | null>(null);
@@ -5187,7 +5191,7 @@ function WorkflowMentionEditor({ value, placeholder, running, maxHeight = 500, m
     <div className="relative">
       {!value ? <div className="pointer-events-none absolute left-2 top-1 z-20 text-[14px] leading-6 text-[#b3b3b3]">{placeholder}</div> : null}
       <div
-        ref={editorRef}
+        ref={setEditorRef}
         contentEditable={!running}
         role="textbox"
         aria-multiline="true"
@@ -5283,10 +5287,9 @@ function WorkflowPromptBox({ node, value, placeholder, maxPromptHeight, onChange
   const [referenceGroupType, setReferenceGroupType] = useState("character_image");
   const [activeAtQuery, setActiveAtQuery] = useState<{ index: number; query: string; cursor: number } | null>(null);
   const [cursorOffset, setCursorOffset] = useState(0);
-  const [focusRequest, setFocusRequest] = useState<{ offset: number; key: number }>();
   const [localTip, setLocalTip] = useState<{ message: string; exiting?: boolean }>();
   const suppressAtTriggerUntilRef = useRef(0);
-  const focusRequestKeyRef = useRef(0);
+  const editorElementRef = useRef<HTMLDivElement | null>(null);
   const uploadsRef = useRef<WorkflowUploadItem[]>(node.data.uploads ?? []);
   const localTipTimerRef = useRef<number | null>(null);
   const connectedUploads = runtime.getConnectedInputUploads(node.id);
@@ -5357,23 +5360,38 @@ function WorkflowPromptBox({ node, value, placeholder, maxPromptHeight, onChange
     uploadsRef.current = node.data.uploads ?? [];
   }, [node.data.uploads]);
 
+  // 读实时 DOM 光标(非滞后 state)；无编辑器/未聚焦时回退 cursorOffset。
+  const getCurrentWorkflowCursor = () => {
+    const editor = editorElementRef.current;
+    if (!editor) return Math.min(Math.max(0, cursorOffset), value.length);
+    return Math.min(Math.max(0, getWorkflowSelectionTextOffset(editor)), value.length);
+  };
+  // 与对话流一致：rAF 等 DOM 渲染出新内容后再 focus + 定位光标(确定的 offset)。
+  const focusWorkflowEditorAt = (offset: number) => {
+    requestAnimationFrame(() => {
+      const editor = editorElementRef.current;
+      if (!editor) return;
+      editor.focus();
+      setWorkflowSelectionTextOffset(editor, offset);
+      setCursorOffset(offset);
+    });
+  };
+
   const insertReferenceText = (name: string) => {
     const referenceText = `@${name} `;
-    // 插到当前光标处；插完光标停在新 @文件名 之后(nextOffset)。
-    // 缩略图/引用按钮用 onMouseDown preventDefault 保住编辑器焦点与光标，cursorOffset 才准。
-    const insertOffset = activeAtQuery ? activeAtQuery.index : Math.min(Math.max(0, cursorOffset), value.length);
-    const insertEnd = activeAtQuery ? activeAtQuery.cursor : insertOffset;
+    // 插到当前光标处(打字触发的 @ 弹窗用 activeAtQuery 位置)；插完光标停在新 @文件名 之后。
+    const cursor = activeAtQuery ? activeAtQuery.index : getCurrentWorkflowCursor();
+    const insertEnd = activeAtQuery ? activeAtQuery.cursor : cursor;
     const maxOwnPromptLength = Math.max(0, MAX_WORKFLOW_PROMPT_LENGTH - connectedTextLength);
-    const nextValue = Array.from(`${value.slice(0, insertOffset)}${referenceText}${value.slice(insertEnd)}`).slice(0, maxOwnPromptLength).join("");
-    if (nextValue.length < `${value.slice(0, insertOffset)}${referenceText}${value.slice(insertEnd)}`.length) showLocalTip("输入框和连接文本合计最多2000字");
-    const nextOffset = Math.min(maxOwnPromptLength, insertOffset + referenceText.length);
+    const rawNext = `${value.slice(0, cursor)}${referenceText}${value.slice(insertEnd)}`;
+    const nextValue = Array.from(rawNext).slice(0, maxOwnPromptLength).join("");
+    if (nextValue.length < rawNext.length) showLocalTip("输入框和连接文本合计最多2000字");
+    const nextOffset = Math.min(maxOwnPromptLength, cursor + referenceText.length);
     suppressAtTriggerUntilRef.current = Date.now() + 500;
     onChange(nextValue);
-    setCursorOffset(nextOffset);
-    focusRequestKeyRef.current += 1;
-    setFocusRequest({ offset: nextOffset, key: focusRequestKeyRef.current });
     setActiveAtQuery(null);
     setIsReferenceMenuOpen(false);
+    focusWorkflowEditorAt(nextOffset);
   };
   const updateUploads = (updater: (uploads: WorkflowUploadItem[]) => WorkflowUploadItem[]) => {
     const nextUploads = updater(uploadsRef.current);
@@ -5567,7 +5585,7 @@ function WorkflowPromptBox({ node, value, placeholder, maxPromptHeight, onChange
           <span>加载引用资产...</span>
         </div>
       ) : (
-        <WorkflowMentionEditor value={value} placeholder={placeholder} running={running} maxHeight={maxPromptHeight} maxLength={Math.max(0, MAX_WORKFLOW_PROMPT_LENGTH - connectedTextLength)} validReferences={validReferenceNames} focusRequest={focusRequest} onChange={onChange} onRun={runFromPromptBox} onPasteImages={(files) => { void handleUploadFiles("image", files); }} onLimit={() => showLocalTip("输入框和连接文本合计最多2000字")} onCursorChange={setCursorOffset} onAtTrigger={(query) => { if (Date.now() < suppressAtTriggerUntilRef.current) return; runtime.onLoadReferenceAssets?.(); setActiveAtQuery(query); setIsReferenceMenuOpen(true); }} onAtClose={() => { setActiveAtQuery(null); setIsReferenceMenuOpen(false); }} />
+        <WorkflowMentionEditor value={value} placeholder={placeholder} running={running} maxHeight={maxPromptHeight} maxLength={Math.max(0, MAX_WORKFLOW_PROMPT_LENGTH - connectedTextLength)} validReferences={validReferenceNames} externalEditorRef={editorElementRef} onChange={onChange} onRun={runFromPromptBox} onPasteImages={(files) => { void handleUploadFiles("image", files); }} onLimit={() => showLocalTip("输入框和连接文本合计最多2000字")} onCursorChange={setCursorOffset} onAtTrigger={(query) => { if (Date.now() < suppressAtTriggerUntilRef.current) return; runtime.onLoadReferenceAssets?.(); setActiveAtQuery(query); setIsReferenceMenuOpen(true); }} onAtClose={() => { setActiveAtQuery(null); setIsReferenceMenuOpen(false); }} />
       )}
       <div className="mt-3 flex min-w-0 flex-nowrap items-center justify-between gap-3 pb-0.5">
         <div className="flex min-w-0 flex-1 flex-nowrap items-center gap-2 text-[12px]">
