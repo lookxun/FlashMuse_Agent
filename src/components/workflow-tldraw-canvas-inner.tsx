@@ -9,6 +9,7 @@ import { BytePlusIcon } from "@/components/byteplus-icon";
 import { DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, bytePlusVideoGenerationModels, frontendConversationModels, frontendImageGenerationModels, getExpectedImageDimensions, getExpectedVideoDimensions, getSupportedImageResolutions, getSupportedVideoRatios, getSupportedVideoResolutions, imageGenerationModels, normalizeImageResolutionForModel, normalizeVideoRatioForModel, normalizeVideoResolutionForModel, videoGenerationModels, type ConversationModel, type GenerationModel, type ModelName } from "@/lib/models";
 import { GENERIC_MEDIA_ERROR_MESSAGE, toUserErrorMessage } from "@/lib/error-message";
 import { buildReferenceHint } from "@/lib/reference-hint";
+import { createUploadProgressTracker } from "@/lib/upload-progress";
 import { sanitizeModelOutputText } from "@/lib/text-cleanup";
 import { getUploadKindFromFileName, getUploadRule, type UploadKind, type UploadKindRule, type UploadRule, type UploadRuleOverrides } from "@/lib/upload-rules";
 
@@ -38,6 +39,7 @@ export type WorkflowNodeData = {
   error?: string;
   isRunning?: boolean;
   uploadProgress?: number;
+  uploadPreviewUrl?: string;
   taskId?: string;
   videoRequestId?: string;
   imageRequestId?: string;
@@ -93,12 +95,19 @@ export type WorkflowCanvasState = {
   viewport?: { x: number; y: number; zoom: number };
   historicalTextNodes?: WorkflowNode[];
   historicalMediaNodes?: WorkflowNode[];
+  // 累计生成计数(只增不减)。存在 canvas 里随 canvasJson 持久化，刷新/删节点都不丢、不减。
+  generatedMediaCounts?: { images: number; videos: number };
 };
 
 const workflowUploadApiBaseUrl = (process.env.NEXT_PUBLIC_UPLOAD_BASE_URL ?? "").replace(/\/$/, "");
 const workflowDefaultProductionUploadApiBaseUrl = "https://api.venusface.com";
 
 function getWorkflowUploadApiBaseUrl() {
+  if (typeof window !== "undefined") {
+    const host = window.location.hostname;
+    // Ali 镜像用户上传走同源(ali.venusface.com)，由 Ali 反代到马来：客户端上传腿走国内更稳，Ali→马来是机房骨干。
+    if (host === "ali.venusface.com" || host === "static.venusface.com" || host === "101.37.129.164") return "";
+  }
   if (workflowUploadApiBaseUrl) return workflowUploadApiBaseUrl;
   if (typeof window === "undefined") return "";
   const hostname = window.location.hostname;
@@ -585,10 +594,12 @@ async function getWorkflowDirectUploadToken() {
 function uploadWorkflowFormDataWithProgress<T>(url: string, formData: FormData, onProgress?: (progress: number) => void, token?: string) {
   return new Promise<T>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
+    const tracker = createUploadProgressTracker(onProgress);
     let settled = false;
     const rejectOnce = (error: Error) => {
       if (settled) return;
       settled = true;
+      tracker.cancel();
       reject(error);
     };
     const resolveOnce = (data: T) => {
@@ -598,16 +609,14 @@ function uploadWorkflowFormDataWithProgress<T>(url: string, formData: FormData, 
     };
     try {
       xhr.open("POST", url);
-      xhr.timeout = 90 * 1000;
+      xhr.timeout = 180 * 1000;
       if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
     } catch (error) {
       rejectOnce(error instanceof Error ? error : new Error("上传初始化失败"));
       return;
     }
-    xhr.upload.onprogress = (event) => {
-      if (!event.lengthComputable) return;
-      onProgress?.(Math.min(95, Math.max(15, Math.round((event.loaded / event.total) * 95))));
-    };
+    xhr.upload.onprogress = tracker.onUploadProgress;
+    xhr.upload.onload = tracker.onBytesComplete;
     xhr.onload = () => {
       let data: T & { error?: string };
       try {
@@ -620,7 +629,7 @@ function uploadWorkflowFormDataWithProgress<T>(url: string, formData: FormData, 
         rejectOnce(new Error(data.error || "上传失败"));
         return;
       }
-      onProgress?.(100);
+      tracker.finish();
       resolveOnce(data);
     };
     xhr.onabort = () => rejectOnce(new Error("上传已取消"));
@@ -638,8 +647,7 @@ async function uploadWorkflowImageOnce(file: File, onProgress?: (progress: numbe
   const formData = new FormData();
   formData.append("image", file, file.name);
   if (forceReencode) formData.append("forceReencode", "1");
-  onProgress?.(8);
-  onProgress?.(12);
+  onProgress?.(2);
   const token = await getWorkflowDirectUploadToken();
   const postData = await uploadWorkflowFormDataWithProgress<{ token?: string; error?: string }>(getWorkflowUploadApiUrl("/api/asset-upload-temp"), formData, onProgress, token);
   if (!postData.token) throw new Error(postData.error || "图片上传失败");
@@ -660,10 +668,14 @@ async function uploadWorkflowImage(file: File, onProgress?: (progress: number) =
   }
 }
 
-async function uploadWorkflowFile(file: File, kind: Exclude<WorkflowUploadKind, "image">) {
-  const dataUrl = await readWorkflowFileAsDataUrl(file);
-  const response = await fetch("/api/upload-file", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ file: dataUrl, name: file.name, mediaKind: kind }) });
-  const data = await readJson<{ url?: string; error?: string }>(response);
+async function uploadWorkflowFile(file: File, kind: Exclude<WorkflowUploadKind, "image">, onProgress?: (progress: number) => void) {
+  // 二进制流式上传，避免 base64+JSON 大字符串导致的极慢和事件循环阻塞。
+  const formData = new FormData();
+  formData.append("file", file, file.name);
+  formData.append("name", file.name);
+  formData.append("mediaKind", kind);
+  const token = await getWorkflowDirectUploadToken();
+  const data = await uploadWorkflowFormDataWithProgress<{ url?: string; error?: string }>(getWorkflowUploadApiUrl("/api/upload-file"), formData, onProgress, token);
   if (!data.url) throw new Error(data.error || "文件上传失败");
   return data.url;
 }
@@ -1088,6 +1100,12 @@ function getWorkflowNodeMediaName(node: WorkflowNode) {
   const imageUrl = node.data.images?.[0];
   if (imageUrl) return node.data.mediaSystemNames?.[imageUrl] ?? "图片生成";
   if (node.data.videoUrl) return node.data.mediaSystemNames?.[node.data.videoUrl] ?? "视频生成";
+  return "";
+}
+
+function getWorkflowUploadFileName(node: WorkflowNode) {
+  const url = node.data.images?.[0] ?? node.data.videoUrl ?? node.data.audioUrl;
+  if (url && node.data.mediaSystemNames?.[url]) return node.data.mediaSystemNames[url];
   return "";
 }
 
@@ -2125,7 +2143,7 @@ function WorkflowShapeComponent({ shape }: { shape: WorkflowNodeShape }) {
         {node.kind === "image" ? <ImageDisplayCard node={node} selected={isSelected} displayUrl={imageDisplayUrl} height={shape.props.h} /> : null}
         {node.kind === "video" ? <VideoDisplayCard node={node} selected={isSelected} height={shape.props.h} onSelect={() => editor.select(shape.id)} /> : null}
         {node.kind === "audio" ? <AudioDisplayCard node={node} selected={isSelected} height={shape.props.h} /> : null}
-        {node.data.uploadProgress !== undefined && node.kind !== "audio" ? <UploadingNodeOverlay progress={node.data.uploadProgress} height={shape.props.h} /> : null}
+        {node.data.uploadProgress !== undefined && node.kind !== "audio" ? <UploadingNodeOverlay progress={node.data.uploadProgress} width={shape.props.w} height={shape.props.h} previewUrl={node.data.uploadPreviewUrl} isVideo={node.kind === "video"} /> : null}
         {showOutputPort ? <NodePort side="right" onPointerEnter={holdPortVisible} onPointerLeave={releasePortVisibleSoon} onPointerDown={(event) => runtime.beginConnectionDrag(node.id, event)} /> : null}
         {showInputPort ? <NodePort side="left" active={Boolean((runtime.connectingFrom && runtime.connectingFrom !== node.id) || (runtime.multiConnectSources.length > 0 && !runtime.multiConnectSources.includes(node.id)))} onPointerEnter={holdPortVisible} onPointerLeave={releasePortVisibleSoon} onPointerDown={(event) => runtime.beginInputConnectionDrag(node.id, event)} /> : null}
       </div>
@@ -2187,7 +2205,7 @@ function WorkflowSelectedNodeOverlay() {
   const node = shape.props.node;
   const Icon = getWorkflowNodeHeaderIcon(node);
   const mediaName = getWorkflowNodeMediaName(node);
-  const title = node.kind === "text" ? (node.title === "上传文本" ? "上传文本（双击进入编辑模式）" : "文本输入（双击进入编辑模式）") : node.title.startsWith("上传") ? node.title : [getNodeLabel(node.kind), mediaName].filter(Boolean).join(" ");
+  const title = node.kind === "text" ? (node.title === "上传文本" ? "上传文本（双击进入编辑模式）" : "文本输入（双击进入编辑模式）") : node.title.startsWith("上传") ? [node.title, getWorkflowUploadFileName(node)].filter(Boolean).join(" ") : [getNodeLabel(node.kind), mediaName].filter(Boolean).join(" ");
   const paramParts = getWorkflowNodeParamParts(node);
   const showEditor = (node.kind === "image" || node.kind === "video") && !hasWorkflowNodeResult(node) && !node.data.isRunning && node.data.uploadProgress === undefined;
   const screenNodeWidth = shape.props.w * zoom;
@@ -2425,14 +2443,6 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     return filtered.length > 0 ? filtered : workflowVideoModels;
   }, [enabledVideoModelIds]);
   const modelOptions = useMemo<WorkflowModelOptions>(() => ({ textModels, textModelProviders, imageModels, videoModels }), [imageModels, textModelProviders, textModels, videoModels]);
-
-  const hasMentionedWorkflowPrompt = useMemo(() => normalizeState(value).nodes.some((node) => (node.data.prompt ?? node.data.text ?? "").includes("@")), [value]);
-
-  useEffect(() => {
-    if (!hasMentionedWorkflowPrompt) return;
-    if (referenceAssetsLoadStatus === "loaded" || referenceAssetsLoadStatus === "loading") return;
-    onLoadReferenceAssets?.();
-  }, [hasMentionedWorkflowPrompt, onLoadReferenceAssets, referenceAssetsLoadStatus]);
 
   const exportStateFromEditor = useCallback((editor: Editor): WorkflowCanvasState => {
     const shapes = editor.getCurrentPageShapesSorted().filter((shape): shape is WorkflowNodeShape => shape.type === "workflow_node");
@@ -2820,10 +2830,12 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
         const validationError = validateWorkflowUploadNodeFile(file, "image", { dimensions });
         if (validationError) return onShowTip?.(validationError);
         const nodeId = createId("workflow_node");
-        addUploadedNode({ id: nodeId, kind: "image", title: "上传图片", data: { ...getDefaultNodeData("image"), prompt: "上传图片", imageDimensions: {}, ratio: normalizeWorkflowImageRatio(undefined, dimensions), uploadProgress: 1 } }, targetNodeId);
+        const previewUrl = URL.createObjectURL(file);
+        addUploadedNode({ id: nodeId, kind: "image", title: "上传图片", data: { ...getDefaultNodeData("image"), prompt: "上传图片", imageDimensions: {}, ratio: normalizeWorkflowImageRatio(undefined, dimensions), uploadProgress: 1, uploadPreviewUrl: previewUrl } }, targetNodeId);
         const url = await uploadWorkflowImage(file, (progress) => updateNode(nodeId, { uploadProgress: Math.min(99, progress) }));
-        const data: WorkflowNodeData = { ...getDefaultNodeData("image"), prompt: "上传图片", images: [url], imageDimensions: { [url]: dimensions }, mediaSystemNames: { [url]: file.name }, ratio: normalizeWorkflowImageRatio(undefined, dimensions), visualSize: undefined, uploadProgress: undefined };
+        const data: WorkflowNodeData = { ...getDefaultNodeData("image"), prompt: "上传图片", images: [url], imageDimensions: { [url]: dimensions }, mediaSystemNames: { [url]: file.name }, ratio: normalizeWorkflowImageRatio(undefined, dimensions), visualSize: undefined, uploadProgress: undefined, uploadPreviewUrl: undefined };
         updateNode(nodeId, data);
+        URL.revokeObjectURL(previewUrl);
         void persistWorkflowUploadNodeAsset({ url, name: file.name, mediaType: "image", workflowId, workflowNodeId: nodeId, sourcePrompt: "上传图片", file, dimensions, settings: { ratio: data.ratio, resolution: data.resolution } }).catch((error) => console.warn("[media-assets] failed to persist workflow uploaded image", error));
         return nodeId;
       }
@@ -2833,10 +2845,12 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
         if (validationError) return onShowTip?.(validationError);
         const defaultData = getDefaultNodeData("video");
         const nodeId = createId("workflow_node");
-        addUploadedNode({ id: nodeId, kind: "video", title: "上传视频", data: { ...defaultData, prompt: "上传视频", videoDimensions: media.dimensions, durationSeconds: media.durationSeconds, ratio: media.dimensions ? getCommonWorkflowRatioLabel(media.dimensions) ?? defaultData.ratio : defaultData.ratio, uploadProgress: 1 } }, targetNodeId);
-        const url = await uploadWorkflowFile(file, "video");
-        const data: WorkflowNodeData = { ...defaultData, prompt: "上传视频", videoUrl: url, videoDimensions: media.dimensions, durationSeconds: media.durationSeconds, videoCurrentTime: 0, mediaSystemNames: { [url]: file.name }, ratio: media.dimensions ? getCommonWorkflowRatioLabel(media.dimensions) ?? defaultData.ratio : defaultData.ratio, visualSize: undefined, uploadProgress: undefined };
+        const previewUrl = URL.createObjectURL(file);
+        addUploadedNode({ id: nodeId, kind: "video", title: "上传视频", data: { ...defaultData, prompt: "上传视频", videoDimensions: media.dimensions, durationSeconds: media.durationSeconds, ratio: media.dimensions ? getCommonWorkflowRatioLabel(media.dimensions) ?? defaultData.ratio : defaultData.ratio, uploadProgress: 1, uploadPreviewUrl: previewUrl } }, targetNodeId);
+        const url = await uploadWorkflowFile(file, "video", (progress) => updateNode(nodeId, { uploadProgress: Math.min(99, progress) }));
+        const data: WorkflowNodeData = { ...defaultData, prompt: "上传视频", videoUrl: url, videoDimensions: media.dimensions, durationSeconds: media.durationSeconds, videoCurrentTime: 0, mediaSystemNames: { [url]: file.name }, ratio: media.dimensions ? getCommonWorkflowRatioLabel(media.dimensions) ?? defaultData.ratio : defaultData.ratio, visualSize: undefined, uploadProgress: undefined, uploadPreviewUrl: undefined };
         updateNode(nodeId, data);
+        URL.revokeObjectURL(previewUrl);
         void persistWorkflowUploadNodeAsset({ url, name: file.name, mediaType: "video", workflowId, workflowNodeId: nodeId, sourcePrompt: "上传视频", file, dimensions: media.dimensions, durationSeconds: media.durationSeconds, settings: { ratio: data.ratio, resolution: data.resolution, duration: data.duration } }).catch((error) => console.warn("[media-assets] failed to persist workflow uploaded video", error));
         return nodeId;
       }
@@ -2846,7 +2860,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
         if (validationError) return onShowTip?.(validationError);
         const nodeId = createId("workflow_node");
         addUploadedNode({ id: nodeId, kind: "audio", title: "上传音频", data: { ...getDefaultNodeData("audio"), durationSeconds: media.durationSeconds, uploadProgress: 1 } }, targetNodeId);
-        const url = await uploadWorkflowFile(file, "audio");
+        const url = await uploadWorkflowFile(file, "audio", (progress) => updateNode(nodeId, { uploadProgress: Math.min(99, progress) }));
         updateNode(nodeId, { audioUrl: url, durationSeconds: media.durationSeconds, mediaSystemNames: { [url]: file.name }, uploadProgress: undefined });
         void persistWorkflowUploadNodeAsset({ url, name: file.name, mediaType: "audio", workflowId, workflowNodeId: nodeId, sourcePrompt: "上传音频", file, durationSeconds: media.durationSeconds }).catch((error) => console.warn("[media-assets] failed to persist workflow uploaded audio", error));
         return nodeId;
@@ -4682,15 +4696,33 @@ function TextDisplayCard({ node, height, isEditing }: { node: WorkflowNode; sele
   );
 }
 function PreviewEyeButton({ label, onPreview }: { label: string; onPreview: () => void }) { return <button type="button" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onPreview(); }} className="absolute bottom-3 right-3 z-20 inline-flex h-9 w-9 items-center justify-center rounded-full bg-black/55 text-white shadow-[0_8px_20px_rgba(0,0,0,0.24)] backdrop-blur transition hover:bg-black/72" aria-label={label} title={label}><RiEyeLine className="h-4.5 w-4.5" /></button>; }
-function UploadingNodeOverlay({ progress, height }: { progress?: number; height: number }) {
-  const fixedScale = useWorkflowFixedScreenScale();
+function UploadingNodeOverlay({ progress, width, height, previewUrl, isVideo }: { progress?: number; width: number; height: number; previewUrl?: string; isVideo?: boolean }) {
   const pct = Math.max(1, Math.min(99, Math.round(progress ?? 1)));
-  const barWidth = 168 * fixedScale;
-  const barHeight = 8 * fixedScale;
-  return <div className="absolute inset-0 z-30 flex items-center justify-center bg-white/62 backdrop-blur-[1px]"><div className="flex flex-col items-center" style={{ gap: 8 * fixedScale }}><div className="font-semibold text-[#333333]" style={{ fontSize: 13 * fixedScale, lineHeight: `${16 * fixedScale}px` }}>{pct}%</div><div className="overflow-hidden rounded-full bg-black/12" style={{ width: barWidth, height: barHeight }}><div className="h-full rounded-full bg-[#367cee] transition-[width]" style={{ width: `${pct}%` }} /></div></div></div>;
+  const degrees = pct * 3.6;
+  const diameter = Math.min(width, height) * 0.3;
+  const ringThickness = Math.max(2, diameter * 0.1);
+  const fontSize = diameter * 0.26;
+  const src = previewUrl ? (/^(blob:|data:)/.test(previewUrl) ? previewUrl : getStaticMediaUrl(previewUrl) ?? previewUrl) : undefined;
+  return (
+    <div className="absolute inset-0 z-30 flex items-center justify-center overflow-hidden">
+      {src ? (
+        isVideo ? (
+          <video src={src} muted playsInline preload="metadata" className="absolute inset-0 h-full w-full object-cover" />
+        ) : (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={src} alt="上传预览" draggable={false} className="absolute inset-0 h-full w-full select-none object-cover" />
+        )
+      ) : null}
+      <div className="absolute inset-0 bg-black/45 backdrop-blur-[1px]" />
+      <div className="relative flex items-center justify-center rounded-full" style={{ width: diameter, height: diameter, background: `conic-gradient(#367cee ${degrees}deg, rgba(255,255,255,0.28) 0deg)` }}>
+        <div className="absolute rounded-full bg-black/62" style={{ inset: ringThickness }} />
+        <span className="relative font-semibold leading-none text-white" style={{ fontSize }}>{pct}%</span>
+      </div>
+    </div>
+  );
 }
 function ImageDisplayCard({ node, selected, displayUrl, height }: { node: WorkflowNode; selected?: boolean; displayUrl?: string; height: number }) { const runtime = useWorkflowRuntime(); if (node.data.isRunning) return <WaitingCard isImage startedAt={node.data.startedAt} selected={selected} height={height} />; if (node.data.error) return <FailedCard isImage selected={selected} height={height} error={node.data.error} onRetry={() => runtime.runImageNode(node)} onOptimizationRetry={isWorkflowGptImageSafetyFailure(node) ? (count) => runtime.runGptImageOptimizationRetry(node, count) : undefined} />; const url = node.data.images?.[0]; if (url) return <div className={`relative w-full overflow-hidden border bg-[#e6e6e6] ${cardBorderClassName(selected)}`} style={{ height }}><img src={displayUrl ?? getStaticMediaUrl(url) ?? url} alt="生成图片" draggable={false} className="h-full w-full select-none object-cover" /></div>; return <EmptyMediaCard kind="image" selected={selected} height={height} />; }
-function AudioDisplayCard({ node, selected, height }: { node: WorkflowNode; selected?: boolean; height: number }) { const url = node.data.audioUrl; const displayUrl = url ? getStaticMediaUrl(url) ?? url : undefined; return <div className="relative flex w-full items-center justify-center overflow-hidden rounded-[20px] border-[5px] border-[#b8b8b8] bg-white px-6" style={{ height }}>{displayUrl ? <audio src={displayUrl} controls className="w-full" /> : <EmptyMediaCard kind="audio" selected={selected} height={height} />}{node.data.uploadProgress !== undefined ? <UploadingNodeOverlay progress={node.data.uploadProgress} height={height} /> : null}</div>; }
+function AudioDisplayCard({ node, selected, height }: { node: WorkflowNode; selected?: boolean; height: number }) { const url = node.data.audioUrl; const displayUrl = url ? getStaticMediaUrl(url) ?? url : undefined; return <div className="relative flex w-full items-center justify-center overflow-hidden rounded-[20px] border-[5px] border-[#b8b8b8] bg-white px-6" style={{ height }}>{displayUrl ? <audio src={displayUrl} controls className="w-full" /> : <EmptyMediaCard kind="audio" selected={selected} height={height} />}{node.data.uploadProgress !== undefined ? <UploadingNodeOverlay progress={node.data.uploadProgress} width={height} height={height} /> : null}</div>; }
 function WorkflowInlineVideo({ node, url, onSelect }: { node: WorkflowNode; url: string; onSelect: () => void }) {
   const editor = useEditor();
   const runtime = useWorkflowRuntime();
@@ -5325,14 +5357,12 @@ function WorkflowPromptBox({ node, value, placeholder, maxPromptHeight, onChange
     uploadsRef.current = node.data.uploads ?? [];
   }, [node.data.uploads]);
 
-  useEffect(() => {
-    if (!value.includes("@")) return;
-    runtime.onLoadReferenceAssets?.();
-  }, [runtime.onLoadReferenceAssets, value]);
-
   const insertReferenceText = (name: string) => {
     const referenceText = `@${name} `;
-    const insertOffset = activeAtQuery ? activeAtQuery.index : Math.min(Math.max(0, cursorOffset), value.length);
+    // 从 @ 弹窗输入触发时插到 @ 查询处；点缩略图/引用按钮追加时插到末尾。
+    // 用 value.length 而非 cursorOffset：点画布上的缩略图按钮会让编辑器失焦、cursorOffset 变旧，
+    // 导致连点多次时光标不落在最新 @文件名 后面。追加到末尾则每次光标都稳定停在新 @文件名 之后。
+    const insertOffset = activeAtQuery ? activeAtQuery.index : value.length;
     const insertEnd = activeAtQuery ? activeAtQuery.cursor : insertOffset;
     const maxOwnPromptLength = Math.max(0, MAX_WORKFLOW_PROMPT_LENGTH - connectedTextLength);
     const nextValue = Array.from(`${value.slice(0, insertOffset)}${referenceText}${value.slice(insertEnd)}`).slice(0, maxOwnPromptLength).join("");
@@ -5445,7 +5475,14 @@ function WorkflowPromptBox({ node, value, placeholder, maxPromptHeight, onChange
   }, []);
   const activeReferenceGroup = referenceGroups.find((group) => group.type === referenceGroupType && group.assets.length > 0) ?? referenceGroups.find((group) => group.assets.length > 0) ?? referenceGroups[0];
   const isReferenceAssetsLoading = runtime.referenceAssetsLoadStatus === "loading";
-  const isWaitingForMentionReferences = value.includes("@") && (runtime.referenceAssetsLoadStatus === "idle" || runtime.referenceAssetsLoadStatus === "loading");
+  // 只有"本地解析不了的 @mention"(即资产库里的引用，需要读库解析)才触发加载/转圈。
+  // 连线到画布上的图/视频在 validReferenceNames 里，点它的 @文件名 直接插入蓝字，不读库、不转圈。
+  const hasUnresolvedMention = useMemo(() => getWorkflowMentionNames(value).some((name) => !validReferenceNames.has(name)), [value, validReferenceNames]);
+  const isWaitingForMentionReferences = hasUnresolvedMention && (runtime.referenceAssetsLoadStatus === "idle" || runtime.referenceAssetsLoadStatus === "loading");
+  useEffect(() => {
+    if (!hasUnresolvedMention) return;
+    runtime.onLoadReferenceAssets?.();
+  }, [hasUnresolvedMention, runtime.onLoadReferenceAssets]);
   const closeMenusIfOutsideMenu = (target: EventTarget | null) => {
     if (!(target as HTMLElement | null)?.closest("[data-workflow-menu]")) closeWorkflowPopups();
   };

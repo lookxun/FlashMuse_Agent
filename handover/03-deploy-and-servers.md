@@ -46,6 +46,12 @@ Full deploy sequence (verified working 2026-07-05):
 
 Current notes:
 
+- 2026-07-08 (网络诊断 session) 服务器运维改动(非应用部署)：
+  - **BBR 已开(两台，持久化)**：马来+阿里都 `net.ipv4.tcp_congestion_control=bbr` + `net.core.default_qdisc=fq`，写进 `/etc/sysctl.conf`。目的：马来↔阿里国际链路当前 50% 丢包，cubic 吞吐崩，BBR 扛丢包(A/B 实测快6~10倍：cubic~6KB/s→BBR~40KB/s)。回退：`sysctl -w net.ipv4.tcp_congestion_control=cubic` 并删 sysctl.conf 两行。
+  - **马来 nginx**：`conf.d/flashmuse-ip.conf`(接收 Ali 反代的默认块) + `conf.d/flashmuse.conf`(main/api) 都加了 `client_body_timeout 300s`(原默认 60s，大视频上传 body 传输被掐返回 408)。备份 `conf.d/flashmuse-ip.conf.bak.20260708164430`、`conf.d/flashmuse.conf.bak.20260708164430`。**保留未回滚。**
+  - **Ali nginx**：`sites-enabled/flashmuse-static-ip` 两个 `location /` 曾加 `proxy_request_buffering off; proxy_max_temp_file_size 0; client_body_timeout 300s;` 后**整体回滚到备份**(误判它导致全站卡)。备份 `/etc/nginx/flashmuse-static-ip.bak.20260708164344`。**当前 Ali=原样。** 上传卡95%的真根因(Ali 默认双重缓冲)因此仍未修——根治见 05-next-actions：重新只加 `proxy_request_buffering off`(别加 `proxy_max_temp_file_size 0`)。
+  - 从马来 ssh 跳 Ali 用 `ssh -i /root/.ssh/flashmuse_to_ali_ed25519 root@101.37.129.164`。Ali flashmuse nginx 配置在 `/etc/nginx/sites-enabled/flashmuse-static-ip`(不在 conf.d)。诊断丢包：从 Ali `ping 101.47.19.109`。
+- Latest 2026-07-08 app deploy (网络诊断 session): narrow single-file deploy of `src/app/page.tsx` (首页 logo 去掉悬停 `title`). Backup `.deploy-backups/20260708-logo-no-tooltip/page.tsx.before`. Build EXIT=0, PM2 online, Ali `_next/static` synced, homepage 200. NOT pushed to GitHub.
 - Latest 2026-07-05 (later session) deploy: asset-library + admin-detail PERFORMANCE optimization (compute-only, no functional change). Full-source snapshot (tarball md5 `01164cebbfecbd725de12ac26f563dc9`; note the first scp truncated — always md5-verify both sides and re-scp on mismatch). NO new Prisma migration (schema already matched prod), so migrate/generate were skipped. Backup `.deploy-backups/20260705-perf-asset-admin/source-before-deploy.tgz`. Guard snapshots `.runtime/deploy-checks/20260705-perf-before.json` / `20260705-perf-after.json`, compare `ok:true` (assetListHash `0deb19ceea43c596` unchanged, stableMissing/fallbackUsers 0). Deploy script build OK, PM2 online, Ali synced. Post-deploy: `/workspace` `/admin` `/api/model-availability` `ali.venusface.com/workspace` all 200. Committed+pushed to GitHub (this commit also pushed the earlier-but-unpushed 2026-07-05 admin-overview/analytics work).
 - Source file hashes for key local files matched the Malaysia server deployment during rebuild.
 - PM2 was online during rebuild.

@@ -1,6 +1,54 @@
 # Current Status
 
-Last checked: 2026-07-08 China time.
+Last checked: 2026-07-09 China time.
+
+## Latest 2026-07-09 (later session) — 右上角使用量计数修复 + 工作流@文件名卡加载/光标修复 + **全量部署 prod+Ali + 推 GitHub** (prod=GitHub=本地 三方同步)
+
+- Reply style 简洁直接中文. 详见 CHANGELOG 顶部条目。本 session 把**之前一整批未部署/未推的改动全部部署上线并推 GitHub**（生成压缩、备案/法务页、上传大改造、网络诊断 logo + 本 session），现在 prod=GitHub=本地。
+- **右上角媒体计数(只增不减是产品口径)修了两 bug**：
+  1. **对话流**：累计 `addSessionGeneratedMediaCount` 无去重、重复累加致图片虚高(实测 d35 存9实际6)。改为面板直接用实时去重数 `getSessionMediaCounts`（对话流无删除→实时=累计不减）。
+  2. **工作流**：累计 `generatedMediaCounts` 从没被持久化（服务器 normalizeWorkflowItems 丢弃它），刷新即丢、删节点会变小。改为存进 `canvas.generatedMediaCounts`（随 canvasJson 存/读回、`updateWorkflowCanvas` 保留、`addWorkflowGeneratedAssets` 写它）→ 真·只增不减、刷新不丢。
+- **工作流 @文件名 两 bug**：① 点画布连线缩略图的 `@文件名` 会读资产库转圈卡死——改为只有"本地解析不了的库资产 @mention"才读库(连线引用本地就有)，删掉画布级"任意@就预加载"。② 连点缩略图光标不落最新 @文件名 后——`insertReferenceText` 非弹窗路径改为追加到末尾。
+- 部署：全量快照 + 服务器 `npm install`(sharp)；无迁移；备份 `.deploy-backups/20260709-gen-compress-counts/`；快照 compare `ok:true`(assetListHash `1597871847f4c23d` 未变)；五域名 200；worker started。
+- **BROWSER-VERIFY(ali 硬刷)**：对话流右上角图片数=当前实际张数(d35 应 6)；工作流生成→累加、刷新不变、删生成节点不减、再刷新仍不减；工作流连线图点 @文件名 秒变蓝字无转圈、连点多次光标都在最新 @文件名 后；真·@库资产仍能读出。生成压缩后台"系统设置"tab + 图片落盘 JPEG/视频 ffmpeg 转码(留意马来 worker CPU)。
+
+## Latest 2026-07-09 — 上传体验修复(已部署) + 生成压缩功能(本地未部署，下一个AI直接部署) (部分 DEPLOYED prod+Ali+Ali-nginx；生成压缩=本地only；**全程 GitHub 未推**)
+
+- Reply style 简洁直接中文. 两大类，详见 CHANGELOG 顶部 A/B。**下一个 AI：用户明确要求直接部署——把 (B) 生成压缩部署 prod+Ali，并把 8866940 之上这一长串未推改动(备案/上传大改造/网络诊断/本session)一起推 GitHub。** 部署要点见 05-next-actions 顶部。
+- **(A) 已部署 prod+Ali 的上传修复**：
+  1. **上传卡95%根治**：Ali nginx `flashmuse-static-ip` 两个反代 `location /` 加 `proxy_request_buffering off;`(nginx -t+reload，备份 `.bak.20260709105656`)。Ali 边收边转发不再双重缓冲。
+  2. **上传进度条真实化**：新建 `src/lib/upload-progress.ts`，前段字节映射随机 60~70% 封顶、后段合成慢爬到99、响应到才100；三个上传函数(chat-workbench 两个 + workflow-inner 一个)接入。
+  3. **工作流上传节点左上角显示文件名**(image/video/audio)。
+  4. **工作流上传节点刷新卡"上传中99%"修复**：`getPersistableWorkflowItems` 存库边界剥离 uploadProgress/uploadPreviewUrl(运行时保留，不动 normalizeState)。
+- **(B) 生成压缩功能 —— 本地 only，未部署，tsc+build 通过**：
+  - 后台"系统设置"改名"模型开关"(图标 RiToggleLine)；新增"系统设置"tab(key=generation，图标 RiSettingsLine)做**生成文件压缩控制**：图片/视频两行，各"压缩"开关+质量三档 高(95%)/标准(80%)/低(60%)，关则质量置灰。默认**都开启+标准80%**。
+  - 接线：**图片**用 `sharp` 转真实质量 JPEG(开)/保留原图(关)；**视频**用 ffmpeg H.264 CRF(95→18/80→21/60→24)转码、**变小才替换**、+faststart(media-save-queue 内异步)。只影响模型生成图/视频，不动上传路径。
+  - 新增依赖 `sharp` + `next.config.ts serverExternalPackages` 加 sharp。**部署时服务器要 `npm install`(sharp Linux x64 原生二进制)**。
+  - ⚠️ 视频压缩默认开→马来 worker 会多 ffmpeg 转码开销，部署后留意 CPU。
+- **押后(M015)**：阿里端上传压缩转发小服务(用户"以后再说")。查证阿里 2核/3.4G/全闲/已装 ffmpeg，可行，成本是维护一个阿里小服务。
+
+## Latest 2026-07-08 (网络诊断 session) — 上传卡95%根因(nginx层) + 跨境50%丢包 + 开BBR + logo去提示语 + 跨境加速方案调研 (部分 DEPLOYED；**GitHub 未推**)
+
+- Reply style 简洁直接中文. 本 session 主要是**诊断 + 服务器运维**，代码只改了一处(首页 logo)。详见 CHANGELOG 顶部 6 条。
+- **用户报"工作流_06 视频上传又卡95%超时"**：查明 **B7(base64→二进制 multipart)没做错、部署正确在工作**；真根因在 **nginx 层**——用户那次 upload-file 返回 **408**(nginx 收 body 超时)。两个原因：① **Ali `location /` 默认 `proxy_request_buffering on`**(先缓冲整个视频再转发马来，双重缓冲慢)；② **马来接收端默认 `client_body_timeout 60s`** 太短，大视频被掐。
+- **⚠️ nginx 当前状态(修了一半)**：马来两个 conf 已加 `client_body_timeout 300s`(保留)；**Ali 的 `proxy_request_buffering off` 加了又回滚了**(因当时误判它导致全站卡)。**上传卡95%的真根因(Ali 双重缓冲)仍未修**。下一个 AI 根治：重新给 Ali `sites-enabled/flashmuse-static-ip` 两个 `location /` 加 `proxy_request_buffering off`(**别加 proxy_max_temp_file_size 0**)再复测大视频。
+- **全站卡真根因 = 马来↔阿里国际链路当前 50% 丢包**(从 Ali ping 马来 RTT~282ms/丢包20~50%，双向)。用户全走 ali 反代马来，动态请求全被重传拖慢。**这是双服务器架构固有软肋，非本次改动引起**(回滚 Ali 后照样卡)。
+- **已开 BBR 缓解**：马来+阿里都切 `tcp_congestion_control=bbr` + `default_qdisc=fq`，写进 `/etc/sysctl.conf` 持久化。A/B 实测 cubic ≈3.7~11KB/s → BBR ≈35~48KB/s(快6~10倍)。仍治标。
+- **前端小改并部署**：首页 logo 切换线路按钮去掉鼠标悬停文字(删 `title`，留 `onClick`+`aria-label`)。`tsc` 通过，窄部署 prod(build EXIT=0/PM2 online/Ali 同步)，首页 200。备份 `.deploy-backups/20260708-logo-no-tooltip/`。**未推 GitHub。**
+- **长期优化方向(与用户讨论定调，写进 05-next-actions)**：把马来 BytePlus 换成**阿里海外(新加坡)**，两台都阿里→走阿里私有骨干组内网，根治跨境丢包。香港排除(被当国内、模型 403)；跨境带宽费换任何中国云都躲不掉；第三方隧道(GlobalSSH 类)因合规/稳定性不建议；CDN 已因费用放弃。GA vs CEN 价格对比已写桌面文件 `C:\Users\ASUS\Desktop\跨境加速方案对比_GA_vs_CEN.md`(100GB/月：GA≈240元、CEN≈700+元；建议先 GA 按量试)。
+
+## Latest 2026-07-08 (备案+上传大改造 session) — 国内备案页/footer + 上传链路重构 (全部 DEPLOYED prod+Ali；**GitHub 未推**)
+
+- Reply style 简洁直接中文. 两大块：(1) 国内上线合规——首页底部黑色70%透明备案横条(浙ICP备2026046799号/浙公网安备33010802014584号/浙B2-20200520/营业执照/杭州亿阅科技有限公司/本站内容均由AI生成，均新窗口链接)、新建 `/terms` `/privacy` 法务页(参考可灵+小云雀写法，主体=杭州亿阅/闪念，顶部切换栏)、登录框统一 50px高/5px圆角。(2) **上传链路重构**(核心，详见 CHANGELOG 顶部 B1-B8 + "⭐当前上传链路全景")。
+- **上传链路当前状态(务必记住)**：
+  - 图片走 `/api/asset-upload-temp`(multipart二进制+token→PATCH commit)；视频/音频/文档走 `/api/upload-file`(**已从 base64 JSON 改成 multipart 二进制流式**)。
+  - ali 用户上传走**同源 ali.venusface.com**由 Ali nginx 反代到马来(A方案，客户端上传腿走国内更稳)；文件在马来落盘。
+  - 上传落盘后 fire-and-forget `syncGeneratedFilesToAli` **把文件回传 Ali 本地镜像**(否则 ali 用户读取走慢回源代理→灰屏)。上传路由和读取路由是两条独立链路。
+  - JPEG 需转码时服务端**内联转码**(不再抛错让客户端重传一趟)。
+- **本 session 修的三个上传痛点**：① 埋点把两步式误记成失败(已修+清历史56条)；② 工作流视频卡1%(无进度→改二进制有进度)；③ 视频卡95%超时(base64 JSON 极慢→二进制 multipart 正解)。
+- 手工清理了 ID_636611 工作流_06 一个卡95%的幽灵节点(WorkspaceWorkflow.canvasJson)。
+- **GitHub 未推**：改动在 `8866940` 之上未提交。文件清单见 CHANGELOG。下一个 AI 若继续改上传，先读 CHANGELOG"⭐当前上传链路全景"。
+- 部署健康：每次 build EXIT=0、PM2 online、Ali 同步、main/ali/api 200。tsc+build 通过。
 
 ## Latest 2026-07-08 (later session) — 工作流恢复时序 bug 修复 + 推 GitHub (DEPLOYED prod+Ali + **PUSHED GitHub `8866940`**)
 

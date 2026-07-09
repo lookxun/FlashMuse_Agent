@@ -97,6 +97,7 @@ import {
 import { ADVANCED_CHAT_MODEL, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, bytePlusVideoGenerationModels, frontendConversationModels, frontendImageGenerationModels, getExpectedImageDimensions, getExpectedVideoDimensions, getImageQualityBadgeLabel, getImageResolutionLabel, getSupportedImageResolutions, getSupportedVideoRatios, getSupportedVideoResolutions, imageGenerationModels, isNonStandardVideoSize, normalizeImageResolutionForModel, normalizeVideoRatioForModel, normalizeVideoResolutionForModel, videoGenerationModels, type ConversationModel, type GenerationModel, type ModelName } from "@/lib/models";
 import { toUserErrorMessage } from "@/lib/error-message";
 import { buildReferenceHint } from "@/lib/reference-hint";
+import { createUploadProgressTracker } from "@/lib/upload-progress";
 import { useBodyScrollLock } from "@/components/use-body-scroll-lock";
 import { BytePlusIcon } from "@/components/byteplus-icon";
 import { WorkflowCanvas, type WorkflowCanvasState, type WorkflowNode } from "@/components/workflow-tldraw-canvas";
@@ -732,6 +733,11 @@ function shouldUseStaticAssetBaseUrl() {
 }
 
 function getUploadApiBaseUrl() {
+  if (typeof window !== "undefined") {
+    const host = window.location.hostname;
+    // Ali 镜像用户上传走同源(ali.venusface.com)，由 Ali 反代到马来：客户端上传腿走国内更稳，Ali→马来是机房骨干。
+    if (host === "ali.venusface.com" || host === "static.venusface.com" || host === "101.37.129.164") return "";
+  }
   if (uploadApiBaseUrl) return uploadApiBaseUrl;
   if (typeof window === "undefined") return "";
   const hostname = window.location.hostname;
@@ -3212,7 +3218,29 @@ function keepSingleUntitledWorkflow(items: WorkflowItem[]) {
 }
 
 function getPersistableWorkflowItems(items: WorkflowItem[]) {
-  return keepSingleUntitledWorkflow(ensureWorkflowItems(items));
+  return keepSingleUntitledWorkflow(ensureWorkflowItems(items)).map(stripWorkflowItemTransientUploadState);
+}
+
+// 上传态是运行时临时字段：uploadProgress(上传百分比) 与 uploadPreviewUrl(blob: 本地预览，刷新即失效)。
+// 绝不能写进数据库，否则刷新后节点会卡在"上传中 99%"(上传的 promise 早已随页面销毁，没有恢复机制)。
+// 运行时内存里的 canvas 仍保留这两个字段(实时进度、echo 守卫需要它们)，只在存库边界剥离。
+function stripWorkflowItemTransientUploadState(item: WorkflowItem): WorkflowItem {
+  if (!item.canvas) return item;
+  const stripNodeUploadState = (node: WorkflowNode): WorkflowNode => {
+    if (node.data.uploadProgress === undefined && node.data.uploadPreviewUrl === undefined) return node;
+    const data = { ...node.data };
+    delete data.uploadProgress;
+    delete data.uploadPreviewUrl;
+    return { ...node, data };
+  };
+  return {
+    ...item,
+    canvas: {
+      ...item.canvas,
+      nodes: (item.canvas.nodes ?? []).map(stripNodeUploadState),
+      historicalMediaNodes: item.canvas.historicalMediaNodes?.map(stripNodeUploadState),
+    },
+  };
 }
 
 function normalizeWorkflowCodesAndMediaNumbers(items: WorkflowItem[]) {
@@ -4143,28 +4171,32 @@ async function withImageConversionTimeout<T>(promise: Promise<T>, timeoutMs = 50
 function uploadJsonWithProgress<T>(url: string, payload: unknown, onProgress?: (progress: number) => void) {
   return new Promise<T>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
+    const tracker = createUploadProgressTracker(onProgress);
     xhr.open("POST", url);
     xhr.setRequestHeader("Content-Type", "application/json");
-    xhr.upload.onprogress = (event) => {
-      if (!event.lengthComputable) return;
-      onProgress?.(Math.min(95, Math.max(8, Math.round((event.loaded / event.total) * 95))));
-    };
+    xhr.upload.onprogress = tracker.onUploadProgress;
+    xhr.upload.onload = tracker.onBytesComplete;
     xhr.onload = () => {
       let data: T & { error?: string };
       try {
         data = JSON.parse(xhr.responseText || "{}") as T & { error?: string };
       } catch {
+        tracker.cancel();
         reject(new Error("上传失败"));
         return;
       }
       if (xhr.status < 200 || xhr.status >= 300) {
+        tracker.cancel();
         reject(new Error(data.error || "上传失败"));
         return;
       }
-      onProgress?.(100);
+      tracker.finish();
       resolve(data);
     };
-    xhr.onerror = () => reject(new Error("上传失败"));
+    xhr.onerror = () => {
+      tracker.cancel();
+      reject(new Error("上传失败"));
+    };
     xhr.send(JSON.stringify(payload));
   });
 }
@@ -4172,10 +4204,12 @@ function uploadJsonWithProgress<T>(url: string, payload: unknown, onProgress?: (
 function uploadFormDataWithProgress<T>(url: string, formData: FormData, onProgress?: (progress: number) => void, token?: string, signal?: AbortSignal) {
   return new Promise<T>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
+    const tracker = createUploadProgressTracker(onProgress);
     let settled = false;
     const rejectOnce = (error: Error) => {
       if (settled) return;
       settled = true;
+      tracker.cancel();
       reject(error);
     };
     const resolveOnce = (data: T) => {
@@ -4189,16 +4223,14 @@ function uploadFormDataWithProgress<T>(url: string, formData: FormData, onProgre
     };
     try {
       xhr.open("POST", url);
-      xhr.timeout = 90 * 1000;
+      xhr.timeout = 180 * 1000;
       if (token) xhr.setRequestHeader("Authorization", `Bearer ${token}`);
     } catch (error) {
       rejectOnce(error instanceof Error ? error : new Error("上传初始化失败"));
       return;
     }
-    xhr.upload.onprogress = (event) => {
-      if (!event.lengthComputable) return;
-      onProgress?.(Math.min(95, Math.max(15, Math.round((event.loaded / event.total) * 95))));
-    };
+    xhr.upload.onprogress = tracker.onUploadProgress;
+    xhr.upload.onload = tracker.onBytesComplete;
     xhr.onload = () => {
       let data: T & { error?: string };
       try {
@@ -4211,7 +4243,7 @@ function uploadFormDataWithProgress<T>(url: string, formData: FormData, onProgre
         rejectOnce(new Error(data.error || "上传失败"));
         return;
       }
-      onProgress?.(100);
+      tracker.finish();
       resolveOnce(data);
     };
     xhr.onabort = () => rejectOnce(new Error("上传已取消"));
@@ -4253,10 +4285,17 @@ async function getDirectUploadToken() {
 }
 
 async function uploadDocumentFileAsset(file: File, options: { conversationId?: string; mediaKind?: "document" | "video" | "audio"; durationSeconds?: number; dimensions?: ImageDimensions } = {}, onProgress?: (progress: number) => void) {
-  onProgress?.(6);
-  const dataUrl = await readFileAsDataUrl(file);
-  onProgress?.(12);
-  const data = await uploadJsonWithProgress<{ url?: string; error?: string }>("/api/upload-file", { file: dataUrl, name: file.name, ...options }, onProgress);
+  // 二进制流式上传，避免 base64+JSON 大字符串导致的极慢和事件循环阻塞。
+  onProgress?.(2);
+  const formData = new FormData();
+  formData.append("file", file, file.name);
+  formData.append("name", file.name);
+  if (options.mediaKind) formData.append("mediaKind", options.mediaKind);
+  if (options.conversationId) formData.append("conversationId", options.conversationId);
+  if (typeof options.durationSeconds === "number") formData.append("durationSeconds", String(options.durationSeconds));
+  if (options.dimensions) formData.append("dimensions", JSON.stringify(options.dimensions));
+  const token = await getDirectUploadToken();
+  const data = await uploadFormDataWithProgress<{ url?: string; error?: string }>(getUploadApiUrl("/api/upload-file"), formData, onProgress, token);
   if (!data.url) throw new Error(data.error || "文件上传失败");
   return data.url;
 }
@@ -4266,9 +4305,8 @@ async function uploadTemporaryAssetImageOnce(file: File, onProgress?: (progress:
   formData.append("image", file, file.name);
   if (forceReencode) formData.append("forceReencode", "1");
   const uploadUrl = getUploadApiUrl("/api/asset-upload-temp");
-  onProgress?.(8);
+  onProgress?.(2);
   const token = await getDirectUploadToken();
-  onProgress?.(12);
   const data = await uploadFormDataWithProgress<{ token?: string; error?: string }>(uploadUrl, formData, onProgress, token, signal);
   if (!data.token) throw new Error(data.error || "图片上传失败");
   return data.token;
@@ -4280,7 +4318,7 @@ async function uploadTemporaryAssetImage(file: File, onProgress?: (progress: num
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (forceReencode || !message.includes("转码")) throw error;
-    onProgress?.(8);
+    onProgress?.(2);
     return uploadTemporaryAssetImageOnce(file, onProgress, signal, true);
   }
 }
@@ -10648,7 +10686,7 @@ export function ChatWorkbench() {
       }
       const textChanged = getWorkflowTextSnapshot(target.canvas) !== getWorkflowTextSnapshot(canvas);
       const meaningfulChanged = getWorkflowMeaningfulSnapshot(target.canvas) !== getWorkflowMeaningfulSnapshot(canvas);
-      const next = current.map((item) => item.id === workflowId ? { ...item, workflowCode, title, canvas, updatedAt: meaningfulChanged ? Date.now() : (item.updatedAt ?? Date.now()) } : item);
+      const next = current.map((item) => item.id === workflowId ? { ...item, workflowCode, title, canvas: { ...canvas, generatedMediaCounts: canvas.generatedMediaCounts ?? item.canvas?.generatedMediaCounts }, updatedAt: meaningfulChanged ? Date.now() : (item.updatedAt ?? Date.now()) } : item);
       if (textChanged && workspaceStorageMode === "user") {
         if (workflowTextSaveTimerRef.current !== null) window.clearTimeout(workflowTextSaveTimerRef.current);
         const payload: WorkspaceStatePayload = {
@@ -11344,15 +11382,15 @@ export function ChatWorkbench() {
     const systemNamesByUrl = Object.fromEntries(items.map((item) => [item.url, item.name]));
     setWorkflowItems((current) => current.map((workflow) => {
       if (workflow.id !== workflowId || !workflow.canvas?.nodes?.length) return workflow;
-      const prevCounts = workflow.generatedMediaCounts ?? getWorkflowMediaCounts(workflow);
-      const nextCounts = workflow.generatedMediaCounts
+      const prevCounts = workflow.canvas.generatedMediaCounts ?? getWorkflowMediaCounts(workflow);
+      const nextCounts = workflow.canvas.generatedMediaCounts
         ? { images: prevCounts.images + (media.kind === "image" ? newlyGeneratedCount : 0), videos: prevCounts.videos + (media.kind === "video" ? newlyGeneratedCount : 0) }
         : prevCounts;
       return {
         ...workflow,
-        generatedMediaCounts: nextCounts,
         canvas: {
           ...workflow.canvas,
+          generatedMediaCounts: nextCounts,
           nodes: workflow.canvas.nodes.map((node) => node.id === nodeId ? { ...node, data: { ...node.data, mediaSystemNames: { ...(node.data.mediaSystemNames ?? {}), ...systemNamesByUrl } } } : node),
         },
       };
@@ -14606,7 +14644,7 @@ export function ChatWorkbench() {
             ) : null}
           </div>
 
-          {activePanel === "chat" ? <UsageSummaryButton summary={activeSession?.usageSummary} mediaCounts={activeSession?.generatedMediaCounts ?? getSessionMediaCounts(activeSession)} /> : null}
+          {activePanel === "chat" ? <UsageSummaryButton summary={activeSession?.usageSummary} mediaCounts={getSessionMediaCounts(activeSession)} /> : null}
 
         </div> : null}
 
@@ -14777,7 +14815,7 @@ export function ChatWorkbench() {
                     <ReminderToast reminder={inputReminder} />
                   </div>
                 ) : null}
-                <UsageSummaryButton summary={activeWorkflow.usageSummary} mediaCounts={activeWorkflow.generatedMediaCounts ?? getWorkflowMediaCounts(activeWorkflow)} className="absolute right-4 top-4 z-30" />
+                <UsageSummaryButton summary={activeWorkflow.usageSummary} mediaCounts={activeWorkflow.canvas?.generatedMediaCounts ?? getWorkflowMediaCounts(activeWorkflow)} className="absolute right-4 top-4 z-30" />
                 {assetImportOpen ? (
                   <div className="fixed inset-0 z-[10050] flex items-center justify-center bg-black/40" onClick={() => setAssetImportOpen(false)}>
                     <div className="flex h-[80vh] w-[1080px] max-w-[94vw] flex-col overflow-hidden rounded-[16px] bg-white shadow-2xl" onClick={(event) => event.stopPropagation()}>

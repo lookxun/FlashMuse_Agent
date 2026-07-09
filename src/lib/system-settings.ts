@@ -30,6 +30,8 @@ export const BYTEPLUS_AGENT_VIDEO_MODEL_KEYS: Record<string, string> = {
 const ENV_PATH = join(process.cwd(), ".env.local");
 const uploadKinds: UploadKind[] = ["document", "image", "video", "audio"];
 
+export type CompressionQuality = "high" | "standard" | "low";
+
 export type AdminSystemSettings = {
   openRouterApiKey: string;
   openRouterApiKeyEnabled: boolean;
@@ -39,7 +41,27 @@ export type AdminSystemSettings = {
   bytePlusRegion: "ap-southeast-1" | "eu-west-1";
   modelProviderPreferences: Record<string, "openrouter" | "byteplus">;
   bytePlusModelSelections: Record<string, string>;
+  imageCompressionEnabled: boolean;
+  imageCompressionQuality: CompressionQuality;
+  videoCompressionEnabled: boolean;
+  videoCompressionQuality: CompressionQuality;
 };
+
+export function isCompressionQuality(value: unknown): value is CompressionQuality {
+  return value === "high" || value === "standard" || value === "low";
+}
+
+// 三档对应"相对原图的精确质量百分比"。图片直接作为真实 JPEG 质量(1-100)；
+// 视频作为转码目标质量(后续接线时映射到编码参数)。
+export const COMPRESSION_QUALITY_PERCENT: Record<CompressionQuality, number> = {
+  high: 95,
+  standard: 80,
+  low: 60,
+};
+
+export function getCompressionQualityPercent(quality: CompressionQuality) {
+  return COMPRESSION_QUALITY_PERCENT[quality];
+}
 
 const DEFAULT_MODEL_PROVIDER_PREFERENCES: Record<string, "openrouter" | "byteplus"> = {
   "general.seed-2-0-lite": "openrouter",
@@ -139,6 +161,11 @@ function getBytePlusRegion() {
   return value === "eu-west-1" ? "eu-west-1" : "ap-southeast-1";
 }
 
+function getCompressionQualityEnvValue(name: string, fallback: CompressionQuality): CompressionQuality {
+  const value = getLocalEnvValue(name) ?? process.env[name];
+  return isCompressionQuality(value) ? value : fallback;
+}
+
 export function getAdminSystemSettings(): AdminSystemSettings {
   return {
     openRouterApiKey: getLocalEnvValue("OPENROUTER_API_KEY") ?? process.env.OPENROUTER_API_KEY ?? "",
@@ -149,6 +176,18 @@ export function getAdminSystemSettings(): AdminSystemSettings {
     bytePlusRegion: getBytePlusRegion(),
     modelProviderPreferences: { ...DEFAULT_MODEL_PROVIDER_PREFERENCES, ...getJsonEnvValue<Record<string, "openrouter" | "byteplus">>("MODEL_PROVIDER_PREFERENCES", {}) },
     bytePlusModelSelections: { ...DEFAULT_BYTEPLUS_MODEL_SELECTIONS, ...getJsonEnvValue<Record<string, string>>("BYTEPLUS_MODEL_SELECTIONS", {}) },
+    imageCompressionEnabled: getBooleanEnvValue("IMAGE_COMPRESSION_ENABLED", true),
+    imageCompressionQuality: getCompressionQualityEnvValue("IMAGE_COMPRESSION_QUALITY", "standard"),
+    videoCompressionEnabled: getBooleanEnvValue("VIDEO_COMPRESSION_ENABLED", true),
+    videoCompressionQuality: getCompressionQualityEnvValue("VIDEO_COMPRESSION_QUALITY", "standard"),
+  };
+}
+
+export function getGenerationCompressionSettings() {
+  const settings = getAdminSystemSettings();
+  return {
+    image: { enabled: settings.imageCompressionEnabled, quality: settings.imageCompressionQuality },
+    video: { enabled: settings.videoCompressionEnabled, quality: settings.videoCompressionQuality },
   };
 }
 
@@ -304,6 +343,10 @@ export async function updateAdminSystemSettings(settings: AdminSystemSettings) {
     ["BYTEPLUS_REGION", settings.bytePlusRegion],
     ["MODEL_PROVIDER_PREFERENCES", formatEnvValue(JSON.stringify(settings.modelProviderPreferences))],
     ["BYTEPLUS_MODEL_SELECTIONS", formatEnvValue(JSON.stringify(settings.bytePlusModelSelections))],
+    ["IMAGE_COMPRESSION_ENABLED", settings.imageCompressionEnabled ? "true" : "false"],
+    ["IMAGE_COMPRESSION_QUALITY", settings.imageCompressionQuality],
+    ["VIDEO_COMPRESSION_ENABLED", settings.videoCompressionEnabled ? "true" : "false"],
+    ["VIDEO_COMPRESSION_QUALITY", settings.videoCompressionQuality],
   ]);
   const seen = new Set<string>();
   const nextLines = getLocalEnvLines().map((line) => {
@@ -330,6 +373,10 @@ export async function updateAdminSystemSettings(settings: AdminSystemSettings) {
   process.env.BYTEPLUS_REGION = settings.bytePlusRegion;
   process.env.MODEL_PROVIDER_PREFERENCES = JSON.stringify(settings.modelProviderPreferences);
   process.env.BYTEPLUS_MODEL_SELECTIONS = JSON.stringify(settings.bytePlusModelSelections);
+  process.env.IMAGE_COMPRESSION_ENABLED = settings.imageCompressionEnabled ? "true" : "false";
+  process.env.IMAGE_COMPRESSION_QUALITY = settings.imageCompressionQuality;
+  process.env.VIDEO_COMPRESSION_ENABLED = settings.videoCompressionEnabled ? "true" : "false";
+  process.env.VIDEO_COMPRESSION_QUALITY = settings.videoCompressionQuality;
 
   return getAdminSystemSettings();
 }

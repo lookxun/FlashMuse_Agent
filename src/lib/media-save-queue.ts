@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { syncGeneratedFilesToAli } from "@/lib/ali-sync";
-import { createGeneratedImageThumbnail, getLocalImageDimensions, saveRemoteAsset, type ImageDimensions } from "@/lib/local-assets";
+import { compressGeneratedVideoInPlace, createGeneratedImageThumbnail, getLocalImageDimensions, saveRemoteAsset, type ImageDimensions } from "@/lib/local-assets";
 import { createVideoPosterFromLocalVideo } from "@/lib/video-poster";
 import { getOpenRouterHeaders, getRequiredOpenRouterApiKey } from "@/lib/openrouter-video";
 import { upsertVideoManifestEntry } from "@/lib/video-manifest";
@@ -198,6 +198,10 @@ async function processMediaSaveJob(id: string) {
       });
       void appendGenerationDiagnosticsLog({ event: "media-save-download-start", requestId: job.requestId, userId: job.userId, mode: job.type, model: job.model, prompt: job.prompt, references: [summarizeGeneratedReference(job.remoteUrl, 0, "remote_asset")], extra: { id: job.id, type: job.type, attempt: job.attempts, queuedMs: downloadStartedAt - job.createdAt, ...getRemoteUrlDebugInfo(job.remoteUrl) } });
       const localUrl = await saveRemoteAsset(job.remoteUrl, job.type, getRequestInit(job), { userId: job.userId });
+      if (job.type === "video") await compressGeneratedVideoInPlace(localUrl).catch((error) => {
+        console.warn("[media-save] video compress failed", { id: job.id, requestId: job.requestId, localUrl, error: error instanceof Error ? error.message : String(error) });
+        return localUrl;
+      });
       const dimensions = job.type === "image" ? getLocalImageDimensions(localUrl) : undefined;
       const thumbnailUrl = job.type === "image" ? await createGeneratedImageThumbnail(localUrl).catch((error) => {
         console.warn("[media-save] image thumbnail create failed", { id: job.id, requestId: job.requestId, model: job.model, localUrl, error: error instanceof Error ? error.message : String(error) });

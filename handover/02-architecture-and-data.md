@@ -1,5 +1,30 @@
 # Architecture And Data
 
+## Upload Chain (上传链路，2026-07-08 重构后现状 — 改上传前必读)
+
+两个上传后端接口：
+- **图片** → `POST /api/asset-upload-temp`(multipart 二进制, field `image`)存临时区返回 token → `PATCH /api/asset-upload-temp`({token}) commit 到 `/generated/users/<uid>/upload_image/<hash>.jpg` 返回正式 URL。服务端 `saveTemporaryUploadedImageBuffer`(`src/lib/local-assets.ts`；JPEG 需转码时**内联转码**，不再抛错让客户端重传) + `commitTemporaryUploadedImage`。PATCH 后 fire-and-forget `syncGeneratedFilesToAli`。
+- **视频/音频/文档** → `POST /api/upload-file`(**multipart 二进制**, field `file`+`name`/`mediaKind`/`conversationId`/`durationSeconds`/`dimensions`；旧 base64 JSON 分支保留兼容)。服务端 `saveUploadedFileBufferAsset` 直接写 Buffer 到 `/generated/users/<uid>/files/<hash>.<ext>`，写 MediaAsset/UserAssetState(conversation_upload_videos/audios/documents)，fire-and-forget `syncGeneratedFilesToAli`。
+
+客户端上传函数：
+- 对话流(`chat-workbench.tsx`)：图片 `uploadTemporaryAssetImage`；文档/视频/音频 `uploadDocumentFileAsset`(FormData 二进制)。进度 XHR `uploadFormDataWithProgress`(180s)。
+- 工作流(`workflow-tldraw-canvas-inner.tsx`)：图片 `uploadWorkflowImage`；视频/音频/文档 `uploadWorkflowFile`(FormData 二进制)。进度 XHR `uploadWorkflowFormDataWithProgress`(180s)。上传中节点显示 `UploadingNodeOverlay`(蓝圆环=最窄边30%+首帧`uploadPreviewUrl`+黑层)。
+
+两条独立路由(务必分清)：
+- **上传路由**：ali 用户 base=`""`(同源)→`ali.venusface.com/api/...`→Ali nginx `location /` 反代 `http://101.47.19.109`(马来默认块 80m→Node 3000)。main 用户直连 `api.venusface.com`。判断在 `getUploadApiBaseUrl`/`getWorkflowUploadApiBaseUrl`(ali/static/阿里IP hostname→同源)。`NEXT_PUBLIC_UPLOAD_BASE_URL=https://api.venusface.com`(被 ali 同源判断优先覆盖)。
+- **读取路由**：`/generated/` 在 ali 由本地镜像 serve，miss 则回源代理马来(慢 ~50KB/s)。所以上传落盘后必须 `syncGeneratedFilesToAli`(`src/lib/ali-sync.ts`, rsync 到 `root@101.37.129.164:/var/www/flashmuse-static/generated`, 需 env `ALI_SYNC_GENERATED_ENABLED=true`+`ALI_SYNC_HOST`)把文件推到 ali 本地。**"上传走哪"≠"存哪"：nginx 反代只转发不落盘，文件始终在马来生成，读取要快必须回传 ali。**
+
+body 上限：Ali ssl block 80m；马来 `server_name 101.47.19.109` 默认块 80m；马来 `main/api` block 仅 20m。
+
+后续改造点见 05-next-actions"上传链路后续"。
+
+## ⚠️ 跨境链路是本架构的固有软肋 (2026-07-08 确认)
+
+- 马来(源站/模型/API/DB/媒体)↔ 阿里(国内入口/镜像/反代) 之间走的是**公网跨境链路**。2026-07-08 实测该链路**丢包 20~50%、RTT ~282ms**(双向)。用户全走 `ali.venusface.com`，所有动态请求(登录/资产库/workspace-state/上传)都要 Ali→马来转发一趟，丢包下靠 TCP 重传→全站卡、上传慢、缓存 miss 灰屏。
+- 这是双服务器方案与生俱来的痛点(早有记录:"走阿里入口 1MB 约 61.99s、瓶颈是阿里反代上传到马来这一跳")，**不是应用 bug**。丢包可能随 ISP 路由波动。
+- **已做的治标**：两台开 BBR(扛丢包，快6~10倍，见 03-deploy)；马来 nginx `client_body_timeout 300s`(防上传 408)。
+- **治本方向**：见 05-next-actions"长期优化方向"——把马来 BytePlus 换成阿里海外(新加坡)，两台阿里走私有骨干(CEN/GA)。香港排除(被当国内、模型 403)。跨境带宽费任何中国云都躲不掉。GA vs CEN 价格对比见桌面 `跨境加速方案对比_GA_vs_CEN.md`。
+
 ## Core Tables
 
 - `User`: account, profile, credits, flags, login audit fields.

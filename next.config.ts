@@ -4,7 +4,7 @@ const nextConfig: NextConfig = {
   devIndicators: {
     position: "bottom-right",
   },
-  serverExternalPackages: ["ffmpeg-static"],
+  serverExternalPackages: ["ffmpeg-static", "sharp"],
   async headers() {
     return [
       {

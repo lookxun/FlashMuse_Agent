@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { mkdir, rename, unlink, writeFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -6,7 +6,9 @@ import { dirname, extname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import ffmpegPath from "ffmpeg-static";
+import sharp from "sharp";
 import { appendUploadDiagnosticsLog } from "@/lib/upload-diagnostics-log";
+import { getCompressionQualityPercent, getGenerationCompressionSettings } from "@/lib/system-settings";
 
 type AssetType = "image" | "video";
 type SaveAssetOptions = { userId?: string; diagnostics?: { requestId?: string; fileName?: string; fileSize?: number } };
@@ -163,6 +165,71 @@ async function writeGeneratedImageAsJpeg(buffer: Buffer, filePath: string, diagn
   }
 }
 
+function getImageExtensionFromMimeOrUrl(mimeType?: string | null, sourceUrl?: string) {
+  return getExtensionFromMime(mimeType) ?? (sourceUrl ? getExtensionFromUrl(sourceUrl) : undefined) ?? "png";
+}
+
+// 生成图片落盘编码：按后台"图片生成压缩"设置。
+// 开启 → 用 sharp 转 JPEG，质量 = 后台三档对应的精确 JPEG 质量(95/90/80)。
+// 关闭 → 保留原始字节与原始格式(不转码不压缩)。
+async function encodeGeneratedImageBuffer(buffer: Buffer, filePathHint: string, sourceMime?: string | null, sourceUrl?: string): Promise<{ buffer: Buffer; extension: string }> {
+  const setting = getGenerationCompressionSettings().image;
+  if (!setting.enabled) {
+    return { buffer, extension: getImageExtensionFromMimeOrUrl(sourceMime, sourceUrl) };
+  }
+  const quality = getCompressionQualityPercent(setting.quality);
+  try {
+    const out = await sharp(buffer, { failOn: "none" })
+      .flatten({ background: "#ffffff" })
+      .jpeg({ quality, mozjpeg: true, chromaSubsampling: "4:2:0" })
+      .toBuffer();
+    return { buffer: out, extension: "jpg" };
+  } catch {
+    // sharp 失败兜底：退回 ffmpeg 转 jpeg（保持"至少转成 jpg"的既有行为）。
+    const tempPath = `${filePathHint}.${randomUUID()}.jpg`;
+    await writeGeneratedImageAsJpeg(buffer, tempPath, { mimeType: sourceMime ?? undefined, stage: "generated-image-sharp-fallback" });
+    const out = readFileSync(tempPath);
+    await unlink(tempPath).catch(() => undefined);
+    return { buffer: out, extension: "jpg" };
+  }
+}
+
+// 生成视频落盘后可选压缩：按后台"视频生成压缩"设置。开启则用 ffmpeg 转 H.264(CRF)+faststart，
+// 只有转码后体积更小才替换原文件；URL/路径不变。
+const VIDEO_QUALITY_CRF: Record<"high" | "standard" | "low", number> = { high: 18, standard: 21, low: 24 };
+
+export async function compressGeneratedVideoInPlace(publicUrl: string): Promise<string> {
+  const setting = getGenerationCompressionSettings().video;
+  if (!setting.enabled || !ffmpegPath) return publicUrl;
+  if (!publicUrl.startsWith("/generated/")) return publicUrl;
+  const cleanUrl = publicUrl.split("?")[0].split("#")[0];
+  const sourcePath = join(process.cwd(), "public", cleanUrl.replace(/^\//, ""));
+  if (!existsSync(sourcePath)) return publicUrl;
+
+  const crf = VIDEO_QUALITY_CRF[setting.quality];
+  const tempPath = `${sourcePath}.${randomUUID()}.tmp.mp4`;
+  try {
+    await execFileAsync(ffmpegPath, [
+      "-y", "-hide_banner", "-loglevel", "error",
+      "-i", sourcePath,
+      "-c:v", "libx264", "-preset", "medium", "-crf", String(crf), "-pix_fmt", "yuv420p",
+      "-c:a", "aac", "-b:a", "128k",
+      "-movflags", "+faststart",
+      tempPath,
+    ], { timeout: 300_000, maxBuffer: 20 * 1024 * 1024 });
+    const originalSize = statSync(sourcePath).size;
+    const compressedSize = statSync(tempPath).size;
+    if (compressedSize > 0 && compressedSize < originalSize) {
+      await rename(tempPath, sourcePath);
+    } else {
+      await unlink(tempPath).catch(() => undefined);
+    }
+  } catch {
+    await unlink(tempPath).catch(() => undefined);
+  }
+  return publicUrl;
+}
+
 function getCurlCommand() {
   return process.platform === "win32" ? "curl.exe" : "curl";
 }
@@ -185,17 +252,19 @@ export async function saveDataUrlAsset(dataUrl: string, type: AssetType, options
     throw new Error("图片数据格式不正确，无法保存到本地。请稍后再试。");
   }
 
-  const extension = type === "image" ? "jpg" : getExtensionFromMime(parsed.mimeType) ?? "mp4";
-  const asset = createPublicAssetPath(type, extension, options);
   const buffer = Buffer.from(parsed.base64, "base64");
 
-  await mkdir(asset.directory, { recursive: true });
   if (type === "image") {
-    await writeGeneratedImageAsJpeg(buffer, asset.filePath, { ...options.diagnostics, userId: options.userId, mimeType: parsed.mimeType, fileSize: buffer.length, stage: "save-generated-asset" });
-  } else {
-    await writeFile(asset.filePath, buffer);
+    const encoded = await encodeGeneratedImageBuffer(buffer, join(GENERATED_ROOT, getGeneratedFolder(getAssetFolder("image"), options), `${Date.now()}-${randomUUID()}`), parsed.mimeType);
+    const asset = createPublicAssetPath("image", encoded.extension, options);
+    await mkdir(asset.directory, { recursive: true });
+    await writeFile(asset.filePath, encoded.buffer);
+    return asset.publicUrl;
   }
 
+  const asset = createPublicAssetPath(type, getExtensionFromMime(parsed.mimeType) ?? "mp4", options);
+  await mkdir(asset.directory, { recursive: true });
+  await writeFile(asset.filePath, buffer);
   return asset.publicUrl;
 }
 
@@ -236,10 +305,13 @@ export async function saveTemporaryUploadedImageBuffer(buffer: Buffer, mimeType 
     await writeGeneratedImageAsJpeg(buffer, filePath, { ...options.diagnostics, userId: options.userId, mimeType, fileSize: buffer.length, forceReencode: options.forceReencode, stage: "temporary-upload" });
   } else {
     if (jpegNeedsReencode(buffer)) {
-      void appendUploadDiagnosticsLog({ event: "temporary-upload-jpeg-needs-reencode", requestId: options.diagnostics?.requestId, userId: options.userId, fileName: options.diagnostics?.fileName, mimeType, fileSize: options.diagnostics?.fileSize ?? buffer.length, forceReencode: options.forceReencode, durationMs: Date.now() - startedAt, extra: { token } });
-      throw new Error("图片编码需要转码，请点击重试。");
+      // 以前这里抛"需要转码"让客户端再传一趟(多一次 客户端→Ali→马来 往返，很慢)。
+      // 现在直接内联转码，省掉整个第二趟往返。
+      void appendUploadDiagnosticsLog({ event: "temporary-upload-jpeg-inline-reencode", requestId: options.diagnostics?.requestId, userId: options.userId, fileName: options.diagnostics?.fileName, mimeType, fileSize: options.diagnostics?.fileSize ?? buffer.length, forceReencode: options.forceReencode, durationMs: Date.now() - startedAt, extra: { token } });
+      await writeGeneratedImageAsJpeg(buffer, filePath, { ...options.diagnostics, userId: options.userId, mimeType, fileSize: buffer.length, forceReencode: true, stage: "temporary-upload-inline" });
+    } else {
+      await writeFile(filePath, buffer);
     }
-    await writeFile(filePath, buffer);
   }
   void appendUploadDiagnosticsLog({ event: "temporary-upload-buffer-saved", requestId: options.diagnostics?.requestId, userId: options.userId, fileName: options.diagnostics?.fileName, mimeType, fileSize: options.diagnostics?.fileSize ?? buffer.length, forceReencode: options.forceReencode, token, durationMs: Date.now() - startedAt, extra: { directory } });
   return { token };
@@ -287,9 +359,11 @@ function getSafeFileBaseName(name: string) {
 export async function saveUploadedFileAsset(dataUrl: string, originalName = "file", options: SaveAssetOptions = {}) {
   const parsed = parseDataUrl(dataUrl);
   if (!parsed) throw new Error("文件数据格式不正确，无法保存到本地。请稍后再试。");
+  return saveUploadedFileBufferAsset(Buffer.from(parsed.base64, "base64"), originalName, parsed.mimeType, options);
+}
 
-  const buffer = Buffer.from(parsed.base64, "base64");
-  const extension = getExtensionFromUrl(originalName) ?? getExtensionFromMime(parsed.mimeType) ?? "bin";
+export async function saveUploadedFileBufferAsset(buffer: Buffer, originalName = "file", mimeType?: string, options: SaveAssetOptions = {}) {
+  const extension = getExtensionFromUrl(originalName) ?? getExtensionFromMime(mimeType) ?? "bin";
   const hash = createHash("sha256").update(buffer).digest("hex").slice(0, 24);
   const baseName = getSafeFileBaseName(originalName.replace(/\.[^.]+$/, ""));
   const generatedFolder = getGeneratedFolder("files", options);
@@ -305,21 +379,22 @@ export async function saveUploadedFileAsset(dataUrl: string, originalName = "fil
 
 export async function saveRemoteAsset(url: string, type: AssetType, init?: RequestInit, options: SaveAssetOptions = {}) {
   const response = await fetch(url, { ...init, cache: "no-store" });
+  const imageDir = join(GENERATED_ROOT, getGeneratedFolder(getAssetFolder("image"), options));
 
   if (!response.ok) {
-    const extension = type === "image" ? "jpg" : getExtensionFromUrl(url) ?? "mp4";
-    const asset = createPublicAssetPath(type, extension, options);
-
-    await mkdir(asset.directory, { recursive: true });
-
     try {
       const { stdout } = await execFileAsync(getCurlCommand(), ["-fL", "-sS", ...toCurlHeaderArgs(init?.headers), url], { encoding: "buffer", maxBuffer: 500 * 1024 * 1024 });
       const buffer = Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout);
       if (type === "image") {
-        await writeGeneratedImageAsJpeg(buffer, asset.filePath);
-      } else {
-        await writeFile(asset.filePath, buffer);
+        const encoded = await encodeGeneratedImageBuffer(buffer, join(imageDir, `${Date.now()}-${randomUUID()}`), undefined, url);
+        const asset = createPublicAssetPath("image", encoded.extension, options);
+        await mkdir(asset.directory, { recursive: true });
+        await writeFile(asset.filePath, encoded.buffer);
+        return asset.publicUrl;
       }
+      const asset = createPublicAssetPath(type, getExtensionFromUrl(url) ?? "mp4", options);
+      await mkdir(asset.directory, { recursive: true });
+      await writeFile(asset.filePath, buffer);
       return asset.publicUrl;
     } catch {
       throw new Error(`保存${type === "image" ? "图片" : "视频"}失败：${response.status}`);
@@ -327,17 +402,19 @@ export async function saveRemoteAsset(url: string, type: AssetType, init?: Reque
   }
 
   const contentType = response.headers.get("content-type");
-  const extension = type === "image" ? "jpg" : getExtensionFromMime(contentType) ?? getExtensionFromUrl(url) ?? "mp4";
-  const asset = createPublicAssetPath(type, extension, options);
   const buffer = Buffer.from(await response.arrayBuffer());
 
-  await mkdir(asset.directory, { recursive: true });
   if (type === "image") {
-    await writeGeneratedImageAsJpeg(buffer, asset.filePath);
-  } else {
-    await writeFile(asset.filePath, buffer);
+    const encoded = await encodeGeneratedImageBuffer(buffer, join(imageDir, `${Date.now()}-${randomUUID()}`), contentType, url);
+    const asset = createPublicAssetPath("image", encoded.extension, options);
+    await mkdir(asset.directory, { recursive: true });
+    await writeFile(asset.filePath, encoded.buffer);
+    return asset.publicUrl;
   }
 
+  const asset = createPublicAssetPath(type, getExtensionFromMime(contentType) ?? getExtensionFromUrl(url) ?? "mp4", options);
+  await mkdir(asset.directory, { recursive: true });
+  await writeFile(asset.filePath, buffer);
   return asset.publicUrl;
 }
 

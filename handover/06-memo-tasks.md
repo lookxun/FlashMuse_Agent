@@ -8,6 +8,19 @@ Historical docs were checked on 2026-06-21. Old items that are already done or c
 
 ## Active Memo Tasks
 
+### [ ] M015 阿里端上传压缩转发小服务（2026-07-09 与用户讨论，押后）
+
+临时不做原因：用户认可思路但决定"以后再说"，先不做。目标是让**上传更快**——上传慢在"阿里→马来"跨境这段，要减小过境体积就得在"过境前"压缩。浏览器端压图片可行但压不了视频；服务端（马来）压缩发生在过境后，对上传提速无用。
+
+关键结论（已查证）：
+- 阿里那台现在**只有 nginx（纯反代，只转发字节，不能调用 sharp/ffmpeg 压缩 body）**。要在阿里压缩，必须跑一个**应用进程**接收→压缩→转发马来。不是"装不装库"的问题，是"谁来调用"。
+- 阿里机器：**2 核 Xeon 6982P-C + 3.4G 内存，长期几乎全闲（load 0.2），系统已装 ffmpeg（/usr/bin/ffmpeg）**。CPU 层面扛得住：图片 sharp 压缩零压力；视频 ffmpeg 转码 2 核偏紧但**限制同时最多 1 个转码 + 用 veryfast preset** 即可，以内部工具的上传频率碰不到瓶颈。
+- 真正的成本不是 CPU，而是要**部署并长期维护一个阿里小 Node 服务**（鉴权 token、大文件流式、错误重试、和马来代码别版本脱节）。它比 Option B（阿里跑整套 App）轻很多，只干"接收→压缩→转发"一件事。
+
+三方案对比：浏览器端压缩（图片✅/视频❌，工作量小）；阿里小服务压缩转发（图片✅/视频✅，工作量中）；Option B 阿里跑整套 App（工作量大）。
+
+以后要做时：先定选哪个方案。若做阿里小服务，先设计结构（接口、鉴权 token 怎么透传、和马来 upload-file 怎么衔接、落盘/回传怎么处理、部署方式），确认后再动手。注意视频转码要限并发+快 preset。
+
 ### [ ] M001 Server-To-Provider Public Reference URLs
 
 Temporary reason: do not change now because the user may change domains later, and the public URL base must be stable before changing provider request behavior.

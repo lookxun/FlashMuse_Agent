@@ -6,6 +6,7 @@ import { toUserErrorMessage } from "@/lib/error-message";
 import { getBearerToken, verifyUploadToken } from "@/lib/upload-token";
 import { appendUploadDiagnosticsLog } from "@/lib/upload-diagnostics-log";
 import { recordUploadEvent } from "@/lib/analytics-events";
+import { syncGeneratedFilesToAli } from "@/lib/ali-sync";
 
 const allowedUploadOrigins = new Set([
   "http://101.37.129.164",
@@ -76,7 +77,12 @@ export async function POST(request: Request) {
     const message = toUserErrorMessage(error, "图片上传失败，请稍后再试。");
     console.error("[upload] asset-upload-temp post failed", { requestId, userId, fileName, mimeType, fileSize, forceReencode, error });
     void appendUploadDiagnosticsLog({ event: "asset-upload-temp-post-failed", requestId, userId, fileName, mimeType, fileSize, forceReencode, status: 500, durationMs: Date.now() - startedAt, error, extra: { userMessage: message } });
-    void recordUploadEvent({ userId, kind: "image", status: "failed", reason: /转码|reencode/i.test(message) ? "reencode" : /超时|timeout/i.test(message) ? "timeout" : "other", bytes: fileSize });
+    // "需要转码" 是两步式上传的探测信号(forceReencode=false 时)，前端会自动带 forceReencode=1 重试，
+    // 不是真正的上传失败，也不算一次上传，故不计入 UploadEvent，避免同一文件被记成"失败+成功"两次。
+    const isReencodeProbe = !forceReencode && /转码|reencode/i.test(message);
+    if (!isReencodeProbe) {
+      void recordUploadEvent({ userId, kind: "image", status: "failed", reason: /转码|reencode/i.test(message) ? "reencode" : /超时|timeout/i.test(message) ? "timeout" : "other", bytes: fileSize });
+    }
     return NextResponse.json({ error: message }, { status: 500, headers });
   }
 }
@@ -101,6 +107,8 @@ export async function PATCH(request: Request) {
     }
     void appendUploadDiagnosticsLog({ event: "asset-upload-temp-patch-start", requestId, userId, token });
     const url = await commitTemporaryUploadedImage(token, { userId, diagnostics: { requestId } });
+    // 同步到 Ali 本地镜像，避免 Ali 用户回源代理加载原图极慢(表现为读很久后灰屏)。
+    void syncGeneratedFilesToAli([url]).catch(() => undefined);
     void appendUploadDiagnosticsLog({ event: "asset-upload-temp-patch-success", requestId, userId, token, status: 200, durationMs: Date.now() - startedAt, extra: { url } });
     return NextResponse.json({ url }, { headers });
   } catch (error) {

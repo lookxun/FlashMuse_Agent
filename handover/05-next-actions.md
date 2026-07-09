@@ -2,6 +2,90 @@
 
 ## Highest Priority
 
+### 2026-07-09 END-OF-SESSION STATE — 下一个 AI 先读这条（用户要求直接部署）
+
+**用户明确指令：下一个 AI 直接部署本 session 做好的"生成压缩"功能，并把这一长串未推改动一起推 GitHub。**
+
+**当前状态分两块：**
+- **(A) 已 DEPLOYED prod+Ali 但未推 GitHub**：上传卡95%根治(Ali nginx)、上传进度条真实化、上传节点显示文件名、工作流上传节点刷新卡99%修复。
+- **(B) 本地 only、未部署**：生成压缩功能（后台可控 + sharp 图片 + ffmpeg 视频）。`tsc`+`build` 通过。
+
+**改动文件清单（本 session）：**
+- 新增：`src/lib/upload-progress.ts`、`src/app/admin/admin-generation-settings-panel.tsx`
+- 改：`src/components/chat-workbench.tsx`、`src/components/workflow-tldraw-canvas-inner.tsx`、`src/lib/system-settings.ts`、`src/app/admin/page.tsx`、`src/app/admin/admin-system-settings-panel.tsx`、`src/app/admin/api/system-settings/route.ts`、`src/lib/local-assets.ts`、`src/lib/media-save-queue.ts`、`next.config.ts`、`package.json`/`package-lock.json`(sharp)
+- Ali nginx(服务器配置，已 live)：`sites-enabled/flashmuse-static-ip` 两个 `location /` 加 `proxy_request_buffering off;`
+
+**部署步骤（有新 npm 依赖 sharp，无 Prisma 迁移）：**
+1. `git status --short`/`diff`/`log`；`npx tsc --noEmit`+`npm run build` 本地再确认。
+2. 全量源码快照部署（改了多文件+新文件），流程见 03-deploy "HOW TO DEPLOY"。
+3. **服务器必须 `npm install`**（`sharp` 要拉 Linux x64 原生二进制；也确认 `next.config.ts` serverExternalPackages 含 sharp 已同步）。可在解压源码后、build 前执行 `npm install`。
+4. `/usr/local/bin/deploy-flashmuse-production.sh`（build+PM2+Ali同步）。
+5. **部署后验证**：
+   - 后台 `ali.venusface.com/admin` 硬刷：导航"模型开关"(开关图标)+"系统设置"(齿轮图标)两个 tab；系统设置里图片/视频两行 压缩开关+三档质量(高95/标准80/低60)、关则质量置灰；改动能保存且不清空"模型开关"里的 API key(字段合并式)。
+   - 生成一张图 → 落盘应是 sharp 转的 JPEG(默认标准80%)；关掉图片压缩再生成 → 应保留原图格式。
+   - 生成一个视频 → media-save 后应被 ffmpeg 转码(变小才替换)；**留意马来 worker CPU**（视频压缩默认开）。
+   - 上传图片/视频：进度条从 0 慢爬到 60~70 随机值再慢爬到99、成功跳100(不再秒到95干等)；工作流上传节点左上角显示"上传XX 文件名"；上传成功刷新不再卡99%。
+6. **推 GitHub**：本次连同 8866940 之上所有未推(备案footer/法务页、上传大改造B1-B8、网络诊断logo、本session全部)一起 commit+push。推完 prod=GitHub=本地。
+7. 风险：生成压缩改了落盘链路(图片扩展名在"关压缩"时会变、视频转码)。建议部署前后跑 `prod-deploy-snapshot` 对比(见 03-deploy)。默认图片开+标准、视频开+标准；如担心 CPU 可先把视频压缩在后台关掉再逐步观察。
+
+**押后（已写 06-memo-tasks M015）**：阿里端上传压缩转发小服务——用户"以后再说"。阿里 2核/3.4G/全闲/已装 ffmpeg，可行；成本是维护一个阿里小 Node 服务(接收→压缩→转发马来)。
+
+**教训**：sharp 要进 serverExternalPackages + 服务器 npm install；nginx 只转发不能压缩；进度条 xhr.upload 只测到最近一跳；工作流运行时临时态别存库(存库边界剥离，别动 normalizeState)。
+
+### 2026-07-08 (网络诊断 session) END-OF-SESSION STATE — 先读这条
+
+- **本 session 以诊断/运维为主，代码只改了首页 logo 一处。GitHub 仍未推**(在 `8866940` 之上，连同前几个 session 的本地改动一起未提交)。
+- **上传卡95%只修了一半，下一个 AI 要根治**：
+  - 已确认 B7(二进制 multipart 上传)没问题。真根因在 nginx：Ali 默认 `proxy_request_buffering on` 双重缓冲 + 马来默认 `client_body_timeout 60s` 太短 → 大视频 nginx 层 408。
+  - 已做：马来 `conf.d/flashmuse-ip.conf`+`flashmuse.conf` 加 `client_body_timeout 300s`(保留)。
+  - **未做/被回滚**：Ali `sites-enabled/flashmuse-static-ip` 两个 `location /` 的 `proxy_request_buffering off`(当时误判它导致全站卡，回滚了；实际全站卡是丢包)。**根治步骤：重新给这两个 `location /` 只加 `proxy_request_buffering off;`(不要加 `proxy_max_temp_file_size 0`)，`nginx -t`+reload，再传大视频复测。** Ali 备份在 `/etc/nginx/flashmuse-static-ip.bak.20260708164344`。
+- **全站卡=马来↔阿里 50% 丢包**(架构固有，非 bug)。已开 **BBR** 缓解(两台 sysctl 持久化，A/B 快6~10倍)。回退：`sysctl -w net.ipv4.tcp_congestion_control=cubic`+删 `/etc/sysctl.conf` 两行。
+- **首页 logo 去提示语已 DEPLOYED prod**(未推 GitHub)。备份 `.deploy-backups/20260708-logo-no-tooltip/`。
+
+### 长期优化方向：双服务器跨境链路治本(2026-07-08 与用户讨论定调)
+
+**问题本质**：现在马来(BytePlus)↔阿里(国内)走**公网跨境**，随机丢包 20~50%，是全站卡顿/上传慢/灰屏的总根源。BBR、nginx 调优、分片上传都只是治标。
+
+**用户认可的治本方向**：把马来 BytePlus 那台**换成阿里海外(新加坡)**，使两台都在阿里 → 可用**阿里私有骨干**(CEN 云企业网 / GA 全球加速)连成稳定内网，跨境速度有保证。海外那台照常调 OpenRouter/BytePlus(二者自带全球 CDN，不必非用 BytePlus 主机)。
+
+**已定的约束/结论(别重复讨论)**：
+- **香港排除**：用户实测香港被当国内、模型返回"当前地区不可用"(403)。境外节点必须用新加坡这类真境外。
+- **跨境带宽费躲不掉**：任何中国云(腾讯/华为/阿里)的"国内↔境外私有链路"都要买跨境带宽——是受管制跨境电路的本质，**换腾讯云也省不掉**。合规由云厂商持牌处理，用户只付费。
+- **第三方隧道(GlobalSSH 类)不建议**：多走公网、稳定性存疑；公司已 ICP 备案，用非持牌跨境隧道跑生产有合规风险。
+- **CDN 之前已因费用放弃。**
+
+**两种买链路方案 + 价格**(详见桌面文件 `C:\Users\ASUS\Desktop\跨境加速方案对比_GA_vs_CEN.md`，价格均估算以阿里控制台/销售为准)：
+- **GA 全球加速(按量)**：实例费 0.137元/时≈99元/月 + CU费 0.386元/GB + 跨境流量费。以 100GB/月≈**220~270元/月**，随数据量线性涨。起步便宜、可随时停/调、适合先试。
+- **CEN 云企业网+跨境带宽包**：按带宽(Mbps)包月、带宽内流量免费。5Mbps≈**550~1400元/月**，与数据量无关。最稳、包月不看量，数据量大时更划算。
+- **交叉点约 300~500GB/月**：低于用 GA，高于用 CEN。
+
+**建议执行顺序**：
+1. **先花小钱验证**(方案成立的前提)：开一台阿里新加坡按量 ECS，实测 ① OpenRouter/BytePlus 那几个模型能不能正常调、会不会 403；② 开 GA 小带宽包实测新加坡↔国内那台的丢包/吞吐(对比现在马来的 ~40KB/s)。这两项过了方案才真成立。
+2. 验证通过 → 规划正式迁移：Next.js 应用、PostgreSQL 数据 + `/generated` 全部媒体、`.env.local`、nginx、PM2、Prisma、tldraw patch、cron、SSL、ali-sync 方向调整。数据/媒体迁移是重头。
+3. 迁完架构变成:阿里新加坡=源站/模型/API/DB/媒体，阿里国内=入口/镜像/反代，两者走 CEN/GA 私网。此时旧想的 Option B(Ali 本地落盘+单向同步)也顺理成章。
+
+### 2026-07-08 (备案+上传大改造 session) END-OF-SESSION STATE — 先读这条
+
+- **状态**：本 session 全部改动 **DEPLOYED prod+Ali 但未推 GitHub**(在 `8866940` 之上未提交)。做了两大块：(1) 国内备案 footer + `/terms` `/privacy` 法务页；(2) **上传链路重构**(核心)。细节见 CHANGELOG 顶部 A/B1-B8 + "⭐当前上传链路全景"。
+- **改动文件清单**：`src/app/page.tsx`、`src/app/terms/page.tsx`(新)、`src/app/privacy/page.tsx`(新)、`src/components/legal-tabs.tsx`(新)、`src/app/api/asset-upload-temp/route.ts`、`src/app/api/upload-file/route.ts`、`src/lib/local-assets.ts`、`src/components/chat-workbench.tsx`、`src/components/workflow-tldraw-canvas-inner.tsx`、`public/home-assets/beian-police.png`(新)、`public/home-assets/business-license.jpg`(新)。
+- **下一个 AI 若继续改造上传：务必先读 CHANGELOG 顶部"⭐当前上传链路全景"**，那里把两个后端接口、客户端函数、上传/读取两条路由、body 上限、ali-sync 都写清楚了。
+
+- **BROWSER-VERIFY(ali 硬刷 Ctrl+Shift+R)**：
+  1. 首页底部黑条备案信息齐全、公安号前有图标、链接新窗口开、营业执照打开水印图。
+  2. 登录框 50px高/5px圆角；《用户协议》《隐私政策》新窗口开，顶部可切换。
+  3. 工作流上传图片/视频：圆环进度(最窄边30%)、首帧+黑层、传完显示原图秒开(不再灰屏/不再卡1%或95%)。
+  4. 上传视频几秒完成(不再 base64 卡死)。上传 JPEG 一趟完成(不再探测重传停顿)。
+
+- **上传链路后续(下一个 AI 可继续，按价值排序)**：
+  1. **根治幽灵节点**：上传失败/中断的节点应自动清除、且任何时候都能删掉(本 session 只手工清了一个)。现在删除逻辑 `deleteNode`/键盘删除把节点移进历史；带 `uploadProgress` 的中断节点会与上传回调打架被写回。建议：上传 promise reject/abort 时把该节点 `uploadProgress` 清掉并标 error 或直接移除；`updateNode` 对已删除节点不要重新插入。
+  2. **Ali 上传端点 `proxy_request_buffering off`**：让 Ali 边收边转发马来(不先缓冲整包)，进一步降大文件延迟。改 Ali nginx(备份+`nginx -t`+reload)。
+  3. **大视频分片/断点续传**：目前一个 XHR 传完整文件(180s 超时)。超大视频或弱网仍可能超时。
+  4. **Option B(用户理想架构，大工程)**：在 Ali 跑上传服务，本地落盘+转码+连马来 DB，改成 Ali→马来单向同步，彻底免"马来→Ali 回传"。需要在 Ali 部署应用、开 Ali→马来 Postgres 通道、迁移转码逻辑。当前是 Option A(nginx 反代)+回传同步。
+  5. 清理冗余：B6 内联转码后，前端 forceReencode 自动重试、B1 的 reencode 埋点判断都成了兜底，可择机删。
+
+- **教训**：home-assets 新图要同时放主服务器 public 和 Ali 镜像；上传"走哪"≠"存哪"；base64+JSON 传大文件是万恶之源用二进制 multipart；改 JSON 数据用 prisma 脚本要 export DATABASE_URL；服务器脚本 scp .sh + `sed -i 's/\r$//'`。
+
+
 ### 2026-07-08 (later session) END-OF-SESSION STATE — 先读这条
 
 - **状态**:全部同步。工作流恢复时序 bug 已修并 DEPLOYED prod+Ali，且**已 PUSHED GitHub `8866940`**。现在 **prod=GitHub=本地** 三方一致，工作树干净(除后续 handover 提交)。

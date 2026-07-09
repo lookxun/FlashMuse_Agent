@@ -299,7 +299,7 @@ export function AdminSystemSettingsPanel({ settings, adminEmailCount }: { settin
   return (
     <>
       <div className="mb-6 flex items-center justify-between gap-4">
-        <h1 className="text-[24px] font-semibold tracking-[-0.03em]">系统设置</h1>
+        <h1 className="text-[24px] font-semibold tracking-[-0.03em]">模型开关</h1>
         <div className="text-[13px] text-[#777777]">管理员白名单：{adminEmailCount} 个邮箱</div>
       </div>
 

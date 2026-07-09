@@ -465,17 +465,6 @@ export default function Home() {
         )}
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_18%_22%,rgba(88,130,255,0.28),transparent_26%),radial-gradient(circle_at_78%_20%,rgba(62,211,218,0.2),transparent_28%),linear-gradient(90deg,rgba(0,0,0,0.78),rgba(0,0,0,0.42)_46%,rgba(0,0,0,0.72))]" />
         <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(0,0,0,0.34),transparent_34%,rgba(0,0,0,0.78))]" />
-        <div className="absolute bottom-8 left-1/2 z-10 flex -translate-x-1/2 gap-2">
-          {heroSlides.map((slide, index) => (
-            <button
-              key={slide.video}
-              type="button"
-              onClick={() => setActiveHeroIndex(index)}
-              className={`h-1 rounded-full transition-all ${index === activeHeroIndex ? "w-8 bg-white/82" : "w-3 bg-white/28 hover:bg-white/46"}`}
-              aria-label={`切换首页背景 ${index + 1}`}
-            />
-          ))}
-        </div>
       </div>
 
       <div
@@ -483,7 +472,7 @@ export default function Home() {
         style={{ transform: isLoginOpen ? "translateX(-8vw)" : "translateX(0)", filter: isLoginOpen ? "blur(8px)" : undefined, transition: "transform 300ms ease-out, filter 300ms ease-out" }}
       >
       <header className="flex items-center justify-between px-6 py-5 sm:px-10 lg:px-14">
-        <button type="button" onClick={() => window.location.assign(logoTargetUrl)} className="flex items-center gap-2.5 text-left" aria-label={logoTargetLabel} title={logoTargetLabel}>
+        <button type="button" onClick={() => window.location.assign(logoTargetUrl)} className="flex items-center gap-2.5 text-left" aria-label={logoTargetLabel}>
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src={staticAssetUrl("/home-assets/logo.png")} alt="闪念 FlashMuse" className="h-[50px] w-[50px] object-contain drop-shadow-[0_0_18px_rgba(116,166,255,0.38)]" />
           <span className="flex items-end gap-2">
@@ -627,6 +616,48 @@ export default function Home() {
       </form>
       </div>
 
+      <footer
+        className="absolute bottom-0 left-0 right-0 z-20 flex flex-wrap items-center justify-center gap-x-2 gap-y-1 px-4 text-[#72797f]"
+        style={{ minHeight: 50, backgroundColor: "rgba(0,0,0,0.7)", fontSize: 12, lineHeight: 1.6 }}
+      >
+        <a
+          href="https://beian.mps.gov.cn/#/query/webSearch?code=33010802014584"
+          target="_blank"
+          rel="noreferrer"
+          className="flex items-center gap-1 transition hover:text-white"
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={staticAssetUrl("/home-assets/beian-police.png")} alt="" className="h-[14px] w-[14px] object-contain" />
+          浙公网安备33010802014584号
+        </a>
+        <span>|</span>
+        <a
+          href="https://beian.miit.gov.cn"
+          target="_blank"
+          rel="noreferrer"
+          className="transition hover:text-white"
+        >
+          浙ICP备2026046799号
+        </a>
+        <span>|</span>
+        <span>浙B2-20200520</span>
+        <span>|</span>
+        <a
+          href={staticAssetUrl("/home-assets/business-license.jpg")}
+          target="_blank"
+          rel="noreferrer"
+          className="transition hover:text-white"
+        >
+          营业执照
+        </a>
+        <span>|</span>
+        <span>杭州亿阅科技有限公司</span>
+        <span>|</span>
+        <span>© 2026 闪念 FlashMuse</span>
+        <span>|</span>
+        <span>本站内容均由AI生成</span>
+      </footer>
+
       {isLoginOpen ? (
         <div className="fixed inset-0 z-50 overscroll-contain bg-black/18" onMouseDown={closeLoginPanel}>
           <aside
@@ -723,7 +754,7 @@ export default function Home() {
                         }}
                         placeholder="请输入邮箱，如 name@email.com"
                         disabled={isLoginSubmitting}
-                        className="h-16 w-full rounded-2xl border border-[#e3e3e3] bg-[#f7f7f7] pl-4 pr-11 text-[16px] leading-5 text-[#111111] outline-none transition placeholder:text-[#b0b0b0] hover:border-[#b9d2ff] focus:border-[#367cee] focus:bg-[#f7f7f7] disabled:cursor-not-allowed disabled:opacity-60"
+                        className="h-[50px] w-full rounded-[5px] border border-[#e3e3e3] bg-[#f7f7f7] pl-4 pr-11 text-[16px] leading-5 text-[#111111] outline-none transition placeholder:text-[#b0b0b0] hover:border-[#b9d2ff] focus:border-[#367cee] focus:bg-[#f7f7f7] disabled:cursor-not-allowed disabled:opacity-60"
                       />
                       {canSubmitEmail ? (
                         <button type="button" onClick={() => void submitLoginEmail()} className="absolute right-3 top-1/2 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-[10px] text-[#8a8a8a] transition hover:bg-[#eeeeee] hover:text-[#333333]" aria-label="提交邮箱">
@@ -731,7 +762,7 @@ export default function Home() {
                         </button>
                       ) : null}
                       {isLoginHistoryOpen && loginHistory.length > 0 ? (
-                        <div className="absolute left-0 right-0 top-[72px] z-20 max-h-[250px] overflow-y-auto rounded-[14px] bg-white p-1.5 shadow-[0_12px_28px_rgba(0,0,0,0.12)] ring-1 ring-[#ececec]">
+                        <div className="absolute left-0 right-0 top-full z-20 max-h-[250px] overflow-y-auto rounded-[5px] bg-white p-1.5 shadow-[0_12px_28px_rgba(0,0,0,0.12)] ring-1 ring-[#ececec]">
                           {loginHistory.map((email) => (
                             <button
                               key={email}
@@ -741,7 +772,7 @@ export default function Home() {
                                 clearLoginFeedback();
                                 closeLoginHistoryMenu();
                               }}
-                              className="flex h-10 w-full items-center rounded-[10px] px-3 text-left text-[#555555] transition hover:bg-[#f5f8ff] hover:text-[#111111]"
+                              className="flex h-[50px] w-full items-center rounded-[10px] px-3 text-left text-[#555555] transition hover:bg-[#f5f8ff] hover:text-[#111111]"
                             >
                               <span style={{ fontSize: 13, lineHeight: 1.2 }}>{email}</span>
                             </button>
@@ -766,7 +797,7 @@ export default function Home() {
                       type="email"
                       value={loginEmail}
                       readOnly
-                      className="h-16 w-full rounded-2xl border border-[#e3e3e3] bg-[#f7f7f7] px-4 text-[16px] text-[#666666] outline-none"
+                      className="h-[50px] w-full rounded-[5px] border border-[#e3e3e3] bg-[#f7f7f7] px-4 text-[16px] text-[#666666] outline-none"
                     />
                     <div className="relative mt-3">
                       <input
@@ -779,13 +810,13 @@ export default function Home() {
                         }}
                         placeholder="请输入密码"
                         disabled={isLoginSubmitting}
-                        className="h-16 w-full rounded-2xl border border-[#e3e3e3] bg-[#f7f7f7] px-4 text-[16px] leading-5 text-[#111111] outline-none transition placeholder:text-[#b0b0b0] hover:border-[#b9d2ff] focus:border-[#367cee] focus:bg-[#f7f7f7] disabled:cursor-not-allowed disabled:opacity-60"
+                        className="h-[50px] w-full rounded-[5px] border border-[#e3e3e3] bg-[#f7f7f7] px-4 text-[16px] leading-5 text-[#111111] outline-none transition placeholder:text-[#b0b0b0] hover:border-[#b9d2ff] focus:border-[#367cee] focus:bg-[#f7f7f7] disabled:cursor-not-allowed disabled:opacity-60"
                       />
                     </div>
                     <button
                       type="submit"
                       disabled={isLoginSubmitting}
-                      className="mt-3 h-16 w-full rounded-2xl bg-[#367cee] text-[15px] font-medium text-white transition hover:bg-[#1f63d9] disabled:cursor-not-allowed disabled:bg-[#a9c5fb]"
+                      className="mt-3 h-[50px] w-full rounded-[5px] bg-[#367cee] text-[15px] font-medium text-white transition hover:bg-[#1f63d9] disabled:cursor-not-allowed disabled:bg-[#a9c5fb]"
                     >
                       {isLoginSubmitting ? "登录中..." : "登录"}
                     </button>
@@ -793,7 +824,7 @@ export default function Home() {
                 ) : null}
 
                 {loginStep === "code" ? (
-                  <div className="flex h-16 w-full gap-2">
+                  <div className="flex h-[50px] w-full gap-2">
                     {loginCode.map((digit, index) => (
                       <input
                         key={index}
@@ -811,7 +842,7 @@ export default function Home() {
                             codeInputRefs.current[index - 1]?.focus();
                           }
                         }}
-                        className="h-16 min-w-0 flex-1 rounded-xl border border-[#e3e3e3] bg-[#f7f7f7] text-center text-[20px] font-medium text-[#111111] outline-none transition hover:border-[#b9d2ff] focus:border-[#367cee] focus:bg-[#f7f7f7] disabled:cursor-not-allowed disabled:opacity-60"
+                        className="h-[50px] min-w-0 flex-1 rounded-[5px] border border-[#e3e3e3] bg-[#f7f7f7] text-center text-[20px] font-medium text-[#111111] outline-none transition hover:border-[#b9d2ff] focus:border-[#367cee] focus:bg-[#f7f7f7] disabled:cursor-not-allowed disabled:opacity-60"
                       />
                     ))}
                   </div>
@@ -833,9 +864,9 @@ export default function Home() {
             </div>
             <div className="absolute bottom-8 left-0 w-full px-8 text-center text-[12px] text-[#8a8a8a]">
               登录即代表同意
-              <button type="button" className="text-[#367cee] hover:text-[#1f63d9]">《用户协议》</button>
+              <a href="/terms" target="_blank" rel="noreferrer" className="text-[#367cee] hover:text-[#1f63d9]">《用户协议》</a>
               和
-              <button type="button" className="text-[#367cee] hover:text-[#1f63d9]">《隐私政策》</button>
+              <a href="/privacy" target="_blank" rel="noreferrer" className="text-[#367cee] hover:text-[#1f63d9]">《隐私政策》</a>
             </div>
           </aside>
         </div>
