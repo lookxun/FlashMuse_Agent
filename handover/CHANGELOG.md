@@ -21,15 +21,20 @@ Reply style: 简洁直接中文. 本 session 修了右上角"使用量"媒体计
 - 根因：点 `@文件名` 本身快(`insertReferenceText` 纯本地)，但只要 value 含 `@` 就触发三处副作用去读库、并用"加载引用资产…"转圈**盖住整个输入框**：① 输入框 effect(value 含@就 `onLoadReferenceAssets`)；② `isWaitingForMentionReferences`=value含@ && 未 loaded → 替换编辑器为转圈；③ 画布级 effect(任意节点 prompt 含@就预加载)。连线上传引用来自连线本身、本地就能解析，根本不需读库。
 - 修复(`workflow-tldraw-canvas-inner.tsx`)：新增 `hasUnresolvedMention`(value 里的 @mention 有名字不在 `validReferenceNames` 才算需读库)；输入框 effect + 转圈 都改成只在 `hasUnresolvedMention` 时触发；删掉画布级"任意@就预加载"effect(它会让带连线引用的工作流一打开就读库)。真·库资产 @mention(如@角色12)仍按需读库解析(生成时 `getWorkflowPromptReferenceUrls` 用 referenceAssets 解析，行为不变)。
 
-### 工作流 @文件名 光标修复
-- 现象：点 `@文件名` 后光标应停在其后；第一次OK，连点几次光标不落在最新 @文件名 后面。
-- 根因：点缩略图(编辑器外按钮)使编辑器失焦、记录光标的 `cursorOffset` 变旧；`insertReferenceText` 非弹窗路径用 `cursorOffset` 定位 → 连点错位。
-- 修复：`insertReferenceText` 非 `activeAtQuery` 路径(点缩略图/引用按钮=追加)改成插到 `value.length`(末尾)，光标 `nextOffset` 稳定停在新 @文件名 后。打字触发 @ 弹窗(有 activeAtQuery)仍插在 @ 查询处，不变。
+### 工作流 @文件名 光标修复（经 3 次迭代，最终对齐对话流）
+- 需求(用户明确)：① 光标在哪，点 `@文件名` 就插在哪；② 插完光标停在新 `@文件名` 之后；③ 连点多次=依次追加、光标始终在**最后一个** `@文件名` 后。
+- **迭代 1(错，已弃)**：把非弹窗路径改成插到 `value.length`(末尾) → 违反①(不在光标处)。
+- **迭代 2(错，已弃)**：改回用 `cursorOffset` state 插光标处 + 给缩略图按钮加 `onMouseDown preventDefault`(不抢焦点) → 仍错。实测：第二次点击读到的 `cursorOffset` 还是旧值(如 3)，新 mention 被插到旧的**前面**；因两个 mention 文字相同，看着像"插在后面但光标在前"。commit `79ca99a`。
+- **迭代 3(最终，正确)** commit `ca28540`：**照搬对话流机制**。根因=工作流原用滞后的 `cursorOffset` state + `focusRequest` 状态机，而工作流 value 经 tldraw canvas 回流有延迟，读到的光标滞后。改法：
+  1. `WorkflowMentionEditor` 新增 `externalEditorRef` prop，`ref` 改 `setEditorRef` 回调把内部 editorRef 同时暴露给 parent。react import 补 `type MutableRefObject`。
+  2. `WorkflowPromptBox` 持 `editorElementRef`；新增 `getCurrentWorkflowCursor()` 读**实时 DOM 光标**(`getWorkflowSelectionTextOffset(editor)`)、`focusWorkflowEditorAt(offset)`(对话流 `focusEditorAt` 同款：`requestAnimationFrame` 等 DOM 渲染完新内容后 `editor.focus()`+`setWorkflowSelectionTextOffset(offset)`+`setCursorOffset(offset)`)。
+  3. `insertReferenceText` 用实时光标定位、`onChange` 后调 `focusWorkflowEditorAt(cursor + referenceText.length)`。删掉旧 `focusRequest` state / `setFocusRequest` / `focusRequestKeyRef`(编辑器 `focusRequest` prop 不再传，其 effect 因 prop=undefined 自然空转，无害)。缩略图按钮的 `onMouseDown preventDefault` 保留(无害，稳住焦点)。
+- 对话流参考实现：`chat-workbench.tsx` `focusEditorAt`(13430, rAF+focus+setSelectionTextOffset)、`getCurrentDraftCursor`(读实时 DOM)、`insertAssetReference`(13495, base/suffix 切片 + `focusEditorAt(insertBase.length+referenceText.length)`)。
 
-### 部署 + GitHub
-- 全量源码快照部署 prod+Ali(排除 public/node_modules 等)；**服务器 `npm install`** 装 sharp Linux x64 原生二进制(patch-package 重新应用 tldraw patch OK)；无 Prisma 迁移。两张 public/home-assets 新图(备案 session 已在服务器，未重复传)。备份 `.deploy-backups/20260709-gen-compress-counts/`。
-- 前后快照 compare `ok:true`(assetListHash `1597871847f4c23d` 未变、stableMissing/fallbackUsers 前后 0)；main/workspace·admin·api·ali/workspace·terms 全 200；`[generation-worker] started`。
-- GitHub：把 `d351906` 之上全部未推(备案/法务页、上传大改造、网络诊断 logo、生成压缩、本 session)一起 commit+push。
+### 部署 + GitHub（本 session 多次部署，最终三方同步于 `ca28540`）
+- **第一次全量部署** commit `ef33f0f`：全量源码快照 prod+Ali(排除 public/node_modules)；**服务器 `npm install`** 装 sharp Linux x64 原生二进制(patch-package 重新应用 tldraw patch OK)；无 Prisma 迁移。两张 public/home-assets 新图(备案 session 已在服务器，未重复传)。备份 `.deploy-backups/20260709-gen-compress-counts/`。前后快照 compare `ok:true`(assetListHash `1597871847f4c23d` 未变、stableMissing/fallbackUsers 前后 0)；main/workspace·admin·api·ali/workspace·terms 全 200；`[generation-worker] started`。把 `d351906` 之上全部未推(备案/法务页、上传大改造、网络诊断 logo、生成压缩、右上角计数修复、@卡加载修复)一起 commit+push。
+- **两次窄部署**(单文件 `workflow-tldraw-canvas-inner.tsx`，md5 校验+scp+deploy 脚本重建)：`79ca99a`(@光标迭代2，错) → `ca28540`(@光标迭代3，最终正确)。均 build EXIT=0、PM2 online、Ali 同步、main/ali workspace 200。备份 `.deploy-backups/20260709-mention-cursor-at-caret/`、`.deploy-backups/20260709-mention-caret-conv-style/`。
+- **现在 prod=GitHub=本地 三方同步于 `ca28540`**。
 
 ## 2026-07-09 上传卡95%根治(Ali proxy_request_buffering off) + 上传进度条真实化 + 上传节点显示文件名 + 工作流上传节点刷新卡99%修复 + 生成压缩功能(后台可控/sharp图片/ffmpeg视频，本地未部署) (部分 DEPLOYED prod+Ali；生成压缩=本地only；**全程 GitHub 未推**)
 

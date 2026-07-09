@@ -8,8 +8,8 @@ Last checked: 2026-07-09 China time.
 - **右上角媒体计数(只增不减是产品口径)修了两 bug**：
   1. **对话流**：累计 `addSessionGeneratedMediaCount` 无去重、重复累加致图片虚高(实测 d35 存9实际6)。改为面板直接用实时去重数 `getSessionMediaCounts`（对话流无删除→实时=累计不减）。
   2. **工作流**：累计 `generatedMediaCounts` 从没被持久化（服务器 normalizeWorkflowItems 丢弃它），刷新即丢、删节点会变小。改为存进 `canvas.generatedMediaCounts`（随 canvasJson 存/读回、`updateWorkflowCanvas` 保留、`addWorkflowGeneratedAssets` 写它）→ 真·只增不减、刷新不丢。
-- **工作流 @文件名 两 bug**：① 点画布连线缩略图的 `@文件名` 会读资产库转圈卡死——改为只有"本地解析不了的库资产 @mention"才读库(连线引用本地就有)，删掉画布级"任意@就预加载"。② 连点缩略图光标不落最新 @文件名 后——`insertReferenceText` 非弹窗路径改为追加到末尾。
-- 部署：全量快照 + 服务器 `npm install`(sharp)；无迁移；备份 `.deploy-backups/20260709-gen-compress-counts/`；快照 compare `ok:true`(assetListHash `1597871847f4c23d` 未变)；五域名 200；worker started。
+- **工作流 @文件名 两 bug**：① 点画布连线缩略图的 `@文件名` 会读资产库转圈卡死——改为只有"本地解析不了的库资产 @mention"才读库(连线引用本地就有)，删掉画布级"任意@就预加载"。② **光标位置(经 3 次迭代最终对齐对话流)**：要求"光标在哪插哪、插完光标在新 @文件名 后、连点依次追加光标永远在最新那个后"。工作流原用滞后的 `cursorOffset` state+`focusRequest`(经 tldraw canvas 回流有延迟→读到旧光标→新 mention 插到旧的前面)。最终改法(commit `ca28540`)：`WorkflowMentionEditor` 加 `externalEditorRef` 把编辑器 DOM 暴露给 parent；`WorkflowPromptBox` 读**实时 DOM 光标** + `focusWorkflowEditorAt`(rAF 等渲染完再 focus+定位，同对话流 `focusEditorAt`)。
+- 部署：**全量快照(commit `ef33f0f`)** + 服务器 `npm install`(sharp)；无迁移；备份 `.deploy-backups/20260709-gen-compress-counts/`；快照 compare `ok:true`(assetListHash `1597871847f4c23d` 未变)；五域名 200；worker started。随后**两次窄部署单文件**修 @光标(`79ca99a`错→`ca28540`最终正确)。**现在 prod=GitHub=本地 三方同步于 `ca28540`**。
 - **BROWSER-VERIFY(ali 硬刷)**：对话流右上角图片数=当前实际张数(d35 应 6)；工作流生成→累加、刷新不变、删生成节点不减、再刷新仍不减；工作流连线图点 @文件名 秒变蓝字无转圈、连点多次光标都在最新 @文件名 后；真·@库资产仍能读出。生成压缩后台"系统设置"tab + 图片落盘 JPEG/视频 ffmpeg 转码(留意马来 worker CPU)。
 
 ## Latest 2026-07-09 — 上传体验修复(已部署) + 生成压缩功能(本地未部署，下一个AI直接部署) (部分 DEPLOYED prod+Ali+Ali-nginx；生成压缩=本地only；**全程 GitHub 未推**)

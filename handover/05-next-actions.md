@@ -2,7 +2,33 @@
 
 ## Highest Priority
 
-### 2026-07-09 END-OF-SESSION STATE — 下一个 AI 先读这条（用户要求直接部署）
+### 2026-07-09 (later session) END-OF-SESSION STATE — 先读这条
+
+**状态：全部已部署 prod+Ali 且已推 GitHub，prod=GitHub=本地 三方同步于 commit `ca28540`。工作树干净(除本次 handover 提交)。** 下方旧的"直接部署生成压缩"指令已完成，保留仅作历史。
+
+**本 session 做了什么(细节见 CHANGELOG 顶部两条 + 01-current-status 顶条)：**
+1. **一次性全量部署**了之前积压未部署/未推的整批(生成压缩 sharp/ffmpeg、备案 footer/法务页、上传链路重构、上传进度条、网络诊断 logo)——commit `ef33f0f`。服务器跑了 `npm install` 装 sharp。
+2. **右上角使用量媒体计数修复**：
+   - 对话流(方案A)：面板改用实时数 `getSessionMediaCounts`(不再用会虚高的累计 `generatedMediaCounts`)。对话流无删除→实时=只增不减。
+   - 工作流(B1)：累计 `generatedMediaCounts` 原来**从没被持久化**(服务器 normalizeWorkflowItems 丢弃)，刷新丢、删节点变小。改为存进 `canvas.generatedMediaCounts`(随 canvasJson 存/读回、`updateWorkflowCanvas` 保留、`addWorkflowGeneratedAssets` 写它)→真·只增不减。
+3. **工作流 @文件名 卡加载修复**：连线引用点 `@文件名` 不再读资产库转圈(只有本地解析不了的库资产 mention 才读库)。
+4. **工作流 @文件名 光标修复**(3 次迭代，最终 `ca28540` 对齐对话流：实时 DOM 光标 + rAF focusEditorAt)。
+
+**BROWSER-VERIFY(ali 硬刷 Ctrl+Shift+R)——用户尚未回报最终测试结果，下一个 AI 可跟进：**
+1. 对话流右上角图片数=当前实际张数(prod `12424740` 的 d35「生成美女」应显示 6，不再 9)。
+2. 工作流：生成→累加；刷新后不变；删生成节点数字不减；再刷新仍不减。
+3. 工作流连线图点 `@文件名`：秒变蓝字、无转圈；连点多次不卡。
+4. 工作流 @文件名 光标：光标点在提示词中间任意处→连点几个缩略图 `@文件名`→都插在光标处、依次追加、光标始终停在最后一个 `@文件名` 后。
+5. 生成压缩：后台"系统设置"tab 图片/视频压缩开关+质量档；生成图落盘 JPEG(默认标准80%)、视频 ffmpeg 转码(变小才替换)。**⚠️ 视频压缩默认开→留意马来 worker CPU**。
+
+**仍可优化/局限：**
+- 生成压缩：视频转码增加马来 worker CPU 开销；押后项 M015(阿里端上传压缩转发小服务，用户"以后再说")。
+- 计数：对话流已放弃累计口径(用实时数)，若未来对话流加删除功能且要"删不减"，需重新引入持久化累计(参考工作流 B1 做法)。旧的 `addSessionGeneratedMediaCount` 累加代码仍在(写 summaryJson.generatedMediaCounts)但已不被面板读取，可择机清理。
+- 工作流累计的历史基线：首次生成时 seed=当前节点数，本次改动前已删除的历史节点无法追回(不可避免，同对话流 seed)。
+
+---
+
+### 2026-07-09 (earlier) END-OF-SESSION STATE — （已完成，保留作历史）下一个 AI 先读这条（用户要求直接部署）
 
 **用户明确指令：下一个 AI 直接部署本 session 做好的"生成压缩"功能，并把这一长串未推改动一起推 GitHub。**
 
