@@ -5359,10 +5359,9 @@ function WorkflowPromptBox({ node, value, placeholder, maxPromptHeight, onChange
 
   const insertReferenceText = (name: string) => {
     const referenceText = `@${name} `;
-    // 从 @ 弹窗输入触发时插到 @ 查询处；点缩略图/引用按钮追加时插到末尾。
-    // 用 value.length 而非 cursorOffset：点画布上的缩略图按钮会让编辑器失焦、cursorOffset 变旧，
-    // 导致连点多次时光标不落在最新 @文件名 后面。追加到末尾则每次光标都稳定停在新 @文件名 之后。
-    const insertOffset = activeAtQuery ? activeAtQuery.index : value.length;
+    // 插到当前光标处；插完光标停在新 @文件名 之后(nextOffset)。
+    // 缩略图/引用按钮用 onMouseDown preventDefault 保住编辑器焦点与光标，cursorOffset 才准。
+    const insertOffset = activeAtQuery ? activeAtQuery.index : Math.min(Math.max(0, cursorOffset), value.length);
     const insertEnd = activeAtQuery ? activeAtQuery.cursor : insertOffset;
     const maxOwnPromptLength = Math.max(0, MAX_WORKFLOW_PROMPT_LENGTH - connectedTextLength);
     const nextValue = Array.from(`${value.slice(0, insertOffset)}${referenceText}${value.slice(insertEnd)}`).slice(0, maxOwnPromptLength).join("");
@@ -5533,7 +5532,7 @@ function WorkflowPromptBox({ node, value, placeholder, maxPromptHeight, onChange
                   </div>
                 </div>
                 )}
-              <button type="button" disabled={!canInsert} onClick={() => insertReferenceText(referenceName)} className={`absolute inset-x-0 bottom-0 z-10 block truncate px-1.5 pb-0.5 pt-4 text-left font-medium leading-4 transition disabled:cursor-not-allowed disabled:opacity-75 ${isVisual ? "bg-gradient-to-t from-black/75 to-transparent text-white" : "text-[#555555]"}`}>
+              <button type="button" disabled={!canInsert} onMouseDown={(event) => event.preventDefault()} onClick={() => insertReferenceText(referenceName)} className={`absolute inset-x-0 bottom-0 z-10 block truncate px-1.5 pb-0.5 pt-4 text-left font-medium leading-4 transition disabled:cursor-not-allowed disabled:opacity-75 ${isVisual ? "bg-gradient-to-t from-black/75 to-transparent text-white" : "text-[#555555]"}`}>
                 <span className="text-[10px] leading-4">{canInsert ? `@${referenceName}` : upload.status === "error" ? "上传失败" : "上传中..."}</span>
               </button>
               {upload.status === "uploading" ? <WorkflowUploadProgressOverlay progress={upload.progress} /> : null}
