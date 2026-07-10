@@ -1,6 +1,37 @@
 # Current Status
 
-Last checked: 2026-07-09 China time.
+Last checked: 2026-07-10 China time.
+
+## ⚠️ 2026-07-10 (迁移 session 续) — 腾讯阶段1 补齐"完整独立"缺口 + 迁移专属 bug 修复 + 产品微调（已 commit+push GitHub；仅腾讯部署）
+
+用户在腾讯 `http://119.28.116.16:5000`（空库全新实例）测试后修复的一批（详见 CHANGELOG 顶条）：
+1. **补 nginx 容器**（根治 `/generated` 404 图片视频不显示；Next 只服务构建时已存在的 public 文件、`public/generated` 被 dockerignore 排除，马来靠各自 nginx 服务 /generated）。新增仓库文件 `docker-compose.yml`(含 nginx)、`nginx/flashmuse.conf`。
+2. **修资产库上传"保存失败"**（EXDEV：`.runtime` 与 `public/generated` 是两个 bind-mount/设备，`local-assets.ts` 跨设备 rename 改 writeFile+unlink）。
+3. **资产生成弹窗加"正在加载中"转圈**（远程 url 加载空白期；**未动**远程→本地替换流程）。
+4. **注册送积分默认改 0**（`credits.ts` + 腾讯 DB 已存行）。
+5. **首页 logo 后显示 "Intl." 国际服标识**（`page.tsx` 腾讯 IP 归国际主站分支）。
+- **部署状态**：腾讯领先（含全部 + nginx）。马来/阿里未部署这些（腾讯专属/产品微调）。GitHub=本地（本次已 push）。
+- ⚠️ 阶段3 切 venusface 域名重 build 时：`page.tsx` 的 Intl IP 判断、其它硬编码 IP 要按 09 文档第六节改域名；signup=0 会被马来 pg_dump 覆盖需再确认。
+
+## ⚠️ 2026-07-10 (进行中) — 主服务器迁移 马来 BytePlus → 腾讯云新加坡（阶段1完成，用户测试中）
+
+- **详见 `09-migration-to-tencent.md`（权威记录）。** 起因：马来↔阿里跨境 20~50% 丢包是全站慢的总根源；实测腾讯新加坡下载比马来快约 32 倍。用户决定把主服务器迁到腾讯云新加坡 `119.28.116.16`、马来弃用；阿里保留改为镜像腾讯。
+- **阶段划分**：①腾讯 IP+端口独立部署测试(已完成) → ②夜里接阿里+停服 → ③数据迁移(DB+媒体)+切阿里反代到腾讯 → ④收尾弃用马来。
+- **阶段1已做**：模型可达性验证无 403(去/留通过)；方案A 独立 Docker 栈部署在腾讯 `/opt/flashmuse/`(app+独立postgres，网络/端口与该机其它项目 CinematicFlow/VibeSocial 完全隔离)，宿主端口 **5000**；`.env.local` 从马来 prod 派生(API key/模型偏好一致)；空库跑全部迁移+worker 启动；home-assets 只传 lite 套；`next.config.ts` 给 `/home-assets`+`/generated` 加长缓存(修首页切视频黑闪)。**md5 核对：腾讯平台代码与马来线上 194 文件逐字节一致，仅 next.config.ts 不同(缓存改进)。**
+- **测试地址**：`http://119.28.116.16:5000`(空库全新实例，需邮箱注册/登录；后台 `/admin` 管理员 `lookxun@163.com`)。
+- **仓库新增未 commit**：`Dockerfile`、`.dockerignore`、`docker-entrypoint.sh`、`next.config.ts`(改)。下一个 AI 等用户测试结论后做阶段2/3。
+- **⚠️ 2026-07-10 补：阶段1 原来漏了 nginx 层，图片/视频显示不出来（已修）。** 根因：Next `next start` 只服务「构建时就存在」于 `public/` 的静态文件，而 `.dockerignore` 排除了 `public/generated`，所以 Next 对 `/generated/*` 一律 404（缩略图走 `/api/media-thumbnail` 路由读盘所以能出→表现为资产库缩略图闪、点开原图空白）。马来/阿里从没暴露此问题是因为 `/generated` 一直由 **nginx** 服务、不经过 Next；腾讯阶段1 的 Docker 栈只有 app+postgres、没搭 nginx。**修复**：给 flashmuse 栈加了 `flashmuse-nginx`(nginx:alpine) 容器，占对外 5000、服务 `/generated`+`/home-assets` 静态、其余反代 `flashmuse-app:3000`；app 改为内部 3000 不再直接占 5000。只在 `flashmuse_default` 网络、只用原有 5000 端口，未碰 ps-/vibesocial。验证：`/generated` 原图从 404→200（本地+外网 IP 均 200），首页/workspace/logo 全 200。
+- **⚠️ 服务器与本地仓库已不一致**：新加的 `docker-compose.yml`(含 nginx)、`data/nginx/flashmuse.conf` **只在服务器上，本地仓库/文档没有**。服务器备份原 compose 在 `/opt/flashmuse/docker-compose.yml.bak.*`。下一个 AI 需把这两个文件补进本地仓库、并把"栈含 nginx"写进迁移文档，否则将来重建栈会再次漏掉 nginx。
+- **⚠️ `09-migration-to-tencent.md` 文件内容是乱码**（写入时编码被破坏，UTF-8 里存了 mojibake）。需要时重写；本条目 + 05-next-actions 是当前可读的权威记录。
+
+## Latest 2026-07-10 — 生成媒体名称提交时原子预约 + 修复历史重复视频名 (DEPLOYED prod+Ali，含 Prisma 迁移；**GitHub 未推、本地未 commit**)
+
+- Reply style 简洁直接中文. 详见 CHANGELOG 顶条。起因=生产两个不同视频撞名 `video_3_w6`。根因=旧逻辑在**任务完成时**才推名（完成顺序+前端计数器不可靠→并发/重连撞名）。
+- **彻底改法**：名字在**提交任务的同一数据库事务里原子预约**（`GenerationJob.reservedNames`，advisory lock 串行化，扫已占用名找空号）。成功直接用预约名、失败 `reservedNames=NULL` 释放可复用。worker `ensureJobReservedNames` 兼容部署前无字段的在途 job。资产写入(MediaAsset+UserAssetState)合并进一个事务，避免半成品占名。**对话流/工作流 图片·视频 + 资产库图片(改成 async job 化)** 全覆盖。前端全部优先用服务端 `reservedNames`、只在旧 job 无名时回退旧客户端编号。
+- **部署**：只打包本次 9 路径（**刻意排除**工作树里无关的 `workflow-prompt-optimization/cases/route.ts`）。迁移 `20260710000000_generation_job_name_reservations` 已 apply（`reservedNames:jsonb` 已确认）。备份 `.deploy-backups/20260710-name-reservations/`。前后快照 `stableMissing`/`fallbackUsers` 均 0（后快照 compare ok:false 仅因部署窗口用户正常新增 1 视频）。五项 HTTP 200、PM2 online。
+- **历史修复**：撞名的第二条视频(user ID_636611, workflow db0a1ac5..., asset cmrec5oyoxjjtnun1d24od361)一事务改名 `video_3_w6`→`video_4_w6`（MediaAsset systemName/initialName + UserAssetState.currentName + 工作流 canvasJson 节点 mediaSystemNames 四处），备份 `.runtime/manual-fixes/20260710-repair-video-4-w6-before.json`。
+- **⚠️ 三方状态**：**prod 领先** = 已含迁移+新代码；**GitHub/本地未 commit**（基线 `eec509a`，本次 9 文件 + 迁移目录仍在工作树；另有无关的 cases/route.ts 改动勿覆盖）。下一个 AI 要同步需 commit+push。
+- **BROWSER-VERIFY 待验(下一个 AI 可跟进)**：并发同工作流生成多个视频/图片名字不再撞；生成失败后重生成号码复用不跳空；刷新/断线恢复后名字与资产库一致；资产库角色/场景/分镜图生成名字连续不撞。
 
 ## Latest 2026-07-09 (later session) — 右上角使用量计数修复 + 工作流@文件名卡加载/光标修复 + **全量部署 prod+Ali + 推 GitHub** (prod=GitHub=本地 三方同步)
 

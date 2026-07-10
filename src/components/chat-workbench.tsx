@@ -7186,6 +7186,17 @@ export function ChatWorkbench() {
   const [characterImageFitMode, setCharacterImageFitMode] = useState<"fit" | "actual">("fit");
   const [characterImagePan, setCharacterImagePan] = useState({ x: 0, y: 0 });
   const [characterImageNaturalSize, setCharacterImageNaturalSize] = useState({ width: 0, height: 0 });
+  const [characterImageDisplayLoaded, setCharacterImageDisplayLoaded] = useState(false);
+  const [characterImageDisplayTrackedUrl, setCharacterImageDisplayTrackedUrl] = useState("");
+  {
+    // 展示 url 保持原设计：先远程后本地替换（远程先显示→后台下载落盘/缩略图/压缩/封面→就绪才换本地）。
+    // 这里只跟踪 url 变化以重置"加载中"转圈：url 一变(含远程→本地替换)就重新显示转圈，直到新图 onLoad。
+    const currentCharacterImageUrl = characterGenerateResult.status === "succeeded" ? characterGenerateResult.url ?? "" : "";
+    if (characterImageDisplayTrackedUrl !== currentCharacterImageUrl) {
+      setCharacterImageDisplayTrackedUrl(currentCharacterImageUrl);
+      setCharacterImageDisplayLoaded(false);
+    }
+  }
   const [characterImageFitScale, setCharacterImageFitScale] = useState(1);
   const [isCharacterImageDragging, setIsCharacterImageDragging] = useState(false);
   const [isInputPromptOptimizing, setIsInputPromptOptimizing] = useState(false);
@@ -11348,14 +11359,15 @@ export function ChatWorkbench() {
     }
   }, [assets, workspaceStorageMode]);
 
-  const addWorkflowGeneratedAssets = useCallback((workflowId: string, nodeId: string, media: { kind: "image" | "video"; urls: string[]; posterUrl?: string; sourcePrompt: string; model?: ModelName; ratio?: string; resolution?: string; duration?: string; dimensions?: Record<string, ImageDimensions>; durationSeconds?: Record<string, number>; silent?: boolean; promptOptimization?: { originalPrompt: string; optimizedPrompt: string; attemptsUsed: number; optimizerModel: string } }) => {
+  const addWorkflowGeneratedAssets = useCallback((workflowId: string, nodeId: string, media: { kind: "image" | "video"; urls: string[]; reservedNames?: string[]; posterUrl?: string; sourcePrompt: string; model?: ModelName; ratio?: string; resolution?: string; duration?: string; dimensions?: Record<string, ImageDimensions>; durationSeconds?: Record<string, number>; silent?: boolean; promptOptimization?: { originalPrompt: string; optimizedPrompt: string; attemptsUsed: number; optimizerModel: string } }) => {
     const cleanUrls = media.urls.filter((url) => url && !url.startsWith("data:"));
     if (cleanUrls.length === 0) return;
     const workflow = workflowItems.find((item) => item.id === workflowId);
     if (!workflow) return;
     const newlyGeneratedCount = media.silent ? 0 : cleanUrls.filter((url) => !assets.some((asset) => isWorkflowAsset(asset) && normalizeMediaUrlForMatch(asset.url) === normalizeMediaUrlForMatch(url))).length;
     if (!media.silent) notifyGenerationCompleteOnce(`workflow:${nodeId}:${cleanUrls[0]}`, media.kind === "video" ? "视频生成已完成" : "图片生成已完成");
-    const reserved = reserveWorkflowMediaSystemNamesForItems(workflowItems, assets, workflowId, media.kind, cleanUrls);
+    const serverNames = Object.fromEntries(cleanUrls.map((url, index) => [url, media.reservedNames?.[index]]).filter((item): item is [string, string] => Boolean(item[1])));
+    const reserved = Object.keys(serverNames).length === cleanUrls.length ? { names: serverNames, workflows: workflowItems } : reserveWorkflowMediaSystemNamesForItems(workflowItems, assets, workflowId, media.kind, cleanUrls);
     if (reserved.workflows !== workflowItems) {
       const reservedWorkflow = reserved.workflows.find((item) => item.id === workflowId);
       if (reservedWorkflow) {
@@ -11556,7 +11568,7 @@ export function ChatWorkbench() {
   }, []);
 
   useEffect(() => {
-    type ConversationImageJobStatus = { requestId: string; status: string; resultUrls?: string[]; resultDimensions?: Record<string, ImageDimensions>; usage?: UsageMeta; credit?: CreditMeta; error?: string; errorCode?: string };
+    type ConversationImageJobStatus = { requestId: string; status: string; resultUrls?: string[]; reservedNames?: string[]; resultDimensions?: Record<string, ImageDimensions>; usage?: UsageMeta; credit?: CreditMeta; error?: string; errorCode?: string };
     const jobsToCheck = sessions.flatMap((session) => session.messages.flatMap((message) => {
       if (message.role !== "assistant" || message.mode !== "image" || !message.requestId || (message.pendingImageCount ?? 0) <= 0) return [];
       const requestedCount = getRequestedImageDisplayCount(message) ?? Math.max(1, (message.images?.length ?? 0) + (message.failedImageCount ?? 0) + (message.pendingImageCount ?? 0));
@@ -11604,7 +11616,8 @@ export function ChatWorkbench() {
           }
           const imageDimensions = Object.fromEntries(images.map((url) => [url, job.resultDimensions?.[url]]).filter((item): item is [string, ImageDimensions] => Boolean(item[1])));
           const imagePrompts = Object.fromEntries(images.map((url) => [url, pending.message.content]));
-          const mediaSystemNames = reserveMediaSystemNames(pending.sessionId, "image", images);
+          const serverNames = Object.fromEntries(images.map((url, index) => [url, job.reservedNames?.[index]]).filter((item): item is [string, string] => Boolean(item[1])));
+          const mediaSystemNames = Object.keys(serverNames).length === images.length ? serverNames : reserveMediaSystemNames(pending.sessionId, "image", images);
           addSessionUsage(pending.sessionId, job.usage);
           applyCreditResult(pending.sessionId, job.credit);
           appendImagesToAssistantMessage(pending.sessionId, pending.message.requestId ?? "", images, imageDimensions, 1, imagePrompts, mediaSystemNames, undefined, pending.index);
@@ -11622,7 +11635,7 @@ export function ChatWorkbench() {
   // (pendingVideoCount > 0) but the backend job already finished, align it to the job result / failure and
   // keep polling while it runs — so a closed/refreshed browser never leaves a permanent waiting card.
   useEffect(() => {
-    type ConversationVideoJobStatus = { requestId: string; status: string; resultUrls?: string[]; posterUrl?: string; usage?: UsageMeta; credit?: CreditMeta; error?: string; errorCode?: string };
+    type ConversationVideoJobStatus = { requestId: string; status: string; resultUrls?: string[]; reservedNames?: string[]; posterUrl?: string; usage?: UsageMeta; credit?: CreditMeta; error?: string; errorCode?: string };
     const jobsToCheck = sessions.flatMap((session) => session.messages.flatMap((message) => {
       if (message.role !== "assistant" || message.mode !== "video" || !message.requestId || (message.pendingVideoCount ?? 0) <= 0) return [];
       const count = Math.max(1, message.pendingVideoCount ?? 1);
@@ -11659,7 +11672,7 @@ export function ChatWorkbench() {
             if (!videoUrl) { markAssistantVideoFailure(pending.sessionId, pending.message.requestId ?? "", "视频生成完成但缺少视频链接"); continue; }
             addSessionUsage(pending.sessionId, job.usage);
             applyCreditResult(pending.sessionId, job.credit);
-            const mediaSystemNames = reserveMediaSystemNames(pending.sessionId, "video", [videoUrl]);
+            const mediaSystemNames = job.reservedNames?.[0] ? { [videoUrl]: job.reservedNames[0] } : reserveMediaSystemNames(pending.sessionId, "video", [videoUrl]);
             appendVideoToAssistantMessage(pending.sessionId, pending.message.requestId ?? "", videoUrl, pending.message.content, mediaSystemNames[videoUrl], job.posterUrl);
             addGeneratedAssets(pending.sessionId, "video", pending.message.content, [videoUrl], undefined, undefined, pending.message.content, mediaSystemNames, job.posterUrl ? { [videoUrl]: job.posterUrl } : {}, {});
             addSessionGeneratedMediaCount(pending.sessionId, 0, 1);
@@ -11894,12 +11907,12 @@ export function ChatWorkbench() {
       if (pendingRequest.mode === "image" && prompt) {
         const sourceText = pendingRequest.sourceText ?? pendingRequest.messages[pendingRequest.messages.length - 1]?.content ?? "";
         const withReferenceHint = (value: string) => pendingRequest.referenceHint ? `${value}\n\n${pendingRequest.referenceHint}` : value;
-        type ConversationImageJobStatus = { requestId: string; status: string; resultUrls?: string[]; resultDimensions?: Record<string, ImageDimensions>; usage?: UsageMeta; credit?: CreditMeta; error?: string; errorCode?: string };
+        type ConversationImageJobStatus = { requestId: string; status: string; resultUrls?: string[]; reservedNames?: string[]; resultDimensions?: Record<string, ImageDimensions>; usage?: UsageMeta; credit?: CreditMeta; error?: string; errorCode?: string };
         // Poll a durable backend image job. The backend worker generates/charges/writes-to-asset-library
         // regardless of the browser; we only READ status. No timeout: only an explicit backend failure
         // surfaces as an error. If the client disconnects, the job still finishes; on reload the persisted
         // pending request re-runs runGeneration → resubmits (idempotent by requestId) → polls the finished job.
-        const pollConversationImageJob = async (imageRequestId: string): Promise<{ images: string[]; imageDimensions: Record<string, ImageDimensions>; usage?: UsageMeta; credit?: CreditMeta }> => {
+        const pollConversationImageJob = async (imageRequestId: string): Promise<{ images: string[]; reservedNames?: string[]; imageDimensions: Record<string, ImageDimensions>; usage?: UsageMeta; credit?: CreditMeta }> => {
           while (true) {
             if (abortController.signal.aborted) throw new DOMException("aborted", "AbortError");
             await new Promise((resolve) => window.setTimeout(resolve, 3000));
@@ -11915,7 +11928,7 @@ export function ChatWorkbench() {
             }
             if (!job) continue;
             if (job.status === "failed") throw new Error(getApiErrorMessageWithCode({ error: job.error, errorCode: job.errorCode }, GENERIC_MEDIA_ERROR_MESSAGE));
-            if (job.status === "succeeded") return { images: Array.isArray(job.resultUrls) ? job.resultUrls.filter(Boolean) : [], imageDimensions: job.resultDimensions ?? {}, usage: job.usage, credit: job.credit };
+            if (job.status === "succeeded") return { images: Array.isArray(job.resultUrls) ? job.resultUrls.filter(Boolean) : [], reservedNames: job.reservedNames, imageDimensions: job.resultDimensions ?? {}, usage: job.usage, credit: job.credit };
           }
         };
         const createImage = async (referenceImages: string[] | undefined, promptOverride = prompt, imageRequestId: string, requestedCount = 1) => {
@@ -11941,11 +11954,11 @@ export function ChatWorkbench() {
           }).then((response) => readJson<{ jobId?: string; error?: string; errorCode?: string }>(response));
           if (!submit.jobId) throw new Error(getApiErrorMessageWithCode({ error: submit.error, errorCode: submit.errorCode }, GENERIC_MEDIA_ERROR_MESSAGE));
           const job = await pollConversationImageJob(imageRequestId);
-          return { images: job.images, imageDimensions: job.imageDimensions, failureReasons: [] as string[], usage: job.usage, credit: job.credit };
+          return { images: job.images, reservedNames: job.reservedNames, imageDimensions: job.imageDimensions, failureReasons: [] as string[], usage: job.usage, credit: job.credit };
         };
 
         const createImageWithRetry = async (promptOverride = prompt, imageRequestId: string, requestedCount = 1) => {
-          let imageData: { images?: string[]; imageDimensions?: Record<string, ImageDimensions>; failureReasons?: string[]; usage?: UsageMeta; credit?: CreditMeta; billableImageCount?: number };
+          let imageData: { images?: string[]; reservedNames?: string[]; imageDimensions?: Record<string, ImageDimensions>; failureReasons?: string[]; usage?: UsageMeta; credit?: CreditMeta; billableImageCount?: number };
 
           try {
             imageData = await createImage(pendingRequest.referenceImages, promptOverride, imageRequestId, requestedCount);
@@ -11969,7 +11982,7 @@ export function ChatWorkbench() {
 
           const nextImages = imageData.images ?? [];
           if (nextImages.length === 0) throw new Error(GENERIC_MEDIA_ERROR_MESSAGE);
-          return { images: nextImages, imageDimensions: imageData.imageDimensions ?? {}, failureReasons: imageData.failureReasons ?? [], usage: imageData.usage, credit: imageData.credit, billableImageCount: imageData.billableImageCount };
+          return { images: nextImages, reservedNames: imageData.reservedNames, imageDimensions: imageData.imageDimensions ?? {}, failureReasons: imageData.failureReasons ?? [], usage: imageData.usage, credit: imageData.credit, billableImageCount: imageData.billableImageCount };
         };
 
         const imageCount = getImageCountValue(pendingRequest.settings?.imageCount, pendingRequest.agentGenerated ? Number.POSITIVE_INFINITY : 4);
@@ -11983,7 +11996,8 @@ export function ChatWorkbench() {
                 const imageResult = await createImageWithRetry(itemPrompt, `${pendingRequest.id}:image:${index}`);
                 const resultImages = imageResult.images;
                 const resultDimensions = Object.fromEntries(resultImages.map((url) => [url, imageResult.imageDimensions[url]]).filter((item): item is [string, ImageDimensions] => Boolean(item[1])));
-                const mediaSystemNames = reserveMediaSystemNames(sessionId, "image", resultImages);
+                const serverNames = Object.fromEntries(resultImages.map((url, imageIndex) => [url, imageResult.reservedNames?.[imageIndex]]).filter((item): item is [string, string] => Boolean(item[1])));
+                const mediaSystemNames = Object.keys(serverNames).length === resultImages.length ? serverNames : reserveMediaSystemNames(sessionId, "image", resultImages);
                 addSessionUsage(sessionId, imageResult.usage);
                 applyCreditResult(sessionId, imageResult.credit);
                 const imagePrompts = Object.fromEntries(resultImages.map((url) => [url, itemPrompt]));
@@ -12104,6 +12118,7 @@ export function ChatWorkbench() {
             errorCode?: string;
             usage?: UsageMeta;
             credit?: CreditMeta;
+            reservedNames?: string[];
           };
           let pollResponse: Response;
           try {
@@ -12126,9 +12141,9 @@ export function ChatWorkbench() {
             continue;
           }
 
-          const statusData = await readJson<{ jobs?: Array<{ status?: string; resultUrls?: string[]; posterUrl?: string; error?: string; errorCode?: string; usage?: UsageMeta; credit?: CreditMeta }> }>(pollResponse);
+          const statusData = await readJson<{ jobs?: Array<{ status?: string; resultUrls?: string[]; reservedNames?: string[]; posterUrl?: string; error?: string; errorCode?: string; usage?: UsageMeta; credit?: CreditMeta }> }>(pollResponse);
           const job = statusData.jobs?.[0];
-          pollData = job ? { status: job.status, content: { video_url: job.resultUrls?.[0], poster_url: job.posterUrl }, error: job.error, errorCode: job.errorCode, usage: job.usage, credit: job.credit } : { status: "running" };
+          pollData = job ? { status: job.status, content: { video_url: job.resultUrls?.[0], poster_url: job.posterUrl }, error: job.error, errorCode: job.errorCode, usage: job.usage, credit: job.credit, reservedNames: job.reservedNames } : { status: "running" };
 
           const status = (pollData.status ?? "running").toLowerCase();
           const statusText = videoStatusLabels[status] ?? `视频状态：${status}`;
@@ -12165,7 +12180,7 @@ export function ChatWorkbench() {
               throw new Error("视频生成完成但缺少视频链接");
             }
 
-            const mediaSystemNames = reserveMediaSystemNames(sessionId, "video", [pollData.content.video_url]);
+            const mediaSystemNames = pollData.reservedNames?.[0] ? { [pollData.content.video_url]: pollData.reservedNames[0] } : reserveMediaSystemNames(sessionId, "video", [pollData.content.video_url]);
             appendVideoToAssistantMessage(sessionId, pendingRequest.id, pollData.content.video_url, videoPrompt, mediaSystemNames[pollData.content.video_url], pollData.content.poster_url, promptDetail);
             addGeneratedAssets(sessionId, pendingRequest.mode, videoPrompt, [pollData.content.video_url], undefined, pendingRequest.assetTargetType, pendingRequest.messages.map((message) => message.content).join("\n"), mediaSystemNames, pollData.content.poster_url ? { [pollData.content.video_url]: pollData.content.poster_url } : {}, promptDetail ? { [pollData.content.video_url]: promptDetail } : {});
             addSessionGeneratedMediaCount(sessionId, 0, 1);
@@ -13642,9 +13657,9 @@ export function ChatWorkbench() {
       setIsCharacterPromptOptimizing(false);
     }
   };
-  const addCharacterGeneratedAsset = useCallback((url: string, prompt: string, dimensions?: ImageDimensions, type = assetGenerateType, previewMeta = characterPreviewMeta) => {
+  const addCharacterGeneratedAsset = useCallback((url: string, prompt: string, dimensions?: ImageDimensions, type = assetGenerateType, previewMeta = characterPreviewMeta, reservedName?: string) => {
     if (!url) return;
-    const name = getNextAssetGenerationName(type, assets);
+    const name = reservedName ?? getNextAssetGenerationName(type, assets);
 
     setAssets((current) => {
       if (current.some((asset) => asset.url === url)) return current;
@@ -13756,17 +13771,28 @@ export function ChatWorkbench() {
             settings,
             count: 1,
             candidateMode: "best",
+            async: true,
             conversationId: activeSessionIdValue,
             conversationTitle: activeSession?.title,
             requestId,
           metadata: { creditSource: isShotGeneration ? "shot_image_generation" : isSceneGeneration ? "scene_image_generation" : "character_image_generation" },
         }),
       });
-      const data = await readJson<{ images?: string[]; imageDimensions?: Record<string, ImageDimensions>; usage?: UsageMeta; credit?: CreditMeta; billableImageCount?: number }>(response);
-      const url = data.images?.[0];
+      const submitted = await readJson<{ jobId?: string; error?: string; reservedNames?: string[] }>(response);
+      if (!submitted.jobId) throw new Error(submitted.error || GENERIC_MEDIA_ERROR_MESSAGE);
+      let data: { resultUrls?: string[]; reservedNames?: string[]; resultDimensions?: Record<string, ImageDimensions>; usage?: UsageMeta; credit?: CreditMeta; error?: string } | undefined;
+      while (!data) {
+        await new Promise((resolve) => window.setTimeout(resolve, 3000));
+        const statusResponse = await fetch("/api/generation-status", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ requestIds: [requestId] }) });
+        const status = await readJson<{ jobs?: Array<{ status?: string; resultUrls?: string[]; reservedNames?: string[]; resultDimensions?: Record<string, ImageDimensions>; usage?: UsageMeta; credit?: CreditMeta; error?: string }> }>(statusResponse);
+        const job = status.jobs?.[0];
+        if (job?.status === "failed") throw new Error(job.error || GENERIC_MEDIA_ERROR_MESSAGE);
+        if (job?.status === "succeeded") data = job;
+      }
+      const url = data.resultUrls?.[0];
       if (!url) throw new Error(GENERIC_MEDIA_ERROR_MESSAGE);
 
-      const dimensions = data.imageDimensions?.[url];
+      const dimensions = data.resultDimensions?.[url];
       addSessionUsage(activeSessionIdValue, data.usage);
       applyCreditResult(activeSessionIdValue, data.credit);
       if (dimensions && activeAssetGenerateJobIdRef.current === jobId) setCharacterImageNaturalSize(dimensions);
@@ -13775,7 +13801,7 @@ export function ChatWorkbench() {
         .filter((job) => !(job.type === jobSnapshot.type && job.result.status === "failed" && job.id !== jobId))
         .map((job) => job.id === jobId ? { ...job, result: succeededResult } : job));
       if (activeAssetGenerateJobIdRef.current === jobId) setCharacterGenerateResult(succeededResult);
-      addCharacterGeneratedAsset(url, rawPrompt, dimensions, jobSnapshot.type, previewMetaSnapshot);
+      addCharacterGeneratedAsset(url, rawPrompt, dimensions, jobSnapshot.type, previewMetaSnapshot, data.reservedNames?.[0] ?? submitted.reservedNames?.[0]);
       notifyGenerationCompleteOnce(requestId, "图片生成已完成");
     } catch (error) {
         const message = normalizeMediaErrorText(toUserErrorMessage(error, GENERIC_MEDIA_ERROR_MESSAGE), "image") ?? GENERIC_MEDIA_ERROR_MESSAGE;
@@ -14771,7 +14797,7 @@ export function ChatWorkbench() {
                     const poster = posterUrl ?? getLocalVideoPosterUrl(url);
                     return poster ? getMediaThumbnailUrl(poster) : undefined;
                   }}
-                  onGeneratedMedia={(media) => addWorkflowGeneratedAssets(activeWorkflow.id, media.nodeId, { kind: media.kind, urls: media.urls, posterUrl: media.posterUrl, sourcePrompt: media.sourcePrompt, model: media.model, ratio: media.ratio, resolution: media.resolution, duration: media.duration, dimensions: media.dimensions, silent: media.silent, promptOptimization: media.promptOptimization })}
+                  onGeneratedMedia={(media) => addWorkflowGeneratedAssets(activeWorkflow.id, media.nodeId, { kind: media.kind, urls: media.urls, reservedNames: media.reservedNames, posterUrl: media.posterUrl, sourcePrompt: media.sourcePrompt, model: media.model, ratio: media.ratio, resolution: media.resolution, duration: media.duration, dimensions: media.dimensions, silent: media.silent, promptOptimization: media.promptOptimization })}
                   onShowTip={showInputTip}
                   onPreviewMedia={(media) => {
                     const existingAsset = assets.find((asset) => isWorkflowAsset(asset) && normalizeMediaUrlForMatch(asset.url) === normalizeMediaUrlForMatch(media.url));
@@ -15815,9 +15841,16 @@ export function ChatWorkbench() {
                           const image = event.currentTarget;
                           const dimensions = { width: image.naturalWidth, height: image.naturalHeight };
                           setCharacterImageNaturalSize(dimensions);
+                          setCharacterImageDisplayLoaded(true);
                           setCharacterGenerateResult((current) => current.status === "succeeded" ? { ...current, dimensions } : current);
                           requestAnimationFrame(() => updateCharacterImageFitScale(dimensions));
                         }} className="max-w-none shrink-0 select-none object-contain shadow-[0_8px_30px_rgba(0,0,0,0.08)]" style={{ width: `${(characterImageNaturalSize.width || characterGenerateDisplayDimensions.width) * visibleCharacterImageScale}px`, height: "auto", transform: `translate3d(${characterImagePan.x}px, ${characterImagePan.y}px, 0)`, transition: isCharacterImageDragging ? "none" : "transform 120ms ease-out" }} />
+                        {!characterImageDisplayLoaded ? (
+                          <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-2.5 text-[13px] font-medium text-[#8a8a8a]" role="status" aria-label="正在加载中">
+                            <LoadingSpinner size={30} />
+                            <span>正在加载中...</span>
+                          </div>
+                        ) : null}
                       </>
                     ) : (
                       <div className="flashmuse-asset-generate-empty">

@@ -348,6 +348,7 @@ model GenerationJob {
   itemIndex         Int?
   count             Int       @default(1)
   providerTaskId    String?
+  reservedNames     Json?
   resultUrls        Json?
   resultDimensions  Json?
   posterUrl         String?

@@ -26,7 +26,11 @@ export async function POST(request: Request) {
     const normalizedUrl = normalizeMediaAssetUrl(imageUrl);
     const mediaRows = await prisma.$queryRaw<Array<{ id: string }>>`SELECT "id" FROM "MediaAsset" WHERE "userId" = ${user.id} AND "normalizedUrl" = ${normalizedUrl} LIMIT 1`;
     const id = `gptopt_${randomUUID()}`;
-    await prisma.$executeRaw`INSERT INTO "GptImagePromptOptimizationCase" ("id", "userId", "workflowId", "workflowNodeId", "mediaAssetId", "imageUrl", "thumbnailUrl", "sourceModel", "optimizerModel", "attemptsUsed", "originalPrompt", "optimizedPrompt", "updatedAt") VALUES (${id}, ${user.id}, ${cleanString(body.workflowId, 160) || null}, ${cleanString(body.workflowNodeId, 160) || null}, ${mediaRows[0]?.id ?? null}, ${imageUrl}, ${cleanString(body.thumbnailUrl, 2000) || null}, ${sourceModel}, ${optimizerModel}, ${attemptsUsed}, ${originalPrompt}, ${optimizedPrompt}, NOW())`;
+    // Write UTC timestamps (JS Date -> UTC) to match how Prisma stores every other table. The DB server clock
+    // is +08, so relying on SQL NOW()/CURRENT_TIMESTAMP would store local time into a UTC-interpreted column,
+    // making the admin panel show the time 8h ahead (see 08-gpt-image-prompt-optimization notes).
+    const now = new Date();
+    await prisma.$executeRaw`INSERT INTO "GptImagePromptOptimizationCase" ("id", "userId", "workflowId", "workflowNodeId", "mediaAssetId", "imageUrl", "thumbnailUrl", "sourceModel", "optimizerModel", "attemptsUsed", "originalPrompt", "optimizedPrompt", "createdAt", "updatedAt") VALUES (${id}, ${user.id}, ${cleanString(body.workflowId, 160) || null}, ${cleanString(body.workflowNodeId, 160) || null}, ${mediaRows[0]?.id ?? null}, ${imageUrl}, ${cleanString(body.thumbnailUrl, 2000) || null}, ${sourceModel}, ${optimizerModel}, ${attemptsUsed}, ${originalPrompt}, ${optimizedPrompt}, ${now}, ${now})`;
     return NextResponse.json({ id });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "保存优化案例失败" }, { status: 500 });

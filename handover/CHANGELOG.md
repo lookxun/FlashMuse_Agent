@@ -1,5 +1,110 @@
 # Current Handover Changelog
 
+## 2026-07-10 (迁移 session 续) 腾讯阶段1 补齐"完整独立项目"缺口 + 若干迁移专属 bug 修复 + 产品微调（本地 commit+push GitHub；腾讯已部署，马来/阿里未动）
+
+Reply style: 简洁直接中文. 承接同日迁移 session：用户在腾讯 `http://119.28.116.16:5000`（空库全新实例）测试，暴露并修复了几处**迁移专属问题**（都是"马来靠 nginx / 同一块盘"的隐含依赖，在腾讯纯 Docker 栈才暴露），并做了两个产品微调。全部先本地 edit → `tsc` → scp 到 `/opt/flashmuse/app/...` → `docker compose up -d --build flashmuse-app` 部署到腾讯。**马来/阿里线上完全没动。** 本条对应一次 commit+push。
+
+### 1. 阶段1 漏了 nginx 层（图片/视频 /generated 404）— 已修（新增 nginx 容器）
+- 现象：资产库缩略图一直闪、点开原图空白。根因：**Next `next start` 只服务构建时已存在于 `public/` 的静态文件**，而 `.dockerignore` 排除了 `public/generated` → Next 对 `/generated/*` 一律 404（缩略图能出是因为走 `/api/media-thumbnail` 路由读盘）。马来/阿里从没暴露：`/generated` 一直由**各自 nginx** 服务、不经 Next；腾讯阶段1 栈只有 app+postgres、没 nginx。
+- 修复：给 flashmuse 栈加 `flashmuse-nginx`(nginx:alpine)：对外 5000→容器80，服务 `/generated`+`/home-assets` 静态 + 反代 `flashmuse-app:3000`；app 改为只 `expose 3000`。只用 flashmuse_default 网络与原 5000 端口，未碰 ps-/vibesocial。验证 `/generated` 404→200（本地+外网 IP）、首页/workspace/logo 200。
+- **新增仓库文件**：`docker-compose.yml`（含 nginx service，之前只在服务器）、`nginx/flashmuse.conf`。服务器路径 `/opt/flashmuse/docker-compose.yml`、`/opt/flashmuse/data/nginx/flashmuse.conf`，旧 compose 备份 `/opt/flashmuse/docker-compose.yml.bak.*`。
+
+### 2. 资产库上传图片"保存失败"（EXDEV 跨设备 rename）— 已修
+- 根因：`commitTemporaryUploadedImage`（`src/lib/local-assets.ts`）用 `fs.rename` 把临时文件从 `.runtime/asset-upload-temp/` 移到 `public/generated/`。马来俩目录同一块盘 OK；腾讯 Docker 里 `.runtime` 与 `public/generated` 是**两个独立 bind-mount（不同设备）** → 跨设备 `rename` 抛 `EXDEV`。
+- 修复：改为 `writeFile(filePath, buffer)`（buffer 本就已读入内存）+ `unlink(tempPath)`，避开跨设备 rename。视频/音频/文档走的 `/api/upload-file` 与生成落盘均无此问题。
+
+### 3. 资产生成弹窗结果图加载空白 — 加"正在加载中"转圈（不动远程→本地替换流程）
+- 现象：资产生成（角色/场景/分镜）等待卡消失后、结果图显示前有一段空白（远程 provider URL 国内加载慢）。**远程先显示→后台落盘/缩略图/压缩/封面→就绪才换本地** 是刻意设计（CHANGELOG 2026-06-08/06-03），**未改**。
+- 只加 UI：`AssetThumbnailImage`→`<img>` `onLoad` 前盖一层居中转圈 `LoadingSpinner`+“正在加载中...”，url 变（含远程→本地替换）即重置再显示。（一度误把 img 指向本地 url 抢跑替换流程，已按用户要求回退。）
+
+### 4. 注册送积分默认改 0
+- `src/lib/credits.ts` `defaultSettings.signupCredits` 1500→0；并把腾讯 DB 已存的 `CreditSetting.signupCredits` 直接 UPDATE 为 0（已存行不受代码默认影响）。⚠️ 阶段3 从马来 pg_dump 迁数据会覆盖此值，正式要 0 需在马来侧/迁移后再确认。
+
+### 5. 首页 logo 后显示 "Intl." 国际服标识（对齐马来）
+- `src/app/page.tsx` `getCurrentHomeSite` 把腾讯 IP `119.28.116.16` 归入国际主站分支（`homeSite="malaysia"`）→ `showInternationalBadge=true`。⚠️ 阶段3 切 venusface 域名重 build 时，此硬编码 IP 判断要按 09 文档第六节一起改域名。
+
+### 本次 commit 一并带上的历史未提交批次
+- **2026-07-10 生成媒体名称原子预约**那批（`prisma/schema.prisma`、迁移 `20260710000000_generation_job_name_reservations/`、`generation-status/image/video` 路由、`chat-workbench.tsx`、两个 workflow canvas、`generation-jobs.ts`）——**马来 prod+Ali 早已部署**，此前一直未 commit，本次一并提交。
+- 无关的 `src/app/api/workflow-prompt-optimization/cases/route.ts`（UTC 时间戳修复）——经用户同意本次一起提交。
+- 迁移基建文件 `Dockerfile`/`.dockerignore`/`docker-entrypoint.sh`/`next.config.ts`（静态缓存头）。
+
+### ⚠️ 部署状态提醒
+- 腾讯 = 领先（含本 session 全部 + nginx）。马来/阿里 = 只有名称预约那批，**没有** 本 session 的 nginx/EXDEV/转圈/signup0/Intl 改动（这些是腾讯专属或产品微调，未部署马来）。GitHub = 本次 push 后与本地一致。
+- `handover/09-migration-to-tencent.md` 文件上半部分是乱码（写入时编码损坏），末尾有可读补充；权威可读记录见 01-current-status + 05-next-actions 顶部。
+
+## 2026-07-10 (迁移 session) 主服务器迁移 马来 BytePlus → 腾讯云新加坡：阶段1 完成(腾讯独立 Docker 部署 + IP 测试)，用户测试中
+
+Reply style: 简洁直接中文. 本 session 不改业务代码，做的是**服务器迁移**。权威记录见新文件 `handover/09-migration-to-tencent.md`，本条只摘要。
+
+### 起因
+- 实测两台服务器：马来(main.venusface.com=`101.47.19.109`) 下载 ~0.07MB/s、延迟 351ms；腾讯云新加坡 `119.28.116.16` ~2.27MB/s、快约 32 倍。马来↔阿里跨境 20~50% 丢包是全站慢总根源。
+- **用户决定**：主服务器从马来迁到腾讯云新加坡，马来弃用；阿里保留、由镜像马来改为镜像腾讯。
+
+### 阶段划分(用户确认)
+1. 腾讯 IP+端口独立部署测试(不碰域名/阿里/马来) ← **已完成，测试中**
+2. 夜里接阿里 + 停服
+3. 数据迁移(DB+媒体) + 阿里反代切到腾讯 + 放开访问
+4. 收尾、弃用马来
+
+### 阶段1 做了什么
+- **去/留决策点通过**：腾讯新加坡实测 OpenRouter/BytePlus 均可达、无 403 地区封锁。
+- **方案 A：完全隔离的独立 Docker 栈** 部署在腾讯 `/opt/flashmuse/`。app(next start，宿主端口 5000)+独立 postgres(不暴露宿主端口)，独立网络 `flashmuse_default`，与该机其它项目(CinematicFlow/VibeSocial)完全隔离。
+- **仓库新增**(本地未 commit)：`Dockerfile`(node:22，装 rsync/ssh，npm install 触发 patch-package，prisma generate+build)、`.dockerignore`、`docker-entrypoint.sh`(migrate deploy+start)。
+- **`.env.local` 从马来 prod 派生**：API key/模型偏好/上传规则与线上一致；DATABASE_URL 改指容器库、删 AUTH_COOKIE_DOMAIN、FORCE_INSECURE_AUTH_COOKIE=true、ALI_SYNC 关；AUTH_SECRET 保持与马来同。它是可写 bind-mount(后台改设置会写此文件、API key 运行时从此文件读)。
+- 空库跑全部 Prisma 迁移(含 20260710000000)、worker 启动。home-assets 只传 lite 套(~7MB，大原视频不要了)。
+- **`next.config.ts` 加 `/home-assets`+`/generated` 长缓存**(`max-age=31536000, immutable`)：修首页切视频黑闪(根因 Next 对 public 默认 max-age=0，切视频重挂要跨境回源验证才显示；马来/阿里 nginx 有长缓存不闪)。这是唯一与马来不同的源码，同步回马来无害。
+- **代码一致性核对**：md5 清单对比马来 `/var/www/flashmuse` 与本地部署树，**194 源码文件逐字节一致，仅 next.config.ts 不同**。腾讯平台代码 = 马来线上、无漂移。
+- 验证：内外部 `/`、`/workspace`、`/admin`、`/api/model-availability`、静态资源全 200。**测试地址 `http://119.28.116.16:5000`**(空库、需邮箱注册登录；后台管理员 `lookxun@163.com`)。曾临时用 Cloudflare tunnel、5000 开通后已停。
+
+### 有意保留的差异(阶段2/3改回，见 09 文档第六节)
+NEXT_PUBLIC_* 留空(同源)、ali-sync 关、insecure cookie、无 cookie domain、server-info 页硬编码马来/阿里 SSH 失效、首页大视频未传、NEXT_PUBLIC_PRIMARY_BASE_URL 兜底仍 main.venusface.com。
+
+### 踩坑备忘
+Tencent pem 要 icacls 锁权限副本；PowerShell 不能 heredoc/内联复杂 bash(写 .sh+scp+sed 去 CRLF)；改 compose 本地改重传别 ssh 内联 sed；docker 用 sudo；China→新加坡上传慢(~68KB/s)包要小。
+
+## 2026-07-10 生成媒体名称提交时原子预约（对话流/工作流 图片·视频、资产库图片）+ 修复历史重复视频名 (DEPLOYED prod+Ali，含 Prisma 迁移；**GitHub 未推、未 commit**)
+
+Reply style: 简洁直接中文. 本 session 起因是**生产两个视频同名 `video_3_w6`**（同一工作流两条不同物理文件却撞名）。根因：旧逻辑在**任务完成时**才用当时计数器/已生成数推名字（`finalizeImageJobAsset`/`finalizeVideoJobAsset`），完成顺序 + 前端计数器不可靠 → 并发/重连时撞名。彻底改成**提交任务时就在同一数据库事务里原子预约名字**，成功提交、失败释放、可复用。
+
+### 核心机制（`src/lib/generation-jobs.ts`）
+- `GenerationJob` 新增 `reservedNames Json?`（迁移 `prisma/migrations/20260710000000_generation_job_name_reservations/migration.sql` = `ALTER TABLE "GenerationJob" ADD COLUMN "reservedNames" JSONB;`）。
+- 新增 `reserveJobNames(tx,...)`：在建 job 的**同一事务**内 `pg_advisory_xact_lock(hashtext(scope))` 串行化，扫已有 `MediaAsset`(systemName/initialName) + 所有 queued/running job 的 `reservedNames` 得到已占用集合，从 1 起找第一个未占用编号。scope 分域：资产库=`asset:{user}`、工作流=`workflow:{user}:{workflowId}:{kind}`、对话流=`conversation:{user}:{conversationId|d0}:{kind}`。命名格式沿用旧规则：对话/工作流 `{image|video}_{n}_{code}`(工作流 code=deriveWorkflowCode、对话=d0)；资产库 `asset_{n}_{role|scene|storyboard}`。
+- `createImageJob`/`createVideoJob` 改成 `prisma.$transaction`：先 `reserveJobNames` 再 INSERT（含 reservedNames 列），锁保持到插入完成。
+- `ensureJobReservedNames(job)`：worker 跑 `runImageJob`/`runVideoJob` 开头调用——**兼容部署前已存在、无预约字段的在途 job**：若 job 无 reservedNames，则 `SELECT ... FOR UPDATE` 后补一次预约并写回。
+- 成功：`finalizeImageJobAsset`/`finalizeVideoJobAsset` **直接用 `job.reservedNames[index]`** 作为 systemName/initialName/currentName（不再完成时算名），且 MediaAsset.upsert + UserAssetState 写入**合并进一个 `prisma.$transaction`**（原来是分开两步 + try/catch 吞错，会留下半成品占名）。缺预约名直接抛错。`markJobSucceeded` 也把 reservedNames 一起落库（保留为已提交历史）。
+- 失败：`markJobFailed` 增加 `"reservedNames" = NULL`——失败即释放，号码可被后续 job 复用。
+- **资产库图片流也 job 化**：`finalizeImageJobAsset` 现识别 `isAssetImageCreditSource`(character/scene/shot)，写入正确 category(character_image/scene_image/shot_image)、sourceKind=asset_generation。
+
+### API 回传预约名
+- `/api/image`(async 分支) 返回 `reservedNames`；`/api/video`(两处 create 成功) 返回 `reservedNames`；`/api/generation-status` `toClientJob` 暴露 `reservedNames`。
+
+### 前端统一用服务端预约名（`chat-workbench.tsx` + `workflow-tldraw-canvas-inner.tsx` + `workflow-tldraw-canvas.tsx`）
+- **对话流**：实时图片完成(`createImageWithRetry` 透传 reservedNames)、实时视频轮询、断线恢复 reconcile(图片+视频) 全部优先用 job.reservedNames；**仅当服务端没给名(旧在途 job)才回退**旧客户端 `reserveMediaSystemNames`。
+- **工作流**：`applyImageNodeResult`/视频轮询/两个 reconcile 都透传 `reservedNames` 并写进节点 `mediaSystemNames`；`onGeneratedMedia` 回调签名加 `reservedNames`(两个 canvas 组件都改)。`addWorkflowGeneratedAssets` 用服务端名(全齐才用，否则回退旧 `reserveWorkflowMediaSystemNamesForItems`)。
+- **资产库图片**(`generateCharacterImage`)：从同步 `/api/image` 改成 **async:true 提交 + 轮询 `/api/generation-status`**，成功用 `data.resultUrls`/`resultDimensions`；`addCharacterGeneratedAsset` 加 `reservedName?` 参数，有则用服务端名、否则回退 `getNextAssetGenerationName`。
+- 注：`workflow-tldraw-canvas-inner.tsx` 还含一处**既有的** GPT-image 安全改写重试并发守卫(`optimizingImageNodesRef`)，是随本次一起进 diff 的既有本地改动，非本次名称机制新增，已保留。
+
+### 验证
+- 本地 `npx tsc --noEmit`、`npm run build`、`git diff --check` 全过。build 仅既有 Turbopack/NFT 广文件 warning（next.config.ts→video-poster→media-save-queue→media-save-status 链路，非本次引入）。
+
+### 部署（含迁移，风险型，已按 03-deploy 流程）
+- **只打包本次 9 个路径**（schema/迁移/generation-status/image/video/chat-workbench/两个 canvas/generation-jobs），**刻意不含**工作树里那处无关的 `src/app/api/workflow-prompt-optimization/cases/route.ts`(写死 UTC 日期，保留未动)。tarball md5 双端校验一致。
+- 备份 `.deploy-backups/20260710-name-reservations/source-before-deploy.tgz`；前快照 `.runtime/deploy-checks/20260710-name-reservations-before.json`(assetListHash `bd431b01a976b013`)。
+- 服务器 `.sh` 脚本(scp+strip CRLF)：`npx prisma migrate deploy`(应用 20260710000000) → `npx prisma generate` → `/usr/local/bin/deploy-flashmuse-production.sh`。build 只有既有 NFT warning、PM2 online、Ali `_next/static` 同步。
+- 迁移确认(psql，注意 DATABASE_URL 含 Prisma 专用 `?schema=` 参数，psql 不认要 `${url%%\?*}` 去掉)：`20260710000000_...:applied`、`reservedNames:jsonb`。
+- 后快照 compare `ok:false` 仅因部署窗口用户 ID_271898 正常新生成 1 个对话视频(conversation_videos 1039→1040)；`stableMissingInNewTable`/`fallbackUsers` 前后均 0，**非迁移丢失**。五项 HTTP：workspace/admin/model-availability 全 200，PM2 online。
+
+### 修复历史重复视频名（生产手工修复，事务）
+- 撞名两条(user ID_636611, workflow db0a1ac5-caf6-4cf3-a21e-96d2eb2c7548, 都叫 video_3_w6)：
+  - 保留 `.../videos/1783651542077-fd506e1c-...mp4`(asset cmrec31rox4gvnun1rvbjyyi6) = `video_3_w6`。
+  - 改名 `.../videos/1783651635035-16a8bbc6-...mp4`(asset cmrec5oyoxjjtnun1d24od361) → **`video_4_w6`**。
+- 定位到重复名在该视频资产的 systemName/initialName、UserAssetState.currentName、以及工作流 canvasJson 里该视频节点的 `mediaSystemNames[url]`。用一个 `prisma.$transaction` 一次性改这四处 + 事务前备份画布/资产到 `.runtime/manual-fixes/20260710-repair-video-4-w6-before.json`。验证：目标四处均为 video_4_w6，该工作流仅剩首条用 video_3_w6。
+- 只读/修复脚本临时放服务器 `.runtime/*.cjs`(读 .env.local 第一条 DATABASE_URL 设 env 后 require @prisma/client)，非仓库代码。
+
+### ⚠️ 交接要点
+- **GitHub 未推、本地未 commit**：本次 9 文件改动 + 新迁移目录仍是工作树未提交状态（基线 `eec509a`）。工作树另有无关的 `workflow-prompt-optimization/cases/route.ts` 改动(勿覆盖)。下一个 AI 若要三方同步，需 commit+push 本次 9 路径与迁移。
+- prod 已含迁移与新代码；本地/GitHub 尚未提交 → 目前 **prod 领先 GitHub/本地(未 commit)**。
+
 ## 2026-07-09 (later session) 右上角使用量计数修复(对话流实时/工作流累计持久化) + 工作流@文件名卡加载修复 + @光标修复 + **全量部署 prod+Ali + 推 GitHub**
 
 Reply style: 简洁直接中文. 本 session 修了右上角"使用量"媒体计数的两个 bug + 工作流 @ 引用的两个交互 bug，然后把**之前一整批未部署/未推的改动全部部署上线并推 GitHub**（含生成压缩 B、备案/法务页、上传大改造、网络诊断 logo、以及本 session）。现在 **prod=GitHub=本地** 三方同步。
