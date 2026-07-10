@@ -8,10 +8,21 @@ Last checked: 2026-07-10 China time.
 1. **补 nginx 容器**（根治 `/generated` 404 图片视频不显示；Next 只服务构建时已存在的 public 文件、`public/generated` 被 dockerignore 排除，马来靠各自 nginx 服务 /generated）。新增仓库文件 `docker-compose.yml`(含 nginx)、`nginx/flashmuse.conf`。
 2. **修资产库上传"保存失败"**（EXDEV：`.runtime` 与 `public/generated` 是两个 bind-mount/设备，`local-assets.ts` 跨设备 rename 改 writeFile+unlink）。
 3. **资产生成弹窗加"正在加载中"转圈**（远程 url 加载空白期；**未动**远程→本地替换流程）。
-4. **注册送积分默认改 0**（`credits.ts` + 腾讯 DB 已存行）。
+4. **注册送积分默认改 0**（`credits.ts` 默认 + schema 列 `@default(0)` + 新迁移 `20260710010000_signup_credits_default_0`；根因是初始迁移 seed 了 1500，现在 fresh 部署天然=0）。
 5. **首页 logo 后显示 "Intl." 国际服标识**（`page.tsx` 腾讯 IP 归国际主站分支）。
-- **部署状态**：腾讯领先（含全部 + nginx）。马来/阿里未部署这些（腾讯专属/产品微调）。GitHub=本地（本次已 push）。
+
+**测试完成后已把腾讯清空回全新部署状态**：`compose down` + 删空 pgdata/generated/runtime + `up -d`（重建空库+migrate deploy）。用户两个测试账号及全部媒体清除。验证 User/MediaAsset/WorkspaceSession=0、generated 0 文件、signup=0、三容器 Up、home 200。**腾讯 = 干净的可独立运行全新实例，随时可进阶段2/3。**
+
+- **部署状态**：腾讯领先且已清空（含全部修复 + nginx）。马来/阿里未部署这些（腾讯专属/产品微调）。GitHub=本地（已 push）。
 - ⚠️ 阶段3 切 venusface 域名重 build 时：`page.tsx` 的 Intl IP 判断、其它硬编码 IP 要按 09 文档第六节改域名；signup=0 会被马来 pg_dump 覆盖需再确认。
+
+## 📍 迁移大事件进度（马来 BytePlus → 腾讯云新加坡）——做到哪了
+
+- **阶段1（腾讯独立部署 + IP 测试）= 完成 ✅**：腾讯 `119.28.116.16` 上已是一个**完整、可独立运行**的实例（app + postgres + **nginx**，端口 5000）。代码与马来线上逐字节一致(仅 next.config 缓存改进)，本 session 又补齐了 nginx/EXDEV/转圈等迁移专属缺口。用户已完成功能测试并确认 OK，实例现已清空为全新状态。
+- **阶段2（夜里接阿里 + 停服）= 未开始**。
+- **阶段3（数据迁移 + 切阿里反代 + 放开访问）= 未开始**。这是重头：马来 `pg_dump` → 腾讯 `flashmuse-db`；马来 `/generated` rsync → 腾讯 `data/generated`；阿里反代目标从马来 IP 改腾讯 IP；`NEXT_PUBLIC_*`/硬编码 IP 改域名并重 build；关 insecure cookie、设 cookie domain、开 ali-sync(方向腾讯→阿里)。
+- **阶段4（收尾、弃用马来）= 未开始**。
+- 权威操作细节见 `09-migration-to-tencent.md`（文件上半乱码、末尾有可读补充）+ 本文件 + `05-next-actions.md` 顶部。
 
 ## ⚠️ 2026-07-10 (进行中) — 主服务器迁移 马来 BytePlus → 腾讯云新加坡（阶段1完成，用户测试中）
 

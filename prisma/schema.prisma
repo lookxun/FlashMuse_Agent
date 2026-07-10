@@ -46,7 +46,7 @@ model CreditSetting {
   id                    String   @id @default("default")
   usdToCnyRate          Float    @default(7.2)
   creditsPerCny         Int      @default(10)
-  signupCredits         Int      @default(1500)
+  signupCredits         Int      @default(0)
   chargeText            Boolean  @default(true)
   chargeImage           Boolean  @default(true)
   chargeVideo           Boolean  @default(true)

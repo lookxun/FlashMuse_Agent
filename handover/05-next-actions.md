@@ -9,7 +9,20 @@
 **2026-07-10 补：阶段1 补齐了漏掉的 nginx 层（图片/视频原来显示不出来，已修）。** 详见 01-current-status 顶部对应条目。要点：
 - 根因：Next `next start` 只服务构建时已存在的 `public/` 文件，`public/generated` 被 dockerignore 排除→Next 对 `/generated/*` 返回 404。马来/阿里靠 nginx 服务 /generated 从不经 Next，腾讯阶段1 栈缺 nginx 才暴露。
 - 修复：flashmuse 栈加 `flashmuse-nginx`(nginx:alpine) 容器，对外 5000、服务 `/generated`+`/home-assets` 静态 + 反代 `flashmuse-app:3000`；app 改内部 3000。只用 flashmuse_default 网络与原 5000 端口，未动其它项目。
-- **已同步（2026-07-10 续 session）**：`docker-compose.yml`(含 nginx service) + `nginx/flashmuse.conf` 已补进本地仓库并 commit+push GitHub。同批还提交了：EXDEV 修复(`local-assets.ts`)、资产生成转圈(`chat-workbench.tsx`)、signup=0(`credits.ts`)、Intl 标识(`page.tsx`)、名称预约那批、Dockerfile 系列、cases/route.ts(UTC)。**GitHub=本地一致**。服务器旧 compose 备份 `/opt/flashmuse/docker-compose.yml.bak.*`。
+- **已同步（2026-07-10 续 session）**：`docker-compose.yml`(含 nginx service) + `nginx/flashmuse.conf` 已补进本地仓库并 commit+push GitHub。同批还提交了：EXDEV 修复(`local-assets.ts`)、资产生成转圈(`chat-workbench.tsx`)、signup=0(`credits.ts` + schema + 迁移 `20260710010000_signup_credits_default_0`)、Intl 标识(`page.tsx`)、名称预约那批、Dockerfile 系列、cases/route.ts(UTC)。**GitHub=本地一致**。服务器旧 compose 备份 `/opt/flashmuse/docker-compose.yml.bak.*`。
+- **腾讯已清空为全新部署状态**（用户测试完成后）：DB 空、generated 空、signup=0、三容器在跑、home 200。可直接进阶段2/3。
+
+- **下一步 = 阶段2/3（用户测试已 OK，可推进）**：
+  1. **阶段2**：夜里接阿里 + 挂停服/维护页。阿里改用独立 conf 反代腾讯（阿里安全组/腾讯安全组已开 5000）。别动阿里上其它项目。阿里登录信息见 `E:\project\【2】server\阿里服务器\`。
+  2. **阶段3（数据迁移，重头）**：
+     - DB：马来 `pg_dump` → 腾讯 `flashmuse-db`（`docker exec` psql 灌入；马来 `.env.local` 有两个 DATABASE_URL 用第一个、去掉 `?schema=`）。
+     - 媒体：马来 `/var/www/flashmuse/public/generated` rsync → 腾讯 `/opt/flashmuse/data/generated`（量大，可走马来→腾讯直传）。
+     - 阿里反代目标：马来 IP → 腾讯 IP。
+     - `NEXT_PUBLIC_*` / 硬编码 IP（`page.tsx` 的 Intl 判断、`chat-workbench.tsx`/其它 IP·venusface 判断、`NEXT_PUBLIC_PRIMARY_BASE_URL` 等）改成正式域名并**重 build**（见 09 文档第六节清单）。
+     - 关 `FORCE_INSECURE_AUTH_COOKIE`、设 `AUTH_COOKIE_DOMAIN`、开 `ALI_SYNC_GENERATED_ENABLED`（方向腾讯→阿里）。
+     - ⚠️ pg_dump 会带来马来的 `CreditSetting.signupCredits`，覆盖腾讯的 0；若正式要 0，迁移后再确认/再置 0。
+     - 用 `.runtime/deploy-checks/prod-deploy-snapshot.mjs` 对数据完整性做前后对比。
+  3. **阶段4**：观察几天，弃用马来。
 - **`09-migration-to-tencent.md` 内容乱码**（编码损坏），需要时重写。
 
 - 全部细节、原因、服务器信息、踩坑、下一步 → 看 `09-migration-to-tencent.md`（本次迁移权威文档）。

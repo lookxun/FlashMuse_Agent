@@ -17,11 +17,19 @@ Reply style: 简洁直接中文. 承接同日迁移 session：用户在腾讯 `h
 - 现象：资产生成（角色/场景/分镜）等待卡消失后、结果图显示前有一段空白（远程 provider URL 国内加载慢）。**远程先显示→后台落盘/缩略图/压缩/封面→就绪才换本地** 是刻意设计（CHANGELOG 2026-06-08/06-03），**未改**。
 - 只加 UI：`AssetThumbnailImage`→`<img>` `onLoad` 前盖一层居中转圈 `LoadingSpinner`+“正在加载中...”，url 变（含远程→本地替换）即重置再显示。（一度误把 img 指向本地 url 抢跑替换流程，已按用户要求回退。）
 
-### 4. 注册送积分默认改 0
-- `src/lib/credits.ts` `defaultSettings.signupCredits` 1500→0；并把腾讯 DB 已存的 `CreditSetting.signupCredits` 直接 UPDATE 为 0（已存行不受代码默认影响）。⚠️ 阶段3 从马来 pg_dump 迁数据会覆盖此值，正式要 0 需在马来侧/迁移后再确认。
+### 4. 注册送积分默认改 0（含 schema 迁移，fresh 部署即 0）
+- `src/lib/credits.ts` `defaultSettings.signupCredits` 1500→0。
+- **发现根因**：初始迁移 `20260522120000_credit_system` 的 SQL **直接 seed 了默认行 signupCredits=1500**，所以任何全新 `migrate deploy` 都会是 1500，跟代码默认无关。
+- **正解（新增迁移）**：`prisma/schema.prisma` 列 `@default(1500)`→`@default(0)`；新增迁移 `20260710010000_signup_credits_default_0`（`ALTER COLUMN ... SET DEFAULT 0` + `UPDATE ... SET signupCredits=0`）。现在**全新部署天然就是 0**。已在腾讯 migrate deploy 应用、DB 行确认为 0。
+- ⚠️ 阶段3 从马来 pg_dump 迁数据会带来马来侧的 CreditSetting 值（覆盖腾讯的 0）。正式若要 0，迁移后需再确认/再置 0。
 
 ### 5. 首页 logo 后显示 "Intl." 国际服标识（对齐马来）
 - `src/app/page.tsx` `getCurrentHomeSite` 把腾讯 IP `119.28.116.16` 归入国际主站分支（`homeSite="malaysia"`）→ `showInternationalBadge=true`。⚠️ 阶段3 切 venusface 域名重 build 时，此硬编码 IP 判断要按 09 文档第六节一起改域名。
+
+### 6. 用户测试完成 → 腾讯清空为全新部署状态
+- 用户测试完毕后，按其要求**把腾讯实例清空回全新部署状态**：`docker compose down` → 删空 `data/pgdata`、`data/generated`、`data/runtime` → `up -d`（postgres 重新初始化空库、app entrypoint `migrate deploy` 建全新 schema 含上面的 signup=0 迁移）。用户的两个测试账号(admin `lookxun@163.com` + `ID_822874`)及其所有生成/上传媒体全部清除。
+- 验证：`User=0 / MediaAsset=0 / WorkspaceSession=0`，generated 文件 0，`CreditSetting.signupCredits=0`，三容器 Up、home 200。**腾讯现在是干净的、可直接进入阶段2/3 的全新独立实例。**
+- 服务器临时文件(`/tmp/*.sql|*.tsx|*.ts`、`/home/ubuntu/fm-rebuild.log`、旧 compose 备份除外)已清理。
 
 ### 本次 commit 一并带上的历史未提交批次
 - **2026-07-10 生成媒体名称原子预约**那批（`prisma/schema.prisma`、迁移 `20260710000000_generation_job_name_reservations/`、`generation-status/image/video` 路由、`chat-workbench.tsx`、两个 workflow canvas、`generation-jobs.ts`）——**马来 prod+Ali 早已部署**，此前一直未 commit，本次一并提交。
