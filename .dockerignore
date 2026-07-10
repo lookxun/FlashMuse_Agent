@@ -1,0 +1,13 @@
+node_modules
+.next
+.git
+.runtime
+public/generated
+.env
+.env.local
+.deploy-backups
+*.pem
+*.tgz
+*.tar.gz
+handover
+FlashMuse_Agent_Project Planning

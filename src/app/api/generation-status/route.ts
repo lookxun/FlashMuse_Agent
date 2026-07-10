@@ -20,6 +20,7 @@ function toClientJob(job: GenerationJobRow) {
     workflowNodeId: job.workflowNodeId ?? undefined,
     itemIndex: job.itemIndex ?? undefined,
     providerTaskId: job.providerTaskId ?? undefined,
+    reservedNames: job.reservedNames ?? undefined,
     resultUrls: job.resultUrls ?? undefined,
     resultDimensions: job.resultDimensions ?? undefined,
     posterUrl: job.posterUrl ?? undefined,

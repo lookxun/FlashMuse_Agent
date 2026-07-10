@@ -2,6 +2,8 @@
 
 Last rebuilt: 2026-06-20
 
+> **⚠️ 2026-07-10 进行中的大事：主服务器正从马来 BytePlus 迁移到腾讯云新加坡。先读 `09-migration-to-tencent.md`（阶段1已完成、用户测试中）。**
+
 This folder is the current handover entry. The previous long handover set was moved to `historical-handover-docs-last-used-2026-06-20/` because it mixed current facts with outdated May and early June decisions.
 
 Read in this order:
@@ -14,7 +16,8 @@ Read in this order:
 6. `06-memo-tasks.md`
 7. `07-remote-video-url-debug.md`
 8. `08-gpt-image-prompt-optimization.md`
-9. `CHANGELOG.md`
+9. `09-migration-to-tencent.md`（马来→腾讯迁移，进行中）
+10. `CHANGELOG.md`
 
 Project path: `E:\project\FlashMuse_Agent`
 

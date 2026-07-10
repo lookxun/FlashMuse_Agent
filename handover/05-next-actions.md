@@ -2,7 +2,47 @@
 
 ## Highest Priority
 
-### 2026-07-09 (later session) END-OF-SESSION STATE — 先读这条
+### 2026-07-10 (最新) 迁移 马来→腾讯新加坡 —— 先读这条 + `09-migration-to-tencent.md`
+
+**状态：阶段1(在腾讯独立部署+IP测试)已完成，用户正在测试 `http://119.28.116.16:5000`。等用户测试结论，再做阶段2/3。**
+
+**2026-07-10 补：阶段1 补齐了漏掉的 nginx 层（图片/视频原来显示不出来，已修）。** 详见 01-current-status 顶部对应条目。要点：
+- 根因：Next `next start` 只服务构建时已存在的 `public/` 文件，`public/generated` 被 dockerignore 排除→Next 对 `/generated/*` 返回 404。马来/阿里靠 nginx 服务 /generated 从不经 Next，腾讯阶段1 栈缺 nginx 才暴露。
+- 修复：flashmuse 栈加 `flashmuse-nginx`(nginx:alpine) 容器，对外 5000、服务 `/generated`+`/home-assets` 静态 + 反代 `flashmuse-app:3000`；app 改内部 3000。只用 flashmuse_default 网络与原 5000 端口，未动其它项目。
+- **已同步（2026-07-10 续 session）**：`docker-compose.yml`(含 nginx service) + `nginx/flashmuse.conf` 已补进本地仓库并 commit+push GitHub。同批还提交了：EXDEV 修复(`local-assets.ts`)、资产生成转圈(`chat-workbench.tsx`)、signup=0(`credits.ts`)、Intl 标识(`page.tsx`)、名称预约那批、Dockerfile 系列、cases/route.ts(UTC)。**GitHub=本地一致**。服务器旧 compose 备份 `/opt/flashmuse/docker-compose.yml.bak.*`。
+- **`09-migration-to-tencent.md` 内容乱码**（编码损坏），需要时重写。
+
+- 全部细节、原因、服务器信息、踩坑、下一步 → 看 `09-migration-to-tencent.md`（本次迁移权威文档）。
+- **下一个 AI 待办**：
+  1. 收用户测试反馈；测出的功能异常先判断是不是"阶段1有意保留的环境差异"(NEXT_PUBLIC 留空/ali-sync关/insecure cookie/空库)导致，见 09 文档第六节。
+  2. 用户测 OK → 阶段2(夜里接阿里+停服) → 阶段3(pg_dump+媒体 rsync 迁数据、阿里反代切到腾讯、NEXT_PUBLIC 改域名重 build、开 ali-sync、关 insecure cookie)。步骤见 09 文档第七节。
+- **本地未 commit 的迁移相关改动**：`Dockerfile`、`.dockerignore`、`docker-entrypoint.sh`(新增)、`next.config.ts`(加静态缓存头)。加上之前 2026-07-10 名称预约那批(9文件+迁移目录)仍未 commit/push。
+
+### 2026-07-10 END-OF-SESSION STATE — 先读这条
+
+**状态：本次"生成媒体名称提交时原子预约"改动已部署 prod+Ali（含 Prisma 迁移），但 GitHub 未推、本地未 commit。目前 prod 领先 GitHub/本地。**
+
+**本 session 做了什么(细节见 CHANGELOG 顶条 + 01-current-status 顶条)：**
+1. 生成媒体命名从"完成时推名"改成"**提交任务时同一事务原子预约**"(`GenerationJob.reservedNames` + advisory lock)。覆盖对话流/工作流 图片·视频 + 资产库图片(资产库图片改成 async job 化 + 轮询)。成功用预约名、失败 `reservedNames=NULL` 释放复用；资产写入合并进一个事务。worker `ensureJobReservedNames` 兼容旧在途 job。前端全部优先用服务端名、旧 job 无名才回退。
+2. 部署了本次 9 个路径(schema/迁移/generation-status/image/video/chat-workbench/两个 canvas/generation-jobs)，迁移 `20260710000000_generation_job_name_reservations` 已 apply。
+3. 修了生产历史撞名视频：第二条 `video_3_w6`→`video_4_w6`(资产三处 + 工作流 canvas 一处，一事务)。
+
+**下一个 AI 待办：**
+1. **若要三方同步：commit+push 本次 9 路径 + `prisma/migrations/20260710000000_generation_job_name_reservations/`。** 注意工作树里还有一处**无关**改动 `src/app/api/workflow-prompt-optimization/cases/route.ts`(写死 UTC 日期)——**勿一起提交、勿覆盖**，按用户历史意图保留。
+2. **BROWSER-VERIFY(ali 硬刷)** 跟进：
+   - 同一工作流并发生成多个图片/视频，名字不再撞(`image_N_wX`/`video_N_wX` 唯一)。
+   - 生成失败后再生成，号码能复用(不因失败永久跳号)。
+   - 关浏览器/刷新后恢复，界面名字与资产库 systemName 一致。
+   - 资产库角色/场景/分镜图连续生成，`asset_N_{role|scene|storyboard}` 连续不撞。
+3. 手工修复脚本临时留在服务器 `/var/www/flashmuse/.runtime/*.cjs`(inspect/repair/verify-duplicate-video/inspect-duplicate-workspace-state 等)，非仓库代码，可择机清理。
+
+**局限/注意：**
+- 资产库图片生成前端从"同步返回图"改成"提交+每 3s 轮询"，交互路径变长(与对话流/工作流一致)，但更可靠(断开也不丢)。
+- 预约扫描每次查该用户所有 MediaAsset 的 name + 在途 job 名；用户资产极多时是一次全表按 userId 查，量级可接受，若日后变慢可加索引/收窄。
+
+---
+
+### 2026-07-09 (later session) END-OF-SESSION STATE — （已完成，保留作历史）
 
 **状态：全部已部署 prod+Ali 且已推 GitHub，prod=GitHub=本地 三方同步于 commit `ca28540`。工作树干净(除本次 handover 提交)。** 下方旧的"直接部署生成压缩"指令已完成，保留仅作历史。
 

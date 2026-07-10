@@ -333,8 +333,10 @@ export async function commitTemporaryUploadedImage(token: string, options: SaveA
   const directory = join(GENERATED_ROOT, generatedFolder);
   const filePath = join(directory, `${hash}.jpg`);
   await mkdir(directory, { recursive: true });
-  if (!existsSync(filePath)) await rename(tempPath, filePath);
-  else await unlink(tempPath).catch(() => undefined);
+  // 用 writeFile+unlink 而非 rename：临时目录(.runtime)与目标(public/generated)在 Docker 下可能是不同挂载点/设备，
+  // 跨设备 rename 会抛 EXDEV。buffer 已在上面读入内存，直接写目标再删临时最稳妥。
+  if (!existsSync(filePath)) await writeFile(filePath, buffer);
+  await unlink(tempPath).catch(() => undefined);
   void appendUploadDiagnosticsLog({ event: "temporary-upload-committed", requestId: options.diagnostics?.requestId, userId: options.userId, token: safeToken, durationMs: Date.now() - startedAt, extra: { url: `/generated/${publicFolder}/${hash}.jpg`, deduped: existsSync(filePath) } });
   return `/generated/${publicFolder}/${hash}.jpg`;
 }

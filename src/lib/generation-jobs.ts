@@ -47,6 +47,7 @@ export type GenerationJobRow = {
   itemIndex: number | null;
   count: number;
   providerTaskId: string | null;
+  reservedNames: string[] | null;
   resultUrls: string[] | null;
   resultDimensions: Record<string, { width: number; height: number }> | null;
   posterUrl: string | null;
@@ -67,6 +68,50 @@ export type GenerationJobRow = {
 
 function jsonParam(value: unknown): string | null {
   return value === undefined || value === null ? null : JSON.stringify(value);
+}
+
+function assetNameSuffix(source: string | null | undefined) {
+  return source === "scene_image_generation" ? "scene" : source === "shot_image_generation" ? "storyboard" : "role";
+}
+
+async function reserveJobNames(tx: Prisma.TransactionClient, input: { userId: string; kind: GenerationJobKind; count: number; flow?: string; workflowId?: string; conversationId?: string; creditSource?: string }) {
+  const assetFlow = isAssetImageCreditSource(input.creditSource);
+  const scope = assetFlow ? `asset:${input.userId}` : input.flow === "workflow" && input.workflowId ? `workflow:${input.userId}:${input.workflowId}:${input.kind}` : `conversation:${input.userId}:${input.conversationId ?? "d0"}:${input.kind}`;
+  // The caller keeps this lock until the job row containing the reservation is inserted.
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${scope}))`;
+  const [assets, jobs, workflow] = await Promise.all([
+    tx.mediaAsset.findMany({ where: { userId: input.userId }, select: { systemName: true, initialName: true } }),
+    tx.$queryRaw<Array<{ reservedNames: string[] | null }>>`SELECT "reservedNames" FROM "GenerationJob" WHERE "userId" = ${input.userId} AND "status" IN ('queued', 'running')`,
+    input.flow === "workflow" && input.workflowId ? tx.workspaceWorkflow.findUnique({ where: { userId_workflowId: { userId: input.userId, workflowId: input.workflowId } }, select: { workflowCode: true, title: true } }) : null,
+  ]);
+  const used = new Set<string>();
+  for (const asset of assets) for (const name of [asset.systemName, asset.initialName]) if (name) used.add(name);
+  for (const job of jobs) for (const name of job.reservedNames ?? []) used.add(name);
+  const code = input.flow === "workflow" ? deriveWorkflowCode(workflow?.workflowCode ?? null, workflow?.title ?? null) : "d0";
+  const suffix = assetNameSuffix(input.creditSource);
+  const prefix = assetFlow ? "asset" : input.kind;
+  const names: string[] = [];
+  let number = 1;
+  while (names.length < input.count) {
+    const name = assetFlow ? `asset_${number}_${suffix}` : `${prefix}_${number}_${code}`;
+    if (!used.has(name)) {
+      names.push(name);
+      used.add(name);
+    }
+    number += 1;
+  }
+  return names;
+}
+
+async function ensureJobReservedNames(job: GenerationJobRow) {
+  if (job.reservedNames?.length) return job.reservedNames;
+  return prisma.$transaction(async (tx) => {
+    const rows = await tx.$queryRaw<Array<{ reservedNames: string[] | null }>>`SELECT "reservedNames" FROM "GenerationJob" WHERE "id" = ${job.id} FOR UPDATE`;
+    if (rows[0]?.reservedNames?.length) return rows[0].reservedNames;
+    const names = await reserveJobNames(tx, { userId: job.userId, kind: job.kind, count: Math.max(1, job.count), flow: job.flow ?? undefined, workflowId: job.workflowId ?? undefined, conversationId: job.conversationId ?? undefined, creditSource: job.creditSource ?? undefined });
+    await tx.$executeRaw`UPDATE "GenerationJob" SET "reservedNames" = ${jsonParam(names)}::jsonb, "updatedAt" = NOW() WHERE "id" = ${job.id}`;
+    return names;
+  });
 }
 
 export type CreateImageJobInput = {
@@ -123,20 +168,23 @@ export async function createImageJob(input: CreateImageJobInput): Promise<Genera
   const provider = input.model?.startsWith("byteplus:") ? "byteplus" : "openrouter";
   const count = Math.min(4, Math.max(1, Math.floor(input.count ?? 1)));
   const extra = { ...(input.extra ?? {}), ...(input.candidateMode ? { candidateMode: input.candidateMode } : {}) };
-  await prisma.$executeRaw`
+  await prisma.$transaction(async (tx) => {
+    const reservedNames = await reserveJobNames(tx, { userId: input.userId, kind: "image", count, flow: input.flow, workflowId: input.workflowId, conversationId: input.conversationId, creditSource: input.creditSource });
+    await tx.$executeRaw`
     INSERT INTO "GenerationJob" (
       "id", "userId", "requestId", "kind", "status", "flow", "creditSource", "model", "provider",
       "prompt", "settingsJson", "referenceImages", "conversationId", "conversationTitle",
-      "messageId", "workflowId", "workflowNodeId", "itemIndex", "count", "metadataJson", "extraJson",
+       "messageId", "workflowId", "workflowNodeId", "itemIndex", "count", "reservedNames", "metadataJson", "extraJson",
       "createdAt", "updatedAt"
     ) VALUES (
       ${id}, ${input.userId}, ${input.requestId}, 'image', 'queued', ${input.flow ?? null}, ${input.creditSource ?? null}, ${input.model ?? null}, ${provider},
       ${input.prompt}, ${jsonParam(input.settings)}::jsonb, ${jsonParam(input.referenceImages ?? [])}::jsonb, ${input.conversationId ?? null}, ${input.conversationTitle ?? null},
-      ${input.messageId ?? null}, ${input.workflowId ?? null}, ${input.workflowNodeId ?? null}, ${input.itemIndex ?? null}, ${count}, ${jsonParam(input.metadata)}::jsonb, ${jsonParam(extra)}::jsonb,
+       ${input.messageId ?? null}, ${input.workflowId ?? null}, ${input.workflowNodeId ?? null}, ${input.itemIndex ?? null}, ${count}, ${jsonParam(reservedNames)}::jsonb, ${jsonParam(input.metadata)}::jsonb, ${jsonParam(extra)}::jsonb,
       NOW(), NOW()
     )
     ON CONFLICT ("requestId") DO NOTHING
-  `;
+    `;
+  });
   const created = await getGenerationJobByRequestId(input.requestId);
   if (!created) throw new Error("创建生成任务失败");
   // 立即触发 worker，尽快开始（worker 内有 lease 防重复）。
@@ -151,20 +199,23 @@ export async function createVideoJob(input: CreateVideoJobInput): Promise<Genera
 
   const id = randomUUID();
   const provider = input.model?.startsWith("byteplus:video.") ? "byteplus" : "openrouter";
-  await prisma.$executeRaw`
+  await prisma.$transaction(async (tx) => {
+    const reservedNames = await reserveJobNames(tx, { userId: input.userId, kind: "video", count: 1, flow: input.flow, workflowId: input.workflowId, conversationId: input.conversationId, creditSource: input.creditSource });
+    await tx.$executeRaw`
     INSERT INTO "GenerationJob" (
       "id", "userId", "requestId", "kind", "status", "flow", "creditSource", "model", "provider",
       "prompt", "settingsJson", "referenceImages", "referenceVideos", "referenceAudios", "referenceMode",
-      "conversationId", "conversationTitle", "messageId", "workflowId", "workflowNodeId", "itemIndex", "count", "providerTaskId",
+       "conversationId", "conversationTitle", "messageId", "workflowId", "workflowNodeId", "itemIndex", "count", "reservedNames", "providerTaskId",
       "usageJson", "metadataJson", "extraJson", "nextRunAt", "createdAt", "updatedAt"
     ) VALUES (
       ${id}, ${input.userId}, ${input.requestId}, 'video', 'running', ${input.flow ?? null}, ${input.creditSource ?? null}, ${input.model ?? null}, ${provider},
       ${input.prompt}, ${jsonParam(input.settings)}::jsonb, ${jsonParam(input.referenceImages ?? [])}::jsonb, ${jsonParam(input.referenceVideos ?? [])}::jsonb, ${jsonParam(input.referenceAudios ?? [])}::jsonb, ${input.referenceMode ?? null},
-      ${input.conversationId ?? null}, ${input.conversationTitle ?? null}, ${input.messageId ?? null}, ${input.workflowId ?? null}, ${input.workflowNodeId ?? null}, ${input.itemIndex ?? null}, 1, ${input.providerTaskId},
+       ${input.conversationId ?? null}, ${input.conversationTitle ?? null}, ${input.messageId ?? null}, ${input.workflowId ?? null}, ${input.workflowNodeId ?? null}, ${input.itemIndex ?? null}, 1, ${jsonParam(reservedNames)}::jsonb, ${input.providerTaskId},
       ${jsonParam(input.usage)}::jsonb, ${jsonParam(input.metadata)}::jsonb, ${jsonParam(input.extra)}::jsonb, NOW(), NOW(), NOW()
     )
     ON CONFLICT ("requestId") DO NOTHING
-  `;
+    `;
+  });
   const created = await getGenerationJobByRequestId(input.requestId);
   if (!created) throw new Error("创建视频生成任务失败");
   void import("@/lib/generation-worker").then((mod) => mod.nudgeGenerationWorker()).catch(() => undefined);
@@ -237,10 +288,10 @@ function mergeImageCreditMetadata(metadata: Prisma.InputJsonValue | undefined, e
   return metadata && typeof metadata === "object" && !Array.isArray(metadata) ? { ...metadata, ...extra } : extra;
 }
 
-async function markJobSucceeded(id: string, patch: { resultUrls: string[]; resultDimensions?: Record<string, { width: number; height: number }>; posterUrl?: string; usage?: unknown; credit?: unknown }) {
+async function markJobSucceeded(id: string, patch: { resultUrls: string[]; reservedNames?: string[]; resultDimensions?: Record<string, { width: number; height: number }>; posterUrl?: string; usage?: unknown; credit?: unknown }) {
   await prisma.$executeRaw`
     UPDATE "GenerationJob" SET
-      "status" = 'succeeded', "resultUrls" = ${jsonParam(patch.resultUrls)}::jsonb, "resultDimensions" = ${jsonParam(patch.resultDimensions)}::jsonb,
+      "status" = 'succeeded', "resultUrls" = ${jsonParam(patch.resultUrls)}::jsonb, "reservedNames" = ${jsonParam(patch.reservedNames)}::jsonb, "resultDimensions" = ${jsonParam(patch.resultDimensions)}::jsonb,
       "posterUrl" = ${patch.posterUrl ?? null}, "usageJson" = ${jsonParam(patch.usage)}::jsonb, "creditJson" = ${jsonParam(patch.credit)}::jsonb,
       "error" = NULL, "errorCode" = NULL, "completedAt" = NOW(), "leaseAt" = NULL, "updatedAt" = NOW()
     WHERE "id" = ${id}
@@ -362,6 +413,7 @@ async function markJobFailed(id: string, error: string, errorCode?: string) {
   await prisma.$executeRaw`
     UPDATE "GenerationJob" SET
       "status" = 'failed', "error" = ${error.slice(0, 500)}, "errorCode" = ${errorCode ?? null},
+      "reservedNames" = NULL,
       "completedAt" = NOW(), "leaseAt" = NULL, "updatedAt" = NOW()
     WHERE "id" = ${id}
   `;
@@ -378,39 +430,26 @@ function deriveWorkflowCode(workflowCode: string | null, title: string | null): 
 
 /**
  * 后端在图片任务成功时直接写入资产库（MediaAsset + UserAssetState）。
- * 这样即使用户永远不回来，成品图也一定进资产库、不丢。工作流命名用工作流当前编号计算一个
- * 稳定名（image_N_wX）；对话流用该会话已生成图数量推一个 image_N_d0。均不改前端计数器，
- * 用户回来后前端若按同 URL 再 upsert，只会补齐/校准（userRenamed=false），不会重复。
+ * 这样即使用户永远不回来，成品图也一定进资产库、不丢。名称在提交任务时已原子保留，
+ * 成功时直接提交该名称，避免完成顺序和前端计数器影响命名。
  */
 async function finalizeImageJobAsset(job: GenerationJobRow, images: string[], dimensions: Record<string, { width: number; height: number }> | undefined) {
   const isWorkflow = job.flow === "workflow" && Boolean(job.workflowId);
+  const isAsset = isAssetImageCreditSource(job.creditSource);
   const sourcePrompt = (job.extraJson?.cleanPrompt as string | undefined) || job.prompt || undefined;
   const settings = job.settingsJson ?? undefined;
-  const currentCategory = isWorkflow ? "workflow_images" : "conversation_images";
-  const sourceKind = isWorkflow ? "workflow_generation" : "conversation_generation_image";
+  const currentCategory = isAsset ? (job.creditSource === "scene_image_generation" ? "scene_image" : job.creditSource === "shot_image_generation" ? "shot_image" : "character_image") : isWorkflow ? "workflow_images" : "conversation_images";
+  const sourceKind = isAsset ? "asset_generation" : isWorkflow ? "workflow_generation" : "conversation_generation_image";
 
-  let code = "d0";
-  let nextNumber = 1;
-  if (isWorkflow) {
-    const workflow = await prisma.workspaceWorkflow.findUnique({ where: { userId_workflowId: { userId: job.userId, workflowId: job.workflowId! } }, select: { workflowCode: true, title: true, nextImageNumber: true } }).catch(() => null);
-    code = deriveWorkflowCode(workflow?.workflowCode ?? null, workflow?.title ?? null);
-    nextNumber = Math.max(1, Math.floor(workflow?.nextImageNumber ?? 1));
-  } else {
-    const existingCount = job.conversationId
-      ? await prisma.mediaAsset.count({ where: { userId: job.userId, conversationId: job.conversationId, mediaType: "image", sourceKind: "conversation_generation_image" } }).catch(() => 0)
-      : 0;
-    nextNumber = existingCount + 1;
-  }
-
-  for (const rawUrl of images) {
-    const resolved = resolvePersistableMediaAssetUrl(job.userId, rawUrl);
-    if (!resolved) continue;
-    const dim = dimensions?.[rawUrl];
-    const name = `image_${nextNumber}_${code}`;
-    nextNumber += 1;
-    const previewMeta = { modelLabel: job.model ?? "-", ratio: dim ? `${dim.width}:${dim.height}` : settings?.ratio ?? "-", sizeText: dim ? `${dim.width} × ${dim.height}` : "-", resolution: settings?.resolution ?? "-", mode: "image" as const };
-    try {
-      const media = await prisma.mediaAsset.upsert({
+  await prisma.$transaction(async (tx) => {
+    for (const [index, rawUrl] of images.entries()) {
+      const resolved = resolvePersistableMediaAssetUrl(job.userId, rawUrl);
+      if (!resolved) continue;
+      const dim = dimensions?.[rawUrl];
+      const name = job.reservedNames?.[index];
+      if (!name) throw new Error(`Missing image name reservation for ${job.requestId}`);
+      const previewMeta = { modelLabel: job.model ?? "-", ratio: dim ? `${dim.width}:${dim.height}` : settings?.ratio ?? "-", sizeText: dim ? `${dim.width} × ${dim.height}` : "-", resolution: settings?.resolution ?? "-", mode: "image" as const };
+      const media = await tx.mediaAsset.upsert({
         where: { userId_normalizedUrl: { userId: job.userId, normalizedUrl: resolved.normalizedUrl } },
         create: {
           userId: job.userId, mediaType: "image", url: resolved.url, normalizedUrl: resolved.normalizedUrl, originalUrl: resolved.originalUrl,
@@ -427,14 +466,12 @@ async function finalizeImageJobAsset(job: GenerationJobRow, images: string[], di
         update: {},
         select: { id: true },
       });
-      const existingState = await prisma.userAssetState.findUnique({ where: { userId_mediaAssetId: { userId: job.userId, mediaAssetId: media.id } }, select: { id: true } });
+      const existingState = await tx.userAssetState.findUnique({ where: { userId_mediaAssetId: { userId: job.userId, mediaAssetId: media.id } }, select: { id: true } });
       if (!existingState) {
-        await prisma.userAssetState.create({ data: { userId: job.userId, mediaAssetId: media.id, currentName: name, currentCategory, originalCategory: currentCategory, lockedCategory: true, userRenamed: false, userRecategorized: true } });
+        await tx.userAssetState.create({ data: { userId: job.userId, mediaAssetId: media.id, currentName: name, currentCategory, originalCategory: currentCategory, lockedCategory: true, userRenamed: false, userRecategorized: true } });
       }
-    } catch (error) {
-      console.warn("[generation-jobs] finalizeImageJobAsset failed", { requestId: job.requestId, error: error instanceof Error ? error.message : String(error) });
     }
-  }
+  });
 }
 
 
@@ -446,6 +483,7 @@ export async function runImageJob(job: GenerationJobRow) {
   const settings = job.settingsJson ?? undefined;
   const requestedImageCount = Math.min(4, Math.max(1, Math.floor(job.count ?? 1)));
   try {
+    job = { ...job, reservedNames: await ensureJobReservedNames(job) };
     if (job.attempts > MAX_IMAGE_JOB_ATTEMPTS) {
       await markJobFailed(job.id, "生成任务多次尝试仍未完成。", "JOB_MAX_ATTEMPTS");
       return;
@@ -479,8 +517,9 @@ export async function runImageJob(job: GenerationJobRow) {
       imageCount: deliveredImages.length,
       metadata: mergeImageCreditMetadata(job.metadataJson as Prisma.InputJsonValue | undefined, { ...getImageCreditParameterMetadata(settings, deliveredImageDimensions), originalPrompt: job.prompt ?? "", requestedImageCount, returnedImageCount: deliveredImages.length, providerReturnedImageCount, billableImageCount: deliveredImages.length, mediaUrls: deliveredImages, allMediaUrls: deliveredImages, extraMediaUrls: [], delivered: true }),
     }) : undefined;
-    await markJobSucceeded(job.id, { resultUrls: deliveredImages, resultDimensions: deliveredImageDimensions ?? undefined, usage: result.usage, credit });
-    await finalizeImageJobAsset(job, deliveredImages, deliveredImageDimensions ?? undefined).catch(() => undefined);
+    const reservedNames = (job.reservedNames ?? []).slice(0, deliveredImages.length);
+    await finalizeImageJobAsset({ ...job, reservedNames }, deliveredImages, deliveredImageDimensions ?? undefined);
+    await markJobSucceeded(job.id, { resultUrls: deliveredImages, reservedNames, resultDimensions: deliveredImageDimensions ?? undefined, usage: result.usage, credit });
     void recordGenerationEvent({ userId: job.userId, requestId: job.requestId, kind: "image", creditSource, model: job.model ?? undefined, provider: job.provider ?? undefined, status: "success", durationMs: Date.now() - startedAt, referenceImageCount: referenceImages.length });
     void appendGenerationDiagnosticsLog({ event: "image-job-success", requestId: job.requestId, conversationId: job.conversationId ?? undefined, userId: job.userId, mode: "image", model: job.model ?? undefined, prompt: job.prompt ?? undefined, settings, durationMs: Date.now() - startedAt, extra: { requestedImageCount, returnedImageCount: deliveredImages.length, providerReturnedImageCount, deliveredImages: deliveredImages.map((url, index) => summarizeGeneratedReference(url, index)), dimensions: deliveredImageDimensions, credit } });
   } catch (error) {
@@ -520,19 +559,11 @@ async function finalizeVideoJobAsset(job: GenerationJobRow, videoUrl: string, po
   const sourceKind = isWorkflow ? "workflow_generation" : "conversation_generation_video";
   const resolved = resolvePersistableMediaAssetUrl(job.userId, videoUrl);
   if (!resolved) return;
-  let code = "d0";
-  let nextNumber = 1;
-  if (isWorkflow) {
-    const workflow = await prisma.workspaceWorkflow.findUnique({ where: { userId_workflowId: { userId: job.userId, workflowId: job.workflowId! } }, select: { workflowCode: true, title: true, nextVideoNumber: true } }).catch(() => null);
-    code = deriveWorkflowCode(workflow?.workflowCode ?? null, workflow?.title ?? null);
-    nextNumber = Math.max(1, Math.floor(workflow?.nextVideoNumber ?? 1));
-  } else {
-    nextNumber = (job.conversationId ? await prisma.mediaAsset.count({ where: { userId: job.userId, conversationId: job.conversationId, mediaType: "video", sourceKind: "conversation_generation_video" } }).catch(() => 0) : 0) + 1;
-  }
-  const name = `video_${nextNumber}_${code}`;
+  const name = job.reservedNames?.[0];
+  if (!name) throw new Error(`Missing video name reservation for ${job.requestId}`);
   const previewMeta = { modelLabel: job.model ?? "-", ratio: settings?.ratio ?? "-", resolution: settings?.resolution ?? "-", duration: settings?.duration ?? "-", mode: "video" as const };
-  try {
-    const media = await prisma.mediaAsset.upsert({
+  await prisma.$transaction(async (tx) => {
+    const media = await tx.mediaAsset.upsert({
       where: { userId_normalizedUrl: { userId: job.userId, normalizedUrl: resolved.normalizedUrl } },
       create: {
         userId: job.userId, mediaType: "video", url: resolved.url, normalizedUrl: resolved.normalizedUrl, originalUrl: resolved.originalUrl,
@@ -547,17 +578,17 @@ async function finalizeVideoJobAsset(job: GenerationJobRow, videoUrl: string, po
       update: { posterUrl: posterUrl ?? undefined, thumbnailUrl: posterUrl ?? undefined },
       select: { id: true },
     });
-    const existingState = await prisma.userAssetState.findUnique({ where: { userId_mediaAssetId: { userId: job.userId, mediaAssetId: media.id } }, select: { id: true } });
-    if (!existingState) await prisma.userAssetState.create({ data: { userId: job.userId, mediaAssetId: media.id, currentName: name, currentCategory, originalCategory: currentCategory, lockedCategory: true, userRenamed: false, userRecategorized: true } });
-  } catch (error) {
-    console.warn("[generation-jobs] finalizeVideoJobAsset failed", { requestId: job.requestId, error: error instanceof Error ? error.message : String(error) });
-  }
+    const existingState = await tx.userAssetState.findUnique({ where: { userId_mediaAssetId: { userId: job.userId, mediaAssetId: media.id } }, select: { id: true } });
+    if (!existingState) await tx.userAssetState.create({ data: { userId: job.userId, mediaAssetId: media.id, currentName: name, currentCategory, originalCategory: currentCategory, lockedCategory: true, userRenamed: false, userRecategorized: true } });
+  });
 }
 
 export async function runVideoJob(job: GenerationJobRow) {
-  if (!job.providerTaskId) return markJobFailed(job.id, "视频平台没有返回任务编号");
+  const providerTaskId = job.providerTaskId;
+  if (!providerTaskId) return markJobFailed(job.id, "视频平台没有返回任务编号");
   try {
-    const task = await getOpenRouterVideoTask(job.providerTaskId);
+    job = { ...job, reservedNames: await ensureJobReservedNames(job) };
+    const task = await getOpenRouterVideoTask(providerTaskId);
     const videoError = getVideoErrorMessage(task);
     if (videoError) {
       const codedError = await createCodedApiError(new Error(videoError), GENERIC_MEDIA_ERROR_MESSAGE, "video job polling failed");
@@ -569,7 +600,7 @@ export async function runVideoJob(job: GenerationJobRow) {
     const videoUrl = getVideoUrl(task);
     if (["succeeded", "success", "completed", "complete"].includes(status) && videoUrl) {
       const needsOpenRouterAuth = videoUrl.startsWith("https://openrouter.ai/api/v1/videos/");
-      let saveJob = await enqueueRemoteAssetSave({ remoteUrl: videoUrl, type: "video", authProvider: needsOpenRouterAuth ? "openrouter" : undefined, videoTaskId: job.providerTaskId, requestId: job.requestId, model: job.model ?? undefined, prompt: job.prompt ?? "", userId: job.userId });
+      let saveJob = await enqueueRemoteAssetSave({ remoteUrl: videoUrl, type: "video", authProvider: needsOpenRouterAuth ? "openrouter" : undefined, videoTaskId: providerTaskId, requestId: job.requestId, model: job.model ?? undefined, prompt: job.prompt ?? "", userId: job.userId });
       // Wait for the local save so the durable job stores a stable local URL (the remote provider URL
       // expires ~24h) and the asset library actually gets the video even if the user never returns.
       if (saveJob?.id && saveJob.status !== "saved") {
@@ -577,11 +608,11 @@ export async function runVideoJob(job: GenerationJobRow) {
         if (waited) saveJob = waited;
       }
       const deliveredUrl = saveJob?.localUrl ?? videoUrl;
-      await upsertVideoManifestEntry({ taskId: job.providerTaskId, prompt: job.prompt ?? "", localVideoUrl: deliveredUrl, remoteVideoUrl: videoUrl, posterUrl: saveJob?.posterUrl });
+      await upsertVideoManifestEntry({ taskId: providerTaskId, prompt: job.prompt ?? "", localVideoUrl: deliveredUrl, remoteVideoUrl: videoUrl, posterUrl: saveJob?.posterUrl });
       const usage = withBytePlusVideoUsd(getUsageMeta(task) ?? job.usageJson ?? undefined, job.model, job.settingsJson ?? undefined);
       const credit = await chargeCredits(job.userId, "video", usage, { conversationId: job.conversationId ?? undefined, conversationTitle: job.conversationTitle ?? undefined, requestId: job.requestId, label: "视频生成", model: job.model ?? undefined, videoCount: 1, metadata: { ...(job.metadataJson ?? {}), settings: job.settingsJson, ratio: job.settingsJson?.ratio, resolution: job.settingsJson?.resolution, duration: job.settingsJson?.duration, originalPrompt: job.prompt, mediaUrls: [deliveredUrl], remoteMediaUrls: [videoUrl], posterUrl: saveJob?.posterUrl, delivered: true, savedLocal: saveJob?.status === "saved", localSaveStatus: saveJob?.status ?? "pending", mediaSaveJobId: saveJob?.id } });
       await finalizeVideoJobAsset(job, deliveredUrl, saveJob?.posterUrl);
-      await markJobSucceeded(job.id, { resultUrls: [deliveredUrl], posterUrl: saveJob?.posterUrl, usage: withChargedUsage(usage, credit), credit });
+      await markJobSucceeded(job.id, { resultUrls: [deliveredUrl], reservedNames: job.reservedNames ?? [], posterUrl: saveJob?.posterUrl, usage: withChargedUsage(usage, credit), credit });
       void recordGenerationEvent({ userId: job.userId, requestId: job.requestId, kind: "video", creditSource: job.creditSource ?? undefined, model: job.model ?? undefined, provider: job.provider ?? undefined, status: "success" });
       return;
     }

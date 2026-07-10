@@ -144,7 +144,7 @@ type WorkflowCanvasProps = {
   onChange: (next: WorkflowCanvasState) => void;
   workflowTitle: string;
   onCredit?: (credit?: CreditResult) => void;
-  onGeneratedMedia?: (media: { nodeId: string; kind: "image" | "video"; urls: string[]; posterUrl?: string; sourcePrompt: string; model?: ModelName; ratio?: string; resolution?: string; duration?: string; dimensions?: Record<string, { width: number; height: number }>; durationSeconds?: Record<string, number>; silent?: boolean; promptOptimization?: { originalPrompt: string; optimizedPrompt: string; attemptsUsed: number; optimizerModel: string } }) => void;
+  onGeneratedMedia?: (media: { nodeId: string; kind: "image" | "video"; urls: string[]; reservedNames?: string[]; posterUrl?: string; sourcePrompt: string; model?: ModelName; ratio?: string; resolution?: string; duration?: string; dimensions?: Record<string, { width: number; height: number }>; durationSeconds?: Record<string, number>; silent?: boolean; promptOptimization?: { originalPrompt: string; optimizedPrompt: string; attemptsUsed: number; optimizerModel: string } }) => void;
   onPreviewMedia?: (media: { nodeId: string; kind: "image" | "video"; url: string; posterUrl?: string; name: string; sourcePrompt?: string; model?: ModelName; ratio?: string; resolution?: string; duration?: string; dimensions?: { width: number; height: number } }) => void;
   onShowTip?: (message: string) => void;
   getImageDisplayUrl?: (url: string) => string;
@@ -287,6 +287,7 @@ type WorkflowImageJobStatus = {
   workflowId?: string;
   workflowNodeId?: string;
   resultUrls?: string[];
+  reservedNames?: string[];
   resultDimensions?: Record<string, { width: number; height: number }>;
   usage?: UsageMeta;
   credit?: CreditResult;
@@ -2404,6 +2405,11 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
   const pollMountedRef = useRef(true);
   const resumingVideoNodesRef = useRef<Set<string>>(new Set());
   const resumingImageNodesRef = useRef<Set<string>>(new Set());
+  // Image nodes currently running the GPT-image safety-rewrite retry loop. While a node is in this set the
+  // backend still has the ORIGINAL failed job (returned by /api/generation-status?active), so the recovery /
+  // reconcile effects must NOT re-apply that stale failure — otherwise the node flips back to the failed card
+  // ~2-3s after the user clicks retry even though the rewrite loop is still running in the background.
+  const optimizingImageNodesRef = useRef<Set<string>>(new Set());
   const lastExternalKeyRef = useRef(stateKey(stateRef.current));
   const lastEmittedKeyRef = useRef("");
   const loadingRef = useRef(false);
@@ -3462,7 +3468,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
   const getEnabledImageModel = useCallback((model?: ModelName) => (model && imageModels.some((item) => item.id === model) ? model : (imageModels[0]?.id as ModelName | undefined) ?? DEFAULT_IMAGE_MODEL), [imageModels]);
   const getEnabledVideoModel = useCallback((model?: ModelName) => (model && videoModels.some((item) => item.id === model) ? model : (videoModels[0]?.id as ModelName | undefined) ?? DEFAULT_VIDEO_MODEL), [videoModels]);
 
-  const applyImageNodeResult = useCallback((node: WorkflowNode, input: { prompt: string; model: ModelName; settings: { ratio: string; resolution: string }; promptOptimization?: { originalPrompt: string; optimizedPrompt: string; attemptsUsed: number; optimizerModel: string } }, images: string[], imageDimensions: Record<string, { width: number; height: number }> | undefined, credit: CreditResult | undefined, usage: UsageMeta | undefined) => {
+  const applyImageNodeResult = useCallback((node: WorkflowNode, input: { prompt: string; model: ModelName; settings: { ratio: string; resolution: string }; promptOptimization?: { originalPrompt: string; optimizedPrompt: string; attemptsUsed: number; optimizerModel: string } }, images: string[], imageDimensions: Record<string, { width: number; height: number }> | undefined, credit: CreditResult | undefined, usage: UsageMeta | undefined, reservedNames?: string[]) => {
     const generationUploads = getWorkflowGenerationUploadSnapshot(stateRef.current, node);
     updateNode(node.id, {
       images,
@@ -3474,6 +3480,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
       error: undefined,
       imageRequestId: undefined,
       startedAt: undefined,
+      mediaSystemNames: { ...(node.data.mediaSystemNames ?? {}), ...Object.fromEntries(images.map((url, index) => [url, reservedNames?.[index]]).filter((item): item is [string, string] => Boolean(item[1]))) },
       ...(input.promptOptimization ? {
         gptImageOptimizationOriginalPrompt: input.promptOptimization.originalPrompt,
         gptImageOptimizationSuccessfulPrompt: input.promptOptimization.optimizedPrompt,
@@ -3483,7 +3490,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
       } : {}),
     });
     updateState((state) => ({ ...state, edges: state.edges.filter((edge) => edge.target !== node.id) }));
-    onGeneratedMedia?.({ nodeId: node.id, kind: "image", urls: images, sourcePrompt: input.prompt, model: input.model, ratio: input.settings.ratio, resolution: input.settings.resolution, dimensions: imageDimensions, promptOptimization: input.promptOptimization });
+    onGeneratedMedia?.({ nodeId: node.id, kind: "image", urls: images, reservedNames, sourcePrompt: input.prompt, model: input.model, ratio: input.settings.ratio, resolution: input.settings.resolution, dimensions: imageDimensions, promptOptimization: input.promptOptimization });
     onCredit?.({ ...credit, usage });
   }, [onCredit, onGeneratedMedia, updateNode, updateState]);
 
@@ -3507,7 +3514,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
       if (job.status === "succeeded") {
         const images = Array.isArray(job.resultUrls) ? job.resultUrls.filter(Boolean) : [];
         if (images.length === 0) throw new Error("图片平台没有返回图片，且没有返回可用原因。");
-        applyImageNodeResult(node, input, images, job.resultDimensions, job.credit, job.usage);
+        applyImageNodeResult(node, input, images, job.resultDimensions, job.credit, job.usage, job.reservedNames);
         return { images, imageDimensions: job.resultDimensions };
       }
       // queued / running: keep waiting card, ensure node stays in running state.
@@ -3549,6 +3556,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
 
   const runGptImageOptimizationRetry = useCallback(async (node: WorkflowNode, maxAttempts: number) => {
     if (!isWorkflowGptImageSafetyFailure(node)) return;
+    if (optimizingImageNodesRef.current.has(node.id)) return;
     const upstreamPrompt = getInputText(node.id);
     const originalOwnPrompt = node.data.gptImageOptimizationOriginalPrompt?.trim() || node.data.prompt?.trim() || "";
     if (!originalOwnPrompt) return updateNode(node.id, { error: "缺少原提示词，无法进行安全改写。" });
@@ -3566,10 +3574,12 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     const originalPromptKey = normalizeWorkflowAttemptPrompt(originalOwnPrompt);
     const previousImageAttempts = new Set(attemptedPrompts.map(normalizeWorkflowAttemptPrompt).filter((prompt) => prompt && prompt !== originalPromptKey)).size;
     let lastError = node.data.error ?? "";
+    optimizingImageNodesRef.current.add(node.id);
     updateNode(node.id, { isRunning: true, error: undefined, images: [], visualSize: undefined, startedAt: Date.now(), gptImageOptimizationOriginalPrompt: originalOwnPrompt });
 
     try {
-      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         let optimizedPrompt = "";
         let optimizerModel = "local-fallback";
         try {
@@ -3614,10 +3624,13 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
           updateNode(node.id, { gptImageOptimizationAttemptPrompts: attemptedPrompts });
         }
       }
-    } catch (error) {
-      lastError = toUserErrorMessage(error, GENERIC_MEDIA_ERROR_MESSAGE);
+      } catch (error) {
+        lastError = toUserErrorMessage(error, GENERIC_MEDIA_ERROR_MESSAGE);
+      }
+      updateNode(node.id, { isRunning: false, error: lastError || "AI 改写重试仍未成功，请调整提示词后再试。", gptImageOptimizationAttemptPrompts: attemptedPrompts, gptImageOptimizationOriginalPrompt: originalOwnPrompt, imageRequestId: undefined });
+    } finally {
+      optimizingImageNodesRef.current.delete(node.id);
     }
-    updateNode(node.id, { isRunning: false, error: lastError || "AI 改写重试仍未成功，请调整提示词后再试。", gptImageOptimizationAttemptPrompts: attemptedPrompts, gptImageOptimizationOriginalPrompt: originalOwnPrompt, imageRequestId: undefined });
   }, [generateImageForNode, getEnabledImageModel, getInputText, getPromptReferenceUrls, getReferenceImages, onCredit, updateNode, uploadRuleOverrides, workflowId, workflowTitle]);
 
   const pollVideoNode = useCallback(async (node: WorkflowNode, taskId: string, prompt: string, model: ModelName, settings: { ratio?: string; resolution?: string; duration?: string }, requestId: string, initialUsage?: UsageMeta) => {
@@ -3639,7 +3652,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
         updateNode(node.id, { isRunning: true, error: undefined, taskId });
         continue;
       }
-      const statusData = await readJson<{ jobs?: Array<{ status?: string; resultUrls?: string[]; posterUrl?: string; error?: string; errorCode?: string; usage?: UsageMeta; credit?: CreditResult }> }>(pollResponse);
+      const statusData = await readJson<{ jobs?: Array<{ status?: string; resultUrls?: string[]; reservedNames?: string[]; posterUrl?: string; error?: string; errorCode?: string; usage?: UsageMeta; credit?: CreditResult }> }>(pollResponse);
       const job = statusData.jobs?.[0];
       pollData = job ? { status: job.status, content: { video_url: job.resultUrls?.[0], poster_url: job.posterUrl }, error: job.error, errorCode: job.errorCode, usage: job.usage, credit: job.credit } as VideoApiResponse : { status: "running" } as VideoApiResponse;
       usage = pollData.usage ?? usage;
@@ -3650,9 +3663,9 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
         const posterUrl = getPosterUrlFromResponse(pollData);
         const chargedUsage = pollData.usage ?? usage;
         const generationUploads = getWorkflowGenerationUploadSnapshot(stateRef.current, node);
-        updateNode(node.id, { prompt, videoUrl, posterUrl, videoCurrentTime: 0, generationUploads: generationUploads.length > 0 ? generationUploads : undefined, visualSize: undefined, isRunning: false, error: undefined, taskId: undefined, videoRequestId: undefined });
+        updateNode(node.id, { prompt, videoUrl, posterUrl, videoCurrentTime: 0, generationUploads: generationUploads.length > 0 ? generationUploads : undefined, visualSize: undefined, isRunning: false, error: undefined, taskId: undefined, videoRequestId: undefined, mediaSystemNames: job?.reservedNames?.[0] ? { ...(node.data.mediaSystemNames ?? {}), [videoUrl]: job.reservedNames[0] } : node.data.mediaSystemNames });
         updateState((state) => ({ ...state, edges: state.edges.filter((edge) => edge.target !== node.id) }));
-        onGeneratedMedia?.({ nodeId: node.id, kind: "video", urls: [videoUrl], posterUrl, sourcePrompt: prompt, model, ratio: settings.ratio, resolution: settings.resolution, duration: settings.duration });
+        onGeneratedMedia?.({ nodeId: node.id, kind: "video", urls: [videoUrl], reservedNames: job?.reservedNames, posterUrl, sourcePrompt: prompt, model, ratio: settings.ratio, resolution: settings.resolution, duration: settings.duration });
         onCredit?.({ ...pollData.credit, usage: chargedUsage });
         return;
       }
@@ -3771,6 +3784,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     const currentWorkflowId = workflowId;
     for (const node of stateRef.current.nodes) {
       if (node.kind !== "image") continue;
+      if (optimizingImageNodesRef.current.has(node.id)) continue;
       const requestId = node.data.imageRequestId;
       if (!node.data.isRunning || !requestId || (node.data.images?.length ?? 0) > 0 || node.data.error) continue;
       const resumeKey = `${currentWorkflowId}:${node.id}:${requestId}`;
@@ -3811,13 +3825,16 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
       if (job.kind !== "image" || (job.workflowId && job.workflowId !== currentWorkflowId) || !job.workflowNodeId) continue;
       const node = stateRef.current.nodes.find((item) => item.id === job.workflowNodeId);
       if (!node || node.kind !== "image" || (node.data.images?.length ?? 0) > 0) continue;
+      // A safety-rewrite retry is actively running for this node; the old failed job here is stale. Skip so we
+      // don't flip the node back to the failed card while the rewrite loop is still generating a new image.
+      if (optimizingImageNodesRef.current.has(node.id)) continue;
       const model = getEnabledImageModel(node.data.model);
       const imageRatio = imageRatioOptions.includes(node.data.ratio ?? "") ? node.data.ratio ?? "16:9" : "16:9";
       const settings = { ratio: imageRatio, resolution: node.data.resolution ?? normalizeImageResolutionForModel(model, getSupportedImageResolutions(model)[0]) };
       const input = { prompt: node.data.prompt?.trim() ?? "", model, settings };
       if (job.status === "succeeded") {
         const images = job.resultUrls?.filter(Boolean) ?? [];
-        if (images.length > 0) applyImageNodeResult(node, input, images, job.resultDimensions, job.credit, job.usage);
+        if (images.length > 0) applyImageNodeResult(node, input, images, job.resultDimensions, job.credit, job.usage, job.reservedNames);
       } else if (job.status === "failed") {
         if (node.data.error) continue;
         updateNode(node.id, { isRunning: false, error: getWorkflowApiErrorMessage({ error: job.error, errorCode: job.errorCode }, GENERIC_MEDIA_ERROR_MESSAGE), imageRequestId: undefined });
@@ -3843,9 +3860,9 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     if (!videoUrl) return false;
     const prompt = node.data.prompt?.trim() ?? job.prompt ?? "";
     const generationUploads = getWorkflowGenerationUploadSnapshot(stateRef.current, node);
-    updateNode(node.id, { prompt, videoUrl, posterUrl: job.posterUrl, videoCurrentTime: 0, generationUploads: generationUploads.length > 0 ? generationUploads : undefined, visualSize: undefined, isRunning: false, error: undefined, taskId: undefined, videoRequestId: undefined });
+    updateNode(node.id, { prompt, videoUrl, posterUrl: job.posterUrl, videoCurrentTime: 0, generationUploads: generationUploads.length > 0 ? generationUploads : undefined, visualSize: undefined, isRunning: false, error: undefined, taskId: undefined, videoRequestId: undefined, mediaSystemNames: job.reservedNames?.[0] ? { ...(node.data.mediaSystemNames ?? {}), [videoUrl]: job.reservedNames[0] } : node.data.mediaSystemNames });
     updateState((state) => ({ ...state, edges: state.edges.filter((edge) => edge.target !== node.id) }));
-    onGeneratedMedia?.({ nodeId: node.id, kind: "video", urls: [videoUrl], posterUrl: job.posterUrl, sourcePrompt: prompt, model, ratio: settings.ratio, resolution: settings.resolution, duration: settings.duration });
+    onGeneratedMedia?.({ nodeId: node.id, kind: "video", urls: [videoUrl], reservedNames: job.reservedNames, posterUrl: job.posterUrl, sourcePrompt: prompt, model, ratio: settings.ratio, resolution: settings.resolution, duration: settings.duration });
     onCredit?.({ ...job.credit, usage: job.usage });
     return true;
   }, [onCredit, onGeneratedMedia, updateNode, updateState]);

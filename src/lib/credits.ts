@@ -36,7 +36,7 @@ export type CreditContext = {
 const defaultSettings = {
   usdToCnyRate: 7.2,
   creditsPerCny: 10,
-  signupCredits: 1500,
+  signupCredits: 0,
   chargeText: true,
   chargeImage: true,
   chargeVideo: true,

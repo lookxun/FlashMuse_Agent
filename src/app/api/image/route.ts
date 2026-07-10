@@ -124,7 +124,7 @@ export async function POST(request: Request) {
         flow: body.flow ?? (creditSource?.startsWith("workflow_") ? "workflow" : "conversation"),
         metadata: body.metadata,
       });
-      return NextResponse.json({ jobId: job.id, requestId: job.requestId, status: job.status });
+      return NextResponse.json({ jobId: job.id, requestId: job.requestId, status: job.status, reservedNames: job.reservedNames ?? undefined });
     }
 
     const requestedImageCount = getRequestedImageCount(body.count);

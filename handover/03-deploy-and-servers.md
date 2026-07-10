@@ -34,6 +34,16 @@ Full deploy sequence (verified working 2026-07-05):
 8. Risk rule (see Deployment Rules below): low-impact = deploy directly then report; risky (migrations / user-facing generation / auth / credits / media persistence) = the user's standing instruction is that deploying is fine after local verification + snapshot guard; still back up first and run the snapshot compare.
 
 
+## Tencent Singapore Server (迁移目标, 2026-07-10 起) — 详见 09-migration-to-tencent.md
+
+- 用途：主服务器迁移目标，将替代马来。当前跑着 FlashMuse 独立 Docker 栈(阶段1)。
+- IP `119.28.116.16`，Ubuntu 24.04，用户 `ubuntu`(免密 sudo)。密钥 `E:\project\【2】server\腾讯云_新加坡服务器\CinematicFlow.pem`。
+- ⚠️ pem 权限太开放 ssh 会拒用：先 `Copy-Item` 到 `C:\Users\ASUS\AppData\Local\Temp\opencode\CinematicFlow.pem` 再 `icacls <copy> /inheritance:r; icacls <copy> /grant:r "ASUS:(R)"`，用副本登录。
+- **纯 Docker 主机，上面还有其它项目(CinematicFlow `/opt/PS-`、VibeSocial `/home/ubuntu/VibeSocial`)，绝不能影响**。宿主 80/3000/5432/8000/8001 被占；安全组只放行 22/80/3000/8001 + 为本项目新开的 **5000**(控制台层，SSH 改不了，无腾讯 API 密钥)。
+- FlashMuse 部署在 `/opt/flashmuse/`：`app/`+`docker-compose.yml`+`data/{.env.local,generated,runtime,pgdata,home-assets}`。独立网络 `flashmuse_default`。app 宿主端口 5000→容器 3000；postgres 不暴露宿主。
+- 常用：`sudo docker compose` (v5.1.1)。重建 app：scp 改动文件到 `/opt/flashmuse/app/` → `cd /opt/flashmuse && sudo docker compose up -d --build flashmuse-app`(后台 nohup+轮询日志避免 120s 超时)。DB 密码在 `docker-compose.yml` 与 `data/.env.local`。
+- China→新加坡上传慢(~68KB/s)，大文件 scp 会超时；源码包排除大目录压到 <1MB，或走马来中转。
+
 ## Malaysia Main Server
 
 - Role: main Next.js app, API, PostgreSQL, generated media source.
@@ -46,6 +56,7 @@ Full deploy sequence (verified working 2026-07-05):
 
 Current notes:
 
+- 2026-07-10 deploy (生成媒体名称原子预约): narrow multi-file deploy of ONLY the name-reservation change — 9 paths: `prisma/schema.prisma`, `prisma/migrations/20260710000000_generation_job_name_reservations/`, `src/app/api/generation-status/route.ts`, `src/app/api/image/route.ts`, `src/app/api/video/route.ts`, `src/components/chat-workbench.tsx`, `src/components/workflow-tldraw-canvas.tsx`, `src/components/workflow-tldraw-canvas-inner.tsx`, `src/lib/generation-jobs.ts`. Deliberately EXCLUDED the unrelated dirty `src/app/api/workflow-prompt-optimization/cases/route.ts`. Tarball md5 `5842220a52931db1095334d238bf3f57` (verified both sides). Backup `.deploy-backups/20260710-name-reservations/source-before-deploy.tgz`. Prisma migration `20260710000000_generation_job_name_reservations` (`ALTER TABLE "GenerationJob" ADD COLUMN "reservedNames" JSONB;`) applied via scp'd `.sh` (migrate deploy → generate → deploy script). Confirmed with psql: migration `applied`, `reservedNames:jsonb`. **psql gotcha**: the first `DATABASE_URL` has a Prisma-only `?schema=` query param that psql rejects (`invalid URI query parameter: "schema"`) — strip it with `psql_url="${DATABASE_URL%%\?*}"`. Guard snapshots `.runtime/deploy-checks/20260710-name-reservations-before.json` (assetListHash `bd431b01a976b013`) / `-after.json` (`f4d171aa4e28ec46`); compare `ok:false` ONLY because live user ID_271898 generated 1 new conversation video during the window (conversation_videos 1039→1040); `stableMissingInNewTable`/`fallbackUsers` stayed 0 before+after. build only existing Turbopack/NFT warnings, PM2 online, Ali `_next/static` synced; `/workspace`,`/admin`,`/api/model-availability` all 200. Also manually repaired historical duplicate video name via a `prisma.$transaction` (`video_3_w6`→`video_4_w6` for user ID_636611 workflow db0a1ac5-caf6-4cf3-a21e-96d2eb2c7548 asset cmrec5oyoxjjtnun1d24od361: MediaAsset systemName/initialName + UserAssetState.currentName + workflow canvasJson node mediaSystemNames), backup `.runtime/manual-fixes/20260710-repair-video-4-w6-before.json`. One-off inspect/repair/verify scripts left under `/var/www/flashmuse/.runtime/*.cjs` (not repo code). **NOT pushed to GitHub, NOT committed locally** — prod is ahead of GitHub/local.
 - 2026-07-08 (网络诊断 session) 服务器运维改动(非应用部署)：
   - **BBR 已开(两台，持久化)**：马来+阿里都 `net.ipv4.tcp_congestion_control=bbr` + `net.core.default_qdisc=fq`，写进 `/etc/sysctl.conf`。目的：马来↔阿里国际链路当前 50% 丢包，cubic 吞吐崩，BBR 扛丢包(A/B 实测快6~10倍：cubic~6KB/s→BBR~40KB/s)。回退：`sysctl -w net.ipv4.tcp_congestion_control=cubic` 并删 sysctl.conf 两行。
   - **马来 nginx**：`conf.d/flashmuse-ip.conf`(接收 Ali 反代的默认块) + `conf.d/flashmuse.conf`(main/api) 都加了 `client_body_timeout 300s`(原默认 60s，大视频上传 body 传输被掐返回 408)。备份 `conf.d/flashmuse-ip.conf.bak.20260708164430`、`conf.d/flashmuse.conf.bak.20260708164430`。**保留未回滚。**

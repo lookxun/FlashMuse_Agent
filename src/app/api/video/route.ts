@@ -837,7 +837,7 @@ export async function POST(request: Request) {
           return NextResponse.json({ ...codedError, raw: task }, { status: 502 });
         }
         await upsertVideoManifestEntry({ taskId: retryId, prompt, model: body.model, settings: body.settings });
-        await createVideoJob({
+        const job = await createVideoJob({
           userId: user!.id,
           requestId,
           providerTaskId: retryId,
@@ -860,7 +860,7 @@ export async function POST(request: Request) {
           extra: { cleanPrompt: body.sourcePrompt ?? prompt, autoReviewTriggered: Boolean(autoBytePlusAssetReview) },
         });
         void appendGenerationDiagnosticsLog({ event: "video-route-create-success-after-review", requestId: body.requestId, conversationId: body.conversationId, conversationTitle: body.conversationTitle, userId: user?.id, mode: "video", provider: isBytePlusVideoModel(body.model) ? "byteplus" : "openrouter", model: body.model, taskId: retryId, prompt, settings: body.settings, durationMs: Date.now() - routeStartedAt, upstream: task, extra: { autoReviewTriggered: Boolean(autoBytePlusAssetReview), usage: getUsageMeta(task) } });
-        return NextResponse.json({ ...task, id: retryId, job_id: getCreateTaskId(task), usage: getUsageMeta(task), autoBytePlusAssetReview: autoBytePlusAssetReview ? { triggered: true, assets: autoBytePlusAssetReview.updates } : undefined });
+        return NextResponse.json({ ...task, id: retryId, job_id: getCreateTaskId(task), usage: getUsageMeta(task), reservedNames: job.reservedNames ?? undefined, autoBytePlusAssetReview: autoBytePlusAssetReview ? { triggered: true, assets: autoBytePlusAssetReview.updates } : undefined });
       }
 
       if (referenceImages.length > 0) {
@@ -907,7 +907,7 @@ export async function POST(request: Request) {
     }
 
     await upsertVideoManifestEntry({ taskId: id, prompt, model: body.model, settings: body.settings });
-    await createVideoJob({
+    const job = await createVideoJob({
       userId: user!.id,
       requestId,
       providerTaskId: id,
@@ -966,7 +966,7 @@ export async function POST(request: Request) {
     }
 
     void appendGenerationDiagnosticsLog({ event: "video-route-create-success", requestId: body.requestId, conversationId: body.conversationId, conversationTitle: body.conversationTitle, userId: user?.id, mode: "video", provider: isBytePlusVideoModel(body.model) ? "byteplus" : "openrouter", model: body.model, taskId: id, prompt, settings: body.settings, durationMs: Date.now() - routeStartedAt, upstream: task, extra: { autoReviewTriggered: Boolean(autoBytePlusAssetReview), usage: getUsageMeta(task) } });
-    return NextResponse.json({ ...task, id, job_id: getCreateTaskId(task), usage: getUsageMeta(task), autoBytePlusAssetReview: autoBytePlusAssetReview ? { triggered: true, assets: autoBytePlusAssetReview.updates } : undefined });
+    return NextResponse.json({ ...task, id, job_id: getCreateTaskId(task), usage: getUsageMeta(task), reservedNames: job.reservedNames ?? undefined, autoBytePlusAssetReview: autoBytePlusAssetReview ? { triggered: true, assets: autoBytePlusAssetReview.updates } : undefined });
   } catch (error) {
     const referenceImageCount = Array.isArray(body?.referenceImages) ? body.referenceImages.length : 0;
     if (referenceImageCount > 0) {

@@ -78,7 +78,7 @@ function openWorkspaceFresh() {
 }
 
 function getCurrentHomeSite(hostname: string): HomeSite {
-  if (hostname === "main.venusface.com" || hostname === "api.venusface.com" || hostname === "101.47.19.109") return "malaysia";
+  if (hostname === "main.venusface.com" || hostname === "api.venusface.com" || hostname === "101.47.19.109" || hostname === "119.28.116.16") return "malaysia";
   if (hostname === "ali.venusface.com" || hostname === "static.venusface.com" || hostname === "101.37.129.164") return "ali";
   return "other";
 }
