@@ -212,6 +212,7 @@ type AssetItem = {
   thumbnailUrl?: string;
   posterUrl?: string;
   librarySource?: "asset_generation" | "conversation" | "workflow";
+  model?: string;
   sourcePrompt: string;
   promptSource?: "generated" | "upload" | "reverse";
   bytePlusAssetId?: string;
@@ -247,6 +248,7 @@ type AssetUploadSlot = {
   uploadFile?: File;
   tempToken?: string;
   tempUrl?: string;
+  contentHash?: string;
   uploadStatus?: UploadTransferStatus;
   uploadProgress?: number;
   forceReencode?: boolean;
@@ -374,6 +376,7 @@ type UploadedImage = {
   previewUrl?: string;
   uploadFile?: File;
   tempToken?: string;
+  contentHash?: string;
   referenceName?: string;
   source?: "upload" | "asset";
   uploadStatus?: UploadTransferStatus;
@@ -4329,26 +4332,28 @@ async function uploadDocumentFileAsset(file: File, options: { conversationId?: s
   return data.url;
 }
 
-async function uploadTemporaryAssetImageOnce(file: File, onProgress?: (progress: number) => void, signal?: AbortSignal, forceReencode = false) {
+async function uploadTemporaryAssetImageOnce(file: File, onProgress?: (progress: number) => void, signal?: AbortSignal, forceReencode = false, dedup = false) {
   const formData = new FormData();
   formData.append("image", file, file.name);
   if (forceReencode) formData.append("forceReencode", "1");
+  if (dedup) formData.append("dedup", "1");
   const uploadUrl = getUploadApiUrl("/api/asset-upload-temp");
   onProgress?.(2);
   const token = await getDirectUploadToken();
-  const data = await uploadFormDataWithProgress<{ token?: string; error?: string }>(uploadUrl, formData, onProgress, token, signal);
+  const data = await uploadFormDataWithProgress<{ token?: string; error?: string; duplicate?: boolean; url?: string; contentHash?: string }>(uploadUrl, formData, onProgress, token, signal);
+  if (data.duplicate && data.url) return { duplicate: true as const, url: data.url, contentHash: data.contentHash };
   if (!data.token) throw new Error(data.error || "图片上传失败");
-  return data.token;
+  return { token: data.token, contentHash: data.contentHash };
 }
 
-async function uploadTemporaryAssetImage(file: File, onProgress?: (progress: number) => void, signal?: AbortSignal, forceReencode = false) {
+async function uploadTemporaryAssetImage(file: File, onProgress?: (progress: number) => void, signal?: AbortSignal, forceReencode = false, dedup = false) {
   try {
-    return await uploadTemporaryAssetImageOnce(file, onProgress, signal, forceReencode);
+    return await uploadTemporaryAssetImageOnce(file, onProgress, signal, forceReencode, dedup);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (forceReencode || !message.includes("转码")) throw error;
     onProgress?.(2);
-    return uploadTemporaryAssetImageOnce(file, onProgress, signal, true);
+    return uploadTemporaryAssetImageOnce(file, onProgress, signal, true, dedup);
   }
 }
 
@@ -8404,10 +8409,12 @@ export function ChatWorkbench() {
       assetUploadAbortControllersRef.current.set(slot.id, controller);
       void uploadTemporaryAssetImage(slot.uploadFile, (progress) => {
         setAssetUploadSlots((current) => current.map((item) => item.id === slot.id ? { ...item, uploadStatus: "uploading", uploadProgress: progress } : item));
-      }, controller.signal, Boolean(slot.forceReencode))
-        .then((tempToken) => {
+      }, controller.signal, Boolean(slot.forceReencode), true)
+        .then((result) => {
           assetUploadAbortControllersRef.current.delete(slot.id);
-          setAssetUploadSlots((current) => current.map((item) => item.id === slot.id ? { ...item, uploadFile: undefined, tempToken, uploadStatus: "ready", uploadProgress: 100, forceReencode: undefined, error: undefined } : item));
+          const dupUrl = "duplicate" in result ? result.url : undefined;
+          if (dupUrl) showAssetUploadTip("图片已存在，无需重复上传！");
+          setAssetUploadSlots((current) => current.map((item) => item.id === slot.id ? { ...item, uploadFile: undefined, tempToken: "duplicate" in result ? undefined : result.token, tempUrl: dupUrl, contentHash: result.contentHash, isDuplicate: Boolean(dupUrl), uploadStatus: "ready", uploadProgress: 100, forceReencode: undefined, error: undefined } : item));
         })
         .catch((error) => {
           assetUploadAbortControllersRef.current.delete(slot.id);
@@ -8464,7 +8471,7 @@ export function ChatWorkbench() {
   }, [activeAssetUploadIndex, assetFilter]);
 
   const submitAssetUpload = useCallback(async () => {
-    const uploadItems = visibleAssetUploadSlots.filter((slot) => slot.dataUrl && slot.uploadStatus === "ready" && slot.tempToken);
+    const uploadItems = visibleAssetUploadSlots.filter((slot) => slot.dataUrl && slot.uploadStatus === "ready" && (slot.tempToken || slot.tempUrl));
     if (uploadItems.length === 0 || isAssetUploading) return;
     if (uploadItems.some((slot) => slot.uploadStatus === "uploading")) {
       showAssetUploadTip("图片上传中，请稍候");
@@ -8475,38 +8482,29 @@ export function ChatWorkbench() {
 
     try {
       const uploadedItems = await Promise.all(uploadItems.map(async (slot) => {
-        const url = await commitTemporaryAssetImage(slot.tempToken as string);
-
+        // 命中内容哈希去重的槽位（tempUrl）复用已有图，不再 commit；其余提交临时文件拿正式地址。
+        const url = slot.tempToken ? await commitTemporaryAssetImage(slot.tempToken) : (slot.tempUrl as string);
         return {
           name: sanitizeAssetName(slot.fileName) || sanitizeAssetName(slot.originalFileName) || "上传图片",
           type: slot.type,
           url,
+          contentHash: slot.contentHash,
+          isDuplicate: Boolean(slot.tempUrl),
           slot,
         };
       }));
 
       const validItems = uploadedItems.filter((item) => item.url);
-      const knownUrls = new Set(assets.map((asset) => asset.url));
-      const newItems: typeof validItems = [];
-      const duplicateItems: typeof validItems = [];
-
-      validItems.forEach((item) => {
-        if (knownUrls.has(item.url)) {
-          duplicateItems.push(item);
-          return;
-        }
-
-        knownUrls.add(item.url);
-        newItems.push(item);
-      });
+      // 去重已在上传时由服务端内容哈希完成并提示；这里只把"新图"入库，复用的重复图不再重复添加。
+      const newItems = validItems.filter((item) => !item.isDuplicate);
 
       if (newItems.length > 0) {
         let simulatedAssets = assets;
-        const itemsToPersist: Array<{ name: string; url: string }> = [];
+        const itemsToPersist: Array<{ name: string; url: string; contentHash?: string }> = [];
         newItems.forEach((item) => {
           if (simulatedAssets.some((asset) => asset.url === item.url)) return;
           const name = getVersionedName(item.name, simulatedAssets);
-          itemsToPersist.push({ name, url: item.url });
+          itemsToPersist.push({ name, url: item.url, contentHash: item.contentHash });
           simulatedAssets = [{ id: item.url, type: "other", name, systemName: name, url: item.url, librarySource: "conversation", sourcePrompt: UPLOAD_IMAGE_PROMPT_PLACEHOLDER, promptSource: "upload", sessionId: activeSessionIdValue, lockedType: true, createdAt: Date.now() }, ...simulatedAssets];
         });
         setAssets((current) => {
@@ -8546,21 +8544,13 @@ export function ChatWorkbench() {
               sourcePrompt: UPLOAD_IMAGE_PROMPT_PLACEHOLDER,
               promptSource: "upload",
               conversationId: activeSessionIdValue,
+              contentHash: item.contentHash,
             }),
           }).catch((error) => console.warn("[media-assets] failed to persist uploaded asset", error));
         });
       }
 
-      if (duplicateItems.length > 0) {
-        const defaultType = getDefaultAssetUploadType(assetFilter);
-        setAssetUploadSlots(normalizeAssetUploadSlots(duplicateItems.map((item) => ({ ...item.slot, tempToken: undefined, uploadStatus: "ready", uploadProgress: 100, isDuplicate: true })), defaultType));
-        setActiveAssetUploadIndex(0);
-        if (newItems.length > 0) showAssetUploadTip(`成功上传${newItems.length}张图片`, "success");
-        showAssetUploadTip("图片已存在，无需要重复添加");
-        return;
-      }
-
-      showAssetUploadTip(`成功上传${newItems.length}张图片`, "success");
+      if (newItems.length > 0) showAssetUploadTip(`成功上传${newItems.length}张图片`, "success");
       assetUploadAbortControllersRef.current.clear();
       setAssetUploadSlots(createAssetUploadSlots(getDefaultAssetUploadType(assetFilter)));
       setIsAssetUploadOpen(false);
@@ -9095,10 +9085,11 @@ export function ChatWorkbench() {
     setAssetImportSelected({});
     setAssetImportFilter("character_image");
     setAssetImportOpen(true);
-    setAssetImportItemsByFilter((current) => {
-      if (!current.character_image) void loadAssetImportPage("character_image", 0);
-      return current;
-    });
+    // Always refresh from server on open so newly generated/uploaded assets show up
+    // (previously the per-filter cache persisted across opens and hid new assets).
+    setAssetImportItemsByFilter({});
+    setAssetImportPaging({});
+    void loadAssetImportPage("character_image", 0);
   }, [loadAssetImportPage]);
 
   const selectAssetImportFilter = useCallback((filter: AssetFilter) => {
@@ -9124,6 +9115,8 @@ export function ChatWorkbench() {
         posterUrl: asset.posterUrl,
         kind: isVideoAsset(asset) ? "video" : "image",
         sourcePrompt: asset.sourcePrompt,
+        model: asset.model as ModelName | undefined,
+        ratio: asset.previewMeta?.ratio,
         resolution: asset.previewMeta?.resolution,
         duration: asset.previewMeta?.duration,
         origin: (isUploadedAssetUrl(asset.url) || asset.promptSource === "upload" || isUploadPromptPlaceholder(asset.sourcePrompt)) ? "upload" : "generated",
@@ -11373,12 +11366,12 @@ export function ChatWorkbench() {
     void contextText;
 
     const simulatedAssets = [...assets];
-    const itemsToPersist: Array<{ url: string; name: string }> = [];
+    const itemsToPersist: Array<{ url: string; name: string; contentHash?: string }> = [];
     images.forEach((image) => {
       if (!image.url || simulatedAssets.some((asset) => asset.url === image.url)) return;
       const baseName = getUploadedImageReferenceName(image, images);
       const name = getUniqueUploadedAssetName(baseName, simulatedAssets, image.url);
-      itemsToPersist.push({ url: image.url, name });
+      itemsToPersist.push({ url: image.url, name, contentHash: image.contentHash });
       simulatedAssets.unshift({ id: image.url, type: "other", name, systemName: name, url: image.url, librarySource: "conversation", sourcePrompt: UPLOAD_IMAGE_PROMPT_PLACEHOLDER, promptSource: "upload", sessionId, lockedType: true, createdAt: Date.now() });
     });
 
@@ -11424,6 +11417,7 @@ export function ChatWorkbench() {
             sourcePrompt: UPLOAD_IMAGE_PROMPT_PLACEHOLDER,
             promptSource: "upload",
             conversationId: sessionId,
+            contentHash: item.contentHash,
           }),
         }).catch((error) => console.warn("[media-assets] failed to persist conversation uploaded asset", error));
       });
@@ -13429,10 +13423,14 @@ export function ChatWorkbench() {
       inputImageUploadAbortControllersRef.current.set(image.id, controller);
       void uploadTemporaryAssetImage(image.uploadFile as File, (progress) => {
         setSessions((current) => current.map((session) => session.id === activeSessionId ? { ...session, uploadedImages: (session.uploadedImages ?? []).map((item) => item.id === image.id ? { ...item, uploadProgress: progress, uploadStatus: "uploading" } : item) } : session));
-      }, controller.signal)
-        .then((tempToken) => {
+      }, controller.signal, false, true)
+        .then((result) => {
           inputImageUploadAbortControllersRef.current.delete(image.id);
-          setSessions((current) => current.map((session) => session.id === activeSessionId ? { ...session, uploadedImages: (session.uploadedImages ?? []).map((item) => item.id === image.id ? { ...item, tempToken, uploadProgress: 100, uploadStatus: "ready", forceReencode: undefined, error: undefined } : item) } : session));
+          const dupUrl = "duplicate" in result ? result.url : undefined;
+          const nextToken = "duplicate" in result ? undefined : result.token;
+          const nextHash = result.contentHash;
+          if (dupUrl) showInputTip("图片已存在，无需重复上传！");
+          setSessions((current) => current.map((session) => session.id === activeSessionId ? { ...session, uploadedImages: (session.uploadedImages ?? []).map((item) => item.id === image.id ? { ...item, tempToken: nextToken, url: dupUrl ?? item.url, contentHash: nextHash, uploadProgress: 100, uploadStatus: "ready", forceReencode: undefined, error: undefined } : item) } : session));
         })
           .catch((error) => {
             inputImageUploadAbortControllersRef.current.delete(image.id);
@@ -13457,10 +13455,14 @@ export function ChatWorkbench() {
     setSessions((current) => current.map((session) => session.id === activeSessionId ? { ...session, uploadedImages: (session.uploadedImages ?? []).map((item) => item.id === imageId ? { ...item, tempToken: undefined, uploadProgress: 6, uploadStatus: "uploading", forceReencode: true, error: undefined } : item) } : session));
     void uploadTemporaryAssetImage(image.uploadFile, (progress) => {
       setSessions((current) => current.map((session) => session.id === activeSessionId ? { ...session, uploadedImages: (session.uploadedImages ?? []).map((item) => item.id === imageId ? { ...item, uploadProgress: progress, uploadStatus: "uploading" } : item) } : session));
-    }, controller.signal, true)
-      .then((tempToken) => {
+    }, controller.signal, true, true)
+      .then((result) => {
         inputImageUploadAbortControllersRef.current.delete(imageId);
-        setSessions((current) => current.map((session) => session.id === activeSessionId ? { ...session, uploadedImages: (session.uploadedImages ?? []).map((item) => item.id === imageId ? { ...item, tempToken, uploadProgress: 100, uploadStatus: "ready", forceReencode: undefined, error: undefined } : item) } : session));
+        const dupUrl = "duplicate" in result ? result.url : undefined;
+        const nextToken = "duplicate" in result ? undefined : result.token;
+        const nextHash = result.contentHash;
+        if (dupUrl) showInputTip("图片已存在，无需重复上传！");
+        setSessions((current) => current.map((session) => session.id === activeSessionId ? { ...session, uploadedImages: (session.uploadedImages ?? []).map((item) => item.id === imageId ? { ...item, tempToken: nextToken, url: dupUrl ?? item.url, contentHash: nextHash, uploadProgress: 100, uploadStatus: "ready", forceReencode: undefined, error: undefined } : item) } : session));
       })
       .catch((error) => {
         inputImageUploadAbortControllersRef.current.delete(imageId);
@@ -14858,7 +14860,7 @@ export function ChatWorkbench() {
                   workflowTitle={activeWorkflow.title}
                   leftSidebarVisible={isSidebarVisible}
                   onToggleLeftSidebar={toggleSidebarVisibility}
-                  workflowAssets={assets.filter((asset) => isWorkflowAsset(asset) && (asset.workflowId || asset.sessionId) === activeWorkflow.id).map((asset) => ({ id: asset.id, name: asset.name, url: asset.url, posterUrl: asset.posterUrl, kind: isVideoAsset(asset) ? "video" : "image", nodeId: asset.workflowNodeId, sourcePrompt: asset.sourcePrompt, ratio: asset.previewMeta?.ratio, resolution: asset.previewMeta?.resolution, duration: asset.previewMeta?.duration, dimensions: getPreviewMetaDimensions(asset.previewMeta) }))}
+                  workflowAssets={assets.filter((asset) => isWorkflowAsset(asset) && (asset.workflowId || asset.sessionId) === activeWorkflow.id).map((asset) => ({ id: asset.id, name: asset.name, url: asset.url, posterUrl: asset.posterUrl, kind: isVideoAsset(asset) ? "video" : "image", nodeId: asset.workflowNodeId, sourcePrompt: asset.sourcePrompt, model: asset.model as ModelName | undefined, ratio: asset.previewMeta?.ratio, resolution: asset.previewMeta?.resolution, duration: asset.previewMeta?.duration, dimensions: getPreviewMetaDimensions(asset.previewMeta) }))}
                   referenceAssets={[
                     ...assets.filter((asset) => isAssetInFilter(asset, "character_image")).map((asset) => ({ id: asset.id, name: asset.name, url: asset.url, thumbnailUrl: getMediaThumbnailUrl(asset.url), groupType: "character_image", groupLabel: mentionAssetTypeLabels.character_image })),
                     ...assets.filter((asset) => isAssetInFilter(asset, "scene_image")).map((asset) => ({ id: asset.id, name: asset.name, url: asset.url, thumbnailUrl: getMediaThumbnailUrl(asset.url), groupType: "scene_image", groupLabel: mentionAssetTypeLabels.scene_image })),

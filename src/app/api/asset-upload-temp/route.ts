@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import { getCurrentUser } from "@/lib/auth";
 import { commitTemporaryUploadedImage, deleteTemporaryUploadedImage, saveTemporaryUploadedImageBuffer } from "@/lib/local-assets";
 import { toUserErrorMessage } from "@/lib/error-message";
@@ -7,6 +7,17 @@ import { getBearerToken, verifyUploadToken } from "@/lib/upload-token";
 import { appendUploadDiagnosticsLog } from "@/lib/upload-diagnostics-log";
 import { recordUploadEvent } from "@/lib/analytics-events";
 import { syncGeneratedFilesToAli } from "@/lib/ali-sync";
+import { prisma } from "@/lib/prisma";
+
+/** 按内容哈希查以前上传过的同一张图（字节完全一致），命中就复用其地址、不重复落库。 */
+async function findDedupImageUrl(userId: string, contentHash: string) {
+  const existing = await prisma.mediaAsset.findFirst({
+    where: { userId, contentHash, mediaType: "image", archivedAt: null, userStates: { some: { deletedAt: null, hiddenAt: null } } },
+    select: { url: true },
+    orderBy: { firstSeenAt: "asc" },
+  });
+  return existing?.url;
+}
 
 const allowedUploadOrigins = new Set([
   "http://101.37.129.164",
@@ -69,10 +80,21 @@ export async function POST(request: Request) {
     mimeType = file.type || "image/jpeg";
     fileSize = file.size;
     void appendUploadDiagnosticsLog({ event: "asset-upload-temp-post-file-received", requestId, userId, fileName, mimeType, fileSize, forceReencode, durationMs: Date.now() - startedAt });
-    const result = await saveTemporaryUploadedImageBuffer(Buffer.from(await file.arrayBuffer()), mimeType, { userId, forceReencode, diagnostics: { requestId, fileName, fileSize } });
+    const originalBuffer = Buffer.from(await file.arrayBuffer());
+    // 内容哈希（原始字节，转码前）：判定"同一文件"用。
+    const contentHash = createHash("sha256").update(originalBuffer).digest("hex");
+    // 命中以前上传过的同一张图 → 直接复用旧地址，不再落盘/不建新记录。
+    // 仅当调用方显式带 dedup=1 才判重（目前只有对话流接线；资产库/工作流不带 → 不受影响）。
+    const wantDedup = formData.get("dedup") === "1";
+    const dedupUrl = wantDedup ? await findDedupImageUrl(userId, contentHash) : undefined;
+    if (dedupUrl) {
+      void appendUploadDiagnosticsLog({ event: "asset-upload-temp-post-dedup-hit", requestId, userId, fileName, status: 200, durationMs: Date.now() - startedAt, extra: { url: dedupUrl, contentHash } });
+      return NextResponse.json({ duplicate: true, url: dedupUrl, contentHash }, { headers });
+    }
+    const result = await saveTemporaryUploadedImageBuffer(originalBuffer, mimeType, { userId, forceReencode, diagnostics: { requestId, fileName, fileSize } });
     void appendUploadDiagnosticsLog({ event: "asset-upload-temp-post-success", requestId, userId, fileName, mimeType, fileSize, forceReencode, token: result.token, status: 200, durationMs: Date.now() - startedAt });
     void recordUploadEvent({ userId, kind: "image", status: "success", bytes: fileSize });
-    return NextResponse.json(result, { headers });
+    return NextResponse.json({ ...result, contentHash }, { headers });
   } catch (error) {
     const message = toUserErrorMessage(error, "图片上传失败，请稍后再试。");
     console.error("[upload] asset-upload-temp post failed", { requestId, userId, fileName, mimeType, fileSize, forceReencode, error });

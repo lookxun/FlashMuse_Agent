@@ -3,6 +3,7 @@ import { getCurrentUser } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@prisma/client";
 import { canonicalizeSavedMediaUrl, normalizeMediaAssetUrl, resolvePersistableMediaAssetUrl } from "@/lib/media-assets";
+import { resolveAssetPreviewMeta } from "@/lib/media-asset-record";
 
 export const runtime = "nodejs";
 
@@ -155,10 +156,11 @@ export async function GET(request: Request) {
       thumbnailUrl: media.thumbnailUrl || undefined,
       posterUrl: media.posterUrl || undefined,
       librarySource: isWorkflowCategory ? "workflow" : "conversation",
+      model: media.model || undefined,
       sourcePrompt: media.reversePrompt || media.sourcePrompt || (promptSource === "upload" ? "上传图片" : ""),
       promptSource,
       lockedType: true,
-      previewMeta: normalizePreviewMeta(media.previewMeta, media),
+      previewMeta: resolveAssetPreviewMeta(media.previewMeta, { mediaType: media.mediaType, model: media.model, ratio: media.ratio, resolution: media.resolution, imageSize: media.imageSize, videoDuration: media.videoDuration, width: media.width, height: media.height, durationSeconds: null }),
       sessionId: media.workflowId || media.conversationId || "",
       messageId: media.messageId || undefined,
       workflowId: media.workflowId || undefined,
@@ -264,6 +266,7 @@ export async function POST(request: Request) {
       systemName: persistName,
       initialName: persistName,
       initialCategory: currentCategory,
+      contentHash: typeof body.contentHash === "string" && body.contentHash.trim() ? body.contentHash.trim() : undefined,
       conversationId: typeof body.conversationId === "string" ? body.conversationId : undefined,
       messageId: typeof body.messageId === "string" ? body.messageId : undefined,
       workflowId: typeof body.workflowId === "string" ? body.workflowId : undefined,
@@ -273,38 +276,8 @@ export async function POST(request: Request) {
       requestId: typeof body.requestId === "string" ? body.requestId : undefined,
       firstSeenAt: new Date(),
     },
-    update: {
-      mediaType,
-      url,
-      originalUrl: resolved.originalUrl,
-      posterUrl,
-      thumbnailUrl,
-      sourceKind,
-      sourceDetail,
-      sourcePrompt,
-      promptSource,
-      model: typeof body.model === "string" ? body.model : undefined,
-      ratio: typeof settings?.ratio === "string" ? settings.ratio : undefined,
-      resolution: typeof settings?.resolution === "string" ? settings.resolution : undefined,
-      imageSize: typeof settings?.imageSize === "string" ? settings.imageSize : undefined,
-      videoDuration: typeof settings?.duration === "string" ? settings.duration : undefined,
-      generationSettings: settingsJson,
-      previewMeta: previewMetaJson,
-      width,
-      height,
-      durationSeconds,
-      mimeType,
-      fileSize,
-      originalFileName,
-      initialCategory: currentCategory,
-      conversationId: typeof body.conversationId === "string" ? body.conversationId : undefined,
-      messageId: typeof body.messageId === "string" ? body.messageId : undefined,
-      workflowId: typeof body.workflowId === "string" ? body.workflowId : undefined,
-      workflowNodeId: typeof body.workflowNodeId === "string" ? body.workflowNodeId : undefined,
-      workspaceKind,
-      workspaceId,
-      requestId: typeof body.requestId === "string" ? body.requestId : undefined,
-    },
+    // 出生即冻结：记录已存在则不覆盖内容字段（改名/移动/删除只走 UserAssetState / PATCH）。
+    update: {},
     select: { id: true },
   });
 

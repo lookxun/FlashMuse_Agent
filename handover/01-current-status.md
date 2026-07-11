@@ -1,6 +1,28 @@
 # Current Status
 
-Last checked: 2026-07-11 China time.
+Last checked: 2026-07-12 China time.
+
+## 2026-07-12 (later session) 生成图统一出生根治 + 资产→节点读取统一(model) + 全平台上传内容哈希去重(阶段3b全量完成) + 三方同步（全部已部署腾讯 + **本次已 commit+push GitHub，三方同步**）
+
+详见 CHANGELOG 顶条。速记（承接同日"资产入库/显示统一大改造"，把没覆盖到的口子补齐）：
+- **原则**：所有生成一律由服务端 `finalize` 唯一权威出生（`buildMediaAssetRecord`）、参数齐全；所有"资产变节点/引用/上传"一律从统一口径读真实数据、不兜底默认；覆盖对话流/工作流/资产库全平台 + 未来新模式。
+- **① 生成图统一出生根治（最关键）**：byteplus 等**异步存盘**的生成图，交付时 url 还是远程 → `runImageJob` 原来跳过不落库 → 行被客户端 PATCH 兜底分支凭空建出、**model/settings/requestId 全空**（资产库图看不到模型名的真根因）。修复=图片对齐视频：远程交付先 `enqueueRemoteAssetSave`+`waitForMediaSaveJob` 拿本地 url 再 finalize。
+- **② 资产→节点读取统一 model**：`workspace-state`/`media-assets` GET 现返回原始 model id；从资产库导入/图层恢复/workflowAssets 都带真实 model（原来导入节点显示成默认 Seedream）。也修了"从资产库导入弹窗不刷新新生成图"。
+- **③ 全平台上传内容哈希去重（阶段3b 全量完成）**：服务端 `dedup=1` 开关隔离；对话流+工作流(画布/输入框)+资产库三处全接上、跨平台判重；提示「图片已存在，无需重复上传！」——对话流/工作流输入框弹**输入框上方**、工作流画布弹**画布下方中间**、资产库用自身提示。去掉了资产库旧的按 url 判重。工作流输入框上传修了两个体验（不再选中上传节点导致输入框消失、不放大画面）。
+- **④ 历史 model 回填**：仅 12424740 账号，从 GenerationJob/creditLedger 精确回填 7 张空 model 老图；5 张无来源留空不猜。
+- **三方状态**：本次把 7-12 两批（"资产入库/显示统一大改造" + 本条）一起 commit+push → **腾讯=GitHub=本地 三方同步**。
+
+## 2026-07-12 资产入库/显示统一大改造 阶段1/2/3a/4（已部署腾讯，**GitHub 未推/本地未 commit**；阶段3b待做）
+
+详见 CHANGELOG 顶条 + 06-memo-tasks M016/M017。速记：
+- **用户定调**：资产原始数据出生即冻结、永不变；之后只有改名/移动/删除（只写 UserAssetState）。这次只保证**以后不再错**，历史数据**不删不改**。未来任何新"生图/生视频/上传"口子都必须走统一存/读方案（`src/lib/media-asset-record.ts`）。
+- **阶段1**：新建统一模块 `media-asset-record.ts`（classifyAsset 唯一归类 / buildMediaAssetRecord 一次填齐入库 / resolveAssetPreviewMeta 唯一显示投影 / normalizeLegacySourceKind 老叫法兼容）。
+- **阶段2**：生成图/视频/上传 全切统一入口；**视频从此存宽高**、存全量 settings；**关掉 3 个"出生后覆盖"元凶**（对话流兜底 workspace-sessions.ts:157 每次保存全覆盖-连initialName、media-assets POST update、upload-file update 全改 create-only）。
+- **阶段3a**：上传按内容哈希（SHA-256 原始字节）去重——视频/音频/文档服务端闭环已生效；`MediaAsset` 加 `contentHash` 列+迁移（腾讯已 apply）。图片服务端已就绪但**休眠安全**（要阶段3b 客户端接线才生效）。
+- **阶段4**：资产库/@弹窗/工作流资产显示统一到共享投影；修工作流显示模型原始 id 的 bug。
+- **部署**：腾讯已上线（备份 `app-backups/20260712013457-asset-unify/`），验证全通过。**三方状态：腾讯=本地（未 commit/未推 GitHub）**。
+- **⚠️ 阶段3b 下一次做**：图片上传去重的客户端接线（thread contentHash + honor duplicate 响应），风险高需浏览器验证，步骤见 CHANGELOG 顶条末尾 + 05-next-actions 顶部。
+- **摸底脚本**：`scripts/audit-asset-consistency.mjs`（只读，`--user=ID / --all`），可随时复查资产字段完整度/归类可疑项。
 
 ## 2026-07-11 (第二 session) 代码改动 + 运维（全部已部署腾讯+推 GitHub，三方同步 `5e6491c`）
 

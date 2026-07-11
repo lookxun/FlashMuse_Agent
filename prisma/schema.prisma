@@ -123,6 +123,7 @@ model MediaAsset {
   generationSettings   Json?
   previewMeta          Json?
   originalFileName     String?
+  contentHash          String?
   systemName           String?
   initialName          String?
   initialCategory      String?
@@ -164,6 +165,7 @@ model MediaAsset {
   @@index([workflowId])
   @@index([userId, workspaceKind, createdAt])
   @@index([userId, archivedAt])
+  @@index([userId, contentHash])
 }
 
 model UserAssetState {

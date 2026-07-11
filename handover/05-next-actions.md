@@ -1,5 +1,43 @@
 # Next Actions
 
+## 🔜 2026-07-12 (later session) END-OF-SESSION —— 先读这条
+
+**状态**：本 session 全部改动**已部署腾讯 + 已 commit+push GitHub（连同上午"资产入库/显示统一大改造"那批一起推）→ 腾讯=GitHub=本地 三方同步**。工作树干净（除后续 handover 提交）。详见 CHANGELOG 顶条 + 01-current-status 顶条。
+
+**本 session 做完的事**：① 生成图统一出生根治（异步存盘图先等本地存盘再由 finalize 权威出生，解决资产库图 model/参数全空）；② 资产→节点读取统一 model（导入/恢复/GET 接口都带真实 model）；③ 从资产库导入弹窗刷新修复；④ **阶段3b 全量完成**——对话流+工作流(画布/输入框)+资产库全平台内容哈希去重、跨平台判重、去掉资产库旧 url 判重、两处提示位置按要求分开；⑤ 历史 model 回填 7 张（12424740）。
+
+**下一个 AI 待办 / 仍可优化**：
+1. **验证面扩大**：本次 dedup + 统一出生只在 12424740 账号验证过。可跑全库只读扫描看"生成图空 model"在其它用户的规模（图片统一出生 bug 是全平台的，7-12 之前所有 byteplus 异步图都可能 model 空）——需要的话我可写脚本按 GenerationJob/creditLedger 批量精确回填（不猜）。
+2. **5 张无来源空 model 老图**（asset_1_role、Anima_00001_、hero-mecha-robot-reference、aaa、1779127299645-…）保持留空。
+3. dedup 局限：只对"本次接线之后传过、已记 contentHash"的图生效；老图无 hash 不会被判重（预期）。png 另存 jpg 字节不同=不同图（预期）。
+4. `waitForMediaSaveJob` 每张图最多阻塞 worker 60s（与视频同）；byteplus 异步图现在 success 会稍慢（等本地存盘），但保证参数齐全。
+
+**部署流程**：腾讯 scp→`docker compose up -d --build flashmuse-app`→**必须同步 `.next/static` 到阿里**；改源码用 edit 工具；PowerShell 内联复杂 bash 会被引号搅乱，用 scp .sh + `sed -i 's/\r$//'`；DB 用 `docker exec -i`。
+
+---
+
+## 🔜 2026-07-12 (上午) —— 资产统一改造（已随上面一起三方同步）
+
+**状态**：资产入库/显示统一大改造 阶段1/2/3a/4 **已部署腾讯线上**、验证通过；**GitHub 未推、本地未 commit**（腾讯=本地）。详见 CHANGELOG 顶条 + 01-current-status 顶条 + 06-memo-tasks M016/M017。
+
+**下一个 AI 待办（按优先级）：**
+
+1. **（可选）三方同步**：用户说"推"时 commit+push 本次改动。文件：新增 `src/lib/media-asset-record.ts`、`scripts/audit-asset-consistency.mjs`、`prisma/migrations/20260712000000_media_asset_content_hash/`；改动 `prisma/schema.prisma`、`src/lib/generation-jobs.ts`、`src/lib/workspace-sessions.ts`、`src/app/api/media-assets/route.ts`、`src/app/api/upload-file/route.ts`、`src/app/api/asset-upload-temp/route.ts`、`src/app/api/workspace-state/route.ts`、`handover/*`。先 `git status`/`diff`、`npx tsc --noEmit`。
+
+2. **⚠️ 阶段3b（用户点名下一次做）——图片上传去重的客户端接线**（风险高、需浏览器验证，单独一批）：
+   - **服务端已就绪**（`asset-upload-temp` 会算 contentHash+判重返回 duplicate/url、`media-assets` POST 能存 contentHash）。缺客户端接线，且现状"休眠安全"（老图无 hash、客户端没传 hash 也没处理 duplicate → 永不触发）。
+   - **要改**（`chat-workbench.tsx` + `workflow-tldraw-canvas-inner.tsx`）：
+     a. `uploadTemporaryAssetImageOnce`(chat~4332)/`uploadWorkflowImageOnce`(workflow~647) 返回值从只有 token 改为 `{token?, contentHash?, duplicate?, url?}`。
+     b. 各上传调用点（chat~8407 资产库 slots、~13435 对话流输入框；workflow~647/741）：命中 duplicate 就跳过 commit、直接用返回 url；把 contentHash 透传进 `POST /api/media-assets` 的 body。
+     c. 注意 reencode 探测重试包装 `uploadTemporaryAssetImage` + 多处独立状态机（tempToken/slots/sessions），逐处小心。
+   - **浏览器验证**：传没传过的图=正常；传已传过的同一文件=秒复用同一张、资产库不新增、输入框直接出缩略图；png另存jpg 应判为不同（字节不同）。
+
+3. **（可选）验证本批效果**（ali 硬刷）：新生成图/视频参数是否齐全一致（含视频尺寸）；上传同一视频/音频/文档是否秒复用不重复入库；工作流资产参数显示的模型名不再是原始 id 一长串。
+
+**教训/注意**：改源码用 edit 工具；腾讯部署流程见 03-deploy 顶部（scp→`docker compose up -d --build`→**必须同步 `.next/static` 到阿里**）；prisma generate 在 Windows 会因引擎锁失败，先 `Stop-Process node` 再 generate；PowerShell 内联复杂 SQL/bash 会被引号搅乱，用 scp .sh + `sed -i 's/\r$//'`。
+
+---
+
 ## ✅ 迁移阶段4 已完成（2026-07-11）—— main/api 已直连腾讯 443，马来出链路
 
 **用户做的**：DNS `main`/`api`.venusface.com A 记录已改指腾讯 `119.28.116.16`；安全组放行 `TCP 443`。

@@ -8,6 +8,54 @@ Historical docs were checked on 2026-06-21. Old items that are already done or c
 
 ## Active Memo Tasks
 
+### [进行中] M016 资产入库/显示统一大改造（2026-07-11 定调，2026-07-12 阶段1/2/3a/4 已部署腾讯）
+
+**进度（2026-07-12）**：阶段 1/2/3a/4 已完成并部署腾讯线上（GitHub 未推/本地未 commit）。**剩阶段3b（图片上传去重客户端接线，见 M017）待做**。详见 CHANGELOG 2026-07-12 顶条。
+- ✅ 阶段1 统一模块 `src/lib/media-asset-record.ts`（classifyAsset/buildMediaAssetRecord/resolveAssetPreviewMeta/normalizeLegacySourceKind）。
+- ✅ 阶段2 写入点全切 builder + 关掉 #3/#4/#5 出生后覆盖 + 视频存尺寸 + 补 mimeType/fileSize。
+- ✅ 阶段3a contentHash 列+迁移 + 视频/音频/文档上传去重（服务端闭环）。
+- ✅ 阶段4 库/工作流资产显示统一到共享投影 + 修工作流显示模型原始 id bug。
+- ⏸ 阶段3b 图片上传去重客户端接线（见 M017，下一次做）。
+- 历史数据**不回填、不删、不改**（用户定调，风险规避）。
+
+原始需求/背景（保留）：
+
+用户盘点资产库发现历史数据乱：生成的显示成"上传"、参数不全（缺模型/缺尺寸比例K数）、疑似被兜底覆盖。根因=**入库没有单一权威、显示没有单一投影、且出生后还被反复覆盖**。已与用户达成的方案（**下面全部要做，按顺序**）：
+
+**核心原则（用户确认）**：生成/上传的图和视频，**数据在出生那一刻定死、永久冻结**；之后唯一变化是用户改名/移动/删除，只写 `UserAssetState`，**绝不碰 `MediaAsset` 原始数据**。合理的出生后写入白名单只有 3 种：①视频封面 poster 晚到回填 ②用户加 reversePrompt ③远程URL换本地URL的规整（canonicalizeSavedMediaUrl）。
+
+**A. 关掉"出生后覆盖"的元凶（查证结果，2026-07-11）** —— 全平台 8 个写 MediaAsset 的点里，真正在出生后还全覆盖内容的是 3 个：
+- **#3（最严重）`workspace-sessions.ts:157` syncWorkspaceMessageMediaAssets**：每次保存对话流都拿 message JSON 把该资产**所有参数字段全覆盖一遍、连 initialName（终生ID）都覆盖**。→ 改成 create-only（记录已存在就完全不碰内容，只在库里没有时才建一条）。
+- **#4 `media-assets/route.ts:237` POST 的 update 分支**：前端重复上报同一资产就全覆盖。→ 同样改 create-only。
+- **#5 `upload-file/route.ts:80` 的 update 分支**：重复上传覆盖。→ 见 M017（改成"识别为同一文件直接复用"，就不会触发）。
+- 保留：#1 图片落库(update 已空✅)、#2 视频 poster 回填、#6/#7 PATCH reversePrompt、#8 URL 规整。
+
+**B. 入库统一（写侧）**：新建 `src/lib/media-asset-record.ts`：`buildMediaAssetRecord(input)`（一次填齐所有列，含全量 generationSettings、视频也存宽高/时长）+ `classifyAsset()`（promptSource/sourceKind/category 唯一规则，消灭"生成显示成上传"）+ 统一生成 previewMeta。现有所有写入点改调它。
+
+**C. 显示统一（读侧）**：把 `workspace-state/route.ts:191` 的 `mediaStateToLegacyAsset` 抽成共享 `toAssetView()`，资产库/对话流内嵌卡/工作流节点参数(`workflow-tldraw-canvas-inner.tsx:1136`那套)/后台详情**全部改用同一投影**，同一资产哪里显示都一致。
+
+**D. 历史数据回填**：写幂等脚本扫全部用户全部 MediaAsset，按最富来源（generationSettings→previewMeta→GenerationJob→message JSON→尺寸反推）补齐并纠正归类。先 dry-run 出"改多少条/明细"给用户看，确认再执行；只补不删、先备份。
+
+落地顺序：阶段1 建三个函数（零风险纯新增）→ 阶段2 写入点切 builder + 关 #3/#4 覆盖（snapshot 前后对比）→ 阶段3 显示端切 DTO → 阶段4 回填脚本。
+
+### [进行中] M017 上传同一文件按内容去重、直接复用已上传的（2026-07-11 定调；2026-07-12 服务端完成，客户端=阶段3b待做）
+
+**进度（2026-07-12）**：视频/音频/文档=**服务端闭环已完成并上线**（`upload-file` 落盘前算 SHA-256、命中就复用旧 url）。图片=服务端已就绪（`asset-upload-temp` 判重、`media-assets` POST 存 contentHash）但**客户端接线未做（阶段3b），现状休眠安全不会触发**。下一次做客户端接线，详见 05-next-actions 顶部 #2 + CHANGELOG 2026-07-12 顶条末尾。
+
+背景/口径（保留）：
+
+用户想法：上传同一个文件时，**100% 判断是不是之前上传过**，若是，不重新落库、不提示，直接把之前那份"调出来"给用户用——对话流就把已上传那张的缩略图放进输入框；工作流本来就有"复制一张图"功能，等于给他复制一份。关键前提=**能否 100% 判断同一文件**。
+
+**当前判断依据（已查证 2026-07-11）**：现在去重完全按 `normalizedUrl`。但上传落盘的文件名是 `local-assets.ts:124` 的 `${Date.now()}-${randomUUID()}.${ext}`（时间戳+随机UUID）→**同一文件每次上传都得到全新 URL**→现有去重对"重复上传"根本判不出来，永远认不出同一个。图片上传还会转码成 JPEG、视频会压缩，连落盘字节都可能不同。
+
+**判定口径（用户已拍板 2026-07-11）**：只按"**同一个文件本身、字节完全一致**"算同一文件（原始文件 SHA-256）。用户明确：png 后来另存成 jpg 虽看着同一张，但字节不同，**不算**同一个（不做图像相似度/感知哈希，那不是 100%）。
+
+**做法（已定）**：
+1. 上传接口收到文件后，**对用户上传的原始字节先算 SHA-256**（必须在任何转码/压缩之前算，`createHash` 已在 local-assets.ts 引入）。
+2. MediaAsset 新增列 `contentHash String?` + `@@index([userId, contentHash])`。
+3. 上传接口先按 `(userId, contentHash)` 查：**命中**→不落盘、不新建记录、不提示，直接返回已存在那条的 `url/缩略图/名字`；前端拿去用（对话流：塞进输入框缩略图；工作流：复用同一 url = 等于复制一张）。**未命中**→走现有正常落盘流程，并把 contentHash 存进 MediaAsset。
+4. 注意：软删除的资产命中时的处理（是否顺带恢复/取消 hidden）上手时再定；老数据无 contentHash，可在回填脚本 M016-D 里按现有本地文件补算。
+
 ### [ ] M015 阿里端上传压缩转发小服务（2026-07-09 与用户讨论，押后）
 
 临时不做原因：用户认可思路但决定"以后再说"，先不做。目标是让**上传更快**——上传慢在"阿里→马来"跨境这段，要减小过境体积就得在"过境前"压缩。浏览器端压图片可行但压不了视频；服务端（马来）压缩发生在过境后，对上传提速无用。
