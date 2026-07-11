@@ -1,5 +1,31 @@
 # Next Actions
 
+## 🚨 未完成任务：必须每次向用户显示，直到用户明确确认完成 🚨
+
+> 下一个 AI：只要下面这个"迁移阶段4"仍未被用户确认完成，**每次接手都要主动、显眼地告诉用户下面这段"我需要做什么 / 你需要做什么"**，不要等用户问。
+
+### 迁移最后一步 —— 阶段4：彻底弃用马来（DNS/443/证书切到腾讯）—— 未完成
+
+**当前状态（2026-07-11）**：主服务器已迁到腾讯并对外服务中（ali/main/api 全 200），但**马来还在链路里**当 SSL+反代壳（DNS 的 main/api 仍指马来 IP，马来 nginx 反代到腾讯）。要彻底甩开马来、只跑腾讯，还差最后一步。
+
+**需要【用户】做的（我没有腾讯 API 密钥 / DNS 管理权限，做不了）：**
+1. **腾讯云控制台**：给实例安全组入站放行 `TCP 443`（并确认 `80` 已放行，签证书要用）。目前只开了 22/80/3000/8001/5000。
+2. **DNS 服务商**：把 `main.venusface.com`、`api.venusface.com` 的 A 记录从 `101.47.19.109`(马来) 改成 `119.28.116.16`(腾讯)。（`ali`/`static` 建议保留指阿里做国内加速，不动。）
+
+**需要【AI】做的（等用户完成上面两步后）：**
+3. 给腾讯 `flashmuse-nginx` 容器加 `443:443` 端口映射（改 `/opt/flashmuse/docker-compose.yml`）。
+4. certbot 给 `main.venusface.com`、`api.venusface.com` 签 Let's Encrypt 证书（需 DNS 已指腾讯 + 80 可达）。
+5. 配腾讯 nginx 443 server_name + 证书 + 反代 app；验证 https://main、https://api 直连腾讯 200。
+6. 全部 OK 后马来可停用（保留几天观察再退租）。
+
+**若用户暂不做**：现状可长期稳定运行（马来只当反代壳），不影响使用；只是没省掉马来的钱、main/api 流量多绕一跳马来（马来↔腾讯同在新加坡，延迟可忽略）。
+
+**⚠️ 本 session 所有代码改动只在腾讯线上，本地仓库 / GitHub 未提交**：`src/lib/generation-jobs.ts`、`src/app/api/image/route.ts`、`src/app/api/video/route.ts`、`src/components/chat-workbench.tsx`、`src/app/api/media-assets/route.ts`（命名 bug 根治那批）。另有服务器端 nginx 改动（阿里/马来 proxy_pass、马来纯反代壳）只在服务器。等用户说"提交"时：本地对这些文件做同样修改（或从腾讯 `/opt/flashmuse/app/` 取回）后 `tsc`+commit+push。**注意本地这些文件目前是"迁移前"旧版，别直接 commit 旧版覆盖线上新逻辑——以腾讯线上为准。**
+
+**⚠️ 腾讯部署新流程（每次改代码必读）**：scp 改动源码到 `/opt/flashmuse/app/src/...` → `cd /opt/flashmuse && nohup sudo docker compose up -d --build flashmuse-app`（后台+轮询日志防 120s 超时）→ **必须**把腾讯 `.next/static` 同步到阿里镜像（否则 chunk 哈希不匹配全 404）：`sudo docker cp flashmuse-flashmuse-app-1:/app/.next/static /tmp/next-static && sudo rsync -a --delete -e "ssh -i /opt/flashmuse/data/runtime/flashmuse_to_ali_ed25519" /tmp/next-static/ root@101.37.129.164:/var/www/flashmuse-static/_next/static/`。详见 03-deploy-and-servers。
+
+---
+
 ## Highest Priority
 
 ### 2026-07-10 (最新) 迁移 马来→腾讯新加坡 —— 先读这条 + `09-migration-to-tencent.md`

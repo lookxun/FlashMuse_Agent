@@ -2,7 +2,7 @@
 
 Last rebuilt: 2026-06-20
 
-> **⚠️ 2026-07-10 进行中的大事：主服务器正从马来 BytePlus 迁移到腾讯云新加坡。先读 `09-migration-to-tencent.md`（阶段1已完成、用户测试中）。**
+> **🚨 2026-07-11 大事进度：主服务器已从马来迁到腾讯云新加坡并对外服务中（阶段2/3完成）。但迁移阶段4（DNS/443/证书切腾讯、弃用马来）未完 —— 未完成前每次接手都要主动提醒用户，见 `05-next-actions.md` 顶部"🚨 未完成任务"。当前架构与部署流程见 `01-current-status.md` 顶部 + `03-deploy-and-servers.md` 顶部。本 session 代码改动只在腾讯线上、本地/GitHub 未提交。**
 
 This folder is the current handover entry. The previous long handover set was moved to `historical-handover-docs-last-used-2026-06-20/` because it mixed current facts with outdated May and early June decisions.
 

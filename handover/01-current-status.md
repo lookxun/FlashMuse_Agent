@@ -1,6 +1,22 @@
 # Current Status
 
-Last checked: 2026-07-10 China time.
+Last checked: 2026-07-11 China time.
+
+## 🚨🚨 2026-07-11 — 主服务器已切到腾讯（阶段2/3完成）；迁移阶段4未完，见 05-next-actions 顶部"每次必显示" 🚨🚨
+
+**线上现状**：真正跑 app+PostgreSQL+worker 的是**腾讯云新加坡 119.28.116.16**（Docker 栈 app+db+nginx，对外 5000）。DNS 未变：`main`/`api`.venusface.com→马来 101.47.19.109，`ali`/`static`→阿里 101.37.129.164；两个入口 nginx 都反代到腾讯。`/generated`+`/_next/static` 走阿里本地镜像加速（腾讯经 ali-sync 回推阿里）。**马来 app 已 `pm2 stop`+`pm2 save`（停止态持久化），马来 nginx 退化为 SSL+反代壳。**
+
+- **迁移做了**：媒体 rsync（马来→腾讯，9855 文件）、DB 全量 pg_dump→腾讯 flashmuse-db（无 ERROR，行数一致）、腾讯 env 改（关 insecure cookie、加 AUTH_COOKIE_DOMAIN、开 ali-sync）、AUTH_SECRET 两台一致（登录态保留）、阿里+马来 nginx proxy_pass 切腾讯、马来改纯反代壳、补齐腾讯→阿里 ali-sync 密钥、腾讯 `.next/static` 同步阿里镜像。详见 CHANGELOG 顶条。
+- **迁移未完（阶段4）**：DNS/443/证书还没切到腾讯，马来仍在链路里。**每次接手要主动提醒用户，直到用户确认完成。步骤见 05-next-actions 顶部。**
+- **⚠️ 腾讯重 build 后必须同步 `.next/static` 到阿里镜像**，否则 chunk 哈希不匹配全站 404。命令见 05/03。
+
+## 🐛 2026-07-11 — 对话流生成图命名 d0 bug 根治（两处根因）+ 历史数据修复（仅腾讯线上，本地/GitHub 未提交）
+
+- **现象**：会话 d35 生成图叫 `image_40_d0`（应 `image_7_d35`），手工修后新生成又撞名。
+- **根因1**：`generation-jobs.ts` 对话流命名 `code` 写死 `d0`（预约改动漏了对话流，工作流 deriveWorkflowCode 是对的）。**修**：客户端传 `conversationCode`→路由透传→reserveJobNames 用它（缺失回退读 `WorkspaceSession.summaryJson.conversationCode`）。
+- **根因2（违反用户命名规则）**：`/api/media-assets` POST 的 UPDATE 分支允许客户端 `body.name` 覆盖服务端预约的 `systemName`/`initialName`；旧标签页 re-persist stale 名把终生ID冲回去。**修**：UPDATE 分支不再动 systemName/initialName（终生ID出生即定不可变），currentName 只在工作流临时名finalize时更新。
+- **用户命名规则（务必遵守）**：生成媒体系统名 = 服务端在生图时**预约的终生ID**、唯一、成功即定、失败释放；对话流 `image_序号_d{会话号}` / `video_序号_d{会话号}`，工作流 `image_序号_wX`；**不是客户端给的，客户端不可改写终生ID**；改名走 `UserAssetState.currentName`(PATCH)。
+- **改的文件**（仅腾讯线上，本地是旧版未改）：generation-jobs.ts、image/route.ts、video/route.ts、chat-workbench.tsx、media-assets/route.ts。历史修复 ID_636611 d35 的 10 张为 image_1~10_d35、nextImageNumber=11。
 
 ## ⚠️ 2026-07-10 (迁移 session 续) — 腾讯阶段1 补齐"完整独立"缺口 + 迁移专属 bug 修复 + 产品微调（已 commit+push GitHub；仅腾讯部署）
 

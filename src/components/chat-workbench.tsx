@@ -11932,7 +11932,8 @@ export function ChatWorkbench() {
           }
         };
         const createImage = async (referenceImages: string[] | undefined, promptOverride = prompt, imageRequestId: string, requestedCount = 1) => {
-          const conversationTitle = sessions.find((session) => session.id === sessionId)?.title;
+          const conversationSession = sessions.find((session) => session.id === sessionId);
+          const conversationTitle = conversationSession?.title;
           const submit = await fetch("/api/image", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -11945,6 +11946,7 @@ export function ChatWorkbench() {
               count: requestedCount,
               conversationId: sessionId,
               conversationTitle,
+              conversationCode: conversationSession?.conversationCode,
               requestId: imageRequestId,
               async: true,
               flow: "conversation",
@@ -12041,7 +12043,8 @@ export function ChatWorkbench() {
         const createAndPollVideo = async (videoPrompt: string, itemSettings: GenerationSettings | undefined, itemIndex: number, promptDetail?: PromptDetail) => {
           let taskId = itemIndex === 0 ? pendingRequest.taskId : undefined;
           let pendingVideoUsage: UsageMeta | undefined;
-          const conversationTitle = sessions.find((session) => session.id === sessionId)?.title;
+          const conversationSession = sessions.find((session) => session.id === sessionId);
+          const conversationTitle = conversationSession?.title;
           const videoRequestId = `${pendingRequest.id}:video:${itemIndex}`;
 
           const settings = itemSettings ?? pendingRequest.settings;
@@ -12066,7 +12069,7 @@ export function ChatWorkbench() {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             signal: abortController.signal,
-            body: JSON.stringify({ prompt: withReferenceHint(modelVideoPrompt), sourcePrompt: videoPrompt, model: pendingRequest.model, referenceImages: pendingRequest.referenceImages, referenceVideos: pendingRequest.referenceVideos, referenceAudios: pendingRequest.referenceAudios, referenceMode: pendingRequest.videoReferenceMode, settings, conversationId: sessionId, conversationTitle, requestId: videoRequestId, flow: "conversation", itemIndex, metadata: pendingRequest.agentGenerated ? { creditSource: "agent_video_generation" } : undefined, autoBytePlusAssetReview }),
+            body: JSON.stringify({ prompt: withReferenceHint(modelVideoPrompt), sourcePrompt: videoPrompt, model: pendingRequest.model, referenceImages: pendingRequest.referenceImages, referenceVideos: pendingRequest.referenceVideos, referenceAudios: pendingRequest.referenceAudios, referenceMode: pendingRequest.videoReferenceMode, settings, conversationId: sessionId, conversationTitle, conversationCode: conversationSession?.conversationCode, requestId: videoRequestId, flow: "conversation", itemIndex, metadata: pendingRequest.agentGenerated ? { creditSource: "agent_video_generation" } : undefined, autoBytePlusAssetReview }),
           });
 
           let taskResponse = await createVideoTask();

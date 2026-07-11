@@ -486,6 +486,7 @@ export async function POST(request: Request) {
     settings?: { ratio?: string; resolution?: string; duration?: string };
     conversationId?: string;
     conversationTitle?: string;
+    conversationCode?: string;
     requestId?: string;
     usage?: UsageMeta;
     metadata?: { creditSource?: string };
@@ -510,6 +511,7 @@ export async function POST(request: Request) {
       settings?: { ratio?: string; resolution?: string; duration?: string };
       conversationId?: string;
       conversationTitle?: string;
+      conversationCode?: string;
       requestId?: string;
       usage?: UsageMeta;
       metadata?: { creditSource?: string };
@@ -850,6 +852,7 @@ export async function POST(request: Request) {
           referenceMode: body.referenceMode,
           conversationId: body.conversationId,
           conversationTitle: body.conversationTitle,
+          conversationCode: body.conversationCode,
           workflowId: body.workflowId,
           workflowNodeId: body.workflowNodeId,
           itemIndex: body.itemIndex,
@@ -920,6 +923,7 @@ export async function POST(request: Request) {
       referenceMode: body.referenceMode,
       conversationId: body.conversationId,
       conversationTitle: body.conversationTitle,
+      conversationCode: body.conversationCode,
       workflowId: body.workflowId,
       workflowNodeId: body.workflowNodeId,
       itemIndex: body.itemIndex,

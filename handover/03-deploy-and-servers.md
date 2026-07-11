@@ -1,6 +1,37 @@
 # Deploy And Servers
 
+## ⭐ 2026-07-11 起：主服务器 = 腾讯云新加坡（马来已停 app，仅当反代壳）
+
+**现在真正跑 app 的是腾讯 `119.28.116.16`（Docker 栈）。下面"HOW TO DEPLOY（马来 PM2）"已过时——马来 app 已停。除非只改 nginx，否则部署要走腾讯 Docker 流程。**
+
+### 腾讯部署流程（改代码必读）
+1. 本地 `npx tsc --noEmit` 通过（改源码一律用 edit 工具，别用 PowerShell Set-Content 会毁中文编码）。
+2. 打包改动源码：`tar -czf namefix.tgz src/...`（保留相对路径），scp 到腾讯 `/tmp/`，md5 两端核对。
+3. 腾讯上：备份原文件到 `/opt/flashmuse/app-backups/<ts>/`，`sudo tar -xzf /tmp/xxx.tgz -C /opt/flashmuse/app`。
+4. 重建：`cd /opt/flashmuse && nohup sudo docker compose up -d --build flashmuse-app > /tmp/build.log 2>&1 &`（后台+轮询 `tail /tmp/build.log` 防 120s 超时）。有 Prisma 迁移时 entrypoint 会自动 `migrate deploy`。
+5. **必须：同步腾讯 `.next/static` 到阿里镜像**（否则 chunk 哈希不匹配、`/_next/static` 全 404、页面样式崩）：
+   `sudo docker cp flashmuse-flashmuse-app-1:/app/.next/static /tmp/next-static && sudo rsync -a --delete -e "ssh -i /opt/flashmuse/data/runtime/flashmuse_to_ali_ed25519" /tmp/next-static/ root@101.37.129.164:/var/www/flashmuse-static/_next/static/`
+6. 验证：`sudo docker compose logs --tail flashmuse-app`(Ready+worker started)；ali/main/api/static.venusface.com 全 200。
+
+### 连接与密钥
+- 腾讯：`ssh -i "C:\Users\ASUS\AppData\Local\Temp\opencode\CinematicFlow.pem" ubuntu@119.28.116.16`（pem 副本已收紧权限；源 `E:\project\【2】server\腾讯云_新加坡服务器\CinematicFlow.pem`）。docker 命令加 `sudo`。
+- 马来→腾讯 免密：马来上 `/root/.ssh/flashmuse_to_tencent_ed25519`（公钥已在腾讯 ubuntu authorized_keys）。
+- 腾讯→阿里 ali-sync 密钥：`/opt/flashmuse/data/runtime/flashmuse_to_ali_ed25519`（容器内 `/app/.runtime/...`，env `ALI_SYNC_SSH_KEY` 指它）。
+- DB（腾讯）：容器 `flashmuse-flashmuse-db-1`，`docker exec -e PGPASSWORD=qky9brw3fp5cojhdv80lamtn7ug1 ... psql -U flashmuse -d flashmuse`。**heredoc SQL 必须 `docker exec -i`**（否则 stdin 不进、SQL 静默不执行）。
+
+### 当前流量架构
+- DNS：`main`/`api`.venusface.com→马来 101.47.19.109；`ali`/`static`→阿里 101.37.129.164（未变）。
+- 马来 nginx `/etc/nginx/conf.d/flashmuse.conf` = 纯反代壳 `location / → http://119.28.116.16:5000`（已删本地 _next/static、generated、home-assets 块）。马来 app 已 `pm2 stop`+`save`。
+- 阿里 nginx `/etc/nginx/sites-enabled/flashmuse-static-ip`：动态 `proxy_pass → 119.28.116.16:5000`；`/generated`+`/_next/static`+`/home-assets` 走阿里本地镜像。改 nginx 备份**别放 sites-enabled/**（通配加载会撞 default server），放 `/root/nginx-cutover-backups/`。
+- 阶段4（DNS/443/证书切腾讯、弃用马来）未完 → 见 05-next-actions 顶部。
+
+### 只改 nginx / 服务器配置
+- 马来/阿里 nginx 仍可按需改（备份→`nginx -t`→reload）。腾讯 nginx 配置在 `/opt/flashmuse/data/nginx/flashmuse.conf`（容器 flashmuse-nginx）。
+
+---
+
 ## HOW TO DEPLOY — FOLLOW THIS, DO NOT ASK THE USER
+（⚠️ 以下为马来 PM2 老流程，app 已停，仅历史参考 / 改马来 nginx 时用）
 
 You already have everything needed to deploy. Do not tell the user you "can't deploy" or ask how — the SSH key, server IP, and process are all here.
 
