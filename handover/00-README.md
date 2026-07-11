@@ -2,7 +2,7 @@
 
 Last rebuilt: 2026-06-20
 
-> **✅ 2026-07-11 大事进度：主服务器已从马来完整迁到腾讯云新加坡，迁移阶段4也完成 —— main/api DNS 已直指腾讯、腾讯 nginx 443 SSL 直连（证书从马来复制，SAN 覆盖 main+api，到 2026-09-06），马来已彻底出链路。两个遗留（不急）：①马来退役待用户决定（AI 未停）②证书自动续期未解决（宿主80被 vibesocial 占，到期前用 tls-alpn-01 续），详见 `05-next-actions.md` 顶部。当前架构/部署见 `03-deploy-and-servers.md` 顶部。本地=GitHub=腾讯线上三方同步（最新 commit 见 CHANGELOG）。**
+> **✅ 2026-07-11 大事进度：主服务器已从马来完整迁到腾讯云新加坡，迁移阶段4也完成 —— main/api DNS 已直指腾讯、腾讯 nginx 443 SSL 直连，马来已彻底出链路。证书自动续期已配好（acme.sh tls-alpn-01 走443，Let's Encrypt ECC 到 2026-10-09，cron 自动续）。唯一遗留：马来退役待用户决定（AI 未停）。详见 `05-next-actions.md` 顶部。当前架构/部署见 `03-deploy-and-servers.md` 顶部。本地=GitHub=腾讯线上三方同步（最新 commit 见 CHANGELOG）。**
 
 This folder is the current handover entry. The previous long handover set was moved to `historical-handover-docs-last-used-2026-06-20/` because it mixed current facts with outdated May and early June decisions.
 

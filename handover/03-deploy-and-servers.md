@@ -24,7 +24,7 @@
 - **腾讯 flashmuse-nginx 直接 SSL 终止 main/api（443）**：`/opt/flashmuse/data/nginx/flashmuse.conf` 有 443 server 块（server_name main/api，证书 `/etc/letsencrypt/live/main.venusface.com/`，反代 flashmuse-app:3000 + 本地 /generated、/home-assets）。宿主 443:443、5000:80。证书从马来复制（SAN main+api，到 2026-09-06）。
 - 阿里 nginx `/etc/nginx/sites-enabled/flashmuse-static-ip`：动态 `proxy_pass → 119.28.116.16:5000`；`/generated`+`/_next/static`+`/home-assets` 走阿里本地镜像。
 - **马来已彻底出链路**（DNS 不再指它，app 早已 pm2 stop）。马来壳/退租见 05-next-actions 遗留项。
-- ⚠️ 宿主 80 被 vibesocial-nginx 占用（腾讯是多项目共宿主机），flashmuse 拿不到 80 → 证书续期不能用 HTTP-01，见 05 遗留项②。
+- ⚠️ 宿主 80 被 vibesocial-nginx 占用（腾讯是多项目共宿主机），flashmuse 拿不到 80。证书续期用 **acme.sh tls-alpn-01（走 443）**：cert=Let's Encrypt ECC(main+api，到 2026-10-09)，acme.sh cron 自动续（约 9-10），续期 hook 停/起 flashmuse-nginx 释放 443、装到 `/opt/flashmuse/data/letsencrypt/live/main.venusface.com/`。详见 05 遗留项②。
 
 ### 只改 nginx / 服务器配置
 - 马来/阿里 nginx 仍可按需改（备份→`nginx -t`→reload）。腾讯 nginx 配置在 `/opt/flashmuse/data/nginx/flashmuse.conf`（容器 flashmuse-nginx）。

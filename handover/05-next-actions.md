@@ -11,9 +11,9 @@
 
 **现在架构**：`main`/`api` DNS→腾讯 119.28.116.16:443（腾讯 nginx 直接 SSL 终止）；`ali`/`static`→阿里 101.37.129.164（阿里入口，反代腾讯 5000 + 本地镜像 _next/static、generated）。**马来已彻底不在链路里。**
 
-### 阶段4 遗留（都不急，下一个 AI 跟进）
+### 阶段4 遗留（下一个 AI 跟进）
 1. **马来退役**：DNS 已不指马来、马来 app 早已 pm2 stop，马来壳成死重。用户观察几天无异常后可退租。**AI 未停马来**，等用户决定。
-2. **⚠️ 证书自动续期未解决**：宿主 80 被 vibesocial 占，标准 HTTP-01 续期走不了。当前 cert 到 **2026-09-06**，约2个月缓冲。到期前需实现续期：优先 **tls-alpn-01**（走 443，certbot 续期时用 `--preferred-challenges tls-alpn-01`，需临时释放/协调 443，可加 nginx pre/post hook 停起容器）；或 DNS-01（需 DNS 服务商 API）。届时也可考虑直接再从马来复制新证书（若马来还没退租且能自行续），但马来退租后此路断。
+2. **✅ 证书自动续期已配好（2026-07-11）**：宿主 80 被 vibesocial 占（certbot standalone 又不支持 tls-alpn-01），改用 **acme.sh + tls-alpn-01（走 443）**。当前证书 = Let's Encrypt ECC，SAN main+api，到 **2026-10-09**。acme.sh 自带 cron（每天 4 次 `--cron`），ARI 窗口约 **2026-09-10** 自动续。续期链：`Le_PreHook=docker stop flashmuse-flashmuse-nginx-1`（释放 443 给 alpn 验证）→ 签发 → `Le_PostHook=docker start ...` → `Le_ReloadCmd=docker restart flashmuse-flashmuse-nginx-1`（加载新证书）。证书装到 `/opt/flashmuse/data/letsencrypt/live/main.venusface.com/{privkey,fullchain}.pem`（nginx 已挂载读取）。**续期时 nginx 会短暂重启（几秒~1分钟），影响 main/api（ali 走 5000 不受影响）。** 手动续期：`sudo /root/.acme.sh/acme.sh --renew -d main.venusface.com --ecc --force`（注意 LE 每周 5 张同域名 duplicate 限额）。
 3. **HTTP(80) 无重定向**：用户敲 `http://main...` 会落到宿主 80 的 vibesocial-nginx（拿不到 flashmuse），实际都走 https 无影响；无法给 flashmuse 绑 80（被占）。
 
 **⚠️ 腾讯部署新流程（每次改代码必读）**：scp 改动源码到 `/opt/flashmuse/app/src/...` → `cd /opt/flashmuse && nohup sudo docker compose up -d --build flashmuse-app`（后台+轮询日志防 120s 超时）→ **必须**把腾讯 `.next/static` 同步到阿里镜像（否则 chunk 哈希不匹配全 404）：`sudo docker cp flashmuse-flashmuse-app-1:/app/.next/static /tmp/next-static && sudo rsync -a --delete -e "ssh -i /opt/flashmuse/data/runtime/flashmuse_to_ali_ed25519" /tmp/next-static/ root@101.37.129.164:/var/www/flashmuse-static/_next/static/`。详见 03-deploy-and-servers。
