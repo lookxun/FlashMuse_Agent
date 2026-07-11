@@ -74,7 +74,7 @@ function assetNameSuffix(source: string | null | undefined) {
   return source === "scene_image_generation" ? "scene" : source === "shot_image_generation" ? "storyboard" : "role";
 }
 
-async function reserveJobNames(tx: Prisma.TransactionClient, input: { userId: string; kind: GenerationJobKind; count: number; flow?: string; workflowId?: string; conversationId?: string; creditSource?: string }) {
+async function reserveJobNames(tx: Prisma.TransactionClient, input: { userId: string; kind: GenerationJobKind; count: number; flow?: string; workflowId?: string; conversationId?: string; conversationCode?: string; creditSource?: string }) {
   const assetFlow = isAssetImageCreditSource(input.creditSource);
   const scope = assetFlow ? `asset:${input.userId}` : input.flow === "workflow" && input.workflowId ? `workflow:${input.userId}:${input.workflowId}:${input.kind}` : `conversation:${input.userId}:${input.conversationId ?? "d0"}:${input.kind}`;
   // The caller keeps this lock until the job row containing the reservation is inserted.
@@ -87,7 +87,25 @@ async function reserveJobNames(tx: Prisma.TransactionClient, input: { userId: st
   const used = new Set<string>();
   for (const asset of assets) for (const name of [asset.systemName, asset.initialName]) if (name) used.add(name);
   for (const job of jobs) for (const name of job.reservedNames ?? []) used.add(name);
-  const code = input.flow === "workflow" ? deriveWorkflowCode(workflow?.workflowCode ?? null, workflow?.title ?? null) : "d0";
+  let code: string;
+  if (input.flow === "workflow") {
+    code = deriveWorkflowCode(workflow?.workflowCode ?? null, workflow?.title ?? null);
+  } else {
+    // 对话流：用会话稳定编号 conversationCode（image_序号_d编号）。优先取调用方传入，
+    // 缺失时回退读 WorkspaceSession.summaryJson.conversationCode，都没有才 d0。
+    code = input.conversationCode?.trim() || "";
+    if (!code && input.conversationId) {
+      const session = await tx.workspaceSession.findUnique({
+        where: { userId_sessionId: { userId: input.userId, sessionId: input.conversationId } },
+        select: { summaryJson: true },
+      });
+      const summaryCode = session && typeof session.summaryJson === "object" && session.summaryJson
+        ? (session.summaryJson as Record<string, unknown>).conversationCode
+        : undefined;
+      if (typeof summaryCode === "string" && summaryCode.trim()) code = summaryCode.trim();
+    }
+    if (!code) code = "d0";
+  }
   const suffix = assetNameSuffix(input.creditSource);
   const prefix = assetFlow ? "asset" : input.kind;
   const names: string[] = [];
@@ -108,7 +126,7 @@ async function ensureJobReservedNames(job: GenerationJobRow) {
   return prisma.$transaction(async (tx) => {
     const rows = await tx.$queryRaw<Array<{ reservedNames: string[] | null }>>`SELECT "reservedNames" FROM "GenerationJob" WHERE "id" = ${job.id} FOR UPDATE`;
     if (rows[0]?.reservedNames?.length) return rows[0].reservedNames;
-    const names = await reserveJobNames(tx, { userId: job.userId, kind: job.kind, count: Math.max(1, job.count), flow: job.flow ?? undefined, workflowId: job.workflowId ?? undefined, conversationId: job.conversationId ?? undefined, creditSource: job.creditSource ?? undefined });
+    const names = await reserveJobNames(tx, { userId: job.userId, kind: job.kind, count: Math.max(1, job.count), flow: job.flow ?? undefined, workflowId: job.workflowId ?? undefined, conversationId: job.conversationId ?? undefined, conversationCode: typeof job.extraJson?.conversationCode === "string" ? job.extraJson.conversationCode : undefined, creditSource: job.creditSource ?? undefined });
     await tx.$executeRaw`UPDATE "GenerationJob" SET "reservedNames" = ${jsonParam(names)}::jsonb, "updatedAt" = NOW() WHERE "id" = ${job.id}`;
     return names;
   });
@@ -126,6 +144,7 @@ export type CreateImageJobInput = {
   creditSource?: string;
   conversationId?: string;
   conversationTitle?: string;
+  conversationCode?: string;
   messageId?: string;
   workflowId?: string;
   workflowNodeId?: string;
@@ -149,6 +168,7 @@ export type CreateVideoJobInput = {
   creditSource?: string;
   conversationId?: string;
   conversationTitle?: string;
+  conversationCode?: string;
   messageId?: string;
   workflowId?: string;
   workflowNodeId?: string;
@@ -167,9 +187,9 @@ export async function createImageJob(input: CreateImageJobInput): Promise<Genera
   const id = randomUUID();
   const provider = input.model?.startsWith("byteplus:") ? "byteplus" : "openrouter";
   const count = Math.min(4, Math.max(1, Math.floor(input.count ?? 1)));
-  const extra = { ...(input.extra ?? {}), ...(input.candidateMode ? { candidateMode: input.candidateMode } : {}) };
+  const extra = { ...(input.extra ?? {}), ...(input.candidateMode ? { candidateMode: input.candidateMode } : {}), ...(input.conversationCode ? { conversationCode: input.conversationCode } : {}) };
   await prisma.$transaction(async (tx) => {
-    const reservedNames = await reserveJobNames(tx, { userId: input.userId, kind: "image", count, flow: input.flow, workflowId: input.workflowId, conversationId: input.conversationId, creditSource: input.creditSource });
+    const reservedNames = await reserveJobNames(tx, { userId: input.userId, kind: "image", count, flow: input.flow, workflowId: input.workflowId, conversationId: input.conversationId, conversationCode: input.conversationCode, creditSource: input.creditSource });
     await tx.$executeRaw`
     INSERT INTO "GenerationJob" (
       "id", "userId", "requestId", "kind", "status", "flow", "creditSource", "model", "provider",
@@ -199,8 +219,9 @@ export async function createVideoJob(input: CreateVideoJobInput): Promise<Genera
 
   const id = randomUUID();
   const provider = input.model?.startsWith("byteplus:video.") ? "byteplus" : "openrouter";
+  const extra = { ...(input.extra ?? {}), ...(input.conversationCode ? { conversationCode: input.conversationCode } : {}) };
   await prisma.$transaction(async (tx) => {
-    const reservedNames = await reserveJobNames(tx, { userId: input.userId, kind: "video", count: 1, flow: input.flow, workflowId: input.workflowId, conversationId: input.conversationId, creditSource: input.creditSource });
+    const reservedNames = await reserveJobNames(tx, { userId: input.userId, kind: "video", count: 1, flow: input.flow, workflowId: input.workflowId, conversationId: input.conversationId, conversationCode: input.conversationCode, creditSource: input.creditSource });
     await tx.$executeRaw`
     INSERT INTO "GenerationJob" (
       "id", "userId", "requestId", "kind", "status", "flow", "creditSource", "model", "provider",
@@ -211,7 +232,7 @@ export async function createVideoJob(input: CreateVideoJobInput): Promise<Genera
       ${id}, ${input.userId}, ${input.requestId}, 'video', 'running', ${input.flow ?? null}, ${input.creditSource ?? null}, ${input.model ?? null}, ${provider},
       ${input.prompt}, ${jsonParam(input.settings)}::jsonb, ${jsonParam(input.referenceImages ?? [])}::jsonb, ${jsonParam(input.referenceVideos ?? [])}::jsonb, ${jsonParam(input.referenceAudios ?? [])}::jsonb, ${input.referenceMode ?? null},
        ${input.conversationId ?? null}, ${input.conversationTitle ?? null}, ${input.messageId ?? null}, ${input.workflowId ?? null}, ${input.workflowNodeId ?? null}, ${input.itemIndex ?? null}, 1, ${jsonParam(reservedNames)}::jsonb, ${input.providerTaskId},
-      ${jsonParam(input.usage)}::jsonb, ${jsonParam(input.metadata)}::jsonb, ${jsonParam(input.extra)}::jsonb, NOW(), NOW(), NOW()
+      ${jsonParam(input.usage)}::jsonb, ${jsonParam(input.metadata)}::jsonb, ${jsonParam(extra)}::jsonb, NOW(), NOW(), NOW()
     )
     ON CONFLICT ("requestId") DO NOTHING
     `;

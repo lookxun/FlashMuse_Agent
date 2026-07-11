@@ -296,8 +296,6 @@ export async function POST(request: Request) {
       mimeType,
       fileSize,
       originalFileName,
-      systemName: persistName,
-      initialName: persistName,
       initialCategory: currentCategory,
       conversationId: typeof body.conversationId === "string" ? body.conversationId : undefined,
       messageId: typeof body.messageId === "string" ? body.messageId : undefined,
@@ -320,7 +318,7 @@ export async function POST(request: Request) {
     await prisma.userAssetState.update({
       where: { id: existingState.id },
       data: {
-        ...(persistName && (!existingState.userRenamed || hasTemporaryWorkflowName) ? { currentName: persistName, userRenamed: false } : {}),
+        ...(persistName && hasTemporaryWorkflowName ? { currentName: persistName, userRenamed: false } : {}),
         ...(shouldPreserveCategory ? {} : { currentCategory, userRecategorized: true, lockedCategory: true }),
         hiddenAt: null,
         hiddenReason: null,

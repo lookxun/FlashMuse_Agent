@@ -84,10 +84,10 @@ function withChargedUsage<T extends { usage?: { promptTokens?: number; completio
 }
 
 export async function POST(request: Request) {
-  let body: { prompt?: string; model?: string; referenceImages?: string[]; settings?: { ratio?: string; resolution?: string }; count?: number; candidateMode?: "all" | "best"; conversationId?: string; conversationTitle?: string; requestId?: string; metadata?: Prisma.InputJsonValue; async?: boolean; workflowId?: string; workflowNodeId?: string; flow?: "conversation" | "workflow" } | undefined;
+  let body: { prompt?: string; model?: string; referenceImages?: string[]; settings?: { ratio?: string; resolution?: string }; count?: number; candidateMode?: "all" | "best"; conversationId?: string; conversationTitle?: string; conversationCode?: string; requestId?: string; metadata?: Prisma.InputJsonValue; async?: boolean; workflowId?: string; workflowNodeId?: string; flow?: "conversation" | "workflow" } | undefined;
   const routeStartedAt = Date.now();
   try {
-    body = (await request.json()) as { prompt?: string; model?: string; referenceImages?: string[]; settings?: { ratio?: string; resolution?: string }; count?: number; candidateMode?: "all" | "best"; conversationId?: string; conversationTitle?: string; requestId?: string; metadata?: Prisma.InputJsonValue; async?: boolean; workflowId?: string; workflowNodeId?: string; flow?: "conversation" | "workflow" };
+    body = (await request.json()) as { prompt?: string; model?: string; referenceImages?: string[]; settings?: { ratio?: string; resolution?: string }; count?: number; candidateMode?: "all" | "best"; conversationId?: string; conversationTitle?: string; conversationCode?: string; requestId?: string; metadata?: Prisma.InputJsonValue; async?: boolean; workflowId?: string; workflowNodeId?: string; flow?: "conversation" | "workflow" };
     const prompt = body.prompt?.trim();
 
     if (!prompt) {
@@ -119,6 +119,7 @@ export async function POST(request: Request) {
         creditSource,
         conversationId: body.conversationId,
         conversationTitle: body.conversationTitle,
+        conversationCode: body.conversationCode,
         workflowId: body.workflowId,
         workflowNodeId: body.workflowNodeId,
         flow: body.flow ?? (creditSource?.startsWith("workflow_") ? "workflow" : "conversation"),
@@ -168,8 +169,8 @@ export async function POST(request: Request) {
           mode: "image",
           model: body.model,
           requestId: body.requestId,
-          conversationId: body.conversationId,
-          conversationTitle: body.conversationTitle,
+        conversationId: body.conversationId,
+        conversationTitle: body.conversationTitle,
           error: "图片平台没有返回图片，且没有返回可用原因。",
           referenceImageCount: referenceImages.length,
           imageCount: referenceImages.length,

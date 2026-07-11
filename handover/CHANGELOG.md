@@ -1,5 +1,33 @@
 # Current Handover Changelog
 
+## 2026-07-11 (迁移执行 session) 主服务器 马来→腾讯 阶段2/3 切换完成（阶段4未完）+ 对话流命名 d0 bug 根治 + media-assets 覆盖终生ID bug 根治（全部只在腾讯线上，本地/GitHub 未提交）
+
+Reply style: 简洁直接中文。本 session 做了两大块：(A) 执行主服务器迁移的停服+数据迁移+流量切换（马来→腾讯新加坡），(B) 修复对话流生成图命名 bug（龙图叫 image_40_d0/后来撞名）。**详细待办与"迁移最后一步"见 05-next-actions 顶部，未完成前每次都要显示。**
+
+### A. 迁移 马来→腾讯（阶段2/3 完成，阶段4 未完）
+- **数据盘点**：媒体 `public/generated` 8.6G/9711→最终 9855 文件；DB 142MB/32 账号/MediaAsset 4748 等。
+- **方案**：媒体用 rsync（增量），DB 用 pg_dump 全量（小、快），不预拷贝 DB。
+- **打通 马来→腾讯 直连**：ping 3.8ms/0% 丢包（都在新加坡区）。马来生成密钥 `/root/.ssh/flashmuse_to_tencent_ed25519`，公钥加到腾讯 `ubuntu` authorized_keys。rsync 用 `--rsync-path="sudo rsync"` 写入 root 属主的 `/opt/flashmuse/data/generated`。
+- **第一遍 rsync**（不停服）：8.6G 全量拷完（~2.5h，~1MB/s，小文件多）。
+- **停服切换**（用户确认后）：`pm2 stop flashmuse`（冻结数据，`pm2 save` 持久化停止态防重启复活）→ 第二遍 rsync 补增量（30 文件）→ 马来 `pg_dump`(63MB)→ 灌入腾讯 `flashmuse-db`（DROP SCHEMA public + restore，无 ERROR）→ 腾讯 entrypoint `migrate deploy` 自动补上腾讯专属迁移 `20260710010000_signup_credits_default_0`（27 迁移一致）。
+- **腾讯 env 改**：`FORCE_INSECURE_AUTH_COOKIE=false`、加 `AUTH_COOKIE_DOMAIN=.venusface.com`、`ALI_SYNC_GENERATED_ENABLED=true`。备份 `.env.local.bak.cutover.*`。**AUTH_SECRET 两台一致**（sha256 `36c914ff…`）→ 老用户登录态不失效。
+- **流量切换**（不改 DNS/证书/腾讯安全组）：
+  - 阿里 nginx `/etc/nginx/sites-enabled/flashmuse-static-ip`：8 处 `proxy_pass http://101.47.19.109` → `http://119.28.116.16:5000`。**坑**：备份文件别放 `sites-enabled/`（Ali 用 `sites-enabled/*` 通配加载会重复 default server），移到 `/root/nginx-cutover-backups/`。
+  - 马来 nginx `/etc/nginx/conf.d/flashmuse.conf` 改成**纯反代壳**：删掉本地 `_next/static`/`generated`/`home-assets` 三个 location（否则服务马来旧构建的静态），只留 `location / → 腾讯:5000`。备份 `/root/*flashmuse.conf*`。
+  - 马来 app 停、马来 nginx 只当 SSL+反代壳。
+- **架构现状**：DNS 未变（main/api→马来101.47.19.109，ali/static→阿里101.37.129.164）；两个入口 nginx 都反代到**腾讯 119.28.116.16:5000**（真正跑 app+DB+worker）；`/generated`+`/_next/static` 走阿里本地镜像加速。
+- **ali-sync 密钥补齐**（原来腾讯缺）：从马来拷 `/root/.ssh/flashmuse_to_ali_ed25519`(md5 dd67bf…) 到腾讯 `/opt/flashmuse/data/runtime/flashmuse_to_ali_ed25519`(chmod 600)，env `ALI_SYNC_SSH_KEY=/app/.runtime/flashmuse_to_ali_ed25519`（走 runtime bind-mount）。实测容器→阿里 rsync 推送→`static.venusface.com` 可取 200。
+- **`_next/static` 哈希不匹配 bug（重要运维点）**：腾讯是独立构建、chunk 哈希与马来旧构建不同；阿里/马来 nginx 本地服务 `/_next/static` → 全 404 → 页面样式/JS 崩（用户报"两个域名打不开"）。**修复+以后每次腾讯重 build 必做**：把腾讯 `.next/static` 同步到阿里镜像：`docker cp flashmuse-flashmuse-app-1:/app/.next/static /tmp/next-static` → `rsync -a --delete /tmp/next-static/ root@阿里:/var/www/flashmuse-static/_next/static/`（用 `/opt/flashmuse/data/runtime/flashmuse_to_ali_ed25519`）。马来已改纯反代不服务静态所以不用同步马来。
+- **验证**：ali/main/api/static.venusface.com 全 200，模型列表由腾讯返回，登录态保留，媒体显示正常。基线快照 `20260710-tencent-migration-baseline`（assetListHash `3ed977fdcafb7aec`）。
+
+### B. 对话流生成图命名 bug（两处根因，均已根治部署腾讯）
+- **现象**：用户 ID_636611 会话 d35 里"生成龙"两张图叫 `image_40_d0`/`image_41_d0`（应是 `image_7_d35`/`image_8_d35`）；手工修复后新生成又撞名。
+- **根因1（预约漏了对话流 code）**：2026-07-10 名称预约改动把命名挪到服务端 `reserveJobNames`，但 `generation-jobs.ts` 对话流 `code` **写死 `"d0"`**（工作流走 `deriveWorkflowCode` 是对的，对话流漏了），导致全对话流生成图挤进 `image_N_d0` 全局计数。会话稳定编号 `conversationCode`（如 d35）存在 `WorkspaceSession.summaryJson.conversationCode`。**修复**：客户端生成时传 `conversationCode`（chat-workbench 图/视频两处）→ image/video route 透传 → `reserveJobNames` 对话流 code 用 `input.conversationCode`，缺失回退读 summaryJson，最后才 d0。也存进 job.extraJson 供 worker 兜底 `ensureJobReservedNames`。
+- **根因2（客户端能覆盖服务端预约的终生ID）**：`/api/media-assets` POST 的 **UPDATE 分支**用客户端 `body.name` 覆盖 `systemName`/`initialName`/`currentName`。对话流 `chat-workbench.tsx:11280` 每次工作区保存都 re-persist 生成图、带客户端缓存名；旧标签页带 stale 名（image_40_d0）就把服务端预约的终生ID冲回去（表现为 MediaAsset.updatedAt 集体跳变、手工修复被回滚）。**违反用户规则：终生ID 只由服务端预约、出生即定、不可被客户端改写。修复**：UPDATE 分支不再写 systemName/initialName；currentName 只在工作流临时名(图片生成/视频生成)finalize 时更新，其它不动。
+- **改的文件**：`src/lib/generation-jobs.ts`、`src/app/api/image/route.ts`、`src/app/api/video/route.ts`、`src/components/chat-workbench.tsx`、`src/app/api/media-assets/route.ts`。`tsc` 通过。
+- **历史数据修复**：ID_636611 会话 d35 那 4 张（2 龙图+2 新图）按时间重排为 `image_7_d35`~`image_10_d35`，systemName=initialName=currentName 一致，`nextImageNumber=11`，同步改 WorkspaceSession.messagesJson + WorkspaceMessage.messageJson（url 片段 regexp_replace）。备份 `/opt/flashmuse/data/runtime/manual-fixes/20260711-repair-dragon-d35-before.json`。因根因2已封，这次修复不会再被旧标签页覆盖。
+- **教训**：① 改源码一律用 edit 工具，别用 PowerShell `Set-Content`（本 session 又踩一次，把 image/route.ts 中文改成乱码，`git checkout` 还原重做）。② 手工改库前先确认没有客户端写回路径会覆盖，否则改了白改。③ `docker exec` 传 heredoc SQL 必须加 `-i`，否则 stdin 不进容器、SQL 静默不执行。
+
 ## 2026-07-10 (迁移 session 续) 腾讯阶段1 补齐"完整独立项目"缺口 + 若干迁移专属 bug 修复 + 产品微调（本地 commit+push GitHub；腾讯已部署，马来/阿里未动）
 
 Reply style: 简洁直接中文. 承接同日迁移 session：用户在腾讯 `http://119.28.116.16:5000`（空库全新实例）测试，暴露并修复了几处**迁移专属问题**（都是"马来靠 nginx / 同一块盘"的隐含依赖，在腾讯纯 Docker 栈才暴露），并做了两个产品微调。全部先本地 edit → `tsc` → scp 到 `/opt/flashmuse/app/...` → `docker compose up -d --build flashmuse-app` 部署到腾讯。**马来/阿里线上完全没动。** 本条对应一次 commit+push。
