@@ -382,7 +382,7 @@ function escapeWorkflowRegExp(value: string) {
 
 function removeWorkflowUploadReferenceText(prompt: string, referenceName: string) {
   if (!referenceName) return prompt;
-  return prompt.replace(new RegExp(`@${escapeWorkflowRegExp(referenceName)}\\s?`, "g"), "");
+  return prompt.replace(new RegExp(`@${escapeWorkflowRegExp(referenceName)}(?=$|[\\s，。！？；;、])`, "g"), "").replace(/[ \t]{2,}/g, " ");
 }
 
 function sortWorkflowDurationOptions(options: string[]) {
@@ -894,6 +894,27 @@ function getWorkflowConnectedInputUploads(state: WorkflowCanvasState, nodeId: st
     });
   });
   return mergeWorkflowUploadItems(uploads);
+}
+
+function removeConnectedReferenceNames(nodes: WorkflowNode[], removedEdges: Array<{ source: string; target: string }>): WorkflowNode[] {
+  if (removedEdges.length === 0) return nodes;
+  const nodeById = new Map(nodes.map((node) => [node.id, node] as const));
+  const namesByTarget = new Map<string, string[]>();
+  removedEdges.forEach(({ source, target }) => {
+    const sourceNode = nodeById.get(source);
+    if (!sourceNode) return;
+    const names = getWorkflowNodeOutputUploadItems(sourceNode).map(getWorkflowUploadReferenceName).filter(Boolean);
+    if (names.length === 0) return;
+    namesByTarget.set(target, [...(namesByTarget.get(target) ?? []), ...names]);
+  });
+  if (namesByTarget.size === 0) return nodes;
+  return nodes.map((node) => {
+    const names = namesByTarget.get(node.id);
+    if (!names?.length) return node;
+    const prompt = names.reduce((current, name) => removeWorkflowUploadReferenceText(current, name), node.data.prompt ?? "");
+    if (prompt === (node.data.prompt ?? "")) return node;
+    return { ...node, data: { ...node.data, prompt } };
+  });
 }
 
 function getWorkflowGenerationUploadSnapshot(state: WorkflowCanvasState, node: WorkflowNode): WorkflowUploadItem[] {
@@ -2602,7 +2623,10 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     };
     const syncEdgesFromBindings = () => {
       if (loadingRef.current) return;
-      const next = { ...stateRef.current, edges: getWorkflowEdgesFromConnectionShapes(editor, stateRef.current) };
+      const nextEdges = getWorkflowEdgesFromConnectionShapes(editor, stateRef.current);
+      const removedEdges = stateRef.current.edges.filter((edge) => !nextEdges.some((item) => item.source === edge.source && item.target === edge.target)).map((edge) => ({ source: edge.source, target: edge.target }));
+      const cleanedNodes = removeConnectedReferenceNames(stateRef.current.nodes, removedEdges);
+      const next = { ...stateRef.current, nodes: cleanedNodes, edges: nextEdges };
       stateRef.current = next;
       lastEmittedKeyRef.current = stateKey(next);
       lastExternalKeyRef.current = lastEmittedKeyRef.current;
@@ -2627,7 +2651,10 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     const unlistenDelete = editor.sideEffects.registerAfterDeleteHandler("shape", (shape) => {
       if (shape.type === "workflow_connection" && typeof shape.meta?.workflowEdgeId === "string") {
         const edgeId = String(shape.meta.workflowEdgeId);
-        const next = { ...stateRef.current, edges: stateRef.current.edges.filter((edge) => edge.id !== edgeId) };
+        const sourceNodeId = typeof shape.meta?.sourceNodeId === "string" ? shape.meta.sourceNodeId : "";
+        const targetNodeId = typeof shape.meta?.targetNodeId === "string" ? shape.meta.targetNodeId : "";
+        const cleanedNodes = sourceNodeId && targetNodeId ? removeConnectedReferenceNames(stateRef.current.nodes, [{ source: sourceNodeId, target: targetNodeId }]) : stateRef.current.nodes;
+        const next = { ...stateRef.current, nodes: cleanedNodes, edges: stateRef.current.edges.filter((edge) => edge.id !== edgeId) };
         stateRef.current = next;
         lastEmittedKeyRef.current = stateKey(next);
         lastExternalKeyRef.current = lastEmittedKeyRef.current;
@@ -3190,13 +3217,15 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     updateState((current) => {
       const deletedNodes = current.nodes.filter((node) => node.id === nodeId);
       const withHistory = addHistoricalNodes(current, deletedNodes);
-      return { ...withHistory, nodes: withHistory.nodes.filter((node) => node.id !== nodeId), edges: withHistory.edges.filter((edge) => edge.source !== nodeId && edge.target !== nodeId) };
+      const removedEdges = withHistory.edges.filter((edge) => edge.source === nodeId || edge.target === nodeId);
+      const cleanedNodes = removeConnectedReferenceNames(withHistory.nodes, removedEdges);
+      return { ...withHistory, nodes: cleanedNodes.filter((node) => node.id !== nodeId), edges: withHistory.edges.filter((edge) => edge.source !== nodeId && edge.target !== nodeId) };
     });
     if (connectingFrom === nodeId) setConnectingFrom("");
   }, [connectingFrom, updateState]);
 
   const disconnectNodes = useCallback((sourceNodeId: string, targetNodeId: string) => {
-    updateState((current) => ({ ...current, edges: current.edges.filter((edge) => !(edge.source === sourceNodeId && edge.target === targetNodeId)) }));
+    updateState((current) => ({ ...current, nodes: removeConnectedReferenceNames(current.nodes, [{ source: sourceNodeId, target: targetNodeId }]), edges: current.edges.filter((edge) => !(edge.source === sourceNodeId && edge.target === targetNodeId)) }));
   }, [updateState]);
 
   const setCanvasTool = useCallback((tool: "select" | "hand") => {
@@ -3220,7 +3249,9 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
       updateState((current) => {
         const deletedNodes = current.nodes.filter((node) => deleting.has(node.id));
         const withHistory = addHistoricalNodes(current, deletedNodes);
-        return { ...withHistory, nodes: withHistory.nodes.filter((node) => !deleting.has(node.id)), edges: withHistory.edges.filter((edge) => !deleting.has(edge.source) && !deleting.has(edge.target)) };
+        const removedEdges = withHistory.edges.filter((edge) => deleting.has(edge.source) || deleting.has(edge.target));
+        const cleanedNodes = removeConnectedReferenceNames(withHistory.nodes, removedEdges);
+        return { ...withHistory, nodes: cleanedNodes.filter((node) => !deleting.has(node.id)), edges: withHistory.edges.filter((edge) => !deleting.has(edge.source) && !deleting.has(edge.target)) };
       });
       if (selectedNodeIds.includes(connectingFrom)) setConnectingFrom("");
     };
