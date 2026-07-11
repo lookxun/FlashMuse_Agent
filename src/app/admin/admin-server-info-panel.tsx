@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 type ServerInfoRow = {
   title: string;
   ali: string;
-  malaysia: string;
+  tencent: string;
 };
 
 function getDiskUsedPercent(value: string) {
@@ -80,14 +80,14 @@ export function AdminServerInfoPanel() {
         {message ? <div className="border-b border-[#f2f2f2] px-5 py-3 text-[12px] text-red-500">{message}</div> : null}
         <div className="grid grid-cols-[260px_460px_460px] border-b border-[#eeeeee] bg-[#fafafa] text-[12px] font-medium text-[#777777]">
           <div className="px-5 py-3">内容标题</div>
-          <div className="px-5 py-3">阿里服务器</div>
-          <div className="px-5 py-3">马来服务器</div>
+          <div className="px-5 py-3">阿里云(杭州)_镜像</div>
+          <div className="px-5 py-3">腾讯云(新加坡)_主服</div>
         </div>
         {rows.length > 0 ? rows.map((row) => (
           <div key={row.title} className="grid grid-cols-[260px_460px_460px] border-b border-[#f2f2f2] text-[12px] leading-5 text-[#444444] last:border-b-0">
             <div className="px-5 py-3 font-medium text-[#222222]">{row.title}</div>
             <ServerInfoCell rowTitle={row.title} value={row.ali} />
-            <ServerInfoCell rowTitle={row.title} value={row.malaysia} />
+            <ServerInfoCell rowTitle={row.title} value={row.tencent} />
           </div>
         )) : (
           <div className="px-5 py-8 text-center text-[13px] text-[#999999]">{isLoading ? "正在读取服务器信息..." : "点击刷新读取服务器信息"}</div>
