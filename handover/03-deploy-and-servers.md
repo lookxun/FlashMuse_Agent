@@ -20,10 +20,11 @@
 - DB（腾讯）：容器 `flashmuse-flashmuse-db-1`，`docker exec -e PGPASSWORD=qky9brw3fp5cojhdv80lamtn7ug1 ... psql -U flashmuse -d flashmuse`。**heredoc SQL 必须 `docker exec -i`**（否则 stdin 不进、SQL 静默不执行）。
 
 ### 当前流量架构
-- DNS：`main`/`api`.venusface.com→马来 101.47.19.109；`ali`/`static`→阿里 101.37.129.164（未变）。
-- 马来 nginx `/etc/nginx/conf.d/flashmuse.conf` = 纯反代壳 `location / → http://119.28.116.16:5000`（已删本地 _next/static、generated、home-assets 块）。马来 app 已 `pm2 stop`+`save`。
-- 阿里 nginx `/etc/nginx/sites-enabled/flashmuse-static-ip`：动态 `proxy_pass → 119.28.116.16:5000`；`/generated`+`/_next/static`+`/home-assets` 走阿里本地镜像。改 nginx 备份**别放 sites-enabled/**（通配加载会撞 default server），放 `/root/nginx-cutover-backups/`。
-- 阶段4（DNS/443/证书切腾讯、弃用马来）未完 → 见 05-next-actions 顶部。
+- DNS：`main`/`api`.venusface.com→**腾讯 119.28.116.16**（阶段4已切）；`ali`/`static`→阿里 101.37.129.164。
+- **腾讯 flashmuse-nginx 直接 SSL 终止 main/api（443）**：`/opt/flashmuse/data/nginx/flashmuse.conf` 有 443 server 块（server_name main/api，证书 `/etc/letsencrypt/live/main.venusface.com/`，反代 flashmuse-app:3000 + 本地 /generated、/home-assets）。宿主 443:443、5000:80。证书从马来复制（SAN main+api，到 2026-09-06）。
+- 阿里 nginx `/etc/nginx/sites-enabled/flashmuse-static-ip`：动态 `proxy_pass → 119.28.116.16:5000`；`/generated`+`/_next/static`+`/home-assets` 走阿里本地镜像。
+- **马来已彻底出链路**（DNS 不再指它，app 早已 pm2 stop）。马来壳/退租见 05-next-actions 遗留项。
+- ⚠️ 宿主 80 被 vibesocial-nginx 占用（腾讯是多项目共宿主机），flashmuse 拿不到 80 → 证书续期不能用 HTTP-01，见 05 遗留项②。
 
 ### 只改 nginx / 服务器配置
 - 马来/阿里 nginx 仍可按需改（备份→`nginx -t`→reload）。腾讯 nginx 配置在 `/opt/flashmuse/data/nginx/flashmuse.conf`（容器 flashmuse-nginx）。

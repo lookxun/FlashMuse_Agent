@@ -1,26 +1,20 @@
 # Next Actions
 
-## 🚨 未完成任务：必须每次向用户显示，直到用户明确确认完成 🚨
+## ✅ 迁移阶段4 已完成（2026-07-11）—— main/api 已直连腾讯 443，马来出链路
 
-> 下一个 AI：只要下面这个"迁移阶段4"仍未被用户确认完成，**每次接手都要主动、显眼地告诉用户下面这段"我需要做什么 / 你需要做什么"**，不要等用户问。
+**用户做的**：DNS `main`/`api`.venusface.com A 记录已改指腾讯 `119.28.116.16`；安全组放行 `TCP 443`。
+**AI 做的**：
+- 宿主 80 被 vibesocial-nginx 占用 → certbot HTTP-01 走不通，改**复制马来现有有效证书**到腾讯（一张 `main.venusface.com` cert，SAN 覆盖 main+api，有效期到 **2026-09-06**）。位置 `/opt/flashmuse/data/letsencrypt/live/main.venusface.com/{fullchain,privkey}.pem`。
+- `docker-compose.yml` flashmuse-nginx 加 `443:443` 端口 + 挂载 `/opt/flashmuse/data/letsencrypt:/etc/letsencrypt:ro`。
+- `flashmuse.conf` 加 443 server 块（server_name main/api，反代 flashmuse-app:3000，本地服务 /generated + /home-assets，X-Forwarded-Proto https）。备份 `docker-compose.yml.bak.20260711190655`、`flashmuse.conf.bak.20260711190655`。
+- 验证：`--resolve` 直连腾讯 443 → https main/api = 200 证书有效；公网 DNS 路径 main/api/ali 全 200。
 
-### 迁移最后一步 —— 阶段4：彻底弃用马来（DNS/443/证书切到腾讯）—— 未完成
+**现在架构**：`main`/`api` DNS→腾讯 119.28.116.16:443（腾讯 nginx 直接 SSL 终止）；`ali`/`static`→阿里 101.37.129.164（阿里入口，反代腾讯 5000 + 本地镜像 _next/static、generated）。**马来已彻底不在链路里。**
 
-**当前状态（2026-07-11）**：主服务器已迁到腾讯并对外服务中（ali/main/api 全 200），但**马来还在链路里**当 SSL+反代壳（DNS 的 main/api 仍指马来 IP，马来 nginx 反代到腾讯）。要彻底甩开马来、只跑腾讯，还差最后一步。
-
-**需要【用户】做的（我没有腾讯 API 密钥 / DNS 管理权限，做不了）：**
-1. **腾讯云控制台**：给实例安全组入站放行 `TCP 443`（并确认 `80` 已放行，签证书要用）。目前只开了 22/80/3000/8001/5000。
-2. **DNS 服务商**：把 `main.venusface.com`、`api.venusface.com` 的 A 记录从 `101.47.19.109`(马来) 改成 `119.28.116.16`(腾讯)。（`ali`/`static` 建议保留指阿里做国内加速，不动。）
-
-**需要【AI】做的（等用户完成上面两步后）：**
-3. 给腾讯 `flashmuse-nginx` 容器加 `443:443` 端口映射（改 `/opt/flashmuse/docker-compose.yml`）。
-4. certbot 给 `main.venusface.com`、`api.venusface.com` 签 Let's Encrypt 证书（需 DNS 已指腾讯 + 80 可达）。
-5. 配腾讯 nginx 443 server_name + 证书 + 反代 app；验证 https://main、https://api 直连腾讯 200。
-6. 全部 OK 后马来可停用（保留几天观察再退租）。
-
-**若用户暂不做**：现状可长期稳定运行（马来只当反代壳），不影响使用；只是没省掉马来的钱、main/api 流量多绕一跳马来（马来↔腾讯同在新加坡，延迟可忽略）。
-
-**⚠️ 本 session 所有代码改动只在腾讯线上，本地仓库 / GitHub 未提交**：`src/lib/generation-jobs.ts`、`src/app/api/image/route.ts`、`src/app/api/video/route.ts`、`src/components/chat-workbench.tsx`、`src/app/api/media-assets/route.ts`（命名 bug 根治那批）。另有服务器端 nginx 改动（阿里/马来 proxy_pass、马来纯反代壳）只在服务器。等用户说"提交"时：本地对这些文件做同样修改（或从腾讯 `/opt/flashmuse/app/` 取回）后 `tsc`+commit+push。**注意本地这些文件目前是"迁移前"旧版，别直接 commit 旧版覆盖线上新逻辑——以腾讯线上为准。**
+### 阶段4 遗留（都不急，下一个 AI 跟进）
+1. **马来退役**：DNS 已不指马来、马来 app 早已 pm2 stop，马来壳成死重。用户观察几天无异常后可退租。**AI 未停马来**，等用户决定。
+2. **⚠️ 证书自动续期未解决**：宿主 80 被 vibesocial 占，标准 HTTP-01 续期走不了。当前 cert 到 **2026-09-06**，约2个月缓冲。到期前需实现续期：优先 **tls-alpn-01**（走 443，certbot 续期时用 `--preferred-challenges tls-alpn-01`，需临时释放/协调 443，可加 nginx pre/post hook 停起容器）；或 DNS-01（需 DNS 服务商 API）。届时也可考虑直接再从马来复制新证书（若马来还没退租且能自行续），但马来退租后此路断。
+3. **HTTP(80) 无重定向**：用户敲 `http://main...` 会落到宿主 80 的 vibesocial-nginx（拿不到 flashmuse），实际都走 https 无影响；无法给 flashmuse 绑 80（被占）。
 
 **⚠️ 腾讯部署新流程（每次改代码必读）**：scp 改动源码到 `/opt/flashmuse/app/src/...` → `cd /opt/flashmuse && nohup sudo docker compose up -d --build flashmuse-app`（后台+轮询日志防 120s 超时）→ **必须**把腾讯 `.next/static` 同步到阿里镜像（否则 chunk 哈希不匹配全 404）：`sudo docker cp flashmuse-flashmuse-app-1:/app/.next/static /tmp/next-static && sudo rsync -a --delete -e "ssh -i /opt/flashmuse/data/runtime/flashmuse_to_ali_ed25519" /tmp/next-static/ root@101.37.129.164:/var/www/flashmuse-static/_next/static/`。详见 03-deploy-and-servers。
 
