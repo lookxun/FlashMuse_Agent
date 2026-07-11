@@ -7,7 +7,7 @@ Last checked: 2026-07-11 China time.
 **线上现状**：主服务器 = **腾讯云新加坡 119.28.116.16**（Docker 栈 app+db+nginx）。`main`/`api` DNS 已直指腾讯，**腾讯 nginx 443 直接 SSL 终止**（证书从马来复制，SAN 覆盖 main+api，到 2026-09-06）；`ali`/`static`→阿里 101.37.129.164（阿里入口反代腾讯 5000 + 本地镜像 _next/static、generated 做国内加速）。**马来已彻底不在链路里**（DNS 不指它、app 早已 pm2 stop）。
 
 - **阶段4 做了**：确认用户已切 DNS + 放行 443；宿主 80 被 vibesocial 占→改复制马来有效证书到腾讯；compose 加 443:443 + 挂证书；nginx 加 443 server 块（main/api）。验证 --resolve 直连腾讯 https main/api=200 证书有效、公网 DNS main/api/ali 全 200。
-- **遗留（不急，见 05 顶部）**：①马来退役待用户决定（AI 未停）②证书自动续期未解决（宿主80被占，到期 9-6 前用 tls-alpn-01 续）③http(80)无重定向（宿主80被占，实际都走 https 无影响）。
+- **遗留（见 05 顶部）**：①马来退役待用户决定（AI 未停）②✅证书自动续期已配好（acme.sh tls-alpn-01 走443，LE ECC 到 2026-10-09，cron 约 9-10 自动续）③http(80)无重定向（宿主80被占，实际都走 https 无影响）。
 - **⚠️ 腾讯重 build 后必须同步 `.next/static` 到阿里镜像**，否则 chunk 哈希不匹配全站 404。命令见 05/03。
 
 ## 🐛 2026-07-11 — 对话流生成图命名 d0 bug 根治（两处根因）+ 历史数据修复（仅腾讯线上，本地/GitHub 未提交）
