@@ -2,12 +2,12 @@
 
 Last checked: 2026-07-11 China time.
 
-## 🚨🚨 2026-07-11 — 主服务器已切到腾讯（阶段2/3完成）；迁移阶段4未完，见 05-next-actions 顶部"每次必显示" 🚨🚨
+## ✅ 2026-07-11 — 迁移全部完成（含阶段4）：main/api 直连腾讯 443，马来出链路
 
-**线上现状**：真正跑 app+PostgreSQL+worker 的是**腾讯云新加坡 119.28.116.16**（Docker 栈 app+db+nginx，对外 5000）。DNS 未变：`main`/`api`.venusface.com→马来 101.47.19.109，`ali`/`static`→阿里 101.37.129.164；两个入口 nginx 都反代到腾讯。`/generated`+`/_next/static` 走阿里本地镜像加速（腾讯经 ali-sync 回推阿里）。**马来 app 已 `pm2 stop`+`pm2 save`（停止态持久化），马来 nginx 退化为 SSL+反代壳。**
+**线上现状**：主服务器 = **腾讯云新加坡 119.28.116.16**（Docker 栈 app+db+nginx）。`main`/`api` DNS 已直指腾讯，**腾讯 nginx 443 直接 SSL 终止**（证书从马来复制，SAN 覆盖 main+api，到 2026-09-06）；`ali`/`static`→阿里 101.37.129.164（阿里入口反代腾讯 5000 + 本地镜像 _next/static、generated 做国内加速）。**马来已彻底不在链路里**（DNS 不指它、app 早已 pm2 stop）。
 
-- **迁移做了**：媒体 rsync（马来→腾讯，9855 文件）、DB 全量 pg_dump→腾讯 flashmuse-db（无 ERROR，行数一致）、腾讯 env 改（关 insecure cookie、加 AUTH_COOKIE_DOMAIN、开 ali-sync）、AUTH_SECRET 两台一致（登录态保留）、阿里+马来 nginx proxy_pass 切腾讯、马来改纯反代壳、补齐腾讯→阿里 ali-sync 密钥、腾讯 `.next/static` 同步阿里镜像。详见 CHANGELOG 顶条。
-- **迁移未完（阶段4）**：DNS/443/证书还没切到腾讯，马来仍在链路里。**每次接手要主动提醒用户，直到用户确认完成。步骤见 05-next-actions 顶部。**
+- **阶段4 做了**：确认用户已切 DNS + 放行 443；宿主 80 被 vibesocial 占→改复制马来有效证书到腾讯；compose 加 443:443 + 挂证书；nginx 加 443 server 块（main/api）。验证 --resolve 直连腾讯 https main/api=200 证书有效、公网 DNS main/api/ali 全 200。
+- **遗留（不急，见 05 顶部）**：①马来退役待用户决定（AI 未停）②证书自动续期未解决（宿主80被占，到期 9-6 前用 tls-alpn-01 续）③http(80)无重定向（宿主80被占，实际都走 https 无影响）。
 - **⚠️ 腾讯重 build 后必须同步 `.next/static` 到阿里镜像**，否则 chunk 哈希不匹配全站 404。命令见 05/03。
 
 ## 🐛 2026-07-11 — 对话流生成图命名 d0 bug 根治（两处根因）+ 历史数据修复（仅腾讯线上，本地/GitHub 未提交）
