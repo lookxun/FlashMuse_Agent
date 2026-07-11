@@ -1,5 +1,56 @@
 # Current Handover Changelog
 
+## 2026-07-11 (第二 session) 7-11改动同步回本地/GitHub + 通用模式对齐agent(剥历史图) + 生成图hover工具菜单 + @文件名/缩略图规则统一 + 迁移阶段4完成(main/api切腾讯443) + 证书自动续期 + 后台服务器信息改腾讯 + 腾讯磁盘扩容500G（全部已部署腾讯+推GitHub，三方同步 `5e6491c`）
+
+Reply style: 简洁直接中文。本 session 接上一个迁移 session，做了 8 件事，**全部已部署腾讯线上 + 推 GitHub，本地=GitHub=腾讯三方同步**。腾讯部署流程见 03-deploy 顶部（scp源码→`docker compose up -d --build flashmuse-app`→**必须同步 `.next/static` 到阿里镜像**）。
+
+### 1. 把上个 session 的 7-11 改动同步回本地/GitHub（commit `fbd955c`）
+- 上个 session 命名 bug 根治那批（generation-jobs.ts/image·video route/chat-workbench/media-assets）当时只在腾讯线上。本 session 从腾讯 scp 回这 5 个文件、与本地逐字节比对**发现本地工作树已一致**（之前也在本地改过没提交），tsc 通过后连同 7-11 handover 文档一起 commit+push。
+
+### 2. 通用(general) Agent 模式对齐 agent 模式：剥离历史图片（commit `8f26c64`，chat-workbench.tsx）
+- **问题**：用户先在生图/生视频模式生成一堆图，再切到**通用 Agent** 模式发"你好"，`toGeneralPayloadMessages` 会把整段历史消息里的所有图片（含之前生成图、上传图）当 `image_url` base64 全打包发给模型（`openrouter.ts` 读盘转 base64 内联）→ 请求暴涨、烧 token、可能 413。而 agent(剧本)模式本来就剥离历史图、只留本轮上传，是对的。
+- **修复**：`toGeneralPayloadMessages` 加 `keepLatestUserImages` 参数，与 agent 一样无条件剥离所有历史图片（`images: undefined`），只在本轮上传了参考图时保留那一张挂到最后一条 user 消息。DeepSeek 纯文本模型仍全无图。调用点传 `referenceImages.length > 0`。**agent/通用的隐式意图带图路径不受影响**（`getRecentReferenceImages`，用户说"把上面那张图改成…"时自动带最近图）。
+- **规则定调（所有模式统一）**：生图/生视频/工作流/agent/通用——有缩略图的一定发，@名只管顺序/意图。agent+通用额外多"理解用户意图自动带最近图"一种情况。
+
+### 3. 生成图 hover 工具菜单（commit `8f26c64`，chat-workbench.tsx `ImageResultThumb`）
+- 对话流里每张**生成完的图片**右上角加悬浮工具菜单：黑底半透明药丸(`rounded-[4px]` `bg-black/90`)，两个按钮(`h-7 w-7` `rounded-[5px]`)：**下载**(RiDownloadLine，同预览页 `getDownloadUrl`+`getDownloadName`)、**@**(RiAtLine，调新增 `mentionMediaIntoInput` 把这张图作参考图加进输入框=缩略图卡片+蓝色@文件名，复用 `toUploadedAssetReference`+`addActiveUploadedImages`，名字取 `getCanonicalMediaName` 终生ID)。只 `group-hover:opacity-100` 显示、图片加载完(`isLoaded`)才出。
+- **实现**：`ImageResultThumb` 外层 `<button>` 改 `<div role=button>`(避免按钮内嵌 a/button 非法嵌套)，保留 Enter/Space 触发预览；菜单按钮 `stopPropagation` 不误触发预览；`onMention`/`getImageName` 经 `ImageResultStrip`+`ImageResultSlotStrip` 两条渲染路径透传。
+
+### 4. @文件名/缩略图 删除规则统一（commit `8f26c64`，chat-workbench.tsx + workflow-tldraw-canvas-inner.tsx）
+- **用户规则**：同图一个缩略图、@名可多次；可删光@名只留缩略图(=+号上传状态，仍发)；**允许"有缩略图无@名"，不允许"有@名无缩略图"**；删缩略图(对话流点关闭/工作流断连/删节点/删连线)→该图**所有**@名全清。对话流+工作流统一。
+- **对话流提交逻辑改**(12483)：`sourceImageReferences` 从"有@名就只发被@的图、丢弃无@名缩略图"改为**所有缩略图都发**，被@命中的按@顺序排前、未@的按原顺序补后。
+- **对话流删缩略图同步删@名**：`removeActiveUploadedImage` 原来完全不碰 draftInput（图片漏了、视频/音频的 `removeActiveUploadedFile` 却有）→ 现用新 helper `removeAllMentionNames` 删净。**修了正则"只删一个"bug**：旧正则 `(^|\s)@name(?=\s|$)\s?` ① 要求@前有空格(中文紧贴匹配不到) ② 相邻`@name @name`共享空格被吃隔一漏删。新正则 `@name(?=$|[\s标点])` 全局删所有出现、不依赖前置空格、加后置边界防 `@image_1` 误伤 `@image_10`。
+- **工作流所有断连路径清下游@名**：新增 helper `removeConnectedReferenceNames`(按被删边的源节点输出名清目标节点 prompt)，接入 `disconnectNodes`/`deleteNode`/键盘删节点/画布删连线shape(`registerAfterDeleteHandler`)/拖断绑定(`syncEdgesFromBindings`差异检测)。`removeWorkflowUploadReferenceText` 也补后置边界。
+
+### 5. 迁移阶段4 完成：main/api 切腾讯 443、马来出链路（commit `9f41fd3`）
+- 用户已做：DNS `main`/`api`→腾讯 `119.28.116.16`、安全组放 443。
+- **宿主 80 被 vibesocial-nginx 占**(腾讯是多项目共宿主：还有 CinematicFlow `ps-`、VibeSocial)→certbot HTTP-01 走不通。**先复制马来现有有效证书**(一张 `main.venusface.com`，SAN 覆盖 main+api)到腾讯 `/opt/flashmuse/data/letsencrypt/live/main.venusface.com/`。
+- `docker-compose.yml` flashmuse-nginx 加 `443:443` + 挂 `/opt/flashmuse/data/letsencrypt:/etc/letsencrypt:ro`；`flashmuse.conf` 加 443 server 块(server_name main/api，反代 flashmuse-app:3000 + 本地 /generated·/home-assets，X-Forwarded-Proto https)。备份 `*.bak.20260711190655`。
+- 验证 `--resolve` 直连腾讯 https main/api=200 证书有效。**马来彻底出链路**(DNS 不指、app 早停)。
+
+### 6. 证书自动续期：acme.sh tls-alpn-01（commit `4ac04e9`）
+- certbot standalone **不支持 tls-alpn-01**(只 http-01，需 80)。改装 **acme.sh** 用 `--alpn`(走 443)。
+- 重新签发 LE ECC(main+api)到 **2026-10-09**(替换了从马来复制的那张)。acme.sh 自带 cron(每天4次)，ARI 约 **2026-09-10** 自动续。续期链(已解码验证)：`Le_PreHook=docker stop flashmuse-flashmuse-nginx-1`(释放443)→签发→`Le_PostHook=docker start ...`→`Le_ReloadCmd=docker restart flashmuse-flashmuse-nginx-1`(加载新证书，用 restart 避开 `nginx -s reload` 的容器未就绪竞态)。装到 `/opt/flashmuse/data/letsencrypt/live/main.venusface.com/`(nginx 已挂载读取)。手动续期：`sudo /root/.acme.sh/acme.sh --renew -d main.venusface.com --ecc --force`(注意 LE 每周5张同域名限额)。**续期时 nginx 短暂重启(几秒~1分钟)只影响 main/api，ali 走5000不受影响。**
+
+### 7. 后台"服务器信息"改腾讯（commit `d0b2290` + `5e6491c`，server-info/route.ts + admin-server-info-panel.tsx）
+- **原代码在腾讯容器跑不通**：硬编码 Windows 本地 pem 路径 + 级联 SSH(本机→马来→跳阿里)。**重设计**：腾讯(主服)=容器**本机** `bash -s` 跑 infoScript(读 /proc·df，容器反映宿主)；阿里(镜像)=容器**直连 SSH**(用挂载的 `/app/.runtime/flashmuse_to_ali_ed25519`)不再经马来跳板。移除所有马来代码。数据键 `malaysia`→`tencent`。app_path 自动探测(腾讯容器 `/app/public/generated`、阿里 `/var/www/flashmuse-static`)。
+- **前端表头**改 `阿里云(杭州)_镜像`(左) / `腾讯云(新加坡)_主服`(右)。
+- **公网 IP 修正**(`5e6491c`)：脚本 `curl api.ipify.org` 超时/被墙→回退拿到内网/容器IP(阿里 172.16.x、腾讯 docker 172.20.x + 容器id)。改用固定常量公网IP显示：阿里 `iZ.../101.37.129.164`、腾讯 `腾讯云新加坡主服/119.28.116.16`(不再显示会变的容器id)。
+- **注意**：改数据键后旧缓存前端会崩("This page couldn't load"，旧JS读 `row.malaysia`=undefined 在硬盘行 `.match` 崩)→**硬刷新 Ctrl+Shift+R** 即好，非真bug。
+
+### 8. 腾讯磁盘扩容 200G→500G（宿主机运维，非代码）
+- 后台显示磁盘只 196G，查明**云盘已扩到 500G 但分区/文件系统没扩**：`vda` 500G 但 `vda2`(/)只 200G。在线扩(ext4 不停机不丢数据)：`sudo growpart /dev/vda 2` + `sudo resize2fs /dev/vda2`。结果 `/dev/vda2` 493G / 可用从 83G→**366G**。生成媒体 `/opt/flashmuse/data/generated` 就在此根分区。
+
+### 当前所有域名指向（2026-07-11）
+- `main.venusface.com` / `api.venusface.com` → **腾讯 119.28.116.16**(nginx 443 直连 app)
+- `ali.venusface.com` / `static.venusface.com` → **阿里 101.37.129.164**(国内加速入口/静态镜像)
+- 马来 `101.47.19.109` 已无域名指向(死重待退役)
+
+### 阶段4 唯一遗留
+- **马来退役**：DNS 已不指、app 早停，观察几天无异常后用户可退租。AI 未停马来。
+
+---
+
 ## 2026-07-11 (迁移执行 session) 主服务器 马来→腾讯 阶段2/3 切换完成（阶段4未完）+ 对话流命名 d0 bug 根治 + media-assets 覆盖终生ID bug 根治（全部只在腾讯线上，本地/GitHub 未提交）
 
 Reply style: 简洁直接中文。本 session 做了两大块：(A) 执行主服务器迁移的停服+数据迁移+流量切换（马来→腾讯新加坡），(B) 修复对话流生成图命名 bug（龙图叫 image_40_d0/后来撞名）。**详细待办与"迁移最后一步"见 05-next-actions 顶部，未完成前每次都要显示。**
