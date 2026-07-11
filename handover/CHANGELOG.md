@@ -1,5 +1,80 @@
 # Current Handover Changelog
 
+## 2026-07-12 (later session) 生成图统一出生根治 + 资产→节点读取统一(model) + 全平台上传内容哈希去重(阶段3b全量) + 从资产库导入刷新/model + 历史model回填（全部已部署腾讯；本条与下面 7-12 那批一起 commit+push 三方同步）
+
+Reply style: 简洁直接中文。承接同日"资产入库/显示统一大改造"。本 session 把统一改造**没覆盖到的几个口子**逐个补齐，核心原则：**所有生成一律由服务端 finalize 唯一权威出生（buildMediaAssetRecord），所有"资产变节点/引用/上传"一律从统一口径读真实数据，不用兜底默认；覆盖对话流/工作流/资产库全平台，且适配未来新生成模式。**
+
+### 1. 从资产库导入工作流：新生成图刷不出来 + 导入节点模型名错
+- **刷新 bug**：`openAssetImportDialog`(chat-workbench) 原来 `if(!current[filter]) 才加载` → 缓存后不再刷新，新生成图看不到。改成**每次打开清空缓存强制重新拉**。
+- **导入节点模型名错(显示成默认 Seedream)**：`toggleAssetImportSelection` 没带资产真实 model → 节点兜底成图片节点默认模型。链路修复：`workspace-state` GET + `media-assets` GET 都**返回原始 model id**（原来只给 previewMeta.modelLabel 显示名，节点 data.model 需要 id）；`AssetItem` 加 `model` 字段；`toggleAssetImportSelection`/`workflowAssets` 映射/`historicalMediaNodes` summary 全部带上 `asset.model`。工作流"使用提示词"(addNodeFromPrompt 从节点复制 model)、对话流消息(generationMeta.model)、图层恢复(整节点)本就正确。
+
+### 2. 生成图"统一出生"根治（图片对齐视频）—— 最关键
+- **现象**：资产库生成的图(byteplus seedream)入库后 model/ratio/settings/requestId **全空**；对话流 gpt 图正常。
+- **根因**：byteplus 图是**异步存盘**(openrouter.ts asyncSave)，交付那刻 url 还是远程；`runImageJob`→`finalizeImageJobAsset` 用 `resolvePersistableMediaAssetUrl` 判远程 url 不可持久化→`continue` **跳过、不出生**。行最后由客户端 **PATCH 兜底分支**(`media-assets:361 fallbackMedia`)凭空建出——不走 buildMediaAssetRecord、不带 model/settings → 全空，且"出生即冻结"再补不回。对话流 gpt 图是本地交付所以 finalize 正常，没暴露。
+- **修复**(`generation-jobs.ts runImageJob`)：**对齐视频**。交付图若为远程 http url，先 `enqueueRemoteAssetSave`+`waitForMediaSaveJob(60s)` 拿到稳定本地 url，再 `finalizeImageJobAsset`（统一 builder 存全量 model/settings/尺寸）、markSucceeded 返回本地 url。→ 所有生成图(含 byteplus 异步、含未来 job 化新模式)都由服务端权威出生、参数齐全；客户端拿到时行已存在，PATCH/POST 都走 update，兜底空行不再发生。
+
+### 3. 历史 model 回填（仅用户 12424740/ID_636611，精确来源，非猜）
+- 从 GenerationJob(reservedNames 匹配) + creditLedger(url 匹配) 精确回填 7 张空 model 老图：`asset_3_role`(seedream,16:9,2K)、`image_1~4_d22`(seedream)、`video_1_d22`(seedance-2-0-fast)、`hero-dragon-reference`(gpt-5.5)。仅补 model/ratio/resolution 列、幂等(只补空的)。备份 `/opt/flashmuse/data/runtime/manual-fixes/20260712-backfill-model-before.json`。
+- **5 张无精确来源留空不猜**：asset_1_role、Anima_00001_、hero-mecha-robot-reference、aaa、1779127299645-…（GenerationJob/ledger 里都无可匹配 model）。
+
+### 4. 全平台上传内容哈希去重（阶段3b 全量完成：对话流+工作流+资产库）
+- **隔离设计**：服务端 `asset-upload-temp` POST 判重加 `dedup=1` 开关（`wantDedup`）——只有带 flag 才判重，contentHash 照常存(无害)。这样可逐场景上线、互不波及；现三处都带上了 → **跨全平台判重**(在任何地方传过的同一字节图，之后到任何地方再传都判重复、复用同一 url、不重复入库)。
+- **对话流**(chat-workbench `uploadTemporaryAssetImage(Once)` 返回 `{token|duplicate+url, contentHash}`；两处上传点带 dedup=true、命中复用 url+跳过 commit、存 contentHash 进 `addUploadedImagesToAssets` POST)。提示「图片已存在，无需重复上传！」弹**输入框上方**(showInputTip)。
+- **工作流**(`uploadWorkflowImageOnce` 加 dedup、返回 `{url,duplicate,contentHash}`；`handleUploadNodeFile` 加 `onDuplicateTip` 回调、`persistWorkflowUploadNodeAsset` 存 contentHash)。**两个上传点、两种提示位置**：画布上传→提示弹**画布下方中间**(`onShowTip`)；输入框上传→提示弹**输入框上方**(`showLocalTip`，经 `uploadFilesAsConnectedNodes(onDuplicateTip)` 透传；连"已在画布/已在历史"提示也一并改走输入框上方)。
+- **资产库**(slot 上传带 dedup、命中即弹提示+复用；`submitAssetUpload` 提交时复用 tempUrl 不再 commit、只入库新图、POST 带 contentHash)。**去掉了旧的按 url 字符串判重**(原 `knownUrls` + "无需要重复添加")，统一到内容哈希。
+- **工作流输入框上传两个体验修复**：① 上传后**不再选中上传的节点**(会导致选中切走、输入框消失、提示也没了)，改为**重新选中生成节点**(`selectAndFocusUploadedNodes([targetNodeId], false)`)→ 输入框保留、提示正常。② 输入框上传**不放大画面**(focus=false)；画布上传照旧放大定位(`selectAndFocusUploadedNodes` 加 `focus` 开关)。
+
+### 部署与验证
+- 全程窄部署腾讯(scp→`docker compose up -d --build`→同步 `.next/static` 到阿里)，每次 tsc 通过、三域名 200、worker started。dedup 已用后台 `asset-upload-temp-post-dedup-hit` 日志 + DB 无重复行验证生效。
+- **本条 + 下面 7-12 那批一起 commit+push GitHub → 三方同步**。
+
+---
+
+## 2026-07-12 资产入库/显示统一大改造 阶段1/2/3a/4（已部署腾讯，**GitHub 未推、本地未 commit**；阶段3b图片去重客户端待做）
+
+Reply style: 简洁直接中文。起因=用户盘点 12424740 账号资产库发现历史乱：生成的显示成"上传"、参数不全（缺模型/尺寸/比例K数）、疑似被兜底覆盖。根因=**入库无单一权威、显示无单一投影、且出生后被反复覆盖**。用户定调（务必遵守）：**资产原始数据出生即冻结、永不变；之后只有用户改名/移动/删除（只写 UserAssetState）**；这次只保证**以后不再错**，历史数据**不删不改**（两个字节相同的老文件也各留各的）；且未来任何新"生图/生视频/上传"口子都必须走这套统一存/读方案，不许另起一套（代码+文档双保险）。详见 06-memo-tasks 的 M016/M017。
+
+### 摸底结果（只读脚本 `scripts/audit-asset-consistency.mjs`，跑在腾讯线上）
+- 你账号 ID_636611：438 个资产；缺 previewMeta 109（**不致命**，读取端有回退用列现算）、生成图缺尺寸 74、缺全量settings 55、缺模型/比例各 6、生成显示成上传类 2、无终生ID 4。
+- 全库：4332 个；缺 previewMeta 2607、缺比例/K数 125、无终生ID 102、归类打架 46。
+- **关键结论**：大部分"没参数"其实只是缺 previewMeta 而显示照常（有回退）；真显示不出参数的是少数；归类错+无名才是看着最乱的。规模不大，历史不动。
+
+### 阶段1 — 新建统一模块 `src/lib/media-asset-record.ts`（纯新增不接线）
+- `classifyAsset(origin/flow/mediaType/assetKind)`→ 唯一归类规则，输出 `promptSource/sourceKind/initialCategory`。**是生成还是上传由代码路径给定，绝不靠 URL 猜**。工作流生成图/视频分开算（`workflow_generation_image`/`_video`）。
+- `buildMediaAssetRecord(input)`→ 唯一入库构造器，一次填齐所有列（含全量 generationSettings、视频也存宽高）。**previewMeta 不再存库**。
+- `buildUserAssetStateRecord(...)`→ 出生态 UserAssetState。
+- `toAssetPreviewMeta`/`resolveAssetPreviewMeta`/`getMediaModelDisplayName`/`getCommonRatioLabel`/`getResolutionFromDimensions`→ 唯一显示投影（有存好的 previewMeta 就用并规范化模型名、否则由列现算）。
+- `normalizeLegacySourceKind`→ 老叫法只读兼容映射（workflow_generation→按类型细分、asset_generation(_video)→asset_generation_image）。
+
+### 阶段2 — 写入点切 builder + 关掉"出生后覆盖"3 个元凶
+- `generation-jobs.ts` `finalizeImageJobAsset`/`finalizeVideoJobAsset`：改用 buildMediaAssetRecord，存全量 settings；**视频从此存宽高**（`finalizeVideoJobAsset` 加 dimensions 参，来自 `saveJob.dimensions`）。图片 update:{} 已冻结；视频 update 只回填 poster/thumbnail。
+- **#3 `workspace-sessions.ts:157` syncWorkspaceMessageMediaAssets（头号元凶）**：以前每次保存对话流都把该资产参数/归类/**连 initialName** 全覆盖。改成 `update:{}`——只在权威写入者漏建时补建，已存在绝不碰内容。
+- **#4 `media-assets/route.ts:237` POST**：update 分支从全覆盖改 `update:{}`。
+- **#5 `upload-file/route.ts:80`**：改用 buildMediaAssetRecord，补存以前漏的 `mimeType/fileSize`，update 改 `{}`。
+
+### 阶段3a — 上传按内容哈希去重（视频/音频/文档，服务端闭环）+ contentHash 列
+- schema `MediaAsset` 加 `contentHash String?` + `@@index([userId, contentHash])`；迁移 `20260712000000_media_asset_content_hash`（腾讯已 apply）。
+- `upload-file/route.ts`：落盘**前**算原始字节 SHA-256，`findDedupUploadUrl(userId,contentHash)` 命中可见资产就直接返回旧 url（`{dedup:true}`）、不重复落库；未命中才存盘并写 contentHash。
+- `asset-upload-temp/route.ts`（图片）：POST 也算哈希、`findDedupImageUrl` 判重命中返回 `{duplicate:true,url}`、否则返回 `{...result, contentHash}`。`media-assets` POST 能接收 body.contentHash 存库。**⚠️ 图片这条对现状是"休眠安全"**：老图无 contentHash、客户端还没传 contentHash、也没处理 duplicate 响应 → 判重永不命中、不会触发、不破坏现有图片上传。要真生效必须做阶段3b。
+
+### 阶段4 — 显示统一
+- `workspace-state/route.ts`（资产库+@弹窗）与 `media-assets/route.ts` GET（工作流资产）的 previewMeta/模型名计算，**全部改用共享 `resolveAssetPreviewMeta`**。删掉各自重复的 model-label/ratio/resolution 实现。**顺手修 bug**：工作流资产以前显示模型原始 id（一长串），现在也走统一显示名。
+- 后台 user-detail 是性能汇总、不渲染这套参数卡，未纳入（无一致性问题）。
+
+### 部署（腾讯，2026-07-12）
+- scp 9 文件（含迁移）到 `/opt/flashmuse/app`，备份 `/opt/flashmuse/app-backups/20260712013457-asset-unify/`，`docker compose up -d --build flashmuse-app`（entrypoint 自动 migrate deploy），同步 `.next/static` 到阿里。
+- 验证：迁移已 apply、contentHash 列存在、Ready+worker started、main/api/ali `/workspace`=200、真实 chunk 在 ali/static=200。
+- **本地 tsc + build 通过。三方状态：腾讯线上 = 本地（未 commit/未推 GitHub）。下一个 AI 若要三方同步：commit+push 本次 9 文件 + `src/lib/media-asset-record.ts`（新）+ `scripts/audit-asset-consistency.mjs`（新）+ 迁移目录。**
+
+### ⚠️ 阶段3b（下一次要做）——图片上传去重的客户端接线（风险高，单独一批 + 浏览器验证）
+**目标**：让"上传字节完全一致的同一张图"也复用已上传那张（对话流塞输入框缩略图、工作流复用同一 url），不重复落库、不提示。**服务端已就绪**（见阶段3a），缺客户端接线。
+**要改的客户端点（都在 `chat-workbench.tsx` 和 `workflow-tldraw-canvas-inner.tsx`）**：
+1. `uploadTemporaryAssetImageOnce`(chat 4332) / `uploadWorkflowImageOnce`(workflow 647)：返回值从只有 `token` 改为含 `{token?, contentHash?, duplicate?, url?}`。
+2. 各上传调用点（chat 约 8407 资产库 slots、约 13435 对话流输入框；workflow 约 647/741）：命中 `duplicate` 时**跳过 commit**、直接用返回的 `url` 作为已上传图；并把 `contentHash` 透传进后续 `POST /api/media-assets`（body 加 `contentHash`，服务端已支持存）。
+3. 注意两步式还有 reencode 探测重试（`uploadTemporaryAssetImage` 包装）、多处独立状态机（tempToken/slots/sessions），逐处小心改。
+4. **必须浏览器实测**：传一张没传过的图=正常；传一张已传过的同一文件=秒复用同一张、资产库不新增、输入框直接出缩略图；png 转 jpg 的"看着同一张"应判为不同（字节不同）。
+
+
 ## 2026-07-11 (第二 session) 7-11改动同步回本地/GitHub + 通用模式对齐agent(剥历史图) + 生成图hover工具菜单 + @文件名/缩略图规则统一 + 迁移阶段4完成(main/api切腾讯443) + 证书自动续期 + 后台服务器信息改腾讯 + 腾讯磁盘扩容500G（全部已部署腾讯+推GitHub，三方同步 `5e6491c`）
 
 Reply style: 简洁直接中文。本 session 接上一个迁移 session，做了 8 件事，**全部已部署腾讯线上 + 推 GitHub，本地=GitHub=腾讯三方同步**。腾讯部署流程见 03-deploy 顶部（scp源码→`docker compose up -d --build flashmuse-app`→**必须同步 `.next/static` 到阿里镜像**）。

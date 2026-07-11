@@ -8,6 +8,7 @@ import { migrateLegacyUserProfileFromWorkspace, stripUserProfileFromWorkspaceSta
 import { compactWorkspaceState, hasJsonChanged, replaceLegacyMediaUrls } from "@/lib/workspace-state-cleanup";
 import { DEFAULT_WORKSPACE_SESSION_LIMIT, getWorkspaceSessionMessages, stripSessionsFromWorkspaceState, upsertWorkspaceSessions, workspaceSessionRowToPayload } from "@/lib/workspace-sessions";
 import { getWorkspaceWorkflowPayloads, stripWorkflowsFromWorkspaceState, upsertWorkspaceWorkflows } from "@/lib/workspace-workflows";
+import { getMediaModelDisplayName, resolveAssetPreviewMeta } from "@/lib/media-asset-record";
 
 export const runtime = "nodejs";
 
@@ -131,27 +132,6 @@ function dbDateToMs(value: Date | null | undefined) {
   return value ? value.getTime() : undefined;
 }
 
-function getMediaModelDisplayName(model: string | null | undefined) {
-  if (!model) return "-";
-  const labels: Record<string, string> = {
-    "byteplus:conversation-image.seedream-4-5": "Seedream 4.5",
-    "byteplus:conversation-image.seedream-5-0": "Seedream 5.0",
-    "byteplus:video.seedance-2-0-fast": "Seedance 2.0 Fast",
-    "byteplus:video.seedance-2-0": "Seedance 2.0",
-    "bytedance-seed/seedream-4.5": "Seedream 4.5",
-    "google/gemini-3.1-flash-image-preview": "Gemini 3.1 Flash",
-    "google/gemini-3-pro-image-preview": "Gemini 3 Pro",
-    "openai/gpt-5.4-image-2": "GPT-5.4 Image 2",
-    "bytedance/seedance-2.0-fast": "Seedance 2.0 Fast",
-    "bytedance/seedance-2.0": "Seedance 2.0",
-    "google/veo-3.1": "Veo 3.1",
-    "kwaivgi/kling-v3.0-std": "Kling v3.0 Standard",
-    "kwaivgi/kling-v3.0-pro": "Kling v3.0 Pro",
-    "kwaivgi/kling-video-o1": "Kling Video O1",
-  };
-  return labels[model] ?? model.replace(/^byteplus:(conversation-image|video)\./, "").replace(/^[^/]+\//, "");
-}
-
 function stripBytePlusReviewAttemptMarker(value: string | null | undefined) {
   return typeof value === "string" ? value.replace(/^__byteplus_review_attempts=\d+__\s*/, "") : undefined;
 }
@@ -160,11 +140,6 @@ function isUploadPromptPlaceholder(value: string | null | undefined) {
   return value === UPLOAD_IMAGE_PROMPT_PLACEHOLDER || value === "资产库上传" || value === "对话流上传";
 }
 
-function normalizePreviewMetaForDisplay(value: Prisma.JsonValue | null, fallbackModel: string | null | undefined) {
-  if (!isRecord(value)) return undefined;
-  const modelLabel = typeof value.modelLabel === "string" ? value.modelLabel : fallbackModel || "";
-  return { ...value, modelLabel: getMediaModelDisplayName(modelLabel) };
-}
 
 function getCommonRatioLabel(width: number, height: number) {
   const commonRatios: Array<[string, number]> = [["16:9", 16 / 9], ["21:9", 21 / 9], ["9:16", 9 / 16], ["4:3", 4 / 3], ["3:4", 3 / 4], ["1:1", 1]];
@@ -238,18 +213,17 @@ function mediaStateToLegacyAsset(item: {
   const isWorkflowCategory = item.currentCategory === "workflow_images" || item.currentCategory === "workflow_uploads" || item.currentCategory === "workflow_videos";
   const librarySource = isAssetCategory ? "asset_generation" : isWorkflowCategory ? "workflow" : "conversation";
   const isWorkflowTemporaryName = isWorkflowCategory && (item.currentName === "图片生成" || item.currentName === "视频生成");
-  const previewMeta = isRecord(media.previewMeta)
-    ? normalizePreviewMetaForDisplay(media.previewMeta, media.model)
-    : media.model || media.ratio || media.resolution || media.imageSize || media.videoDuration || media.width || media.height
-      ? {
-          modelLabel: getMediaModelDisplayName(media.model),
-          ratio: media.width && media.height ? getCommonRatioLabel(media.width, media.height) : media.ratio || "-",
-          sizeText: media.width && media.height ? `${media.width} × ${media.height}` : media.imageSize || "-",
-          resolution: media.resolution || media.imageSize || getImageResolutionFromDimensions(media.width, media.height) || "-",
-          duration: media.videoDuration || undefined,
-          mode: media.mediaType === "video" ? "video" : "image",
-        }
-      : undefined;
+  const previewMeta = resolveAssetPreviewMeta(media.previewMeta, {
+    mediaType: media.mediaType,
+    model: media.model,
+    ratio: media.ratio,
+    resolution: media.resolution,
+    imageSize: media.imageSize,
+    videoDuration: media.videoDuration,
+    width: media.width,
+    height: media.height,
+    durationSeconds: null,
+  });
   return {
     id: item.id,
     mediaId: media.id,
@@ -260,6 +234,7 @@ function mediaStateToLegacyAsset(item: {
     thumbnailUrl: media.thumbnailUrl || undefined,
     posterUrl: media.posterUrl || undefined,
     librarySource,
+    model: media.model || undefined,
     sourcePrompt,
     promptSource: media.reversePrompt && !isUploadPromptPlaceholder(media.reversePrompt) ? "reverse" : isUploadCategory ? "upload" : media.promptSource || (media.sourceKind.includes("upload") ? "upload" : "generated"),
     lockedType: true,

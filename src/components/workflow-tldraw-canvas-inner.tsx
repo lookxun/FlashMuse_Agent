@@ -644,28 +644,30 @@ function uploadWorkflowFormDataWithProgress<T>(url: string, formData: FormData, 
   });
 }
 
-async function uploadWorkflowImageOnce(file: File, onProgress?: (progress: number) => void, forceReencode = false) {
+async function uploadWorkflowImageOnce(file: File, onProgress?: (progress: number) => void, forceReencode = false, dedup = false) {
   const formData = new FormData();
   formData.append("image", file, file.name);
   if (forceReencode) formData.append("forceReencode", "1");
+  if (dedup) formData.append("dedup", "1");
   onProgress?.(2);
   const token = await getWorkflowDirectUploadToken();
-  const postData = await uploadWorkflowFormDataWithProgress<{ token?: string; error?: string }>(getWorkflowUploadApiUrl("/api/asset-upload-temp"), formData, onProgress, token);
+  const postData = await uploadWorkflowFormDataWithProgress<{ token?: string; error?: string; duplicate?: boolean; url?: string; contentHash?: string }>(getWorkflowUploadApiUrl("/api/asset-upload-temp"), formData, onProgress, token);
+  if (postData.duplicate && postData.url) return { url: postData.url, duplicate: true as const, contentHash: postData.contentHash };
   if (!postData.token) throw new Error(postData.error || "图片上传失败");
   const patchToken = await getWorkflowDirectUploadToken();
   const patchResponse = await fetch(getWorkflowUploadApiUrl("/api/asset-upload-temp"), { method: "PATCH", headers: { "Content-Type": "application/json", ...(patchToken ? { Authorization: `Bearer ${patchToken}` } : {}) }, body: JSON.stringify({ token: postData.token }) });
   const patchData = await readJson<{ url?: string; error?: string }>(patchResponse);
   if (!patchData.url) throw new Error(patchData.error || "图片保存失败");
-  return patchData.url;
+  return { url: patchData.url, duplicate: false as const, contentHash: postData.contentHash };
 }
 
-async function uploadWorkflowImage(file: File, onProgress?: (progress: number) => void) {
+async function uploadWorkflowImage(file: File, onProgress?: (progress: number) => void, dedup = false) {
   try {
-    return await uploadWorkflowImageOnce(file, onProgress);
+    return await uploadWorkflowImageOnce(file, onProgress, false, dedup);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (!message.includes("转码")) throw error;
-    return uploadWorkflowImageOnce(file, onProgress, true);
+    return uploadWorkflowImageOnce(file, onProgress, true, dedup);
   }
 }
 
@@ -737,7 +739,7 @@ function validateWorkflowUploadNodeFile(file: File, kind: "image" | "video" | "a
   return validateWorkflowMediaDuration("音频", media?.durationSeconds, { minSeconds: 2, maxSeconds: 15 });
 }
 
-function persistWorkflowUploadNodeAsset(input: { url: string; name: string; mediaType: "image" | "video" | "audio" | "document"; workflowId: string; workflowNodeId: string; sourcePrompt: string; file: File; dimensions?: { width: number; height: number }; durationSeconds?: number; settings?: { ratio?: string; resolution?: string; duration?: string } }) {
+function persistWorkflowUploadNodeAsset(input: { url: string; name: string; mediaType: "image" | "video" | "audio" | "document"; workflowId: string; workflowNodeId: string; sourcePrompt: string; file: File; dimensions?: { width: number; height: number }; durationSeconds?: number; settings?: { ratio?: string; resolution?: string; duration?: string }; contentHash?: string }) {
   return fetch("/api/media-assets", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -757,6 +759,7 @@ function persistWorkflowUploadNodeAsset(input: { url: string; name: string; medi
       mimeType: input.file.type,
       fileSize: input.file.size,
       settings: input.settings,
+      contentHash: input.contentHash,
     }),
   });
 }
@@ -1877,7 +1880,7 @@ type WorkflowRuntime = {
   uploadRuleOverrides?: UploadRuleOverrides;
   getConnectedInputUploads: (nodeId: string) => WorkflowUploadItem[];
   getInputTextLength: (nodeId: string) => number;
-  uploadFilesAsConnectedNodes: (targetNodeId: string, files: File[]) => void;
+  uploadFilesAsConnectedNodes: (targetNodeId: string, files: File[], onDuplicateTip?: (message: string) => void) => void;
 };
 
 const WorkflowRuntimeContext = createContext<WorkflowRuntime | null>(null);
@@ -2844,7 +2847,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     return node;
   }, [updateState]);
 
-  const selectAndFocusUploadedNodes = useCallback((nodeIds: string[]) => {
+  const selectAndFocusUploadedNodes = useCallback((nodeIds: string[], focus = true) => {
     if (nodeIds.length === 0) return;
     window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
       const editor = editorRef.current;
@@ -2852,11 +2855,11 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
       const shapeIds = nodeIds.map(getShapeId).filter((shapeId) => editor.getShape(shapeId));
       if (shapeIds.length === 0) return;
       editor.select(...shapeIds);
-      zoomToSelectedOrWorkflowNodes(editor, stateRef.current.nodes.filter((node) => nodeIds.includes(node.id)));
+      if (focus) zoomToSelectedOrWorkflowNodes(editor, stateRef.current.nodes.filter((node) => nodeIds.includes(node.id)));
     }));
   }, []);
 
-  const handleUploadNodeFile = useCallback(async (file: File, targetNodeId?: string) => {
+  const handleUploadNodeFile = useCallback(async (file: File, targetNodeId?: string, onDuplicateTip?: (message: string) => void) => {
     try {
       if (file.type.startsWith("image/")) {
         const dimensions = await getWorkflowImageFileDimensions(file);
@@ -2865,11 +2868,13 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
         const nodeId = createId("workflow_node");
         const previewUrl = URL.createObjectURL(file);
         addUploadedNode({ id: nodeId, kind: "image", title: "上传图片", data: { ...getDefaultNodeData("image"), prompt: "上传图片", imageDimensions: {}, ratio: normalizeWorkflowImageRatio(undefined, dimensions), uploadProgress: 1, uploadPreviewUrl: previewUrl } }, targetNodeId);
-        const url = await uploadWorkflowImage(file, (progress) => updateNode(nodeId, { uploadProgress: Math.min(99, progress) }));
+        const uploaded = await uploadWorkflowImage(file, (progress) => updateNode(nodeId, { uploadProgress: Math.min(99, progress) }), true);
+        const url = uploaded.url;
+        if (uploaded.duplicate) (onDuplicateTip ?? onShowTip)?.("图片已存在，无需重复上传！");
         const data: WorkflowNodeData = { ...getDefaultNodeData("image"), prompt: "上传图片", images: [url], imageDimensions: { [url]: dimensions }, mediaSystemNames: { [url]: file.name }, ratio: normalizeWorkflowImageRatio(undefined, dimensions), visualSize: undefined, uploadProgress: undefined, uploadPreviewUrl: undefined };
         updateNode(nodeId, data);
         URL.revokeObjectURL(previewUrl);
-        void persistWorkflowUploadNodeAsset({ url, name: file.name, mediaType: "image", workflowId, workflowNodeId: nodeId, sourcePrompt: "上传图片", file, dimensions, settings: { ratio: data.ratio, resolution: data.resolution } }).catch((error) => console.warn("[media-assets] failed to persist workflow uploaded image", error));
+        void persistWorkflowUploadNodeAsset({ url, name: file.name, mediaType: "image", workflowId, workflowNodeId: nodeId, sourcePrompt: "上传图片", file, dimensions, settings: { ratio: data.ratio, resolution: data.resolution }, contentHash: uploaded.contentHash }).catch((error) => console.warn("[media-assets] failed to persist workflow uploaded image", error));
         return nodeId;
       }
       if (file.type.startsWith("video/")) {
@@ -3010,29 +3015,31 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     return node.id;
   }, [updateState]);
 
-  const uploadFilesAsConnectedNodes = useCallback((targetNodeId: string, files: File[]) => {
+  const uploadFilesAsConnectedNodes = useCallback((targetNodeId: string, files: File[], onDuplicateTip?: (message: string) => void) => {
     if (files.length === 0) return;
     const run = async () => {
       const connectedNodeIds: string[] = [];
       for (const file of files) {
         const existingNode = findExistingUploadNodeForFile(file);
         if (existingNode) {
-          onShowTip?.(`${file.name} 已存在，已直接连接`);
+          (onDuplicateTip ?? onShowTip)?.(`${file.name} 已存在，已直接连接`);
           updateState((state) => state.edges.some((edge) => edge.source === existingNode.id && edge.target === targetNodeId) ? state : { ...state, edges: [...state.edges, { id: createId("workflow_edge"), source: existingNode.id, target: targetNodeId }] });
           connectedNodeIds.push(existingNode.id);
           continue;
         }
         const historicalAsset = workflowAssets.find((asset) => asset.name === file.name && (file.type.startsWith("image/") ? asset.kind === "image" : file.type.startsWith("video/") ? asset.kind === "video" : false));
         if (historicalAsset) {
-          onShowTip?.(`${file.name} 已在历史记录中，已恢复并连接`);
+          (onDuplicateTip ?? onShowTip)?.(`${file.name} 已在历史记录中，已恢复并连接`);
           const nodeId = restoreWorkflowAssetToCanvas(historicalAsset, undefined, targetNodeId);
           if (nodeId) connectedNodeIds.push(nodeId);
           continue;
         }
-        const nodeId = await handleUploadNodeFile(file, targetNodeId);
+        const nodeId = await handleUploadNodeFile(file, targetNodeId, onDuplicateTip);
         if (nodeId) connectedNodeIds.push(nodeId);
       }
-      selectAndFocusUploadedNodes(connectedNodeIds);
+      // 输入框内上传：连线并显示在画布上，但保持选中"生成节点"（不选中上传的节点、不放大），
+      // 这样输入框不会消失、提示也能正常弹在输入框上方。
+      selectAndFocusUploadedNodes([targetNodeId], false);
     };
     void run();
   }, [findExistingUploadNodeForFile, handleUploadNodeFile, onShowTip, restoreWorkflowAssetToCanvas, selectAndFocusUploadedNodes, updateState, workflowAssets]);
@@ -4304,6 +4311,7 @@ function WorkflowLayerPanel({ state, workflowAssets, selectedNodeId, getImageDis
       kind: node.kind === "video" ? "video" : "image",
       nodeId: node.id,
       sourcePrompt: node.data.prompt,
+      model: node.data.model,
       ratio: node.data.ratio,
       resolution: node.data.resolution,
       duration: node.data.duration,
@@ -5525,7 +5533,7 @@ function WorkflowPromptBox({ node, value, placeholder, maxPromptHeight, onChange
       if (tips.size === 0) showLocalTip("没有符合当前类型和格式限制的文件");
       return;
     }
-    runtime.uploadFilesAsConnectedNodes(node.id, accepted.map(({ file }) => file));
+    runtime.uploadFilesAsConnectedNodes(node.id, accepted.map(({ file }) => file), showLocalTip);
   };
   const validReferenceNames = useMemo(() => new Set([...runtime.referenceAssets.map((asset) => asset.name), ...visibleUploads.filter((upload) => upload.status === "ready").map(getWorkflowUploadReferenceName)]), [runtime.referenceAssets, visibleUploads]);
   const referenceGroups = runtime.referenceAssets.reduce<{ type: string; label: string; assets: WorkflowReferenceAsset[] }[]>((groups, asset) => {
