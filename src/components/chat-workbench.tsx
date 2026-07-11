@@ -3583,9 +3583,27 @@ function applyMemorySummaryToPayload(payload: ChatPayloadMessage[], memorySummar
   ];
 }
 
-function toGeneralPayloadMessages(messages: Message[], modelId: ModelName, memorySummary?: SessionMemorySummary): ChatPayloadMessage[] {
+function toGeneralPayloadMessages(messages: Message[], modelId: ModelName, keepLatestUserImages: boolean, memorySummary?: SessionMemorySummary): ChatPayloadMessage[] {
   const textOnlyHistory = shouldUseTextOnlyHistoryForConversationModel(modelId);
-  const payload = applyMemorySummaryToPayload(toChatPayloadMessages(messages), memorySummary).map((message) => textOnlyHistory ? { ...message, images: undefined } : message);
+  // 与 agent 模式对齐：无条件剥离所有历史图片（含之前生图/生视频模式产出的生成图），
+  // 只保留“本轮用户刚上传的参考图”，避免每次对话都把历史媒体 base64 打包发给模型。
+  const payload: ChatPayloadMessage[] = applyMemorySummaryToPayload(toChatPayloadMessages(messages), memorySummary).map((message) => ({
+    ...message,
+    images: undefined,
+  }));
+  if (!textOnlyHistory && keepLatestUserImages) {
+    let latestUserIndex = -1;
+    for (let index = payload.length - 1; index >= 0; index -= 1) {
+      if (payload[index].role === "user") {
+        latestUserIndex = index;
+        break;
+      }
+    }
+    const latestSourceUser = [...toChatPayloadMessages(messages)].reverse().find((message) => message.role === "user");
+    if (latestUserIndex >= 0 && latestSourceUser?.images?.length) {
+      payload[latestUserIndex] = { ...payload[latestUserIndex], images: latestSourceUser.images };
+    }
+  }
   const latestUserMessage = [...payload].reverse().find((message) => message.role === "user");
   payload.push({
     role: "user",
@@ -3696,6 +3714,17 @@ function sanitizeAssetName(name: string) {
 
 function escapeRegExp(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// 删除提示词里某个引用名的【所有】@文件名出现（同一名字可出现多次、可紧贴中文、可相邻）。
+// 不依赖前置空格，带后置边界防止 @image_1 误伤 @image_10。
+function removeAllMentionNames(draft: string, referenceName: string) {
+  if (!draft || !referenceName) return draft;
+  return draft
+    .replace(new RegExp(`@${escapeRegExp(referenceName)}(?=$|[\\s，。！？；;、])`, "g"), "")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/\s+$/g, "")
+    .replace(/^\s+/g, "");
 }
 
 function toChineseNumber(value: string) {
@@ -6455,21 +6484,57 @@ function InlineVideoResult({ url, posterUrl, onPreview, onLoadedDimensions, roun
   );
 }
 
-function ImageResultThumb({ url, imageIndex, onPreview, onLoadedDimensions, rounded = false }: { url: string; imageIndex: number; onPreview: (url: string, index: number) => void; onLoadedDimensions?: (url: string, dimensions: ImageDimensions) => void; rounded?: boolean }) {
+function ImageResultThumb({ url, imageIndex, name, onPreview, onMention, onLoadedDimensions, rounded = false }: { url: string; imageIndex: number; name?: string; onPreview: (url: string, index: number) => void; onMention?: (url: string, name: string) => void; onLoadedDimensions?: (url: string, dimensions: ImageDimensions) => void; rounded?: boolean }) {
   const [loadedUrl, setLoadedUrl] = useState("");
   const [failedThumbnailUrl, setFailedThumbnailUrl] = useState("");
   const mediaSurfaceStyle = { backgroundColor: "var(--flashmuse-media-surface)" } as CSSProperties;
   const useOriginalImage = failedThumbnailUrl === url;
   const displayUrl = useOriginalImage ? getStaticMediaUrl(url) ?? url : getMediaThumbnailUrl(url);
   const isLoaded = loadedUrl === displayUrl;
+  const canonicalName = name ?? `生成图片${imageIndex + 1}`;
 
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
       onClick={() => onPreview(url, imageIndex)}
-      className={`flashmuse-success-media-card group relative flex h-[250px] w-[250px] shrink-0 items-center justify-center overflow-hidden bg-[#f4f4f4] transition ${rounded ? "rounded-[10px]" : ""}`}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onPreview(url, imageIndex);
+        }
+      }}
+      className={`flashmuse-success-media-card group relative flex h-[250px] w-[250px] shrink-0 cursor-pointer items-center justify-center overflow-hidden bg-[#f4f4f4] transition ${rounded ? "rounded-[10px]" : ""}`}
       style={mediaSurfaceStyle}
     >
+      {isLoaded ? (
+        <div className="absolute right-2 top-2 z-20 flex items-center gap-0.5 rounded-[4px] bg-black/90 px-1 py-0.5 opacity-0 backdrop-blur-sm transition group-hover:opacity-100">
+          <a
+            href={getDownloadUrl(url)}
+            download={getDownloadName({ name: canonicalName, url } as AssetItem)}
+            onClick={(event) => event.stopPropagation()}
+            className="inline-flex h-7 w-7 items-center justify-center rounded-[5px] text-white/90 transition hover:bg-white/20 hover:text-white"
+            aria-label="下载图片"
+            title="下载"
+          >
+            <RiDownloadLine className="h-4 w-4" aria-hidden="true" />
+          </a>
+          {onMention ? (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                onMention(url, canonicalName);
+              }}
+              className="inline-flex h-7 w-7 items-center justify-center rounded-[5px] text-white/90 transition hover:bg-white/20 hover:text-white"
+              aria-label="引用到输入框"
+              title="引用到输入框"
+            >
+              <RiAtLine className="h-4 w-4" aria-hidden="true" />
+            </button>
+          ) : null}
+        </div>
+      ) : null}
       {!isLoaded ? (
         <div className="absolute left-4 top-4 z-10 inline-flex items-center text-[13px] font-medium leading-none text-[#777777]">
           <span>正在加载中</span>
@@ -6496,11 +6561,11 @@ function ImageResultThumb({ url, imageIndex, onPreview, onLoadedDimensions, roun
           setLoadedUrl("");
         }}
       />
-    </button>
+    </div>
   );
 }
 
-function ImageResultStrip({ images, imageIndexes, pendingCount, failedCount, retryingFailedIndexes = [], retryingFailedStartedAt = {}, createdAt, now, onPreview, onLoadedDimensions, rounded = false, onRetryFailed }: { images: string[]; imageIndexes?: number[]; pendingCount: number; failedCount: number; retryingFailedIndexes?: number[]; retryingFailedStartedAt?: Record<number, number>; createdAt?: number; now: number; onPreview: (url: string, index: number) => void; onLoadedDimensions?: (url: string, dimensions: ImageDimensions) => void; rounded?: boolean; onRetryFailed?: (failedIndex: number) => void }) {
+function ImageResultStrip({ images, imageIndexes, pendingCount, failedCount, retryingFailedIndexes = [], retryingFailedStartedAt = {}, createdAt, now, onPreview, onMention, getImageName, onLoadedDimensions, rounded = false, onRetryFailed }: { images: string[]; imageIndexes?: number[]; pendingCount: number; failedCount: number; retryingFailedIndexes?: number[]; retryingFailedStartedAt?: Record<number, number>; createdAt?: number; now: number; onPreview: (url: string, index: number) => void; onMention?: (url: string, name: string) => void; getImageName?: (url: string, index: number) => string; onLoadedDimensions?: (url: string, dimensions: ImageDimensions) => void; rounded?: boolean; onRetryFailed?: (failedIndex: number) => void }) {
   if (images.length + pendingCount + failedCount === 0) return null;
   const items = [
     ...images.map((url, imageIndex) => ({ type: "image" as const, url, imageIndex: imageIndexes?.[imageIndex] ?? imageIndex })),
@@ -6513,7 +6578,7 @@ function ImageResultStrip({ images, imageIndexes, pendingCount, failedCount, ret
       <div className="grid grid-cols-4 gap-0.5">
         {items.map((item) => {
           if (item.type === "image") {
-            return <ImageResultThumb key={`${item.url}-${item.imageIndex}`} url={item.url} imageIndex={item.imageIndex} onPreview={onPreview} onLoadedDimensions={onLoadedDimensions} rounded={rounded} />;
+            return <ImageResultThumb key={`${item.url}-${item.imageIndex}`} url={item.url} imageIndex={item.imageIndex} name={getImageName?.(item.url, item.imageIndex)} onPreview={onPreview} onMention={onMention} onLoadedDimensions={onLoadedDimensions} rounded={rounded} />;
           }
 
           if (item.type === "pending") {
@@ -6544,7 +6609,7 @@ function ImageResultStrip({ images, imageIndexes, pendingCount, failedCount, ret
   );
 }
 
-function ImageResultSlotStrip({ slots, imageIndexes, pendingCount, createdAt, now, onPreview, onLoadedDimensions, rounded = false, onRetryFailed, isRetrying = false }: { slots: ImageResultSlot[]; imageIndexes?: number[]; pendingCount: number; createdAt?: number; now: number; onPreview: (url: string, index: number) => void; onLoadedDimensions?: (url: string, dimensions: ImageDimensions) => void; rounded?: boolean; onRetryFailed?: (failedIndex: number) => void; isRetrying?: boolean }) {
+function ImageResultSlotStrip({ slots, imageIndexes, pendingCount, createdAt, now, onPreview, onMention, getImageName, onLoadedDimensions, rounded = false, onRetryFailed, isRetrying = false }: { slots: ImageResultSlot[]; imageIndexes?: number[]; pendingCount: number; createdAt?: number; now: number; onPreview: (url: string, index: number) => void; onMention?: (url: string, name: string) => void; getImageName?: (url: string, index: number) => string; onLoadedDimensions?: (url: string, dimensions: ImageDimensions) => void; rounded?: boolean; onRetryFailed?: (failedIndex: number) => void; isRetrying?: boolean }) {
   if (slots.length + pendingCount === 0) return null;
   const items = [
     ...slots.map((slot, slotIndex) => ({ type: "slot" as const, slot, slotIndex })),
@@ -6565,7 +6630,7 @@ function ImageResultSlotStrip({ slots, imageIndexes, pendingCount, createdAt, no
 
           if (item.slot.type === "image") {
             const imageOrdinal = slots.slice(0, item.slotIndex + 1).filter((slot) => slot.type === "image").length - 1;
-            return <ImageResultThumb key={`${item.slot.url}-${item.slotIndex}`} url={item.slot.url} imageIndex={imageIndexes?.[imageOrdinal] ?? imageOrdinal} onPreview={onPreview} onLoadedDimensions={onLoadedDimensions} rounded={rounded} />;
+            return <ImageResultThumb key={`${item.slot.url}-${item.slotIndex}`} url={item.slot.url} imageIndex={imageIndexes?.[imageOrdinal] ?? imageOrdinal} name={getImageName?.(item.slot.url, imageIndexes?.[imageOrdinal] ?? imageOrdinal)} onPreview={onPreview} onMention={onMention} onLoadedDimensions={onLoadedDimensions} rounded={rounded} />;
           }
 
           const failedIndex = slots.slice(0, item.slotIndex + 1).filter((slot) => slot.type === "failed").length - 1;
@@ -8800,7 +8865,13 @@ export function ChatWorkbench() {
     inputImageUploadAbortControllersRef.current.get(imageId)?.abort();
     inputImageUploadAbortControllersRef.current.delete(imageId);
     if (image?.tempToken) void deleteTemporaryAssetImages([image.tempToken]);
-    setSessions((current) => current.map((session) => (session.id === activeSessionId ? { ...session, uploadedImages: (session.uploadedImages ?? []).filter((image) => image.id !== imageId), updatedAt: Date.now() } : session)));
+    // 规则：不允许“有@文件名、无缩略图”。移除缩略图时同步删净提示词里该图对应的所有 @文件名。
+    const removingName = image ? getUploadedImageReferenceName(image, activeUploadedImages) : "";
+    setSessions((current) => current.map((session) => {
+      if (session.id !== activeSessionId) return session;
+      const nextDraft = removingName ? removeAllMentionNames(session.draftInput ?? "", removingName) : session.draftInput;
+      return { ...session, draftInput: nextDraft, uploadedImages: (session.uploadedImages ?? []).filter((item) => item.id !== imageId), updatedAt: Date.now() };
+    }));
   }, [activeSessionId, activeUploadedImages]);
 
   const removeActiveUploadedFile = useCallback((fileIndex: number) => {
@@ -8808,7 +8879,7 @@ export function ChatWorkbench() {
     const removingName = removingFile && isUploadedMediaFile(removingFile) ? getUploadedFileDisplayName(removingFile) : "";
     setSessions((current) => current.map((session) => {
       if (session.id !== activeSessionId) return session;
-      const nextDraft = removingName ? (session.draftInput ?? "").replace(new RegExp(`(^|\\s)@${escapeRegExp(removingName)}(?=\\s|$)\\s?`, "g"), (match, prefix: string) => prefix ? prefix : "").replace(/\s{2,}/g, " ").trimStart() : session.draftInput;
+      const nextDraft = removingName ? removeAllMentionNames(session.draftInput ?? "", removingName) : session.draftInput;
       return { ...session, draftInput: nextDraft, uploadedFiles: (session.uploadedFiles ?? []).filter((_, index) => index !== fileIndex), updatedAt: Date.now() };
     }));
   }, [activeSessionId, activeUploadedFiles]);
@@ -12428,7 +12499,11 @@ export function ChatWorkbench() {
 
     const explicitImageReferences = getOrderedExplicitImageReferences(rawTextWithMediaMentions, assets, sendUploadedImages, activeConversationImageReferences);
     const uploadedImageReferences = sendUploadedImages.map((image) => ({ name: getUploadedImageReferenceName(image, sendUploadedImages), url: image.url }));
-    const sourceImageReferences = explicitImageReferences.length > 0 ? explicitImageReferences : uploadedImageReferences;
+    // 统一规则：有缩略图的一定发，@名只管顺序/意图。以被@命中的顺序排前面，未被@的缩略图按原顺序补在后面，不再因“别的图有@名”就丢弃无@名的缩略图。
+    const sourceImageReferences: ImageReference[] = [...explicitImageReferences];
+    uploadedImageReferences.forEach((reference) => {
+      if (reference.url && !sourceImageReferences.some((item) => item.url === reference.url)) sourceImageReferences.push(reference);
+    });
     if (sourceImageReferences.filter((reference, index, array) => Boolean(reference.url) && array.findIndex((item) => item.url === reference.url) === index).length > currentMaxReferenceImages) {
       showInputTip(`当前模型最多支持 ${currentMaxReferenceImages} 张参考图，不能上传更多图片`);
       return;
@@ -12597,7 +12672,7 @@ export function ChatWorkbench() {
     }
 
     if (submitMode === "general") {
-      const payloadMessages = toGeneralPayloadMessages(optimisticMessages, generalModelsForSubmit.chat, sessionForSend.memorySummary);
+      const payloadMessages = toGeneralPayloadMessages(optimisticMessages, generalModelsForSubmit.chat, referenceImages.length > 0, sessionForSend.memorySummary);
       if (referencedAssets.length > 0) {
         const lastUserMessage = [...payloadMessages].reverse().find((message) => message.role === "user");
         if (lastUserMessage) lastUserMessage.content = `${lastUserMessage.content}${getAssetReferencesText(referencedAssets)}`;
@@ -13467,6 +13542,16 @@ export function ChatWorkbench() {
     setActiveDraftInput(nextInput);
     focusEditorAt(cursor + text.length);
   }, [activeInput, focusEditorAt, getCurrentDraftCursor, setActiveDraftInput]);
+  const mentionMediaIntoInput = useCallback((url: string, name: string) => {
+    if (activeUploadedImages.length >= currentMaxReferenceImages && !activeUploadedImages.some((image) => image.url === url)) {
+      showInputTip(`当前模型最多支持 ${currentMaxReferenceImages} 张参考图，不能上传更多图片`);
+      return;
+    }
+    setActivePanel("chat");
+    const cursor = getCurrentDraftCursor();
+    addActiveUploadedImages([toUploadedAssetReference({ name, url })], { draftBase: activeInput.slice(0, cursor), draftSuffix: activeInput.slice(cursor), insertReferenceText: true });
+    focusEditorAt(cursor + name.length + 2);
+  }, [activeInput, activeUploadedImages, addActiveUploadedImages, currentMaxReferenceImages, focusEditorAt, getCurrentDraftCursor, setActivePanel, showInputTip]);
   const focusCharacterEditorAt = useCallback((offset: number) => {
     requestAnimationFrame(() => {
       const editor = characterEditorRef.current;
@@ -15163,9 +15248,9 @@ export function ChatWorkbench() {
                       {message.role === "assistant" && message.mode === "image" && isAssistantMessageComplete && ((message.images?.length ?? 0) > 0 || hasDisplayedImageResultSlots || imagePendingCount > 0 || imageFailedCount > 0) ? (
                          <LazyMediaMount height={250} className="mt-2">
                              {displayedImageResultSlots ? (
-                               <ImageResultSlotStrip slots={displayedImageResultSlots} imageIndexes={selectedImageVariant?.imageIndexes} pendingCount={displayedPendingImageCount} createdAt={message.createdAt} now={timerNow} rounded={isAgentMediaMessage} isRetrying={activeMessagePendingRequest?.mode === "image"} onRetryFailed={(failedIndex) => retryFailedMedia(message, failedIndex)} onLoadedDimensions={(url, dimensions) => updateMessageImageDimensions(activeSession?.id ?? "", message.id, url, dimensions)} onPreview={(url, imageIndex) => setPreviewAsset({ id: `${message.id}-${imageIndex}`, type: "other", name: getCanonicalMediaName(message, url, `生成图片${imageIndex + 1}`), url, sourcePrompt: getImageSourcePrompt(message, url), previewMeta: getPreviewMediaMeta(message, url), sessionId: activeSession?.id ?? "", messageId: message.id, createdAt: message.createdAt ?? Date.now() })} />
+                               <ImageResultSlotStrip slots={displayedImageResultSlots} imageIndexes={selectedImageVariant?.imageIndexes} pendingCount={displayedPendingImageCount} createdAt={message.createdAt} now={timerNow} rounded={isAgentMediaMessage} isRetrying={activeMessagePendingRequest?.mode === "image"} onRetryFailed={(failedIndex) => retryFailedMedia(message, failedIndex)} onLoadedDimensions={(url, dimensions) => updateMessageImageDimensions(activeSession?.id ?? "", message.id, url, dimensions)} onMention={mentionMediaIntoInput} getImageName={(url, imageIndex) => getCanonicalMediaName(message, url, `生成图片${imageIndex + 1}`)} onPreview={(url, imageIndex) => setPreviewAsset({ id: `${message.id}-${imageIndex}`, type: "other", name: getCanonicalMediaName(message, url, `生成图片${imageIndex + 1}`), url, sourcePrompt: getImageSourcePrompt(message, url), previewMeta: getPreviewMediaMeta(message, url), sessionId: activeSession?.id ?? "", messageId: message.id, createdAt: message.createdAt ?? Date.now() })} />
                              ) : (
-                               <ImageResultStrip images={displayedMessageImages} imageIndexes={selectedImageVariant?.imageIndexes} pendingCount={displayedPendingImageCount} failedCount={displayedFailedImageCount} retryingFailedIndexes={message.retryingFailedImageIndexes} retryingFailedStartedAt={message.retryingFailedImageStartedAt} createdAt={message.createdAt} now={timerNow} rounded={isAgentMediaMessage} onRetryFailed={(failedIndex) => retryFailedMedia(message, failedIndex)} onLoadedDimensions={(url, dimensions) => updateMessageImageDimensions(activeSession?.id ?? "", message.id, url, dimensions)} onPreview={(url, imageIndex) => setPreviewAsset({ id: `${message.id}-${imageIndex}`, type: "other", name: getCanonicalMediaName(message, url, `生成图片${imageIndex + 1}`), url, sourcePrompt: getImageSourcePrompt(message, url), previewMeta: getPreviewMediaMeta(message, url), sessionId: activeSession?.id ?? "", messageId: message.id, createdAt: message.createdAt ?? Date.now() })} />
+                               <ImageResultStrip images={displayedMessageImages} imageIndexes={selectedImageVariant?.imageIndexes} pendingCount={displayedPendingImageCount} failedCount={displayedFailedImageCount} retryingFailedIndexes={message.retryingFailedImageIndexes} retryingFailedStartedAt={message.retryingFailedImageStartedAt} createdAt={message.createdAt} now={timerNow} rounded={isAgentMediaMessage} onRetryFailed={(failedIndex) => retryFailedMedia(message, failedIndex)} onLoadedDimensions={(url, dimensions) => updateMessageImageDimensions(activeSession?.id ?? "", message.id, url, dimensions)} onMention={mentionMediaIntoInput} getImageName={(url, imageIndex) => getCanonicalMediaName(message, url, `生成图片${imageIndex + 1}`)} onPreview={(url, imageIndex) => setPreviewAsset({ id: `${message.id}-${imageIndex}`, type: "other", name: getCanonicalMediaName(message, url, `生成图片${imageIndex + 1}`), url, sourcePrompt: getImageSourcePrompt(message, url), previewMeta: getPreviewMediaMeta(message, url), sessionId: activeSession?.id ?? "", messageId: message.id, createdAt: message.createdAt ?? Date.now() })} />
                              )}
                           </LazyMediaMount>
                         ) : null}
