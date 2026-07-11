@@ -17,6 +17,9 @@ type ServerInfo = {
 const ALI_HOST = process.env.FLASHMUSE_ALI_SSH_HOST || "root@101.37.129.164";
 // 阿里私钥：app 容器把 /opt/flashmuse/data/runtime 挂到 /app/.runtime。
 const ALI_KEY = process.env.FLASHMUSE_ALI_SSH_KEY || "/app/.runtime/flashmuse_to_ali_ed25519";
+// 固定公网 IP（脚本 curl api.ipify.org 可能超时/被墙，回退会拿到内网/容器 IP，这里直接用已知公网 IP 显示）。
+const TENCENT_PUBLIC_IP = process.env.FLASHMUSE_TENCENT_PUBLIC_IP || "119.28.116.16";
+const ALI_PUBLIC_IP = process.env.FLASHMUSE_ALI_PUBLIC_IP || "101.37.129.164";
 
 const infoScript = [
   "kv() { printf '%s|%s' \"$1\" \"$2\"; echo; }",
@@ -137,7 +140,7 @@ export async function GET() {
   const [tencent, ali] = await Promise.all([runTencentInfo(), runAliInfo()]);
 
   const rows: Array<{ title: string; ali: string; tencent: string }> = [
-    { title: "服务器", ali: `${valueOf(ali, "hostname")} / ${valueOf(ali, "publicIp")}`, tencent: `${valueOf(tencent, "hostname")} / ${valueOf(tencent, "publicIp")}` },
+    { title: "服务器", ali: `${valueOf(ali, "hostname")} / ${ALI_PUBLIC_IP}`, tencent: `腾讯云新加坡主服 / ${TENCENT_PUBLIC_IP}` },
     { title: "硬盘（系统盘 /）", ali: valueOf(ali, "diskRoot"), tencent: valueOf(tencent, "diskRoot") },
     { title: "硬盘（应用目录）", ali: valueOf(ali, "diskApp"), tencent: valueOf(tencent, "diskApp") },
     { title: "当前网速", ali: valueOf(ali, "networkSpeed"), tencent: valueOf(tencent, "networkSpeed") },
