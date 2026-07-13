@@ -1,5 +1,41 @@
 # Current Handover Changelog
 
+## 2026-07-13 (deploy session) 两批新模型部署上线 + Pro 像素分档扣费修复 + 工作流卡死/空名根治 + workflow_02 历史图名回填（✅ 全部已部署腾讯 + commit+push GitHub，三方同步）
+
+Reply style: 简洁直接中文。本 session 承接前两批"仅本地未部署"的模型改动，**先把那两批一起部署上线**（commit `7c66f85`：模型开关5组化+GPT-5.6 Terra + Seedream 5.0 Pro/Seedance 2.0 Mini + 全量校准计费/尺寸/多图 + 前端定时器卡顿修复），随后按用户逐个反馈修了若干 bug，最后又部署一批（commit `b94c3ea`）。**现在腾讯=GitHub=本地 三方同步于 `b94c3ea`（+ 本次 handover 提交）。用户铁律不变：资产原始数据出生即冻结永不变。**
+
+### 1. 部署两批模型改动（commit `7c66f85`）
+- 无 Prisma 迁移。scp 14 个 src 文件到腾讯 → `docker compose up -d --build flashmuse-app` → 同步 `.next/static` 到阿里 → 四域名 200。备份 `app-backups/20260713195040-model-batches`。
+
+### 2. 排查"工作流04 两个新模型生图/生视频超时不返回"——结论=本地跨境网络，非 bug
+- 查 `.runtime/generation-diagnostics-log.jsonl`：**图片 Pro** `image-provider-fetch-error`（`TypeError: fetch failed`，本地连不上 `ark.ap-southeast.bytepluses.com`）→ job failed B_197；**视频 Mini** 平台已 succeeded，但**远程→本地下载耗时 271 秒**（跨境慢）看起来像卡住。模型接线/端点/尺寸都对，生产（腾讯新加坡与 BytePlus 同区）不会有此问题。
+
+### 3. 对照 BytePlus 官方文档核对 Seedance 2.0 全系 + 价格表
+- 逐条对照 `Dreamina Seedance 2.0 series tutorial.md` + `模型价格.md`：**Model ID / 比例(6种) / 时长(4-15s) / 计费单价 全部正确**。视频两条扣费路径（`video/route.ts` PATCH + `generation-jobs.ts` worker）都用了新计费 + `hasVideoInput`，一致。
+- **唯一差异**：Seedance 2.0（完整版）官方支持 480p/720p/1080p/**4K**，项目只到 1080p（缺 4K；计费函数已有 4K 档但 UI 选不到——半接线）。**用户决定：4K 先不接。**
+
+### 4. 【真 bug 已修】Seedream 5.0 Pro 像素分档扣费——低档永远算成高档（约2倍多扣）
+- 官方：输出 ≤236万px=0.045、>236万px=0.09。`getSeedream50ProUsd` 靠**输出图实测像素**判档，但 Pro 是 BytePlus **异步存盘**图，扣费时图还在远程、本地没落盘 → `getLocalImageDimensions` 返回 undefined → 兜底 `POSITIVE_INFINITY` → **每次都落高档 0.09**。本地日志实证 1K（1424×800≈114万px，应 0.045）被扣 ≈0.09。
+- **修法**（`openrouter.ts`）：`getSeedream50ProUsd` 加 `fallbackDimensions` 形参，实测拿不到时用生成前已知的 `targetDimensions`（`getExpectedImageDimensions`）判档；`getBytePlusImageUsage` 透传；BytePlus 调用点传 `targetDimensions`。Pro 1K 全 ≤236万px→低档、2K 全 >236万px→高档，正好对上官方。Lite/4.5（扁平单价）不受影响。
+
+### 5. 【真 bug 已修】工作流节点成功/失败都不返回（永久卡"生成中/渲染中"）
+- 现象：workflow_04 图片节点(97%生成中)、视频节点(96%渲染中)等 30+ 分钟不回填。查腾讯 DB：两个 GenerationJob 早到终态（video succeeded 有 url、image failed B_197）。
+- **根因**：工作流恢复/reconcile **只在 3 个时机触发**（挂载后一次性 signature 变化、标签页可见、窗口聚焦），**无周期性兜底**。一次性触发时若 stateRef 节点未加载好 / status 请求抖动 / worker 还没写完终态 且用户不切标签页 → 永远错过。
+- **修法**（`workflow-tldraw-canvas-inner.tsx`）：加周期性兜底 effect——只要 `pendingRecoverySignature` 非空（画布有进行中节点），每 8s 重跑 resume+reconcile 四函数，直到无待处理自动停。幂等、复用现有逻辑。
+
+### 6. 【统一读取的洞 已修 + 历史数据回填】workflow_02（账号 12424740 = ID_636611）三张图名字全是"图片生成"
+- **注意**：账号 `12424740` 是 nickname/邮箱(12424740@qq.com)，真实 User.id = **`ID_636611`**（查库先转换）。
+- 查库：三张图 = workflow_02（`11d9ce76...` code w2）里的图片节点，MediaAsset **systemName/initialName/currentName/requestId 全空**，sourceKind=**旧的 `workflow_generation`**（新统一路径是 `workflow_generation_image`），生成于 2026-07-07——即 7-12"生成图统一出生根治"之前那个 byteplus 异步图 bug 的遗留（同类已修，历史未回填名字）。canvas 节点 mediaSystemNames 也是空 → 显示兜底"图片生成"。
+- **统一读取的真洞**：工作流"按 url 从库校准节点名"的 effect **只纠正已有名字、不补全缺失名字**（`if (!names) return false`），空名节点永远补不上。**已修**（`workflow-tldraw-canvas-inner.tsx`）：改为遍历节点自身的图片/视频 url，从库(workflowAssets/referenceAssets)按 url **补全缺失 + 纠正漂移**，保留稳定签名 + 差异守卫防循环。
+- **历史数据回填**（线上腾讯 DB，事务）：3 条 MediaAsset systemName/initialName + 3 条 UserAssetState currentName → `image_2_w2/3_w2/4_w2`（按生成时间排序）；canvasJson 三节点补 mediaSystemNames；`nextImageNumber`→5。只碰这 3 张。备份本地 `C:\Users\ASUS\AppData\Local\Temp\opencode\workflow02-backup-20260713.txt`（含改前 canvasJson 全文）。**未动其它历史空名图**（如那批上传图/其它工作流）。
+
+### 7. 后台上传规则面板补 Pro/Mini 标签（`admin-upload-rules-panel.tsx`，纯文案）
+- 实际开关早已生效（Pro 图片从 `frontendImageGenerationModels` 自动出行；Mini 视频与其它 Seedance 共用 override 键），只是标签没提到，看起来像漏了。改：编辑表 3 个 Seedance 视频行标签 "2.0 / Fast" → "2.0 / Fast / Mini"；底部文档表视频行 + BytePlus 图片两行标注含 Pro/Mini。
+
+### 8. 部署（commit `b94c3ea`：第4/5/6/7 项代码）
+- 无迁移。scp 3 个 src 文件（openrouter.ts、workflow-tldraw-canvas-inner.tsx、admin-upload-rules-panel.tsx）→ 备份 `app-backups/20260713204827-pro-billing-workflow-recovery` → `docker compose up -d --build` → 同步 `.next/static` 到阿里 → 四域名 200。
+- **未做/押后**：Seedance 2.0 4K（用户先不接）；对话流是否也加同样的周期性兜底 reconcile（本 session 只修了工作流，对话流同样是"一次性+可见性"触发、理论同风险，用户未要求）；图片 Pro 走 OpenRouter 路径时的像素分档（当前 Pro provider 偏好=byteplus，OpenRouter 路径用 getUsageMeta 的 cost，未接分档，暂不涉及）。
+
 ## 2026-07-13 (later session) 新增 2 个 BytePlus 模型（Seedream 5.0 Pro 图片 / Seedance 2.0 Mini 视频）+ 全量按官网校准计费·尺寸·多图 + 修一个全局前端卡顿 bug（⚠️ 全部仅本地，未 commit/未部署；**下次直接部署**）
 
 Reply style: 简洁直接中文。承接同日上一 session（"模型开关大简化 + GPT-5.6 Terra"），用户要求继续加模型。本 session 把两个 BytePlus 新模型接入图片/视频生成组，并**逐项对照 BytePlus 官方文档/价格表**校准了计费、尺寸、多图行为，最后顺手修了一个 dev 里暴露、线上也存在的前端卡顿 bug。**⚠️ 三方状态：本 session + 上一 session 两批全部只在本地，`npx tsc --noEmit` 全程通过、`npm run build` 通过；未 commit/未推/未部署。用户明确：这次是最后一批，下个 AI 直接部署（见 05-next-actions 顶条）。** 权威参考文档已存本地：`E:\project\【1】Api key\Byteplus\` 下的 `Byteplus api key.md`（端点映射）、`模型价格.md`（计费）、`Seedream 4.0-5.0 tutorial.md`（尺寸/能力，第 2591-2596 行是权威参考像素表）。

@@ -2,6 +2,18 @@
 
 Last checked: 2026-07-13 China time.
 
+## 2026-07-13 (deploy session) 部署两批新模型 + 修 Pro 扣费/工作流卡死/统一读取空名 + 回填 workflow_02 历史图名（✅ 全部已部署腾讯 + push GitHub，三方同步 `b94c3ea`）
+
+详见 CHANGELOG 顶条。速记：
+- **部署了前两批仅本地的模型改动**（commit `7c66f85`：开关5组+Terra + Seedream 5.0 Pro/Seedance 2.0 Mini + 校准计费/尺寸/多图 + 前端定时器卡顿）。无迁移。
+- **排查工作流04超时**：本地跨境网络问题（图片 fetch failed B_197、视频下载271s），非 bug，生产无此问题。
+- **对照官方文档核对 Seedance 2.0 全系**：Model ID/比例/时长/计费单价全对；唯一差异 Seedance 2.0 缺 4K（**用户决定先不接**，计费函数已有 4K 档但 UI 选不到）。
+- **修 Pro 像素分档扣费 bug**：异步图扣费时拿不到实测尺寸→永远算高档 0.09；改为兜底用已知 `targetDimensions` 判档（1K→0.045、2K→0.09）。
+- **修工作流节点成功/失败都不返回**：恢复只在挂载/可见/聚焦三时机触发、无周期兜底；加"只要有进行中节点就每 8s 重跑 reconcile"。
+- **修统一读取的洞 + 回填历史数据**：工作流校准 effect 只纠正已有名、不补全空名（`if(!names)return false`）→ 改为从库按 url 补全缺失名；并在线上 DB 事务回填 workflow_02（**ID_636611**，nickname 12424740）三张 7-07 遗留空名图 → image_2/3/4_w2（库+canvas+nextImageNumber=5，备份在本地 temp）。
+- 后台上传规则面板补 Pro/Mini 标签（纯文案，开关本就生效）。
+- commit `b94c3ea` 部署（openrouter.ts / workflow-tldraw-canvas-inner.tsx / admin-upload-rules-panel.tsx），四域名 200。
+
 ## 2026-07-13 (later session) 新增 2 个 BytePlus 模型 + 全量按官网校准计费/尺寸/多图 + 修前端卡顿（⚠️ 全部仅本地，未 commit/未部署；**下次直接部署**）
 
 详见 CHANGELOG 顶条 + 05-next-actions 顶条（部署步骤+验证清单）。速记：
