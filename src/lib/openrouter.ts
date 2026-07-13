@@ -254,11 +254,13 @@ function isSeedream50ProModel(model: string | undefined) {
   return SEEDREAM_5_0_PRO_MODEL_NAMES.has(model) || /seedream-5-0-pro|seedream-5\.0-pro/i.test(model);
 }
 
-function getSeedream50ProUsd(outputDimensions: ImageDimensions[], outputImageCount: number, referenceImageCount: number) {
+function getSeedream50ProUsd(outputDimensions: ImageDimensions[], outputImageCount: number, referenceImageCount: number, fallbackDimensions?: ImageDimensions) {
   let outputUsd = 0;
   for (let index = 0; index < Math.max(0, outputImageCount); index += 1) {
-    const dimension = outputDimensions[index];
-    const pixels = dimension ? dimension.width * dimension.height : Number.POSITIVE_INFINITY; // 未知尺寸按高档兜底，避免少扣费
+    // 实测尺寸（异步存盘的 BytePlus 图在扣费时往往还没落盘、拿不到）优先，否则用生成前已知的目标尺寸判档；
+    // 都没有才按高档兜底避免少扣费。
+    const dimension = outputDimensions[index] ?? fallbackDimensions;
+    const pixels = dimension ? dimension.width * dimension.height : Number.POSITIVE_INFINITY;
     outputUsd += pixels <= SEEDREAM_5_0_PRO_PIXEL_THRESHOLD ? SEEDREAM_5_0_PRO_OUTPUT_USD_LOW : SEEDREAM_5_0_PRO_OUTPUT_USD_HIGH;
   }
   const inputUsd = Math.max(0, referenceImageCount - 1) * SEEDREAM_5_0_PRO_INPUT_USD_PER_EXTRA_IMAGE;
@@ -1082,7 +1084,7 @@ function getBytePlusImageFailureReasons(data: BytePlusImageGenerationResponse) {
   return Array.from(new Set([rootReason, ...itemReasons].filter((item): item is string => Boolean(item))));
 }
 
-function getBytePlusImageUsage(data: BytePlusImageGenerationResponse, model: string, outputImageCount: number, outputDimensions: ImageDimensions[] = [], referenceImageCount = 0): UsageMeta | undefined {
+function getBytePlusImageUsage(data: BytePlusImageGenerationResponse, model: string, outputImageCount: number, outputDimensions: ImageDimensions[] = [], referenceImageCount = 0, fallbackDimensions?: ImageDimensions): UsageMeta | undefined {
   const usage = data.usage;
   const promptTokens = Math.max(0, Math.floor(usage?.prompt_tokens ?? 0));
   const completionTokens = Math.max(0, Math.floor(usage?.completion_tokens ?? usage?.output_tokens ?? 0));
@@ -1091,7 +1093,7 @@ function getBytePlusImageUsage(data: BytePlusImageGenerationResponse, model: str
   const fallbackPrice = getBytePlusImagePricePerOutput(model);
   const usd = explicitUsd
     ?? (isSeedream50ProModel(model)
-      ? getSeedream50ProUsd(outputDimensions, outputImageCount, referenceImageCount)
+      ? getSeedream50ProUsd(outputDimensions, outputImageCount, referenceImageCount, fallbackDimensions)
       : fallbackPrice !== undefined ? fallbackPrice * Math.max(0, outputImageCount) : undefined);
   if (promptTokens <= 0 && completionTokens <= 0 && totalTokens <= 0 && usd === undefined) return undefined;
   return { promptTokens, completionTokens, totalTokens, usd };
@@ -1371,7 +1373,7 @@ async function generateBytePlusImage(prompt: string, referenceImages: string[] =
       images: selectedImages,
       imageDimensions,
       failureReasons,
-      usage: getBytePlusImageUsage(data, bytePlusModel, displayImages.length, displayImages.map((image) => allImageDimensions[image]).filter((item): item is ImageDimensions => Boolean(item)), safeReferenceImages.length),
+      usage: getBytePlusImageUsage(data, bytePlusModel, displayImages.length, displayImages.map((image) => allImageDimensions[image]).filter((item): item is ImageDimensions => Boolean(item)), safeReferenceImages.length, targetDimensions.width > 0 && targetDimensions.height > 0 ? targetDimensions : undefined),
     };
   };
 
