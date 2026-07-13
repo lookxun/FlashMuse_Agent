@@ -5,7 +5,7 @@ import { chargeCredits } from "@/lib/credits";
 import { generateOpenRouterImage } from "@/lib/openrouter";
 import { createCodedApiError } from "@/lib/error-code";
 import { GENERIC_MEDIA_ERROR_MESSAGE } from "@/lib/error-message";
-import { getExpectedImageDimensions } from "@/lib/models";
+import { getBytePlusVideoPricePerMillionUsd, getExpectedImageDimensions } from "@/lib/models";
 import { recordGenerationEvent } from "@/lib/analytics-events";
 import { appendGenerationDiagnosticsLog, summarizeGeneratedReference } from "@/lib/generation-diagnostics-log";
 import { resolvePersistableMediaAssetUrl } from "@/lib/media-assets";
@@ -281,6 +281,7 @@ function getBytePlusProviderKey(modelId: string | null | undefined, source: stri
   if (!modelId?.startsWith("byteplus:")) return undefined;
   const prefix = isAssetImageCreditSource(source) ? "asset-image" : isAgentImageCreditSource(source) ? "agent-image" : "conversation-image";
   if (modelId.endsWith("seedream-4-5")) return `${prefix}.seedream-4-5`;
+  if (modelId.endsWith("seedream-5-0-pro")) return `${prefix}.seedream-5-0-pro`;
   if (modelId.endsWith("seedream-5-0")) return `${prefix}.seedream-5-0`;
   return undefined;
 }
@@ -348,10 +349,10 @@ function getUsageMeta(value: unknown): Record<string, unknown> | undefined {
   return undefined;
 }
 
-function withBytePlusVideoUsd(usage: Record<string, unknown> | undefined, model: string | null | undefined, settings?: { resolution?: string }) {
+function withBytePlusVideoUsd(usage: Record<string, unknown> | undefined, model: string | null | undefined, settings?: { resolution?: string }, hasVideoInput = false) {
   if (!usage || usage.usd !== undefined || !model?.startsWith("byteplus:video.")) return usage;
   const outputTokens = Math.max(0, Number(usage.completionTokens ?? usage.totalTokens ?? 0));
-  const pricePerMillion = model === "byteplus:video.seedance-2-0-fast" ? 5.6 : settings?.resolution === "1080p" ? 7.7 : 7.0;
+  const pricePerMillion = getBytePlusVideoPricePerMillionUsd(model, settings?.resolution, hasVideoInput);
   return { ...usage, usd: (outputTokens / 1_000_000) * pricePerMillion };
 }
 
@@ -648,7 +649,7 @@ export async function runVideoJob(job: GenerationJobRow) {
       }
       const deliveredUrl = saveJob?.localUrl ?? videoUrl;
       await upsertVideoManifestEntry({ taskId: providerTaskId, prompt: job.prompt ?? "", localVideoUrl: deliveredUrl, remoteVideoUrl: videoUrl, posterUrl: saveJob?.posterUrl });
-      const usage = withBytePlusVideoUsd(getUsageMeta(task) ?? job.usageJson ?? undefined, job.model, job.settingsJson ?? undefined);
+      const usage = withBytePlusVideoUsd(getUsageMeta(task) ?? job.usageJson ?? undefined, job.model, job.settingsJson ?? undefined, Array.isArray(job.referenceVideos) && job.referenceVideos.length > 0);
       const credit = await chargeCredits(job.userId, "video", usage, { conversationId: job.conversationId ?? undefined, conversationTitle: job.conversationTitle ?? undefined, requestId: job.requestId, label: "视频生成", model: job.model ?? undefined, videoCount: 1, metadata: { ...(job.metadataJson ?? {}), settings: job.settingsJson, ratio: job.settingsJson?.ratio, resolution: job.settingsJson?.resolution, duration: job.settingsJson?.duration, originalPrompt: job.prompt, mediaUrls: [deliveredUrl], remoteMediaUrls: [videoUrl], posterUrl: saveJob?.posterUrl, delivered: true, savedLocal: saveJob?.status === "saved", localSaveStatus: saveJob?.status ?? "pending", mediaSaveJobId: saveJob?.id } });
       await finalizeVideoJobAsset(job, deliveredUrl, saveJob?.posterUrl, saveJob?.dimensions);
       await markJobSucceeded(job.id, { resultUrls: [deliveredUrl], reservedNames: job.reservedNames ?? [], posterUrl: saveJob?.posterUrl, usage: withChargedUsage(usage, credit), credit });

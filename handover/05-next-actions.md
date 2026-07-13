@@ -1,5 +1,51 @@
 # Next Actions
 
+## 🚀 2026-07-13 (later session) END-OF-SESSION —— 先读这条：**下一个 AI 直接部署**
+
+**状态**：两批改动全部只在本地，`npx tsc --noEmit` 全程通过、`npm run build` 通过，**未 commit / 未推 / 未部署**。
+- 批1（同日上午/早）：后台模型开关 7→5 组大简化 + GPT-5.6 Terra/Terra Pro + Agent 改造。
+- 批2（本 session）：新增 Seedream 5.0 Pro（图片）+ Seedance 2.0 Mini（视频）+ 全量按官网校准计费/尺寸/多图 + 修前端 1 秒定时器卡顿 bug。
+- 详见 CHANGELOG 顶部两条 + 01-current-status 顶部。
+
+**用户明确指令：模型加完了，下一个 AI 直接把这两批一起部署。**
+
+**部署步骤（腾讯，无 Prisma 迁移）：**
+1. `git status --short` / `git diff` 确认（基线 `f14a6c5`，两批约 14~15 个文件，见 CHANGELOG 两条的"文件清单"；确保不带入无关改动）。
+2. `npx tsc --noEmit` + `npm run build` 再确认。
+3. `git commit` + `git push`（GitHub）。
+4. 腾讯部署：scp 改动源码到 `/opt/flashmuse/app/src/...` → `cd /opt/flashmuse && nohup sudo docker compose up -d --build flashmuse-app` → **必须**同步 `.next/static` 到阿里镜像（否则 chunk 哈希不匹配全站 404），命令见本文件"腾讯部署新流程"节 / 03-deploy 顶部。
+5. **部署后浏览器验证（ali 硬刷）**：见下方"验证清单"。
+
+**⚠️ 部署注意**：
+- 本批**无数据库迁移**（`ImageResolution` 加 "3K" 是 TS 类型，不是 DB）。
+- 生产 `.env.local` 的 `BYTEPLUS_MODEL_SELECTIONS`/`MODEL_PROVIDER_PREFERENCES` 里**没有** pro/mini 条目，靠代码 `DEFAULT_*` 兜底（已含 pro/mini 端点与偏好），部署即生效；等管理员在后台保存一次设置才会把这两条写进 env（无碍）。
+- 生产 `BYTEPLUS_API_KEY_ENABLED` 本就 true，新模型默认开。
+- **改路由/模型判定后，dev 必须停 node + 删 `.next` + 重启**，否则跑旧编译代码（本 session 踩过：Pro 一直报 "not a valid model ID" 就是 dev 缓存）。
+
+**验证清单（部署后 ali 硬刷）：**
+1. 后台"模型开关"：图片生成组有 Seedream 5.0 Pro；视频生成组 Mini 显示在 Fast **上面**；都默认开。
+2. Seedream 5.0 Pro 出图正常（走 BytePlus、名字 `dola-seedream-5-0-pro-260628`）；分辨率只有 1K/2K；生成 4 张 = 申请 4 次（4 张独立图）。
+3. Seedream 5.0 Lite 出现 **3K** 档，选 3K 出图后参数框显示 **3K**（不再显示成 2K）；4.5/Lite 选多张仍是"一次出多张"。
+4. Seedance 2.0 Mini 能生成、时长菜单正常、参考图/首尾帧模式正常。
+5. 扣费抽查：Pro 1K≈0.045、2K≈0.09（+参考图第2张起 0.003）；视频 Mini 无参考视频≈3.5、带参考视频≈2.1 单价档（后台生成记录/积分看金额合理）。
+6. 空闲时前端不再持续卡（1 秒定时器已按需开启）。
+
+---
+
+## 🔜 2026-07-13 (上一 session) —— 已并入上面一起部署
+
+**状态**：本 session 做的**后台模型开关大简化 + GPT-5.6 Terra 新模型 + Agent 改造**全部**只在本地**，`npx tsc --noEmit` + `npm run build` 都过，但**未 commit / 未推 GitHub / 未部署腾讯**。唯一上线的是后台白名单加 `176107103@qq.com`（腾讯 env 改动+重启，非代码）。详见 CHANGELOG 顶条 + 01-current-status 顶条。
+
+**用户明确指令**：**下个 AI 还要继续加模型，加完后再一起部署。** 所以先别急着部署，先接着加用户要的模型。
+
+**下个 AI 待办**：
+1. 按用户要求继续加/调模型（延续本次的 additive 规则：同名模型只留 BytePlus 版、OpenRouter 留独有；新对话模型加进 `models.ts models[]`；金色用 `isGoldConversationModel`/`isGoldGenerationModel`）。加 OpenRouter 模型先查官网 API 拿准确 ID：`Invoke-RestMethod https://openrouter.ai/api/v1/models`。
+2. 加完后**一起部署**：`git status`/`diff` 确认（本批在 `f14a6c5` 之上，8 个文件：system-settings.ts、models.ts、openrouter.ts、chat-workbench.tsx、admin-system-settings-panel.tsx、api/model-availability|image|video/route.ts）→ `npx tsc --noEmit`+`npm run build` → commit+push → 腾讯部署（scp 源码→`docker compose up -d --build flashmuse-app`→**必须同步 `.next/static` 到阿里**，见 03-deploy 顶部）。
+3. **部署后浏览器验证**（ali 硬刷）：后台模型开关 5 组显示正常、功能模块/作用位置列对；三个模块 OpenRouter 不再有 seedream/seedance/seed-2.0-lite；通用模式能选 GPT-5.6 Terra/Terra Pro（Terra Pro 金色，GPT-5.5 不再金色）；Agent 生成正常、首选关掉时能随机兜底用图片/视频生成里的模型；反推/优化按 5.5→5.4→Pro→Lite 兜底。
+4. ⚠️ 提醒：`BYTEPLUS_API_KEY_ENABLED` 默认已改 true；生产 .env.local 本就 true，无碍。去掉 OR 兜底后 BytePlus 全局必须开着这些模型才可用（生产已开）。
+
+---
+
 ## 🔜 2026-07-12 (later session) END-OF-SESSION —— 先读这条
 
 **状态**：本 session 全部改动**已部署腾讯 + 已 commit+push GitHub（连同上午"资产入库/显示统一大改造"那批一起推）→ 腾讯=GitHub=本地 三方同步**。工作树干净（除后续 handover 提交）。详见 CHANGELOG 顶条 + 01-current-status 顶条。

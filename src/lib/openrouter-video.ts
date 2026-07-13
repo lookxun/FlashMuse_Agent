@@ -51,6 +51,7 @@ const execFileAsync = promisify(execFile);
 
 function getBytePlusVideoModelName(modelId?: string, providerKey?: string) {
   if (modelId === "byteplus:video.seedance-2-0-fast") return getBytePlusModelForRequest(providerKey ?? "video.seedance-2-0-fast");
+  if (modelId === "byteplus:video.seedance-2-0-mini") return getBytePlusModelForRequest(providerKey ?? "video.seedance-2-0-mini");
   if (modelId === "byteplus:video.seedance-2-0") return getBytePlusModelForRequest(providerKey ?? "video.seedance-2-0");
   return undefined;
 }

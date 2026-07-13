@@ -66,15 +66,18 @@ function isAgentImageCreditSource(source: string | undefined) {
 
 function isImageModelEnabledForSource(model: string, source: string | undefined) {
   if (isAssetImageCreditSource(source)) return isAssetImageModelEnabled(model);
-  if (isAgentImageCreditSource(source)) return isAgentImageModelEnabled(model);
+  // Agent 自动生图：首选（agent 开关）或「图片生成」里已开启的兜底模型都放行。
+  if (isAgentImageCreditSource(source)) return isAgentImageModelEnabled(model) || isConversationImageModelEnabled(model);
   return isConversationImageModelEnabled(model);
 }
 
 function getBytePlusProviderKey(modelId: string | undefined, source: string | undefined) {
   if (!modelId?.startsWith("byteplus:")) return undefined;
-  const prefix = isAssetImageCreditSource(source) ? "asset-image" : isAgentImageCreditSource(source) ? "agent-image" : "conversation-image";
-  if (modelId.endsWith("seedream-4-5")) return `${prefix}.seedream-4-5`;
-  if (modelId.endsWith("seedream-5-0")) return `${prefix}.seedream-5-0`;
+  const isAgent = isAgentImageCreditSource(source);
+  // seedream-4-5 有 agent 专属端点键；seedream-5-0 无 agent 变体，统一用会话键（agent 兜底选到它时也可用）。
+  if (modelId.endsWith("seedream-4-5")) return isAgent ? "agent-image.seedream-4-5" : "conversation-image.seedream-4-5";
+  if (modelId.endsWith("seedream-5-0-pro")) return "conversation-image.seedream-5-0-pro";
+  if (modelId.endsWith("seedream-5-0")) return "conversation-image.seedream-5-0";
   return undefined;
 }
 

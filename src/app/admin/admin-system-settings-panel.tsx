@@ -1,20 +1,20 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { ADVANCED_CHAT_MODEL, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, imageGenerationModels, models, videoGenerationModels } from "@/lib/models";
+import { ADVANCED_CHAT_MODEL, DEFAULT_CHAT_MODEL, imageGenerationModels, models, videoGenerationModels } from "@/lib/models";
 import type { AdminSystemSettings } from "@/lib/system-settings";
 import { BytePlusIcon } from "@/components/byteplus-icon";
 import { RiGoogleFill, RiOpenaiFill, RiTiktokFill } from "react-icons/ri";
-
-const DEFAULT_ASSET_IMAGE_MODEL = "openai/gpt-5.4-image-2";
 
 const extraModelLabels: Record<string, string> = {
   "openai/gpt-5.5": "GPT-5.5",
   "byteplus:chat.seed-2-0-pro": "BytePlus Seed 2.0 Pro",
   "byteplus:conversation-image.seedream-4-5": "BytePlus Seedream 4.5",
   "byteplus:conversation-image.seedream-5-0": "BytePlus Seedream 5.0 Lite",
+  "byteplus:conversation-image.seedream-5-0-pro": "BytePlus Seedream 5.0 Pro",
   "byteplus:video.seedance-2-0-fast": "BytePlus Seedance 2.0 Fast",
   "byteplus:video.seedance-2-0": "BytePlus Seedance 2.0",
+  "byteplus:video.seedance-2-0-mini": "BytePlus Seedance 2.0 Mini",
 };
 
 function getModelLabel(id: string) {
@@ -27,11 +27,20 @@ type ModelUsageItem = {
   providerKey?: string;
   bytePlusOptions?: Array<{ label: string; endpointId: string }>;
   bytePlusStatic?: { label: string; endpointId: string };
+  subheading?: string;
+  // additive 布局下，标记该项属于哪一列（openrouter 独有模型 / byteplus 模型）。
+  provider?: "openrouter" | "byteplus";
 };
 
 type ModelUsageGroup = {
   title: string;
   note: string;
+  // 作用位置：该组开关实际影响的功能位置（显示为黑字圆点列表）。
+  usageLocations: string[];
+  // 用于 openrouter-only providerKey 命名空间（与后端硬编码字符串对齐）；显示 title 可自由改。
+  providerGroup?: string;
+  // additive=true：不再互斥，OpenRouter 独有模型 + BytePlus 模型分列独立开关、简单相加。
+  additive?: boolean;
   models: ModelUsageItem[];
 };
 
@@ -45,30 +54,14 @@ const bytePlusImageModels = [
   { label: "Seedream 4.0", endpointId: "ep-20260515121509-mvr84" },
   { label: "Seedream 4.5", endpointId: "ep-20260514174622-n9qfb" },
   { label: "Seedream 5.0 Lite", endpointId: "ep-20260514142211-p2wdk" },
+  { label: "Seedream 5.0 Pro", endpointId: "ep-20260713101732-q5zvf" },
 ];
 
 const bytePlusVideoModels = [
+  { label: "Seedance 2.0 Mini", endpointId: "ep-20260713100634-mwp78" },
   { label: "Seedance 2.0 Fast", endpointId: "ep-20260521134040-vf2jf" },
   { label: "Seedance 2.0", endpointId: "ep-20260521133841-nn8bg" },
 ];
-
-const agentBackupImageModelIds = imageGenerationModels
-  .map((model) => model.id)
-  .filter((modelId) => modelId !== DEFAULT_IMAGE_MODEL && modelId !== "openai/gpt-5.4-image-2");
-
-const agentBackupVideoModelIds = videoGenerationModels
-  .map((model) => model.id)
-  .filter((modelId) => modelId !== DEFAULT_VIDEO_MODEL && modelId !== "bytedance/seedance-2.0");
-
-function uniqueModelItems(items: ModelUsageItem[]) {
-  const seen = new Set<string>();
-  return items.filter((item) => {
-    const key = `${item.badge}:${item.modelId}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
 
 function getOpenRouterOnlyProviderKey(groupTitle: string, item: ModelUsageItem) {
   return item.providerKey ?? `openrouter-only:${groupTitle}:${item.badge}:${item.modelId}`;
@@ -76,63 +69,71 @@ function getOpenRouterOnlyProviderKey(groupTitle: string, item: ModelUsageItem) 
 
 const modelUsageGroups: ModelUsageGroup[] = [
   {
-    title: "通用模式 / Agent 规划 / 意图识别",
-    note: "通用模式使用这组对话模型；Seed 2.0 Lite 可在 OpenRouter 和 BytePlus 间互斥，BytePlus Seed 2.0 Pro 独立开关。",
+    title: "图片生成",
+    note: "",
+    usageLocations: ["通用模式生图", "对话流图片模式", "工作流图片节点", "资产库生图"],
+    providerGroup: "对话流图片生成",
+    additive: true,
     models: [
-      { badge: "", modelId: DEFAULT_CHAT_MODEL, providerKey: "general.seed-2-0-lite", bytePlusStatic: bytePlusChatModels[0] },
-      { badge: "独立", modelId: "", providerKey: "general.seed-2-0-pro", bytePlusStatic: bytePlusChatModels[1] },
-      ...models.filter((model) => model.id !== DEFAULT_CHAT_MODEL).map((model) => ({ badge: "", modelId: model.id })),
+      ...imageGenerationModels.filter((model) => model.id !== "bytedance-seed/seedream-4.5").map((model) => ({ provider: "openrouter" as const, badge: "", modelId: model.id })),
+      { provider: "byteplus", badge: "", modelId: "byteplus:conversation-image.seedream-4-5", providerKey: "conversation-image.seedream-4-5", bytePlusStatic: bytePlusImageModels[1] },
+      { provider: "byteplus", badge: "", modelId: "byteplus:conversation-image.seedream-5-0", providerKey: "conversation-image.seedream-5-0", bytePlusStatic: bytePlusImageModels[2] },
+      { provider: "byteplus", badge: "", modelId: "byteplus:conversation-image.seedream-5-0-pro", providerKey: "conversation-image.seedream-5-0-pro", bytePlusStatic: bytePlusImageModels[3] },
     ],
   },
   {
-    title: "对话 / Agent 规划 / 意图识别",
-    note: "普通 Agent 默认用普通对话模型，高级 Agent 用高级对话模型。",
+    title: "视频生成",
+    note: "",
+    usageLocations: ["通用模式生视频", "对话流视频", "工作流视频节点"],
+    providerGroup: "对话流视频生成",
+    additive: true,
     models: [
-      { badge: "普通", modelId: DEFAULT_CHAT_MODEL, providerKey: "chat.seed-2-0-lite", bytePlusOptions: bytePlusChatModels },
-      { badge: "高级", modelId: ADVANCED_CHAT_MODEL, providerKey: "chat.advanced", bytePlusOptions: bytePlusChatModels },
+      ...videoGenerationModels.filter((model) => model.id !== "bytedance/seedance-2.0-fast" && model.id !== "bytedance/seedance-2.0").map((model) => ({ provider: "openrouter" as const, badge: "", modelId: model.id })),
+      { provider: "byteplus", badge: "", modelId: "byteplus:video.seedance-2-0-mini", providerKey: "video.seedance-2-0-mini", bytePlusStatic: bytePlusVideoModels[0] },
+      { provider: "byteplus", badge: "", modelId: "byteplus:video.seedance-2-0-fast", providerKey: "video.seedance-2-0-fast", bytePlusStatic: bytePlusVideoModels[1] },
+      { provider: "byteplus", badge: "", modelId: "byteplus:video.seedance-2-0", providerKey: "video.seedance-2-0", bytePlusStatic: bytePlusVideoModels[2] },
+    ],
+  },
+  {
+    title: "通用模式",
+    note: "",
+    usageLocations: ["通用模式对话"],
+    providerGroup: "通用模式 / Agent 规划 / 意图识别",
+    additive: true,
+    models: [
+      ...models.filter((model) => model.id !== DEFAULT_CHAT_MODEL).map((model) => ({ provider: "openrouter" as const, badge: "", modelId: model.id })),
+      { provider: "byteplus", badge: "", modelId: "", providerKey: "general.seed-2-0-lite", bytePlusStatic: bytePlusChatModels[0] },
+      { provider: "byteplus", badge: "", modelId: "", providerKey: "general.seed-2-0-pro", bytePlusStatic: bytePlusChatModels[1] },
+    ],
+  },
+  {
+    title: "Agent 模式",
+    note: "Agent 自动规划任务并调用模型：普通/高级两档分别用对应模型；自动生图/生视频的首选不可用时，随机使用「图片生成」「视频生成」里已开启的模型兜底。",
+    usageLocations: ["Agent 对话规划", "Agent 自动生图", "Agent 自动生视频", "兜底：图片生成 / 视频生成"],
+    providerGroup: "Agent 自动生成策略",
+    models: [
+      { badge: "", modelId: "", subheading: "规划对话模型" },
+      { provider: "byteplus", badge: "普通", modelId: "byteplus:chat.seed-2-0-pro", providerKey: "agent-chat.seed-2-0-pro", bytePlusStatic: bytePlusChatModels[1] },
+      { provider: "openrouter", badge: "高级", modelId: "openai/gpt-5.6-terra-pro", providerKey: "agent-chat.advanced" },
+      { badge: "", modelId: "", subheading: "自动生成图片" },
+      { provider: "byteplus", badge: "普通", modelId: "byteplus:conversation-image.seedream-4-5", providerKey: "agent-image.seedream-4-5", bytePlusStatic: bytePlusImageModels[1] },
+      { provider: "openrouter", badge: "高级", modelId: "openai/gpt-5.4-image-2", providerKey: "agent-image.advanced" },
+      { badge: "", modelId: "", subheading: "自动生成视频" },
+      { provider: "byteplus", badge: "普通", modelId: "byteplus:video.seedance-2-0-fast", providerKey: "agent-video.seedance-2-0-fast", bytePlusStatic: bytePlusVideoModels[1] },
+      { provider: "byteplus", badge: "高级", modelId: "byteplus:video.seedance-2-0", providerKey: "agent-video.seedance-2-0", bytePlusStatic: bytePlusVideoModels[2] },
     ],
   },
   {
     title: "反推提示词 / 优化提示词",
-    note: "按顺序兜底，前一个失败再用下一个。",
+    note: "四个模型都开启时，按 GPT-5.5 → GPT-5.4 → Seed 2.0 Pro → Seed 2.0 Lite 顺序兜底，前一个失败/关闭再用下一个。",
+    usageLocations: ["反推提示词", "优化提示词"],
+    additive: true,
     models: [
-      { badge: "优先", modelId: "openai/gpt-5.5", providerKey: "prompt.priority", bytePlusOptions: bytePlusChatModels },
-      { badge: "第二", modelId: ADVANCED_CHAT_MODEL, providerKey: "prompt.second", bytePlusOptions: bytePlusChatModels },
-      { badge: "第三", modelId: DEFAULT_CHAT_MODEL, providerKey: "prompt.seed-2-0-lite", bytePlusOptions: bytePlusChatModels },
+      { provider: "openrouter", badge: "", modelId: "openai/gpt-5.5", providerKey: "prompt.priority" },
+      { provider: "openrouter", badge: "", modelId: ADVANCED_CHAT_MODEL, providerKey: "prompt.second" },
+      { provider: "byteplus", badge: "", modelId: "byteplus:chat.seed-2-0-pro", providerKey: "prompt.seed-2-0-pro", bytePlusStatic: bytePlusChatModels[1] },
+      { provider: "byteplus", badge: "", modelId: "", providerKey: "prompt.seed-2-0-lite", bytePlusStatic: bytePlusChatModels[0] },
     ],
-  },
-  {
-    title: "对话流图片生成",
-    note: "图片生成专业模式使用。Agent 自动生图有单独策略。",
-    models: [
-      ...imageGenerationModels.map((model) => ({ badge: "", modelId: model.id, ...(model.id === "bytedance-seed/seedream-4.5" ? { providerKey: "conversation-image.seedream-4-5", bytePlusStatic: bytePlusImageModels[1] } : {}) })),
-      { badge: "", modelId: "", providerKey: "conversation-image.seedream-5-0", bytePlusStatic: bytePlusImageModels[2] },
-    ],
-  },
-  {
-    title: "资产库图片生成",
-    note: "角色 / 场景 / 分镜生成使用同一组图片模型，默认 GPT-5.4 Image 2。",
-    models: [
-      ...uniqueModelItems([DEFAULT_ASSET_IMAGE_MODEL, ...imageGenerationModels.map((model) => model.id)].map((modelId) => ({ badge: "", modelId, ...(modelId === "bytedance-seed/seedream-4.5" ? { providerKey: "asset-image.seedream-4-5", bytePlusStatic: bytePlusImageModels[1] } : {}) }))),
-      { badge: "", modelId: "", providerKey: "asset-image.seedream-5-0", bytePlusStatic: bytePlusImageModels[2] },
-    ],
-  },
-  {
-    title: "对话流视频生成",
-    note: "视频生成专业模式使用。Agent 自动生视频有单独策略。",
-    models: videoGenerationModels.map((model) => ({ badge: "", modelId: model.id, ...(model.id === "bytedance/seedance-2.0-fast" ? { providerKey: "video.seedance-2-0-fast", bytePlusStatic: bytePlusVideoModels[0] } : model.id === "bytedance/seedance-2.0" ? { providerKey: "video.seedance-2-0", bytePlusStatic: bytePlusVideoModels[1] } : {}) })),
-  },
-  {
-    title: "Agent 自动生成策略",
-    note: "普通/高级 Agent 优先使用对应首选模型；首选不可用时，才使用下方已开启的备选图片或备选视频。",
-    models: uniqueModelItems([
-      { badge: "普通图片", modelId: DEFAULT_IMAGE_MODEL, providerKey: "agent-image.seedream-4-5", bytePlusStatic: bytePlusImageModels[1] },
-      { badge: "高级图片", modelId: "openai/gpt-5.4-image-2" },
-      { badge: "普通视频", modelId: DEFAULT_VIDEO_MODEL, providerKey: "agent-video.seedance-2-0-fast", bytePlusStatic: bytePlusVideoModels[0] },
-      { badge: "高级视频", modelId: "bytedance/seedance-2.0", providerKey: "agent-video.seedance-2-0", bytePlusStatic: bytePlusVideoModels[1] },
-      ...agentBackupImageModelIds.map((modelId) => ({ badge: "备选图片", modelId })),
-      ...agentBackupVideoModelIds.map((modelId) => ({ badge: "备选视频", modelId })),
-    ]),
   },
 ];
 
@@ -350,30 +351,65 @@ export function AdminSystemSettingsPanel({ settings, adminEmailCount }: { settin
       </section>
 
       <section className="mt-8 min-w-[1180px] overflow-hidden rounded-[10px] border border-[#eeeeee] bg-white text-[13px] shadow-[0_10px_28px_rgba(0,0,0,0.04)]">
-        <div className="grid grid-cols-[260px_360px_70px_360px] border-b border-[#eeeeee] bg-[#fafafa] text-[12px] text-[#777777]">
-          <div className="px-5 py-3 font-medium">使用位置</div>
-          <div className="px-5 py-3 font-medium">OpenRouter</div>
-          <div className="px-2 py-3 text-center font-medium">说明</div>
-          <div className="px-5 py-3 font-medium">BytePlus</div>
+        <div className="grid grid-cols-[200px_170px_1fr] border-b border-[#eeeeee] bg-[#fafafa] text-[12px] text-[#777777]">
+          <div className="px-5 py-3 font-medium">功能模块</div>
+          <div className="px-5 py-3 font-medium">作用位置</div>
+          <div className="grid grid-cols-[360px_70px_360px] px-5 py-3">
+            <div className="font-medium">OpenRouter</div>
+            <div className="text-center font-medium">说明</div>
+            <div className="font-medium">BytePlus</div>
+          </div>
         </div>
         {modelUsageGroups.map((group) => (
-          <div key={group.title} className="grid grid-cols-[260px_360px_70px_360px] border-b border-[#f2f2f2] last:border-b-0">
+          <div key={group.title} className="grid grid-cols-[200px_170px_1fr] border-b border-[#f2f2f2] last:border-b-0">
             <div className="px-5 py-4">
               <div className="font-medium text-[#222222]">{group.title}</div>
-              <div className="mt-1 text-[12px] leading-5 text-[#888888]">{group.note}</div>
+              {group.note ? <div className="mt-1 text-[12px] leading-5 text-[#888888]">{group.note}</div> : null}
             </div>
-            <div className="flex flex-col gap-2 px-5 py-4">
-              {group.models.map((model) => {
-                const providerKey = getOpenRouterOnlyProviderKey(group.title, model);
-                const checked = model.providerKey ? modelProviderPreferences[model.providerKey] !== "byteplus" : modelProviderPreferences[providerKey] !== "byteplus";
-                return <OpenRouterModelTag key={`${group.title}-${model.badge}-${model.modelId}`} item={model} checked={checked} onToggle={(value) => model.providerKey ? updateProvider(model.providerKey, value ? "openrouter" : "byteplus") : updateOpenRouterOnlyProvider(providerKey, value)} />;
-              })}
+            <div className="flex flex-col gap-1.5 px-5 py-4 text-[13px] text-[#222222]">
+              {group.usageLocations.map((location) => (
+                <div key={location} className="flex items-start gap-2">
+                  <span className="mt-[7px] h-1 w-1 shrink-0 rounded-full bg-[#367cee]" />
+                  <span>{location}</span>
+                </div>
+              ))}
             </div>
-            <div className="flex flex-col gap-2 px-2 py-4">
-              {group.models.map((model) => <span key={`${group.title}-${model.badge}-${model.modelId}-badge`} className="flex h-8 items-center justify-center text-[12px] text-[#888888]">{model.badge}</span>)}
-            </div>
-            <div className="flex flex-col gap-2 px-5 py-4">
-              {group.models.map((model) => <BytePlusModelTag key={`${group.title}-${model.badge}-${model.modelId}`} item={model} selectedEndpointId={model.providerKey ? bytePlusModelSelections[model.providerKey] : ""} selectedProvider={model.providerKey ? modelProviderPreferences[model.providerKey] ?? "openrouter" : "openrouter"} onToggle={(value) => model.providerKey && updateProvider(model.providerKey, value ? "byteplus" : "openrouter")} onChange={(endpointId) => model.providerKey && updateBytePlusModel(model.providerKey, endpointId)} />)}
+            <div className="px-5 py-4">
+              {group.additive ? (
+                <div className="grid grid-cols-[360px_70px_360px]">
+                  <div className="flex flex-col gap-2">
+                    {group.models.filter((model) => model.provider === "openrouter").map((model, index) => {
+                      const openRouterOnlyKey = getOpenRouterOnlyProviderKey(group.providerGroup ?? group.title, model);
+                      const effectiveKey = model.providerKey ?? openRouterOnlyKey;
+                      const checked = modelProviderPreferences[effectiveKey] !== "byteplus";
+                      return <OpenRouterModelTag key={`${group.title}-or-${index}-${model.modelId}`} item={model} checked={checked} onToggle={(value) => model.providerKey ? updateProvider(model.providerKey, value ? "openrouter" : "byteplus") : updateOpenRouterOnlyProvider(openRouterOnlyKey, value)} />;
+                    })}
+                  </div>
+                  <div />
+                  <div className="flex flex-col gap-2">
+                    {group.models.filter((model) => model.provider === "byteplus").map((model, index) => (
+                      <BytePlusModelTag key={`${group.title}-bp-${index}-${model.modelId}`} item={model} selectedEndpointId={model.providerKey ? bytePlusModelSelections[model.providerKey] : ""} selectedProvider={model.providerKey ? modelProviderPreferences[model.providerKey] ?? "openrouter" : "openrouter"} onToggle={(value) => model.providerKey && updateProvider(model.providerKey, value ? "byteplus" : "openrouter")} onChange={(endpointId) => model.providerKey && updateBytePlusModel(model.providerKey, endpointId)} />
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div className="flex flex-col gap-2">
+                  {group.models.map((model, index) => {
+                    if (model.subheading) return <div key={`${group.title}-sub-${index}`} className={`text-[12px] font-medium text-[#555555] ${index === 0 ? "" : "mt-1"}`}>{model.subheading}</div>;
+                    const providerKey = getOpenRouterOnlyProviderKey(group.providerGroup ?? group.title, model);
+                    const checked = model.providerKey ? modelProviderPreferences[model.providerKey] !== "byteplus" : modelProviderPreferences[providerKey] !== "byteplus";
+                    const showOpenRouter = model.provider === undefined || model.provider === "openrouter";
+                    const showBytePlus = model.provider === undefined || model.provider === "byteplus";
+                    return (
+                      <div key={`${group.title}-${index}-${model.modelId}`} className="grid grid-cols-[360px_70px_360px] items-center">
+                        {showOpenRouter ? <OpenRouterModelTag item={model} checked={checked} onToggle={(value) => model.providerKey ? updateProvider(model.providerKey, value ? "openrouter" : "byteplus") : updateOpenRouterOnlyProvider(providerKey, value)} /> : <span className="inline-flex h-8 w-full rounded-[7px] bg-[#f4f6fb]" />}
+                        <span className="flex h-8 items-center justify-center text-[12px] text-[#888888]">{model.badge}</span>
+                        {showBytePlus ? <BytePlusModelTag item={model} selectedEndpointId={model.providerKey ? bytePlusModelSelections[model.providerKey] : ""} selectedProvider={model.providerKey ? modelProviderPreferences[model.providerKey] ?? "openrouter" : "openrouter"} onToggle={(value) => model.providerKey && updateProvider(model.providerKey, value ? "byteplus" : "openrouter")} onChange={(endpointId) => model.providerKey && updateBytePlusModel(model.providerKey, endpointId)} /> : <span className="inline-flex h-8 w-full rounded-[7px] bg-[#f4f6fb]" />}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           </div>
         ))}

@@ -2,6 +2,10 @@
 
 Last rebuilt: 2026-06-20
 
+> **⚠️ 2026-07-13 最新（later session）：新增 2 个 BytePlus 模型（Seedream 5.0 Pro 图片 / Seedance 2.0 Mini 视频）+ 全量按官网校准计费·尺寸·多图 + 修一个全局前端卡顿 bug。全部仅本地，未 commit/未推/未部署。** 承接同日"模型开关大简化 + GPT-5.6 Terra"那批，用户说这是最后一批模型，**下个 AI 直接把两批一起部署**（步骤+验证清单见 05-next-actions 顶条）。要点：Pro 调用名带 `dola-` 前缀、只支持 1K/2K/单图；计费 token×单价自算（图片像素分档+参考图、视频有无视频输入分档）；4.5/Lite 保留"一次出多张"、Pro/OpenRouter 走"申请N次"；Lite 补 3K；改路由后 dev 必须停 node+删 `.next` 重启。参考文档存 `E:\project\【1】Api key\Byteplus\`（api key/模型价格/tutorial）。详见 CHANGELOG / 01-current-status / 05-next-actions 顶条。**用户铁律不变：资产原始数据出生即冻结永不变。**
+
+> **⚠️ 2026-07-13（earlier）：后台"模型开关"大简化 + 新增 GPT-5.6 Terra/Terra Pro + Agent 模式改造（全部仅本地，未 commit/未推/未部署）。** 7 组→5 组（图片/视频/通用/Agent/反推优化），取消 OpenRouter↔BytePlus 互斥改"相加"（去掉重复的 OR seedream-4.5/seedance/seed-2.0-lite，只留 BytePlus 版），表头"使用位置"→"功能模块"+新增"作用位置"列。反推/优化固定顺序 GPT-5.5→5.4→Seed2.0Pro→Seed2.0Lite。通用模式加 GPT-5.6 Terra/Terra Pro（金色改到 Terra Pro）。Agent 合并成一组、去掉备选、首选不可用随机兜底用「图片生成/视频生成」。默认全开（含 BYTEPLUS_API_KEY_ENABLED 默认→true）。`tsc`+`build` 通过。**已与上面 later session 那批合并，一起部署。** 详见 CHANGELOG / 01-current-status / 05-next-actions 顶条。另：后台白名单已加 `176107103@qq.com`（腾讯 env，已上线）。**用户铁律不变：资产原始数据出生即冻结永不变。**
+
 > **✅ 2026-07-12 (later session) 最新：生成图统一出生根治 + 资产→节点读取统一(model) + 全平台上传内容哈希去重(阶段3b全量) 已部署腾讯并 commit+push GitHub（腾讯=GitHub=本地 三方同步）。** 所有生成由服务端 finalize 唯一权威出生（异步存盘图先等本地存盘再落库，修复资产库图 model/参数全空）；从资产库导入/图层恢复/GET 接口都带真实 model（修导入节点显示默认模型）；对话流+工作流(画布/输入框)+资产库三处上传统一内容哈希去重（跨平台判重、提示「图片已存在，无需重复上传！」按位置分开弹、去掉资产库旧 url 判重）。历史空 model 老图从 GenerationJob/ledger 精确回填 7 张（12424740）、5 张无来源留空不猜。详见 `CHANGELOG.md` / `01-current-status.md` / `05-next-actions.md` 顶条。**用户铁律不变：资产原始数据出生即冻结永不变，之后只有改名/移动/删除（只写 UserAssetState）；新口子必须走统一存/读模块。**
 
 > **✅ 2026-07-12 (上午)：资产入库/显示统一大改造 阶段1/2/3a/4** 已部署腾讯（统一入库 `src/lib/media-asset-record.ts`、关掉出生后覆盖、视频存尺寸、上传按内容哈希去重、库/工作流显示统一）。历史数据不删不改。

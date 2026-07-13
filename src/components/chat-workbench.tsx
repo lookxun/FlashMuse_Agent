@@ -351,7 +351,7 @@ function getVideoReferenceModeLabel(value: VideoReferenceMode) {
 }
 
 function isBytePlusSeedanceVideoModel(modelId?: string) {
-  return modelId === "byteplus:video.seedance-2-0" || modelId === "byteplus:video.seedance-2-0-fast";
+  return modelId === "byteplus:video.seedance-2-0" || modelId === "byteplus:video.seedance-2-0-fast" || modelId === "byteplus:video.seedance-2-0-mini";
 }
 
 function getEffectiveBytePlusVideoReferenceItems<T>(items: T[] | undefined, mode?: VideoReferenceMode): T[] {
@@ -1663,6 +1663,9 @@ function getActualTextModelLabel(modelId: string) {
     "google/gemini-3.1-pro-preview": "Gemini 3.1 Pro Preview",
     "openai/gpt-4o": "GPT-4o",
     "openai/gpt-5.5": "GPT-5.5",
+    "openai/gpt-5.6-terra": "GPT-5.6 Terra",
+    "openai/gpt-5.6-terra-pro": "GPT-5.6 Terra Pro",
+    "byteplus:chat.seed-2-0-pro": "Seed 2.0 Pro",
   };
   return labels[modelId] ?? (modelId === DEFAULT_CHAT_MODEL ? "Seed 2.0 Lite" : modelId === ADVANCED_CHAT_MODEL ? "GPT-5.4" : modelId);
 }
@@ -1749,25 +1752,29 @@ function getFeedbackDissatisfactionCount(sessionId: string, mode: "image" | "vid
     .length;
 }
 
-function getPreferredAvailableGenerationModel(generationMode: "image" | "video", desiredModels: ModelName[], enabledModels?: Record<"image" | "video", string[]>) {
+function getPreferredAvailableGenerationModel(generationMode: "image" | "video", desiredModels: ModelName[], enabledModels?: Record<"image" | "video", string[]>, fallbackModels?: Record<"image" | "video", string[]>) {
   const availableModels = enabledModels?.[generationMode] ?? [];
-  if (availableModels.length === 0) return desiredModels[0];
   const preferredModel = desiredModels.find((model) => availableModels.includes(model));
-  return (preferredModel ?? availableModels[0]) as ModelName;
+  if (preferredModel) return preferredModel;
+  // Agent 首选不可用 → 去「图片生成 / 视频生成」里随机取一个已开启的模型兜底。
+  const fallbackPool = fallbackModels?.[generationMode] ?? [];
+  if (fallbackPool.length > 0) return fallbackPool[Math.floor(Math.random() * fallbackPool.length)] as ModelName;
+  if (availableModels.length > 0) return availableModels[0] as ModelName;
+  return desiredModels[0];
 }
 
-function getAgentGenerationModel(agentTier: AgentModelTier, generationMode: WorkMode, selectedGenerationModels: Record<"image" | "video", ModelName>, options?: { sourceText?: string; session?: WorkSession; feedbackLogs?: FeedbackLogEntry[]; enabledModels?: Record<"image" | "video", string[]> }) {
+function getAgentGenerationModel(agentTier: AgentModelTier, generationMode: WorkMode, selectedGenerationModels: Record<"image" | "video", ModelName>, options?: { sourceText?: string; session?: WorkSession; feedbackLogs?: FeedbackLogEntry[]; enabledModels?: Record<"image" | "video", string[]>; fallbackModels?: Record<"image" | "video", string[]> }) {
   if (generationMode === "image") {
-    if (agentTier === "normal") return getPreferredAvailableGenerationModel("image", ["byteplus:conversation-image.seedream-4-5", "bytedance-seed/seedream-4.5"], options?.enabledModels);
-    return getPreferredAvailableGenerationModel("image", ["openai/gpt-5.4-image-2"], options?.enabledModels);
+    if (agentTier === "normal") return getPreferredAvailableGenerationModel("image", ["byteplus:conversation-image.seedream-4-5"], options?.enabledModels, options?.fallbackModels);
+    return getPreferredAvailableGenerationModel("image", ["openai/gpt-5.4-image-2"], options?.enabledModels, options?.fallbackModels);
   }
 
   if (generationMode === "video") {
-    if (agentTier === "normal") return getPreferredAvailableGenerationModel("video", ["byteplus:video.seedance-2-0-fast", "bytedance/seedance-2.0-fast"], options?.enabledModels);
-    return getPreferredAvailableGenerationModel("video", ["byteplus:video.seedance-2-0", "bytedance/seedance-2.0"], options?.enabledModels);
+    if (agentTier === "normal") return getPreferredAvailableGenerationModel("video", ["byteplus:video.seedance-2-0-fast"], options?.enabledModels, options?.fallbackModels);
+    return getPreferredAvailableGenerationModel("video", ["byteplus:video.seedance-2-0"], options?.enabledModels, options?.fallbackModels);
   }
 
-  return agentTier === "advanced" ? ADVANCED_CHAT_MODEL : DEFAULT_CHAT_MODEL;
+  return agentTier === "advanced" ? "openai/gpt-5.6-terra-pro" : "byteplus:chat.seed-2-0-pro";
 }
 
 function getAgentGenerationSettings(text: string, generationMode: WorkMode, model: ModelName): GenerationSettings | undefined {
@@ -2128,7 +2135,7 @@ function isGoldGenerationModel(modelId: string) {
 }
 
 function isGoldConversationModel(modelId: string) {
-  return modelId === "openai/gpt-5.5";
+  return modelId === "openai/gpt-5.6-terra-pro";
 }
 
 const ratioCardMeta: Record<string, { icon: string; width: string; height: string }> = {
@@ -2350,9 +2357,12 @@ function getCommonRatioLabel(width: number, height: number) {
 
 function getImageResolutionFromDimensions(dimensions?: ImageDimensions) {
   if (!dimensions) return undefined;
-  const maxSide = Math.max(dimensions.width, dimensions.height);
-  if (maxSide >= 3500) return "4K";
-  if (maxSide >= 1900) return "2K";
+  // 用总像素区分档位：不同模型/比例的「最长边」会重叠（如 Lite 3K 1:1=3072 比 2K 21:9=3136 还小），
+  // 但总像素互不重叠（1K≈1M、2K≈4M、3K≈9M、4K≈16.7M）。
+  const totalPixels = dimensions.width * dimensions.height;
+  if (totalPixels >= 13_000_000) return "4K";
+  if (totalPixels >= 6_500_000) return "3K";
+  if (totalPixels >= 2_500_000) return "2K";
   return "1K";
 }
 
@@ -7140,7 +7150,7 @@ export function ChatWorkbench() {
   });
   const [enabledGeneralChatModelIds, setEnabledGeneralChatModelIds] = useState<string[]>(frontendConversationModels.map((model) => model.id));
   const [generalModelProviders, setGeneralModelProviders] = useState<Record<string, "openrouter" | "byteplus">>({});
-  const [enabledAgentChatModelIds, setEnabledAgentChatModelIds] = useState<string[]>([DEFAULT_CHAT_MODEL, ADVANCED_CHAT_MODEL]);
+  const [enabledAgentChatModelIds, setEnabledAgentChatModelIds] = useState<string[]>(["byteplus:chat.seed-2-0-pro", "openai/gpt-5.6-terra-pro"]);
   const [agentChatModelProviders, setAgentChatModelProviders] = useState<Record<string, "openrouter" | "byteplus">>({});
   const [enabledGenerationModelIds, setEnabledGenerationModelIds] = useState<Record<"image" | "video", string[]>>({
     image: imageGenerationModels.map((model) => model.id),
@@ -7920,6 +7930,9 @@ export function ChatWorkbench() {
   const activePendingRequests = getSessionPendingRequests(activeSession);
   const activePendingRequestCount = activePendingRequests.length;
   const activeHasMaxPendingRequests = activePendingRequestCount >= MAX_SESSION_PENDING_REQUESTS;
+  // 只有在「真正需要按秒刷新的界面」出现时才开 1 秒计时器：生成进行中 / 会话加载中 / 角色图生成中 / 资产生成任务。
+  // 空闲时不再每秒 setState，避免整棵大组件（含依赖 timerNow 的重 useMemo）每秒重渲染导致卡顿。
+  const needsLiveTimer = activePendingRequestCount > 0 || isActiveSessionLoading || isCharacterGenerating || assetGenerateJobs.length > 0;
   const isThinking = activeIsResolving || activePendingRequests.some((request) => request.mode === "agent" || request.mode === "general") || modelInfoSessionId === activeSession?.id;
   const isMainInputDisabled = isThinking || isInputPromptOptimizing;
   const activeIsSending = activeSession ? sendingSessionIds.has(activeSession.id) : false;
@@ -8696,7 +8709,7 @@ export function ChatWorkbench() {
     setIsReversePromptingPreview(true);
     setPreviewPromptError(null);
     try {
-      const reverseModels = Array.from(new Set(["openai/gpt-5.5", ADVANCED_CHAT_MODEL, DEFAULT_CHAT_MODEL]));
+      const reverseModels = Array.from(new Set(["openai/gpt-5.5", ADVANCED_CHAT_MODEL, "byteplus:chat.seed-2-0-pro", DEFAULT_CHAT_MODEL]));
       let data: ChatApiResponse | undefined;
       let nextPrompt = "";
       let lastError: unknown;
@@ -8907,10 +8920,12 @@ export function ChatWorkbench() {
   }, []);
 
   useEffect(() => {
+    if (!needsLiveTimer) return;
+    setTimerNow(Date.now());
     const timer = window.setInterval(() => setTimerNow(Date.now()), 1000);
 
     return () => window.clearInterval(timer);
-  }, []);
+  }, [needsLiveTimer]);
 
   useEffect(() => {
     sessionsRef.current = sessions;
@@ -10102,7 +10117,7 @@ export function ChatWorkbench() {
 
   const renderControlMenu = (name: ControlMenuName, label: string, title: string, options: string[], value: string, onChange: (value: string) => void, icon?: typeof RiImageLine) => {
     const isDurationMenu = name === "duration";
-    const isBytePlusDurationMenu = isDurationMenu && (selectedGenerationModels.video === "byteplus:video.seedance-2-0-fast" || selectedGenerationModels.video === "byteplus:video.seedance-2-0");
+    const isBytePlusDurationMenu = isDurationMenu && (selectedGenerationModels.video === "byteplus:video.seedance-2-0-fast" || selectedGenerationModels.video === "byteplus:video.seedance-2-0" || selectedGenerationModels.video === "byteplus:video.seedance-2-0-mini");
     const durationMenuRows = Math.ceil(options.length / 2);
     const durationMenuSplitIndex = Math.max(0, options.length - durationMenuRows);
 
@@ -11794,24 +11809,30 @@ export function ChatWorkbench() {
 
         const generationMode: WorkMode = plan.intent === "image" || plan.intent === "video" ? plan.intent : pendingRequest.mode === "general" ? "general" : "agent";
         let availableMediaModels = pendingRequest.mode === "general" ? enabledGenerationModelIds : enabledAgentGenerationModelIds;
+        // Agent 首选不可用时的兜底池 = 「图片生成 / 视频生成」已开启模型。
+        let agentFallbackModels = enabledGenerationModelIds;
         if (generationMode === "image" || generationMode === "video") {
           try {
             const response = await fetch("/api/model-availability", { cache: "no-store" });
             const data = (await response.json()) as { imageModels?: string[]; videoModels?: string[]; agentImageModels?: string[]; agentVideoModels?: string[] };
-            availableMediaModels = pendingRequest.mode === "general"
-              ? {
-                  image: Array.isArray(data.imageModels) ? data.imageModels : [],
-                  video: Array.isArray(data.videoModels) ? data.videoModels : [],
-                }
-              : {
-                  image: Array.isArray(data.agentImageModels) ? data.agentImageModels : [],
-                  video: Array.isArray(data.agentVideoModels) ? data.agentVideoModels : [],
-                };
-            if (pendingRequest.mode === "general") setEnabledGenerationModelIds(availableMediaModels);
-            else setEnabledAgentGenerationModelIds(availableMediaModels);
+            const conversationModels = {
+              image: Array.isArray(data.imageModels) ? data.imageModels : [],
+              video: Array.isArray(data.videoModels) ? data.videoModels : [],
+            };
+            const agentModels = {
+              image: Array.isArray(data.agentImageModels) ? data.agentImageModels : [],
+              video: Array.isArray(data.agentVideoModels) ? data.agentVideoModels : [],
+            };
+            availableMediaModels = pendingRequest.mode === "general" ? conversationModels : agentModels;
+            agentFallbackModels = conversationModels;
+            setEnabledGenerationModelIds(conversationModels);
+            if (pendingRequest.mode !== "general") setEnabledAgentGenerationModelIds(agentModels);
           } catch {}
 
-          if (availableMediaModels[generationMode].length === 0) {
+          const availablePoolCount = pendingRequest.mode === "general"
+            ? availableMediaModels[generationMode].length
+            : availableMediaModels[generationMode].length + agentFallbackModels[generationMode].length;
+          if (availablePoolCount === 0) {
             appendSystemMessage(sessionId, { content: "连接不到模型，请联系管理员！", error: "连接不到模型，请联系管理员！", mode: generationMode });
             return;
           }
@@ -11820,7 +11841,7 @@ export function ChatWorkbench() {
           ? pendingRequest.model
           : pendingRequest.mode === "general" && (generationMode === "image" || generationMode === "video")
           ? (availableMediaModels[generationMode].includes(pendingRequest.selectedMediaModels?.[generationMode] ?? "") ? pendingRequest.selectedMediaModels?.[generationMode] : availableMediaModels[generationMode][0]) as ModelName
-          : getAgentGenerationModel(agentModelTier, generationMode, selectedGenerationModels, { sourceText, session: sessions.find((session) => session.id === sessionId), feedbackLogs, enabledModels: availableMediaModels });
+          : getAgentGenerationModel(agentModelTier, generationMode, selectedGenerationModels, { sourceText, session: sessions.find((session) => session.id === sessionId), feedbackLogs, enabledModels: availableMediaModels, fallbackModels: agentFallbackModels });
         const agentSettings = getAgentGenerationSettingsFromPlan(plan, sourceText, generationMode, generationModel);
         const agentPromptDetail = generationMode === "image" || generationMode === "video" ? getAgentPromptDetailFromPlan(plan, sourceText, generationMode) : undefined;
         const agentPrompt = joinPromptDetail(agentPromptDetail);
@@ -13699,7 +13720,7 @@ export function ChatWorkbench() {
       setIsCharacterAtAssetMenuOpen(false);
       setOpenControlMenu("");
       const referencedAssets = getReferencedAssets(rawPrompt, assets);
-      const optimizeModels = Array.from(new Set(["openai/gpt-5.5", ADVANCED_CHAT_MODEL, DEFAULT_CHAT_MODEL]));
+      const optimizeModels = Array.from(new Set(["openai/gpt-5.5", ADVANCED_CHAT_MODEL, "byteplus:chat.seed-2-0-pro", DEFAULT_CHAT_MODEL]));
       let data: ChatApiResponse | undefined;
       let nextPrompt = "";
       let lastError: unknown;
@@ -13944,7 +13965,7 @@ export function ChatWorkbench() {
     try {
       closeInputMenus();
       const referencedAssets = getReferencedAssets(rawPrompt, assets);
-      const optimizeModels = Array.from(new Set(["openai/gpt-5.5", ADVANCED_CHAT_MODEL, DEFAULT_CHAT_MODEL]));
+      const optimizeModels = Array.from(new Set(["openai/gpt-5.5", ADVANCED_CHAT_MODEL, "byteplus:chat.seed-2-0-pro", DEFAULT_CHAT_MODEL]));
       let data: ChatApiResponse | undefined;
       let nextPrompt = "";
       let lastError: unknown;

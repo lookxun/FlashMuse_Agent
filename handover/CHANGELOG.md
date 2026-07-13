@@ -1,5 +1,90 @@
 # Current Handover Changelog
 
+## 2026-07-13 (later session) 新增 2 个 BytePlus 模型（Seedream 5.0 Pro 图片 / Seedance 2.0 Mini 视频）+ 全量按官网校准计费·尺寸·多图 + 修一个全局前端卡顿 bug（⚠️ 全部仅本地，未 commit/未部署；**下次直接部署**）
+
+Reply style: 简洁直接中文。承接同日上一 session（"模型开关大简化 + GPT-5.6 Terra"），用户要求继续加模型。本 session 把两个 BytePlus 新模型接入图片/视频生成组，并**逐项对照 BytePlus 官方文档/价格表**校准了计费、尺寸、多图行为，最后顺手修了一个 dev 里暴露、线上也存在的前端卡顿 bug。**⚠️ 三方状态：本 session + 上一 session 两批全部只在本地，`npx tsc --noEmit` 全程通过、`npm run build` 通过；未 commit/未推/未部署。用户明确：这次是最后一批，下个 AI 直接部署（见 05-next-actions 顶条）。** 权威参考文档已存本地：`E:\project\【1】Api key\Byteplus\` 下的 `Byteplus api key.md`（端点映射）、`模型价格.md`（计费）、`Seedream 4.0-5.0 tutorial.md`（尺寸/能力，第 2591-2596 行是权威参考像素表）。
+
+### 1. 新增两个模型（按现有 additive 方式加进"图片生成"/"视频生成"组，默认开）
+- **Seedream 5.0 Pro（图片）**：id `byteplus:conversation-image.seedream-5-0-pro`；BytePlus 调用名 **`dola-seedream-5-0-pro-260628`**（⚠️注意有 `dola-` 前缀，少了就报 "not a valid model ID"）；端点 `ep-20260713101732-q5zvf`。
+- **Seedance 2.0 Mini（视频）**：id `byteplus:video.seedance-2-0-mini`；调用名 `dreamina-seedance-2-0-mini-260615`；端点 `ep-20260713100634-mwp78`。
+- 接线文件：`models.ts`(模型数组+imageModelRules/videoModelRules)、`system-settings.ts`(KEYS 映射3处 + DEFAULT_MODEL_PROVIDER_PREFERENCES + DEFAULT_BYTEPLUS_MODEL_SELECTIONS + BYTEPLUS_ENDPOINT_MODEL_NAMES)、`image/route.ts` & `generation-jobs.ts`(getBytePlusProviderKey 加 seedream-5-0-pro 分支，**必须在 seedream-5-0 之前判**)、`video/route.ts`(seedance-2-0-mini 分支)、`openrouter.ts`(getBytePlusImageModelName + supportsBytePlusImageOutputFormat + Pro 判定集合)、`openrouter-video.ts`(getBytePlusVideoModelName 加 mini)、`upload-rules.ts`(isBytePlusImageModel/isBytePlusVideoModel)、`media-asset-record.ts`(显示名)、`admin-system-settings-panel.tsx`(extraModelLabels + bytePlusImageModels[3]/bytePlusVideoModels + 两组 items)、`chat-workbench.tsx` & `workflow-tldraw-canvas-inner.tsx`(seedance 判定 + 时长菜单含 mini)。
+- **顺序**：用户要 Mini 显示在 Fast 上面 → `bytePlusVideoGenerationModels` 顺序改 Mini→Fast→2.0；admin `bytePlusVideoModels` 同步改并修正 Agent 组 [1]/[2] 下标。
+
+### 2. 计费全部按官网校准（`模型价格.md`）
+- **图片**：Pro 输出**按像素分档**（≤236 万像素 0.045/张、>236 万 0.09/张，未知尺寸按高档兜底）+ 输入参考图**第1张免费、第2张起 0.003/张**；Lite=0.035、4.5=0.04（输入免费）。实现：`openrouter.ts` 新增 `isSeedream50ProModel` + `getSeedream50ProUsd`，`getBytePlusImageUsage` 签名加 `outputDimensions`/`referenceImageCount`，调用点传 `allImageDimensions`(按displayImages) + `safeReferenceImages.length`。
+- **视频**：新增 `models.ts getBytePlusVideoPricePerMillionUsd(model, resolution, hasVideoInput)`（USD/百万token × API 返回的 completion_tokens）。单价表：Seedance 2.0 = 480/720p 7.0(无视频输入)/4.3(有)、1080p 7.7/4.7、4K 4.0/2.4；Fast = 5.6/3.3；Mini = **3.5/2.1**。两处 `withBytePlusVideoUsd`（`video/route.ts`、`generation-jobs.ts`）加 `hasVideoInput` 形参并调该函数；扣费点传参：route 用 `body.referenceVideos`、job 用 `job.referenceVideos`（有参考视频→走"有视频输入"的低单价档）。
+- **关键理解**（用户追问过）：BytePlus 只返回 token 不返回美元，我们 token×单价 自己算；单价随"分辨率+有无视频输入"变，所以必须判 hasVideoInput 才能选对档。这些是官方**固定档位不是限时折扣**；但价格硬编码在代码里，BytePlus 若调价需人工改代码（可考虑以后做后台"单价可配置"页，用户暂缓）。扣费链路：usd → `chargeCredits`（按 usdToCnyRate 换算积分，通用无按模型分支）→ 扣分，新模型自动对上。
+
+### 3. 多图（"生成N张"）行为按模型区分（重要，别再改错）
+- 用户澄清：本产品"生成4张"= **申请 N 次**（N 张独立候选，配合"挑最好"），**不是**让模型一次吐 N 张。
+- OpenRouter 图片：一直是申请 N 次（`Promise.all(count)`），不变。
+- BytePlus：`generateBytePlusImage` 里 `supportsSequentialBatch = !isSeedream50ProModel(bytePlusModel)`、`useSequentialBatch = count>1 && supportsSequentialBatch`。**4.5 / 5.0 Lite 保留原生"一次出多张"**（`sequential_image_generation: auto, max_images`，一次调用）；**Pro 只支持单图 → 申请 N 次**（Promise.all，每次单图、不发 sequential 参数）。前端对话流照常可选 4 张，对所有模型都工作（Pro 走4次、4.5/Lite 走1次批量）。
+- 依据 tutorial 能力表：一次出多张能力 = 4.0/4.5/5.0-lite 有，**Pro 无（Only single-image generation）**。
+
+### 4. 尺寸表按官网参考像素表校准（`Seedream 4.0-5.0 tutorial.md` 2591-2596 行）+ Lite 补 3K
+- BytePlus `size` 支持关键字或 `宽x高`；我们发 `宽x高`（Method 1）以锁比例，**发送逻辑不动**，只修尺寸表。
+- 核对结论：**4.5 与 5.0 Lite 的 2K/4K 表相同且我们原表正确**（逐项对上）。
+- **Pro 建独立表**：1K（1:1 1024×1024/16:9 1424×800/9:16 800×1424/4:3 1152×864/3:4 864×1152/21:9 1568×672）；**2K 与 4.5/Lite 不同**（16:9=2816×1584、9:16=1584×2816、4:3=2368×1776、3:4=1776×2368；1:1/21:9 相同）。Pro 只支持 **1K/2K**（无 4K）。
+- **Lite 补 3K**：`ImageResolution` 类型加 `"3K"`；Lite 规则改 2K/3K/4K；新增 `bytePlusSeedream3KDimensions`（1:1 3072×3072/16:9 4096×2304/9:16 2304×4096/4:3 3456×2592/3:4 2592×3456/21:9 4704×2016）。删了已无用的 `bytePlusSeedream50Dimensions`。前端分辨率选择器动态读 `getSupportedImageResolutions`，自动出 3K/隐藏 Pro 的 4K。
+
+### 5. 修 3K 显示成 2K 的 bug（`getImageResolutionFromDimensions`）
+- 原按"最长边"反推 K 档，但不同模型/比例最长边重叠（Lite 3K 1:1=3072 < 2K 21:9=3136；3K 16:9=4096 = 4K 1:1=4096）→ 3K 被判成 2K/4K。
+- 改成**按总像素**判：≥1300万→4K、≥650万→3K、≥250万→2K、否则1K（四档互不重叠，各模型均适用）。三处同步改：`chat-workbench.tsx`、`api/workspace-state/route.ts`、`lib/media-asset-record.ts`(getResolutionFromDimensions)。
+
+### 6. 修前端卡顿 bug（`chat-workbench.tsx` 1 秒定时器无条件常开）
+- 根因：顶层 `setInterval(()=>setTimerNow(Date.now()),1000)` **无条件常开**，`timerNow` 又是第 ~7870 行重 useMemo（依赖 assets/messages/workflowItems）的依赖 → **空闲也每秒全量重渲染+重算**。dev 下卡顿明显。
+- 修：新增 `needsLiveTimer = activePendingRequestCount>0 || isActiveSessionLoading || isCharacterGenerating || assetGenerateJobs.length>0`，effect 依赖它、只在需要按秒计时时才开定时器。计时显示("已等待X秒")功能不受影响。
+- **影响面**：线上同样存在（空闲每秒重渲染=多耗 CPU/电），但被生产构建优化掩盖（生产 React 快 5~20 倍、无 StrictMode 双渲染），所以线上无肉眼卡顿、一直没被发现；dev 高强度测试才暴露。值得随本批上线。
+
+### 7. 本地已验证
+- Pro 出图 OK（修 `dola-` 名 + 停 node/删 `.next`/重启 dev 后；dev `.next` 缓存会导致旧路由代码，改路由后必须重启）。Lite 3K 出图 OK、参数框显示 3K 正确。空闲卡顿明显缓解。
+- ⚠️ 本地 `.env.local` 的 `BYTEPLUS_MODEL_SELECTIONS`/`MODEL_PROVIDER_PREFERENCES` 尚无 pro/mini 条目，靠代码 DEFAULT_* 兜底（已含），不影响；生产 env 同理（后台保存一次设置才会写入 env）。
+
+### 8. 本 session 改动文件清单（本地，未 commit；在上一 session 未提交批 + f14a6c5 之上）
+`src/lib/models.ts`、`src/lib/system-settings.ts`、`src/lib/openrouter.ts`、`src/lib/openrouter-video.ts`、`src/lib/generation-jobs.ts`、`src/lib/upload-rules.ts`、`src/lib/media-asset-record.ts`、`src/app/api/image/route.ts`、`src/app/api/video/route.ts`、`src/app/api/workspace-state/route.ts`、`src/app/admin/admin-system-settings-panel.tsx`、`src/components/chat-workbench.tsx`、`src/components/workflow-tldraw-canvas-inner.tsx`。
+
+## 2026-07-13 后台模型开关大简化 + 新增 GPT-5.6 Terra 模型 + Agent 改造 + 白名单加号（⚠️ 除白名单外全部仅本地，未 commit/未部署；下个 AI 继续加模型后再一起部署）
+
+Reply style: 简洁直接中文。本 session 全部围绕**后台"模型开关"页简化**（`src/app/admin/admin-system-settings-panel.tsx` + `src/lib/system-settings.ts` 为主）。**⚠️ 三方状态：这批代码改动只在本地，`npx tsc --noEmit` + `npm run build` 都过，但未 commit、未推 GitHub、未部署腾讯。用户明确说"下个 AI 还要继续加模型后再部署"，所以先攒着。** 唯一已上线的是后台白名单加账号（服务器 env 改动，见第 7 条）。
+
+**核心规则（贯穿全篇）**：同名模型两家供应商原来是"互斥单选路由"；本次这些用户面模块改成**加法（additive）**——去掉 OpenRouter 侧与 BytePlus 重复的模型，只留 BytePlus 版（真人审核等功能只在 BytePlus 版有），OpenRouter 只留其独有模型；左右两列各自独立开关、不互斥、BytePlus 去掉端点下拉。**那四个被去掉的 OpenRouter 模型 ID（`bytedance-seed/seedream-4.5`、`bytedance/seedance-2.0-fast`、`bytedance/seedance-2.0`、`bytedance-seed/seed-2.0-lite`）没有从 models.ts 删除**——它们是 DEFAULT_* 且别处仍引用，只是在这些模块的可用性过滤里返回 false。
+
+### 1. 后台模型开关：7 组 → 5 组 + 版式
+- 组：① 图片生成 ② 视频生成 ③ 通用模式 ④ Agent 模式 ⑤ 反推/优化提示词。
+- 表头"使用位置"→**"功能模块"**；新增一列**"作用位置"**（黑字 + 蓝色小圆点列表，展示每组开关实际影响的功能位置）。
+- 版式重构：每组模型区 = `[OpenRouter | 说明(badge) | BytePlus]` 子网格；小标题（Agent 用）整行横跨、旁边不再有空单元格。`ModelUsageGroup` 加 `usageLocations`/`providerGroup`(openrouter-only key 命名空间，与后端硬编码字符串解耦，改显示 title 不破坏已存偏好)/`additive`；`ModelUsageItem` 加 `subheading`/`provider`。
+
+### 2. 图片生成 / 视频生成 / 通用模式：取消互斥、改相加
+- **图片生成**（作用位置：通用模式生图 / 对话流图片模式 / 工作流图片节点 / 资产库生图 四处共用）：OpenRouter 只留 Gemini 3.1 Flash Image、Gemini 3 Pro Image、GPT-5.4 Image 2；BytePlus 留 Seedream 4.5、Seedream 5.0 Lite。`isConversationImageModelEnabled`：`bytedance-seed/seedream-4.5`→false。**资产库已并入对话流那套**（前一批 `isAssetImageModelEnabled` 已改为直接调 `isConversationImageModelEnabled`）。
+- **视频生成**（通用模式生视频 / 对话流视频 / 工作流视频节点）：OpenRouter 留 Kling×3、Veo 3.1；BytePlus 留 Seedance 2.0 Fast、Seedance 2.0。`isConversationVideoModelEnabled`：两个 OR seedance→false。
+- **通用模式**（通用模式对话）：OpenRouter 去掉 Seed 2.0 Lite（`isGeneralTextModelEnabled` seed-2.0-lite 只认 byteplus）；BytePlus 留 Seed 2.0 Lite、Seed 2.0 Pro。
+- 默认偏好：conversation-image.*、video.*、general.seed-2-0-lite/pro 等翻成 `byteplus`（默认开）。
+- ⚠️ 注意：去掉 OR 兜底后，**BytePlus 全局关时**这些模块看不到对应模型；已把 `BYTEPLUS_API_KEY_ENABLED` 默认从 false 改 **true**（配合各 key 默认开 = 全部默认打开）。
+
+### 3. 反推/优化提示词：additive + 4 模型固定顺序、无下拉
+- 顺序：**GPT-5.5 → GPT-5.4 → Seed 2.0 Pro → Seed 2.0 Lite**，前一个失败/关闭用下一个。
+- OpenRouter：GPT-5.5(prompt.priority)、GPT-5.4(prompt.second)；BytePlus：Seed 2.0 Pro(**新 key** prompt.seed-2-0-pro)、Seed 2.0 Lite(prompt.seed-2-0-lite)。
+- `isTextModelEnabled(...,"prompt")` 重写为这套（chat 源不变）；`openrouter.ts getTextProviderKey` 提示词模式下 `byteplus:chat.seed-2-0-pro`→prompt.seed-2-0-pro；`chat-workbench` 三处兜底数组（reverse×1、optimize×2）改为含 seed-2.0-pro 的固定顺序。
+- ⚠️ 反推是"看图"任务(mode:image 带图)，BytePlus seed 若不支持视觉则轮到它会失败跳过；GPT 在前无碍。优化是纯文本不受影响。
+
+### 4. 新增 GPT-5.6 Terra / Terra Pro（通用模式 OpenRouter）
+- 官网 API 查得 ID：`openai/gpt-5.6-terra`、`openai/gpt-5.6-terra-pro`（均多模态输入 file/image/text，价格同 GPT-5.4）。
+- `models.ts models[]` 加两个；`openrouter.ts` 价格兜底表加两条；`chat-workbench getActualTextModelLabel` 加显示名。通用模式 OR 列自动出现、默认开、`/api/chat` 直接放行、vision 默认支持。
+- **金色显示调整**：`isGoldConversationModel` 从 `openai/gpt-5.5` 改成 `openai/gpt-5.6-terra-pro`（GPT-5.5 不再金色）。
+
+### 5. Agent 模式：合并两组为一组（小标题分区）+ 去掉备选 + 兜底共用图片/视频生成
+- 一组三分区：**规划对话模型**（普通=BytePlus Seed 2.0 Pro；高级=OpenRouter GPT-5.6 Terra Pro）、**自动生成图片**（普通=BytePlus Seedream 4.5；高级=OpenRouter GPT-5.4 Image 2）、**自动生成视频**（普通=BytePlus Seedance 2.0 Fast；高级=BytePlus Seedance 2.0）。additive、无下拉；单 provider 行里空的那侧渲染灰色空白底(`bg-[#f4f6fb]`)。
+- 新增 key：`agent-chat.seed-2-0-pro`(byteplus)、`agent-chat.advanced`(openrouter，terra pro)、`agent-image.advanced`(openrouter，gpt-5.4-image-2)。`isAgentImageModelEnabled`/`isAgentVideoModelEnabled` 重写：**只留上述首选，其余 false，备选段删除**。`isTextModelEnabled` chat 分支加 seed-2.0-pro/terra-pro。`getTextProviderKey` seed-2.0-pro 按 mode 分流(general/prompt/agent)、terra-pro→agent-chat.advanced。`model-availability chatModels` 改成 `[byteplus:chat.seed-2-0-pro, openai/gpt-5.6-terra-pro]`（工作流文本节点也用这组，会一起变）。
+- `chat-workbench getAgentGenerationModel`：普通 chat=seed 2.0 pro、高级=terra pro；图片/视频普通/高级去掉 OR 兜底。`enabledAgentChatModelIds` 默认改这两个。
+- **备选 → 兜底共用**：Agent 自动生图/生视频首选不可用时，**随机**取「图片生成/视频生成」里已开启的模型。前端 `getPreferredAvailableGenerationModel` 加 `fallbackModels`；agent 运行器同时拉 agent 首选池 + 会话(图片/视频生成)池，前者选首选、后者随机兜底，空判改为两池都空才报错。后端放行：`image/route isImageModelEnabledForSource` agent 分支 = `isAgentImageModelEnabled || isConversationImageModelEnabled`；`video/route` 校验同理；`image/route getBytePlusProviderKey` seedream-5-0 统一用 conversation-image 键（agent 兜底选到也能解析端点）。作用位置里加了 `兜底：图片生成 / 视频生成` 一条并在 note 说明。
+
+### 6. 本 session 改动文件清单（本地，未 commit）
+- `src/lib/system-settings.ts`、`src/lib/models.ts`、`src/lib/openrouter.ts`、`src/components/chat-workbench.tsx`、`src/app/admin/admin-system-settings-panel.tsx`、`src/app/api/model-availability/route.ts`、`src/app/api/image/route.ts`、`src/app/api/video/route.ts`。
+- 注意：前一批"资产统一"(f14a6c5)已 commit；本批全部在其之上未提交。**下个 AI：继续加模型后，一起 `git status`/`diff`→`tsc`→`build`→commit+push→部署腾讯（scp 源码→`docker compose up -d --build flashmuse-app`→同步 `.next/static` 到阿里）。**
+
+### 7. 后台白名单加账号（已部署腾讯）
+- `/opt/flashmuse/data/.env.local` `ADMIN_EMAILS`：`lookxun@163.com` → `lookxun@163.com,176107103@qq.com`（原文件备份 `.env.local.bak.*`），`docker compose restart flashmuse-app` 重启读取，`/admin` 200。纯 env 改动、无代码。SSH：`ssh -i "C:\Users\ASUS\AppData\Local\Temp\opencode\CinematicFlow.pem" ubuntu@119.28.116.16`。
+
 ## 2026-07-12 (later session) 生成图统一出生根治 + 资产→节点读取统一(model) + 全平台上传内容哈希去重(阶段3b全量) + 从资产库导入刷新/model + 历史model回填（全部已部署腾讯；本条与下面 7-12 那批一起 commit+push 三方同步）
 
 Reply style: 简洁直接中文。承接同日"资产入库/显示统一大改造"。本 session 把统一改造**没覆盖到的几个口子**逐个补齐，核心原则：**所有生成一律由服务端 finalize 唯一权威出生（buildMediaAssetRecord），所有"资产变节点/引用/上传"一律从统一口径读真实数据，不用兜底默认；覆盖对话流/工作流/资产库全平台，且适配未来新生成模式。**

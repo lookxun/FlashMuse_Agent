@@ -209,8 +209,10 @@ export function buildUserAssetStateRecord(input: { userId: string; mediaAssetId:
 const MODEL_DISPLAY_LABELS: Record<string, string> = {
   "byteplus:conversation-image.seedream-4-5": "Seedream 4.5",
   "byteplus:conversation-image.seedream-5-0": "Seedream 5.0",
+  "byteplus:conversation-image.seedream-5-0-pro": "Seedream 5.0 Pro",
   "byteplus:video.seedance-2-0-fast": "Seedance 2.0 Fast",
   "byteplus:video.seedance-2-0": "Seedance 2.0",
+  "byteplus:video.seedance-2-0-mini": "Seedance 2.0 Mini",
   "bytedance-seed/seedream-4.5": "Seedream 4.5",
   "google/gemini-3.1-flash-image-preview": "Gemini 3.1 Flash",
   "google/gemini-3-pro-image-preview": "Gemini 3 Pro",
@@ -244,9 +246,11 @@ export function getCommonRatioLabel(width: number, height: number): string {
 /** 由宽高反推分辨率档（getImageResolutionFromDimensions）。 */
 export function getResolutionFromDimensions(width: number | null | undefined, height: number | null | undefined): string | undefined {
   if (!width || !height) return undefined;
-  const maxSide = Math.max(width, height);
-  if (maxSide >= 3500) return "4K";
-  if (maxSide >= 1900) return "2K";
+  // 用总像素区分档位（不同模型/比例的最长边会重叠，总像素不会）：1K≈1M、2K≈4M、3K≈9M、4K≈16.7M。
+  const totalPixels = width * height;
+  if (totalPixels >= 13_000_000) return "4K";
+  if (totalPixels >= 6_500_000) return "3K";
+  if (totalPixels >= 2_500_000) return "2K";
   return "1K";
 }
 

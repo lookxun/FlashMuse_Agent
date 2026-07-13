@@ -62,11 +62,11 @@ function makeRule(partial: Partial<UploadRule>): UploadRule {
 }
 
 function isBytePlusImageModel(modelId?: string) {
-  return modelId === "byteplus:conversation-image.seedream-4-5" || modelId === "byteplus:conversation-image.seedream-5-0";
+  return modelId === "byteplus:conversation-image.seedream-4-5" || modelId === "byteplus:conversation-image.seedream-5-0" || modelId === "byteplus:conversation-image.seedream-5-0-pro";
 }
 
 function isBytePlusVideoModel(modelId?: string) {
-  return modelId === "byteplus:video.seedance-2-0-fast" || modelId === "byteplus:video.seedance-2-0";
+  return modelId === "byteplus:video.seedance-2-0-fast" || modelId === "byteplus:video.seedance-2-0" || modelId === "byteplus:video.seedance-2-0-mini";
 }
 
 function isKlingVideoModel(modelId?: string) {

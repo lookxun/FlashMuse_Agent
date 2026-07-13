@@ -1,6 +1,29 @@
 # Current Status
 
-Last checked: 2026-07-12 China time.
+Last checked: 2026-07-13 China time.
+
+## 2026-07-13 (later session) 新增 2 个 BytePlus 模型 + 全量按官网校准计费/尺寸/多图 + 修前端卡顿（⚠️ 全部仅本地，未 commit/未部署；**下次直接部署**）
+
+详见 CHANGELOG 顶条 + 05-next-actions 顶条（部署步骤+验证清单）。速记：
+- **新增模型**：Seedream 5.0 Pro（图片，id `byteplus:conversation-image.seedream-5-0-pro`，调用名 `dola-seedream-5-0-pro-260628`，端点 ep-…q5zvf，仅 1K/2K，只支持单图生成）；Seedance 2.0 Mini（视频，id `byteplus:video.seedance-2-0-mini`，调用名 `dreamina-seedance-2-0-mini-260615`，端点 ep-…mwp78）。都加进 图片/视频生成 组、默认开、Mini 显示在 Fast 上面。
+- **计费按官网**：图片 Pro 输出按像素分档(≤236万px 0.045/>0.09)+参考图第2张起0.003；视频新增 `getBytePlusVideoPricePerMillionUsd(model,resolution,hasVideoInput)`——Seedance2.0 7.0/4.3·1080p 7.7/4.7·4K 4.0/2.4，Fast 5.6/3.3，Mini 3.5/2.1（有无视频输入两档，扣费点传 referenceVideos）。BytePlus 只返 token、我们 token×单价 自算。
+- **多图行为按模型**：4.5/Lite 保留原生"一次出多张"(sequential)；Pro 单图 → 申请 N 次；OpenRouter 一直申请 N 次。产品语义="申请N次"独立候选，不是让模型一次吐N张。
+- **尺寸按官网参考像素表**：4.5/Lite 2K/4K 原表正确；Pro 建独立表(2K 与它们不同、1K 专属)；Lite 补 3K（`ImageResolution` 加 "3K"）。发送仍用 `宽x高`。
+- **修 3K 显示成 2K**：`getImageResolutionFromDimensions` 由"最长边"改"总像素"判档（三处）。
+- **修前端卡顿**：`chat-workbench` 1 秒定时器原无条件常开→空闲每秒全量重渲染；改为 `needsLiveTimer` 按需开。线上也存在（被生产优化掩盖、无肉眼卡），随本批一起修上线。
+- **三方状态**：本 session + 上一 session 两批都只在本地（tsc/build 过），未 commit/未推/未部署。**用户：最后一批，下个 AI 直接部署。**
+
+## 2026-07-13 后台模型开关大简化 + GPT-5.6 Terra 新模型 + Agent 改造（⚠️ 全部仅本地，未 commit/未部署；白名单加号已上线腾讯）
+
+详见 CHANGELOG 顶条。速记：
+- **后台"模型开关" 7 组→5 组**：① 图片生成 ② 视频生成 ③ 通用模式 ④ Agent 模式 ⑤ 反推/优化提示词。表头"使用位置"→"功能模块"，新增"作用位置"列（黑字圆点，列出每组影响的功能位置）。
+- **取消互斥、改相加**：图片/视频/通用三个模块去掉与 BytePlus 重复的 OpenRouter 模型（seedream-4.5 / seedance-2.0-fast / seedance-2.0 / seed-2.0-lite，只在这些模块可用性过滤里返回 false，ID 未从 models.ts 删），OpenRouter 只留独有模型；左右各自开关不互斥、BytePlus 去下拉。
+- **反推/优化提示词**：additive，固定顺序 GPT-5.5→GPT-5.4→Seed 2.0 Pro→Seed 2.0 Lite（新增 key prompt.seed-2-0-pro）。
+- **新增 GPT-5.6 Terra / Terra Pro**（`openai/gpt-5.6-terra`/`-pro`）到通用模式 OpenRouter；金色显示从 GPT-5.5 改为 GPT-5.6 Terra Pro。
+- **Agent 模式**：合并成一组（小标题：规划对话/自动生图/自动生视频），普通=BytePlus Seed 2.0 Pro/Seedream 4.5/Seedance Fast、高级=Terra Pro/GPT-5.4 Image 2/Seedance 2.0；additive、无下拉、去掉备选段。**备选改成兜底共用**：首选不可用时随机用「图片生成/视频生成」里已开启模型（前端 fallbackModels + 后端 image/video 路由放行 conversation 模型）。
+- **默认全部打开**：各 provider key 默认开 + `BYTEPLUS_API_KEY_ENABLED` 默认 false→**true**。
+- **三方状态**：本批代码只在本地（tsc+build 过），**未 commit/未推/未部署**。用户要求下个 AI **继续加模型后再一起部署**。改动文件：system-settings.ts、models.ts、openrouter.ts、chat-workbench.tsx、admin-system-settings-panel.tsx、api/model-availability|image|video/route.ts。
+- **白名单**：腾讯 `ADMIN_EMAILS` 加 `176107103@qq.com` 已上线（env 改动+重启容器，非代码）。
 
 ## 2026-07-12 (later session) 生成图统一出生根治 + 资产→节点读取统一(model) + 全平台上传内容哈希去重(阶段3b全量完成) + 三方同步（全部已部署腾讯 + **本次已 commit+push GitHub，三方同步**）
 

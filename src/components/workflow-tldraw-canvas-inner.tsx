@@ -398,7 +398,7 @@ function getWorkflowUploadRuleVideoReferenceMode(text: string): WorkflowVideoRef
 }
 
 function isWorkflowBytePlusSeedanceVideoModel(modelId?: string) {
-  return modelId === "byteplus:video.seedance-2-0" || modelId === "byteplus:video.seedance-2-0-fast";
+  return modelId === "byteplus:video.seedance-2-0" || modelId === "byteplus:video.seedance-2-0-fast" || modelId === "byteplus:video.seedance-2-0-mini";
 }
 
 function getWorkflowVideoReferenceModeLabel(value?: WorkflowVideoReferenceMode) {

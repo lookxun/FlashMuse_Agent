@@ -222,6 +222,8 @@ const openRouterTextPricingFallback: Record<string, { prompt: number; completion
   "openai/gpt-4o": { prompt: 0.0000025, completion: 0.00001 },
   "openai/gpt-5.4": { prompt: 0.0000025, completion: 0.000015 },
   "openai/gpt-5.5": { prompt: 0.000005, completion: 0.00003 },
+  "openai/gpt-5.6-terra": { prompt: 0.0000025, completion: 0.000015 },
+  "openai/gpt-5.6-terra-pro": { prompt: 0.0000025, completion: 0.000015 },
 };
 
 const bytePlusTextPricing: Record<string, { prompt: number; completion: number; tiered?: boolean }> = {
@@ -239,6 +241,29 @@ const bytePlusImagePricePerOutputByModel: Record<string, number> = {
   "seedream-5-0-260128": 0.035,
   "ep-20260514142211-p2wdk": 0.035,
 };
+
+// Seedream 5.0 Pro 计费与其它 Seedream 不同：输出按像素分档、参考图从第 2 张起收费。
+const SEEDREAM_5_0_PRO_MODEL_NAMES = new Set(["dola-seedream-5-0-pro-260628", "seedream-5-0-pro-260628", "ep-20260713101732-q5zvf"]);
+const SEEDREAM_5_0_PRO_PIXEL_THRESHOLD = 2_360_000;
+const SEEDREAM_5_0_PRO_OUTPUT_USD_LOW = 0.045; // ≤ 236 万像素
+const SEEDREAM_5_0_PRO_OUTPUT_USD_HIGH = 0.09; // > 236 万像素
+const SEEDREAM_5_0_PRO_INPUT_USD_PER_EXTRA_IMAGE = 0.003; // 第 1 张参考图免费，从第 2 张起每张收费
+
+function isSeedream50ProModel(model: string | undefined) {
+  if (!model) return false;
+  return SEEDREAM_5_0_PRO_MODEL_NAMES.has(model) || /seedream-5-0-pro|seedream-5\.0-pro/i.test(model);
+}
+
+function getSeedream50ProUsd(outputDimensions: ImageDimensions[], outputImageCount: number, referenceImageCount: number) {
+  let outputUsd = 0;
+  for (let index = 0; index < Math.max(0, outputImageCount); index += 1) {
+    const dimension = outputDimensions[index];
+    const pixels = dimension ? dimension.width * dimension.height : Number.POSITIVE_INFINITY; // 未知尺寸按高档兜底，避免少扣费
+    outputUsd += pixels <= SEEDREAM_5_0_PRO_PIXEL_THRESHOLD ? SEEDREAM_5_0_PRO_OUTPUT_USD_LOW : SEEDREAM_5_0_PRO_OUTPUT_USD_HIGH;
+  }
+  const inputUsd = Math.max(0, referenceImageCount - 1) * SEEDREAM_5_0_PRO_INPUT_USD_PER_EXTRA_IMAGE;
+  return outputUsd + inputUsd;
+}
 
 function getBytePlusImagePricePerOutput(model: string | undefined) {
   if (!model) return undefined;
@@ -372,22 +397,24 @@ function getBytePlusHeaders(apiKey: string) {
 }
 
 function getBytePlusImageModelName(modelId: string, providerKey?: string) {
-  if ((modelId === "byteplus:conversation-image.seedream-4-5" || modelId === "byteplus:conversation-image.seedream-5-0") && providerKey) return getBytePlusModelForRequest(providerKey);
+  if ((modelId === "byteplus:conversation-image.seedream-4-5" || modelId === "byteplus:conversation-image.seedream-5-0" || modelId === "byteplus:conversation-image.seedream-5-0-pro") && providerKey) return getBytePlusModelForRequest(providerKey);
   if (modelId === "byteplus:conversation-image.seedream-4-5") return getBytePlusModelForRequest("conversation-image.seedream-4-5");
   if (modelId === "byteplus:conversation-image.seedream-5-0") return getBytePlusModelForRequest("conversation-image.seedream-5-0");
+  if (modelId === "byteplus:conversation-image.seedream-5-0-pro") return getBytePlusModelForRequest("conversation-image.seedream-5-0-pro");
   return undefined;
 }
 
 function supportsBytePlusImageOutputFormat(modelName: string) {
-  return modelName === "seedream-5-0-260128" || modelName === "ep-20260514142211-p2wdk";
+  return modelName === "seedream-5-0-260128" || modelName === "ep-20260514142211-p2wdk" || modelName === "dola-seedream-5-0-pro-260628" || modelName === "seedream-5-0-pro-260628" || modelName === "ep-20260713101732-q5zvf";
 }
 
 function getTextProviderKey(model: string, mode?: ChatRequest["mode"]) {
   if (mode === "general" && model === DEFAULT_CHAT_MODEL) return "general.seed-2-0-lite";
-  if (mode === "general" && model === "byteplus:chat.seed-2-0-pro") return "general.seed-2-0-pro";
+  if (model === "byteplus:chat.seed-2-0-pro") return mode === "general" ? "general.seed-2-0-pro" : (mode === "image" || mode === "video") ? "prompt.seed-2-0-pro" : "agent-chat.seed-2-0-pro";
   if (model === DEFAULT_CHAT_MODEL) return mode === "image" || mode === "video" ? "prompt.seed-2-0-lite" : "chat.seed-2-0-lite";
   if (model === ADVANCED_CHAT_MODEL) return mode === "image" || mode === "video" ? "prompt.second" : "chat.advanced";
   if (model === "openai/gpt-5.5") return "prompt.priority";
+  if (model === "openai/gpt-5.6-terra-pro") return "agent-chat.advanced";
   return undefined;
 }
 
@@ -1055,14 +1082,17 @@ function getBytePlusImageFailureReasons(data: BytePlusImageGenerationResponse) {
   return Array.from(new Set([rootReason, ...itemReasons].filter((item): item is string => Boolean(item))));
 }
 
-function getBytePlusImageUsage(data: BytePlusImageGenerationResponse, model: string, outputImageCount: number): UsageMeta | undefined {
+function getBytePlusImageUsage(data: BytePlusImageGenerationResponse, model: string, outputImageCount: number, outputDimensions: ImageDimensions[] = [], referenceImageCount = 0): UsageMeta | undefined {
   const usage = data.usage;
   const promptTokens = Math.max(0, Math.floor(usage?.prompt_tokens ?? 0));
   const completionTokens = Math.max(0, Math.floor(usage?.completion_tokens ?? usage?.output_tokens ?? 0));
   const totalTokens = Math.max(0, Math.floor(usage?.total_tokens ?? promptTokens + completionTokens));
   const explicitUsd = typeof usage?.usd === "number" && usage.usd > 0 ? usage.usd : typeof usage?.cost === "number" && usage.cost > 0 ? usage.cost : undefined;
   const fallbackPrice = getBytePlusImagePricePerOutput(model);
-  const usd = explicitUsd ?? (fallbackPrice !== undefined ? fallbackPrice * Math.max(0, outputImageCount) : undefined);
+  const usd = explicitUsd
+    ?? (isSeedream50ProModel(model)
+      ? getSeedream50ProUsd(outputDimensions, outputImageCount, referenceImageCount)
+      : fallbackPrice !== undefined ? fallbackPrice * Math.max(0, outputImageCount) : undefined);
   if (promptTokens <= 0 && completionTokens <= 0 && totalTokens <= 0 && usd === undefined) return undefined;
   return { promptTokens, completionTokens, totalTokens, usd };
 }
@@ -1129,6 +1159,10 @@ async function generateBytePlusImage(prompt: string, referenceImages: string[] =
   if (!bytePlusModel) throw new Error("连接不到模型，请联系管理员！");
 
   const count = Math.min(4, Math.max(1, Math.floor(options.count ?? 1)));
+  // Seedream 4.5 / 5.0 Lite 支持「一次调用出多张」(sequential_image_generation)；Seedream 5.0 Pro 只支持单图，
+  // 需要多张时改为「申请 N 次」独立单图调用。
+  const supportsSequentialBatch = !isSeedream50ProModel(bytePlusModel);
+  const useSequentialBatch = count > 1 && supportsSequentialBatch;
   const safeReferenceImages = referenceImages.filter(Boolean).slice(0, 10).map(toDataUrlIfLocalPublicAsset);
   const { resolution, ratio: aspectRatio } = resolveImageSettingsForModel(model, options.settings);
   const targetDimensions = getExpectedImageDimensions(model, resolution, aspectRatio);
@@ -1152,7 +1186,7 @@ async function generateBytePlusImage(prompt: string, referenceImages: string[] =
       model: bytePlusModel,
       prompt,
       ...(safeReferenceImages.length === 1 ? { image: safeReferenceImages[0] } : safeReferenceImages.length > 1 ? { image: safeReferenceImages } : {}),
-      ...(count > 1 ? { sequential_image_generation: "auto", sequential_image_generation_options: { max_images: count } } : safeReferenceImages.length > 1 ? { sequential_image_generation: "disabled" } : {}),
+      ...(useSequentialBatch ? { sequential_image_generation: "auto", sequential_image_generation_options: { max_images: count } } : safeReferenceImages.length > 1 ? { sequential_image_generation: "disabled" } : {}),
       size: bytePlusSize,
       watermark: false,
     };
@@ -1337,7 +1371,7 @@ async function generateBytePlusImage(prompt: string, referenceImages: string[] =
       images: selectedImages,
       imageDimensions,
       failureReasons,
-      usage: getBytePlusImageUsage(data, bytePlusModel, displayImages.length),
+      usage: getBytePlusImageUsage(data, bytePlusModel, displayImages.length, displayImages.map((image) => allImageDimensions[image]).filter((item): item is ImageDimensions => Boolean(item)), safeReferenceImages.length),
     };
   };
 
@@ -1352,7 +1386,7 @@ async function generateBytePlusImage(prompt: string, referenceImages: string[] =
     }
   };
 
-  const results = count > 1 ? [await createOneWithRetry()] : await Promise.all(Array.from({ length: count }).map(() => createOneWithRetry()));
+  const results = useSequentialBatch ? [await createOneWithRetry()] : await Promise.all(Array.from({ length: count }).map(() => createOneWithRetry()));
   const usage = results.reduce<UsageMeta | undefined>((current, item) => addUsageMeta(current, item.usage), undefined);
 
   return {
