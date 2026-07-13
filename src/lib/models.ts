@@ -7,7 +7,7 @@ export type GenerationModel = ConversationModel & {
   durations?: string[];
 };
 
-export type ImageResolution = "1K" | "2K" | "4K";
+export type ImageResolution = "1K" | "2K" | "3K" | "4K";
 export type ImageRatio = "智能比例" | "16:9" | "9:16" | "1:1" | "4:3" | "3:4" | "21:9";
 type ConcreteImageRatio = Exclude<ImageRatio, "智能比例">;
 type ImageDimensions = { width: number; height: number };
@@ -39,6 +39,8 @@ export const models: ConversationModel[] = [
   { label: "GPT-4o", id: "openai/gpt-4o" },
   { label: "GPT-5.4", id: "openai/gpt-5.4" },
   { label: "GPT-5.5", id: "openai/gpt-5.5" },
+  { label: "GPT-5.6 Terra", id: "openai/gpt-5.6-terra" },
+  { label: "GPT-5.6 Terra Pro", id: "openai/gpt-5.6-terra-pro" },
 ] as const;
 
 export const bytePlusConversationModels: ConversationModel[] = [
@@ -63,6 +65,7 @@ export const imageGenerationModels: GenerationModel[] = [
 export const bytePlusImageGenerationModels: GenerationModel[] = [
   { label: "Seedream 4.5", id: "byteplus:conversation-image.seedream-4-5" },
   { label: "Seedream 5.0 Lite", id: "byteplus:conversation-image.seedream-5-0" },
+  { label: "Seedream 5.0 Pro", id: "byteplus:conversation-image.seedream-5-0-pro" },
 ] as const;
 
 export const frontendImageGenerationModels: GenerationModel[] = [
@@ -82,6 +85,7 @@ export const videoGenerationModels: GenerationModel[] = [
 const bytePlusSeedanceDurations = ["4秒", "5秒", "6秒", "7秒", "8秒", "9秒", "10秒", "11秒", "12秒", "13秒", "14秒", "15秒"];
 
 export const bytePlusVideoGenerationModels: GenerationModel[] = [
+  { label: "Seedance 2.0 Mini", id: "byteplus:video.seedance-2-0-mini", durations: bytePlusSeedanceDurations },
   { label: "Seedance 2.0 Fast", id: "byteplus:video.seedance-2-0-fast", durations: bytePlusSeedanceDurations },
   { label: "Seedance 2.0", id: "byteplus:video.seedance-2-0", durations: bytePlusSeedanceDurations },
 ] as const;
@@ -125,9 +129,33 @@ const bytePlusSeedream4KDimensions: Record<ConcreteImageRatio, ImageDimensions> 
   "3:4": { width: 3520, height: 4704 },
 };
 
-const bytePlusSeedream50Dimensions = {
-  "2K": bytePlusSeedream2KDimensions,
-  "4K": bytePlusSeedream4KDimensions,
+// Seedream 5.0 Pro 只支持 1K / 2K（不支持 4K），且 2K 尺寸与 4.5/Lite 不同（官方参考像素表）。
+const bytePlusSeedream1KDimensions: Record<ConcreteImageRatio, ImageDimensions> = {
+  "1:1": { width: 1024, height: 1024 },
+  "16:9": { width: 1424, height: 800 },
+  "9:16": { width: 800, height: 1424 },
+  "21:9": { width: 1568, height: 672 },
+  "4:3": { width: 1152, height: 864 },
+  "3:4": { width: 864, height: 1152 },
+};
+
+const bytePlusSeedreamPro2KDimensions: Record<ConcreteImageRatio, ImageDimensions> = {
+  "1:1": { width: 2048, height: 2048 },
+  "16:9": { width: 2816, height: 1584 },
+  "9:16": { width: 1584, height: 2816 },
+  "21:9": { width: 3136, height: 1344 },
+  "4:3": { width: 2368, height: 1776 },
+  "3:4": { width: 1776, height: 2368 },
+};
+
+// Seedream 5.0 Lite 3K（官方参考像素表）。
+const bytePlusSeedream3KDimensions: Record<ConcreteImageRatio, ImageDimensions> = {
+  "1:1": { width: 3072, height: 3072 },
+  "16:9": { width: 4096, height: 2304 },
+  "9:16": { width: 2304, height: 4096 },
+  "21:9": { width: 4704, height: 2016 },
+  "4:3": { width: 3456, height: 2592 },
+  "3:4": { width: 2592, height: 3456 },
 };
 
 const gemini1KDimensions: Record<ConcreteImageRatio, ImageDimensions> = {
@@ -195,12 +223,22 @@ export const imageModelRules: Record<string, ImageModelRule> = {
     },
   },
   "byteplus:conversation-image.seedream-5-0": {
-    resolutions: ["2K", "4K"],
+    resolutions: ["2K", "3K", "4K"],
     defaultResolution: "2K",
     modalities: ["image"],
     dimensions: {
-      "2K": bytePlusSeedream50Dimensions["2K"],
-      "4K": bytePlusSeedream50Dimensions["4K"],
+      "2K": bytePlusSeedream2KDimensions,
+      "3K": bytePlusSeedream3KDimensions,
+      "4K": bytePlusSeedream4KDimensions,
+    },
+  },
+  "byteplus:conversation-image.seedream-5-0-pro": {
+    resolutions: ["1K", "2K"],
+    defaultResolution: "2K",
+    modalities: ["image"],
+    dimensions: {
+      "1K": bytePlusSeedream1KDimensions,
+      "2K": bytePlusSeedreamPro2KDimensions,
     },
   },
   "google/gemini-3.1-flash-image-preview": {
@@ -357,6 +395,14 @@ export const videoModelRules: Record<string, VideoModelRule> = {
     sizes: seedanceVideoSizes,
     nonStandardSizes: seedanceNonStandardVideoSizes,
   },
+  "byteplus:video.seedance-2-0-mini": {
+    resolutions: ["480p", "720p"],
+    ratios: ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
+    defaultResolution: "720p",
+    defaultRatio: "16:9",
+    sizes: seedanceFastVideoSizes,
+    nonStandardSizes: seedanceFastNonStandardVideoSizes,
+  },
   "kwaivgi/kling-v3.0-std": {
     resolutions: ["720p"],
     ratios: ["16:9", "1:1", "9:16"],
@@ -391,6 +437,17 @@ export const videoModelRules: Record<string, VideoModelRule> = {
 };
 
 export const fallbackVideoModelRule: VideoModelRule = videoModelRules[DEFAULT_VIDEO_MODEL];
+
+// BytePlus 视频单价（USD / 百万 token），按 官网价：随「输出分辨率」+「是否带视频输入」变化。
+// 费用 = 该单价 × API 返回的 completion_tokens / 1_000_000。
+export function getBytePlusVideoPricePerMillionUsd(modelId: string | null | undefined, resolution: string | undefined, hasVideoInput: boolean) {
+  if (modelId === "byteplus:video.seedance-2-0-fast") return hasVideoInput ? 3.3 : 5.6;
+  if (modelId === "byteplus:video.seedance-2-0-mini") return hasVideoInput ? 2.1 : 3.5;
+  // Seedance 2.0（完整版）：480p/720p 与 1080p / 4K 分档。
+  if (resolution === "4K") return hasVideoInput ? 2.4 : 4.0;
+  if (resolution === "1080p") return hasVideoInput ? 4.7 : 7.7;
+  return hasVideoInput ? 4.3 : 7.0;
+}
 
 export const imageRatioMap: Record<ConcreteImageRatio, [number, number]> = {
   "16:9": [16, 9],

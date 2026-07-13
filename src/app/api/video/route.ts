@@ -16,6 +16,7 @@ import { appendGenerationDiagnosticsLog, summarizeGeneratedReference } from "@/l
 import { createBytePlusAsset, getBytePlusAsset } from "@/lib/byteplus-assets";
 import { recordGenerationEvent } from "@/lib/analytics-events";
 import { createVideoJob } from "@/lib/generation-jobs";
+import { getBytePlusVideoPricePerMillionUsd } from "@/lib/models";
 import { Prisma } from "@prisma/client";
 
 type UsageMeta = {
@@ -55,10 +56,10 @@ function getUsageMeta(value: unknown): UsageMeta | undefined {
   return undefined;
 }
 
-function withBytePlusVideoUsd(usage: UsageMeta | undefined, model: string | undefined, settings?: { resolution?: string }) {
+function withBytePlusVideoUsd(usage: UsageMeta | undefined, model: string | undefined, settings?: { resolution?: string }, hasVideoInput = false) {
   if (!usage || usage.usd !== undefined || !model?.startsWith("byteplus:video.")) return usage;
   const outputTokens = Math.max(0, usage.completionTokens ?? usage.totalTokens ?? 0);
-  const pricePerMillion = model === "byteplus:video.seedance-2-0-fast" ? 5.6 : settings?.resolution === "1080p" ? 7.7 : 7.0;
+  const pricePerMillion = getBytePlusVideoPricePerMillionUsd(model, settings?.resolution, hasVideoInput);
   return { ...usage, usd: (outputTokens / 1_000_000) * pricePerMillion };
 }
 
@@ -349,6 +350,7 @@ function getBytePlusProviderKey(modelId: string | undefined, source: string | un
   if (!modelId?.startsWith("byteplus:video.")) return undefined;
   const prefix = source === "agent_video_generation" ? "agent-video" : "video";
   if (modelId.endsWith("seedance-2-0-fast")) return `${prefix}.seedance-2-0-fast`;
+  if (modelId.endsWith("seedance-2-0-mini")) return `${prefix}.seedance-2-0-mini`;
   if (modelId.endsWith("seedance-2-0")) return `${prefix}.seedance-2-0`;
   return undefined;
 }
@@ -617,7 +619,7 @@ export async function POST(request: Request) {
 
         await upsertVideoManifestEntry({ taskId, prompt: body.prompt ?? "", localVideoUrl: saveJob?.localUrl ?? videoUrl, remoteVideoUrl: videoUrl, posterUrl: saveJob?.posterUrl });
 
-        const usage = withBytePlusVideoUsd(getUsageMeta(task) ?? body.usage, body.model, body.settings);
+        const usage = withBytePlusVideoUsd(getUsageMeta(task) ?? body.usage, body.model, body.settings, Array.isArray(body.referenceVideos) && body.referenceVideos.some((url) => typeof url === "string" && url.trim().length > 0));
         const credit = user ? await chargeCredits(user.id, "video", usage, { conversationId: body.conversationId, conversationTitle: body.conversationTitle, requestId, label: "视频生成", model: body.model, videoCount: 1, metadata: { ...body.metadata, settings: body.settings, ratio: body.settings?.ratio, resolution: body.settings?.resolution, duration: body.settings?.duration, originalPrompt: body.prompt, mediaUrls: [saveJob?.localUrl ?? videoUrl], remoteMediaUrls: [videoUrl], posterUrl: saveJob?.posterUrl, delivered: true, savedLocal: saveJob?.status === "saved", localSaveStatus: saveJob?.status ?? "pending", mediaSaveJobId: saveJob?.id } }) : undefined;
         void appendGenerationDiagnosticsLog({ event: "video-route-poll-completed", requestId: body.requestId ?? taskId, conversationId: body.conversationId, conversationTitle: body.conversationTitle, userId: user?.id, mode: "video", provider: isBytePlusVideoModel(body.model) ? "byteplus" : "openrouter", model: body.model, taskId, settings: body.settings, prompt: body.prompt, references: [summarizeGeneratedReference(videoUrl, 0, "remote_video")], durationMs: Date.now() - startedAt, extra: { status, saveJob, credit } });
         void recordGenerationEvent({ userId: user?.id, requestId, kind: "video", creditSource: body.metadata?.creditSource, model: body.model, provider: isBytePlusVideoModel(body.model) ? "byteplus" : "openrouter", status: "success" });
@@ -675,7 +677,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "缺少提示词" }, { status: 400 });
     }
     const creditSource = body.metadata?.creditSource;
-    if (body.model && !(creditSource === "agent_video_generation" ? isAgentVideoModelEnabled(body.model) : isConversationVideoModelEnabled(body.model))) return NextResponse.json({ error: "连接不到模型，请联系管理员！" }, { status: 400 });
+    if (body.model && !(creditSource === "agent_video_generation" ? (isAgentVideoModelEnabled(body.model) || isConversationVideoModelEnabled(body.model)) : isConversationVideoModelEnabled(body.model))) return NextResponse.json({ error: "连接不到模型，请联系管理员！" }, { status: 400 });
     const referenceImages = Array.isArray(body.referenceImages) ? body.referenceImages : [];
     const referenceVideos = Array.isArray(body.referenceVideos) ? body.referenceVideos.filter((url) => typeof url === "string" && url.trim()) : [];
     const referenceAudios = Array.isArray(body.referenceAudios) ? body.referenceAudios.filter((url) => typeof url === "string" && url.trim()) : [];

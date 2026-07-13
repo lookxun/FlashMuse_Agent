@@ -153,9 +153,11 @@ function getCommonRatioLabel(width: number, height: number) {
 
 function getImageResolutionFromDimensions(width: number | null | undefined, height: number | null | undefined) {
   if (!width || !height) return undefined;
-  const maxSide = Math.max(width, height);
-  if (maxSide >= 3500) return "4K";
-  if (maxSide >= 1900) return "2K";
+  // 用总像素区分档位（不同模型/比例的最长边会重叠，总像素不会）：1K≈1M、2K≈4M、3K≈9M、4K≈16.7M。
+  const totalPixels = width * height;
+  if (totalPixels >= 13_000_000) return "4K";
+  if (totalPixels >= 6_500_000) return "3K";
+  if (totalPixels >= 2_500_000) return "2K";
   return "1K";
 }
 

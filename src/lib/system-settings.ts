@@ -6,16 +6,19 @@ import type { UploadKind, UploadRuleOverrides } from "@/lib/upload-rules";
 export const BYTEPLUS_CONVERSATION_IMAGE_MODEL_KEYS: Record<string, string> = {
   "byteplus:conversation-image.seedream-4-5": "conversation-image.seedream-4-5",
   "byteplus:conversation-image.seedream-5-0": "conversation-image.seedream-5-0",
+  "byteplus:conversation-image.seedream-5-0-pro": "conversation-image.seedream-5-0-pro",
 };
 
 export const BYTEPLUS_ASSET_IMAGE_MODEL_KEYS: Record<string, string> = {
   "byteplus:conversation-image.seedream-4-5": "asset-image.seedream-4-5",
   "byteplus:conversation-image.seedream-5-0": "asset-image.seedream-5-0",
+  "byteplus:conversation-image.seedream-5-0-pro": "asset-image.seedream-5-0-pro",
 };
 
 export const BYTEPLUS_CONVERSATION_VIDEO_MODEL_KEYS: Record<string, string> = {
   "byteplus:video.seedance-2-0-fast": "video.seedance-2-0-fast",
   "byteplus:video.seedance-2-0": "video.seedance-2-0",
+  "byteplus:video.seedance-2-0-mini": "video.seedance-2-0-mini",
 };
 
 export const BYTEPLUS_AGENT_IMAGE_MODEL_KEYS: Record<string, string> = {
@@ -64,22 +67,29 @@ export function getCompressionQualityPercent(quality: CompressionQuality) {
 }
 
 const DEFAULT_MODEL_PROVIDER_PREFERENCES: Record<string, "openrouter" | "byteplus"> = {
-  "general.seed-2-0-lite": "openrouter",
-  "general.seed-2-0-pro": "openrouter",
+  "general.seed-2-0-lite": "byteplus",
+  "general.seed-2-0-pro": "byteplus",
   "chat.seed-2-0-lite": "openrouter",
   "chat.advanced": "openrouter",
   "prompt.priority": "openrouter",
   "prompt.second": "openrouter",
-  "prompt.seed-2-0-lite": "openrouter",
-  "conversation-image.seedream-4-5": "openrouter",
-  "conversation-image.seedream-5-0": "openrouter",
+  "prompt.seed-2-0-pro": "byteplus",
+  "prompt.seed-2-0-lite": "byteplus",
+  "conversation-image.seedream-4-5": "byteplus",
+  "conversation-image.seedream-5-0": "byteplus",
+  "conversation-image.seedream-5-0-pro": "byteplus",
   "asset-image.seedream-4-5": "openrouter",
   "asset-image.seedream-5-0": "openrouter",
-  "video.seedance-2-0-fast": "openrouter",
-  "video.seedance-2-0": "openrouter",
-  "agent-image.seedream-4-5": "openrouter",
-  "agent-video.seedance-2-0-fast": "openrouter",
-  "agent-video.seedance-2-0": "openrouter",
+  "asset-image.seedream-5-0-pro": "openrouter",
+  "video.seedance-2-0-fast": "byteplus",
+  "video.seedance-2-0": "byteplus",
+  "video.seedance-2-0-mini": "byteplus",
+  "agent-image.seedream-4-5": "byteplus",
+  "agent-image.advanced": "openrouter",
+  "agent-video.seedance-2-0-fast": "byteplus",
+  "agent-video.seedance-2-0": "byteplus",
+  "agent-chat.seed-2-0-pro": "byteplus",
+  "agent-chat.advanced": "openrouter",
 };
 
 const DEFAULT_BYTEPLUS_MODEL_SELECTIONS: Record<string, string> = {
@@ -89,21 +99,27 @@ const DEFAULT_BYTEPLUS_MODEL_SELECTIONS: Record<string, string> = {
   "chat.advanced": "ep-20260514173614-jbcb4",
   "prompt.priority": "ep-20260514173614-jbcb4",
   "prompt.second": "ep-20260514173614-jbcb4",
+  "prompt.seed-2-0-pro": "ep-20260514173614-jbcb4",
   "prompt.seed-2-0-lite": "ep-20260518173102-9mtk6",
   "conversation-image.seedream-4-5": "ep-20260514174622-n9qfb",
   "conversation-image.seedream-5-0": "ep-20260514142211-p2wdk",
+  "conversation-image.seedream-5-0-pro": "ep-20260713101732-q5zvf",
   "asset-image.seedream-4-5": "ep-20260514174622-n9qfb",
   "asset-image.seedream-5-0": "ep-20260514142211-p2wdk",
+  "asset-image.seedream-5-0-pro": "ep-20260713101732-q5zvf",
   "video.seedance-2-0-fast": "ep-20260521134040-vf2jf",
   "video.seedance-2-0": "ep-20260521133841-nn8bg",
+  "video.seedance-2-0-mini": "ep-20260713100634-mwp78",
   "agent-image.seedream-4-5": "ep-20260514174622-n9qfb",
   "agent-video.seedance-2-0-fast": "ep-20260521134040-vf2jf",
   "agent-video.seedance-2-0": "ep-20260521133841-nn8bg",
+  "agent-chat.seed-2-0-pro": "ep-20260514173614-jbcb4",
 };
 
 const BYTEPLUS_ENDPOINT_MODEL_NAMES: Record<string, string> = {
   "ep-20260521133841-nn8bg": "dreamina-seedance-2-0-260128",
   "ep-20260521134040-vf2jf": "dreamina-seedance-2-0-fast-260128",
+  "ep-20260713100634-mwp78": "dreamina-seedance-2-0-mini-260615",
   "ep-20260514175234-9ssvl": "glm-4-7-251222",
   "ep-20260514175425-cd8jn": "seed-1-8-251228",
   "ep-20260518173102-9mtk6": "seed-2-0-lite-260428",
@@ -113,6 +129,7 @@ const BYTEPLUS_ENDPOINT_MODEL_NAMES: Record<string, string> = {
   "ep-20260515121509-mvr84": "seedream-4-0-250828",
   "ep-20260514174622-n9qfb": "seedream-4-5-251128",
   "ep-20260514142211-p2wdk": "seedream-5-0-260128",
+  "ep-20260713101732-q5zvf": "dola-seedream-5-0-pro-260628",
 };
 
 function parseEnvValue(value: string | undefined) {
@@ -171,7 +188,7 @@ export function getAdminSystemSettings(): AdminSystemSettings {
     openRouterApiKey: getLocalEnvValue("OPENROUTER_API_KEY") ?? process.env.OPENROUTER_API_KEY ?? "",
     openRouterApiKeyEnabled: getBooleanEnvValue("OPENROUTER_API_KEY_ENABLED", true),
     bytePlusApiKey: getLocalEnvValue("BYTEPLUS_API_KEY") ?? process.env.BYTEPLUS_API_KEY ?? getLocalEnvValue("ARK_API_KEY") ?? process.env.ARK_API_KEY ?? "",
-    bytePlusApiKeyEnabled: getBooleanEnvValue("BYTEPLUS_API_KEY_ENABLED", false),
+    bytePlusApiKeyEnabled: getBooleanEnvValue("BYTEPLUS_API_KEY_ENABLED", true),
     bytePlusUnlockLimits: getBooleanEnvValue("BYTEPLUS_UNLOCK_LIMITS", false),
     bytePlusRegion: getBytePlusRegion(),
     modelProviderPreferences: { ...DEFAULT_MODEL_PROVIDER_PREFERENCES, ...getJsonEnvValue<Record<string, "openrouter" | "byteplus">>("MODEL_PROVIDER_PREFERENCES", {}) },
@@ -238,52 +255,62 @@ function isOpenRouterOnlyDisabled(groupTitle: string, badge: string, modelId: st
 export function isConversationImageModelEnabled(modelId: string) {
   const bytePlusKey = BYTEPLUS_CONVERSATION_IMAGE_MODEL_KEYS[modelId];
   if (bytePlusKey) return isBytePlusPreferenceEnabled(bytePlusKey);
-  if (modelId === "bytedance-seed/seedream-4.5") return isOpenRouterPreferenceEnabled("conversation-image.seedream-4-5");
+  // 图片生成模块已去掉 OpenRouter 版 Seedream 4.5（只保留 BytePlus 版，真人审核等功能只在 BytePlus）。
+  if (modelId === "bytedance-seed/seedream-4.5") return false;
   return !isOpenRouterOnlyDisabled("对话流图片生成", "", modelId);
 }
 
+// 资产库图片与对话流/工作流图片共用同一套开关（2026-07-13 统一：一个开关控三处）。
 export function isAssetImageModelEnabled(modelId: string) {
-  const bytePlusKey = BYTEPLUS_ASSET_IMAGE_MODEL_KEYS[modelId];
-  if (bytePlusKey) return isBytePlusPreferenceEnabled(bytePlusKey);
-  if (modelId === "bytedance-seed/seedream-4.5") return isOpenRouterPreferenceEnabled("asset-image.seedream-4-5");
-  return !isOpenRouterOnlyDisabled("资产库图片生成", "", modelId);
+  return isConversationImageModelEnabled(modelId);
 }
 
 export function isConversationVideoModelEnabled(modelId: string) {
   const bytePlusKey = BYTEPLUS_CONVERSATION_VIDEO_MODEL_KEYS[modelId];
   if (bytePlusKey) return isBytePlusPreferenceEnabled(bytePlusKey);
-  if (modelId === "bytedance/seedance-2.0-fast") return isOpenRouterPreferenceEnabled("video.seedance-2-0-fast");
-  if (modelId === "bytedance/seedance-2.0") return isOpenRouterPreferenceEnabled("video.seedance-2-0");
+  // 视频生成模块已去掉 OpenRouter 版 Seedance（只保留 BytePlus 版）。
+  if (modelId === "bytedance/seedance-2.0-fast") return false;
+  if (modelId === "bytedance/seedance-2.0") return false;
   return !isOpenRouterOnlyDisabled("对话流视频生成", "", modelId);
 }
 
 export function isAgentImageModelEnabled(modelId: string) {
   const bytePlusKey = BYTEPLUS_AGENT_IMAGE_MODEL_KEYS[modelId];
   if (bytePlusKey) return isBytePlusPreferenceEnabled(bytePlusKey);
-  if (modelId.startsWith("byteplus:")) return false;
-  if (modelId === "bytedance-seed/seedream-4.5") return isOpenRouterPreferenceEnabled("agent-image.seedream-4-5");
-  if (modelId === "openai/gpt-5.4-image-2") return !isOpenRouterOnlyDisabled("Agent 自动生成策略", "高级图片", modelId);
-  return !isOpenRouterOnlyDisabled("Agent 自动生成策略", "备选图片", modelId);
+  // Agent 自动生图只保留：普通=BytePlus Seedream 4.5、高级=OpenRouter GPT-5.4 Image 2（备选已去掉）。
+  if (modelId === "openai/gpt-5.4-image-2") return getModelProviderPreference("agent-image.advanced") !== "byteplus";
+  return false;
 }
 
 export function isAgentVideoModelEnabled(modelId: string) {
   const bytePlusKey = BYTEPLUS_AGENT_VIDEO_MODEL_KEYS[modelId];
   if (bytePlusKey) return isBytePlusPreferenceEnabled(bytePlusKey);
-  if (modelId === "bytedance/seedance-2.0-fast") return isOpenRouterPreferenceEnabled("agent-video.seedance-2-0-fast");
-  if (modelId === "bytedance/seedance-2.0") return isOpenRouterPreferenceEnabled("agent-video.seedance-2-0");
-  return !isOpenRouterOnlyDisabled("Agent 自动生成策略", "备选视频", modelId);
+  // Agent 自动生视频只保留：普通=BytePlus Seedance 2.0 Fast、高级=BytePlus Seedance 2.0（备选已去掉）。
+  return false;
 }
 
 export function isGeneralTextModelEnabled(modelId: string) {
-  if (modelId === "bytedance-seed/seed-2.0-lite") return getModelProviderPreference("general.seed-2-0-lite") === "openrouter" || isBytePlusPreferenceEnabled("general.seed-2-0-lite");
+  // 通用模式已去掉 OpenRouter 版 Seed 2.0 Lite（只保留 BytePlus 版）。
+  if (modelId === "bytedance-seed/seed-2.0-lite") return isBytePlusPreferenceEnabled("general.seed-2-0-lite");
   if (modelId === "byteplus:chat.seed-2-0-pro") return isBytePlusPreferenceEnabled("general.seed-2-0-pro");
   return !isOpenRouterOnlyDisabled("通用模式 / Agent 规划 / 意图识别", "", modelId);
 }
 
 export function isTextModelEnabled(modelId: string, source: "chat" | "prompt" = "chat") {
-  if (modelId === "bytedance-seed/seed-2.0-lite") return getModelProviderPreference(source === "prompt" ? "prompt.seed-2-0-lite" : "chat.seed-2-0-lite") === "openrouter" || isBytePlusPreferenceEnabled(source === "prompt" ? "prompt.seed-2-0-lite" : "chat.seed-2-0-lite");
-  if (modelId === "openai/gpt-5.4") return getModelProviderPreference(source === "prompt" ? "prompt.second" : "chat.advanced") === "openrouter" || isBytePlusPreferenceEnabled(source === "prompt" ? "prompt.second" : "chat.advanced");
+  // 反推/优化提示词：additive，OpenRouter 只留 GPT-5.5/GPT-5.4，BytePlus 留 Seed 2.0 Pro/Lite；各自独立开关。
+  if (source === "prompt") {
+    if (modelId === "openai/gpt-5.5") return getModelProviderPreference("prompt.priority") !== "byteplus";
+    if (modelId === "openai/gpt-5.4") return getModelProviderPreference("prompt.second") !== "byteplus";
+    if (modelId === "byteplus:chat.seed-2-0-pro") return isBytePlusPreferenceEnabled("prompt.seed-2-0-pro");
+    if (modelId === "bytedance-seed/seed-2.0-lite") return isBytePlusPreferenceEnabled("prompt.seed-2-0-lite");
+    return true;
+  }
+  if (modelId === "bytedance-seed/seed-2.0-lite") return getModelProviderPreference("chat.seed-2-0-lite") === "openrouter" || isBytePlusPreferenceEnabled("chat.seed-2-0-lite");
+  if (modelId === "openai/gpt-5.4") return getModelProviderPreference("chat.advanced") === "openrouter" || isBytePlusPreferenceEnabled("chat.advanced");
   if (modelId === "openai/gpt-5.5") return getModelProviderPreference("prompt.priority") === "openrouter" || isBytePlusPreferenceEnabled("prompt.priority");
+  // Agent 规划对话模型：普通=BytePlus Seed 2.0 Pro、高级=OpenRouter GPT-5.6 Terra Pro。
+  if (modelId === "byteplus:chat.seed-2-0-pro") return isBytePlusPreferenceEnabled("agent-chat.seed-2-0-pro");
+  if (modelId === "openai/gpt-5.6-terra-pro") return getModelProviderPreference("agent-chat.advanced") !== "byteplus";
   return true;
 }
 
