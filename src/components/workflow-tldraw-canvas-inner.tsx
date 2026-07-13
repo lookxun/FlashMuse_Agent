@@ -3966,6 +3966,26 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     };
   }, [resumeInterruptedImageNodes, resumeInterruptedVideoNodes, reconcileImageJobsFromBackend, reconcileVideoJobsFromBackend]);
 
+  // Safety-net: while ANY node still looks in-progress, periodically re-run the backend reconcile so a
+  // terminal job (succeeded OR failed) is ALWAYS eventually reflected on the node — even if the one-shot
+  // mount recovery raced (nodes/stateRef not loaded yet), the status fetch transiently failed, or the worker
+  // finished after that single attempt, and the tab was never hidden/refocused. Without this, such a node
+  // stays stuck on the waiting card forever although the backend job is already done. Stops (interval
+  // cleared) as soon as no node is pending. Idempotent: applying a done/failed result is guarded, so repeats
+  // are harmless.
+  useEffect(() => {
+    if (!pendingRecoverySignature) return;
+    const interval = window.setInterval(() => {
+      if (!pollMountedRef.current) return;
+      resumeInterruptedImageNodes();
+      resumeInterruptedVideoNodes();
+      void reconcileImageJobsFromBackend();
+      void reconcileVideoJobsFromBackend();
+    }, 8000);
+    return () => window.clearInterval(interval);
+  }, [pendingRecoverySignature, resumeInterruptedImageNodes, resumeInterruptedVideoNodes, reconcileImageJobsFromBackend, reconcileVideoJobsFromBackend]);
+
+
   // Keep workflow node display names in sync with the canonical library name (permanent 终身id or the
   // user's rename), resolved by URL from the asset store. Without this, a node keeps whatever name was
   // frozen into mediaSystemNames at generation/import time and drifts from the library after a rename.
@@ -3986,25 +4006,35 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
       const sep = part.indexOf("\u0000");
       if (sep > 0) canonicalNameByUrl.set(part.slice(0, sep), part.slice(sep + 1));
     }
+    // A node's own media URLs (generated images + generated video). We reconcile names for THESE urls, not
+    // just the ones already present in mediaSystemNames — otherwise a node whose mediaSystemNames is empty
+    // (e.g. legacy rows born before the unified write, or any edge that never wrote a name) can never pick
+    // up its canonical library name and stays stuck on the generic "图片生成/视频生成" fallback forever.
+    const nodeMediaUrls = (node: WorkflowNode) => {
+      const urls: string[] = [];
+      if (Array.isArray(node.data.images)) for (const url of node.data.images) if (url) urls.push(url);
+      if (node.data.videoUrl) urls.push(node.data.videoUrl);
+      return urls;
+    };
     const needsUpdate = stateRef.current.nodes.some((node) => {
       const names = node.data.mediaSystemNames;
-      if (!names) return false;
-      return Object.entries(names).some(([url, current]) => {
+      return nodeMediaUrls(node).some((url) => {
         const canonical = canonicalNameByUrl.get(normalizeWorkflowMediaUrl(url));
-        return Boolean(canonical && canonical !== current);
+        return Boolean(canonical && canonical !== names?.[url]);
       });
     });
     if (!needsUpdate) return;
     updateState((state) => {
       let changed = false;
       const nodes = state.nodes.map((node) => {
+        const urls = nodeMediaUrls(node);
+        if (urls.length === 0) return node;
         const names = node.data.mediaSystemNames;
-        if (!names) return node;
         let nodeChanged = false;
-        const next: Record<string, string> = { ...names };
-        for (const [url, current] of Object.entries(names)) {
+        const next: Record<string, string> = { ...(names ?? {}) };
+        for (const url of urls) {
           const canonical = canonicalNameByUrl.get(normalizeWorkflowMediaUrl(url));
-          if (canonical && canonical !== current) { next[url] = canonical; nodeChanged = true; }
+          if (canonical && canonical !== next[url]) { next[url] = canonical; nodeChanged = true; }
         }
         if (!nodeChanged) return node;
         changed = true;

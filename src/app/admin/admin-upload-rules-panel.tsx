@@ -36,9 +36,9 @@ function getEditableUploadRuleRows(): EditableUploadRuleRow[] {
   const openRouterVideoRows = videoGenerationModels.map((model) => makeModelRow(model, "视频模型", { mode: "video", modelId: model.id, transportMode: "local-base64" }));
   const bytePlusImageRows = frontendImageGenerationModels.filter((model) => model.id.startsWith("byteplus:")).map((model) => makeModelRow(model, "图片模型", { mode: "image", modelId: model.id, transportMode: "local-base64" }));
   const bytePlusVideoRows: EditableUploadRuleRow[] = [
-    { key: BYTEPLUS_SEEDANCE_UPLOAD_RULE_KEYS.reference, providerType: "BytePlus · 视频模型", modelName: "Seedance 2.0 / Fast · 融合模式", context: { mode: "video", modelId: "byteplus:video.seedance-2-0", transportMode: "local-base64", videoReferenceMode: "reference" } },
-    { key: BYTEPLUS_SEEDANCE_UPLOAD_RULE_KEYS.firstFrame, providerType: "BytePlus · 视频模型", modelName: "Seedance 2.0 / Fast · 首帧模式", context: { mode: "video", modelId: "byteplus:video.seedance-2-0", transportMode: "local-base64", videoReferenceMode: "first_frame" } },
-    { key: BYTEPLUS_SEEDANCE_UPLOAD_RULE_KEYS.firstLastFrame, providerType: "BytePlus · 视频模型", modelName: "Seedance 2.0 / Fast · 首尾帧模式", context: { mode: "video", modelId: "byteplus:video.seedance-2-0", transportMode: "local-base64", videoReferenceMode: "first_last_frame" } },
+    { key: BYTEPLUS_SEEDANCE_UPLOAD_RULE_KEYS.reference, providerType: "BytePlus · 视频模型", modelName: "Seedance 2.0 / Fast / Mini · 融合模式", context: { mode: "video", modelId: "byteplus:video.seedance-2-0", transportMode: "local-base64", videoReferenceMode: "reference" } },
+    { key: BYTEPLUS_SEEDANCE_UPLOAD_RULE_KEYS.firstFrame, providerType: "BytePlus · 视频模型", modelName: "Seedance 2.0 / Fast / Mini · 首帧模式", context: { mode: "video", modelId: "byteplus:video.seedance-2-0", transportMode: "local-base64", videoReferenceMode: "first_frame" } },
+    { key: BYTEPLUS_SEEDANCE_UPLOAD_RULE_KEYS.firstLastFrame, providerType: "BytePlus · 视频模型", modelName: "Seedance 2.0 / Fast / Mini · 首尾帧模式", context: { mode: "video", modelId: "byteplus:video.seedance-2-0", transportMode: "local-base64", videoReferenceMode: "first_last_frame" } },
   ];
   return [
     {
@@ -109,7 +109,7 @@ const uploadRuleRows: UploadRuleRow[] = [
   },
   {
     scene: "对话流图片 / 资产库图片",
-    model: "BytePlus 图片模型（本地测试）",
+    model: "BytePlus 图片模型（4.5 / Lite / Pro，本地测试）",
     rule: getUploadRule({ mode: "image", modelId: "byteplus:conversation-image.seedream-4-5", transportMode: "local-base64" }),
     note: "当前本地继续 Base64 打包测试，先限制 6 张。",
     details: { image: `${bytePlusImageReferenceRuleText}${bytePlusImageOfficialLimitText}` },
@@ -117,7 +117,7 @@ const uploadRuleRows: UploadRuleRow[] = [
   },
   {
     scene: "对话流图片 / 资产库图片",
-    model: "BytePlus 图片模型（服务器 URL）",
+    model: "BytePlus 图片模型（4.5 / Lite / Pro，服务器 URL）",
     rule: getUploadRule({ mode: "image", modelId: "byteplus:conversation-image.seedream-4-5", transportMode: "server-url" }),
     note: "部署到公网服务器后，上传文件生成服务器 URL，可按官方 14 张上限。",
     details: { image: `${bytePlusImageReferenceRuleText}服务器 URL 模式按火山官方上限最多 14 张。` },
@@ -137,9 +137,9 @@ const uploadRuleRows: UploadRuleRow[] = [
   },
   {
     scene: "对话流视频",
-    model: "BytePlus Seedance 2.0 系列",
+    model: "BytePlus Seedance 2.0 / Fast / Mini 系列",
     rule: getUploadRule({ mode: "video", modelId: "byteplus:video.seedance-2-0", transportMode: "server-url" }),
-    note: "融合模式支持图片、视频、音频参考上传；首帧/首尾帧模式只支持图片。参考视频/音频按服务器公网 URL 传入模型。",
+    note: "Seedance 2.0 / Fast / Mini 共用同一套上传规则。融合模式支持图片、视频、音频参考上传；首帧/首尾帧模式只支持图片。参考视频/音频按服务器公网 URL 传入模型。",
     details: {
       image: seedanceImageReferenceRuleText,
       video: "视频参考完整规则：mp4/mov；最多 3 个；单个 2-15 秒、≤50MB；总时长≤15秒；宽高比 0.4-2.5；宽高 300-6000px；总像素 409600-2086876。",
