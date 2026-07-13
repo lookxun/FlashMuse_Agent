@@ -1,5 +1,27 @@
 # Next Actions
 
+## ✅ 2026-07-13 (deploy session) END-OF-SESSION —— 先读这条：三方已同步，无待部署
+
+**状态**：本 session 所有代码已部署腾讯 + push GitHub，**腾讯=GitHub=本地 三方同步于 `b94c3ea`**（+ 本次 handover 提交）。工作树干净。无 Prisma 迁移。详见 CHANGELOG / 01-current-status 顶条。
+
+**本 session 做完**：
+1. 部署前两批仅本地的模型改动（`7c66f85`）。
+2. Seedream 5.0 Pro 像素分档扣费修复（`b94c3ea`）。
+3. 工作流节点成功/失败都不返回 → 周期性兜底 reconcile（`b94c3ea`）。
+4. 统一读取的洞（校准 effect 只纠正已有名、不补全空名）→ 已修补全缺失名（`b94c3ea`）。
+5. 线上 DB 回填 workflow_02（ID_636611）三张历史空名图 → image_2/3/4_w2。
+6. 后台上传规则面板 Pro/Mini 标签（`b94c3ea`）。
+
+**下一个 AI 待办 / 仍可优化（都非紧急，用户未催）**：
+1. **Seedance 2.0 4K**：官方支持、计费函数已有 4K 档，但 UI 选不到（`videoModelRules["byteplus:video.seedance-2-0"].resolutions` 只到 1080p、缺 4K 尺寸表）。用户"先不接"。要接需加 `"4K"` 到 resolutions + 4K 尺寸表（各比例宽高，官网参考像素表；文档那几页是图片无文字表，需用户给值或按标准 3840×2160 推算）。
+2. **对话流是否也加周期性兜底 reconcile**：本 session 只修了工作流。对话流恢复同样是"一次性(sessions变化)+可见性"触发、理论同样有"一次性错过就卡住"的风险，但用户没报对话流卡死、也没要求，先观察。
+3. **历史其它空名图**：本次只回填了 workflow_02 那 3 张（用户点名）。ID_636611 还有一张 7-07 的 `workflow_generation` 空名图（`3307-fd4393d8...994.jpg`，17:20）**不在任何 canvas 节点**（已删节点的孤儿），未回填；如需全库扫描历史空名 workflow 图批量回填，可写只读脚本按 workflowId 分组用 nextImageNumber 补（不猜、只补确定属于某工作流的）。
+4. **BytePlus 调价风险**：单价硬编码在 `models.ts getBytePlusVideoPricePerMillionUsd` 和 `openrouter.ts` 的 Pro 常量里；BytePlus 若调价需人工改代码。可考虑做后台"单价可配置"页（用户暂缓）。
+
+**部署流程**（腾讯，改代码必读）：scp 改动源码到 `/opt/flashmuse/app/src/...` → `cd /opt/flashmuse && nohup sudo docker compose up -d --build flashmuse-app`（后台+轮询日志防120s超时）→ **必须**同步 `.next/static` 到阿里镜像（否则 chunk 哈希不匹配全 404）→ 四域名 200。改源码用 edit 工具；DB 操作用 scp .sql + `docker exec -i psql`（PowerShell 内联 SQL 引号会被搅坏）；账号 id 形如 `ID_xxxxxx`，用户说的"12424740"是 nickname/邮箱要先查 User 表转换。
+
+---
+
 ## 🚀 2026-07-13 (later session) END-OF-SESSION —— 先读这条：**下一个 AI 直接部署**
 
 **状态**：两批改动全部只在本地，`npx tsc --noEmit` 全程通过、`npm run build` 通过，**未 commit / 未推 / 未部署**。
