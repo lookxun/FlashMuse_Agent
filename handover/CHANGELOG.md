@@ -1,5 +1,42 @@
 # Current Handover Changelog
 
+## 2026-07-14 (later session) 工作流"使用提示词"带图/@变蓝根治：改读后端权威 GenerationJob（名字进库）+ 画布去 generationUploads 冗余 + 等待卡计时平滑 + 回填 830 条历史 job 名字（✅ 全部已部署腾讯；本次代码本地未 commit→本 session 末尾一起 push GitHub）
+
+Reply style: 简洁直接中文。用户报线上工作流_02 最新视频 `video_5_w2`（后来又复现 `video_6_w2`，同提示词）右键"使用提示词"**只带回文字、没有图、@ 不是蓝色**。彻查后根治并部署腾讯 + 回填历史。SSH：`ssh -i "C:\Users\ASUS\AppData\Local\Temp\opencode\CinematicFlow.pem" ubuntu@119.28.116.16`（腾讯 docker `entrypoint` 会在容器启动时自动 `prisma migrate deploy`，所以有迁移也只需 scp 源码进 `/opt/flashmuse/app` 再 `docker compose up -d --build flashmuse-app`）。
+
+### 排查历程（几次推翻假设，最终靠查生产 DB 定案）
+- 现象：`video_5_w2`（节点 `6c12747d`）DB 里 `data.generationUploads=MISSING`、`uploads=MISSING`、入边=空、但 `videoUrl` 有、prompt 有 `@image_4_w2 跳街舞，@image_2_w2 跳民族舞，@image_3_w2 跳拉丁舞`。
+- 先误判"服务端自愈没拍照/@提及不算参考"，被用户纠正（图是**连线**连的、不是@库）。查全画布发现：4 条边连到的是**另一个空节点 `3c46b156`**（用户正在配的下一次生成），`video_5_w2` 的入边早在收尾时删了。
+- 用户开着浏览器又生成 `video_6_w2`（走"路A 前端亲自收尾"），**同样 generationUploads 空** → 证明路 A 也坏。
+- **真根因 = 双重收尾把快照冲空**：上次部署（`b94c3ea`）新加的"每 8 秒兜底 reconcile" + 实时轮询 + resume 会**收尾同一视频两次**；谁先收尾（删了入边），另一个再收尾时 `getWorkflowGenerationUploadSnapshot` 拿到**空**，而老代码写的是 `generationUploads: 空 ? 好值 : undefined` → 用 `undefined` 把先前存好的好快照**覆盖清空**（`updateNode` 是浅合并）。8 秒 reconcile 是刚上线的，双重收尾竞态变常见，所以最近才明显。
+- 后端 `GenerationJob` 里 `referenceImages/Videos/Audios/prompt/referenceMode` 是**建任务时写死的权威记录**，`video_5/6_w2` 的 job 里三张参考图 url 都在。→ 决定弃用脆弱的画布内快照，改读 job。
+
+### 用户拍板的根治方向（比打补丁更干净，一箭双雕）
+"使用提示词"改成**点击时按 `workflowNodeId` 去后端查该次生成的 job 参考素材**来还原；**名字也存进库**（不用每次反查）；**去掉画布里的 `generationUploads` 冗余副本**（缓解 canvasJson 越来越大、读写慢的隐患，见 M019）。
+
+### 改动清单（本 session）
+1. **DB 迁移** `prisma/migrations/20260714100000_generation_job_reference_names/`：`GenerationJob` 加 `referenceNames JSONB`（存 `url→显示名` 映射）。**只加可空列、无回填 → 毫秒级、不锁表**。schema.prisma 同步。
+2. **`src/lib/generation-jobs.ts`**：
+   - `GenerationJobRow` 加 `referenceNames`。
+   - 新增 `resolveReferenceNames(userId, urls)`：按参考 url 从 `MediaAsset`(+`UserAssetState`) 反查显示名（改名 currentName || 终身ID initialName || systemName），匹配 `url` 或 `normalizedUrl`。
+   - `createImageJob`（图片参考）/`createVideoJob`（图+视频+音频参考）**建任务时算好 `referenceNames` 写入**。
+   - 新增 `getLatestSucceededJobForWorkflowNode(userId, workflowId, workflowNodeId)`。
+3. **新接口** `src/app/api/workflow-generation-references/route.ts`（POST `{workflowId, workflowNodeId}`，需登录）：返回该节点最近成功 job 的 `references:[{url,name,kind}]` + prompt + referenceMode。
+4. **`src/components/workflow-tldraw-canvas-inner.tsx`**：
+   - `addNodeFromPrompt`（"使用提示词"）改为**异步先查新接口**再建节点，用返回的 url+name 建 uploads（带图、@变蓝）；查不到/老节点**回退**读画布里旧 `generationUploads`。
+   - **去掉 3 个 finalize 点（图片 applyImageNodeResult / 视频 poll / 视频 reconcile）写 `generationUploads`**；删掉没用的 `getWorkflowGenerationUploadSnapshot`。
+   - **等待卡计时修复**：`WaitingCard` 加每秒 `setInterval` tick（只在生成中挂载期间跑、出结果即卸载停），`getVideoWaitProgress`/`formatElapsedTime` 加 `now` 参数 → "已等待/X%渲染中"平滑走秒，不再停顿后猛跳（对话流本来就有每秒 timer，工作流之前没接）。
+5. **历史回填**：一次性 SQL（`docker exec -i psql`）扫所有 `referenceNames IS NULL` 且有参考的 job，按 url 反查名字回填 → **830 条 job 更新**（含 `video_5/6_w2`，其 referenceNames 已正确映射 image_2/3/4_w2）。老视频现在图 + 蓝 @ 都能带回。
+
+### 部署 & 验证（腾讯）
+- 只 scp 改动 5 个文件（tgz md5 `43d18cda...`，两端核对）到 `/opt/flashmuse/app`，`docker compose up -d --build flashmuse-app`（后台+轮询日志）。容器启动日志确认迁移 `20260714100000_generation_job_reference_names` applied、`[generation-worker] started`。同步 `.next/static` 到阿里。`referenceNames` 列已存在；main/api/ali 三域名 200。备份 `/opt/flashmuse/app-backups/20260714-refnames/`。
+- 用户浏览器实测：**新生成视频"使用提示词"完全正常**（图+视频+音频缩略图+prompt+蓝@）；老视频回填后 @ 也蓝。
+
+### 期间同步排查 / 记录
+- **对话流"使用提示词"为何一直没这问题**：它是**另一套机制**——提交生成时就把参考写进消息本身（`Message.imageReferences`+`uploadedFiles`），`copyPrompt`(chat-workbench:12959) 直接读消息还原。属"提交即写权威持久数据"，天然稳。工作流现在也达到同样效果（读 job），只是存的地方不同（对话流存消息、工作流存 job）。对话流无需改。
+- **新增备忘 M019**：工作流整张画布存一个 `canvasJson` 大字段——整块读写慢、整块覆盖有竞态/旧标签页抹字段风险、前端临时态易污染。本 session 去 generationUploads 只是减轻，根本结构未动，用户决定以后重构（拆表/字段级 patch/媒体只存引用）。
+
+
 ## 2026-07-14 对话流视频/图片：双失败卡根治 + 等待卡关浏览器重登录后消失根治 + 错误码红字误映射(Request id 里数字子串)修复（✅ 全部已部署腾讯 + push GitHub；本次 handover 提交本地不推，等下次一起推）
 
 Reply style: 简洁直接中文。用户报线上 Seedance 2.0 Mini（7-13 新加视频模型）出错时显示异常，逐个排查修了 3 个 bug，均已部署腾讯（三个代码 commit：`2db526b` 视频双卡+错误码、`e9ee160` 视频等待卡消失、`04dafb0` 图片双卡）。**新模型本身没 bug，是这几个对话流通用 bug 被新模型稳定触发暴露的**（以前时序偶合没必现）。SSH：`ssh -i "C:\Users\ASUS\AppData\Local\Temp\opencode\CinematicFlow.pem" ubuntu@119.28.116.16`。

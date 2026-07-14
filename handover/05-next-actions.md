@@ -1,8 +1,28 @@
 # Next Actions
 
-## ✅ 2026-07-14 END-OF-SESSION —— 先读这条
+## ✅ 2026-07-14 (later session) END-OF-SESSION —— 先读这条
 
-**状态**：本 session 修的 3 个对话流 bug 代码全部 tsc+build 过、部署腾讯、push GitHub（`2db526b`/`e9ee160`/`04dafb0`）。**handover 文档改动=本地 commit 但用户要求暂不 push、以后一起推。** 详见 CHANGELOG / 01-current-status 顶条。
+**状态**：工作流"使用提示词"根治 + 等待卡计时 + 830 条历史 job 名字回填，**全部 tsc 通过、已部署腾讯、并已 push GitHub**（连同上一 session 另一 AI 未推的 handover commit `84582e5` 一起推）。有 Prisma 迁移 `20260714100000_generation_job_reference_names`（腾讯 entrypoint 容器启动自动 apply，已确认 applied）。详见 CHANGELOG / 01-current-status 顶条。
+
+**本 session 做完**：
+1. 工作流"使用提示词"改读后端 `GenerationJob`（新接口 `/api/workflow-generation-references`），彻底摆脱"双重收尾把画布内 `generationUploads` 快照冲空"的 bug。
+2. `GenerationJob` 加 `referenceNames` 列，建任务时反查名字写库；去掉画布里 `generationUploads` 冗余写入（瘦身）。
+3. 工作流等待卡"已等待/渲染%"每秒平滑刷新。
+4. 回填 830 条历史 job 的 referenceNames（老视频 @ 也蓝）。
+
+**下一个 AI 待办 / 可优化（都非紧急）**：
+1. **M019（重点记忆）**：工作流整张画布存单个 `canvasJson` 大字段的结构隐患（整块读写慢、整块覆盖竞态、前端临时态污染）——用户要求以后重构（拆表/字段级 patch/媒体只存引用）。本 session 只去 generationUploads 减轻，根本未动。
+2. **M018**：对话流统一单轮询器（另一 AI 上一 session 留）。
+3. 老 job 名字回填只做了"能反查到 MediaAsset 名字的"；个别参考 url 在库里查不到名字的 job，其 @ 仍可能不蓝（图仍能带回，url 有）。极少，按需再处理。
+4. `addNodeFromPrompt` 现为点击时异步查接口再建节点（有几十 ms 延迟），如觉得慢可改成先建节点占位、拿到再补 uploads。
+
+**部署流程**（腾讯，改代码必读）：scp 改动源码到 `/opt/flashmuse/app/...` → `cd /opt/flashmuse && nohup sudo docker compose up -d --build flashmuse-app`（后台+轮询日志防 120s 超时；entrypoint 自动 `prisma migrate deploy`，有迁移无需手动跑）→ **必须**同步 `.next/static` 到阿里镜像（否则 chunk 哈希不匹配全 404）→ 四域名 200。改源码用 edit 工具；DB 操作用 scp .sql + `docker exec -i psql`；PowerShell 内联复杂 SQL/bash 引号会被搅坏，一律走 scp 的 .sh/.sql + `sed -i 's/\r$//'`。
+
+---
+
+## ✅ 2026-07-14 (earlier) END-OF-SESSION —— 对话流 3 bug（已完成，保留作历史）
+
+**状态**：本 session 修的 3 个对话流 bug 代码全部 tsc+build 过、部署腾讯、push GitHub（`2db526b`/`e9ee160`/`04dafb0`）。handover 文档改动=本地 commit `84582e5`（本 later session 已随一起 push）。详见 CHANGELOG / 01-current-status。
 
 **本 session 做完**：
 1. 错误码红字误映射修复（Request id 数字子串命中 HTTP 码 → 剥 Request id + 词边界）。

@@ -2,6 +2,22 @@
 
 Last checked: 2026-07-14 China time.
 
+## 2026-07-14 (later session) 工作流"使用提示词"带图/@变蓝根治（改读后端 GenerationJob + 名字进库 + 画布去冗余）+ 等待卡计时平滑 + 回填 830 条历史 job（✅ 已部署腾讯；代码本 session 末尾一起 push GitHub）
+
+详见 CHANGELOG 顶条。速记：
+- **现象**：工作流 `video_5_w2`/`video_6_w2`（同提示词、连线连的 3 张参考图）右键"使用提示词"只带回文字、无图、@ 不蓝。
+- **真根因**：上次部署新加的"每 8 秒兜底 reconcile" + 实时轮询 + resume **双重收尾同一视频**；先收尾者删了入边，后收尾者拍到空快照，老代码 `generationUploads: 空?好值:undefined` 用 `undefined` **把好快照覆盖清空**（updateNode 浅合并）。开着浏览器（路A）也复现，证明不是断线问题。
+- **根治**（用户拍板，弃脆弱的画布内快照，改读后端权威 job）：
+  1. `GenerationJob` 加 `referenceNames` 列（迁移 `20260714100000`，仅加可空列、毫秒级不锁表）；建任务时反查 MediaAsset 名字写库（改名||终身ID||systemName）。
+  2. 新接口 `/api/workflow-generation-references`（按 workflowId+workflowNodeId 查最近成功 job 的参考素材+名字）。
+  3. `addNodeFromPrompt` 改为点击时读该接口还原（带图/视频/音频 + @变蓝），查不到/老节点回退读旧 `generationUploads`。
+  4. 去掉 3 个 finalize 点写 `generationUploads`（画布瘦身，缓解 canvasJson 膨胀，见 M019）。
+  5. 工作流等待卡加每秒 tick，"已等待/渲染%"平滑走秒（不再停顿猛跳；对话流本就有此 timer）。
+  6. 一次性回填 **830 条历史 job** 的 referenceNames（含 video_5/6_w2）→ 老视频 @ 也蓝。
+- **对话流不涉及**：它"使用提示词"读的是消息里提交时就存的 `imageReferences`/`uploadedFiles`（`copyPrompt`），天然稳，无需改。工作流现在也达到同样"读权威持久数据"效果，只是存在 job 而非消息。
+- **三方状态**：已部署腾讯；本 session 末尾把这批代码 + 上一 session 另一 AI 未推的 handover commit(`84582e5`) 一起 push GitHub。有 Prisma 迁移（腾讯 entrypoint 容器启动自动 migrate deploy）。备份 `/opt/flashmuse/app-backups/20260714-refnames/`。
+- **新增备忘 M019**：工作流整张画布存单个 canvasJson 大字段的结构隐患（整块读写慢、整块覆盖竞态），以后重构。
+
 ## 2026-07-14 对话流视频/图片 3 个 bug 根治（✅ 代码已部署腾讯 + push GitHub；handover 文档本地 commit 暂不推）
 
 用户报线上 Seedance 2.0 Mini（7-13 新视频模型）出错显示异常，排查发现是**对话流通用 bug**被新模型稳定触发（模型本身无 bug）。详见 CHANGELOG 顶条。三个代码 commit 全部 tsc+build 过、部署腾讯、push GitHub：

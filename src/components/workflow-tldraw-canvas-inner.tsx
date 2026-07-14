@@ -920,16 +920,6 @@ function removeConnectedReferenceNames(nodes: WorkflowNode[], removedEdges: Arra
   });
 }
 
-function getWorkflowGenerationUploadSnapshot(state: WorkflowCanvasState, node: WorkflowNode): WorkflowUploadItem[] {
-  const connectedUploads = getWorkflowConnectedInputUploads(state, node.id);
-  return mergeWorkflowUploadItems([...(node.data.uploads ?? []), ...connectedUploads])
-    .filter((upload) => upload.status === "ready" && Boolean(upload.url))
-    .map((upload) => {
-      const { readonlySource: _readonlySource, sourceNodeId: _sourceNodeId, ...rest } = upload;
-      return { ...rest, status: "ready" as const };
-    });
-}
-
 function validateWorkflowConnectionUploadRules(source: WorkflowNode, target: WorkflowNode, state: WorkflowCanvasState, overrides?: UploadRuleOverrides) {
   const connectedUploads = getWorkflowConnectedInputUploads(state, target.id, source);
   if (connectedUploads.length === 0) return undefined;
@@ -1560,9 +1550,9 @@ function getVideoTaskId(data: VideoApiResponse) {
   return data.id || data.job_id || data.polling_url || data.pollingUrl || "";
 }
 
-function getVideoWaitProgress(startedAt?: number, index = 0) {
-  const start = startedAt ?? Date.now();
-  const elapsedSeconds = Math.max(0, (Date.now() - start) / 1000);
+function getVideoWaitProgress(startedAt?: number, now = Date.now(), index = 0) {
+  const start = startedAt ?? now;
+  const elapsedSeconds = Math.max(0, (now - start) / 1000);
   const stableOffset = index > 0 ? ((index * 7 + Math.abs(Math.floor(start / 1000))) % 7) - 3 : 0;
   const applyOffset = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value + stableOffset));
   if (elapsedSeconds <= 30) return applyOffset(Math.round(1 + (elapsedSeconds / 30) * 44), 1, 45);
@@ -1579,8 +1569,8 @@ function closeWorkflowPopups() {
   window.dispatchEvent(new Event("workflow-close-popups"));
 }
 
-function formatElapsedTime(startedAt?: number) {
-  const elapsedSeconds = Math.max(0, Math.floor((Date.now() - (startedAt ?? Date.now())) / 1000));
+function formatElapsedTime(startedAt?: number, now = Date.now()) {
+  const elapsedSeconds = Math.max(0, Math.floor((now - (startedAt ?? now)) / 1000));
   return `${Math.floor(elapsedSeconds / 60)}:${String(elapsedSeconds % 60).padStart(2, "0")}`;
 }
 
@@ -2798,37 +2788,58 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
 
   const addNodeFromPrompt = useCallback((sourceNode: WorkflowNode) => {
     if (sourceNode.kind !== "image" && sourceNode.kind !== "video") return;
-    const current = stateRef.current;
     const kind = sourceNode.kind;
     const defaultData = getDefaultNodeData(kind);
-    const data: WorkflowNodeData = {
-      ...defaultData,
-      prompt: sourceNode.data.prompt ?? "",
-      model: sourceNode.data.model ?? defaultData.model,
-      ratio: sourceNode.data.ratio ?? defaultData.ratio,
-      resolution: sourceNode.data.resolution ?? defaultData.resolution,
-      duration: kind === "video" ? sourceNode.data.duration ?? defaultData.duration : undefined,
-      videoReferenceMode: kind === "video" ? sourceNode.data.videoReferenceMode : undefined,
-      uploads: (sourceNode.data.generationUploads ?? sourceNode.data.uploads)?.map((upload) => {
-        const { readonlySource: _readonlySource, sourceNodeId: _sourceNodeId, ...rest } = upload;
-        return { ...rest, id: createId("workflow_upload"), status: "ready" as const };
-      }),
+    const buildAndInsert = (uploads: WorkflowUploadItem[] | undefined) => {
+      const current = stateRef.current;
+      const data: WorkflowNodeData = {
+        ...defaultData,
+        prompt: sourceNode.data.prompt ?? "",
+        model: sourceNode.data.model ?? defaultData.model,
+        ratio: sourceNode.data.ratio ?? defaultData.ratio,
+        resolution: sourceNode.data.resolution ?? defaultData.resolution,
+        duration: kind === "video" ? sourceNode.data.duration ?? defaultData.duration : undefined,
+        videoReferenceMode: kind === "video" ? sourceNode.data.videoReferenceMode : undefined,
+        uploads: uploads && uploads.length > 0 ? uploads : undefined,
+      };
+      const draftNode: WorkflowNode = { id: createId("workflow_node"), kind, title: getNodeLabel(kind), x: 0, y: 0, data };
+      const size = getWorkflowNodeVisualSize(draftNode);
+      const position = findNonOverlappingNodePosition(current.nodes, size, sourceNode);
+      const node = { ...draftNode, x: position.x, y: position.y };
+      recentActionNodeIdsRef.current = [node.id, ...recentActionNodeIdsRef.current].slice(0, 20);
+      updateState((state) => ({ ...state, nodes: [...state.nodes, node] }));
+      window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+        const editor = editorRef.current;
+        if (!editor) return;
+        const shapeId = getShapeId(node.id);
+        if (!editor.getShape(shapeId)) return;
+        editor.select(shapeId);
+        focusWorkflowNodeInViewport(editor, node);
+      }));
     };
-    const draftNode: WorkflowNode = { id: createId("workflow_node"), kind, title: getNodeLabel(kind), x: 0, y: 0, data };
-    const size = getWorkflowNodeVisualSize(draftNode);
-    const position = findNonOverlappingNodePosition(current.nodes, size, sourceNode);
-    const node = { ...draftNode, x: position.x, y: position.y };
-    recentActionNodeIdsRef.current = [node.id, ...recentActionNodeIdsRef.current].slice(0, 20);
-    updateState((state) => ({ ...state, nodes: [...state.nodes, node] }));
-    window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
-      const editor = editorRef.current;
-      if (!editor) return;
-      const shapeId = getShapeId(node.id);
-      if (!editor.getShape(shapeId)) return;
-      editor.select(shapeId);
-      focusWorkflowNodeInViewport(editor, node);
-    }));
-  }, [updateState]);
+    // Legacy fallback for old nodes that still carry an inline snapshot on the canvas.
+    const legacyUploads = (sourceNode.data.generationUploads ?? sourceNode.data.uploads)?.map((upload) => {
+      const { readonlySource: _readonlySource, sourceNodeId: _sourceNodeId, ...rest } = upload;
+      return { ...rest, id: createId("workflow_upload"), status: "ready" as const };
+    });
+    // Preferred: read the reference inputs (with display names) that this node's generation actually used
+    // from the authoritative backend job. This does not depend on a fragile per-node canvas snapshot, so it
+    // works no matter how the generation was finalized (browser / backend worker / self-heal).
+    void (async () => {
+      try {
+        const response = await fetch("/api/workflow-generation-references", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ workflowId, workflowNodeId: sourceNode.id }) });
+        const data = await readJson<{ references?: Array<{ url?: string; name?: string; kind?: "image" | "video" | "audio" }> }>(response);
+        const refs = Array.isArray(data.references) ? data.references.filter((ref): ref is { url: string; name?: string; kind: "image" | "video" | "audio" } => Boolean(ref?.url) && (ref?.kind === "image" || ref?.kind === "video" || ref?.kind === "audio")) : [];
+        if (refs.length > 0) {
+          buildAndInsert(refs.map((ref, index) => ({ id: createId("workflow_upload"), kind: ref.kind, name: ref.name ?? `${ref.kind === "image" ? "图片" : ref.kind === "video" ? "视频" : "音频"}${index + 1}`, url: ref.url, status: "ready" as const, progress: 100 })));
+          return;
+        }
+      } catch {
+        // fall through to legacy inline snapshot below
+      }
+      buildAndInsert(legacyUploads);
+    })();
+  }, [updateState, workflowId]);
 
   const addUploadedNode = useCallback((draftNode: Omit<WorkflowNode, "x" | "y">, targetNodeId?: string) => {
     const editor = editorRef.current;
@@ -3507,12 +3518,10 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
   const getEnabledVideoModel = useCallback((model?: ModelName) => (model && videoModels.some((item) => item.id === model) ? model : (videoModels[0]?.id as ModelName | undefined) ?? DEFAULT_VIDEO_MODEL), [videoModels]);
 
   const applyImageNodeResult = useCallback((node: WorkflowNode, input: { prompt: string; model: ModelName; settings: { ratio: string; resolution: string }; promptOptimization?: { originalPrompt: string; optimizedPrompt: string; attemptsUsed: number; optimizerModel: string } }, images: string[], imageDimensions: Record<string, { width: number; height: number }> | undefined, credit: CreditResult | undefined, usage: UsageMeta | undefined, reservedNames?: string[]) => {
-    const generationUploads = getWorkflowGenerationUploadSnapshot(stateRef.current, node);
     updateNode(node.id, {
       images,
       imageDimensions,
       prompt: input.prompt,
-      generationUploads: generationUploads.length > 0 ? generationUploads : undefined,
       visualSize: undefined,
       isRunning: false,
       error: undefined,
@@ -3700,8 +3709,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
       if (isVideoDoneStatus(pollData.status) && videoUrl) {
         const posterUrl = getPosterUrlFromResponse(pollData);
         const chargedUsage = pollData.usage ?? usage;
-        const generationUploads = getWorkflowGenerationUploadSnapshot(stateRef.current, node);
-        updateNode(node.id, { prompt, videoUrl, posterUrl, videoCurrentTime: 0, generationUploads: generationUploads.length > 0 ? generationUploads : undefined, visualSize: undefined, isRunning: false, error: undefined, taskId: undefined, videoRequestId: undefined, mediaSystemNames: job?.reservedNames?.[0] ? { ...(node.data.mediaSystemNames ?? {}), [videoUrl]: job.reservedNames[0] } : node.data.mediaSystemNames });
+        updateNode(node.id, { prompt, videoUrl, posterUrl, videoCurrentTime: 0, visualSize: undefined, isRunning: false, error: undefined, taskId: undefined, videoRequestId: undefined, mediaSystemNames: job?.reservedNames?.[0] ? { ...(node.data.mediaSystemNames ?? {}), [videoUrl]: job.reservedNames[0] } : node.data.mediaSystemNames });
         updateState((state) => ({ ...state, edges: state.edges.filter((edge) => edge.target !== node.id) }));
         onGeneratedMedia?.({ nodeId: node.id, kind: "video", urls: [videoUrl], reservedNames: job?.reservedNames, posterUrl, sourcePrompt: prompt, model, ratio: settings.ratio, resolution: settings.resolution, duration: settings.duration });
         onCredit?.({ ...pollData.credit, usage: chargedUsage });
@@ -3897,8 +3905,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     const videoUrl = job.resultUrls?.find(Boolean);
     if (!videoUrl) return false;
     const prompt = node.data.prompt?.trim() ?? job.prompt ?? "";
-    const generationUploads = getWorkflowGenerationUploadSnapshot(stateRef.current, node);
-    updateNode(node.id, { prompt, videoUrl, posterUrl: job.posterUrl, videoCurrentTime: 0, generationUploads: generationUploads.length > 0 ? generationUploads : undefined, visualSize: undefined, isRunning: false, error: undefined, taskId: undefined, videoRequestId: undefined, mediaSystemNames: job.reservedNames?.[0] ? { ...(node.data.mediaSystemNames ?? {}), [videoUrl]: job.reservedNames[0] } : node.data.mediaSystemNames });
+    updateNode(node.id, { prompt, videoUrl, posterUrl: job.posterUrl, videoCurrentTime: 0, visualSize: undefined, isRunning: false, error: undefined, taskId: undefined, videoRequestId: undefined, mediaSystemNames: job.reservedNames?.[0] ? { ...(node.data.mediaSystemNames ?? {}), [videoUrl]: job.reservedNames[0] } : node.data.mediaSystemNames });
     updateState((state) => ({ ...state, edges: state.edges.filter((edge) => edge.target !== node.id) }));
     onGeneratedMedia?.({ nodeId: node.id, kind: "video", urls: [videoUrl], reservedNames: job.reservedNames, posterUrl: job.posterUrl, sourcePrompt: prompt, model, ratio: settings.ratio, resolution: settings.resolution, duration: settings.duration });
     onCredit?.({ ...job.credit, usage: job.usage });
@@ -4692,7 +4699,15 @@ function useWorkflowFixedScreenScale() {
 function WaitingCard({ isImage, startedAt, selected, height }: { isImage: boolean; startedAt?: number; selected?: boolean; height: number }) {
   const fixedScale = useWorkflowFixedScreenScale();
   const inset = 14 * fixedScale;
-  return <div className={`relative w-full overflow-hidden border bg-[#e6e6e6] text-left text-[#4f6f86] ${cardBorderClassName(selected)}`} style={{ height }}><div className="absolute inset-0 animate-[yinzaoVideoWaiting_5s_ease-in-out_infinite] bg-[radial-gradient(circle_at_16%_22%,rgba(193,210,255,0.7),transparent_31%),radial-gradient(circle_at_42%_70%,rgba(188,177,255,0.46),transparent_34%),radial-gradient(circle_at_76%_34%,rgba(126,205,255,0.52),transparent_35%),linear-gradient(120deg,#eef8ff_0%,#d8efff_36%,#edfaff_68%,#dcf8ff_100%)]" /><div className="absolute z-10 overflow-hidden" style={{ left: inset, right: inset, top: inset }}><div className="inline-flex max-w-full rounded-md bg-black/12 font-medium leading-none text-black/75 backdrop-blur-sm" style={{ fontSize: 13 * fixedScale, padding: `${4 * fixedScale}px ${10 * fixedScale}px` }}><span className="truncate">{getVideoWaitProgress(startedAt)}%{isImage ? "生成中" : "渲染中"}</span></div></div><div className="absolute z-10 overflow-hidden" style={{ left: inset, right: inset, bottom: inset }}><div className="truncate leading-none text-[#6f8fa3]" style={{ fontSize: 12 * fixedScale }}>已等待 {formatElapsedTime(startedAt)}</div></div></div>;
+  // Tick once per second so the elapsed timer / progress advance smoothly. This card is only mounted while
+  // the node is running, so the interval is created on generate and cleared the moment the result arrives
+  // (unmount) — no always-on timer, no idle re-renders.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+  return <div className={`relative w-full overflow-hidden border bg-[#e6e6e6] text-left text-[#4f6f86] ${cardBorderClassName(selected)}`} style={{ height }}><div className="absolute inset-0 animate-[yinzaoVideoWaiting_5s_ease-in-out_infinite] bg-[radial-gradient(circle_at_16%_22%,rgba(193,210,255,0.7),transparent_31%),radial-gradient(circle_at_42%_70%,rgba(188,177,255,0.46),transparent_34%),radial-gradient(circle_at_76%_34%,rgba(126,205,255,0.52),transparent_35%),linear-gradient(120deg,#eef8ff_0%,#d8efff_36%,#edfaff_68%,#dcf8ff_100%)]" /><div className="absolute z-10 overflow-hidden" style={{ left: inset, right: inset, top: inset }}><div className="inline-flex max-w-full rounded-md bg-black/12 font-medium leading-none text-black/75 backdrop-blur-sm" style={{ fontSize: 13 * fixedScale, padding: `${4 * fixedScale}px ${10 * fixedScale}px` }}><span className="truncate">{getVideoWaitProgress(startedAt, now)}%{isImage ? "生成中" : "渲染中"}</span></div></div><div className="absolute z-10 overflow-hidden" style={{ left: inset, right: inset, bottom: inset }}><div className="truncate leading-none text-[#6f8fa3]" style={{ fontSize: 12 * fixedScale }}>已等待 {formatElapsedTime(startedAt, now)}</div></div></div>;
 }
 function FailedCard({ isImage, selected, height, error, onRetry, onOptimizationRetry: maybeOptimizationRetry }: { isImage: boolean; selected?: boolean; height: number; error?: string; onRetry?: () => void; onOptimizationRetry?: (maxAttempts: number) => void }) {
   const fixedScale = useWorkflowFixedScreenScale();

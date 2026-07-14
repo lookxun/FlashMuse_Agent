@@ -39,6 +39,7 @@ export type GenerationJobRow = {
   referenceImages: string[] | null;
   referenceVideos: string[] | null;
   referenceAudios: string[] | null;
+  referenceNames: Record<string, string> | null;
   referenceMode: string | null;
   conversationId: string | null;
   conversationTitle: string | null;
@@ -180,6 +181,35 @@ export type CreateVideoJobInput = {
   extra?: Record<string, unknown>;
 };
 
+/**
+ * Resolve display names for reference URLs from the authoritative asset tables, keyed by url.
+ * Name = 改名(UserAssetState.currentName) || 终身ID(MediaAsset.initialName) || systemName. Matched on both
+ * `url` and `normalizedUrl`. Stored on the job at creation so "使用提示词" needs no per-click lookup and the
+ * prompt's @mentions can turn blue again. Best-effort: URLs without a MediaAsset row are simply omitted.
+ */
+async function resolveReferenceNames(userId: string, urls: string[]): Promise<Record<string, string>> {
+  const unique = Array.from(new Set(urls.filter((url) => typeof url === "string" && Boolean(url))));
+  if (unique.length === 0) return {};
+  const nameByUrl: Record<string, string> = {};
+  try {
+    const rows = await prisma.$queryRaw<Array<{ url: string; normalizedUrl: string; systemName: string | null; initialName: string | null; currentName: string | null }>>`
+      SELECT ma."url", ma."normalizedUrl", ma."systemName", ma."initialName", uas."currentName"
+      FROM "MediaAsset" ma
+      LEFT JOIN "UserAssetState" uas ON uas."mediaAssetId" = ma."id" AND uas."userId" = ma."userId"
+      WHERE ma."userId" = ${userId} AND (ma."url" IN (${Prisma.join(unique)}) OR ma."normalizedUrl" IN (${Prisma.join(unique)}))
+    `;
+    for (const row of rows) {
+      const name = (row.currentName ?? row.initialName ?? row.systemName ?? "").trim();
+      if (!name) continue;
+      if (row.url) nameByUrl[row.url] ??= name;
+      if (row.normalizedUrl) nameByUrl[row.normalizedUrl] ??= name;
+    }
+  } catch (error) {
+    console.warn("[generation-jobs] resolveReferenceNames failed", { error: error instanceof Error ? error.message : String(error) });
+  }
+  return nameByUrl;
+}
+
 /** 建一条排队中的图片任务（幂等：同 requestId 已存在则直接返回原任务）。 */
 export async function createImageJob(input: CreateImageJobInput): Promise<GenerationJobRow> {
   const existing = await getGenerationJobByRequestId(input.requestId);
@@ -189,17 +219,18 @@ export async function createImageJob(input: CreateImageJobInput): Promise<Genera
   const provider = input.model?.startsWith("byteplus:") ? "byteplus" : "openrouter";
   const count = Math.min(4, Math.max(1, Math.floor(input.count ?? 1)));
   const extra = { ...(input.extra ?? {}), ...(input.candidateMode ? { candidateMode: input.candidateMode } : {}), ...(input.conversationCode ? { conversationCode: input.conversationCode } : {}) };
+  const referenceNames = await resolveReferenceNames(input.userId, input.referenceImages ?? []);
   await prisma.$transaction(async (tx) => {
     const reservedNames = await reserveJobNames(tx, { userId: input.userId, kind: "image", count, flow: input.flow, workflowId: input.workflowId, conversationId: input.conversationId, conversationCode: input.conversationCode, creditSource: input.creditSource });
     await tx.$executeRaw`
     INSERT INTO "GenerationJob" (
       "id", "userId", "requestId", "kind", "status", "flow", "creditSource", "model", "provider",
-      "prompt", "settingsJson", "referenceImages", "conversationId", "conversationTitle",
+      "prompt", "settingsJson", "referenceImages", "referenceNames", "conversationId", "conversationTitle",
        "messageId", "workflowId", "workflowNodeId", "itemIndex", "count", "reservedNames", "metadataJson", "extraJson",
       "createdAt", "updatedAt"
     ) VALUES (
       ${id}, ${input.userId}, ${input.requestId}, 'image', 'queued', ${input.flow ?? null}, ${input.creditSource ?? null}, ${input.model ?? null}, ${provider},
-      ${input.prompt}, ${jsonParam(input.settings)}::jsonb, ${jsonParam(input.referenceImages ?? [])}::jsonb, ${input.conversationId ?? null}, ${input.conversationTitle ?? null},
+      ${input.prompt}, ${jsonParam(input.settings)}::jsonb, ${jsonParam(input.referenceImages ?? [])}::jsonb, ${jsonParam(referenceNames)}::jsonb, ${input.conversationId ?? null}, ${input.conversationTitle ?? null},
        ${input.messageId ?? null}, ${input.workflowId ?? null}, ${input.workflowNodeId ?? null}, ${input.itemIndex ?? null}, ${count}, ${jsonParam(reservedNames)}::jsonb, ${jsonParam(input.metadata)}::jsonb, ${jsonParam(extra)}::jsonb,
       NOW(), NOW()
     )
@@ -221,17 +252,18 @@ export async function createVideoJob(input: CreateVideoJobInput): Promise<Genera
   const id = randomUUID();
   const provider = input.model?.startsWith("byteplus:video.") ? "byteplus" : "openrouter";
   const extra = { ...(input.extra ?? {}), ...(input.conversationCode ? { conversationCode: input.conversationCode } : {}) };
+  const referenceNames = await resolveReferenceNames(input.userId, [...(input.referenceImages ?? []), ...(input.referenceVideos ?? []), ...(input.referenceAudios ?? [])]);
   await prisma.$transaction(async (tx) => {
     const reservedNames = await reserveJobNames(tx, { userId: input.userId, kind: "video", count: 1, flow: input.flow, workflowId: input.workflowId, conversationId: input.conversationId, conversationCode: input.conversationCode, creditSource: input.creditSource });
     await tx.$executeRaw`
     INSERT INTO "GenerationJob" (
       "id", "userId", "requestId", "kind", "status", "flow", "creditSource", "model", "provider",
-      "prompt", "settingsJson", "referenceImages", "referenceVideos", "referenceAudios", "referenceMode",
+      "prompt", "settingsJson", "referenceImages", "referenceVideos", "referenceAudios", "referenceNames", "referenceMode",
        "conversationId", "conversationTitle", "messageId", "workflowId", "workflowNodeId", "itemIndex", "count", "reservedNames", "providerTaskId",
       "usageJson", "metadataJson", "extraJson", "nextRunAt", "createdAt", "updatedAt"
     ) VALUES (
       ${id}, ${input.userId}, ${input.requestId}, 'video', 'running', ${input.flow ?? null}, ${input.creditSource ?? null}, ${input.model ?? null}, ${provider},
-      ${input.prompt}, ${jsonParam(input.settings)}::jsonb, ${jsonParam(input.referenceImages ?? [])}::jsonb, ${jsonParam(input.referenceVideos ?? [])}::jsonb, ${jsonParam(input.referenceAudios ?? [])}::jsonb, ${input.referenceMode ?? null},
+      ${input.prompt}, ${jsonParam(input.settings)}::jsonb, ${jsonParam(input.referenceImages ?? [])}::jsonb, ${jsonParam(input.referenceVideos ?? [])}::jsonb, ${jsonParam(input.referenceAudios ?? [])}::jsonb, ${jsonParam(referenceNames)}::jsonb, ${input.referenceMode ?? null},
        ${input.conversationId ?? null}, ${input.conversationTitle ?? null}, ${input.messageId ?? null}, ${input.workflowId ?? null}, ${input.workflowNodeId ?? null}, ${input.itemIndex ?? null}, 1, ${jsonParam(reservedNames)}::jsonb, ${input.providerTaskId},
       ${jsonParam(input.usage)}::jsonb, ${jsonParam(input.metadata)}::jsonb, ${jsonParam(extra)}::jsonb, NOW(), NOW(), NOW()
     )
@@ -253,6 +285,17 @@ export async function getGenerationJobsByRequestIds(userId: string, requestIds: 
   const ids = requestIds.filter((id) => typeof id === "string" && id).slice(0, 200);
   if (ids.length === 0) return [];
   return prisma.$queryRaw<GenerationJobRow[]>`SELECT * FROM "GenerationJob" WHERE "userId" = ${userId} AND "requestId" IN (${Prisma.join(ids)})`;
+}
+
+/** 取某工作流节点最近一次成功生成的任务（供"使用提示词"还原参考素材+名字）。 */
+export async function getLatestSucceededJobForWorkflowNode(userId: string, workflowId: string, workflowNodeId: string): Promise<GenerationJobRow | undefined> {
+  const rows = await prisma.$queryRaw<GenerationJobRow[]>`
+    SELECT * FROM "GenerationJob"
+    WHERE "userId" = ${userId} AND "workflowId" = ${workflowId} AND "workflowNodeId" = ${workflowNodeId} AND "status" = 'succeeded'
+    ORDER BY "updatedAt" DESC
+    LIMIT 1
+  `;
+  return rows[0];
 }
 
 /** 拉取该用户所有仍在进行 + 最近完成的任务，供前端加载/重连时对齐展示。 */
