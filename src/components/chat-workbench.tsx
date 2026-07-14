@@ -11654,6 +11654,11 @@ export function ChatWorkbench() {
     type ConversationImageJobStatus = { requestId: string; status: string; resultUrls?: string[]; reservedNames?: string[]; resultDimensions?: Record<string, ImageDimensions>; usage?: UsageMeta; credit?: CreditMeta; error?: string; errorCode?: string };
     const jobsToCheck = sessions.flatMap((session) => session.messages.flatMap((message) => {
       if (message.role !== "assistant" || message.mode !== "image" || !message.requestId || (message.pendingImageCount ?? 0) <= 0) return [];
+      // Skip requests still being polled by the foreground generator; otherwise both this recovery effect and
+      // the foreground poller call markAssistantImageFailure for the same slot and failedImageCount double-counts
+      // (inflated count / duplicate error reason / possible extra failed card). Recovery is a backstop only for
+      // orphaned jobs (closed/refreshed browser → no foreground poller). Mirrors the conversation-video guard.
+      if (runningRequestIdsRef.current.has(message.requestId)) return [];
       const requestedCount = getRequestedImageDisplayCount(message) ?? Math.max(1, (message.images?.length ?? 0) + (message.failedImageCount ?? 0) + (message.pendingImageCount ?? 0));
       const slots = message.imageResultSlots ?? [
         ...(message.images ?? []).map((url) => ({ type: "image" as const, url })),
