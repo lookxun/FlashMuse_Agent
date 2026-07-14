@@ -1271,8 +1271,11 @@ async function generateBytePlusImage(prompt: string, referenceImages: string[] =
           upstream: { url, statusText: response.statusText, body: responseText },
         });
         const curlMessage = curlError instanceof Error ? curlError.message : "";
-        if (/curl|schannel|closed abruptly|close_notify|command failed/i.test(curlMessage)) throw new Error("网络连接异常，请稍后重试。");
-        if (curlMessage) throw new Error(curlMessage);
+        // curl 没装/无法启动(ENOENT)不是网络问题，别误映射成"网络连接异常"盖住真实上游报错——
+        // 落到下面用 getOpenRouterError 把真错(如平台 400 body)透出来。
+        const curlMissing = /enoent|spawn\s+curl/i.test(curlMessage);
+        if (!curlMissing && /curl|schannel|closed abruptly|close_notify|command failed/i.test(curlMessage)) throw new Error("网络连接异常，请稍后重试。");
+        if (!curlMissing && curlMessage) throw new Error(curlMessage);
         throw new Error(await getOpenRouterError(response, "BytePlus 图片生成失败"));
       }
     } else {
@@ -1516,8 +1519,11 @@ export async function generateOpenRouterImage(prompt: string, referenceImages: s
           upstream: { url: OPENROUTER_URL, statusText: response.statusText, body: responseText },
         });
         const curlMessage = curlError instanceof Error ? curlError.message : "";
-        if (/curl|schannel|closed abruptly|close_notify|command failed/i.test(curlMessage)) throw new Error("网络连接异常，请稍后重试。");
-        if (curlMessage) throw new Error(curlMessage);
+        // curl 没装/无法启动(ENOENT)不是网络问题，别误映射成"网络连接异常"盖住真实上游报错——
+        // 落到下面用 getOpenRouterError 把真错(如平台 400 body)透出来。
+        const curlMissing = /enoent|spawn\s+curl/i.test(curlMessage);
+        if (!curlMissing && /curl|schannel|closed abruptly|close_notify|command failed/i.test(curlMessage)) throw new Error("网络连接异常，请稍后重试。");
+        if (!curlMissing && curlMessage) throw new Error(curlMessage);
         throw new Error(await getOpenRouterError(response, "图片生成失败"));
       }
     } else {

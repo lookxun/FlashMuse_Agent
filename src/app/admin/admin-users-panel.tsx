@@ -1,7 +1,7 @@
 "use client";
 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
-import { RiArrowDownSLine, RiArrowRightSLine, RiCloseLine, RiQuillPenAiLine, RiSearchLine } from "react-icons/ri";
+import { RiArrowDownSLine, RiArrowRightSLine, RiCloseLine, RiMusic2Line, RiQuillPenAiLine, RiSearchLine } from "react-icons/ri";
 import { useBodyScrollLock } from "@/components/use-body-scroll-lock";
 import { AdminHoverImagePreview } from "./admin-hover-image-preview";
 import { getCachedAdminDetail, setCachedAdminDetail } from "./admin-detail-cache";
@@ -40,6 +40,9 @@ export type AdminMediaItem = {
   id: string;
   requestId?: string;
   conversationId?: string;
+  messageId?: string;
+  workflowId?: string;
+  workflowNodeId?: string;
   type: "image" | "video";
   systemName?: string;
   assetType?: "character_image" | "scene_image" | "shot_image";
@@ -59,6 +62,8 @@ export type AdminMediaItem = {
   size: string;
   style?: string;
   createdAtTs?: number;
+  // 该次生成实际用到的参考素材（上传/连线的图片/视频/音频 + 显示名），来自权威 GenerationJob。
+  references?: Array<{ url: string; name?: string; kind: "image" | "video" | "audio" }>;
 };
 
 export type AdminUploadRecord = {
@@ -382,14 +387,43 @@ export function AdminMediaDialog({ userId, userLabel, mediaType, onClose }: { us
                         ) : null}
                       </div>
                     )}
-                    <div className="mt-2 whitespace-pre-wrap break-words text-[14px] leading-7 text-[#111111]">
+                    {activeMedia.references?.length ? (
+                      <div className="mt-3">
+                        <div className="mb-2 text-[12px] font-medium text-[#777777]">参考素材（{activeMedia.references.length}）</div>
+                        <div className="flex flex-wrap gap-2">
+                          {activeMedia.references.map((ref, index) => (
+                            <button
+                              key={`${ref.url}-${index}`}
+                              type="button"
+                              onClick={() => window.open(getAdminMediaSourceUrl(ref.url), "_blank", "noopener,noreferrer")}
+                              title={ref.name || ref.url}
+                              className="relative h-[76px] w-[76px] shrink-0 overflow-hidden rounded-[6px] border border-[#e3e3e3] bg-[#f0f0f0] transition hover:border-[#367cee]"
+                            >
+                              {ref.kind === "image" ? (
+                                // eslint-disable-next-line @next/next/no-img-element
+                                <img src={getAdminMediaThumbnailUrl(ref.url)} onError={(event) => fallbackAdminImageToOriginal(event.currentTarget, ref.url)} alt="参考图" loading="lazy" className="h-full w-full object-cover" />
+                              ) : ref.kind === "video" ? (
+                                getLocalVideoPosterUrl(ref.url) ? (
+                                  // eslint-disable-next-line @next/next/no-img-element
+                                  <img src={getAdminMediaThumbnailUrl(getLocalVideoPosterUrl(ref.url) ?? ref.url)} onError={(event) => fallbackAdminImageToOriginal(event.currentTarget, ref.url)} alt="参考视频" loading="lazy" className="h-full w-full object-cover" />
+                                ) : <video src={getAdminMediaSourceUrl(ref.url)} className="h-full w-full object-cover" muted preload="metadata" />
+                              ) : (
+                                <span className="flex h-full w-full items-center justify-center text-[#8a8a8a]"><RiMusic2Line className="h-6 w-6" aria-hidden="true" /></span>
+                              )}
+                              {ref.name ? <div className="absolute inset-x-0 bottom-0 truncate bg-black/62 px-1 py-0.5 text-[9px] leading-tight text-white">{ref.name}</div> : null}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+                    <div className="mt-3 whitespace-pre-wrap break-words text-[14px] leading-7 text-[#111111]">
                       {activeMedia.isReversePrompt ? (
                         <span className="mr-2 inline-flex h-6 align-[1px] items-center gap-1.5 rounded-[6px] border border-[#367cee] px-2 text-[12px] font-medium leading-none text-[#367cee]">
                           <RiQuillPenAiLine className="h-3.5 w-3.5" aria-hidden="true" />
                           <span>反推提示词</span>
                         </span>
                       ) : null}
-                      {activeMedia.prompt || "暂无提示词"}
+                      {activeMedia.prompt ? <AdminPromptWithMentions prompt={activeMedia.prompt} names={(activeMedia.references ?? []).map((ref) => ref.name).filter((name): name is string => Boolean(name))} /> : "暂无提示词"}
                       {activeMedia.promptConstraints?.length ? <div className="mt-1 text-[13px] leading-6 text-[#999999]">{activeMedia.promptConstraints.join("，")}</div> : null}
                     </div>
                   </div>
@@ -452,6 +486,39 @@ export function AdminMediaDialog({ userId, userLabel, mediaType, onClose }: { us
       </div>
     </div>
   );
+}
+
+// 把提示词里的 @文件名（匹配该次生成用到的参考素材名）渲染成蓝色，其余原样。
+function AdminPromptWithMentions({ prompt, names }: { prompt: string; names: string[] }) {
+  // @提及可能省略文件后缀（如输入 @D68_S01P2 而资产名是 D68_S01P2.jpg），所以每个名字额外加一个去后缀变体一起匹配。
+  const valid = Array.from(new Set(
+    names.filter(Boolean).flatMap((name) => {
+      const trimmed = name.trim();
+      const noExt = trimmed.replace(/\.[a-zA-Z0-9]{1,5}$/, "");
+      return noExt && noExt !== trimmed ? [trimmed, noExt] : [trimmed];
+    }).filter(Boolean),
+  )).sort((left, right) => right.length - left.length);
+  if (valid.length === 0) return <>{prompt}</>;
+  const out: React.ReactNode[] = [];
+  let buffer = "";
+  let index = 0;
+  let key = 0;
+  const flush = () => { if (buffer) { out.push(buffer); buffer = ""; } };
+  while (index < prompt.length) {
+    if (prompt[index] === "@") {
+      const match = valid.find((name) => prompt.startsWith(name, index + 1));
+      if (match) {
+        flush();
+        out.push(<span key={`mention-${key++}`} className="font-medium text-[#367cee]">@{match}</span>);
+        index += 1 + match.length;
+        continue;
+      }
+    }
+    buffer += prompt[index];
+    index += 1;
+  }
+  flush();
+  return <>{out}</>;
 }
 
 function AdminCompactResolutionIcon({ option, mode }: { option?: string; mode: "image" | "video" }) {

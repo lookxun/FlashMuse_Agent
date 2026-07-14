@@ -2790,11 +2790,11 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     if (sourceNode.kind !== "image" && sourceNode.kind !== "video") return;
     const kind = sourceNode.kind;
     const defaultData = getDefaultNodeData(kind);
-    const buildAndInsert = (uploads: WorkflowUploadItem[] | undefined) => {
+    const buildAndInsert = (uploads: WorkflowUploadItem[] | undefined, promptOverride?: string) => {
       const current = stateRef.current;
       const data: WorkflowNodeData = {
         ...defaultData,
-        prompt: sourceNode.data.prompt ?? "",
+        prompt: (typeof promptOverride === "string" && promptOverride.trim()) ? promptOverride : (sourceNode.data.prompt ?? ""),
         model: sourceNode.data.model ?? defaultData.model,
         ratio: sourceNode.data.ratio ?? defaultData.ratio,
         resolution: sourceNode.data.resolution ?? defaultData.resolution,
@@ -2827,11 +2827,14 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     // works no matter how the generation was finalized (browser / backend worker / self-heal).
     void (async () => {
       try {
-        const response = await fetch("/api/workflow-generation-references", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ workflowId, workflowNodeId: sourceNode.id }) });
-        const data = await readJson<{ references?: Array<{ url?: string; name?: string; kind?: "image" | "video" | "audio" }> }>(response);
+        const sourceMediaUrl = sourceNode.data.images?.[0] ?? sourceNode.data.videoUrl ?? sourceNode.data.audioUrl ?? "";
+        const response = await fetch("/api/workflow-generation-references", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ workflowId, workflowNodeId: sourceNode.id, mediaUrl: sourceMediaUrl }) });
+        const data = await readJson<{ references?: Array<{ url?: string; name?: string; kind?: "image" | "video" | "audio" }>; prompt?: string }>(response);
         const refs = Array.isArray(data.references) ? data.references.filter((ref): ref is { url: string; name?: string; kind: "image" | "video" | "audio" } => Boolean(ref?.url) && (ref?.kind === "image" || ref?.kind === "video" || ref?.kind === "audio")) : [];
-        if (refs.length > 0) {
-          buildAndInsert(refs.map((ref, index) => ({ id: createId("workflow_upload"), kind: ref.kind, name: ref.name ?? `${ref.kind === "image" ? "图片" : ref.kind === "video" ? "视频" : "音频"}${index + 1}`, url: ref.url, status: "ready" as const, progress: 100 })));
+        // 用后端权威 job 里的「用户真实提示词」(输入框+连线文本节点，含 @蓝字，不含 hint) 回填；查不到再回退画布自带。
+        const restoredPrompt = typeof data.prompt === "string" && data.prompt.trim() ? data.prompt : undefined;
+        if (refs.length > 0 || restoredPrompt) {
+          buildAndInsert(refs.length > 0 ? refs.map((ref, index) => ({ id: createId("workflow_upload"), kind: ref.kind, name: ref.name ?? `${ref.kind === "image" ? "图片" : ref.kind === "video" ? "视频" : "音频"}${index + 1}`, url: ref.url, status: "ready" as const, progress: 100 })) : undefined, restoredPrompt);
           return;
         }
       } catch {
@@ -3572,7 +3575,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     const modelPrompt = appendWorkflowReferenceHint(input.prompt, getReferenceImageNames(node, input.referenceImages));
     const requestId = createId("workflow_image");
     updateNode(node.id, { isRunning: true, error: undefined, images: [], visualSize: undefined, startedAt: Date.now(), imageRequestId: requestId });
-    const submit = await fetch("/api/image", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt: modelPrompt, model: input.model, settings: input.settings, referenceImages: input.referenceImages, count: 1, conversationId: workflowId, conversationTitle: workflowTitle, requestId, async: true, workflowId, workflowNodeId: node.id, flow: "workflow", metadata: { creditSource: "workflow_image_generation" } }) }).then((response) => readJson<{ jobId?: string; error?: string; errorCode?: string }>(response));
+    const submit = await fetch("/api/image", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt: modelPrompt, sourcePrompt: input.prompt, model: input.model, settings: input.settings, referenceImages: input.referenceImages, count: 1, conversationId: workflowId, conversationTitle: workflowTitle, requestId, async: true, workflowId, workflowNodeId: node.id, flow: "workflow", metadata: { creditSource: "workflow_image_generation" } }) }).then((response) => readJson<{ jobId?: string; error?: string; errorCode?: string }>(response));
     if (!submit.jobId) throw new Error(getWorkflowApiErrorMessage({ error: submit.error, errorCode: submit.errorCode }, GENERIC_MEDIA_ERROR_MESSAGE));
     return pollImageNode(node, requestId, input);
   }, [getReferenceImageNames, pollImageNode, updateNode, workflowId, workflowTitle]);

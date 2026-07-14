@@ -3,7 +3,7 @@ import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { syncGeneratedFilesToAli } from "@/lib/ali-sync";
 import { compressGeneratedVideoInPlace, createGeneratedImageThumbnail, getLocalImageDimensions, saveRemoteAsset, type ImageDimensions } from "@/lib/local-assets";
-import { createVideoPosterFromLocalVideo } from "@/lib/video-poster";
+import { createVideoPosterFromLocalVideo, getLocalVideoDimensions } from "@/lib/video-poster";
 import { getOpenRouterHeaders, getRequiredOpenRouterApiKey } from "@/lib/openrouter-video";
 import { upsertVideoManifestEntry } from "@/lib/video-manifest";
 import { appendGenerationDiagnosticsLog, summarizeGeneratedReference } from "@/lib/generation-diagnostics-log";
@@ -211,12 +211,14 @@ async function processMediaSaveJob(id: string) {
         console.warn("[media-save] video poster create failed", { id: job.id, requestId: job.requestId, model: job.model, localUrl, error: error instanceof Error ? error.message : String(error) });
         return undefined;
       }) : undefined;
+      // 视频真实宽高用 ffmpeg 解析（封面被降采样到 640，不能当尺寸）。
+      const resolvedDimensions = dimensions ?? (job.type === "video" ? await getLocalVideoDimensions(localUrl).catch(() => undefined) : undefined);
       const posterThumbnailUrl = posterUrl ? await createGeneratedImageThumbnail(posterUrl).catch((error) => {
         console.warn("[media-save] video poster thumbnail create failed", { id: job.id, requestId: job.requestId, model: job.model, posterUrl, error: error instanceof Error ? error.message : String(error) });
         return undefined;
       }) : undefined;
       const aliSync = await syncGeneratedFilesToAli(job.type === "image" ? [localUrl, thumbnailUrl] : [localUrl, posterUrl, posterThumbnailUrl]);
-      const savedJob = await markJob(job.id, { status: "saved", localUrl, thumbnailUrl, posterUrl, posterThumbnailUrl, dimensions, aliSynced: aliSync.ok, aliSyncedAt: aliSync.ok ? Date.now() : undefined, aliSyncError: aliSync.error, error: undefined, nextRetryAt: undefined });
+      const savedJob = await markJob(job.id, { status: "saved", localUrl, thumbnailUrl, posterUrl, posterThumbnailUrl, dimensions: resolvedDimensions, aliSynced: aliSync.ok, aliSyncedAt: aliSync.ok ? Date.now() : undefined, aliSyncError: aliSync.error, error: undefined, nextRetryAt: undefined });
       const savedAt = Date.now();
 
       if (savedJob?.type === "video" && savedJob.videoTaskId) {

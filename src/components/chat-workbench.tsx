@@ -13890,6 +13890,7 @@ export function ChatWorkbench() {
         headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             prompt,
+            sourcePrompt: rawPrompt,
             model: characterGenerateModel,
             referenceImages: references.length > 0 ? references.map((reference) => reference.url) : undefined,
             settings,

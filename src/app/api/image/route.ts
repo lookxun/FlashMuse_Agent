@@ -12,6 +12,7 @@ import { appendUploadRuleFeedbackLog } from "@/lib/upload-rule-feedback-log";
 import { appendGenerationDiagnosticsLog, summarizeGeneratedReference } from "@/lib/generation-diagnostics-log";
 import { recordGenerationEvent } from "@/lib/analytics-events";
 import { createImageJob } from "@/lib/generation-jobs";
+import { getBytePlusProviderKey } from "@/lib/byteplus-provider-key";
 
 function getRequestedImageCount(value: unknown) {
   const count = typeof value === "number" ? value : typeof value === "string" ? Number(value) : 1;
@@ -71,26 +72,16 @@ function isImageModelEnabledForSource(model: string, source: string | undefined)
   return isConversationImageModelEnabled(model);
 }
 
-function getBytePlusProviderKey(modelId: string | undefined, source: string | undefined) {
-  if (!modelId?.startsWith("byteplus:")) return undefined;
-  const isAgent = isAgentImageCreditSource(source);
-  // seedream-4-5 有 agent 专属端点键；seedream-5-0 无 agent 变体，统一用会话键（agent 兜底选到它时也可用）。
-  if (modelId.endsWith("seedream-4-5")) return isAgent ? "agent-image.seedream-4-5" : "conversation-image.seedream-4-5";
-  if (modelId.endsWith("seedream-5-0-pro")) return "conversation-image.seedream-5-0-pro";
-  if (modelId.endsWith("seedream-5-0")) return "conversation-image.seedream-5-0";
-  return undefined;
-}
-
 function withChargedUsage<T extends { usage?: { promptTokens?: number; completionTokens?: number; totalTokens?: number; usd?: number } }>(result: T, credit: Awaited<ReturnType<typeof chargeCredits>> | undefined) {
   if (!credit || credit.skipped) return result;
   return { ...result, usage: { ...(result.usage ?? {}), usd: credit.chargedUsd, cny: credit.chargedCny } };
 }
 
 export async function POST(request: Request) {
-  let body: { prompt?: string; model?: string; referenceImages?: string[]; settings?: { ratio?: string; resolution?: string }; count?: number; candidateMode?: "all" | "best"; conversationId?: string; conversationTitle?: string; conversationCode?: string; requestId?: string; metadata?: Prisma.InputJsonValue; async?: boolean; workflowId?: string; workflowNodeId?: string; flow?: "conversation" | "workflow" } | undefined;
+  let body: { prompt?: string; sourcePrompt?: string; model?: string; referenceImages?: string[]; settings?: { ratio?: string; resolution?: string }; count?: number; candidateMode?: "all" | "best"; conversationId?: string; conversationTitle?: string; conversationCode?: string; requestId?: string; metadata?: Prisma.InputJsonValue; async?: boolean; workflowId?: string; workflowNodeId?: string; flow?: "conversation" | "workflow" } | undefined;
   const routeStartedAt = Date.now();
   try {
-    body = (await request.json()) as { prompt?: string; model?: string; referenceImages?: string[]; settings?: { ratio?: string; resolution?: string }; count?: number; candidateMode?: "all" | "best"; conversationId?: string; conversationTitle?: string; conversationCode?: string; requestId?: string; metadata?: Prisma.InputJsonValue; async?: boolean; workflowId?: string; workflowNodeId?: string; flow?: "conversation" | "workflow" };
+    body = (await request.json()) as { prompt?: string; sourcePrompt?: string; model?: string; referenceImages?: string[]; settings?: { ratio?: string; resolution?: string }; count?: number; candidateMode?: "all" | "best"; conversationId?: string; conversationTitle?: string; conversationCode?: string; requestId?: string; metadata?: Prisma.InputJsonValue; async?: boolean; workflowId?: string; workflowNodeId?: string; flow?: "conversation" | "workflow" };
     const prompt = body.prompt?.trim();
 
     if (!prompt) {
@@ -127,6 +118,9 @@ export async function POST(request: Request) {
         workflowNodeId: body.workflowNodeId,
         flow: body.flow ?? (creditSource?.startsWith("workflow_") ? "workflow" : "conversation"),
         metadata: body.metadata,
+        // 统一存「用户真实提示词」(不含参考图 hint)：与视频 extra.cleanPrompt 一致。
+        // finalizeImageJobAsset 会优先用它写 MediaAsset.sourcePrompt；"使用提示词"也读它。
+        extra: { cleanPrompt: (typeof body.sourcePrompt === "string" && body.sourcePrompt.trim()) ? body.sourcePrompt : prompt },
       });
       return NextResponse.json({ jobId: job.id, requestId: job.requestId, status: job.status, reservedNames: job.reservedNames ?? undefined });
     }

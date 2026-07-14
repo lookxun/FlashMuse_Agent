@@ -1,6 +1,32 @@
 # Current Status
 
-Last checked: 2026-07-14 China time.
+Last checked: 2026-07-15 China time.
+
+## 2026-07-15 后台/工作流「参考素材·提示词·尺寸」统一读取根治 + 对话流视频双卡历史修复 — 见 CHANGELOG 顶条为权威。速记：
+
+**本 session 全部已部署腾讯 + 同步阿里；代码已 push GitHub（连同 07-14 统一根治大 session 那批一起推）；无 Prisma 迁移。服务器 /tmp 临时文件已清；持久备份在 `app-backups/20260714-video-doublecard-fix/`。**
+
+1. **对话流视频双卡**：复查 07-14 修复无误；全库 7 例历史双卡按用户要求手修（两失败卡→留一个；一成功一失败→留成功去失败），两张表都改。
+2. **后台弹窗参考素材匹配统一健壮化**：从「仅精确 requestId」改为 requestId→裸id前缀→workflowNodeId→messageId+kind→conversationId 多口径；抽唯一 `buildJobReferenceItems`，后台+工作流接口共用。
+3. **参考图破图根因=`asset://` 没解析**：`createImageJob/createVideoJob` 新增 `resolveReferenceUrls` 把客户端发的 `asset://<bytePlusAssetId>` 解析成真实 url 再存（前向）；回填 256 条老 job。
+4. **视频没尺寸根因=从没量过视频宽高**：`media-save-queue` 用新 `getLocalVideoDimensions`（ffmpeg 解析，非封面！封面被降采样过）量真实宽高（前向）；回填 238 条老视频。
+5. **sourcePrompt 混入 hint**：回填剥掉 190 条历史媒体的 `参考图顺序：...` hint。
+6. **@不蓝=后缀不一致**：`AdminPromptWithMentions` 加去后缀容错匹配。
+7. **导入资产「使用提示词」无缩略图**：新增 `getGenerationJobByMediaUrl`（媒体 url→原始 job），工作流接口按节点查不到就按 mediaUrl 回溯；对话流生成图回填 291 条 requestId（按 messageJson.images 位置取精确 `:image:序号`）。
+8. **前向保证**（别再当 bug 查历史）：新生成天然带全 requestId/cleanPrompt/refs（asset:// 已解析）/尺寸；工作流「使用提示词」+ 后台弹窗都能带回参考缩略图/@蓝字/干净提示词/尺寸。合理边界：`@图片1` 位置占位不蓝；纯临时未入库引用可能无名不蓝；6 月老远程媒体文件已丢无法补。
+
+## 2026-07-14 (统一根治大 session) — 见 CHANGELOG 顶条为权威。速记：
+
+**本 session 全部已部署腾讯；代码未 push GitHub（用户测完一起推）；无 Prisma 迁移。**
+
+1. **Agent/通用模型路由统一根治**：通用/Agent 用 Seedream 5.0 Pro/5.0 Lite/Seedance 2.0 Mini 报"网络连接异常(b76)"= `getBytePlusProviderKey` 复制三份跑偏 + agent-image/agent-video 前缀漏配端点 + 容器没装 curl + "spawn curl ENOENT"误映射成网络错误。已收敛为唯一 `src/lib/byteplus-provider-key.ts`、配置表对称补齐、Dockerfile 装 curl、修误映射。**铁律写进 `AGENTS.md` 顶部 + `04-product-rules.md`：能统一一律统一，禁止复制多份各走各的。**
+2. **工作流"使用提示词"回填干净真实 prompt**（输入框+连线文本节点、不含 hint）：统一字段 `job.extraJson.cleanPrompt`；图片 job 补存它、接口返回它、`addNodeFromPrompt` 回填。
+3. **后台媒体弹窗**：提示词上方显示参考图/视频/音频缩略图（点开原文件）+ @文件名蓝字；后端按 requestId 关联 GenerationJob 参考素材。
+4. **资产库生图去内部强制规则**：只存用户输入（异步 `/api/image` 传 `sourcePrompt: rawPrompt`）；回填历史 34 条。
+5. **视频本地存盘不限时根治**：`runVideoJob` 不再"等 60s 就用会过期的远程 url 落库"，改成没存好就重排队等到本地存好再 finalize（存盘队列一直重试到成功或远程 24h 过期）；finalize（图+视频）权威补写生成参数（防兜底抢先建空行锁死）。回填历史空参数媒体 99 条。
+6. **⚠️ 现状记录（别当 bug 重查）**：线上 243 视频+378 图的 `MediaAsset.url` 仍是远程 volces 地址，**全是 2026-06-19~21（job 化之前）的老数据**，远程已过期、媒体已丢、无法恢复，非 bug；另有 90 条空参数生成媒体无权威来源、按"不猜"保留。7 月起及当前的视频/图都正常落地。`systemName` 会被不同批次重名占用，别只按名字认定同一个东西。
+
+**备份目录**：`app-backups/20260714-unify-providerkey`、`-cleanprompt`、`-admin-refs`、`-asset-cleanprompt`、`-assetprompt-backfill`、`-video-localsave`、`-mediaparam-backfill`。
 
 ## 2026-07-14 (later session) 工作流"使用提示词"带图/@变蓝根治（改读后端 GenerationJob + 名字进库 + 画布去冗余）+ 等待卡计时平滑 + 回填 830 条历史 job（✅ 已部署腾讯；代码本 session 末尾一起 push GitHub）
 

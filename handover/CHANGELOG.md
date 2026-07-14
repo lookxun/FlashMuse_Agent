@@ -1,5 +1,85 @@
 # Current Handover Changelog
 
+## 2026-07-15 后台/工作流「参考素材·提示词·尺寸」统一读取根治 + 对话流视频双卡历史修复（✅ 全部已部署腾讯 + 同步阿里；本 session 末尾**已 push GitHub**（连同 07-14 统一根治大 session 那批一起推）；无 Prisma 迁移）
+
+Reply style 简洁直接中文。承接 07-14「统一入库/统一读取」，本 session 把后台用户管理「所有生成图片/视频」弹窗 + 工作流「使用提示词」里**参考素材缩略图 / @蓝字 / 用户干净提示词 / 视频尺寸**没显示的一连串问题查清并根治（都是历史数据 + 读取脆弱，前向早已修好）。SSH：`ssh -i "C:\Users\ASUS\AppData\Local\Temp\opencode\CinematicFlow.pem" ubuntu@119.28.116.16`。部署=scp 源码→`docker compose up -d --build flashmuse-app`→同步 `.next/static` 到阿里→四域名 200。**DB 操作用 PowerShell here-string 管道 psql 时，含中文的 SQL 必须先 `$OutputEncoding=[Text.Encoding]::UTF8;[Console]::OutputEncoding=[Text.Encoding]::UTF8`，否则中文被 GBK 搅坏匹配不到。⚠️ 千万别用 `Set-Content` 改带中文的源码文件——会把整文件重新编码成 mojibake（本 session 踩过 media-save-queue.ts，已 `git checkout` 还原重改）。**
+
+### 1. 【已核实无问题】对话流视频「双轮询导致双失败卡」修复复查 + 历史 7 例修复
+- 复查 07-14 的 `2db526b` 修复（`runningRequestIdsRef` 守卫 + `pendingVideoCount<=0` 守卫）逻辑正确、无残留。
+- 全库扫描对话流视频「双卡」（`成功数+failedVideoCount > 请求槽位数`，槽位取 `generationMeta.itemPrompts` 长度）：**共 7 例**（5 例两失败卡、2 例一成功一失败；无双成功卡，因 `appendVideoToAssistantMessage` 按 url 去重）。按用户要求手动修：两失败卡→`failedVideoCount=1`；一成功一失败→去掉失败卡（`failedVideoCount=0` + 清 error/mediaErrorReasons）。同步改 `WorkspaceSession.messagesJson` 和 `WorkspaceMessage.messageJson` 两张表。备份 `app-backups/20260714-video-doublecard-fix/dc_*.json`。
+
+### 2. 【读根治+统一】后台弹窗参考素材匹配从「仅精确 requestId」改为多口径健壮匹配
+- **现象**：后台最近视频没带参考图、@不蓝。**真因**：`attachGenerationReferences` 只按 `MediaAsset.requestId == GenerationJob.requestId` 匹配，历史生成媒体 requestId 缺失/不一致就查不到。
+- **改法**（`user-detail/route.ts`）：改为 **① 精确 requestId ② 裸 requestId 前缀（对话流 job=`<消息id>:video|image:N`）③ 工作流 workflowNodeId ④ 会话 messageId+kind ⑤ 追加按 conversationId 拉候选** 依次匹配。`AdminMediaItem` + DETAIL select 补 `messageId/workflowId/workflowNodeId`。
+- **统一**：把「job 参考素材→`{url,name,kind}[]`」抽成唯一 `buildJobReferenceItems`（`generation-jobs.ts` 导出），后台弹窗 + `/api/workflow-generation-references` 都复用，删掉各自的副本。
+- **回填**：对话流视频 requestId 经 `MediaAsset.messageId→WorkspaceMessage.messageJson.requestId→<req>:video:0`（且 job 存在才写）回填 **349 条**。备份 `reqid_backfill_backup.csv`。
+
+### 3. 【真 bug 根治+回填】参考图在后台显示成破图（`asset://` 未解析）
+- **真因**：对话流为省流量用已上传/库内资产当参考时，客户端发的是内部代号 `asset://<bytePlusAssetId>`（存在 `UserAssetState.bytePlusAssetId`），`createImageJob/createVideoJob` 把它**原样存进 job.referenceImages**，从没解析成真实 url → `<img src="asset://...">` 破图、名字也反查不到。
+- **前向修法**（`generation-jobs.ts`）：新增唯一 `resolveReferenceUrls(userId,urls)`：`asset://<id>`→`UserAssetState.bytePlusAssetId join MediaAsset.url` 真实地址（真实 url/data:/http 原样）。`createImageJob`（图）+`createVideoJob`（图/视频/音频）建任务时先解析再存，并用解析后的 url 算 `referenceNames`。
+- **回填**：**256 条** job 的 referenceImages/Videos/Audios 里 `asset://` 解析回真实 url、并合并补齐 referenceNames（保留原有名字如音频名）。备份 `asset_refs_backup.csv`。
+
+### 4. 【真 bug 根治+回填】生成视频后台没有尺寸
+- **真因**：`media-save-queue.ts` 里 `dimensions = job.type==='image' ? getLocalImageDimensions : undefined`——**视频从来没量过宽高**。
+- **前向修法**：新增 `getLocalVideoDimensions(publicUrl)`（`video-poster.ts`，用 ffmpeg `-i` 解析 stderr 的 `Stream #..Video: ..,WxH`，无需 ffprobe），media-save 保存视频时取真实宽高写库。**⚠️ 坑：一开始想用封面帧尺寸偷懒，但封面被 `scale=640:640` 降采样过，量出来是错的（640×360 而非 1280×720），必须读原视频。**
+- **回填**：238 条有本地文件的老视频用 ffmpeg 量真实宽高补 `width/height`（脚本 `dims2.mjs` 在 app 容器 `-w /app` 跑）。目前 1531/1746 视频有尺寸；剩 215 条是 6 月老远程视频、文件已丢无法恢复。
+
+### 5. 【回填】提示词里混入参考图 hint（`参考图顺序：...`）
+- **真因**：07-14「存干净 prompt」修复**之前**生成的图/视频，`sourcePrompt` 里带了内部 hint（`参考图顺序：参考图1。生成时必须保留…`）。前向已修（`extra.cleanPrompt`）。
+- **回填**：`regexp_replace(sourcePrompt,'\s*参考图顺序.*','','s')` 剥掉 hint（marker 固定、拼在用户输入末尾），恢复真实用户输入，**190 条**（162 图+28 视频）。备份 `hint_backfill_backup.csv`。按 07-14 澄清，hint 不属冻结用户数据，剥离合规。
+
+### 6. 【读根治】@文件名不蓝：后缀不一致
+- **真因**：提示词 @提及常省后缀（`@D68_S01P2`、`@阳台`），而参考名带后缀（`D68_S01P2.jpg`、`阳台.jpg`），`AdminPromptWithMentions` 精确匹配失败→不蓝（缩略图靠 url 仍在）。
+- **改法**：每个名字额外生成一个「去后缀变体」（`\.[a-zA-Z0-9]{1,5}$`）一起参与匹配。`@图片1` 这种位置占位不是真实资产名，仍是黑字（正常）。
+
+### 7. 【读根治+回填】从资产库导入的资产「使用提示词」不显示缩略图
+- **真因**：`addNodeFromPrompt` 只按 `workflowId+节点id` 查 `/api/workflow-generation-references`，而导入的资产是对话流/别处生成的、本工作流节点没有对应 job → 参考素材空（prompt/@蓝来自节点自带 data）。
+- **改法**（统一）：新增 `getGenerationJobByMediaUrl(userId,mediaUrl)`（媒体 url→`MediaAsset.requestId`→job，兼容裸 requestId 前缀兜底）；`/api/workflow-generation-references` 收 `mediaUrl`，按节点查不到就按媒体 url 回溯原始 job；客户端 `addNodeFromPrompt` 把节点 `images[0]/videoUrl/audioUrl` 作为 mediaUrl 传入。参考素材/干净 prompt 仍复用 `buildJobReferenceItems`。
+- **图片也读统一（回填）**：对话流生成图经 `messageId→message.requestId + 图片在 messageJson.images[] 里的位置`→`<req>:image:<正确序号>`（且 job 存在才写）回填 **291 条**（用精确序号而非统一 `:image:0`，避免后台积分按 requestId 查错张）。剩约 1500 条是 job 化前老图、无 GenerationJob、无参考数据可恢复。备份 `img_reqid_backup.csv`。
+
+### 前向保证（下一个 AI 记住：新生成天然带全，别再当 bug 查历史）
+- 新图/新视频：finalize 权威写 `MediaAsset.requestId`（create+update 都写）+ `sourcePrompt=cleanPrompt`（干净无 hint）+ 参数 + 视频尺寸；job 建任务时 `referenceImages` 已把 `asset://` 解析成真实 url、`referenceNames` 齐全、`extra.cleanPrompt` 存干净输入（对话流生图同时传 `prompt=带hint`/`sourcePrompt=干净`）。
+- 因此：工作流「使用提示词」（本工作流节点走 workflowNodeId、导入资产走 mediaUrl）+ 后台弹窗（requestId 多口径）都能带回参考缩略图/@蓝字/干净提示词/尺寸。
+- 合理边界（非 bug）：`@图片1` 等位置占位不蓝；纯临时未入库引用可能无名不蓝；6 月老远程媒体文件已丢无法补尺寸/参考。
+
+### 改动文件（本 session，均已部署腾讯）
+新增 `src/lib/video-poster.ts` 的 `getLocalVideoDimensions`（同文件）；改 `src/lib/generation-jobs.ts`（buildJobReferenceItems / resolveReferenceUrls / getGenerationJobByMediaUrl / createImageJob / createVideoJob）、`src/lib/media-save-queue.ts`（视频尺寸）、`src/app/api/workflow-generation-references/route.ts`（mediaUrl 回溯 + 复用 helper）、`src/components/workflow-tldraw-canvas-inner.tsx`（addNodeFromPrompt 传 mediaUrl）、`src/app/admin/api/records/user-detail/route.ts`（多口径匹配 + 复用 helper + select 补字段）、`src/app/admin/admin-users-panel.tsx`（AdminMediaItem 补字段 + @后缀容错）。**这批 + 07-14 统一根治大 session 那批一起 push GitHub。**
+
+## 2026-07-14 (统一根治大 session) Agent/通用模型路由统一 + 使用提示词存干净prompt + 后台弹窗参考素材/@蓝字 + 资产库去强制规则 + 视频本地存盘不限时根治 + 多批历史回填（✅ 全部已部署腾讯；**代码未 push GitHub，用户测完一起推**；无 Prisma 迁移）
+
+Reply style 简洁直接中文。本 session 一连串排查+统一根治，全部 tsc 过、部署腾讯（scp 源码→`docker compose up -d --build flashmuse-app`→同步 `.next/static` 到阿里→域名 200）。SSH：`ssh -i "C:\Users\ASUS\AppData\Local\Temp\opencode\CinematicFlow.pem" ubuntu@119.28.116.16`。**核心方针（已升为铁律，写进 `AGENTS.md` 顶部 + `04-product-rules.md`）：能统一的一律统一，禁止同一逻辑复制多份各走各的；一处能用其它处都该能用。**
+
+### 1. 【真 bug 根治】Agent/通用模式用新模型生图/生视频报"网络连接异常(b76)"——模型→端点路由被复制三份跑偏
+- **现象**：通用模式选 Seedream 5.0 Pro（或 5.0 Lite）生图、Agent/通用用 Seedance 2.0 Mini 生视频 → 前端红字"(B_76) 网络连接异常"。对话流/工作流/资产库都正常，唯独通用/Agent 不行。
+- **真因链（跟网络无关，误映射害惨排查）**：`getBytePlusProviderKey`（模型 id+creditSource→BytePlus 端点配置键）被**复制成 3 份**（`image/route.ts`、`video/route.ts`、`generation-jobs.ts`），各改各的。7-13 加 Pro/Mini 时只给 conversation-image/asset-image/video 前缀配了端点，**agent-image./agent-video. 前缀漏配**；且真正在跑的异步 worker(`generation-jobs.ts`)那份用 `${prefix}` 拼出 `agent-image.seedream-5-0-pro`（配置表里没有）→ 端点解析成 undefined → 当成"非 BytePlus 模型"→ 把内部 id 原样发给 OpenRouter → **400 "not a valid model ID"** → 代码降级调 curl 兜底 → **容器没装 curl → `spawn curl ENOENT`** → "spawn curl ENOENT" 含 "curl" 命中网络错误正则 → 抛"网络连接异常"，把真实 400 完全盖住。
+- **统一修法**：① 新建唯一权威实现 `src/lib/byteplus-provider-key.ts`（图片+视频合一，纯前缀拼接），`image/route`/`video/route`/`generation-jobs` 三处删本地副本、全 import 它。② `system-settings.ts` 两张表**对称补齐** `agent-image.seedream-5-0`、`agent-image.seedream-5-0-pro`、`agent-video.seedance-2-0-mini`（端点同 conversation、偏好 byteplus）。③ Dockerfile `apt-get install curl`。④ `openrouter.ts` curl 兜底 catch 里排除 `ENOENT|spawn curl`，不再误映射成网络错误（让真实上游错误透出）。
+
+### 2. 工作流"使用提示词"回填**用户真实干净 prompt**（输入框+连线文本节点，不含参考图 hint）
+- **背景**：上一 session 把工作流"使用提示词"改成读后端 GenerationJob 拿参考素材，但 prompt 仍只读画布节点自带 `data.prompt`（只有输入框、无连线文本节点内容）；且图片 job 存的 `job.prompt` 带 hint。
+- **查明**：文本节点内容其实**写进了库**（生成时 `runImageNode` 把 ownPrompt+连线文本 join 成 prompt→modelPrompt 存 job.prompt），只是**读那端没用**、且带 hint。统一字段是 `job.extraJson.cleanPrompt`（视频早有、图片没存）。
+- **修法**：① `image/route.ts` 接收 `sourcePrompt`→存 `extra.cleanPrompt`（对话流本就传 sourcePrompt，之前被路由丢弃）。② 工作流图片提交传 `sourcePrompt: input.prompt`（干净合并、无 hint）。③ `finalizeImageJobAsset` 本就优先用 `extra.cleanPrompt` 写 `MediaAsset.sourcePrompt`→后台显示也变干净。④ `workflow-generation-references` 返回 `extra.cleanPrompt`（老 job 无则返回 undefined、前端回退画布 prompt、不回归）。⑤ `addNodeFromPrompt` 用返回的干净 prompt 回填输入框（@变蓝靠一并返回的参考素材名字）。
+
+### 3. 后台用户管理媒体弹窗：参考素材缩略图 + @文件名蓝字
+- 弹窗左侧"文件名/参数"排的**上方**显示该次生成实际用的**参考图/视频/音频缩略图**（76×76 等大，视频显封面、音频显音符图标），**点击新窗口开原文件**；提示词里的 `@文件名` 蓝色渲染。
+- 后端 `user-detail/route.ts` 新增 `attachGenerationReferences`：按 `requestId` 关联 `GenerationJob` 的 referenceImages/Videos/Audios + referenceNames，挂到 `AdminMediaItem.references`。前端 `admin-users-panel.tsx` 加 `AdminPromptWithMentions` + 缩略图区。只对有 GenerationJob 的媒体显示（老媒体没 job 就不显示，正常）。
+
+### 4. 【真 bug 根治+回填】资产库生图把"内部强制规则"存进了提示词
+- **根因（写的问题）**：`chat-workbench.tsx generateCharacterImage` 里 `prompt = [ruleText(内部强制规则) + referenceHint + "用户角色提示词："+styledPrompt].join`，这个带规则的整体被存进 sourcePrompt（服务端异步 `/api/image` 没传 sourcePrompt→用了带规则的 prompt；客户端 POST 早就传的是干净 rawPrompt，但服务端那条常抢先建库）。
+- **修法**：异步 `/api/image` 也传 `sourcePrompt: rawPrompt`（纯用户输入）。内部规则只发给模型、不落库。角色/场景/分镜共用一函数一并覆盖。
+- **回填**：历史 34 条（`sourcePrompt` 含"内部强制规则…用户X提示词："）截取"用户X提示词："后的用户输入写回。备份 `app-backups/20260714-assetprompt-backfill/`。剩 0 条带规则。
+
+### 5. 【真 bug 根治+回填】部分生成视频/图后台参数(model/比例/分辨率/时长)显示空
+- **根因（写的问题，非网络/非漏下载）**：`runVideoJob` 视频完成后只 `waitForMediaSaveJob(…, 60_000)` **等本地存盘 60 秒**；跨境慢超 60s → `deliveredUrl = 本地url ?? 远程url` **退回成远程 volces 地址** → `finalizeVideoJobAsset(远程url)` → `resolvePersistableMediaAssetUrl` 对"没存好的远程 url"返回 undefined → **finalize 一个参数都没写就 return**。视频其实**后来被存盘队列下载到本地了**（文件在），但 finalize 不重跑 → 参数永远没进库；只剩兜底路径(`workspace-sessions.ts syncWorkspaceMessageMediaAssets`)按会话 JSON 建的空参数行，且 finalize 是 create-only→锁死补不上。
+- **修法（用户要求：不设时限，只要有远程 url 就一定下载到本地为止）**：① `runVideoJob` 本地没存好就 `scheduleJobRetry` **保持 running 重排队稍后再 finalize**（媒体存盘队列自己会一直重试下载到成功或远程 24h 过期），**只用本地 url 落库**；远程过期才判失败。② `finalizeVideoJobAsset`/`finalizeImageJobAsset` 的 upsert `update` 改为**权威补写生成参数**（model/比例/分辨率/时长/尺寸/settings/requestId），防兜底抢先建空行后锁死；**不碰 name/sourcePrompt/归类等用户冻结字段**。
+- **回填**：备份 189 条空参数生成媒体到 `app-backups/20260714-mediaparam-backfill/`；从 `WorkspaceMessage.generationMeta`（按会话+messageId / url-key）回填 97 条 + 按 `GenerationJob.reservedNames` 唯一匹配再补 2 条 = **共 99 条**。剩 90 条（44 会话图+8 视频+38 资产图）**无任何权威来源，按"不猜"保留空**。
+
+### 6. ⚠️ 重要现状记录（**以后 AI 看到"缺数据"别当 bug 重查**）
+- **"出生即冻结"的准确范围（用户澄清）**：冻结的是**用户提示词（工作流含连线文本节点）、上传的参考图/视频/音频、名字、参数**这些；**不包括内部强制规则/参考图 hint**（这些本就不该进库）。生成**参数**属"系统该正确写入的生成事实"，允许权威 finalize 补写空值（不算篡改用户创作）。
+- **老远程 url 媒体（已丢、无法恢复、非 bug）**：线上 `MediaAsset` 里有 **243 个生成视频 + 378 张生成图 url 仍是远程 volces 地址**，**全部集中在 2026-06-19~21（视频/图片 job 化 7-7/7-8 之前）**。那批远程地址是 24h 签名、两周前已过期，媒体本体已丢失、**无法重新下载**；`.runtime/media-save-jobs.json` 只保留近几天记录（老映射已清）。**这是历史遗留、不是当前 bug，不需要重新排查。** 7 月以后及当前的视频/图都正常下载到本地（前向修复已保证）。
+- **90 条空参数生成媒体（保留空、非 bug）**：无 GenerationJob、消息 JSON 也查不到，多为 job 化前老数据/纯客户端建的资产图，无权威来源，按"不猜"保留。
+- **"同名不同代"提醒**：`systemName`（如 `video_51_d1`）会被**不同批次的不同媒体重复占用**（不是唯一键，unique 的是 `userId+normalizedUrl`）。排查/回填**不要只按 systemName 认定是同一个东西**。
+
+
 ## 2026-07-14 (later session) 工作流"使用提示词"带图/@变蓝根治：改读后端权威 GenerationJob（名字进库）+ 画布去 generationUploads 冗余 + 等待卡计时平滑 + 回填 830 条历史 job 名字（✅ 全部已部署腾讯；本次代码本地未 commit→本 session 末尾一起 push GitHub）
 
 Reply style: 简洁直接中文。用户报线上工作流_02 最新视频 `video_5_w2`（后来又复现 `video_6_w2`，同提示词）右键"使用提示词"**只带回文字、没有图、@ 不是蓝色**。彻查后根治并部署腾讯 + 回填历史。SSH：`ssh -i "C:\Users\ASUS\AppData\Local\Temp\opencode\CinematicFlow.pem" ubuntu@119.28.116.16`（腾讯 docker `entrypoint` 会在容器启动时自动 `prisma migrate deploy`，所以有迁移也只需 scp 源码进 `/opt/flashmuse/app` 再 `docker compose up -d --build flashmuse-app`）。

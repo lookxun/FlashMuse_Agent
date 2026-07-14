@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { chargeCredits } from "@/lib/credits";
 import { generateOpenRouterImage } from "@/lib/openrouter";
 import { createCodedApiError } from "@/lib/error-code";
+import { getBytePlusProviderKey } from "@/lib/byteplus-provider-key";
 import { GENERIC_MEDIA_ERROR_MESSAGE } from "@/lib/error-message";
 import { getBytePlusVideoPricePerMillionUsd, getExpectedImageDimensions } from "@/lib/models";
 import { recordGenerationEvent } from "@/lib/analytics-events";
@@ -182,6 +183,28 @@ export type CreateVideoJobInput = {
 };
 
 /**
+ * 把参考素材里的 `asset://<bytePlusAssetId>`（对话流为省流量对已上传/库内资产的引用）解析回真实可显示 url。
+ * 真实 url / data: / http 原样返回；解析不到的 asset:// 也原样保留。统一在建 job 时解析，保证 referenceImages
+ * 存的是可显示 url（否则后台弹窗/使用提示词只能显示成破图），并让 resolveReferenceNames 能反查到名字。
+ */
+async function resolveReferenceUrls(userId: string, urls: string[]): Promise<string[]> {
+  const assetIds = Array.from(new Set(urls.filter((url) => typeof url === "string" && url.startsWith("asset://")).map((url) => url.slice("asset://".length)).filter(Boolean)));
+  if (assetIds.length === 0) return urls;
+  const urlByAssetId = new Map<string, string>();
+  try {
+    const rows = await prisma.$queryRaw<Array<{ bytePlusAssetId: string; url: string }>>`
+      SELECT uas."bytePlusAssetId", ma."url"
+      FROM "UserAssetState" uas JOIN "MediaAsset" ma ON ma."id" = uas."mediaAssetId"
+      WHERE uas."userId" = ${userId} AND uas."bytePlusAssetId" IN (${Prisma.join(assetIds)})
+    `;
+    for (const row of rows) if (row.bytePlusAssetId && row.url) urlByAssetId.set(row.bytePlusAssetId, row.url);
+  } catch (error) {
+    console.warn("[generation-jobs] resolveReferenceUrls failed", { error: error instanceof Error ? error.message : String(error) });
+  }
+  return urls.map((url) => (typeof url === "string" && url.startsWith("asset://") ? (urlByAssetId.get(url.slice("asset://".length)) ?? url) : url));
+}
+
+/**
  * Resolve display names for reference URLs from the authoritative asset tables, keyed by url.
  * Name = 改名(UserAssetState.currentName) || 终身ID(MediaAsset.initialName) || systemName. Matched on both
  * `url` and `normalizedUrl`. Stored on the job at creation so "使用提示词" needs no per-click lookup and the
@@ -219,7 +242,8 @@ export async function createImageJob(input: CreateImageJobInput): Promise<Genera
   const provider = input.model?.startsWith("byteplus:") ? "byteplus" : "openrouter";
   const count = Math.min(4, Math.max(1, Math.floor(input.count ?? 1)));
   const extra = { ...(input.extra ?? {}), ...(input.candidateMode ? { candidateMode: input.candidateMode } : {}), ...(input.conversationCode ? { conversationCode: input.conversationCode } : {}) };
-  const referenceNames = await resolveReferenceNames(input.userId, input.referenceImages ?? []);
+  const referenceImages = await resolveReferenceUrls(input.userId, input.referenceImages ?? []);
+  const referenceNames = await resolveReferenceNames(input.userId, referenceImages);
   await prisma.$transaction(async (tx) => {
     const reservedNames = await reserveJobNames(tx, { userId: input.userId, kind: "image", count, flow: input.flow, workflowId: input.workflowId, conversationId: input.conversationId, conversationCode: input.conversationCode, creditSource: input.creditSource });
     await tx.$executeRaw`
@@ -230,7 +254,7 @@ export async function createImageJob(input: CreateImageJobInput): Promise<Genera
       "createdAt", "updatedAt"
     ) VALUES (
       ${id}, ${input.userId}, ${input.requestId}, 'image', 'queued', ${input.flow ?? null}, ${input.creditSource ?? null}, ${input.model ?? null}, ${provider},
-      ${input.prompt}, ${jsonParam(input.settings)}::jsonb, ${jsonParam(input.referenceImages ?? [])}::jsonb, ${jsonParam(referenceNames)}::jsonb, ${input.conversationId ?? null}, ${input.conversationTitle ?? null},
+      ${input.prompt}, ${jsonParam(input.settings)}::jsonb, ${jsonParam(referenceImages)}::jsonb, ${jsonParam(referenceNames)}::jsonb, ${input.conversationId ?? null}, ${input.conversationTitle ?? null},
        ${input.messageId ?? null}, ${input.workflowId ?? null}, ${input.workflowNodeId ?? null}, ${input.itemIndex ?? null}, ${count}, ${jsonParam(reservedNames)}::jsonb, ${jsonParam(input.metadata)}::jsonb, ${jsonParam(extra)}::jsonb,
       NOW(), NOW()
     )
@@ -252,7 +276,10 @@ export async function createVideoJob(input: CreateVideoJobInput): Promise<Genera
   const id = randomUUID();
   const provider = input.model?.startsWith("byteplus:video.") ? "byteplus" : "openrouter";
   const extra = { ...(input.extra ?? {}), ...(input.conversationCode ? { conversationCode: input.conversationCode } : {}) };
-  const referenceNames = await resolveReferenceNames(input.userId, [...(input.referenceImages ?? []), ...(input.referenceVideos ?? []), ...(input.referenceAudios ?? [])]);
+  const referenceImages = await resolveReferenceUrls(input.userId, input.referenceImages ?? []);
+  const referenceVideos = await resolveReferenceUrls(input.userId, input.referenceVideos ?? []);
+  const referenceAudios = await resolveReferenceUrls(input.userId, input.referenceAudios ?? []);
+  const referenceNames = await resolveReferenceNames(input.userId, [...referenceImages, ...referenceVideos, ...referenceAudios]);
   await prisma.$transaction(async (tx) => {
     const reservedNames = await reserveJobNames(tx, { userId: input.userId, kind: "video", count: 1, flow: input.flow, workflowId: input.workflowId, conversationId: input.conversationId, conversationCode: input.conversationCode, creditSource: input.creditSource });
     await tx.$executeRaw`
@@ -263,7 +290,7 @@ export async function createVideoJob(input: CreateVideoJobInput): Promise<Genera
       "usageJson", "metadataJson", "extraJson", "nextRunAt", "createdAt", "updatedAt"
     ) VALUES (
       ${id}, ${input.userId}, ${input.requestId}, 'video', 'running', ${input.flow ?? null}, ${input.creditSource ?? null}, ${input.model ?? null}, ${provider},
-      ${input.prompt}, ${jsonParam(input.settings)}::jsonb, ${jsonParam(input.referenceImages ?? [])}::jsonb, ${jsonParam(input.referenceVideos ?? [])}::jsonb, ${jsonParam(input.referenceAudios ?? [])}::jsonb, ${jsonParam(referenceNames)}::jsonb, ${input.referenceMode ?? null},
+      ${input.prompt}, ${jsonParam(input.settings)}::jsonb, ${jsonParam(referenceImages)}::jsonb, ${jsonParam(referenceVideos)}::jsonb, ${jsonParam(referenceAudios)}::jsonb, ${jsonParam(referenceNames)}::jsonb, ${input.referenceMode ?? null},
        ${input.conversationId ?? null}, ${input.conversationTitle ?? null}, ${input.messageId ?? null}, ${input.workflowId ?? null}, ${input.workflowNodeId ?? null}, ${input.itemIndex ?? null}, 1, ${jsonParam(reservedNames)}::jsonb, ${input.providerTaskId},
       ${jsonParam(input.usage)}::jsonb, ${jsonParam(input.metadata)}::jsonb, ${jsonParam(extra)}::jsonb, NOW(), NOW(), NOW()
     )
@@ -287,6 +314,18 @@ export async function getGenerationJobsByRequestIds(userId: string, requestIds: 
   return prisma.$queryRaw<GenerationJobRow[]>`SELECT * FROM "GenerationJob" WHERE "userId" = ${userId} AND "requestId" IN (${Prisma.join(ids)})`;
 }
 
+/**
+ * 唯一权威：把一条 GenerationJob 的参考素材（图/视频/音频 url + referenceNames 显示名）拍平成
+ * `{url, name, kind}[]`。前端"使用提示词"接口、后台媒体弹窗都必须复用它，禁止各写一份。
+ */
+export type GenerationReferenceItem = { url: string; name?: string; kind: "image" | "video" | "audio" };
+export function buildJobReferenceItems(job: { referenceImages?: unknown; referenceVideos?: unknown; referenceAudios?: unknown; referenceNames?: unknown }): GenerationReferenceItem[] {
+  const names = (job.referenceNames && typeof job.referenceNames === "object" && !Array.isArray(job.referenceNames)) ? job.referenceNames as Record<string, string> : {};
+  const build = (urls: unknown, kind: GenerationReferenceItem["kind"]): GenerationReferenceItem[] =>
+    (Array.isArray(urls) ? urls : []).filter((url): url is string => typeof url === "string" && Boolean(url)).map((url) => ({ url, name: names[url], kind }));
+  return [...build(job.referenceImages, "image"), ...build(job.referenceVideos, "video"), ...build(job.referenceAudios, "audio")];
+}
+
 /** 取某工作流节点最近一次成功生成的任务（供"使用提示词"还原参考素材+名字）。 */
 export async function getLatestSucceededJobForWorkflowNode(userId: string, workflowId: string, workflowNodeId: string): Promise<GenerationJobRow | undefined> {
   const rows = await prisma.$queryRaw<GenerationJobRow[]>`
@@ -296,6 +335,30 @@ export async function getLatestSucceededJobForWorkflowNode(userId: string, workf
     LIMIT 1
   `;
   return rows[0];
+}
+
+/**
+ * 按某个生成媒体的 url 找它「原始生成任务」（供从资产库导入的节点"使用提示词"还原参考素材）。
+ * 导入的资产可能是对话流/别的工作流生成的，本工作流节点没有对应 job，故改按媒体 url→MediaAsset.requestId→job 找。
+ * 兼容对话流历史裸 requestId（job 是 `<裸>:image|video:0`）：直查不到就按前缀再找一次。
+ */
+export async function getGenerationJobByMediaUrl(userId: string, mediaUrl: string): Promise<GenerationJobRow | undefined> {
+  if (!mediaUrl) return undefined;
+  const clean = mediaUrl.split("?")[0].split("#")[0].replace(/^https?:\/\/[^/]+/, "");
+  const assetRows = await prisma.$queryRaw<Array<{ requestId: string | null }>>`
+    SELECT "requestId" FROM "MediaAsset"
+    WHERE "userId" = ${userId} AND ("url" = ${mediaUrl} OR "url" = ${clean} OR "normalizedUrl" = ${clean})
+      AND "requestId" IS NOT NULL AND "requestId" <> ''
+    LIMIT 1
+  `;
+  const requestId = assetRows[0]?.requestId ?? undefined;
+  if (!requestId) return undefined;
+  const direct = await getGenerationJobByRequestId(requestId);
+  if (direct) return direct;
+  const prefixed = await prisma.$queryRaw<GenerationJobRow[]>`
+    SELECT * FROM "GenerationJob" WHERE "userId" = ${userId} AND "requestId" LIKE ${requestId + ":%"} ORDER BY "createdAt" DESC LIMIT 1
+  `;
+  return prefixed[0];
 }
 
 /** 拉取该用户所有仍在进行 + 最近完成的任务，供前端加载/重连时对齐展示。 */
@@ -314,19 +377,6 @@ export async function getActiveGenerationJobs(userId: string, sinceMs = 6 * 60 *
 
 function isAssetImageCreditSource(source: string | null | undefined) {
   return source === "character_image_generation" || source === "scene_image_generation" || source === "shot_image_generation";
-}
-
-function isAgentImageCreditSource(source: string | null | undefined) {
-  return source === "agent_image_generation";
-}
-
-function getBytePlusProviderKey(modelId: string | null | undefined, source: string | null | undefined) {
-  if (!modelId?.startsWith("byteplus:")) return undefined;
-  const prefix = isAssetImageCreditSource(source) ? "asset-image" : isAgentImageCreditSource(source) ? "agent-image" : "conversation-image";
-  if (modelId.endsWith("seedream-4-5")) return `${prefix}.seedream-4-5`;
-  if (modelId.endsWith("seedream-5-0-pro")) return `${prefix}.seedream-5-0-pro`;
-  if (modelId.endsWith("seedream-5-0")) return `${prefix}.seedream-5-0`;
-  return undefined;
 }
 
 function isSameImageDimensions(a: { width: number; height: number } | undefined, b: { width: number; height: number } | undefined) {
@@ -528,8 +578,16 @@ async function finalizeImageJobAsset(job: GenerationJobRow, images: string[], di
           workflowId: job.workflowId ?? undefined, workflowNodeId: job.workflowNodeId ?? undefined,
           requestId: job.requestId,
         }),
-        // 出生即冻结：记录已存在则完全不改内容。
-        update: {},
+        // 出生即冻结用户数据；但权威补齐生成参数（兜底路径可能抢先建了空参数行）。
+        update: {
+          model: job.model ?? undefined,
+          ratio: settings?.ratio ?? undefined,
+          resolution: settings?.resolution ?? undefined,
+          generationSettings: (settings ?? undefined) as Prisma.InputJsonValue | undefined,
+          width: dim?.width ?? undefined,
+          height: dim?.height ?? undefined,
+          requestId: job.requestId ?? undefined,
+        },
         select: { id: true },
       });
       const existingState = await tx.userAssetState.findUnique({ where: { userId_mediaAssetId: { userId: job.userId, mediaAssetId: media.id } }, select: { id: true } });
@@ -657,8 +715,20 @@ async function finalizeVideoJobAsset(job: GenerationJobRow, videoUrl: string, po
         workflowId: job.workflowId ?? undefined, workflowNodeId: job.workflowNodeId ?? undefined,
         requestId: job.requestId,
       }),
-      // 出生即冻结；仅回填晚到的视频封面。
-      update: { posterUrl: posterUrl ?? undefined, thumbnailUrl: posterUrl ?? undefined },
+      // 权威写入者补齐生成参数：兜底路径(workspace JSON)可能抢先建了空参数行，这里用 job 的
+      // 权威参数补上（生成事实，非冻结的用户数据）；不动 name/sourcePrompt/归类等用户冻结字段。
+      update: {
+        posterUrl: posterUrl ?? undefined,
+        thumbnailUrl: posterUrl ?? undefined,
+        model: job.model ?? undefined,
+        ratio: settings?.ratio ?? undefined,
+        resolution: settings?.resolution ?? undefined,
+        videoDuration: settings?.duration ?? undefined,
+        generationSettings: (settings ?? undefined) as Prisma.InputJsonValue | undefined,
+        width: dimensions?.width ?? undefined,
+        height: dimensions?.height ?? undefined,
+        requestId: job.requestId ?? undefined,
+      },
       select: { id: true },
     });
     const existingState = await tx.userAssetState.findUnique({ where: { userId_mediaAssetId: { userId: job.userId, mediaAssetId: media.id } }, select: { id: true } });
@@ -684,18 +754,29 @@ export async function runVideoJob(job: GenerationJobRow) {
     if (["succeeded", "success", "completed", "complete"].includes(status) && videoUrl) {
       const needsOpenRouterAuth = videoUrl.startsWith("https://openrouter.ai/api/v1/videos/");
       let saveJob = await enqueueRemoteAssetSave({ remoteUrl: videoUrl, type: "video", authProvider: needsOpenRouterAuth ? "openrouter" : undefined, videoTaskId: providerTaskId, requestId: job.requestId, model: job.model ?? undefined, prompt: job.prompt ?? "", userId: job.userId });
-      // Wait for the local save so the durable job stores a stable local URL (the remote provider URL
-      // expires ~24h) and the asset library actually gets the video even if the user never returns.
+      // 不设总时限：只要平台给了远程 url 就一定是成功了，必须下载存到本地再落库（跨境慢也一直等）。
+      // 本地没存好前，绝不用会过期的远程 url 落库；保持 running、稍后重试，直到本地 url 就绪。
       if (saveJob?.id && saveJob.status !== "saved") {
         const waited = await waitForMediaSaveJob(saveJob.id, 60_000);
         if (waited) saveJob = waited;
       }
-      const deliveredUrl = saveJob?.localUrl ?? videoUrl;
-      await upsertVideoManifestEntry({ taskId: providerTaskId, prompt: job.prompt ?? "", localVideoUrl: deliveredUrl, remoteVideoUrl: videoUrl, posterUrl: saveJob?.posterUrl });
+      if (!saveJob?.localUrl) {
+        if (saveJob?.status === "expired") {
+          const codedError = await createCodedApiError(new Error("视频下载保存失败（远程地址已过期）。"), GENERIC_MEDIA_ERROR_MESSAGE, "video local save expired");
+          void recordGenerationEvent({ userId: job.userId, requestId: job.requestId, kind: "video", creditSource: job.creditSource ?? undefined, model: job.model ?? undefined, provider: job.provider ?? undefined, status: "failed", failureReason: codedError.error, failureCode: codedError.errorCode });
+          await markJobFailed(job.id, codedError.error, codedError.errorCode);
+          return;
+        }
+        // 还在下载/待重试：媒体存盘队列会一直重试到成功（或远程过期）。保持 running，稍后再来 finalize。
+        await scheduleJobRetry(job.id, 15000);
+        return;
+      }
+      const deliveredUrl = saveJob.localUrl;
+      await upsertVideoManifestEntry({ taskId: providerTaskId, prompt: job.prompt ?? "", localVideoUrl: deliveredUrl, remoteVideoUrl: videoUrl, posterUrl: saveJob.posterUrl });
       const usage = withBytePlusVideoUsd(getUsageMeta(task) ?? job.usageJson ?? undefined, job.model, job.settingsJson ?? undefined, Array.isArray(job.referenceVideos) && job.referenceVideos.length > 0);
-      const credit = await chargeCredits(job.userId, "video", usage, { conversationId: job.conversationId ?? undefined, conversationTitle: job.conversationTitle ?? undefined, requestId: job.requestId, label: "视频生成", model: job.model ?? undefined, videoCount: 1, metadata: { ...(job.metadataJson ?? {}), settings: job.settingsJson, ratio: job.settingsJson?.ratio, resolution: job.settingsJson?.resolution, duration: job.settingsJson?.duration, originalPrompt: job.prompt, mediaUrls: [deliveredUrl], remoteMediaUrls: [videoUrl], posterUrl: saveJob?.posterUrl, delivered: true, savedLocal: saveJob?.status === "saved", localSaveStatus: saveJob?.status ?? "pending", mediaSaveJobId: saveJob?.id } });
-      await finalizeVideoJobAsset(job, deliveredUrl, saveJob?.posterUrl, saveJob?.dimensions);
-      await markJobSucceeded(job.id, { resultUrls: [deliveredUrl], reservedNames: job.reservedNames ?? [], posterUrl: saveJob?.posterUrl, usage: withChargedUsage(usage, credit), credit });
+      const credit = await chargeCredits(job.userId, "video", usage, { conversationId: job.conversationId ?? undefined, conversationTitle: job.conversationTitle ?? undefined, requestId: job.requestId, label: "视频生成", model: job.model ?? undefined, videoCount: 1, metadata: { ...(job.metadataJson ?? {}), settings: job.settingsJson, ratio: job.settingsJson?.ratio, resolution: job.settingsJson?.resolution, duration: job.settingsJson?.duration, originalPrompt: job.prompt, mediaUrls: [deliveredUrl], remoteMediaUrls: [videoUrl], posterUrl: saveJob.posterUrl, delivered: true, savedLocal: true, localSaveStatus: "saved", mediaSaveJobId: saveJob.id } });
+      await finalizeVideoJobAsset(job, deliveredUrl, saveJob.posterUrl, saveJob.dimensions);
+      await markJobSucceeded(job.id, { resultUrls: [deliveredUrl], reservedNames: job.reservedNames ?? [], posterUrl: saveJob.posterUrl, usage: withChargedUsage(usage, credit), credit });
       void recordGenerationEvent({ userId: job.userId, requestId: job.requestId, kind: "video", creditSource: job.creditSource ?? undefined, model: job.model ?? undefined, provider: job.provider ?? undefined, status: "success" });
       return;
     }
