@@ -1,5 +1,24 @@
 # Next Actions
 
+## ✅ 2026-07-14 END-OF-SESSION —— 先读这条
+
+**状态**：本 session 修的 3 个对话流 bug 代码全部 tsc+build 过、部署腾讯、push GitHub（`2db526b`/`e9ee160`/`04dafb0`）。**handover 文档改动=本地 commit 但用户要求暂不 push、以后一起推。** 详见 CHANGELOG / 01-current-status 顶条。
+
+**本 session 做完**：
+1. 错误码红字误映射修复（Request id 数字子串命中 HTTP 码 → 剥 Request id + 词边界）。
+2. 对话流视频双失败卡（恢复 effect 加 `runningRequestIdsRef` 守卫）。
+3. 对话流视频等待卡关浏览器重登录后消失（改按持久化 `videoPendingCount` 渲染 + `needsLiveTimer` 加 `hasRecoveringMedia`）。
+4. 对话流图片同款双卡隐患（图片恢复 effect 加同款守卫）。
+
+**下一个 AI 待办 / 注意**：
+1. **⚠️ 工作树两个别的 AI 未完成文件勿误提交/部署**：`src/components/workflow-tldraw-canvas-inner.tsx`（工作流等待卡每秒计时器 + generationUploads spread）、`src/lib/workspace-workflows.ts`（从 job references 重建 generationUploads 自愈）。这是另一个 AI 干了一半的活，用户明确"不要动"。`git status` 会看到它们 modified，**提交本 session 改动时只 add 你自己改的文件**，别 `git add -A`/`git add .`。
+2. **M018 统一单轮询器**（押后，见 06-memo-tasks）：把对话流前台轮询 while 循环砍掉、统一由数据驱动 reconcile 做唯一轮询器，根除双轮询器撞车。中等重构、要仔细测。
+3. 本次 handover 文档 commit 未推，下次推 GitHub 时一起带上。
+
+**部署流程**（腾讯，改代码必读）：scp 改动源码到 `/opt/flashmuse/app/src/...` → `cd /opt/flashmuse && nohup sudo docker compose up -d --build flashmuse-app`（后台+轮询日志防 120s 超时）→ **必须**同步 `.next/static` 到阿里镜像（否则 chunk 哈希不匹配全 404）→ 四域名 200。改源码用 edit 工具。
+
+---
+
 ## ✅ 2026-07-13 (deploy session) END-OF-SESSION —— 先读这条：三方已同步，无待部署
 
 **状态**：本 session 所有代码已部署腾讯 + push GitHub，**腾讯=GitHub=本地 三方同步于 `b94c3ea`**（+ 本次 handover 提交）。工作树干净。无 Prisma 迁移。详见 CHANGELOG / 01-current-status 顶条。

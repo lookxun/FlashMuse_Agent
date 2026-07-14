@@ -2,6 +2,8 @@
 
 Last rebuilt: 2026-06-20
 
+> **✅ 2026-07-14 最新：修对话流视频/图片 3 个 bug（新模型 Seedance 2.0 Mini 触发暴露）——① 错误码红字误映射（Request id 数字子串如 401 被 HTTP 码正则命中，显示成"API Key 无效"）② 视频双失败卡（前台+后台两轮询器都无脑 +1 计数）③ 视频等待卡关浏览器重登录后消失（渲染依赖内存 pending，改按持久化状态）。均已部署腾讯 + push GitHub（`2db526b`/`e9ee160`/`04dafb0`）。图片同款双卡隐患也一并修。四路径×两问题已核查（工作流本来无此问题）。押后 M018 统一单轮询器重构。⚠️ 工作树有两个别的 AI 未完成的工作流文件改动（`workflow-tldraw-canvas-inner.tsx`/`workspace-workflows.ts`），本 session 未碰、下个 AI 勿误提交。本次 handover 文档本地 commit 暂不推、以后一起推。详见 CHANGELOG / 01-current-status 顶条 + 06-memo-tasks M018。**
+
 > **✅ 2026-07-13（deploy session）最新：把前两批新模型改动部署上线（`7c66f85`）+ 修 3 个 bug 并部署（`b94c3ea`）+ 回填一批历史图名。腾讯=GitHub=本地 三方同步于 `b94c3ea`。** 本 session：①部署"模型开关5组+Terra + Seedream 5.0 Pro/Seedance 2.0 Mini + 校准计费/尺寸/多图 + 前端卡顿修复"；②修 Seedream 5.0 Pro 像素分档扣费（异步图拿不到实测尺寸→永远算高档，改用已知 targetDimensions 判档，1K=0.045/2K=0.09）；③修工作流节点成功/失败都不返回（恢复只在挂载/可见/聚焦触发、无周期兜底 → 加"有进行中节点就每8s重跑reconcile"）；④修统一读取的洞（工作流校准 effect 只纠正已有名、不补全空名 → 改为从库按url补全缺失名）；⑤线上DB事务回填 workflow_02（账号12424740=真实id **ID_636611**）三张7-07遗留空名图→image_2/3/4_w2；⑥后台上传规则面板补 Pro/Mini 标签。Seedance 2.0 的 4K **用户决定先不接**。详见 CHANGELOG / 01-current-status / 05-next-actions 顶条。**用户铁律不变：资产原始数据出生即冻结永不变。**
 
 > **⚠️ 2026-07-13 最新（later session）：新增 2 个 BytePlus 模型（Seedream 5.0 Pro 图片 / Seedance 2.0 Mini 视频）+ 全量按官网校准计费·尺寸·多图 + 修一个全局前端卡顿 bug。（已由上面 deploy session 部署上线）** 要点：Pro 调用名带 `dola-` 前缀、只支持 1K/2K/单图；计费 token×单价自算（图片像素分档+参考图、视频有无视频输入分档）；4.5/Lite 保留"一次出多张"、Pro/OpenRouter 走"申请N次"；Lite 补 3K；改路由后 dev 必须停 node+删 `.next` 重启。参考文档存 `E:\project\【1】Api key\Byteplus\`（api key/模型价格/tutorial）。详见 CHANGELOG / 01-current-status / 05-next-actions。

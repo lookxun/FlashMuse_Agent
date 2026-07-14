@@ -1,5 +1,44 @@
 # Current Handover Changelog
 
+## 2026-07-14 对话流视频/图片：双失败卡根治 + 等待卡关浏览器重登录后消失根治 + 错误码红字误映射(Request id 里数字子串)修复（✅ 全部已部署腾讯 + push GitHub；本次 handover 提交本地不推，等下次一起推）
+
+Reply style: 简洁直接中文。用户报线上 Seedance 2.0 Mini（7-13 新加视频模型）出错时显示异常，逐个排查修了 3 个 bug，均已部署腾讯（三个代码 commit：`2db526b` 视频双卡+错误码、`e9ee160` 视频等待卡消失、`04dafb0` 图片双卡）。**新模型本身没 bug，是这几个对话流通用 bug 被新模型稳定触发暴露的**（以前时序偶合没必现）。SSH：`ssh -i "C:\Users\ASUS\AppData\Local\Temp\opencode\CinematicFlow.pem" ubuntu@119.28.116.16`。
+
+### 0. 顺带回答用户："错误码怎么从 400 多又回到 62？"
+- 错误码计数器存服务器本地文件 `.runtime/error-code-counter.txt`（`src/lib/error-code.ts:5`），在 `.gitignore` 里、**不随 DB/媒体迁移**。7-11 主服务器马来→腾讯时腾讯 `.runtime` 是全新空卷，计数器从 `B_1` 重来，现在爬到 60 多。马来那台 400 多号随旧服务器废弃。设计上"换机器从 B_1 重来可接受"，非 bug。
+
+### 1. 【真 bug 已修】错误码红字误映射：Request id 里的数字子串命中 HTTP 状态码判定（`error-message.ts`，commit `2db526b`）
+- 现象：B_62（实为 `output audio may contain sensitive information` 音频审核）、B_66（实为 `output video may be related to copyright` 版权风控）红字都显示成 **"API Key 无效或已过期"**。
+- **根因**：BytePlus 报错串带 `Request id: 02178`**`401`**`06...`，而 `toUserErrorMessage` 里 `/401/`（还有 413/403/429/500）会匹配字符串**任意位置**的数字子串 → Request id 里的 `401` 抢先命中 401 分支 → 误显示 API Key。
+- **修法**：匹配前先 `.replace(/\bRequest\s*id\s*:\s*[0-9a-f]+/gi," ")` 剥掉 Request id 尾巴；HTTP 状态码全部改词边界 `\b401\b`/`\b403\b`/`\b413\b`/`\b429\b`/`\b500\b`（长数字串里的子串不再命中）。修后 B_62→音频审核文案、B_66→版权/敏感文案。
+
+### 2. 【真 bug 已修】对话流视频出现两个失败卡（`chat-workbench.tsx`，commit `2db526b`）
+- 现象：单条视频（1 槽位）失败后显示**两个**"视频生成失败"卡。
+- **根因**：对话流视频有**两个并行轮询器**——前台 `createAndPollVideo`（失败 throw→`:12296` 调 `markAssistantVideoFailure`）+ 后台恢复 effect（`:11717`，只要 `pendingVideoCount>0` 就也轮询，失败→`:11747` 也调 `markAssistantVideoFailure`）。`markAssistantVideoFailure`（`:11251`）无脑 `failedVideoCount + 1`，两器撞在同一 3s 窗口 → 计数变 2 → 两卡。
+- **修法**：恢复 effect 的 jobsToCheck 过滤加 `if (runningRequestIdsRef.current.has(message.requestId)) return [];`——前台还在跑就让路，恢复 effect 只兜底孤儿 job（关浏览器/刷新后前台没了才接管）。
+
+### 3. 【真 bug 已修】对话流视频等待卡：关浏览器→重登录后整个消失（`chat-workbench.tsx`，commit `e9ee160`）
+- 现象：生成视频→关浏览器退出→重登录→视频等待卡不见了（数据没丢，但卡不渲染）。
+- **根因**：等待卡渲染（`:15286`/`:15293`）依赖 `isActiveVideoPending`，而它（`:15134`）要求存在**内存里的** `activeMessagePendingRequest`。重登录后 `activePendingRequests` 是空的 → false → 即使 `pendingVideoCount>0`（已持久化、后台恢复 effect 也在轮询）也不渲染。（对话流图片没这问题：它按持久化 `imagePendingCount`/`imageResultSlots` 渲染。）
+- **修法**：新增 `isVideoPendingVisible = message.mode==="video" && videoPendingCount>0 && !message.error`，等待卡改按它渲染（持久化状态，不依赖内存 pending）；`needsLiveTimer` 加 `hasRecoveringMedia`（`pendingVideoCount/pendingImageCount/retrying*` 任一 >0），让恢复中的媒体保持 1 秒计时器、等待卡进度/已等待时间正常走（这条也顺带覆盖了对话流图片恢复的计时）。
+
+### 4. 【真 bug 已修】对话流图片同样的双失败卡隐患（`chat-workbench.tsx`，commit `04dafb0`）
+- 用户追问"图片会不会也出两个失败卡"→ 核查：`markAssistantImageFailure`（`:11111`）也无脑 `failedImageCount + 1`；图片前台轮询（`pollConversationImageJob`失败→`:12107`标记）+ 后台恢复 effect（`:11691`标记）同样两器并行。单图常被 `requestedCount` 的 slot 上限盖住不一定露两卡，但 `failedImageCount` 会被冲成 2、红字页码变 1/2，多图更易露两卡。
+- **修法**：图片恢复 effect（`:11653`）加**同款守卫** `if (runningRequestIdsRef.current.has(message.requestId)) return [];`。
+
+### 5. 四种生成路径×两类问题 核查结论（用户要求"图片、工作流都要保证"）
+- **双失败卡**：对话流视频✅修、对话流图片✅修；工作流图片/视频**无此问题**（节点失败是单个 `node.data.error` 字段、一节点一卡、覆盖不叠加）。
+- **等待卡重登录消失**：对话流视频✅修；对话流图片本来就没事（持久化 `imagePendingCount`/slots 渲染）；工作流图片(`ImageDisplayCard:4818`)/视频(`VideoDisplayCard:4860`)本来就没事（按持久化 `node.data.isRunning` 渲染，`workspace-workflows.ts:198` 只在节点已拿到媒体才删 isRunning、仍在跑的保留）。
+
+### 6. 记录押后任务 M018（统一单轮询器）
+- 用户决定：双轮询器双卡是历史分层遗留，当前守卫是低风险即时修复；**以后做"统一由数据驱动 reconcile 单轮询器"的重构**。详见 06-memo-tasks M018（含背景、要搬的 4 项前台职责、回归清单）。
+
+### 7. 部署与三方状态
+- 三个代码 commit（`2db526b`/`e9ee160`/`04dafb0`）**每个都 tsc+build 过、push GitHub、部署腾讯**（scp chat-workbench.tsx/error-message.ts → `docker compose up -d --build flashmuse-app` → 同步 `.next/static` 到阿里 → main/ali/api 200、worker started）。备份 `app-backups/20260714-video-doublecard-errcode`、`20260714-video-waitingcard`、`20260714-image-doublecard`。无 Prisma 迁移。
+- **本次 handover 文档提交：用户要求本地 commit 但暂不 push GitHub，以后一起推。** 代码本身已在 GitHub（三个 commit）。
+- ⚠️ **工作树里另有两个别的 AI 未完成的改动**（`workflow-tldraw-canvas-inner.tsx` 工作流等待卡每秒计时器+generationUploads spread、`workspace-workflows.ts` 从 job references 重建 generationUploads 自愈）——**本 session 全程未碰、未提交、未部署**（用户明确"那是另一个 AI 干了一半的活，不要动"）。下个 AI 也别误提交这两个文件。
+
+
 ## 2026-07-13 (deploy session) 两批新模型部署上线 + Pro 像素分档扣费修复 + 工作流卡死/空名根治 + workflow_02 历史图名回填（✅ 全部已部署腾讯 + commit+push GitHub，三方同步）
 
 Reply style: 简洁直接中文。本 session 承接前两批"仅本地未部署"的模型改动，**先把那两批一起部署上线**（commit `7c66f85`：模型开关5组化+GPT-5.6 Terra + Seedream 5.0 Pro/Seedance 2.0 Mini + 全量校准计费/尺寸/多图 + 前端定时器卡顿修复），随后按用户逐个反馈修了若干 bug，最后又部署一批（commit `b94c3ea`）。**现在腾讯=GitHub=本地 三方同步于 `b94c3ea`（+ 本次 handover 提交）。用户铁律不变：资产原始数据出生即冻结永不变。**
