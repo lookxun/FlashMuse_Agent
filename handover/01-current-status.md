@@ -1,6 +1,17 @@
 # Current Status
 
-Last checked: 2026-07-13 China time.
+Last checked: 2026-07-14 China time.
+
+## 2026-07-14 对话流视频/图片 3 个 bug 根治（✅ 代码已部署腾讯 + push GitHub；handover 文档本地 commit 暂不推）
+
+用户报线上 Seedance 2.0 Mini（7-13 新视频模型）出错显示异常，排查发现是**对话流通用 bug**被新模型稳定触发（模型本身无 bug）。详见 CHANGELOG 顶条。三个代码 commit 全部 tsc+build 过、部署腾讯、push GitHub：
+- **`2db526b`**：① 错误码红字误映射修复——BytePlus `Request id` 里的数字子串（如 `...78401...` 含 `401`）被 `error-message.ts` 的 `/401/` 等命中 → 剥掉 Request id 尾巴 + HTTP 码全加词边界 `\b`。② 对话流视频**两个失败卡**修复——前台轮询器 + 后台恢复 effect 都对同一 job 调无脑 `+1` 的 `markAssistantVideoFailure` → 恢复 effect 加守卫 `runningRequestIdsRef.has(requestId)` 跳过前台仍在跑的请求。
+- **`e9ee160`**：对话流视频**等待卡关浏览器重登录后消失**修复——渲染依赖内存 `isActiveVideoPending`（需内存 pending request）→ 改按持久化 `videoPendingCount` 渲染（`isVideoPendingVisible`）；`needsLiveTimer` 加 `hasRecoveringMedia` 保持恢复中媒体的 1 秒计时器。
+- **`04dafb0`**：对话流**图片同款双失败卡隐患**修复——图片恢复 effect 加同款 `runningRequestIdsRef` 守卫。
+- **四路径核查**：双失败卡=对话流图/视频修、工作流无此问题（节点单 error 字段）；等待卡重登录消失=对话流视频修、对话流图片本来没事、工作流图/视频本来没事（按持久化 `node.data.isRunning` 渲染）。
+- **押后**：M018 统一单轮询器重构（当前守卫是低风险即时修，双轮询器合一以后做）。
+- ⚠️ **工作树有两个别的 AI 未完成改动**（`workflow-tldraw-canvas-inner.tsx`、`workspace-workflows.ts`）——本 session 未碰/未提交/未部署，下个 AI 勿误提交。
+- **错误码回到 60 多的原因**：计数器 `.runtime/error-code-counter.txt` 不随迁移搬，腾讯新卷从 B_1 重来，非 bug。
 
 ## 2026-07-13 (deploy session) 部署两批新模型 + 修 Pro 扣费/工作流卡死/统一读取空名 + 回填 workflow_02 历史图名（✅ 全部已部署腾讯 + push GitHub，三方同步 `b94c3ea`）
 

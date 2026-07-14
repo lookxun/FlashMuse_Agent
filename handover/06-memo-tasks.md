@@ -152,3 +152,17 @@ What to do later: design a workflow like song generation or upload -> Agent spli
 Temporary reason: first version is now local-only and should be tested online/local in workflow mode before expanding. The first version records successful GPT-5.4 Image 2 safety rewrite cases but does not yet analyze them automatically.
 
 What to do later: after enough successful cases accumulate, add automatic success-case analysis, store a rolling analysis report, feed that report into future rewrite prompts, add success/cost/latency statistics, and consider copying the feature from workflow image nodes to conversation-flow image generation. See `handover/08-gpt-image-prompt-optimization.md`.
+
+### [ ] M018 对话流生成统一单轮询器（2026-07-14 与用户讨论，押后）
+
+临时不做原因：现在是**低风险即时修复**（给后台恢复 effect 加守卫、前台在跑时让路）已上线解决双失败卡；统一单轮询器是中等重构、要仔细测，用户决定以后再做。
+
+**背景（务必看懂再动手）**：对话流图片/视频当前有**两个并行轮询器**，是历史分层长出来的：
+1. **前台轮询器**（`chat-workbench.tsx` 的 `createAndPollVideo` / `pollConversationImageJob`，由 `runGeneration` 驱动）：用户当场生成时跑，负责即时状态文字、BytePlus 真人审核往返（reviewing→重试）、审核提示消息、用户点"停止"的 abort。缺点=内存里的 JS 循环，浏览器一关/刷新就死，后端 job 还在跑但 UI 不更新。
+2. **后台恢复 effect**（durable reconcile，`chat-workbench.tsx:11650`(image)/`11717`(video)）：数据驱动，从持久化的 `pendingImageCount`/`pendingVideoCount` 出发，挂载/标签页可见时对齐后端 job 状态。这是"关浏览器再回来能恢复"的功臣。
+
+**问题根源**：标签页开着、前台正轮询时，两个轮询器**同时轮询同一个 job**；它俩都调 `markAssistantImageFailure`/`markAssistantVideoFailure`（都无脑 `failedXxxCount + 1`），撞在同一个 3s 窗口就双重计数 → **两个失败卡**。
+
+**当前修复（2026-07-14 已上线，见 CHANGELOG）**：恢复 effect 的 jobsToCheck 过滤里加 `if (runningRequestIdsRef.current.has(message.requestId)) return [];`，前台还活着（requestId 在 `runningRequestIdsRef`）就让路，只在孤儿 job（前台没了）才接管。视频 + 图片两处都加了。
+
+**以后统一单轮询器要做的**：既然图片/视频都已 **job 化**（后端 worker 负责真正生成/挑图/扣费/写库），前台轮询其实只是"读状态"。可以砍掉前台 while 循环，**统一由数据驱动的 reconcile 做唯一轮询器**（单一真相来源、彻底无撞车可能）。代价=要把前台那些额外职责搬进 reconcile：① BytePlus 真人审核往返（reviewing→autoBytePlusAssetReview 重试）② 即时状态文字（排队中/渲染中）③ 停止 abort ④ 压缩重试（`createImageWithRetry` 的参考图过大压缩）。搬完后前台 submit 只建 job，其余全靠 reconcile。务必回归测：正常生成、失败单卡、审核往返、停止、关浏览器恢复、多图并发命名不撞。工作流不涉及（节点失败是单个 `error` 字段、一节点一卡，天然无双卡问题）。
