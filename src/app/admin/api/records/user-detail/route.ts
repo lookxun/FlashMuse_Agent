@@ -3,7 +3,9 @@ import { isAdminEmail } from "@/lib/admin";
 import { getCurrentAdminEmail } from "@/lib/admin-auth";
 import { getCreditSettings } from "@/lib/credits";
 import { bytePlusImageGenerationModels, bytePlusVideoGenerationModels, imageGenerationModels, videoGenerationModels } from "@/lib/models";
+import { buildJobReferenceItems } from "@/lib/generation-jobs";
 import { prisma } from "@/lib/prisma";
+import { Prisma } from "@prisma/client";
 import type { AdminCreditCategoryDetail, AdminCreditConversationDetail, AdminCreditFlowItem, AdminCreditUser } from "../../../admin-credits-panel";
 import type { AdminConversation, AdminConversationMessage, AdminMediaItem, AdminUserRow } from "../../../admin-users-panel";
 
@@ -273,6 +275,9 @@ function getMediaAssetItems(assetStates: any[], scope: "conversation" | "asset" 
       id: getString(media.id, `media-asset-${index}`),
       requestId: getString(media.requestId),
       conversationId: getString(media.conversationId),
+      messageId: getString(media.messageId),
+      workflowId: getString(media.workflowId),
+      workflowNodeId: getString(media.workflowNodeId),
       type,
       assetType: isAssetCategory ? category as "character_image" | "scene_image" | "shot_image" : undefined,
       isDeleted: Boolean(deletedAt),
@@ -294,6 +299,64 @@ function getMediaAssetItems(assetStates: any[], scope: "conversation" | "asset" 
       createdAtTs: media.firstSeenAt instanceof Date ? media.firstSeenAt.getTime() : media.createdAt instanceof Date ? media.createdAt.getTime() : 0,
     }];
   });
+}
+
+// 给生成媒体挂上该次生成实际用到的参考素材（上传/连线的图片/视频/音频 + 名字），
+// 数据来自权威 GenerationJob。按三条口径依次匹配，兼容历史 MediaAsset.requestId 缺失/不一致：
+//   ① 精确 requestId ② 工作流节点(workflowNodeId) ③ 对话流会话消息(messageId + kind)。
+async function attachGenerationReferences(userId: string, items: AdminMediaItem[]) {
+  const requestIds = new Set<string>();
+  const nodeIds = new Set<string>();
+  const messageIds = new Set<string>();
+  const conversationIds = new Set<string>();
+  for (const item of items) {
+    if (item.requestId) requestIds.add(item.requestId);
+    if (item.workflowNodeId) nodeIds.add(item.workflowNodeId);
+    if (item.messageId) messageIds.add(item.messageId);
+    if (item.conversationId) conversationIds.add(item.conversationId);
+  }
+  if (requestIds.size === 0 && nodeIds.size === 0 && messageIds.size === 0 && conversationIds.size === 0) return;
+
+  const conditions: Prisma.Sql[] = [];
+  if (requestIds.size) conditions.push(Prisma.sql`"requestId" IN (${Prisma.join([...requestIds])})`);
+  if (nodeIds.size) conditions.push(Prisma.sql`"workflowNodeId" IN (${Prisma.join([...nodeIds])})`);
+  if (messageIds.size) conditions.push(Prisma.sql`"messageId" IN (${Prisma.join([...messageIds])})`);
+  if (conversationIds.size) conditions.push(Prisma.sql`"conversationId" IN (${Prisma.join([...conversationIds])})`);
+
+  const jobs = await prisma.$queryRaw<Array<{ requestId: string; kind: string; workflowNodeId: string | null; messageId: string | null; referenceImages: unknown; referenceVideos: unknown; referenceAudios: unknown; referenceNames: unknown }>>`
+    SELECT "requestId", "kind", "workflowNodeId", "messageId", "referenceImages", "referenceVideos", "referenceAudios", "referenceNames"
+    FROM "GenerationJob"
+    WHERE "userId" = ${userId} AND (${Prisma.join(conditions, " OR ")})
+    ORDER BY "createdAt" DESC
+  `;
+
+  type Ref = { url: string; name?: string; kind: "image" | "video" | "audio" };
+  // jobs 已按 createdAt DESC；每个键只保留最新一条有参考素材的 job。参考素材拍平用统一实现 buildJobReferenceItems。
+  const byRequest = new Map<string, Ref[]>();
+  const byBareRequest = new Map<string, Ref[]>(); // 对话流 job requestId = `<消息ID>:video|image:N`，剥掉后缀匹配裸 requestId 的老资产
+  const byNode = new Map<string, Ref[]>();
+  const byMessageKind = new Map<string, Ref[]>();
+  for (const job of jobs) {
+    const refs = buildJobReferenceItems(job);
+    if (refs.length === 0) continue;
+    if (job.requestId && !byRequest.has(job.requestId)) byRequest.set(job.requestId, refs);
+    const bare = job.requestId?.match(/^(.+):(?:video|image):\d+$/)?.[1];
+    if (bare && !byBareRequest.has(bare)) byBareRequest.set(bare, refs);
+    if (job.workflowNodeId && !byNode.has(job.workflowNodeId)) byNode.set(job.workflowNodeId, refs);
+    if (job.messageId) {
+      const key = `${job.messageId}:${job.kind}`;
+      if (!byMessageKind.has(key)) byMessageKind.set(key, refs);
+    }
+  }
+
+  for (const item of items) {
+    const references =
+      (item.requestId ? byRequest.get(item.requestId) : undefined) ??
+      (item.requestId ? byBareRequest.get(item.requestId) : undefined) ??
+      (item.workflowNodeId ? byNode.get(item.workflowNodeId) : undefined) ??
+      (item.messageId ? byMessageKind.get(`${item.messageId}:${item.type}`) : undefined);
+    if (references && references.length > 0) item.references = references;
+  }
 }
 
 function makeMediaFlowItem(item: AdminMediaItem, index: number, creditLookup: Map<string, AdminCreditFlowItem>): AdminCreditFlowItem {
@@ -468,7 +531,7 @@ const DETAIL_ASSET_STATE_SELECT = {
   hiddenAt: true,
   currentName: true,
   deletedAt: true,
-  mediaAsset: { select: { id: true, url: true, archivedAt: true, mediaType: true, sourceKind: true, workspaceKind: true, systemName: true, initialName: true, originalFileName: true, mimeType: true, reversePrompt: true, sourcePrompt: true, sourceDetail: true, model: true, ratio: true, resolution: true, videoDuration: true, width: true, height: true, imageSize: true, requestId: true, conversationId: true, firstSeenAt: true, createdAt: true } },
+  mediaAsset: { select: { id: true, url: true, archivedAt: true, mediaType: true, sourceKind: true, workspaceKind: true, systemName: true, initialName: true, originalFileName: true, mimeType: true, reversePrompt: true, sourcePrompt: true, sourceDetail: true, model: true, ratio: true, resolution: true, videoDuration: true, width: true, height: true, imageSize: true, requestId: true, conversationId: true, messageId: true, workflowId: true, workflowNodeId: true, firstSeenAt: true, createdAt: true } },
 } as const;
 
 // Light select for the paginated media dialog: only the columns needed to classify a row and sort
@@ -602,6 +665,7 @@ export async function GET(request: Request) {
       ...getMediaAssetItems(pageStates, "asset"),
       ...getMediaAssetItems(pageStates, "workflow"),
     ].sort((left, right) => (right.createdAtTs ?? 0) - (left.createdAtTs ?? 0));
+    await attachGenerationReferences(userId, built);
     return NextResponse.json({ detail: { items: built, total } });
   }
 

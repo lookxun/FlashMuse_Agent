@@ -7,6 +7,14 @@
 - Main modes: Agent/general chat, image generation, video generation, asset library, and workflow code behind a production feature gate.
 - Production workflow entry stays disabled unless the user explicitly asks to open it.
 
+## 铁律：能统一的一律统一（禁止同一逻辑复制多份各走各的）
+
+- 各模式（对话流 / 工作流 / 资产库 / Agent / 通用）本质相同，功能不多。写/改代码前**先查有没有统一公共路径**，有就复用、没有就抽一个。
+- **绝不允许把同一段逻辑复制成多份各自演化**。已踩坑：`getBytePlusProviderKey` 复制三份，只修对话流那份 → Agent/通用生图/生视频用新模型直接失败。已统一为 `src/lib/byteplus-provider-key.ts`。
+- 标准：**一处能用，其它处都该能用**（生图/生视频/上传/进库/读取/命名/扣费/参考图）。出现"对话流行、Agent 不行"就是分叉了，先收敛别打局部补丁。
+- 新增模型/模式：只改统一函数 + `system-settings.ts` 配置表，且**对称补齐所有前缀**（conversation-image / asset-image / agent-image / video / agent-video）。
+- 详见 `AGENTS.md` 顶部同名铁律。
+
 ## Deletion Rule
 
 - User deletion is soft deletion.

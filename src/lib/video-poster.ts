@@ -42,3 +42,27 @@ export async function createVideoPosterFromLocalVideo(publicVideoUrl: string) {
 
   return poster.publicUrl;
 }
+
+/**
+ * 读取本地视频的真实宽高（用 ffmpeg 解析流信息，无需 ffprobe）。封面被降采样到 640，不能拿来当尺寸，
+ * 所以视频尺寸一律走这里。解析不到返回 undefined。
+ */
+export async function getLocalVideoDimensions(publicVideoUrl: string): Promise<{ width: number; height: number } | undefined> {
+  const { default: ffmpegPath } = await import("ffmpeg-static");
+  if (!ffmpegPath) return undefined;
+  const videoPath = getLocalGeneratedFilePath(publicVideoUrl);
+  if (!videoPath || !existsSync(videoPath)) return undefined;
+  // ffmpeg 未指定输出会以非 0 退出，但仍把流信息打到 stderr，这里主动捕获。
+  const stderr = await execFileAsync(ffmpegPath, ["-hide_banner", "-i", videoPath], { maxBuffer: 20 * 1024 * 1024 })
+    .then((result) => `${result.stdout}${result.stderr}`)
+    .catch((error: unknown) => {
+      const err = error as { stderr?: string; stdout?: string };
+      return `${err.stdout ?? ""}${err.stderr ?? ""}`;
+    });
+  const videoLine = stderr.split("\n").find((line) => /Stream #.*Video:/.test(line));
+  const match = videoLine?.match(/,\s*(\d{2,5})x(\d{2,5})/);
+  if (!match) return undefined;
+  const width = Number.parseInt(match[1], 10);
+  const height = Number.parseInt(match[2], 10);
+  return Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0 ? { width, height } : undefined;
+}

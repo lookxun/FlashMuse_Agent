@@ -1,5 +1,47 @@
 # Next Actions
 
+## ✅ 2026-07-15 (后台/工作流统一读取根治 session) END-OF-SESSION —— 先读这条
+
+**状态**：本 session 一连串改动**全部 tsc 过、已部署腾讯 + 同步阿里、并已 push GitHub**（连同 07-14 统一根治大 session 未推的那批一起推）。无 Prisma 迁移。服务器 /tmp 临时文件已清。详见 CHANGELOG / 01-current-status 顶条。
+
+**本 session 做完**：
+1. 对话流视频历史双卡 7 例手修（两表同步）。
+2. 后台弹窗参考素材匹配改多口径健壮化 + 抽唯一 `buildJobReferenceItems`（后台+工作流接口共用）。
+3. `asset://` 参考在建 job 时统一解析成真实 url（`resolveReferenceUrls`，前向）+ 回填 256 条老 job。
+4. 视频尺寸用 ffmpeg 真实量取（`getLocalVideoDimensions`，前向）+ 回填 238 条。
+5. 回填剥离 190 条 sourcePrompt 里的 hint。
+6. 后台 @文件名去后缀容错匹配。
+7. 导入资产「使用提示词」按 mediaUrl 回溯原始 job（`getGenerationJobByMediaUrl`）+ 回填 291 条对话流图 requestId（精确 `:image:序号`）。
+
+**下一个 AI 待办 / 可优化（都非紧急）**：
+1. **后台弹窗对话流老图参考**：约 1500 条 job 化（7-7/7-8）前的对话流老图无 GenerationJob，无参考数据可恢复——**不是 bug，别重查**。
+2. **6 月老远程媒体**（243 视频+378 图 url 仍是远程 volces、文件已丢）无法补尺寸/参考——**历史遗留、别重查**。
+3. 若要把「@变蓝」逻辑在对话流前端与后台弹窗之间也统一（目前后台 `AdminPromptWithMentions` 是独立实现），可考虑抽共享；当前非必要。
+4. M018（对话流统一单轮询器）、M019（工作流 canvasJson 大字段重构）仍押后。
+
+**部署流程**（腾讯，改代码必读）：scp 改动源码到 `/opt/flashmuse/app/src/...` → `cd /opt/flashmuse && nohup sudo docker compose up -d --build flashmuse-app`（后台+轮询 `/tmp/build*.log` 防 120s 超时）→ **必须**同步 `.next/static` 到阿里镜像（否则 chunk 哈希不匹配全 404）→ 四域名 200。**改源码一律用 edit 工具，禁止用 `Set-Content` 改带中文的文件（会整文件 mojibake）。** DB 用 scp .sql/.sh + `docker exec -i psql`；**PowerShell here-string 管道 psql 若 SQL 含中文，先设 `$OutputEncoding`/`[Console]::OutputEncoding` 为 UTF8**；账号 id 形如 `ID_xxxxxx`，用户说的数字是 nickname，先查 User 表转换。容器内跑 node 脚本要放 `/app` 且 `-w /app`（否则 import 解析不到 node_modules）。
+
+---
+
+## ✅ 2026-07-14 (统一根治大 session) END-OF-SESSION —— 先读这条
+
+**状态**：本 session 一连串改动**全部 tsc 过、已部署腾讯**（模型路由统一 / 干净 prompt 存读 / 后台弹窗参考素材+@蓝字 / 资产库去规则 / 视频本地存盘不限时根治 / 多批历史回填）。**代码未 push GitHub（用户要求测完一起推）。无 Prisma 迁移。** 详见 CHANGELOG 顶条 + 01-current-status 顶条。
+
+**下一个 AI 待办**：
+1. **push GitHub**：用户测完这批后一起推。改动文件：新增 `src/lib/byteplus-provider-key.ts`；改 `src/lib/system-settings.ts`、`src/lib/generation-jobs.ts`、`src/lib/openrouter.ts`、`src/app/api/image/route.ts`、`src/app/api/video/route.ts`、`src/app/api/workflow-generation-references/route.ts`、`src/components/workflow-tldraw-canvas-inner.tsx`、`src/components/chat-workbench.tsx`、`src/app/admin/admin-users-panel.tsx`、`src/app/admin/api/records/user-detail/route.ts`、`Dockerfile`、`AGENTS.md`、`handover/*`。push 前 `git status`/`diff` 确认，别带入无关改动。
+2. **（可选）后台展示扩展**：目前只在"所有生成图片/视频"弹窗加了参考素材+@蓝字；如需在积分明细等其它弹窗也显示，复用同思路。
+3. **老数据别再查**：见下"现状记录"。
+
+**⚠️ 现状记录（重要，避免以后 AI 重复排查/误判为 bug）**：
+- 线上 `MediaAsset` 有 **243 生成视频 + 378 生成图 url 仍是远程 volces 地址**，**全是 2026-06-19~21（job 化之前）老数据**，远程 24h 签名早过期、媒体已丢、**无法恢复**——**不是 bug、不用重查**。
+- **90 条生成媒体参数(model/比例等)为空**：无 GenerationJob、消息 JSON 也查不到，无权威来源，**按"不猜"保留空**——不是 bug。
+- **`systemName` 非唯一**（会被不同批次重名占用，如 `video_51_d1` 有多条）；unique 的是 `userId+normalizedUrl`。回填/排查别只按 systemName 认定同一个东西。
+- **"出生即冻结"范围**（用户澄清）：冻结=用户提示词(工作流含连线文本节点)+上传参考图/视频/音频+名字+参数；**不含内部强制规则/参考 hint**。生成参数属系统该正确写入的事实，允许权威 finalize 补写空值。
+
+**部署流程**（腾讯，改代码必读）：scp 改动源码到 `/opt/flashmuse/app/...` → `cd /opt/flashmuse && nohup sudo docker compose up -d --build flashmuse-app`（后台+轮询 `/tmp/build*.log` 防 120s 超时）→ **必须**同步 `.next/static` 到阿里镜像（否则 chunk 哈希不匹配全 404）→ 域名 200。改源码用 edit 工具；DB 用 scp .sql/.sh + `sed -i 's/\r$//'` + `docker exec -i psql`（PowerShell 内联 SQL/bash 引号会被搅坏）；账号 id 形如 `ID_xxxxxx`，用户说的数字是 nickname 要先查 User 表转换。
+
+---
+
 ## ✅ 2026-07-14 (later session) END-OF-SESSION —— 先读这条
 
 **状态**：工作流"使用提示词"根治 + 等待卡计时 + 830 条历史 job 名字回填，**全部 tsc 通过、已部署腾讯、并已 push GitHub**（连同上一 session 另一 AI 未推的 handover commit `84582e5` 一起推）。有 Prisma 迁移 `20260714100000_generation_job_reference_names`（腾讯 entrypoint 容器启动自动 apply，已确认 applied）。详见 CHANGELOG / 01-current-status 顶条。

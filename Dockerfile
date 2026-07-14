@@ -1,9 +1,10 @@
 # FlashMuse production image (Tencent Singapore, Docker deploy)
 FROM node:22-bookworm-slim
 
-# Tools: rsync/ssh needed for ali-sync (phase 3); ffmpeg-static & sharp ship their own binaries
+# Tools: rsync/ssh needed for ali-sync (phase 3); curl is the fallback HTTP client for BytePlus/OpenRouter
+# (openrouter.ts curlPostJson) — without it the fallback throws "spawn curl ENOENT"; ffmpeg-static & sharp ship their own binaries
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends rsync openssh-client ca-certificates \
+  && apt-get install -y --no-install-recommends rsync openssh-client ca-certificates curl \
   && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

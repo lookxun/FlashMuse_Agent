@@ -85,9 +85,12 @@ const DEFAULT_MODEL_PROVIDER_PREFERENCES: Record<string, "openrouter" | "byteplu
   "video.seedance-2-0": "byteplus",
   "video.seedance-2-0-mini": "byteplus",
   "agent-image.seedream-4-5": "byteplus",
+  "agent-image.seedream-5-0": "byteplus",
+  "agent-image.seedream-5-0-pro": "byteplus",
   "agent-image.advanced": "openrouter",
   "agent-video.seedance-2-0-fast": "byteplus",
   "agent-video.seedance-2-0": "byteplus",
+  "agent-video.seedance-2-0-mini": "byteplus",
   "agent-chat.seed-2-0-pro": "byteplus",
   "agent-chat.advanced": "openrouter",
 };
@@ -111,8 +114,11 @@ const DEFAULT_BYTEPLUS_MODEL_SELECTIONS: Record<string, string> = {
   "video.seedance-2-0": "ep-20260521133841-nn8bg",
   "video.seedance-2-0-mini": "ep-20260713100634-mwp78",
   "agent-image.seedream-4-5": "ep-20260514174622-n9qfb",
+  "agent-image.seedream-5-0": "ep-20260514142211-p2wdk",
+  "agent-image.seedream-5-0-pro": "ep-20260713101732-q5zvf",
   "agent-video.seedance-2-0-fast": "ep-20260521134040-vf2jf",
   "agent-video.seedance-2-0": "ep-20260521133841-nn8bg",
+  "agent-video.seedance-2-0-mini": "ep-20260713100634-mwp78",
   "agent-chat.seed-2-0-pro": "ep-20260514173614-jbcb4",
 };
 

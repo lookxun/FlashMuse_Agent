@@ -3,6 +3,7 @@ import { getCurrentUser } from "@/lib/auth";
 import { assertUserCanUseCredits, chargeCredits } from "@/lib/credits";
 import { createOpenRouterVideoTask, getBytePlusEffectiveReferenceImages, getOpenRouterVideoTask, type VideoReferenceMode } from "@/lib/openrouter-video";
 import { createCodedApiError } from "@/lib/error-code";
+import { getBytePlusProviderKey } from "@/lib/byteplus-provider-key";
 import { GENERIC_MEDIA_ERROR_MESSAGE } from "@/lib/error-message";
 import { getUploadRule, validateReferenceImageCount } from "@/lib/upload-rules";
 import { enqueueRemoteAssetSave } from "@/lib/media-save-queue";
@@ -344,15 +345,6 @@ async function autoReviewBytePlusVideoReferences(input: { userId: string | undef
     referenceAudios: references.filter((reference) => reference.kind === "audio").map((reference) => reference.url),
     updates,
   };
-}
-
-function getBytePlusProviderKey(modelId: string | undefined, source: string | undefined) {
-  if (!modelId?.startsWith("byteplus:video.")) return undefined;
-  const prefix = source === "agent_video_generation" ? "agent-video" : "video";
-  if (modelId.endsWith("seedance-2-0-fast")) return `${prefix}.seedance-2-0-fast`;
-  if (modelId.endsWith("seedance-2-0-mini")) return `${prefix}.seedance-2-0-mini`;
-  if (modelId.endsWith("seedance-2-0")) return `${prefix}.seedance-2-0`;
-  return undefined;
 }
 
 function logVideoTiming(label: string, data: Record<string, unknown>) {
