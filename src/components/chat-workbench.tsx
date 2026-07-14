@@ -7932,7 +7932,10 @@ export function ChatWorkbench() {
   const activeHasMaxPendingRequests = activePendingRequestCount >= MAX_SESSION_PENDING_REQUESTS;
   // 只有在「真正需要按秒刷新的界面」出现时才开 1 秒计时器：生成进行中 / 会话加载中 / 角色图生成中 / 资产生成任务。
   // 空闲时不再每秒 setState，避免整棵大组件（含依赖 timerNow 的重 useMemo）每秒重渲染导致卡顿。
-  const needsLiveTimer = activePendingRequestCount > 0 || isActiveSessionLoading || isCharacterGenerating || assetGenerateJobs.length > 0;
+  // After a close/re-login the foreground pending request is gone but a media message can still be pending
+  // (durable recovery keeps polling). Keep the 1s timer alive so the recovered waiting card's progress/elapsed advances.
+  const hasRecoveringMedia = messages.some((message) => message.role === "assistant" && ((message.pendingVideoCount ?? 0) > 0 || (message.pendingImageCount ?? 0) > 0 || (message.retryingFailedVideoIndexes?.length ?? 0) > 0 || (message.retryingFailedImageIndexes?.length ?? 0) > 0));
+  const needsLiveTimer = activePendingRequestCount > 0 || isActiveSessionLoading || isCharacterGenerating || assetGenerateJobs.length > 0 || hasRecoveringMedia;
   const isThinking = activeIsResolving || activePendingRequests.some((request) => request.mode === "agent" || request.mode === "general") || modelInfoSessionId === activeSession?.id;
   const isMainInputDisabled = isThinking || isInputPromptOptimizing;
   const activeIsSending = activeSession ? sendingSessionIds.has(activeSession.id) : false;
@@ -15132,6 +15135,11 @@ export function ChatWorkbench() {
                 const hasVisibleMediaFailure = (message.mode === "image" && imageFailedCount > 0) || (message.mode === "video" && videoFailedCount > 0);
                 const mediaErrorText = !hasVisibleMediaFailure || allImageFailuresRetrying || allVideoFailuresRetrying ? undefined : normalizedMediaErrorReasons[selectedMediaErrorIndex] ?? normalizeMediaErrorText(message.error, message.mode) ?? (message.mode === "image" && imagePendingCount === 0 && imageFailedCount > 0 ? GENERIC_MEDIA_ERROR_MESSAGE : message.mode === "video" && videoPendingCount === 0 && videoFailedCount > 0 ? GENERIC_MEDIA_ERROR_MESSAGE : undefined);
                 const isActiveVideoPending = activeMessagePendingRequest?.mode === "video" && videoPendingCount > 0 && !message.error;
+                // A video is still pending based on the PERSISTED count, independent of whether the in-memory
+                // foreground pending request exists. After a browser close/re-login the foreground request is
+                // gone but the durable recovery effect keeps polling — so the waiting card must render from
+                // videoPendingCount, not from isActiveVideoPending (which requires an in-memory pending request).
+                const isVideoPendingVisible = message.mode === "video" && videoPendingCount > 0 && !message.error;
                 const isActiveImagePending = activeMessagePendingRequest?.mode === "image" && imagePendingCount > 0;
                 const isActiveMediaPending = isActiveVideoPending || isActiveImagePending;
                 const userImageReferences = message.role === "user" ? getDisplayImageReferences(message) : undefined;
@@ -15283,14 +15291,14 @@ export function ChatWorkbench() {
                           </LazyMediaMount>
                         ) : null}
 
-                      {message.role === "assistant" && message.mode === "video" && isAssistantMessageComplete && (displayedMessageVideos.length > 0 || videoFailedCount > 0 || (isActiveVideoPending && videoPendingCount > 0)) ? (
+                      {message.role === "assistant" && message.mode === "video" && isAssistantMessageComplete && (displayedMessageVideos.length > 0 || videoFailedCount > 0 || isVideoPendingVisible) ? (
                         <LazyMediaMount height={360} className={isAgentMediaMessage ? "mt-2 grid w-full max-w-[1006px] grid-cols-2 gap-0.5" : "mt-2 flex max-w-full flex-wrap gap-0.5"}>
                            {displayedMessageVideos.map((url, videoIndex) => (
                              <div key={`${url}-${videoIndex}`} className="contents">
                                <InlineVideoResult url={url} posterUrl={getVideoPosterForMessage(message, url)} rounded={isAgentMediaMessage} compact={isAgentMediaMessage} onLoadedDimensions={(dimensions) => updateMessageVideoDimensions(activeSession?.id ?? "", message.id, dimensions)} onPreview={() => setPreviewAsset({ id: `${message.id}-video-${videoIndex}`, type: "shot_video", name: getCanonicalMediaName(message, url, `生成视频${videoIndex + 1}`), url, posterUrl: getVideoPosterForMessage(message, url), sourcePrompt: message.videoPrompts?.[url] ?? message.generationMeta?.itemPrompts?.[videoIndex] ?? message.generationMeta?.originalPrompt ?? message.content, previewMeta: getPreviewMediaMeta(message), sessionId: activeSession?.id ?? "", messageId: message.id, createdAt: message.createdAt ?? Date.now() })} />
                              </div>
                             ))}
-                          {Array.from({ length: isActiveVideoPending ? videoPendingCount : 0 }).map((_, pendingIndex) => (
+                          {Array.from({ length: isVideoPendingVisible ? videoPendingCount : 0 }).map((_, pendingIndex) => (
                             <MediaWaitingCard key={`video-pending-${pendingIndex}`} createdAt={message.createdAt} now={timerNow} isImage={false} index={videoPendingCount > 1 ? displayedMessageVideos.length + pendingIndex + 1 : undefined} rounded={isAgentMediaMessage} compactVideo={isAgentMediaMessage} />
                           ))}
                            {Array.from({ length: videoFailedCount }).map((_, failedIndex) => (
