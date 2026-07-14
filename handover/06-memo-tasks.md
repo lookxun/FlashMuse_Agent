@@ -166,3 +166,20 @@ What to do later: after enough successful cases accumulate, add automatic succes
 **当前修复（2026-07-14 已上线，见 CHANGELOG）**：恢复 effect 的 jobsToCheck 过滤里加 `if (runningRequestIdsRef.current.has(message.requestId)) return [];`，前台还活着（requestId 在 `runningRequestIdsRef`）就让路，只在孤儿 job（前台没了）才接管。视频 + 图片两处都加了。
 
 **以后统一单轮询器要做的**：既然图片/视频都已 **job 化**（后端 worker 负责真正生成/挑图/扣费/写库），前台轮询其实只是"读状态"。可以砍掉前台 while 循环，**统一由数据驱动的 reconcile 做唯一轮询器**（单一真相来源、彻底无撞车可能）。代价=要把前台那些额外职责搬进 reconcile：① BytePlus 真人审核往返（reviewing→autoBytePlusAssetReview 重试）② 即时状态文字（排队中/渲染中）③ 停止 abort ④ 压缩重试（`createImageWithRetry` 的参考图过大压缩）。搬完后前台 submit 只建 job，其余全靠 reconcile。务必回归测：正常生成、失败单卡、审核往返、停止、关浏览器恢复、多图并发命名不撞。工作流不涉及（节点失败是单个 `error` 字段、一节点一卡，天然无双卡问题）。
+
+### [ ] M019 工作流整张画布存一个 canvasJson 大字段——太大、有隐患，以后重构（2026-07-14 与用户讨论，押后）
+
+临时不做原因：这是**架构级重构、风险高、要大量回归测**，且当前功能可用；用户决定以后再改。本 session 已经**顺手减轻**了一部分（去掉了往画布里塞 `generationUploads` 冗余副本，改成"使用提示词"点击时读后端 `GenerationJob`，见 CHANGELOG 2026-07-14 顶条），但根本结构没动。
+
+**问题本质**：一个工作流的**整张画布**（所有节点、所有连线、每个节点 data 里的图 url / 视频 url / mediaSystemNames / 各种运行时派生字段…）被序列化成**一整块 JSON**，存进 `WorkspaceWorkflow.canvasJson` **单个 jsonb 列**。
+
+**由此带来的隐患（务必让下一个 AI 心里有数）**：
+1. **整块读写**：每次读工作流 = 读整块 JSON；每次存 = 整块重写。节点越多、画布越复杂，这块 JSON 越大，读写越慢、越占内存/带宽。用户明确担心"以后越来越大，一次性读取很久"。
+2. **整块覆盖 = 竞态/旧标签页覆盖风险**：谁后保存谁盖整块。历史上已多次踩坑（旧标签页发空图覆盖已成功结果 → 才有服务端自愈 `mergeWorkflowCanvasMedia` 打补丁；`generationUploads` 被空快照冲掉 → 本 session 才根治）。只要还是"整块 JSON 前端整体保存"，这类"某字段被另一次保存意外抹掉"的坑就一直潜伏。
+3. **前端临时态混进持久数据**：靠 `getPersistableWorkflowItems`/`stripKeys` 在存库边界手工剥离 uploadProgress 等运行时字段，容易漏、容易再长出新字段污染库。
+
+**以后重构方向（供参考，未定案）**：
+- 把画布拆成更细的持久化粒度：节点/连线独立成行（如 `WorkflowNode`/`WorkflowEdge` 表），按需读写、局部更新，避免整块重写；成品媒体只存引用（指向 `MediaAsset`/`GenerationJob`）而不是在画布里存副本。
+- 或至少：保存改成**增量/字段级 patch**（只写变化的节点），配服务端合并，杜绝整块覆盖。
+- 迁移历史 canvasJson 数据是重头，需 dry-run + 备份 + 前后快照对比。
+- 参考对话流的思路（消息分行 `WorkspaceMessage`、媒体/参考各有权威来源），工作流也往"权威数据分表、画布只存布局与引用"靠拢。

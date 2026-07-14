@@ -341,6 +341,7 @@ model GenerationJob {
   referenceImages   Json?
   referenceVideos   Json?
   referenceAudios   Json?
+  referenceNames    Json?
   referenceMode     String?
   conversationId    String?
   conversationTitle String?
