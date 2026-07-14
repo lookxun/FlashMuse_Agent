@@ -11718,6 +11718,11 @@ export function ChatWorkbench() {
     type ConversationVideoJobStatus = { requestId: string; status: string; resultUrls?: string[]; reservedNames?: string[]; posterUrl?: string; usage?: UsageMeta; credit?: CreditMeta; error?: string; errorCode?: string };
     const jobsToCheck = sessions.flatMap((session) => session.messages.flatMap((message) => {
       if (message.role !== "assistant" || message.mode !== "video" || !message.requestId || (message.pendingVideoCount ?? 0) <= 0) return [];
+      // Skip requests that are still being polled by the foreground generator (createAndPollVideo);
+      // otherwise both this recovery effect and the foreground poller mark the same failed job and
+      // markAssistantVideoFailure double-counts (producing two failed cards). This effect is a
+      // recovery backstop only for orphaned jobs (closed/refreshed browser → no foreground poller).
+      if (runningRequestIdsRef.current.has(message.requestId)) return [];
       const count = Math.max(1, message.pendingVideoCount ?? 1);
       return Array.from({ length: count }).flatMap((_, index) => {
         const videoRequestId = `${message.requestId}:video:${index}`;
