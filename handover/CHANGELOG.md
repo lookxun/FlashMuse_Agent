@@ -22,6 +22,26 @@ Reply style 简洁直接中文。用户诉求：**同一张图（同 contentHash
 - 同一批次并发上传多个**不同内容但同原名**文件，极端并发下预览名可能短暂重复（前端框内兜底去重；入库经 advisory 锁最终唯一）；顺序上传完全正确。
 - 改名（currentName）后各处新解析的 @引用名跟随当前名；已插入 prompt 里的旧 @名不回改（transient 输入框，可接受）。
 
+### 用户明确决策（本 session 拍板，后续别推翻）
+1. 统一权威名**去扩展名**（工作流原来带 `.jpg` 是乱源之一）。
+2. **只修前向、老数据不回填**。
+3. 用户改名后 @引用名**跟随改名后的当前名**（权威名取 `currentName||systemName||initialName`）。
+4. 目标口径：**同一张图（同字节）全平台唯一一个名字；项目内无同名；异名同原文件名任一处上传即刻错开 `名_2`；资产库右侧永远按入库时间最新在最上、不许变来变去**。
+
+### 关键实现索引（下一个 AI 快速定位）
+- 服务端：`src/lib/upload-name.ts`（`resolveUploadName`/`resolveUploadNameInTx`/`withUploadNameLock`/`collectUsedNames`/`allocateUniqueName`/`sanitizeUploadBaseName`）。
+- `src/app/api/media-assets/route.ts` POST：`isUpload = promptSource==="upload"` 分支用 `resolveUploadName` 定名（`finalPersistName`），existingMedia(按 url) 命中→复用其 `currentName/systemName/initialName`；返回体加 `name`。生成媒体走原 `persistName`。
+- `src/app/api/upload-file/route.ts`：`findDedupUpload` 返回 `{url,name}`；写路径 `withUploadNameLock` 内 `resolveUploadNameInTx`+upsert，返回 `name`。
+- `src/app/api/asset-upload-temp/route.ts`：`findDedupImage` 返回 `{url,name}`；新图 POST 成功也 `resolveUploadName` 预分配返回 `name`。
+- 对话流 `chat-workbench.tsx`：`uploadTemporaryAssetImageOnce`/`uploadDocumentFileAsset` 透传 `name`；`submitAssetUpload` 用 `data.name`；输入框图片完成回调写 `referenceName`；`uploadedFiles` 完成回调写 `UploadedDocumentFile.name`；新增 `getUploadedFileMetaName`；`visibleAssets` 加 `createdAt` 降序；`onChangeType` 去掉 `createdAt: movedAt`。
+- 工作流 `workflow-tldraw-canvas-inner.tsx`：`uploadWorkflowImageOnce`/`uploadWorkflowFile` 透传 `name`；`handleUploadNodeFile` 四类用 `mediaName = uploaded.name || sanitizeWorkflowReferenceName(file.name)` 写 `mediaSystemNames` + `persistWorkflowUploadNodeAsset`。
+
+### 部署与运维教训（本 session 踩坑）
+- 腾讯部署：源码先 scp 到 `/tmp/dep/...` 再 `sudo cp` 就位（`/opt/flashmuse/app/src` 属主 root）；`nohup sudo docker compose up -d --build flashmuse-app`；轮询 `/tmp/build*.log`。
+- **同步 `.next/static` 到阿里必须写成 .sh 再 scp 上去跑**：PowerShell 内联会吃掉 `rsync -e "ssh -i <key> ..."` 里的双引号 → rsync 退化成密码认证报 `Permission denied (publickey,password)`。Ali key=`/opt/flashmuse/data/runtime/flashmuse_to_ali_ed25519`，`root@101.37.129.164`（实际登进去是 ubuntu 账号，正常）。
+- PowerShell 传给 ssh 的远程命令：**用单引号包整条**，别让 `$A`/`|`/`"` 被 PS 吞掉（本 session 因此重试过几次）。
+- 本批 `tsc`+`npm run build` 均通过；部署后四域名（main/api/ali/static）200；push GitHub commit（上传命名统一 + 资产库排序 + 07-16 输入框统一，一起）。
+
 ## 2026-07-16 输入框 @mention/上传缩略图 全平台统一 + 唯一引用名 + 上传判重文案根治（⚠️ 全部仅本地，`npx tsc --noEmit` 通过，**未 build/未部署/未 push**；下一个 AI 直接部署；无 Prisma 迁移）
 
 Reply style 简洁直接中文。本 session 全程只做代码、**只在本地**，一路 `npx tsc --noEmit` 通过（没跑 build，按项目惯例 tsc 为准）。**下一个 AI：直接部署这批（腾讯 + 同步阿里 `.next/static` + push GitHub）。** 改动文件：新增 `src/lib/mention-text.ts`；改 `src/components/chat-workbench.tsx`、`src/components/workflow-tldraw-canvas-inner.tsx`、`src/app/admin/admin-users-panel.tsx`、`src/app/api/media-assets/route.ts`。基线是上一条 07-15 已 push 的状态（工作树此前干净）。
