@@ -1,6 +1,28 @@
 # Current Status
 
-Last checked: 2026-07-15 China time.
+Last checked: 2026-07-17 China time.
+
+## 2026-07-17 上传文件命名全平台统一 + 资产库右侧按入库时间稳定排序 — 见 CHANGELOG 顶条为权威。速记：
+
+**本 session 改动已部署腾讯 + 同步阿里 + push GitHub（连同 07-16 输入框统一那批一起）；`tsc`+`build` 通过；无 Prisma 迁移。** 改动文件：新增 `src/lib/upload-name.ts`；改 `src/app/api/media-assets/route.ts`、`src/app/api/upload-file/route.ts`、`src/app/api/asset-upload-temp/route.ts`、`src/components/chat-workbench.tsx`、`src/components/workflow-tldraw-canvas-inner.tsx`。
+
+1. **上传命名唯一权威** `src/lib/upload-name.ts`（`resolveUploadName`：contentHash 命中→复用旧权威名 currentName||systemName||initialName；否则去扩展名+sanitize+全局唯一 base/base_2，扫描含在途 GenerationJob.reservedNames）。三条上传接口都返回权威 `name`；生成媒体命名逻辑不动。
+2. **前端三处只显示服务端返回名**：对话流资产库/输入框(图)、对话流 uploadedFiles(视频/音频/文档，新增 `getUploadedFileMetaName` 保住图标/下载后缀)、工作流 handleUploadNodeFile 四类 + 输入框（经 uploadFilesAsConnectedNodes）。
+3. **资产库右侧排序根治**：`visibleAssets` 按 `createdAt`(=服务端 firstSeenAt) 稳定降序；移动分类 `onChangeType` 不再覆盖 `createdAt`。→ 最新入库永远最上、不跳、与刷新一致。
+4. **边界（别当 bug）**：只修前向老数据不回填；同批并发不同内容同原名极端下预览名可能短暂重复（入库经 advisory 锁最终唯一）；已插入 prompt 的旧 @名不回改。
+
+## 2026-07-16 输入框 @mention/上传显示 全平台统一 + 唯一引用名 + 上传判重文案根治（已随 07-17 一起部署+推送）— 见 CHANGELOG。速记：
+
+1. **@mention 纯逻辑收敛唯一实现** `src/lib/mention-text.ts`（匹配/删除/移除/替换 + `MENTION_ACCENT=#367cee`），对话流输入框+对话流消息展示+工作流输入框+后台弹窗四处复用；前端 mention 蓝色统一成 `#367cee`。
+2. **三输入框选中文本后点 @文件名 = 覆盖选中区**（新增 selection-range 读取，collapsed 回退存储光标）。
+3. **资产库生成弹窗输入框全面对齐**：参考缩略图改独立状态（不再从文本派生）；删@文本留缩略图、删缩略图清所有@名；缩略图下@名可插入；"清空输入框"连缩略图一起清。
+4. **对话流上传缩略图显示对齐工作流**：上排只放文档，下排 图片+视频+音频 混排 80×80、换行、X 在外角。
+5. **切模式发送提示**：`当前模型不支持视频/音频/文件`（替代"最多支持0个文件"）。
+6. **视频/音频/文档判重提示**（对话流+工作流，对齐图片）：`XX已存在，无需重复上传！`。
+7. **全平台唯一引用名**：同名不同图错开 `名/名_2`，杜绝 @文件名 撞名无法区分（对话流 `addActiveUploadedImages` + 工作流 `WorkflowPromptBox`）。
+8. **资产库"上传成功却不显示"根治**：真因=转码后内容哈希与库里一张老工作流图 url 撞车（老图 contentHash 空、判重 miss）。改 `/api/media-assets` POST 返回 `duplicate` + 命中回填 contentHash；`submitAssetUpload` await 结果、只加真新图、文案区分 新增/已存在。
+
+**⚠️ 现状记录（别当新 bug 重查）**：去重是按"内容字节"（转码后内容寻址 url）+ contentHash；同一张图（含改文件名再传）只存一份；老数据 contentHash 多为空，靠 url 撞车兜底判重（本 session 已让 POST 命中时回填）。
 
 ## 2026-07-15 后台/工作流「参考素材·提示词·尺寸」统一读取根治 + 对话流视频双卡历史修复 — 见 CHANGELOG 顶条为权威。速记：
 

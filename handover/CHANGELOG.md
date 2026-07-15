@@ -1,5 +1,71 @@
 # Current Handover Changelog
 
+## 2026-07-17 上传文件命名全平台统一（服务端唯一权威）+ 资产库右侧按入库时间稳定排序（部署腾讯+同步阿里+push GitHub；无 Prisma 迁移；连同 07-16 那批一起部署/推送）
+
+Reply style 简洁直接中文。用户诉求：**同一张图（同 contentHash）在对话流/工作流/资产库所有地方显示的名字必须相同；项目里不能有同名文件；异图同原名在任何一处上传时就即时错开为 名_2；名字去扩展名；改名后引用名跟随当前名。** 根因=「上传取名/去重」此前三份各写各的（对话流 `makeUniqueReferenceName` 仅框内碰撞去扩展名 / 资产库 `getVersionedName` 全库碰撞吃标点 / 工作流直接用 `file.name` 带 `.jpg`），碰撞域+扩展名处理都不同，且上传文件没有像生成文件那样的服务端权威名（生成有 `generation-jobs.reservedNames`）。已收敛。
+
+### 1. 服务端唯一命名权威（新增 `src/lib/upload-name.ts`）
+- `resolveUploadName({userId,originalFileName,contentHash})`：advisory 锁串行化；① contentHash 命中已有资产 → 复用其权威名（`currentName||systemName||initialName`，改名跟随）；② 否则去扩展名+sanitize 得 base，扫描该用户所有 `systemName/initialName/currentName + 在途 GenerationJob.reservedNames`，全局唯一 `base`/`base_2`（与生成命名互不撞车）。`sanitizeUploadBaseName`/`collectUsedNames`/`allocateUniqueName`/`withUploadNameLock` 辅助。
+- **三条上传接口都返回权威 `name`**：`/api/media-assets` POST（上传即用 `resolveUploadName`，不信客户端传名；生成媒体保持原 `persistName` 逻辑不动）、`/api/upload-file`（命名+入库放进持锁事务）、`/api/asset-upload-temp`（dedup 命中返回旧权威名；新图也预分配返回）。dedup 查询扩展返回 `name`。
+
+### 2. 前端三处改为「只显示服务端返回名」
+- **对话流**：资产库 `submitAssetUpload` 删掉本地 `getVersionedName`、用 `data.name`；输入框图片上传完成把服务端名写进 `referenceName`（框内 `makeUniqueReferenceName` 兜底去重）；`AssetUploadSlot` 加 `serverName`。
+- **对话流视频/音频/文件**（走 `uploadedFiles`，原来显示本地带扩展名原文件名，未覆盖 → 现补上）：`uploadDocumentFileAsset` 透传 `name`，上传完成把 `UploadedDocumentFile.name` 设为服务端权威名；新增 `getUploadedFileMetaName`（显示名去扩展名后，图标/类型判定与下载文件名改用独立保留的 `file.extension` 拼回，避免图标丢/下载丢后缀）。
+- **工作流**：`handleUploadNodeFile` 四类（图/视频/音频/文档）`mediaSystemNames` 与 `persistWorkflowUploadNodeAsset` 都改用服务端权威名（不再 `file.name` 带 `.jpg`）；输入框上传经 `uploadFilesAsConnectedNodes → handleUploadNodeFile`，@引用名从 `mediaSystemNames` 派生自动一致。上传 helper（`uploadWorkflowImageOnce`/`uploadWorkflowFile`）透传 `name`。
+
+### 3. 资产库右侧显示按入库时间稳定排序（修「别处上传后顺序变、刷新才复原」）
+- 真因=资产库显示直接跟 `assets` 内存数组顺序（`visibleAssets` 只过滤不排序）；别处上传触发 `extractAssetsFromSessions` 按 `createdAt` 重排整个数组、且「移动分类」`onChangeType` 把 `createdAt` 覆盖成 `Date.now()`（与服务端入库时间 `firstSeenAt` 不一致）→ 几张图跳前面；刷新按 `firstSeenAt` 重载才复原。
+- **修**：① `visibleAssets` 增加**按 `createdAt`（=服务端 `firstSeenAt`）稳定降序**，显示不再依赖数组插入顺序（最新入库永远最上、不跳）；② 移动分类不再覆盖 `createdAt`（入库时间是固定事实），只更新 `updatedAt`。
+
+### 现状/边界（别当 bug 重查）
+- 只修前向，库里已存在的名字分叉老上传文件**不回填**（用户拍板）。
+- 同一批次并发上传多个**不同内容但同原名**文件，极端并发下预览名可能短暂重复（前端框内兜底去重；入库经 advisory 锁最终唯一）；顺序上传完全正确。
+- 改名（currentName）后各处新解析的 @引用名跟随当前名；已插入 prompt 里的旧 @名不回改（transient 输入框，可接受）。
+
+## 2026-07-16 输入框 @mention/上传缩略图 全平台统一 + 唯一引用名 + 上传判重文案根治（⚠️ 全部仅本地，`npx tsc --noEmit` 通过，**未 build/未部署/未 push**；下一个 AI 直接部署；无 Prisma 迁移）
+
+Reply style 简洁直接中文。本 session 全程只做代码、**只在本地**，一路 `npx tsc --noEmit` 通过（没跑 build，按项目惯例 tsc 为准）。**下一个 AI：直接部署这批（腾讯 + 同步阿里 `.next/static` + push GitHub）。** 改动文件：新增 `src/lib/mention-text.ts`；改 `src/components/chat-workbench.tsx`、`src/components/workflow-tldraw-canvas-inner.tsx`、`src/app/admin/admin-users-panel.tsx`、`src/app/api/media-assets/route.ts`。基线是上一条 07-15 已 push 的状态（工作树此前干净）。
+
+### 1. @mention 纯逻辑收敛为唯一实现（此前 4 处各写一份，违铁律）
+- **新增 `src/lib/mention-text.ts`**：`getMentionRanges(text,names,{stripExtension?})`（长度降序 startsWith 匹配 + 可选去后缀容错）、`getMentionRangeForDeletion`、`getMentionNames`、`removeMentionName(text,name,{trim?})`、`replaceMentionName(text,name,repl)`、`MENTION_ACCENT="#367cee"`。
+- **四处改调 lib（渲染层各自保留，只统一匹配/删除/移除/替换纯逻辑）**：① 对话流输入框 `getEditorMentionRanges/getMentionRangeForDeletion/removeAllMentionNames` ② 对话流消息展示 `ReferencedTextContent` ③ 工作流输入框 `getWorkflowMentionRanges/...ForDeletion/getWorkflowMentionNames/removeWorkflowUploadReferenceText`（删掉逐字节重复的副本 + 不再用的 `escapeWorkflowRegExp`）④ 后台弹窗 `AdminPromptWithMentions`（改用 `getMentionRanges(...,{stripExtension:true})`）。发模型前清洗 `replaceMentionNamesForModelPrompt` 改用 `replaceMentionName`。
+- **蓝色统一**：前端三处 mention 从 `#4f7cff` 收敛为全站 `#367cee`（与后台一致）。
+- `trim` 开关保住各自原行为：对话流删 @名 trim 首尾、工作流不 trim。`stripExtension` 只后台开（其 names 带 `.jpg`）。
+
+### 2. 三个输入框：选中文本后点 @文件名 = 覆盖选中区（原来是插入）
+- 新增按元素读选区起止的 `getSelectionTextRange`（对话流/资产库共用 `PlainMentionEditor`）、`getWorkflowSelectionTextRange`（工作流，含 `dataset.mention` 原子块计数）。
+- 新增 `getCurrentDraftSelection`/`getCurrentCharacterPromptSelection`/`getCurrentWorkflowSelection`：有选区→`{start,end}` 覆盖；collapsed→回退到各自存的光标 offset（`draftCursorOffset`/`characterPromptCursorOffset`/`cursorOffset`），保证按钮点击致失焦时仍插到原光标处、不跳到文本末尾。
+- 所有 @文件名 插入点（@菜单、上传图/生成图 @按钮、缩略图 @名、参考条）改用选区。打字触发的 `@query` 分支不受影响（本就无选区）。清理了因此空出的 `getCurrentDraftCursor`/`getCurrentWorkflowCursor`。
+
+### 3. 资产库生成弹窗输入框 全面对齐对话流/工作流
+- **根因**：资产库参考缩略图原本是**从提示词文本派生**（`getOrderedExplicitImageReferences(characterGeneratePrompt,...)`），导致删 @文本缩略图就没了、方向反了。
+- **改为独立状态**：新增 `assetGenerateReferenceDrafts`（按 character/scene/shot 各存一份 `ImageReference[]`）+ `setActiveAssetGenerateReferences`。`assetGenerateReferenceImages`/`getCharacterPromptReferences` 改读状态。
+- **对齐规则**（与对话流一致）：`insertCharacterAssetReference`（@菜单选图）= 插 @文本 + 加入状态（按 url 去重）；`removeAssetGenerateReference`（点缩略图 X）= 移除状态 + `removeMentionName` 清净所有 @文件名；编辑器手动删 @文本 → 缩略图保留；`openAssetGenerateJob` 恢复历史任务时按 job 提示词重建缩略图状态。
+- **补齐缺失交互**：缩略图下的 `@文件名` 之前只 focus 不插入 → 新增 `insertCharacterReferenceText` 真正插入 @名（支持选区覆盖）。
+- **"清空输入框"** 现在同时清文字 + 所有缩略图（`setActiveAssetGenerateReferences(()=>[])`），且禁用条件放宽为"无文字**且**无缩略图"。
+
+### 4. 对话流输入框上传缩略图显示 对齐工作流（保留 80×80）
+- 仍 2 行分类：**上排只显示文档**（`!isUploadedMediaFile` 过滤）；**下排 图片+视频+音频 混排**（视频=封面`<video>`+播放三角、音频=图标瓦片、图片=缩略图，全 80×80）。
+- 溢出改 `flex-wrap` 换行（去掉横向滚动箭头）；X 按钮改工作流样式（外侧角 `right-[-5px] top-[-5px]` 黑圆 + `stroke-[1.5]`，瓦片改 外层 `overflow-visible`+内层 `overflow-hidden` 两层结构避免裁剪）。进度组件沿用未改。删掉因此没用的 `scrollUploadedRow`/`getMediaDurationLabel`。
+
+### 5. 切模式后整类不支持的发送提示文案
+- `sendMessage`：原"当前模型最多支持 0 个文件"改为按类型精确提示。整类 `!enabled` 时收集 → `当前模型不支持视频/音频/文件`（多类 `/` 连接）；再分别判超数量。
+
+### 6. 视频/音频/文档命中判重加提示（对话流 + 工作流，对齐图片）
+- 服务端 `/api/upload-file` 本就无条件按 SHA-256 判重复用旧 url，但客户端静默。现让 `uploadDocumentFileAsset`（对话流）/`uploadWorkflowFile`（工作流）返回 `{url,duplicate}`，命中弹 `视频/音频/文件已存在，无需重复上传！`。资产库只有图片上传（本就有提示），不涉及。
+
+### 7. 【真 bug 根治】上传同名不同图 @文件名 撞名无法区分 → 全平台唯一引用名
+- **根因**：`readFileAsUploadedImage` 上传瞬间就把 `referenceName` 写死成文件名基名、各文件独立；`getUploadedImageReferenceName` 第一行 `if(referenceName)return` 短路了本用于去重的 `_2` 后缀逻辑 → 两张不同内容同名图都叫 `@Day15s9`，发送时按 name 匹配+按 url 去重 → **第二张被丢弃、无法引用**。
+- **对话流修法**：新增 `makeUniqueReferenceName(base,used)`；在唯一收口 `addActiveUploadedImages` 里给每张新图分配"和已有+本批已接受"都不冲突的稳定唯一名（`名_2/名_3`），写回 `referenceName`。下游插入/渲染/发送/删名全用它。
+- **工作流修法**：`WorkflowPromptBox` 对 `visibleUploads` 建 `uploadReferenceNameById`（`useMemo`，对齐库资产名一起去碰撞）+ `getVisibleUploadReferenceName`，供 @名标签/`validReferenceNames`/插入/删除一致使用。
+- 历史已存同名数据不自动改（前向修复）。内容相同的同一张图仍按 url/hash 只留一份。
+
+### 8. 【真 bug 根治】资产库上传"显示成功却在库里找不到"
+- **实测定位**（本地 ID_779117，查 DB + `.runtime/upload-diagnostics-log.jsonl`）：桌面某图经 JPEG 内联转码后 committed 内容哈希 = 库里一张**工作流生成老图**（`image_6_w4`，`workflow_images`，`contentHash=NULL`）的 url。文件内容寻址存储 → url 撞车。
+- **链路**：上传时按 contentHash 判重 miss（老图 hash 空）→ 不提示；commit 命中已存在 url；`/api/media-assets` upsert 命中旧行、分类冻结在 workflow_images 不动；前端仍按旧口径报"上传成功" → 但没进 conversation_uploads → 上传库看不到（其实是工作流那张）。**去重本身对，错在文案 + 幽灵成功。**
+- **服务端修法**（`media-assets/route.ts` POST）：upsert 前先 `findUnique(userId_normalizedUrl)` 判 `isDuplicateMedia`，返回 `{ok,mediaAssetId,duplicate}`；命中旧行且其 `contentHash` 为空时在 update 分支**回填 contentHash**（纯技术判重字段、不动用户可见内容，今后老图也能被快速判重）。
+- **前端修法**（`submitAssetUpload`）：改为 `await` 每个入库请求读 `duplicate`；**只把服务端确认的新图加进库**（重复的不再乐观添加 → 消灭幽灵卡）；文案按真实结果：全新→`成功上传N张图片`、有新有重→`成功上传X张图片，Y张已存在`、全已存在→`图片已存在，无需重复上传！`。
+
 ## 2026-07-15 后台/工作流「参考素材·提示词·尺寸」统一读取根治 + 对话流视频双卡历史修复（✅ 全部已部署腾讯 + 同步阿里；本 session 末尾**已 push GitHub**（连同 07-14 统一根治大 session 那批一起推）；无 Prisma 迁移）
 
 Reply style 简洁直接中文。承接 07-14「统一入库/统一读取」，本 session 把后台用户管理「所有生成图片/视频」弹窗 + 工作流「使用提示词」里**参考素材缩略图 / @蓝字 / 用户干净提示词 / 视频尺寸**没显示的一连串问题查清并根治（都是历史数据 + 读取脆弱，前向早已修好）。SSH：`ssh -i "C:\Users\ASUS\AppData\Local\Temp\opencode\CinematicFlow.pem" ubuntu@119.28.116.16`。部署=scp 源码→`docker compose up -d --build flashmuse-app`→同步 `.next/static` 到阿里→四域名 200。**DB 操作用 PowerShell here-string 管道 psql 时，含中文的 SQL 必须先 `$OutputEncoding=[Text.Encoding]::UTF8;[Console]::OutputEncoding=[Text.Encoding]::UTF8`，否则中文被 GBK 搅坏匹配不到。⚠️ 千万别用 `Set-Content` 改带中文的源码文件——会把整文件重新编码成 mojibake（本 session 踩过 media-save-queue.ts，已 `git checkout` 还原重改）。**

@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import type { Prisma } from "@prisma/client";
 import { canonicalizeSavedMediaUrl, normalizeMediaAssetUrl, resolvePersistableMediaAssetUrl } from "@/lib/media-assets";
 import { resolveAssetPreviewMeta } from "@/lib/media-asset-record";
+import { resolveUploadName } from "@/lib/upload-name";
 
 export const runtime = "nodejs";
 
@@ -236,6 +237,29 @@ export async function POST(request: Request) {
   const mimeType = typeof body.mimeType === "string" && body.mimeType.trim() ? body.mimeType.trim() : undefined;
   const fileSize = typeof body.fileSize === "number" && Number.isFinite(body.fileSize) && body.fileSize > 0 ? Math.floor(body.fileSize) : undefined;
 
+  const trimmedContentHash = typeof body.contentHash === "string" && body.contentHash.trim() ? body.contentHash.trim() : undefined;
+
+  // 判重：这条 url（内容寻址）是否已在库里（命中说明是同一张图，可能在别的分类/别的来源）。
+  const existingMedia = await prisma.mediaAsset.findUnique({
+    where: { userId_normalizedUrl: { userId: user.id, normalizedUrl } },
+    select: { id: true, contentHash: true, systemName: true, initialName: true, userStates: { where: { userId: user.id }, select: { currentName: true }, take: 1 } },
+  });
+  const isDuplicateMedia = Boolean(existingMedia);
+
+  // 上传文件命名：服务端唯一权威（去扩展名 + 全局唯一 + 同图复用同名），不信客户端传来的名字。
+  // 生成媒体（promptSource !== upload）保持原有 persistName 逻辑（生成的终生ID由 generation-jobs 预约）。
+  const isUpload = promptSource === "upload";
+  let uploadName: string | undefined;
+  if (isUpload) {
+    if (existingMedia) {
+      uploadName = existingMedia.userStates[0]?.currentName?.trim() || existingMedia.systemName?.trim() || existingMedia.initialName?.trim() || undefined;
+    }
+    if (!uploadName) {
+      uploadName = (await resolveUploadName({ userId: user.id, originalFileName: originalFileName || name, contentHash: trimmedContentHash })).name;
+    }
+  }
+  const finalPersistName = isUpload ? uploadName : persistName;
+
   const media = await prisma.mediaAsset.upsert({
     where: { userId_normalizedUrl: { userId: user.id, normalizedUrl } },
     create: {
@@ -263,10 +287,10 @@ export async function POST(request: Request) {
       mimeType,
       fileSize,
       originalFileName,
-      systemName: persistName,
-      initialName: persistName,
+      systemName: finalPersistName,
+      initialName: finalPersistName,
       initialCategory: currentCategory,
-      contentHash: typeof body.contentHash === "string" && body.contentHash.trim() ? body.contentHash.trim() : undefined,
+      contentHash: trimmedContentHash,
       conversationId: typeof body.conversationId === "string" ? body.conversationId : undefined,
       messageId: typeof body.messageId === "string" ? body.messageId : undefined,
       workflowId: typeof body.workflowId === "string" ? body.workflowId : undefined,
@@ -277,7 +301,8 @@ export async function POST(request: Request) {
       firstSeenAt: new Date(),
     },
     // 出生即冻结：记录已存在则不覆盖内容字段（改名/移动/删除只走 UserAssetState / PATCH）。
-    update: {},
+    // 例外：contentHash 是纯技术判重字段，老数据可能为空，命中时按需回填（不改任何用户可见内容）。
+    update: existingMedia && !existingMedia.contentHash && trimmedContentHash ? { contentHash: trimmedContentHash } : {},
     select: { id: true },
   });
 
@@ -291,7 +316,7 @@ export async function POST(request: Request) {
     await prisma.userAssetState.update({
       where: { id: existingState.id },
       data: {
-        ...(persistName && hasTemporaryWorkflowName ? { currentName: persistName, userRenamed: false } : {}),
+        ...(finalPersistName && hasTemporaryWorkflowName ? { currentName: finalPersistName, userRenamed: false } : {}),
         ...(shouldPreserveCategory ? {} : { currentCategory, userRecategorized: true, lockedCategory: true }),
         hiddenAt: null,
         hiddenReason: null,
@@ -303,11 +328,11 @@ export async function POST(request: Request) {
       data: {
         userId: user.id,
         mediaAssetId: media.id,
-        currentName: persistName,
+        currentName: finalPersistName,
         currentCategory,
         originalCategory: currentCategory,
         lockedCategory: true,
-        userRenamed: Boolean(persistName),
+        userRenamed: Boolean(finalPersistName),
         userRecategorized: true,
       },
     });
@@ -315,7 +340,7 @@ export async function POST(request: Request) {
 
   await canonicalizeSavedMediaUrl(user.id, url);
 
-  return NextResponse.json({ ok: true, mediaAssetId: media.id });
+  return NextResponse.json({ ok: true, mediaAssetId: media.id, duplicate: isDuplicateMedia, name: finalPersistName ?? persistName });
 }
 
 function stateCategoryFromBody(value: unknown, mediaUrl: string) {

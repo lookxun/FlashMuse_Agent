@@ -1,5 +1,53 @@
 # Next Actions
 
+## ✅ 2026-07-17 (上传命名统一 + 资产库排序 session) END-OF-SESSION —— 先读这条：三方已同步，无待部署
+
+**状态**：本 session 改动（上传文件命名全平台统一 `src/lib/upload-name.ts` + 资产库右侧按入库时间稳定排序）连同 07-16 输入框统一那批一起：`tsc`+`build` 通过、**已部署腾讯 flashmuse-app、已同步 `.next/static` 到阿里、四域名 200、已 push GitHub**。无 Prisma 迁移。工作树应干净（除本次 handover 提交）。详见 CHANGELOG / 01-current-status 顶条。
+
+**部署后浏览器验证（ali 硬刷，下一个 AI 可跟进用户反馈）**：
+1. 同一张图在资产库/对话流/工作流显示同名（去扩展名、无 `_2`）；异图同原名任一处上传即显示 `名_2`。
+2. 视频/音频/文档：对话流+工作流同样走服务端权威名（去扩展名、唯一）；图标/下载后缀正常。
+3. 资产库右侧：别处上传/生成后顺序不再跳；最新入库在最上；刷新前后一致；移动分类不再把老图顶到最前。
+
+**下一个 AI 待办 / 可优化（非紧急）**：
+1. 老数据名字分叉**不回填**（用户拍板）；如日后要统一历史，写只读脚本按 contentHash 分组归一名，风险自估。
+2. 同批并发上传多个不同内容同原名文件的预览名短暂重复：如要根治，把 media-assets/upload-file 的命名与写入完全合并进单一持锁事务并让前端顺序化上传。
+3. M018（对话流统一单轮询器）、M019（工作流 canvasJson 大字段重构）仍押后。
+
+**部署流程**（腾讯，改代码必读）：scp 改动源码到 `/opt/flashmuse/app/src/...`（先 scp 到 /tmp 再 `sudo cp` 就位，root 属主）→ `cd /opt/flashmuse && nohup sudo docker compose up -d --build flashmuse-app`（后台+轮询 `/tmp/build*.log`）→ **必须**同步 `.next/static` 到阿里镜像（否则全站 404）：把 rsync 写进 .sh scp 上去跑，别在 PowerShell 内联（PS 会吃掉 `-e "ssh -i ..."` 的引号导致 rsync 走密码认证失败）；Ali 同步 key=`/opt/flashmuse/data/runtime/flashmuse_to_ali_ed25519`（`root@101.37.129.164`）→ 四域名 200。**改源码用 edit 工具，禁 `Set-Content` 改中文文件。**
+
+---
+
+## 🚀 2026-07-16 (输入框统一 session) —— 已随 07-17 一起部署+推送（保留作历史）
+
+**状态**：本 session 全部改动**只在本地**，`npx tsc --noEmit` 全程通过（未跑 build，项目惯例以 tsc 为准），**未 commit / 未 push / 未部署**。无 Prisma 迁移。详见 CHANGELOG / 01-current-status 顶条。
+
+**用户明确指令：下一个 AI 直接把这批部署上线。**
+
+**改动文件（5 个）**：
+- 新增 `src/lib/mention-text.ts`
+- 改 `src/components/chat-workbench.tsx`、`src/components/workflow-tldraw-canvas-inner.tsx`、`src/app/admin/admin-users-panel.tsx`、`src/app/api/media-assets/route.ts`
+
+**部署步骤（腾讯，无 Prisma 迁移）**：
+1. `git status --short` / `git diff` 确认只有上述 5 文件 + 本次 handover（别带无关改动）。
+2. `npx tsc --noEmit` 再确认；可选 `npm run build`。
+3. `git commit` + `git push`（GitHub）。
+4. 腾讯部署：`ssh -i "C:\Users\ASUS\AppData\Local\Temp\opencode\CinematicFlow.pem" ubuntu@119.28.116.16`；scp 改动源码到 `/opt/flashmuse/app/src/...`（`media-assets/route.ts` 也在 src 下）→ `cd /opt/flashmuse && nohup sudo docker compose up -d --build flashmuse-app`（后台+轮询 `/tmp/build*.log` 防 120s 超时）→ **必须**同步 `.next/static` 到阿里镜像（否则 chunk 哈希不匹配全站 404）：`sudo docker cp flashmuse-flashmuse-app-1:/app/.next/static /tmp/next-static && sudo rsync -a --delete -e "ssh -i /opt/flashmuse/data/runtime/flashmuse_to_ali_ed25519" /tmp/next-static/ root@101.37.129.164:/var/www/flashmuse-static/_next/static/` → 四域名 200。
+5. **改源码一律用 edit 工具，禁止 `Set-Content` 改带中文文件（整文件 mojibake）。**
+
+**部署后浏览器验证（ali 硬刷）**：
+1. 对话流/工作流/资产库 输入框：@文件名 蓝色统一（#367cee）；选中一段文字点 @文件名 → 覆盖选中区；不选中→插到光标处。
+2. 资产库生成弹窗：@菜单选图出缩略图+@名；删 @文本缩略图还在；点缩略图 X 清净所有 @名；点缩略图下 @名 → 插入输入框；"清空输入框"连缩略图一起清。
+3. 对话流上传：文档在上排、图片/视频/音频 80×80 混排在下排（视频有封面+播放键）、换行、X 在外角。
+4. 同名不同内容两张图（对话流+工作流）→ 显示 `@名` 与 `@名_2`，各自对应正确的图、都能发模型。
+5. 视频模式传视频+音频→切图片模式→发送 → `当前模型不支持视频/音频`。
+6. 传一个之前传过的视频/音频/文档 → `XX已存在，无需重复上传！`。
+7. 资产库传一张库里已有内容的图（如某工作流生成图另存）→ `图片已存在，无需重复上传！`（不再假报成功）；传全新图 → `成功上传1张图片` 并出现在上传库。
+
+**可优化（非必须）**：资产库命中已存在但那张其实被软删的情况，POST 会 un-delete 但前端未 reload、需刷新才见（罕见，文案已诚实）。
+
+---
+
 ## ✅ 2026-07-15 (后台/工作流统一读取根治 session) END-OF-SESSION —— 先读这条
 
 **状态**：本 session 一连串改动**全部 tsc 过、已部署腾讯 + 同步阿里、并已 push GitHub**（连同 07-14 统一根治大 session 未推的那批一起推）。无 Prisma 迁移。服务器 /tmp 临时文件已清。详见 CHANGELOG / 01-current-status 顶条。
