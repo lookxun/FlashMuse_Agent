@@ -8,15 +8,18 @@ import { appendUploadDiagnosticsLog } from "@/lib/upload-diagnostics-log";
 import { recordUploadEvent } from "@/lib/analytics-events";
 import { syncGeneratedFilesToAli } from "@/lib/ali-sync";
 import { prisma } from "@/lib/prisma";
+import { resolveUploadName } from "@/lib/upload-name";
 
-/** 按内容哈希查以前上传过的同一张图（字节完全一致），命中就复用其地址、不重复落库。 */
-async function findDedupImageUrl(userId: string, contentHash: string) {
+/** 按内容哈希查以前上传过的同一张图（字节完全一致），命中就复用其地址+权威名、不重复落库。 */
+async function findDedupImage(userId: string, contentHash: string) {
   const existing = await prisma.mediaAsset.findFirst({
     where: { userId, contentHash, mediaType: "image", archivedAt: null, userStates: { some: { deletedAt: null, hiddenAt: null } } },
-    select: { url: true },
+    select: { url: true, systemName: true, initialName: true, userStates: { where: { userId }, select: { currentName: true }, take: 1 } },
     orderBy: { firstSeenAt: "asc" },
   });
-  return existing?.url;
+  if (!existing) return undefined;
+  const name = existing.userStates[0]?.currentName?.trim() || existing.systemName?.trim() || existing.initialName?.trim() || undefined;
+  return { url: existing.url, name };
 }
 
 const allowedUploadOrigins = new Set([
@@ -86,15 +89,18 @@ export async function POST(request: Request) {
     // 命中以前上传过的同一张图 → 直接复用旧地址，不再落盘/不建新记录。
     // 仅当调用方显式带 dedup=1 才判重（目前只有对话流接线；资产库/工作流不带 → 不受影响）。
     const wantDedup = formData.get("dedup") === "1";
-    const dedupUrl = wantDedup ? await findDedupImageUrl(userId, contentHash) : undefined;
-    if (dedupUrl) {
-      void appendUploadDiagnosticsLog({ event: "asset-upload-temp-post-dedup-hit", requestId, userId, fileName, status: 200, durationMs: Date.now() - startedAt, extra: { url: dedupUrl, contentHash } });
-      return NextResponse.json({ duplicate: true, url: dedupUrl, contentHash }, { headers });
+    const dedup = wantDedup ? await findDedupImage(userId, contentHash) : undefined;
+    if (dedup) {
+      void appendUploadDiagnosticsLog({ event: "asset-upload-temp-post-dedup-hit", requestId, userId, fileName, status: 200, durationMs: Date.now() - startedAt, extra: { url: dedup.url, contentHash } });
+      return NextResponse.json({ duplicate: true, url: dedup.url, name: dedup.name, contentHash }, { headers });
     }
     const result = await saveTemporaryUploadedImageBuffer(originalBuffer, mimeType, { userId, forceReencode, diagnostics: { requestId, fileName, fileSize } });
+    // 服务端权威预分配显示名（去扩展名 + 全局唯一 + 同图复用同名），前端上传当下即可显示，
+    // 最终入库 media-assets POST 会再权威定名（非并发场景结果一致）。
+    const resolvedName = (await resolveUploadName({ userId, originalFileName: fileName, contentHash }).catch(() => undefined))?.name;
     void appendUploadDiagnosticsLog({ event: "asset-upload-temp-post-success", requestId, userId, fileName, mimeType, fileSize, forceReencode, token: result.token, status: 200, durationMs: Date.now() - startedAt });
     void recordUploadEvent({ userId, kind: "image", status: "success", bytes: fileSize });
-    return NextResponse.json({ ...result, contentHash }, { headers });
+    return NextResponse.json({ ...result, contentHash, name: resolvedName }, { headers });
   } catch (error) {
     const message = toUserErrorMessage(error, "图片上传失败，请稍后再试。");
     console.error("[upload] asset-upload-temp post failed", { requestId, userId, fileName, mimeType, fileSize, forceReencode, error });

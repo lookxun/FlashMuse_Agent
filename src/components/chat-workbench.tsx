@@ -97,6 +97,7 @@ import {
 import { ADVANCED_CHAT_MODEL, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, bytePlusVideoGenerationModels, frontendConversationModels, frontendImageGenerationModels, getExpectedImageDimensions, getExpectedVideoDimensions, getImageQualityBadgeLabel, getImageResolutionLabel, getSupportedImageResolutions, getSupportedVideoRatios, getSupportedVideoResolutions, imageGenerationModels, isNonStandardVideoSize, normalizeImageResolutionForModel, normalizeVideoRatioForModel, normalizeVideoResolutionForModel, videoGenerationModels, type ConversationModel, type GenerationModel, type ModelName } from "@/lib/models";
 import { toUserErrorMessage } from "@/lib/error-message";
 import { buildReferenceHint } from "@/lib/reference-hint";
+import { getMentionRangeForDeletion as getSharedMentionRangeForDeletion, getMentionRanges as getSharedMentionRanges, removeMentionName, replaceMentionName } from "@/lib/mention-text";
 import { createUploadProgressTracker } from "@/lib/upload-progress";
 import { useBodyScrollLock } from "@/components/use-body-scroll-lock";
 import { BytePlusIcon } from "@/components/byteplus-icon";
@@ -249,6 +250,7 @@ type AssetUploadSlot = {
   tempToken?: string;
   tempUrl?: string;
   contentHash?: string;
+  serverName?: string;
   uploadStatus?: UploadTransferStatus;
   uploadProgress?: number;
   forceReencode?: boolean;
@@ -3732,12 +3734,7 @@ function escapeRegExp(value: string) {
 // 删除提示词里某个引用名的【所有】@文件名出现（同一名字可出现多次、可紧贴中文、可相邻）。
 // 不依赖前置空格，带后置边界防止 @image_1 误伤 @image_10。
 function removeAllMentionNames(draft: string, referenceName: string) {
-  if (!draft || !referenceName) return draft;
-  return draft
-    .replace(new RegExp(`@${escapeRegExp(referenceName)}(?=$|[\\s，。！？；;、])`, "g"), "")
-    .replace(/[ \t]{2,}/g, " ")
-    .replace(/\s+$/g, "")
-    .replace(/^\s+/g, "");
+  return removeMentionName(draft, referenceName, { trim: true });
 }
 
 function toChineseNumber(value: string) {
@@ -4091,6 +4088,15 @@ function getUploadedReferenceBaseName(fileName: string) {
   return sanitizeAssetName(fileName.replace(/\.[^.]+$/, "")) || "上传图片";
 }
 
+// 生成一个在 used 集合里唯一的引用名：base 冲突就依次 base_2 / base_3…（不同图不能共用同一个 @文件名）。
+function makeUniqueReferenceName(base: string, used: Set<string>) {
+  const name = base || "上传图片";
+  if (!used.has(name)) return name;
+  let index = 2;
+  while (used.has(`${name}_${index}`)) index += 1;
+  return `${name}_${index}`;
+}
+
 function createAssetUploadSlots(type: UploadableImageAssetType): AssetUploadSlot[] {
   return Array.from({ length: ASSET_UPLOAD_SLOT_COUNT }, () => ({
     id: createClientId(),
@@ -4337,9 +4343,9 @@ async function uploadDocumentFileAsset(file: File, options: { conversationId?: s
   if (typeof options.durationSeconds === "number") formData.append("durationSeconds", String(options.durationSeconds));
   if (options.dimensions) formData.append("dimensions", JSON.stringify(options.dimensions));
   const token = await getDirectUploadToken();
-  const data = await uploadFormDataWithProgress<{ url?: string; error?: string }>(getUploadApiUrl("/api/upload-file"), formData, onProgress, token);
+  const data = await uploadFormDataWithProgress<{ url?: string; error?: string; dedup?: boolean; name?: string }>(getUploadApiUrl("/api/upload-file"), formData, onProgress, token);
   if (!data.url) throw new Error(data.error || "文件上传失败");
-  return data.url;
+  return { url: data.url, duplicate: Boolean(data.dedup), name: data.name };
 }
 
 async function uploadTemporaryAssetImageOnce(file: File, onProgress?: (progress: number) => void, signal?: AbortSignal, forceReencode = false, dedup = false) {
@@ -4350,10 +4356,10 @@ async function uploadTemporaryAssetImageOnce(file: File, onProgress?: (progress:
   const uploadUrl = getUploadApiUrl("/api/asset-upload-temp");
   onProgress?.(2);
   const token = await getDirectUploadToken();
-  const data = await uploadFormDataWithProgress<{ token?: string; error?: string; duplicate?: boolean; url?: string; contentHash?: string }>(uploadUrl, formData, onProgress, token, signal);
-  if (data.duplicate && data.url) return { duplicate: true as const, url: data.url, contentHash: data.contentHash };
+  const data = await uploadFormDataWithProgress<{ token?: string; error?: string; duplicate?: boolean; url?: string; contentHash?: string; name?: string }>(uploadUrl, formData, onProgress, token, signal);
+  if (data.duplicate && data.url) return { duplicate: true as const, url: data.url, contentHash: data.contentHash, name: data.name };
   if (!data.token) throw new Error(data.error || "图片上传失败");
-  return { token: data.token, contentHash: data.contentHash };
+  return { token: data.token, contentHash: data.contentHash, name: data.name };
 }
 
 async function uploadTemporaryAssetImage(file: File, onProgress?: (progress: number) => void, signal?: AbortSignal, forceReencode = false, dedup = false) {
@@ -4486,7 +4492,7 @@ function replaceMentionNamesForModelPrompt(prompt: string, references?: ImageRef
   references.forEach((reference, index) => {
     if (!reference.name) return;
     const label = references.length === 1 ? "参考图中的主体" : `参考图${index + 1}中的主体`;
-    nextPrompt = nextPrompt.replace(new RegExp(`@${escapeRegExp(reference.name)}(?=$|[\\s，。！？；;、])`, "g"), label);
+    nextPrompt = replaceMentionName(nextPrompt, reference.name, label);
   });
 
   return nextPrompt.trim() || prompt;
@@ -5239,26 +5245,11 @@ function appendEditorText(element: HTMLElement, text: string) {
 }
 
 function getEditorMentionRanges(value: string, validReferences: Set<string>) {
-  const names = Array.from(validReferences).filter(Boolean).sort((a, b) => b.length - a.length);
-  const ranges: Array<{ start: number; end: number; name: string }> = [];
-  if (names.length === 0) return ranges;
-
-  for (let index = 0; index < value.length; index += 1) {
-    if (value[index] !== "@") continue;
-    const matchedName = names.find((name) => value.startsWith(`@${name}`, index));
-    if (!matchedName) continue;
-    const end = index + matchedName.length + 1;
-    ranges.push({ start: index, end, name: matchedName });
-    index = end - 1;
-  }
-
-  return ranges;
+  return getSharedMentionRanges(value, validReferences);
 }
 
 function getMentionRangeForDeletion(value: string, cursorOffset: number, direction: "backward" | "forward", validReferences: Set<string>) {
-  const probeOffset = direction === "backward" ? cursorOffset - 1 : cursorOffset;
-  if (probeOffset < 0 || probeOffset >= value.length) return undefined;
-  return getEditorMentionRanges(value, validReferences).find((range) => probeOffset >= range.start && probeOffset < range.end);
+  return getSharedMentionRangeForDeletion(value, cursorOffset, direction, validReferences);
 }
 
 function getSelectionTextOffset(element: HTMLElement) {
@@ -5300,6 +5291,50 @@ function getSelectionTextOffset(element: HTMLElement) {
 
   walk(element);
   return found ? offset : getEditableText(element).length;
+}
+
+// 读取当前选区的文本起止偏移（start<=end）。无选区时 start===end（即光标位置）。
+// 用于"选中文本后点 @文件名 → 覆盖选中区"。
+function getSelectionTextRange(element: HTMLElement): { start: number; end: number } {
+  const selection = window.getSelection();
+  const fallback = getEditableText(element).length;
+  if (!selection || selection.rangeCount === 0) return { start: fallback, end: fallback };
+
+  const range = selection.getRangeAt(0);
+  if (!element.contains(range.startContainer) || !element.contains(range.endContainer)) return { start: fallback, end: fallback };
+
+  const nodeTextLength = (node: Node): number => {
+    if (node.nodeType === Node.TEXT_NODE) return node.textContent?.length ?? 0;
+    if (node.nodeName === "BR") return node instanceof HTMLElement && node.dataset.trailingBreak === "true" ? 0 : 1;
+    return Array.from(node.childNodes).reduce((sum, child) => sum + nodeTextLength(child), 0);
+  };
+  const offsetOf = (targetNode: Node, targetOffset: number): number => {
+    let offset = 0;
+    let found = false;
+    const walk = (node: Node) => {
+      if (found) return;
+      if (node === targetNode) {
+        if (node.nodeType === Node.TEXT_NODE) {
+          offset += targetOffset;
+        } else {
+          Array.from(node.childNodes).slice(0, targetOffset).forEach((child) => { offset += nodeTextLength(child); });
+        }
+        found = true;
+        return;
+      }
+      if (node.nodeType === Node.TEXT_NODE || node.nodeName === "BR") {
+        offset += nodeTextLength(node);
+        return;
+      }
+      node.childNodes.forEach(walk);
+    };
+    walk(element);
+    return found ? offset : fallback;
+  };
+
+  const a = offsetOf(range.startContainer, range.startOffset);
+  const b = offsetOf(range.endContainer, range.endOffset);
+  return a <= b ? { start: a, end: b } : { start: b, end: a };
 }
 
 function setSelectionTextOffset(element: HTMLElement, offset: number) {
@@ -5391,7 +5426,7 @@ function renderEditorContent(element: HTMLElement, value: string, validReference
     if (range.start > cursor) appendEditorText(element, value.slice(cursor, range.start));
 
     const mention = document.createElement("span");
-    mention.className = "text-[#4f7cff]";
+    mention.className = "text-[#367cee]";
     mention.dataset.mention = "true";
     mention.contentEditable = "false";
     mention.textContent = value.slice(range.start, range.end);
@@ -5673,8 +5708,8 @@ function ReferencedTextContent({ content, references, mediaReferences, onPreview
         if ("mediaKind" in reference) {
           const Icon = reference.mediaKind === "video" ? RiVideoLine : RiMusic2Line;
           return (
-            <span key={`${part.text}-${index}`} className="mx-0.5 inline-flex items-center gap-1 align-[-4px] leading-none text-[#4f7cff]">
-              <button type="button" onClick={() => onPreviewMedia?.(reference.file)} className="inline-flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded bg-[#eef3ff] text-[#4f7cff] ring-1 ring-[#dbe5ff] transition hover:bg-white" aria-label={`预览${reference.name}`}>
+            <span key={`${part.text}-${index}`} className="mx-0.5 inline-flex items-center gap-1 align-[-4px] leading-none text-[#367cee]">
+              <button type="button" onClick={() => onPreviewMedia?.(reference.file)} className="inline-flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded bg-[#eef3ff] text-[#367cee] ring-1 ring-[#dbe5ff] transition hover:bg-white" aria-label={`预览${reference.name}`}>
                 <Icon className="h-3.5 w-3.5" aria-hidden="true" />
               </button>
               <span className="max-w-[180px] truncate leading-[18px]">{part.text}</span>
@@ -5683,7 +5718,7 @@ function ReferencedTextContent({ content, references, mediaReferences, onPreview
         }
 
         return (
-          <span key={`${part.text}-${index}`} className="mx-0.5 inline-flex items-center gap-1 align-[-3px] leading-none text-[#4f7cff]">
+          <span key={`${part.text}-${index}`} className="mx-0.5 inline-flex items-center gap-1 align-[-3px] leading-none text-[#367cee]">
             <HoverImagePreview src={getStaticMediaUrl(reference.url) ?? reference.url} alt={reference.name} wrapperClassName="inline-flex h-[18px] w-[18px] shrink-0 items-center align-middle">
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img src={getStaticMediaUrl(reference.url) ?? reference.url} alt={reference.name} className="block h-[18px] w-[18px] rounded object-cover" />
@@ -5782,7 +5817,7 @@ function UploadedDocumentStrip({ files, onPreview }: { files?: UploadedFileEntry
     <div className="mt-2 flex flex-wrap justify-end gap-2">
       {files.map((file, index) => {
         const displayName = getUploadedFileDisplayName(file);
-        const meta = getUploadedDocumentMeta(displayName);
+        const meta = getUploadedDocumentMeta(getUploadedFileMetaName(file));
         const sizeText = formatUploadedFileSize(file);
         const mediaKind = getUploadedFileMediaKind(file);
 
@@ -5866,7 +5901,7 @@ function AssetManagementPanel({
   const visibleAssets = useMemo(() => assets.filter((asset) => {
     if (isAssetTrashExpired(asset, now)) return false;
     return isAssetInFilter(asset, assetFilter);
-  }), [assets, assetFilter, now]);
+  }).sort((left, right) => (right.createdAt ?? 0) - (left.createdAt ?? 0)), [assets, assetFilter, now]);
   const visibleTypes: AssetType[] = assetFilter === "conversation_images" || assetFilter === "conversation_uploads" || assetFilter === "conversation_videos" || assetFilter === "workflow_images" || assetFilter === "workflow_videos" ? assetTypeOrder : [assetFilter];
   const title = assetFilter === "conversation_images" ? "生成图片" : assetFilter === "conversation_uploads" ? "上传图片" : assetFilter === "conversation_videos" ? "生成视频" : assetFilter === "workflow_images" ? "工作流生成图片" : assetFilter === "workflow_videos" ? "工作流生成视频" : assetTypeLabels[assetFilter];
   const canUploadImages = assetFilter === "conversation_uploads";
@@ -6849,17 +6884,19 @@ function getUploadedFileDisplayName(file: UploadedFileEntry) {
   return fileName.replace(/\s·\s[^·]+$/, "");
 }
 
+// 用于取图标/类型的"带扩展名"名字：显示名已改为服务端权威名（去扩展名），
+// 但图标判定仍需扩展名，故用独立保留的 file.extension 拼回。
+function getUploadedFileMetaName(file: UploadedFileEntry) {
+  if (typeof file === "string") return getUploadedFileDisplayName(file);
+  return file.extension ? `${file.name}.${file.extension}` : file.name;
+}
+
 function getUploadedFileStorageValue(file: UploadedFileEntry) {
   return typeof file === "string" ? file : file.storageName;
 }
 
 function getUploadedFilePreviewText(file: UploadedFileEntry) {
   return typeof file === "string" ? "" : file.text?.trim() ?? "";
-}
-
-function getMediaDurationLabel(seconds?: number) {
-  if (!Number.isFinite(seconds ?? Number.NaN) || !seconds) return "";
-  return `${Math.round(seconds * 10) / 10}s`;
 }
 
 function getUploadedMediaDuration(file: UploadedFileEntry) {
@@ -6935,7 +6972,7 @@ function DocumentPreviewPanel({ file, width, onResizeStart, onClose }: { file: U
   if (!file) return null;
 
   const displayName = getUploadedFileDisplayName(file);
-  const meta = getUploadedDocumentMeta(displayName);
+  const meta = getUploadedDocumentMeta(getUploadedFileMetaName(file));
   const text = getUploadedFilePreviewText(file);
   const sizeText = formatUploadedFileSize(file);
   const canUseText = Boolean(text);
@@ -6951,7 +6988,7 @@ function DocumentPreviewPanel({ file, width, onResizeStart, onClose }: { file: U
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = displayName;
+    link.download = getUploadedFileMetaName(file);
     document.body.appendChild(link);
     link.click();
     link.remove();
@@ -7254,6 +7291,8 @@ export function ChatWorkbench() {
   const [assetGenerateType, setAssetGenerateType] = useState<AssetGenerationImageType>("character_image");
   const [characterGeneratePrompt, setCharacterGeneratePrompt] = useState("");
   const [assetGeneratePromptDrafts, setAssetGeneratePromptDrafts] = useState<Record<AssetGenerationImageType, string>>({ character_image: "", scene_image: "", shot_image: "" });
+  // 资产库生成的参考图作为独立状态（对齐对话流/工作流：缩略图独立于 @文件名 文本，删 @ 文本不删图、删图清净所有 @）。
+  const [assetGenerateReferenceDrafts, setAssetGenerateReferenceDrafts] = useState<Record<AssetGenerationImageType, ImageReference[]>>({ character_image: [], scene_image: [], shot_image: [] });
   const [assetGenerateRatioSelections, setAssetGenerateRatioSelections] = useState<Record<AssetGenerationImageType, AssetGenerateRatio>>({ character_image: "single", scene_image: "single", shot_image: "single" });
   const [characterGenerateRatio, setCharacterGenerateRatio] = useState<AssetGenerateRatio>("single");
   const [characterGenerateStyle, setCharacterGenerateStyle] = useState<"realistic" | "2d" | "3d">("realistic");
@@ -7412,6 +7451,9 @@ export function ChatWorkbench() {
   const setActiveAssetGeneratePrompt = useCallback((value: string) => {
     setCharacterGeneratePrompt(value);
     setAssetGeneratePromptDrafts((current) => ({ ...current, [assetGenerateType]: value }));
+  }, [assetGenerateType]);
+  const setActiveAssetGenerateReferences = useCallback((updater: (current: ImageReference[]) => ImageReference[]) => {
+    setAssetGenerateReferenceDrafts((current) => ({ ...current, [assetGenerateType]: updater(current[assetGenerateType] ?? []) }));
   }, [assetGenerateType]);
   const setActiveAssetGenerateRatio = useCallback((value: AssetGenerateRatio) => {
     setCharacterGenerateRatio(value);
@@ -7714,12 +7756,6 @@ export function ChatWorkbench() {
       setCanScrollUploadedImages({ left: false, right: false });
     }
   }, []);
-  const scrollUploadedRow = useCallback((kind: "files" | "images", direction: -1 | 1) => {
-    const row = kind === "files" ? uploadedFilesRowRef.current : uploadedImagesRowRef.current;
-    if (!row) return;
-    row.scrollBy({ left: direction * Math.max(180, row.clientWidth * 0.72), behavior: "smooth" });
-    window.setTimeout(updateUploadedRowScrollState, 220);
-  }, [updateUploadedRowScrollState]);
   const updateAssetGenerateReferenceScrollState = useCallback(() => {
     const row = assetGenerateReferencesRowRef.current;
     if (!row) {
@@ -7739,11 +7775,12 @@ export function ChatWorkbench() {
     window.setTimeout(updateAssetGenerateReferenceScrollState, 220);
   }, [updateAssetGenerateReferenceScrollState]);
   const removeAssetGenerateReference = useCallback((name: string) => {
-    const pattern = new RegExp(`(^|\\s)@${escapeRegExp(name)}(?=\\s|$)\\s?`, "g");
-    const nextPrompt = characterGeneratePrompt.replace(pattern, (match, prefix: string) => prefix ? prefix : "").replace(/\s{2,}/g, " ").trimStart();
+    // 删缩略图：移除该参考图状态 + 删净提示词里它对应的所有 @文件名（对齐对话流规则：不允许“有@文件名、无缩略图”）。
+    setActiveAssetGenerateReferences((current) => current.filter((reference) => reference.name !== name));
+    const nextPrompt = removeMentionName(characterGeneratePrompt, name, { trim: true });
     setActiveAssetGeneratePrompt(nextPrompt);
     setCharacterPromptCursorOffset(Math.min(characterPromptCursorOffset, nextPrompt.length));
-  }, [characterGeneratePrompt, characterPromptCursorOffset, setActiveAssetGeneratePrompt]);
+  }, [characterGeneratePrompt, characterPromptCursorOffset, setActiveAssetGeneratePrompt, setActiveAssetGenerateReferences]);
   const getWorkflowPreviewAsset = useCallback((workflow: WorkflowItem, node: WorkflowNode, kind: "image" | "video", url: string, asset?: AssetItem): AssetItem => {
     const nodeName = node.data.mediaSystemNames?.[url];
     const fallbackName = kind === "video" ? "视频生成" : "图片生成";
@@ -7890,7 +7927,7 @@ export function ChatWorkbench() {
   const hasAnyWorkflowGenerating = activeWorkflowItems.some((workflow) => workflow.canvas?.nodes?.some((node) => node.data.isRunning));
   const hasAnyGenerationRunning = hasAnyConversationRunning || hasAnyAssetGenerating || hasAnyWorkflowGenerating;
   const characterValidReferenceNames = getValidReferenceNames(assets, [], []);
-  const assetGenerateReferenceImages = useMemo(() => getOrderedExplicitImageReferences(characterGeneratePrompt, assets, [], []), [assets, characterGeneratePrompt]);
+  const assetGenerateReferenceImages = assetGenerateReferenceDrafts[assetGenerateType] ?? [];
   const characterAtQuery = getAtQueryAtCursor(characterGeneratePrompt, characterPromptCursorOffset);
   const characterAtAssetSearch = characterAtQuery?.query ?? "";
   const characterAtAssetGroups = isCharacterAtAssetMenuOpen
@@ -8430,7 +8467,7 @@ export function ChatWorkbench() {
           assetUploadAbortControllersRef.current.delete(slot.id);
           const dupUrl = "duplicate" in result ? result.url : undefined;
           if (dupUrl) showAssetUploadTip("图片已存在，无需重复上传！");
-          setAssetUploadSlots((current) => current.map((item) => item.id === slot.id ? { ...item, uploadFile: undefined, tempToken: "duplicate" in result ? undefined : result.token, tempUrl: dupUrl, contentHash: result.contentHash, isDuplicate: Boolean(dupUrl), uploadStatus: "ready", uploadProgress: 100, forceReencode: undefined, error: undefined } : item));
+          setAssetUploadSlots((current) => current.map((item) => item.id === slot.id ? { ...item, uploadFile: undefined, tempToken: "duplicate" in result ? undefined : result.token, tempUrl: dupUrl, contentHash: result.contentHash, serverName: result.name, isDuplicate: Boolean(dupUrl), uploadStatus: "ready", uploadProgress: 100, forceReencode: undefined, error: undefined } : item));
         })
         .catch((error) => {
           assetUploadAbortControllersRef.current.delete(slot.id);
@@ -8501,7 +8538,8 @@ export function ChatWorkbench() {
         // 命中内容哈希去重的槽位（tempUrl）复用已有图，不再 commit；其余提交临时文件拿正式地址。
         const url = slot.tempToken ? await commitTemporaryAssetImage(slot.tempToken) : (slot.tempUrl as string);
         return {
-          name: sanitizeAssetName(slot.fileName) || sanitizeAssetName(slot.originalFileName) || "上传图片",
+          // 名字一律由服务端权威定（去扩展名 + 全局唯一 + 同图复用同名）；serverName 兜底才用本地清洗名。
+          name: slot.serverName || sanitizeAssetName(slot.fileName) || sanitizeAssetName(slot.originalFileName) || "上传图片",
           type: slot.type,
           url,
           contentHash: slot.contentHash,
@@ -8511,45 +8549,15 @@ export function ChatWorkbench() {
       }));
 
       const validItems = uploadedItems.filter((item) => item.url);
-      // 去重已在上传时由服务端内容哈希完成并提示；这里只把"新图"入库，复用的重复图不再重复添加。
-      const newItems = validItems.filter((item) => !item.isDuplicate);
+      // 上传时按 contentHash 命中判重的，直接算"已存在"。
+      const contentHashDuplicateCount = validItems.filter((item) => item.isDuplicate).length;
+      const candidates = validItems.filter((item) => !item.isDuplicate);
 
-      if (newItems.length > 0) {
-        let simulatedAssets = assets;
-        const itemsToPersist: Array<{ name: string; url: string; contentHash?: string }> = [];
-        newItems.forEach((item) => {
-          if (simulatedAssets.some((asset) => asset.url === item.url)) return;
-          const name = getVersionedName(item.name, simulatedAssets);
-          itemsToPersist.push({ name, url: item.url, contentHash: item.contentHash });
-          simulatedAssets = [{ id: item.url, type: "other", name, systemName: name, url: item.url, librarySource: "conversation", sourcePrompt: UPLOAD_IMAGE_PROMPT_PLACEHOLDER, promptSource: "upload", sessionId: activeSessionIdValue, lockedType: true, createdAt: Date.now() }, ...simulatedAssets];
-        });
-        setAssets((current) => {
-          let nextAssets = current;
-
-          itemsToPersist.forEach((item) => {
-            if (nextAssets.some((asset) => asset.url === item.url)) return;
-            nextAssets = [
-              {
-            id: createClientId(),
-            type: "other",
-            name: item.name,
-            systemName: item.name,
-            url: item.url,
-            librarySource: "conversation",
-            sourcePrompt: UPLOAD_IMAGE_PROMPT_PLACEHOLDER,
-            promptSource: "upload",
-            sessionId: activeSessionIdValue,
-                lockedType: true,
-                createdAt: Date.now(),
-              },
-              ...nextAssets,
-            ];
-          });
-
-          return nextAssets;
-        });
-        itemsToPersist.forEach((item) => {
-          void fetch("/api/media-assets", {
+      // 提交入库并等待结果：服务端返回权威 name（去扩展名 + 全局唯一 + 同图复用同名）与
+      // duplicate=true（这张图同内容/同 url 已在库里，可能在别的分类，不是新图）。
+      const postResults = await Promise.all(candidates.map(async (item) => {
+        try {
+          const response = await fetch("/api/media-assets", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -8562,11 +8570,48 @@ export function ChatWorkbench() {
               conversationId: activeSessionIdValue,
               contentHash: item.contentHash,
             }),
-          }).catch((error) => console.warn("[media-assets] failed to persist uploaded asset", error));
+          });
+          const data = await response.json().catch(() => undefined);
+          return { item: { ...item, name: (typeof data?.name === "string" && data.name.trim()) ? data.name.trim() : item.name }, duplicate: Boolean(data?.duplicate) };
+        } catch (error) {
+          console.warn("[media-assets] failed to persist uploaded asset", error);
+          return { item, duplicate: false };
+        }
+      }));
+
+      // 只把服务端确认的新图加入库（重复图不加，避免出现"上传成功却在上传库里找不到"的幽灵）。
+      const persistedItems = postResults.filter((result) => !result.duplicate).map((result) => result.item);
+      const duplicateCount = contentHashDuplicateCount + postResults.filter((result) => result.duplicate).length;
+
+      if (persistedItems.length > 0) {
+        setAssets((current) => {
+          let nextAssets = current;
+          persistedItems.forEach((item) => {
+            if (nextAssets.some((asset) => asset.url === item.url)) return;
+            nextAssets = [
+              {
+                id: createClientId(),
+                type: "other",
+                name: item.name,
+                systemName: item.name,
+                url: item.url,
+                librarySource: "conversation",
+                sourcePrompt: UPLOAD_IMAGE_PROMPT_PLACEHOLDER,
+                promptSource: "upload",
+                sessionId: activeSessionIdValue,
+                lockedType: true,
+                createdAt: Date.now(),
+              },
+              ...nextAssets,
+            ];
+          });
+          return nextAssets;
         });
       }
 
-      if (newItems.length > 0) showAssetUploadTip(`成功上传${newItems.length}张图片`, "success");
+      if (persistedItems.length > 0 && duplicateCount > 0) showAssetUploadTip(`成功上传${persistedItems.length}张图片，${duplicateCount}张已存在`, "success");
+      else if (persistedItems.length > 0) showAssetUploadTip(`成功上传${persistedItems.length}张图片`, "success");
+      else if (duplicateCount > 0) showAssetUploadTip("图片已存在，无需重复上传！");
       assetUploadAbortControllersRef.current.clear();
       setAssetUploadSlots(createAssetUploadSlots(getDefaultAssetUploadType(assetFilter)));
       setIsAssetUploadOpen(false);
@@ -8845,7 +8890,15 @@ export function ChatWorkbench() {
         const maxImages = currentUploadRule.image.maxCount;
         const availableCount = Math.max(0, maxImages - existingImages.length);
         const newImages = images.filter((image) => !existingImages.some((item) => item.url === image.url)).slice(0, availableCount);
-        const nextUploadedImages = [...existingImages, ...newImages].slice(0, maxImages);
+        // 给每张新图分配唯一稳定的引用名：不同图即使文件名相同也错开成 名_2/名_3，避免 @文件名 撞名无法区分。
+        const usedReferenceNames = new Set(existingImages.map((item) => getUploadedImageReferenceName(item, existingImages)));
+        const dedupedNewImages = newImages.map((image) => {
+          const base = (image.referenceName && image.referenceName.trim()) || getUploadedReferenceBaseName(image.name);
+          const uniqueName = makeUniqueReferenceName(base, usedReferenceNames);
+          usedReferenceNames.add(uniqueName);
+          return { ...image, referenceName: uniqueName };
+        });
+        const nextUploadedImages = [...existingImages, ...dedupedNewImages].slice(0, maxImages);
         const acceptedImages = images
           .map((image) => nextUploadedImages.find((item) => item.url === image.url))
           .filter((image): image is UploadedImage => Boolean(image));
@@ -12404,19 +12457,17 @@ export function ChatWorkbench() {
       showInputTip(`当前模型最多支持 ${submitUploadRule.image.maxCount} 张参考图，不能上传更多图片`);
       return;
     }
-    const submitMaxUploadFiles = submitUploadRule.document.maxCount + submitUploadRule.video.maxCount + submitUploadRule.audio.maxCount;
-    if (availableUploadedFiles.length > submitMaxUploadFiles) {
-      showInputTip(`当前模型最多支持 ${submitMaxUploadFiles} 个文件`);
-      return;
-    }
     const uploadedVideoFiles = availableUploadedFiles.filter((file) => getUploadedFileMediaKind(file) === "video");
     const uploadedAudioFiles = availableUploadedFiles.filter((file) => getUploadedFileMediaKind(file) === "audio");
-    if (uploadedVideoFiles.length > 0 && !submitUploadRule.video.enabled) {
-      showInputTip("当前模型不支持上传视频");
-      return;
-    }
-    if (uploadedAudioFiles.length > 0 && !submitUploadRule.audio.enabled) {
-      showInputTip("当前模型不支持上传音频");
+    const uploadedDocumentFiles = availableUploadedFiles.filter((file) => getUploadedFileMediaKind(file) === "document");
+    // 切换模式后当前模型可能整类不支持（如从视频模式切到图片模式，图片模型不支持视频/音频/文件）。
+    // 直接提示"当前模型不支持视频/音频/文件"，而不是含糊的"最多支持 0 个文件"。
+    const unsupportedUploadKinds: string[] = [];
+    if (uploadedVideoFiles.length > 0 && !submitUploadRule.video.enabled) unsupportedUploadKinds.push("视频");
+    if (uploadedAudioFiles.length > 0 && !submitUploadRule.audio.enabled) unsupportedUploadKinds.push("音频");
+    if (uploadedDocumentFiles.length > 0 && !submitUploadRule.document.enabled) unsupportedUploadKinds.push("文件");
+    if (unsupportedUploadKinds.length > 0) {
+      showInputTip(`当前模型不支持${unsupportedUploadKinds.join("/")}`);
       return;
     }
     if (uploadedVideoFiles.length > submitUploadRule.video.maxCount) {
@@ -12425,6 +12476,10 @@ export function ChatWorkbench() {
     }
     if (uploadedAudioFiles.length > submitUploadRule.audio.maxCount) {
       showInputTip(`当前模型最多支持 ${submitUploadRule.audio.maxCount} 个参考音频`);
+      return;
+    }
+    if (uploadedDocumentFiles.length > submitUploadRule.document.maxCount) {
+      showInputTip(`当前模型最多支持 ${submitUploadRule.document.maxCount} 个文件`);
       return;
     }
     const uploadedVideoDuration = uploadedVideoFiles.reduce((sum, file) => sum + getUploadedMediaDuration(file), 0);
@@ -13423,8 +13478,19 @@ export function ChatWorkbench() {
         void uploadDocumentFileAsset(file, { conversationId: activeSessionId, mediaKind: media?.mediaKind, durationSeconds: media?.durationSeconds, dimensions: media?.dimensions }, (progress) => {
           setSessions((current) => current.map((session) => session.id === activeSessionId ? { ...session, uploadedFiles: (session.uploadedFiles ?? []).map((item) => typeof item !== "string" && item.id === entry.id ? { ...item, uploadProgress: progress, uploadStatus: "uploading" } : item) } : session));
         })
-          .then((url) => {
-            setSessions((current) => current.map((session) => session.id === activeSessionId ? { ...session, uploadedFiles: (session.uploadedFiles ?? []).map((item) => typeof item !== "string" && item.id === entry.id ? { ...item, url, uploadProgress: 100, uploadStatus: "ready" } : item) } : session));
+          .then(({ url, duplicate, name: serverName }) => {
+            if (duplicate) showInputTip(`${media?.mediaKind === "video" ? "视频" : media?.mediaKind === "audio" ? "音频" : "文件"}已存在，无需重复上传！`);
+            setSessions((current) => current.map((session) => {
+              if (session.id !== activeSessionId) return session;
+              const list = session.uploadedFiles ?? [];
+              // 显示名/引用名一律用服务端权威名（去扩展名 + 全局唯一 + 同文件复用同名），框内再兜底去重。
+              let nextName: string | undefined;
+              if (serverName) {
+                const usedNames = new Set(list.filter((item) => typeof item !== "string" && item.id !== entry.id).map((item) => (typeof item === "string" ? "" : item.name)).filter(Boolean));
+                nextName = makeUniqueReferenceName(serverName, usedNames);
+              }
+              return { ...session, uploadedFiles: list.map((item) => typeof item !== "string" && item.id === entry.id ? { ...item, url, ...(nextName ? { name: nextName } : {}), uploadProgress: 100, uploadStatus: "ready" } : item) };
+            }));
           })
           .catch((error) => {
             setSessions((current) => current.map((session) => session.id === activeSessionId ? { ...session, uploadedFiles: (session.uploadedFiles ?? []).map((item) => typeof item !== "string" && item.id === entry.id ? { ...item, uploadProgress: 100, uploadStatus: "error", error: item.error ?? toUserErrorMessage(error, "上传失败") } : item) } : session));
@@ -13463,8 +13529,16 @@ export function ChatWorkbench() {
           const dupUrl = "duplicate" in result ? result.url : undefined;
           const nextToken = "duplicate" in result ? undefined : result.token;
           const nextHash = result.contentHash;
+          const serverName = result.name;
           if (dupUrl) showInputTip("图片已存在，无需重复上传！");
-          setSessions((current) => current.map((session) => session.id === activeSessionId ? { ...session, uploadedImages: (session.uploadedImages ?? []).map((item) => item.id === image.id ? { ...item, tempToken: nextToken, url: dupUrl ?? item.url, contentHash: nextHash, uploadProgress: 100, uploadStatus: "ready", forceReencode: undefined, error: undefined } : item) } : session));
+          setSessions((current) => current.map((session) => {
+            if (session.id !== activeSessionId) return session;
+            const list = session.uploadedImages ?? [];
+            // 引用名一律用服务端权威名；同框内再兜底去重保证唯一。
+            const usedNames = new Set(list.filter((item) => item.id !== image.id).map((item) => item.referenceName).filter((name): name is string => Boolean(name)));
+            const referenceName = serverName ? makeUniqueReferenceName(serverName, usedNames) : undefined;
+            return { ...session, uploadedImages: list.map((item) => item.id === image.id ? { ...item, tempToken: nextToken, url: dupUrl ?? item.url, contentHash: nextHash, ...(referenceName ? { referenceName } : {}), uploadProgress: 100, uploadStatus: "ready", forceReencode: undefined, error: undefined } : item) };
+          }));
         })
           .catch((error) => {
             inputImageUploadAbortControllersRef.current.delete(image.id);
@@ -13495,8 +13569,15 @@ export function ChatWorkbench() {
         const dupUrl = "duplicate" in result ? result.url : undefined;
         const nextToken = "duplicate" in result ? undefined : result.token;
         const nextHash = result.contentHash;
+        const serverName = result.name;
         if (dupUrl) showInputTip("图片已存在，无需重复上传！");
-        setSessions((current) => current.map((session) => session.id === activeSessionId ? { ...session, uploadedImages: (session.uploadedImages ?? []).map((item) => item.id === imageId ? { ...item, tempToken: nextToken, url: dupUrl ?? item.url, contentHash: nextHash, uploadProgress: 100, uploadStatus: "ready", forceReencode: undefined, error: undefined } : item) } : session));
+        setSessions((current) => current.map((session) => {
+          if (session.id !== activeSessionId) return session;
+          const list = session.uploadedImages ?? [];
+          const usedNames = new Set(list.filter((item) => item.id !== imageId).map((item) => item.referenceName).filter((name): name is string => Boolean(name)));
+          const referenceName = serverName ? makeUniqueReferenceName(serverName, usedNames) : undefined;
+          return { ...session, uploadedImages: list.map((item) => item.id === imageId ? { ...item, tempToken: nextToken, url: dupUrl ?? item.url, contentHash: nextHash, ...(referenceName ? { referenceName } : {}), uploadProgress: 100, uploadStatus: "ready", forceReencode: undefined, error: undefined } : item) };
+        }));
       })
       .catch((error) => {
         inputImageUploadAbortControllersRef.current.delete(imageId);
@@ -13565,29 +13646,34 @@ export function ChatWorkbench() {
       setDraftCursorOffset(offset);
     });
   }, []);
-  const getCurrentDraftCursor = useCallback(() => {
+  // 选中文本后点 @文件名 时覆盖选中区：返回选区起止（无选区则回退到 draftCursorOffset，保持原插入位置行为）。
+  const getCurrentDraftSelection = useCallback(() => {
     const editor = editorRef.current;
-    if (!editor) return Math.min(Math.max(0, draftCursorOffset), activeInput.length);
-
-    const cursor = getSelectionTextOffset(editor);
-    return Math.min(Math.max(0, cursor), activeInput.length);
+    const length = activeInput.length;
+    const storedCursor = Math.min(Math.max(0, draftCursorOffset), length);
+    if (!editor) return { start: storedCursor, end: storedCursor };
+    const range = getSelectionTextRange(editor);
+    const start = Math.min(Math.max(0, range.start), length);
+    const end = Math.min(Math.max(0, range.end), length);
+    if (start === end) return { start: storedCursor, end: storedCursor };
+    return { start, end };
   }, [activeInput.length, draftCursorOffset]);
   const insertTextAtDraftCursor = useCallback((text: string) => {
-    const cursor = getCurrentDraftCursor();
-    const nextInput = `${activeInput.slice(0, cursor)}${text}${activeInput.slice(cursor)}`;
+    const { start, end } = getCurrentDraftSelection();
+    const nextInput = `${activeInput.slice(0, start)}${text}${activeInput.slice(end)}`;
     setActiveDraftInput(nextInput);
-    focusEditorAt(cursor + text.length);
-  }, [activeInput, focusEditorAt, getCurrentDraftCursor, setActiveDraftInput]);
+    focusEditorAt(start + text.length);
+  }, [activeInput, focusEditorAt, getCurrentDraftSelection, setActiveDraftInput]);
   const mentionMediaIntoInput = useCallback((url: string, name: string) => {
     if (activeUploadedImages.length >= currentMaxReferenceImages && !activeUploadedImages.some((image) => image.url === url)) {
       showInputTip(`当前模型最多支持 ${currentMaxReferenceImages} 张参考图，不能上传更多图片`);
       return;
     }
     setActivePanel("chat");
-    const cursor = getCurrentDraftCursor();
-    addActiveUploadedImages([toUploadedAssetReference({ name, url })], { draftBase: activeInput.slice(0, cursor), draftSuffix: activeInput.slice(cursor), insertReferenceText: true });
-    focusEditorAt(cursor + name.length + 2);
-  }, [activeInput, activeUploadedImages, addActiveUploadedImages, currentMaxReferenceImages, focusEditorAt, getCurrentDraftCursor, setActivePanel, showInputTip]);
+    const { start, end } = getCurrentDraftSelection();
+    addActiveUploadedImages([toUploadedAssetReference({ name, url })], { draftBase: activeInput.slice(0, start), draftSuffix: activeInput.slice(end), insertReferenceText: true });
+    focusEditorAt(start + name.length + 2);
+  }, [activeInput, activeUploadedImages, addActiveUploadedImages, currentMaxReferenceImages, focusEditorAt, getCurrentDraftSelection, setActivePanel, showInputTip]);
   const focusCharacterEditorAt = useCallback((offset: number) => {
     requestAnimationFrame(() => {
       const editor = characterEditorRef.current;
@@ -13603,6 +13689,17 @@ export function ChatWorkbench() {
 
     const cursor = getSelectionTextOffset(editor);
     return Math.min(Math.max(0, cursor), characterGeneratePrompt.length);
+  }, [characterGeneratePrompt.length, characterPromptCursorOffset]);
+  const getCurrentCharacterPromptSelection = useCallback(() => {
+    const editor = characterEditorRef.current;
+    const length = characterGeneratePrompt.length;
+    const storedCursor = Math.min(Math.max(0, characterPromptCursorOffset), length);
+    if (!editor) return { start: storedCursor, end: storedCursor };
+    const range = getSelectionTextRange(editor);
+    const start = Math.min(Math.max(0, range.start), length);
+    const end = Math.min(Math.max(0, range.end), length);
+    if (start === end) return { start: storedCursor, end: storedCursor };
+    return { start, end };
   }, [characterGeneratePrompt.length, characterPromptCursorOffset]);
   const activeAtQuery = getAtQueryAtCursor(activeInput, draftCursorOffset);
   useEffect(() => {
@@ -13638,8 +13735,9 @@ export function ChatWorkbench() {
       return;
     }
 
-    const insertBase = activeAtQuery ? activeInput.slice(0, activeAtQuery.index) : activeInput.slice(0, draftCursorOffset);
-    const insertSuffix = activeAtQuery ? activeInput.slice(activeAtQuery.cursor) : activeInput.slice(draftCursorOffset);
+    const selection = getCurrentDraftSelection();
+    const insertBase = activeAtQuery ? activeInput.slice(0, activeAtQuery.index) : activeInput.slice(0, selection.start);
+    const insertSuffix = activeAtQuery ? activeInput.slice(activeAtQuery.cursor) : activeInput.slice(selection.end);
     const referenceText = `@${asset.name} `;
     addActiveUploadedImages([toUploadedAssetReference(asset)], { draftBase: insertBase, draftSuffix: insertSuffix, insertReferenceText: true });
     setIsAtAssetMenuOpen(false);
@@ -13652,15 +13750,26 @@ export function ChatWorkbench() {
       return;
     }
 
-    const currentCursor = getCurrentCharacterPromptCursor();
-    const currentAtQuery = getAtQueryAtCursor(characterGeneratePrompt, currentCursor);
-    const insertBase = currentAtQuery ? characterGeneratePrompt.slice(0, currentAtQuery.index) : characterGeneratePrompt.slice(0, currentCursor);
-    const insertSuffix = currentAtQuery ? characterGeneratePrompt.slice(currentAtQuery.cursor) : characterGeneratePrompt.slice(currentCursor);
+    const selection = getCurrentCharacterPromptSelection();
+    const currentAtQuery = getAtQueryAtCursor(characterGeneratePrompt, selection.start);
+    const insertBase = currentAtQuery ? characterGeneratePrompt.slice(0, currentAtQuery.index) : characterGeneratePrompt.slice(0, selection.start);
+    const insertSuffix = currentAtQuery ? characterGeneratePrompt.slice(currentAtQuery.cursor) : characterGeneratePrompt.slice(selection.end);
     const referenceText = `@${asset.name} `;
     const nextPrompt = Array.from(`${insertBase}${referenceText}${insertSuffix}`).slice(0, MAX_DRAFT_INPUT_LENGTH).join("");
 
     setActiveAssetGeneratePrompt(nextPrompt);
+    setActiveAssetGenerateReferences((current) => current.some((reference) => reference.url === asset.url) ? current : [...current, { name: asset.name, url: asset.url }]);
     setIsCharacterAtAssetMenuOpen(false);
+    focusCharacterEditorAt(Math.min(MAX_DRAFT_INPUT_LENGTH, insertBase.length + referenceText.length));
+  };
+  // 点缩略图下的 @文件名：往输入框插入 @名字（缩略图状态已存在，不重复添加）；支持选中覆盖。对齐对话流/工作流。
+  const insertCharacterReferenceText = (name: string) => {
+    const referenceText = `@${name} `;
+    const selection = getCurrentCharacterPromptSelection();
+    const insertBase = characterGeneratePrompt.slice(0, selection.start);
+    const insertSuffix = characterGeneratePrompt.slice(selection.end);
+    const nextPrompt = Array.from(`${insertBase}${referenceText}${insertSuffix}`).slice(0, MAX_DRAFT_INPUT_LENGTH).join("");
+    setActiveAssetGeneratePrompt(nextPrompt);
     focusCharacterEditorAt(Math.min(MAX_DRAFT_INPUT_LENGTH, insertBase.length + referenceText.length));
   };
   const openCharacterMentionAssetMenu = () => {
@@ -13701,6 +13810,8 @@ export function ChatWorkbench() {
 
     setAssetGenerateType(job.type);
     setCharacterGeneratePrompt(job.prompt);
+    // 恢复历史任务时按提示词里的 @文件名 重建该类型的参考图缩略图状态。
+    setAssetGenerateReferenceDrafts((current) => ({ ...current, [job.type]: getOrderedExplicitImageReferences(job.prompt, assets, [], []) }));
     setCharacterPromptCursorOffset(job.prompt.length);
     setCharacterGenerateRatio(job.ratio);
     setCharacterGenerateStyle(job.style);
@@ -13719,11 +13830,10 @@ export function ChatWorkbench() {
     setOpenControlMenu("");
     setActiveAssetGenerateJobId(job.id);
     setIsCharacterGenerateOpen(true);
-  }, [assetGenerateJobs]);
+  }, [assetGenerateJobs, assets]);
   const getCharacterPromptReferences = useCallback(() => {
-    const prompt = characterGeneratePrompt.trim();
-    return getOrderedExplicitImageReferences(prompt, assets, [], []);
-  }, [assets, characterGeneratePrompt]);
+    return assetGenerateReferenceDrafts[assetGenerateType] ?? [];
+  }, [assetGenerateReferenceDrafts, assetGenerateType]);
   const optimizeCharacterPrompt = async () => {
     const rawPrompt = characterGeneratePrompt.trim();
     if (!rawPrompt || isCharacterPromptOptimizing || characterGenerateResult.status === "generating") return;
@@ -14876,8 +14986,8 @@ export function ChatWorkbench() {
                 const targetAsset = current.find((asset) => asset.id === assetId);
                 if (!targetAsset) return current;
                 const movedAsset = target === "conversation_image"
-                  ? { ...targetAsset, type: "other" as const, librarySource: "conversation" as const, sourcePrompt: targetAsset.sourcePrompt || UPLOAD_IMAGE_PROMPT_PLACEHOLDER, promptSource: "upload" as const, lockedType: true, createdAt: movedAt, updatedAt: movedAt }
-                  : { ...targetAsset, type: target, librarySource: "asset_generation" as const, lockedType: true, createdAt: movedAt, updatedAt: movedAt };
+                  ? { ...targetAsset, type: "other" as const, librarySource: "conversation" as const, sourcePrompt: targetAsset.sourcePrompt || UPLOAD_IMAGE_PROMPT_PLACEHOLDER, promptSource: "upload" as const, lockedType: true, updatedAt: movedAt }
+                  : { ...targetAsset, type: target, librarySource: "asset_generation" as const, lockedType: true, updatedAt: movedAt };
                 const movedKey = getAssetIdentityKey(movedAsset);
                 return [movedAsset, ...current.filter((asset) => asset.id !== assetId && getAssetIdentityKey(asset) !== movedKey)];
               });
@@ -15258,9 +15368,9 @@ export function ChatWorkbench() {
                             return;
                           }
 
-                          const cursor = Math.min(Math.max(0, draftCursorOffset), activeInput.length);
-                          addActiveUploadedImages([{ id: createClientId(), name: reference.name, referenceName: reference.name, url: reference.url, source: "asset" }], { draftBase: activeInput.slice(0, cursor), draftSuffix: activeInput.slice(cursor), insertReferenceText: true });
-                          focusEditorAt(cursor + reference.name.length + 2);
+                          const { start, end } = getCurrentDraftSelection();
+                          addActiveUploadedImages([{ id: createClientId(), name: reference.name, referenceName: reference.name, url: reference.url, source: "asset" }], { draftBase: activeInput.slice(0, start), draftSuffix: activeInput.slice(end), insertReferenceText: true });
+                          focusEditorAt(start + reference.name.length + 2);
                         }} />
                       </>
                     ) : null}
@@ -15481,39 +15591,19 @@ export function ChatWorkbench() {
             <div className={isMainInputDisabled ? "pointer-events-none opacity-45 grayscale-[0.15] transition" : "transition"}>
             {activeUploadedImages.length > 0 || activeUploadedFiles.length > 0 ? (
               <div className="mb-3 space-y-2 px-2">
-                {activeUploadedFiles.length > 0 ? (
-                  <div className="relative">
-                  {canScrollUploadedFiles.left ? (
-                    <button type="button" onClick={() => scrollUploadedRow("files", -1)} className="absolute left-0 top-1/2 z-10 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full bg-white/92 text-[#777777] shadow-[0_4px_12px_rgba(0,0,0,0.12)] transition hover:text-[#111111]" aria-label="向左查看文件">
-                      <RiArrowLeftSLine className="h-5 w-5" aria-hidden="true" />
-                    </button>
-                  ) : null}
-                  {canScrollUploadedFiles.left ? <div className="pointer-events-none absolute bottom-0 left-0 top-0 z-[5] w-9 bg-gradient-to-r from-white/95 to-transparent" /> : null}
-                  <div ref={uploadedFilesRowRef} onScroll={updateUploadedRowScrollState} className="yinzao-upload-row-scroll flex flex-nowrap gap-2 overflow-x-auto overflow-y-hidden scroll-smooth px-0.5">
-                    {activeUploadedFiles.map((file, index) => {
+                {/* 上面一行：只显示文档文件（视频/音频已下移，与图片混排显示） */}
+                {activeUploadedFiles.some((file) => !isUploadedMediaFile(file)) ? (
+                  <div ref={uploadedFilesRowRef} className="yinzao-upload-row-scroll flex flex-wrap gap-2 px-0.5">
+                    {activeUploadedFiles.map((file, index) => ({ file, index })).filter(({ file }) => !isUploadedMediaFile(file)).map(({ file, index }) => {
                       const displayName = getUploadedFileDisplayName(file);
-                      const meta = getUploadedDocumentMeta(displayName);
+                      const meta = getUploadedDocumentMeta(getUploadedFileMetaName(file));
                       const sizeText = formatUploadedFileSize(file);
-                      const mediaKind = getUploadedFileMediaKind(file);
                       const progress = typeof file === "string" ? 0 : Math.min(100, Math.max(0, Math.floor(file.progress ?? 0)));
                       const uploadProgress = typeof file === "string" ? 0 : Math.min(100, Math.max(0, Math.floor(file.uploadProgress ?? 0)));
                       const isUploading = typeof file !== "string" && file.uploadStatus === "uploading";
-                      const durationText = typeof file !== "string" ? getMediaDurationLabel(file.durationSeconds) : "";
-                      const isMediaFile = isUploadedMediaFile(file);
-                      const canPreviewMediaFile = Boolean(getUploadedFilePreviewAsset(file));
 
                       return (
-                        <div key={`${getUploadedFileKey(file)}-${index}`} onClick={() => {
-                          if (isMediaFile) {
-                            if (!canPreviewMediaFile) {
-                              showInputTip("文件上传中");
-                              return;
-                            }
-                            insertTextAtDraftCursor(`@${displayName} `);
-                            return;
-                          }
-                          setPreviewDocumentFile(file);
-                        }} className="relative flex h-[54px] w-[200px] shrink-0 cursor-pointer items-center gap-3 overflow-hidden rounded-[10px] bg-[#f2f2f2] px-4 transition hover:bg-[#ececec]">
+                        <div key={`${getUploadedFileKey(file)}-${index}`} onClick={() => setPreviewDocumentFile(file)} className="relative flex h-[54px] w-[200px] shrink-0 cursor-pointer items-center gap-3 overflow-hidden rounded-[10px] bg-[#f2f2f2] px-4 transition hover:bg-[#ececec]">
                           <button
                             type="button"
                             disabled={isMainInputDisabled}
@@ -15526,30 +15616,12 @@ export function ChatWorkbench() {
                           >
                             <RiCloseLine className="h-3 w-3" aria-hidden="true" />
                           </button>
-                          {isMediaFile ? (
-                            <button
-                              type="button"
-                              disabled={isMainInputDisabled || !canPreviewMediaFile}
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                if (!canPreviewMediaFile) {
-                                  showInputTip("文件上传中");
-                                  return;
-                                }
-                                insertTextAtDraftCursor(`@${displayName} `);
-                              }}
-                              className="absolute bottom-1 right-1 z-30 inline-flex h-4.5 min-w-4.5 items-center justify-center rounded-[4px] bg-black/45 px-1 text-[10px] font-medium leading-none text-white transition hover:bg-black/60 disabled:cursor-not-allowed disabled:opacity-40"
-                              aria-label={`引用${displayName}`}
-                            >
-                              @
-                            </button>
-                          ) : null}
                           <div className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-[3px] border-2 text-[15px] font-bold leading-none" style={{ backgroundColor: meta.bg, borderColor: meta.border, color: meta.color }}>
-                            {mediaKind === "video" ? <RiVideoLine className="h-4 w-4" aria-hidden="true" /> : mediaKind === "audio" ? <RiMusic2Line className="h-4 w-4" aria-hidden="true" /> : meta.icon}
+                            {meta.icon}
                           </div>
                           <div className="min-w-0 flex-1">
                             <div className="truncate text-[13px] font-medium leading-4 text-[#222222]">{displayName}</div>
-                            <div className="mt-0.5 truncate text-[11px] leading-4 text-[#9a9a9a]">{meta.label}{sizeText ? ` · ${sizeText}` : ""}{durationText ? ` · ${durationText}` : ""}</div>
+                            <div className="mt-0.5 truncate text-[11px] leading-4 text-[#9a9a9a]">{meta.label}{sizeText ? ` · ${sizeText}` : ""}</div>
                           </div>
                           {isUploading ? <UploadProgressOverlay progress={uploadProgress} /> : null}
                           {!isUploading && typeof file !== "string" && file.status === "reading" ? <div className="absolute inset-x-0 bottom-0 h-[2px] bg-black/8"><div className="h-full bg-[#367cee] transition-all" style={{ width: `${progress}%` }} /></div> : null}
@@ -15557,74 +15629,108 @@ export function ChatWorkbench() {
                       );
                     })}
                   </div>
-                  {canScrollUploadedFiles.right ? (
-                    <button type="button" onClick={() => scrollUploadedRow("files", 1)} className="absolute right-0 top-1/2 z-10 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full bg-white/92 text-[#777777] shadow-[0_4px_12px_rgba(0,0,0,0.12)] transition hover:text-[#111111]" aria-label="向右查看文件">
-                      <RiArrowRightSLine className="h-5 w-5" aria-hidden="true" />
-                    </button>
-                  ) : null}
-                  {canScrollUploadedFiles.right ? <div className="pointer-events-none absolute bottom-0 right-0 top-0 z-[5] w-9 bg-gradient-to-l from-white/95 to-transparent" /> : null}
-                  </div>
                 ) : null}
-                {activeUploadedImages.length > 0 ? (
-                  <div className="relative">
-                  {canScrollUploadedImages.left ? (
-                    <button type="button" onClick={() => scrollUploadedRow("images", -1)} className="absolute left-0 top-1/2 z-10 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full bg-white/92 text-[#777777] shadow-[0_4px_12px_rgba(0,0,0,0.12)] transition hover:text-[#111111]" aria-label="向左查看图片">
-                      <RiArrowLeftSLine className="h-5 w-5" aria-hidden="true" />
-                    </button>
-                  ) : null}
-                  {canScrollUploadedImages.left ? <div className="pointer-events-none absolute bottom-0 left-0 top-0 z-[5] w-10 bg-gradient-to-r from-white/95 to-transparent" /> : null}
-                  <div ref={uploadedImagesRowRef} onScroll={updateUploadedRowScrollState} className="yinzao-upload-row-scroll flex flex-nowrap gap-2 overflow-x-auto overflow-y-hidden scroll-smooth px-0.5">
+                {/* 下面一行：图片 + 视频 + 音频 混排（80×80 瓦片、换行、X 在外角，与工作流显示方式一致） */}
+                {activeUploadedImages.length > 0 || activeUploadedFiles.some((file) => isUploadedMediaFile(file)) ? (
+                  <div ref={uploadedImagesRowRef} className="yinzao-upload-row-scroll flex flex-wrap gap-2 px-0.5">
                     {activeUploadedImages.map((image) => {
                       const isUploading = image.uploadStatus === "uploading";
                       const uploadProgress = Math.min(100, Math.max(0, Math.floor(image.uploadProgress ?? 0)));
                       const previewUrl = image.previewUrl ?? getMediaThumbnailUrl(image.url);
 
                       return (
-                      <div key={image.id} className="group relative h-[80px] w-[80px] shrink-0 overflow-hidden rounded-xl border border-[#e5e5e5] bg-[#f7f7f7]">
-                          <HoverImagePreview src={previewUrl} alt={image.name} wrapperClassName="block h-full w-full">
-                            <Image src={previewUrl} alt={image.name} width={100} height={100} unoptimized className="h-full w-full object-cover" style={{ width: "100%", height: "100%" }} />
-                          </HoverImagePreview>
-                        <button
-                          type="button"
-                          disabled={isMainInputDisabled}
-                          onClick={() => removeActiveUploadedImage(image.id)}
-                          className="absolute right-1 top-1 z-30 flex h-5 w-5 items-center justify-center rounded-full bg-black/55 text-white transition hover:bg-black/70"
-                          aria-label="移除图片"
-                        >
-                          <RiCloseLine className="h-3 w-3" aria-hidden="true" />
-                        </button>
-                        <button
-                          type="button"
-                          disabled={isMainInputDisabled}
-                          onClick={() => {
-                            insertTextAtDraftCursor(`@${getUploadedImageReferenceName(image, activeUploadedImages)} `);
-                          }}
-                          className="absolute inset-x-0 bottom-0 block truncate bg-gradient-to-t from-black/75 to-transparent px-1.5 pb-0.5 pt-2 text-left font-medium leading-4 text-white transition"
-                        >
-                          <span className="text-[10px] leading-4">@{getUploadedImageReferenceName(image, activeUploadedImages)}</span>
-                        </button>
-                        {isUploading ? <UploadProgressOverlay progress={uploadProgress} /> : null}
-                        {image.uploadStatus === "error" ? (
-                          <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-1.5 bg-black/58 px-2 text-center text-[13px] font-semibold leading-4 text-white">
-                            <span>上传失败</span>
-                            {image.uploadFile ? (
-                              <button type="button" onClick={() => retryInputImageUpload(image.id)} className="inline-flex items-center gap-1 text-[13px] font-semibold text-[#75a7ff] transition hover:text-[#a9c8ff]">
-                                <RiRefreshLine className="h-3.5 w-3.5" aria-hidden="true" />
-                                <span>重试</span>
-                              </button>
+                        <div key={image.id} className="group relative h-[80px] w-[80px] shrink-0 overflow-visible">
+                          <div className="relative h-full w-full overflow-hidden rounded-xl border border-[#e5e5e5] bg-[#f7f7f7]">
+                            <HoverImagePreview src={previewUrl} alt={image.name} wrapperClassName="block h-full w-full">
+                              <Image src={previewUrl} alt={image.name} width={100} height={100} unoptimized className="h-full w-full object-cover" style={{ width: "100%", height: "100%" }} />
+                            </HoverImagePreview>
+                            <button
+                              type="button"
+                              disabled={isMainInputDisabled}
+                              onClick={() => {
+                                insertTextAtDraftCursor(`@${getUploadedImageReferenceName(image, activeUploadedImages)} `);
+                              }}
+                              className="absolute inset-x-0 bottom-0 block truncate bg-gradient-to-t from-black/75 to-transparent px-1.5 pb-0.5 pt-2 text-left font-medium leading-4 text-white transition"
+                            >
+                              <span className="text-[10px] leading-4">@{getUploadedImageReferenceName(image, activeUploadedImages)}</span>
+                            </button>
+                            {isUploading ? <UploadProgressOverlay progress={uploadProgress} /> : null}
+                            {image.uploadStatus === "error" ? (
+                              <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-1.5 bg-black/58 px-2 text-center text-[13px] font-semibold leading-4 text-white">
+                                <span>上传失败</span>
+                                {image.uploadFile ? (
+                                  <button type="button" onClick={() => retryInputImageUpload(image.id)} className="inline-flex items-center gap-1 text-[13px] font-semibold text-[#75a7ff] transition hover:text-[#a9c8ff]">
+                                    <RiRefreshLine className="h-3.5 w-3.5" aria-hidden="true" />
+                                    <span>重试</span>
+                                  </button>
+                                ) : null}
+                              </div>
                             ) : null}
                           </div>
-                        ) : null}
-                      </div>
+                          <button
+                            type="button"
+                            disabled={isMainInputDisabled}
+                            onClick={() => removeActiveUploadedImage(image.id)}
+                            className="absolute right-[-5px] top-[-5px] z-30 flex h-[22px] w-[22px] items-center justify-center rounded-full bg-black text-white transition hover:bg-black disabled:pointer-events-none disabled:opacity-40"
+                            aria-label="移除图片"
+                          >
+                            <RiCloseLine className="h-4 w-4 stroke-[1.5]" aria-hidden="true" />
+                          </button>
+                        </div>
                       );
                     })}
-                  </div>
-                  {canScrollUploadedImages.right ? (
-                    <button type="button" onClick={() => scrollUploadedRow("images", 1)} className="absolute right-0 top-1/2 z-10 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full bg-white/92 text-[#777777] shadow-[0_4px_12px_rgba(0,0,0,0.12)] transition hover:text-[#111111]" aria-label="向右查看图片">
-                      <RiArrowRightSLine className="h-5 w-5" aria-hidden="true" />
-                    </button>
-                  ) : null}
-                  {canScrollUploadedImages.right ? <div className="pointer-events-none absolute bottom-0 right-0 top-0 z-[5] w-10 bg-gradient-to-l from-white/95 to-transparent" /> : null}
+                    {activeUploadedFiles.map((file, index) => ({ file, index })).filter(({ file }) => isUploadedMediaFile(file)).map(({ file, index }) => {
+                      const displayName = getUploadedFileDisplayName(file);
+                      const mediaKind = getUploadedFileMediaKind(file);
+                      const uploadProgress = typeof file === "string" ? 0 : Math.min(100, Math.max(0, Math.floor(file.uploadProgress ?? 0)));
+                      const isUploading = typeof file !== "string" && file.uploadStatus === "uploading";
+                      const canPreviewMediaFile = Boolean(getUploadedFilePreviewAsset(file));
+                      const mediaUrl = getUploadedMediaFileUrl(file);
+                      const videoSrc = mediaUrl ? getStaticMediaUrl(mediaUrl) ?? mediaUrl : "";
+
+                      return (
+                        <div key={`${getUploadedFileKey(file)}-${index}`} className="group relative h-[80px] w-[80px] shrink-0 overflow-visible">
+                          <div className="relative h-full w-full overflow-hidden rounded-xl border border-[#e5e5e5] bg-[#f7f7f7]">
+                            {mediaKind === "video" && videoSrc ? (
+                              <>
+                                <video src={videoSrc} className="h-full w-full object-cover" muted playsInline preload="metadata" />
+                                <div className="pointer-events-none absolute left-1/2 top-1/2 z-10 flex h-7 w-7 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-black/58 text-white shadow-[0_4px_12px_rgba(0,0,0,0.22)]">
+                                  <span className="ml-0.5 h-0 w-0 border-y-[6px] border-l-[9px] border-y-transparent border-l-current" />
+                                </div>
+                              </>
+                            ) : (
+                              <div className="flex h-full w-full items-center justify-center text-[#8a8a8a]">
+                                {mediaKind === "audio" ? <RiMusic2Line className="h-7 w-7" aria-hidden="true" /> : <RiVideoLine className="h-7 w-7" aria-hidden="true" />}
+                              </div>
+                            )}
+                            <button
+                              type="button"
+                              disabled={isMainInputDisabled || !canPreviewMediaFile}
+                              onClick={() => {
+                                if (!canPreviewMediaFile) {
+                                  showInputTip("文件上传中");
+                                  return;
+                                }
+                                insertTextAtDraftCursor(`@${displayName} `);
+                              }}
+                              className="absolute inset-x-0 bottom-0 block truncate bg-gradient-to-t from-black/75 to-transparent px-1.5 pb-0.5 pt-2 text-left font-medium leading-4 text-white transition disabled:cursor-not-allowed"
+                            >
+                              <span className="text-[10px] leading-4">@{displayName}</span>
+                            </button>
+                            {isUploading ? <UploadProgressOverlay progress={uploadProgress} /> : null}
+                          </div>
+                          <button
+                            type="button"
+                            disabled={isMainInputDisabled}
+                            onClick={() => removeActiveUploadedFile(index)}
+                            className="absolute right-[-5px] top-[-5px] z-30 flex h-[22px] w-[22px] items-center justify-center rounded-full bg-black text-white transition hover:bg-black disabled:pointer-events-none disabled:opacity-40"
+                            aria-label="移除文件"
+                          >
+                            <RiCloseLine className="h-4 w-4 stroke-[1.5]" aria-hidden="true" />
+                          </button>
+                        </div>
+                      );
+                    })}
                   </div>
                 ) : null}
               </div>
@@ -16034,7 +16140,7 @@ export function ChatWorkbench() {
                         <RiShining2Line className="h-3.5 w-3.5" aria-hidden="true" />
                         <span>{isCharacterPromptOptimizing ? "优化中" : "优化提示词"}</span>
                       </button>
-                      <button type="button" disabled={isCharacterGenerateInputDisabled || !characterGeneratePrompt.trim()} onClick={() => { setActiveAssetGeneratePrompt(""); setCharacterPromptCursorOffset(0); setIsCharacterAtAssetMenuOpen(false); requestAnimationFrame(() => characterEditorRef.current?.focus()); }} className="inline-flex h-5 items-center gap-1.5 bg-transparent p-0 text-[#367cee] transition hover:text-[#1f63d4] disabled:cursor-not-allowed disabled:opacity-35" aria-label="清空输入框">
+                      <button type="button" disabled={isCharacterGenerateInputDisabled || (!characterGeneratePrompt.trim() && assetGenerateReferenceImages.length === 0)} onClick={() => { setActiveAssetGeneratePrompt(""); setActiveAssetGenerateReferences(() => []); setCharacterPromptCursorOffset(0); setIsCharacterAtAssetMenuOpen(false); requestAnimationFrame(() => characterEditorRef.current?.focus()); }} className="inline-flex h-5 items-center gap-1.5 bg-transparent p-0 text-[#367cee] transition hover:text-[#1f63d4] disabled:cursor-not-allowed disabled:opacity-35" aria-label="清空输入框">
                         <RiFormatClear className="h-3.5 w-3.5" aria-hidden="true" />
                         <span>清空输入框</span>
                       </button>
@@ -16090,7 +16196,7 @@ export function ChatWorkbench() {
                               <button type="button" disabled={isCharacterGenerateInputDisabled} onClick={() => removeAssetGenerateReference(image.name)} className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-black/55 text-white transition hover:bg-black/70 disabled:pointer-events-none disabled:opacity-40" aria-label="移除图片">
                                 <RiCloseLine className="h-3 w-3" aria-hidden="true" />
                               </button>
-                              <button type="button" disabled={isCharacterGenerateInputDisabled} onClick={() => { focusCharacterEditorAt(characterGeneratePrompt.length); }} className="absolute inset-x-0 bottom-0 block truncate bg-gradient-to-t from-black/75 to-transparent px-1.5 pb-0.5 pt-2 text-left font-medium leading-4 text-white transition">
+                              <button type="button" disabled={isCharacterGenerateInputDisabled} onClick={() => insertCharacterReferenceText(image.name)} className="absolute inset-x-0 bottom-0 block truncate bg-gradient-to-t from-black/75 to-transparent px-1.5 pb-0.5 pt-2 text-left font-medium leading-4 text-white transition">
                                 <span className="text-[10px] leading-4">@{image.name}</span>
                               </button>
                             </div>

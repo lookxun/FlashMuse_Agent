@@ -9,6 +9,7 @@ import { BytePlusIcon } from "@/components/byteplus-icon";
 import { DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, bytePlusVideoGenerationModels, frontendConversationModels, frontendImageGenerationModels, getExpectedImageDimensions, getExpectedVideoDimensions, getSupportedImageResolutions, getSupportedVideoRatios, getSupportedVideoResolutions, imageGenerationModels, normalizeImageResolutionForModel, normalizeVideoRatioForModel, normalizeVideoResolutionForModel, videoGenerationModels, type ConversationModel, type GenerationModel, type ModelName } from "@/lib/models";
 import { GENERIC_MEDIA_ERROR_MESSAGE, toUserErrorMessage } from "@/lib/error-message";
 import { buildReferenceHint } from "@/lib/reference-hint";
+import { getMentionNames as getSharedMentionNames, getMentionRangeForDeletion as getSharedMentionRangeForDeletion, getMentionRanges as getSharedMentionRanges, removeMentionName } from "@/lib/mention-text";
 import { createUploadProgressTracker } from "@/lib/upload-progress";
 import { sanitizeModelOutputText } from "@/lib/text-cleanup";
 import { getUploadKindFromFileName, getUploadRule, type UploadKind, type UploadKindRule, type UploadRule, type UploadRuleOverrides } from "@/lib/upload-rules";
@@ -376,13 +377,8 @@ function sanitizeWorkflowReferenceName(name: string) {
   return name.replace(/\.[^.]+$/, "").replace(/[@\s，。！？；;、]+/g, "").trim() || "上传文件";
 }
 
-function escapeWorkflowRegExp(value: string) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
 function removeWorkflowUploadReferenceText(prompt: string, referenceName: string) {
-  if (!referenceName) return prompt;
-  return prompt.replace(new RegExp(`@${escapeWorkflowRegExp(referenceName)}(?=$|[\\s，。！？；;、])`, "g"), "").replace(/[ \t]{2,}/g, " ");
+  return removeMentionName(prompt, referenceName);
 }
 
 function sortWorkflowDurationOptions(options: string[]) {
@@ -651,14 +647,14 @@ async function uploadWorkflowImageOnce(file: File, onProgress?: (progress: numbe
   if (dedup) formData.append("dedup", "1");
   onProgress?.(2);
   const token = await getWorkflowDirectUploadToken();
-  const postData = await uploadWorkflowFormDataWithProgress<{ token?: string; error?: string; duplicate?: boolean; url?: string; contentHash?: string }>(getWorkflowUploadApiUrl("/api/asset-upload-temp"), formData, onProgress, token);
-  if (postData.duplicate && postData.url) return { url: postData.url, duplicate: true as const, contentHash: postData.contentHash };
+  const postData = await uploadWorkflowFormDataWithProgress<{ token?: string; error?: string; duplicate?: boolean; url?: string; contentHash?: string; name?: string }>(getWorkflowUploadApiUrl("/api/asset-upload-temp"), formData, onProgress, token);
+  if (postData.duplicate && postData.url) return { url: postData.url, duplicate: true as const, contentHash: postData.contentHash, name: postData.name };
   if (!postData.token) throw new Error(postData.error || "图片上传失败");
   const patchToken = await getWorkflowDirectUploadToken();
   const patchResponse = await fetch(getWorkflowUploadApiUrl("/api/asset-upload-temp"), { method: "PATCH", headers: { "Content-Type": "application/json", ...(patchToken ? { Authorization: `Bearer ${patchToken}` } : {}) }, body: JSON.stringify({ token: postData.token }) });
   const patchData = await readJson<{ url?: string; error?: string }>(patchResponse);
   if (!patchData.url) throw new Error(patchData.error || "图片保存失败");
-  return { url: patchData.url, duplicate: false as const, contentHash: postData.contentHash };
+  return { url: patchData.url, duplicate: false as const, contentHash: postData.contentHash, name: postData.name };
 }
 
 async function uploadWorkflowImage(file: File, onProgress?: (progress: number) => void, dedup = false) {
@@ -678,13 +674,13 @@ async function uploadWorkflowFile(file: File, kind: Exclude<WorkflowUploadKind, 
   formData.append("name", file.name);
   formData.append("mediaKind", kind);
   const token = await getWorkflowDirectUploadToken();
-  const data = await uploadWorkflowFormDataWithProgress<{ url?: string; error?: string }>(getWorkflowUploadApiUrl("/api/upload-file"), formData, onProgress, token);
+  const data = await uploadWorkflowFormDataWithProgress<{ url?: string; error?: string; dedup?: boolean; name?: string }>(getWorkflowUploadApiUrl("/api/upload-file"), formData, onProgress, token);
   if (!data.url) throw new Error(data.error || "文件上传失败");
-  return data.url;
+  return { url: data.url, duplicate: Boolean(data.dedup), name: data.name };
 }
 
 function getWorkflowMentionNames(text: string) {
-  return [...text.matchAll(/@([^@\s，。！？；;、]+)/g)].map((match) => match[1]);
+  return getSharedMentionNames(text);
 }
 
 function getWorkflowUploadReferenceName(upload: WorkflowUploadItem) {
@@ -2885,10 +2881,12 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
         const uploaded = await uploadWorkflowImage(file, (progress) => updateNode(nodeId, { uploadProgress: Math.min(99, progress) }), true);
         const url = uploaded.url;
         if (uploaded.duplicate) (onDuplicateTip ?? onShowTip)?.("图片已存在，无需重复上传！");
-        const data: WorkflowNodeData = { ...getDefaultNodeData("image"), prompt: "上传图片", images: [url], imageDimensions: { [url]: dimensions }, mediaSystemNames: { [url]: file.name }, ratio: normalizeWorkflowImageRatio(undefined, dimensions), visualSize: undefined, uploadProgress: undefined, uploadPreviewUrl: undefined };
+        // 名字一律用服务端权威名（去扩展名 + 全局唯一 + 同图复用同名），兜底才用文件名。
+        const mediaName = uploaded.name || sanitizeWorkflowReferenceName(file.name);
+        const data: WorkflowNodeData = { ...getDefaultNodeData("image"), prompt: "上传图片", images: [url], imageDimensions: { [url]: dimensions }, mediaSystemNames: { [url]: mediaName }, ratio: normalizeWorkflowImageRatio(undefined, dimensions), visualSize: undefined, uploadProgress: undefined, uploadPreviewUrl: undefined };
         updateNode(nodeId, data);
         URL.revokeObjectURL(previewUrl);
-        void persistWorkflowUploadNodeAsset({ url, name: file.name, mediaType: "image", workflowId, workflowNodeId: nodeId, sourcePrompt: "上传图片", file, dimensions, settings: { ratio: data.ratio, resolution: data.resolution }, contentHash: uploaded.contentHash }).catch((error) => console.warn("[media-assets] failed to persist workflow uploaded image", error));
+        void persistWorkflowUploadNodeAsset({ url, name: mediaName, mediaType: "image", workflowId, workflowNodeId: nodeId, sourcePrompt: "上传图片", file, dimensions, settings: { ratio: data.ratio, resolution: data.resolution }, contentHash: uploaded.contentHash }).catch((error) => console.warn("[media-assets] failed to persist workflow uploaded image", error));
         return nodeId;
       }
       if (file.type.startsWith("video/")) {
@@ -2899,11 +2897,14 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
         const nodeId = createId("workflow_node");
         const previewUrl = URL.createObjectURL(file);
         addUploadedNode({ id: nodeId, kind: "video", title: "上传视频", data: { ...defaultData, prompt: "上传视频", videoDimensions: media.dimensions, durationSeconds: media.durationSeconds, ratio: media.dimensions ? getCommonWorkflowRatioLabel(media.dimensions) ?? defaultData.ratio : defaultData.ratio, uploadProgress: 1, uploadPreviewUrl: previewUrl } }, targetNodeId);
-        const url = await uploadWorkflowFile(file, "video", (progress) => updateNode(nodeId, { uploadProgress: Math.min(99, progress) }));
-        const data: WorkflowNodeData = { ...defaultData, prompt: "上传视频", videoUrl: url, videoDimensions: media.dimensions, durationSeconds: media.durationSeconds, videoCurrentTime: 0, mediaSystemNames: { [url]: file.name }, ratio: media.dimensions ? getCommonWorkflowRatioLabel(media.dimensions) ?? defaultData.ratio : defaultData.ratio, visualSize: undefined, uploadProgress: undefined, uploadPreviewUrl: undefined };
+        const uploadedVideo = await uploadWorkflowFile(file, "video", (progress) => updateNode(nodeId, { uploadProgress: Math.min(99, progress) }));
+        const url = uploadedVideo.url;
+        if (uploadedVideo.duplicate) (onDuplicateTip ?? onShowTip)?.("视频已存在，无需重复上传！");
+        const mediaName = uploadedVideo.name || sanitizeWorkflowReferenceName(file.name);
+        const data: WorkflowNodeData = { ...defaultData, prompt: "上传视频", videoUrl: url, videoDimensions: media.dimensions, durationSeconds: media.durationSeconds, videoCurrentTime: 0, mediaSystemNames: { [url]: mediaName }, ratio: media.dimensions ? getCommonWorkflowRatioLabel(media.dimensions) ?? defaultData.ratio : defaultData.ratio, visualSize: undefined, uploadProgress: undefined, uploadPreviewUrl: undefined };
         updateNode(nodeId, data);
         URL.revokeObjectURL(previewUrl);
-        void persistWorkflowUploadNodeAsset({ url, name: file.name, mediaType: "video", workflowId, workflowNodeId: nodeId, sourcePrompt: "上传视频", file, dimensions: media.dimensions, durationSeconds: media.durationSeconds, settings: { ratio: data.ratio, resolution: data.resolution, duration: data.duration } }).catch((error) => console.warn("[media-assets] failed to persist workflow uploaded video", error));
+        void persistWorkflowUploadNodeAsset({ url, name: mediaName, mediaType: "video", workflowId, workflowNodeId: nodeId, sourcePrompt: "上传视频", file, dimensions: media.dimensions, durationSeconds: media.durationSeconds, settings: { ratio: data.ratio, resolution: data.resolution, duration: data.duration } }).catch((error) => console.warn("[media-assets] failed to persist workflow uploaded video", error));
         return nodeId;
       }
       if (file.type.startsWith("audio/") || ["mp3", "wav"].includes(getWorkflowFileExtension(file))) {
@@ -2912,9 +2913,12 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
         if (validationError) return onShowTip?.(validationError);
         const nodeId = createId("workflow_node");
         addUploadedNode({ id: nodeId, kind: "audio", title: "上传音频", data: { ...getDefaultNodeData("audio"), durationSeconds: media.durationSeconds, uploadProgress: 1 } }, targetNodeId);
-        const url = await uploadWorkflowFile(file, "audio", (progress) => updateNode(nodeId, { uploadProgress: Math.min(99, progress) }));
-        updateNode(nodeId, { audioUrl: url, durationSeconds: media.durationSeconds, mediaSystemNames: { [url]: file.name }, uploadProgress: undefined });
-        void persistWorkflowUploadNodeAsset({ url, name: file.name, mediaType: "audio", workflowId, workflowNodeId: nodeId, sourcePrompt: "上传音频", file, durationSeconds: media.durationSeconds }).catch((error) => console.warn("[media-assets] failed to persist workflow uploaded audio", error));
+        const uploadedAudio = await uploadWorkflowFile(file, "audio", (progress) => updateNode(nodeId, { uploadProgress: Math.min(99, progress) }));
+        const url = uploadedAudio.url;
+        if (uploadedAudio.duplicate) (onDuplicateTip ?? onShowTip)?.("音频已存在，无需重复上传！");
+        const mediaName = uploadedAudio.name || sanitizeWorkflowReferenceName(file.name);
+        updateNode(nodeId, { audioUrl: url, durationSeconds: media.durationSeconds, mediaSystemNames: { [url]: mediaName }, uploadProgress: undefined });
+        void persistWorkflowUploadNodeAsset({ url, name: mediaName, mediaType: "audio", workflowId, workflowNodeId: nodeId, sourcePrompt: "上传音频", file, durationSeconds: media.durationSeconds }).catch((error) => console.warn("[media-assets] failed to persist workflow uploaded audio", error));
         return nodeId;
       }
       if (file.type === "text/plain" || getWorkflowFileExtension(file) === "txt") {
@@ -2926,9 +2930,12 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
           updateNode(nodeId, { uploadProgress: undefined, error: validationError });
           return onShowTip?.(validationError);
         }
-        const url = await uploadWorkflowFile(file, "document");
-        updateNode(nodeId, { text, prompt: text, outputText: undefined, mediaSystemNames: { [url]: file.name }, uploadProgress: undefined });
-        void persistWorkflowUploadNodeAsset({ url, name: file.name, mediaType: "document", workflowId, workflowNodeId: nodeId, sourcePrompt: "上传文本", file }).catch((error) => console.warn("[media-assets] failed to persist workflow uploaded text", error));
+        const uploadedDocument = await uploadWorkflowFile(file, "document");
+        const url = uploadedDocument.url;
+        if (uploadedDocument.duplicate) (onDuplicateTip ?? onShowTip)?.("文件已存在，无需重复上传！");
+        const mediaName = uploadedDocument.name || sanitizeWorkflowReferenceName(file.name);
+        updateNode(nodeId, { text, prompt: text, outputText: undefined, mediaSystemNames: { [url]: mediaName }, uploadProgress: undefined });
+        void persistWorkflowUploadNodeAsset({ url, name: mediaName, mediaType: "document", workflowId, workflowNodeId: nodeId, sourcePrompt: "上传文本", file }).catch((error) => console.warn("[media-assets] failed to persist workflow uploaded text", error));
         return nodeId;
       }
       onShowTip?.("上传节点只支持图片、视频、音频和 txt 文本");
@@ -4897,24 +4904,11 @@ function appendWorkflowEditorText(element: HTMLElement, text: string) {
 }
 
 function getWorkflowMentionRanges(value: string, validReferences: Set<string>) {
-  const names = Array.from(validReferences).filter(Boolean).sort((a, b) => b.length - a.length);
-  const ranges: Array<{ start: number; end: number }> = [];
-  if (names.length === 0) return ranges;
-  for (let index = 0; index < value.length; index += 1) {
-    if (value[index] !== "@") continue;
-    const matchedName = names.find((name) => value.startsWith(`@${name}`, index));
-    if (!matchedName) continue;
-    const end = index + matchedName.length + 1;
-    ranges.push({ start: index, end });
-    index = end - 1;
-  }
-  return ranges;
+  return getSharedMentionRanges(value, validReferences);
 }
 
 function getWorkflowMentionRangeForDeletion(value: string, cursorOffset: number, direction: "backward" | "forward", validReferences: Set<string>) {
-  const probeOffset = direction === "backward" ? cursorOffset - 1 : cursorOffset;
-  if (probeOffset < 0 || probeOffset >= value.length) return undefined;
-  return getWorkflowMentionRanges(value, validReferences).find((range) => probeOffset >= range.start && probeOffset < range.end);
+  return getSharedMentionRangeForDeletion(value, cursorOffset, direction, validReferences);
 }
 
 function getWorkflowAtQueryAtCursor(text: string, cursorOffset: number) {
@@ -4971,6 +4965,53 @@ function getWorkflowSelectionTextOffset(element: HTMLElement) {
   };
   walk(element);
   return found ? offset : getWorkflowEditableText(element).length;
+}
+
+// 读取当前选区文本起止偏移（start<=end）。无选区则 start===end（光标）。用于"选中后点 @文件名 覆盖"。
+function getWorkflowSelectionTextRange(element: HTMLElement): { start: number; end: number } {
+  const selection = window.getSelection();
+  const fallback = getWorkflowEditableText(element).length;
+  if (!selection || selection.rangeCount === 0) return { start: fallback, end: fallback };
+  const range = selection.getRangeAt(0);
+  if (!element.contains(range.startContainer) || !element.contains(range.endContainer)) return { start: fallback, end: fallback };
+
+  const nodeTextLength = (node: Node): number => {
+    if (node.nodeType === Node.TEXT_NODE) return node.textContent?.length ?? 0;
+    if (node.nodeName === "BR") return node instanceof HTMLElement && node.dataset.trailingBreak === "true" ? 0 : 1;
+    return Array.from(node.childNodes).reduce((sum, child) => sum + nodeTextLength(child), 0);
+  };
+  const offsetOf = (targetNode: Node, targetOffset: number): number => {
+    let offset = 0;
+    let found = false;
+    const walk = (node: Node) => {
+      if (found) return;
+      if (node instanceof HTMLElement && node.dataset.mention === "true") {
+        offset += nodeTextLength(node);
+        if (node.contains(targetNode)) found = true;
+        return;
+      }
+      if (node === targetNode) {
+        if (node.nodeType === Node.TEXT_NODE) {
+          offset += targetOffset;
+        } else {
+          Array.from(node.childNodes).slice(0, targetOffset).forEach((child) => { offset += nodeTextLength(child); });
+        }
+        found = true;
+        return;
+      }
+      if (node.nodeType === Node.TEXT_NODE || node.nodeName === "BR") {
+        offset += nodeTextLength(node);
+        return;
+      }
+      node.childNodes.forEach(walk);
+    };
+    walk(element);
+    return found ? offset : fallback;
+  };
+
+  const a = offsetOf(range.startContainer, range.startOffset);
+  const b = offsetOf(range.endContainer, range.endOffset);
+  return a <= b ? { start: a, end: b } : { start: b, end: a };
 }
 
 function setWorkflowSelectionTextOffset(element: HTMLElement, offset: number) {
@@ -5068,7 +5109,7 @@ function renderWorkflowEditorContent(element: HTMLElement, value: string, validR
   getWorkflowMentionRanges(value, validReferences).forEach((range) => {
     if (range.start > cursor) appendWorkflowEditorText(element, value.slice(cursor, range.start));
     const mention = document.createElement("span");
-    mention.className = "text-[#4f7cff]";
+    mention.className = "text-[#367cee]";
     mention.dataset.mention = "true";
     mention.contentEditable = "false";
     mention.textContent = value.slice(range.start, range.end);
@@ -5420,6 +5461,21 @@ function WorkflowPromptBox({ node, value, placeholder, maxPromptHeight, onChange
       ];
   const uploads = node.data.uploads ?? [];
   const visibleUploads = mergeWorkflowUploadItems([...connectedUploads, ...uploads]);
+  // 给同时出现的上传/连线素材分配唯一引用名：不同文件即使同名也错开成 名_2/名_3，避免 @文件名 撞名无法区分。
+  const uploadReferenceNameById = useMemo(() => {
+    const used = new Set(runtime.referenceAssets.map((asset) => asset.name));
+    const map = new Map<string, string>();
+    visibleUploads.forEach((upload) => {
+      const base = getWorkflowUploadReferenceName(upload);
+      let name = base;
+      let index = 2;
+      while (used.has(name)) { name = `${base}_${index}`; index += 1; }
+      used.add(name);
+      map.set(upload.id, name);
+    });
+    return map;
+  }, [visibleUploads, runtime.referenceAssets]);
+  const getVisibleUploadReferenceName = useCallback((upload: WorkflowUploadItem) => uploadReferenceNameById.get(upload.id) ?? getWorkflowUploadReferenceName(upload), [uploadReferenceNameById]);
   const currentImageReferenceCount = showVideoReferenceModeMenu ? mergeWorkflowUploadItems([...visibleUploads.filter((upload) => upload.kind === "image"), ...getWorkflowPromptReferenceUrls(value, node, runtime.referenceAssets, "image").map((url) => ({ id: `prompt-image-${url}`, kind: "image" as const, name: url, url, status: "ready" as const }))]).length : 0;
   const canRun = (Boolean(value.trim()) || connectedTextLength > 0) && !running && currentImageReferenceCount >= requiredImageReferenceCount;
   const uploadCounts = visibleUploads.reduce<Record<WorkflowUploadKind, number>>((counts, upload) => ({ ...counts, [upload.kind]: counts[upload.kind] + 1 }), { image: 0, document: 0, video: 0, audio: 0 });
@@ -5465,10 +5521,15 @@ function WorkflowPromptBox({ node, value, placeholder, maxPromptHeight, onChange
   }, [node.data.uploads]);
 
   // 读实时 DOM 光标(非滞后 state)；无编辑器/未聚焦时回退 cursorOffset。
-  const getCurrentWorkflowCursor = () => {
+  // 选中文本后点 @文件名 覆盖选中区：返回选区起止（无选区则 start===end=光标）。
+  const getCurrentWorkflowSelection = () => {
     const editor = editorElementRef.current;
-    if (!editor) return Math.min(Math.max(0, cursorOffset), value.length);
-    return Math.min(Math.max(0, getWorkflowSelectionTextOffset(editor)), value.length);
+    if (!editor) {
+      const cursor = Math.min(Math.max(0, cursorOffset), value.length);
+      return { start: cursor, end: cursor };
+    }
+    const range = getWorkflowSelectionTextRange(editor);
+    return { start: Math.min(Math.max(0, range.start), value.length), end: Math.min(Math.max(0, range.end), value.length) };
   };
   // 与对话流一致：rAF 等 DOM 渲染出新内容后再 focus + 定位光标(确定的 offset)。
   const focusWorkflowEditorAt = (offset: number) => {
@@ -5483,9 +5544,10 @@ function WorkflowPromptBox({ node, value, placeholder, maxPromptHeight, onChange
 
   const insertReferenceText = (name: string) => {
     const referenceText = `@${name} `;
-    // 插到当前光标处(打字触发的 @ 弹窗用 activeAtQuery 位置)；插完光标停在新 @文件名 之后。
-    const cursor = activeAtQuery ? activeAtQuery.index : getCurrentWorkflowCursor();
-    const insertEnd = activeAtQuery ? activeAtQuery.cursor : cursor;
+    // 插到当前光标处(打字触发的 @ 弹窗用 activeAtQuery 位置)；有选区则覆盖选区；插完光标停在新 @文件名 之后。
+    const selection = getCurrentWorkflowSelection();
+    const cursor = activeAtQuery ? activeAtQuery.index : selection.start;
+    const insertEnd = activeAtQuery ? activeAtQuery.cursor : selection.end;
     const maxOwnPromptLength = Math.max(0, MAX_WORKFLOW_PROMPT_LENGTH - connectedTextLength);
     const rawNext = `${value.slice(0, cursor)}${referenceText}${value.slice(insertEnd)}`;
     const nextValue = Array.from(rawNext).slice(0, maxOwnPromptLength).join("");
@@ -5583,7 +5645,7 @@ function WorkflowPromptBox({ node, value, placeholder, maxPromptHeight, onChange
     }
     runtime.uploadFilesAsConnectedNodes(node.id, accepted.map(({ file }) => file), showLocalTip);
   };
-  const validReferenceNames = useMemo(() => new Set([...runtime.referenceAssets.map((asset) => asset.name), ...visibleUploads.filter((upload) => upload.status === "ready").map(getWorkflowUploadReferenceName)]), [runtime.referenceAssets, visibleUploads]);
+  const validReferenceNames = useMemo(() => new Set([...runtime.referenceAssets.map((asset) => asset.name), ...visibleUploads.filter((upload) => upload.status === "ready").map(getVisibleUploadReferenceName)]), [runtime.referenceAssets, visibleUploads, getVisibleUploadReferenceName]);
   const referenceGroups = runtime.referenceAssets.reduce<{ type: string; label: string; assets: WorkflowReferenceAsset[] }[]>((groups, asset) => {
     const matched = !activeAtQuery?.query || asset.name.includes(activeAtQuery.query);
     const group = groups.find((item) => item.type === asset.groupType);
@@ -5626,7 +5688,7 @@ function WorkflowPromptBox({ node, value, placeholder, maxPromptHeight, onChange
           </label>
         )) : null}
         {visibleUploads.map((upload) => {
-          const referenceName = getWorkflowUploadReferenceName(upload);
+          const referenceName = getVisibleUploadReferenceName(upload);
           const canInsert = upload.status === "ready";
           const mediaSrc = getWorkflowUploadMediaSrc(upload);
           const isVisual = upload.kind === "image" || upload.kind === "video";

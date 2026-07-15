@@ -3,6 +3,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { RiArrowDownSLine, RiArrowRightSLine, RiCloseLine, RiMusic2Line, RiQuillPenAiLine, RiSearchLine } from "react-icons/ri";
 import { useBodyScrollLock } from "@/components/use-body-scroll-lock";
+import { getMentionRanges } from "@/lib/mention-text";
 import { AdminHoverImagePreview } from "./admin-hover-image-preview";
 import { getCachedAdminDetail, setCachedAdminDetail } from "./admin-detail-cache";
 import { fallbackAdminImageToOriginal, getAdminMediaSourceUrl, getAdminMediaThumbnailUrl, normalizeAdminMediaUrl } from "./admin-media-url";
@@ -490,34 +491,18 @@ export function AdminMediaDialog({ userId, userLabel, mediaType, onClose }: { us
 
 // 把提示词里的 @文件名（匹配该次生成用到的参考素材名）渲染成蓝色，其余原样。
 function AdminPromptWithMentions({ prompt, names }: { prompt: string; names: string[] }) {
-  // @提及可能省略文件后缀（如输入 @D68_S01P2 而资产名是 D68_S01P2.jpg），所以每个名字额外加一个去后缀变体一起匹配。
-  const valid = Array.from(new Set(
-    names.filter(Boolean).flatMap((name) => {
-      const trimmed = name.trim();
-      const noExt = trimmed.replace(/\.[a-zA-Z0-9]{1,5}$/, "");
-      return noExt && noExt !== trimmed ? [trimmed, noExt] : [trimmed];
-    }).filter(Boolean),
-  )).sort((left, right) => right.length - left.length);
-  if (valid.length === 0) return <>{prompt}</>;
+  // @提及可能省略文件后缀（如输入 @D68_S01P2 而资产名是 D68_S01P2.jpg），用共享匹配器的去后缀容错。
+  const ranges = getMentionRanges(prompt, names, { stripExtension: true });
+  if (ranges.length === 0) return <>{prompt}</>;
   const out: React.ReactNode[] = [];
-  let buffer = "";
-  let index = 0;
+  let cursor = 0;
   let key = 0;
-  const flush = () => { if (buffer) { out.push(buffer); buffer = ""; } };
-  while (index < prompt.length) {
-    if (prompt[index] === "@") {
-      const match = valid.find((name) => prompt.startsWith(name, index + 1));
-      if (match) {
-        flush();
-        out.push(<span key={`mention-${key++}`} className="font-medium text-[#367cee]">@{match}</span>);
-        index += 1 + match.length;
-        continue;
-      }
-    }
-    buffer += prompt[index];
-    index += 1;
-  }
-  flush();
+  ranges.forEach((range) => {
+    if (range.start > cursor) out.push(prompt.slice(cursor, range.start));
+    out.push(<span key={`mention-${key++}`} className="font-medium text-[#367cee]">{prompt.slice(range.start, range.end)}</span>);
+    cursor = range.end;
+  });
+  if (cursor < prompt.length) out.push(prompt.slice(cursor));
   return <>{out}</>;
 }
 

@@ -7,6 +7,7 @@ import { normalizeMediaAssetUrl } from "@/lib/media-assets";
 import { buildMediaAssetRecord, buildUserAssetStateRecord } from "@/lib/media-asset-record";
 import { createHash } from "node:crypto";
 import { syncGeneratedFilesToAli } from "@/lib/ali-sync";
+import { resolveUploadNameInTx, withUploadNameLock } from "@/lib/upload-name";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -34,13 +35,15 @@ function getUploadPrompt(mediaType: string) {
  * 按内容哈希查"以前上传过的字节完全一致的同一文件"。命中就复用，不重复落库。
  * 只在已存在可见（未删除/未隐藏/未归档）的资产时返回。文件不物理删除，故不再核对磁盘。
  */
-async function findDedupUploadUrl(userId: string, contentHash: string) {
+async function findDedupUpload(userId: string, contentHash: string) {
   const existing = await prisma.mediaAsset.findFirst({
     where: { userId, contentHash, archivedAt: null, userStates: { some: { deletedAt: null, hiddenAt: null } } },
-    select: { url: true },
+    select: { url: true, systemName: true, initialName: true, userStates: { where: { userId }, select: { currentName: true }, take: 1 } },
     orderBy: { firstSeenAt: "asc" },
   });
-  return existing?.url;
+  if (!existing) return undefined;
+  const name = existing.userStates[0]?.currentName?.trim() || existing.systemName?.trim() || existing.initialName?.trim() || undefined;
+  return { url: existing.url, name };
 }
 
 export async function POST(request: Request) {
@@ -75,11 +78,11 @@ export async function POST(request: Request) {
       mimeType = file.type || undefined;
       fileSize = Number.isFinite(file.size) && file.size > 0 ? file.size : undefined;
       const buffer = Buffer.from(await file.arrayBuffer());
-      // 出生前先算原始字节哈希；命中"同一文件"直接复用旧地址，不重复落库。
+      // 出生前先算原始字节哈希；命中"同一文件"直接复用旧地址+旧权威名，不重复落库。
       contentHash = createHash("sha256").update(buffer).digest("hex");
       if (user?.id) {
-        const dupUrl = await findDedupUploadUrl(user.id, contentHash);
-        if (dupUrl) return NextResponse.json({ url: dupUrl, dedup: true });
+        const dup = await findDedupUpload(user.id, contentHash);
+        if (dup) return NextResponse.json({ url: dup.url, dedup: true, name: dup.name });
       }
       url = await saveUploadedFileBufferAsset(buffer, name, file.type || undefined, { userId: user?.id });
     } else {
@@ -94,41 +97,49 @@ export async function POST(request: Request) {
       const base64 = file.includes(",") ? file.split(",").pop() ?? "" : file;
       contentHash = createHash("sha256").update(Buffer.from(base64, "base64")).digest("hex");
       if (user?.id) {
-        const dupUrl = await findDedupUploadUrl(user.id, contentHash);
-        if (dupUrl) return NextResponse.json({ url: dupUrl, dedup: true });
+        const dup = await findDedupUpload(user.id, contentHash);
+        if (dup) return NextResponse.json({ url: dup.url, dedup: true, name: dup.name });
       }
       url = await saveUploadedFileAsset(file, name, { userId: user?.id });
     }
     // 同步到 Ali 本地镜像，避免 Ali 用户回源代理加载上传的视频/音频/文档极慢。
     void syncGeneratedFilesToAli([url]).catch(() => undefined);
+    let resolvedName = name;
     if (user?.id) {
+      const userId = user.id;
       const mediaType = getFileMediaType(mediaKindRaw, name, url);
       const currentCategory = getFileCategory(mediaType);
       const width = typeof dimensions?.width === "number" ? Math.floor(dimensions.width) : undefined;
       const height = typeof dimensions?.height === "number" ? Math.floor(dimensions.height) : undefined;
       const normalizedUrl = normalizeMediaAssetUrl(url);
       const normalizedDuration = typeof durationSeconds === "number" && Number.isFinite(durationSeconds) ? Math.max(0, Math.floor(durationSeconds)) : undefined;
-      const media = await prisma.mediaAsset.upsert({
-        where: { userId_normalizedUrl: { userId: user.id, normalizedUrl } },
-        create: buildMediaAssetRecord({
-          userId: user.id, origin: "upload", flow: "conversation",
-          mediaType: mediaType as "video" | "audio" | "document",
-          url, normalizedUrl, name,
-          originalFileName: name, mimeType, fileSize, contentHash,
-          width, height, durationSeconds: normalizedDuration,
-          conversationId,
-        }),
-        // 出生即冻结：记录已存在则不覆盖内容。
-        update: {},
-        select: { id: true },
-      });
-      await prisma.userAssetState.upsert({
-        where: { userId_mediaAssetId: { userId: user.id, mediaAssetId: media.id } },
-        create: buildUserAssetStateRecord({ userId: user.id, mediaAssetId: media.id, name, initialCategory: currentCategory }),
-        update: { hiddenAt: null, hiddenReason: null },
+      // 命名与写入放进同一个持锁事务，服务端权威定名（去扩展名 + 全局唯一），杜绝并发撞名。
+      resolvedName = await withUploadNameLock(userId, async (tx) => {
+        const resolved = await resolveUploadNameInTx(tx, { userId, originalFileName: name, contentHash });
+        const media = await tx.mediaAsset.upsert({
+          where: { userId_normalizedUrl: { userId, normalizedUrl } },
+          create: buildMediaAssetRecord({
+            userId, origin: "upload", flow: "conversation",
+            mediaType: mediaType as "video" | "audio" | "document",
+            url, normalizedUrl, name: resolved.name,
+            originalFileName: name, mimeType, fileSize, contentHash,
+            width, height, durationSeconds: normalizedDuration,
+            conversationId,
+          }),
+          // 出生即冻结：记录已存在则不覆盖内容。
+          update: {},
+          select: { id: true, systemName: true, initialName: true },
+        });
+        await tx.userAssetState.upsert({
+          where: { userId_mediaAssetId: { userId, mediaAssetId: media.id } },
+          create: buildUserAssetStateRecord({ userId, mediaAssetId: media.id, name: media.systemName ?? resolved.name, initialCategory: currentCategory }),
+          update: { hiddenAt: null, hiddenReason: null },
+        });
+        // 记录已存在（同 url 老资产）时用它的权威名，别用新分配的。
+        return media.systemName?.trim() || media.initialName?.trim() || resolved.name;
       });
     }
-    return NextResponse.json({ url });
+    return NextResponse.json({ url, name: resolvedName });
   } catch (error) {
     const message = toUserErrorMessage(error, "文件上传失败，请稍后再试。");
     return NextResponse.json({ error: message }, { status: 500 });
