@@ -1,6 +1,19 @@
 # Current Status
 
-Last checked: 2026-07-21 China time.
+Last checked: 2026-07-22 China time.
+
+## 2026-07-22 部署 07-20+07-21 全部上线 + 工作流删除确认弹窗 + 图层右键拦截 + @引用视频首帧/音频倒计时 + 导入选中蓝框层级 — 见 CHANGELOG 顶条为权威。速记：
+
+**✅ 全部已部署腾讯 + 同步阿里、四域名 200；`tsc`+`build` 通过；无 Prisma 迁移；已 push GitHub（三方同步 `ac4c38f`）。`wavesurfer.js` 随镜像 build 自动装入（Dockerfile 内 npm install，无需宿主单独装）。**
+
+1. **部署**：把积压的 07-20（资产库改造 + wavesurfer.js）+ 07-21（@引用迷你资产库 + 从资产库导入音视频 + 视频卡@图标）**两批一次性上线**。提交序列 `0a577e3`→`2e0672b`→`936dbbe`→`ac4c38f`。
+2. **工作流空生成节点删除确认弹窗**：空的图片/视频生成节点（无结果）输入框有提示词时删除弹通用确认框，为空直接删。判定 `workflowNodeNeedsDeleteConfirm`，覆盖三删除入口（键盘 Del/右键菜单/runtime.deleteNode）。弹窗 `z-[10002]`（高于节点输入框浮层 z-[9999]），确定按钮黑色 `bg-[#111] px-12`。
+3. **图层面板右键不出菜单**：`WorkflowLayerPanel` 根加 `onContextMenu` 拦截。
+4. **@引用视频首帧封面**：`asset-mention-picker.tsx` 视频无 poster（上传视频）时用 `<video #t=0.1>` 首帧，不再只显图标。
+5. **@引用音频卡时间**：`AudioWaveformPlayer` 加 `secondsCountdown` prop，@引用弹窗音频卡显示"倒计时秒/总秒数"两位数（15/15→00/15）、移右上 `right-[3px] top-[3px]`；其它地方（资产库/导入弹窗音频卡）不变。
+6. **导入弹窗选中蓝框/勾层级**：渐变黑=z-10、名字=z-20、蓝框/勾移 DOM 末尾+z-50，不再被渐变挡。
+7. **影响评估（用户点名）**：核查 07-20/07-21 改动**不影响生成主链路、扣积分**（图片存盘重排队扣费仍幂等/只 finalize 扣一次；服务端只改资产库过滤展示；前端没动生成提交/扣费）。
+8. **部署窗口 ChunkLoadError 非 bug**：旧标签跨部署窗口现象，硬刷即可（容器=阿里 chunk 一致、页面 200）。
 
 ## 2026-07-21 从资产库导入补音视频 + @引用资产弹窗大改造 + 视频卡@媒体图标 — 见 CHANGELOG 顶条为权威。速记：
 

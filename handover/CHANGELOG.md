@@ -1,5 +1,48 @@
 # Current Handover Changelog
 
+## 2026-07-22 部署 07-20+07-21 两批全部上线 + 工作流空生成节点删除确认弹窗 + 图层面板右键拦截 + @引用弹窗视频首帧封面/音频倒计时显示 + 导入弹窗选中蓝框层级修复（✅ 全部已部署腾讯 + 同步阿里、四域名 200、`tsc`+`build` 通过、无 Prisma 迁移、已 push GitHub；`wavesurfer.js` 已随镜像 build 装入）
+
+Reply style 简洁直接中文。本 session 主线=**把积压的 07-20（资产库改造 + `wavesurfer.js`）+ 07-21（@引用资产迷你资产库 + 从资产库导入音视频 + 视频卡@图标）两批一次性部署上线**，并顺带做了几个工作流/UI 小改动。三方同步于 `ac4c38f`。
+
+### 提交序列（GitHub）
+- `0a577e3` 07-20+07-21 两批全部改动 + 工作流空生成节点删除确认弹窗 + 图层面板右键拦截（首次部署）
+- `2e0672b` @引用资产：视频无封面用视频首帧作封面（图标仅兜底）
+- `936dbbe` @引用音频卡倒计时/总秒数两位数(右上角) + 导入弹窗选中蓝框/勾提到渐变之上
+- `ac4c38f` 导入弹窗选中蓝框/勾移到 DOM 末尾 + z-50（彻底压在渐变黑之上）
+
+### 1. ⭐ 部署（重点）
+- Dockerfile 内 `RUN npm install`、`.dockerignore` 排除 `node_modules` → **`docker compose up -d --build` 时会在镜像里自动装 `wavesurfer.js`**，不需要在宿主单独 `npm install`（本 session 已验证）。
+- 流程：本地 `npm run build` 过 → scp 源码 + `package.json`/`package-lock.json` 到 `/opt/flashmuse/app/`（先 /tmp 再 `sudo cp`）→ `cd /opt/flashmuse && nohup sudo docker compose up -d --build flashmuse-app`（后台+轮询 `/tmp/build*.log`）→ `bash /tmp/syncali.sh` 同步 `.next/static` 到阿里 → `bash /tmp/health.sh` 四域名 200。
+- **`/tmp/syncali.sh` 与 `/tmp/health.sh` 是本 session 现写的**（重启后 /tmp 会清，下个 AI 需重建）：syncali=`sudo rm -rf /tmp/next-static; sudo docker cp flashmuse-flashmuse-app-1:/app/.next/static /tmp/next-static; sudo rsync -a --delete -e 'ssh -i /opt/flashmuse/data/runtime/flashmuse_to_ali_ed25519 -o StrictHostKeyChecking=no' /tmp/next-static/ root@101.37.129.164:/var/www/flashmuse-static/_next/static/`；health=循环 curl main/api/ali/static.venusface.com。
+- **踩坑**：Ali 同步 key `/opt/flashmuse/data/runtime/flashmuse_to_ali_ed25519` 属主 root，**必须 `sudo` 读**（非 sudo ssh 会 `Permission denied`）。PowerShell 内联含 `$(...)`/`%{}`/中文的 bash/curl 会被本地 PS 先解释坏，一律 scp .sh 再 `sed -i 's/\r$//'` + `bash` 跑。
+
+### 2. 工作流空生成节点删除确认弹窗（`workflow-tldraw-canvas-inner.tsx`）
+- 需求：工作流里**空的图片/视频生成节点**（无生成结果），若**输入框有提示词内容**，删除时弹通用确认框"当前{图片|视频}生成节点输入框中有输入内容，删除后不可恢复，是否删除？"；输入框为空则直接删、不弹。
+- 新增判定 `workflowNodeNeedsDeleteConfirm(node)` = `(image|video) && !hasWorkflowNodeResult && prompt.trim() 非空`。
+- 覆盖**三个删除入口**：① 键盘 Del/Backspace（`deleteSelectedNodes`）② 右键菜单删除（`runDelete`，走 tldraw `editor.deleteShapes`；给 `WorkflowCustomContextMenu` 加 `onConfirmDelete` prop）③ `runtime.deleteNode`。每处都抽出 `performDelete`，需确认就 `setDeleteConfirm({kindLabel, onConfirm})`。
+- 弹窗 render 在 shell 里、`z-[10002]`（**高于节点输入框浮层 `z-[9999]`**，否则遮罩盖不住输入框、弹窗被挡）。确定按钮=黑色 `bg-[#111] px-12`（对齐"从资产库导入"弹窗右下角确定按钮宽度）、取消=`border`。
+
+### 3. 图层面板右键不出菜单（`workflow-tldraw-canvas-inner.tsx`）
+- `WorkflowLayerPanel` 根元素加 `onContextMenu={e => {e.preventDefault(); e.stopPropagation();}}`，右键不再冒泡到画布触发工作流上下文菜单。
+
+### 4. @引用资产弹窗视频首帧封面（`asset-mention-picker.tsx`）
+- 原来视频无 `thumbnailUrl`（**上传视频没 poster**）时直接落图标兜底 → 上传视频只剩图标。改成无封面时用 `<video src=...#t=0.1 preload=metadata>` **首帧作封面**（与"从资产库导入"弹窗一致），播放键始终显示；`RiVideoOnLine` 图标 import 已删。调用方（对话流/工作流）都已传 `getMediaSrc`。
+
+### 5. @引用资产音频卡时间显示改倒计时/总秒数（`audio-waveform-player.tsx` + `asset-mention-picker.tsx`）
+- `AudioWaveformPlayer` 加 prop `secondsCountdown`（默认 false）。开启后 card variant 左上时间从 `MM:SS / MM:SS` 改成 `倒计时秒/总秒数` 两位数格式（如 `15/15`→`00/15`，新 helper `padSeconds`），位置移到**右上 `right-[3px] top-[3px]`**。**只在 `AssetMentionPicker` 的音频卡传 `secondsCountdown`**——资产库上传音频卡、从资产库导入弹窗的音频卡保持原 `MM:SS / MM:SS` 左/无不变。
+
+### 6. 从资产库导入弹窗选中蓝框/勾层级修复（`chat-workbench.tsx` ~15302 卡片块）
+- 选中蓝框（`inset-0 border-2`）和右上角勾原来被底部渐变黑（`h-10 from-black/75`）盖住。修复：渐变黑=`z-10`、名字=`z-20`、**蓝框/勾移到 DOM 末尾渲染 + `z-50`**，确保压在最上层。
+
+### 7. 影响评估（用户点名，已核查无影响）
+- 逐个 diff 了 07-20/07-21 涉及的服务端 + 前端文件，确认**不影响生成主链路、扣积分**：
+  - `generation-jobs.ts`（07-20 图片存盘不丢重排队 `localizeAndFinalizeImages`）：扣费仍按 requestId 幂等、**只在图片本地化成功 finalize 时扣一次**，重排队/等待存盘阶段不扣费也不重新生成；断线续跑走 `extraJson.pendingImageLocalize` 只本地化、跳过 attempts 上限。
+  - `media-assets`/`workspace-state` 路由：只改资产库过滤/计数/透传 `mediaType`（新增 upload_videos/upload_audios 分类），纯展示层。
+  - 前端 grep `charge/credit/sendMessage/api\/(image|video)/referenceImages` 零命中——没动生成提交/扣费客户端逻辑，@引用视频/音频走复用的 uploadRule 校验 + ready 参考进杠，与原提交路径一致。
+
+### 8. 部署窗口 ChunkLoadError（非 bug，已排查）
+- 用户部署后旧标签页报 `ChunkLoadError` + `Failed to find Server Action "x"` + "This page couldn't load"。排查：容器与阿里 chunk 数一致(26=26)、报错 chunk 阿里上存在、`https://ali.venusface.com/workspace` 返回 200 且引用的 8 个 chunk 阿里全有。**真因=旧标签页跨越部署窗口（重建换 chunk 哈希，部署那几秒去加载旧哈希 chunk 失败）——硬刷/重开标签即可，每次部署固有现象**。
+
 ## 2026-07-21 从资产库导入补齐音视频 + @引用资产弹窗大改造（迷你资产库 + 视频/音频可引用 + 懒加载）+ 视频卡@媒体图标（⚠️ 全部**仅本地**，`npx tsc --noEmit` 通过；未 build/未部署/未 commit；无 Prisma 迁移；**无新增 npm 依赖**，但**上一 07-20 session 的 wavesurfer.js 也仍未部署**——见"部署"）
 
 Reply style 简洁直接中文。本 session 全程只做本地不部署（遵守铁律）。承接 07-20 资产库改造，把"上传的资产"三类打通到 `从资产库导入` 和 `@引用资产` 两处，并把 @引用弹窗重做成左右结构的迷你资产库、支持视频/音频引用（复用 + 号上传规则）、按标签懒加载。**下一个 AI：用户要求把全部更新（含 07-20 那批）一次性部署上线。**
