@@ -15306,10 +15306,10 @@ export function ChatWorkbench() {
                                         poster ? <img src={poster} alt={asset.systemName || asset.name} draggable={false} className="h-full w-full object-cover" /> : <video src={`${getStaticMediaUrl(asset.url) ?? asset.url}#t=0.1`} muted playsInline preload="metadata" className="h-full w-full object-cover" />
                                       ) : poster ? <img src={poster} alt={asset.systemName || asset.name} draggable={false} className="h-full w-full object-cover" /> : <div className="flex h-full w-full items-center justify-center text-[12px] text-[#aaa]">无预览</div>}
                                       {isVideo ? <span className="pointer-events-none absolute left-1/2 top-1/2 flex h-11 w-11 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-black/42 text-white shadow-[0_8px_24px_rgba(0,0,0,0.22)] backdrop-blur-[4px]"><RiPlayLargeFill className="ml-0.5 h-5 w-5" aria-hidden="true" /></span> : null}
-                                      <span className={`absolute right-2 top-2 z-40 flex h-5 w-5 items-center justify-center rounded-full border ${selected ? "border-[#2f80ed] bg-[#2f80ed] text-white" : "border-white bg-black/25 text-transparent"}`}><RiCheckLine className="h-3.5 w-3.5" /></span>
-                                      {selected ? <span className="pointer-events-none absolute inset-0 z-40 border-2 border-[#2f80ed]" /> : null}
                                       <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 h-10 bg-gradient-to-t from-black/75 to-transparent" />
                                       <span className="pointer-events-none absolute bottom-2 left-2 z-20 max-w-[calc(100%-16px)] truncate text-[13px] font-medium leading-none text-white">@{asset.systemName || asset.name}</span>
+                                      <span className={`absolute right-2 top-2 z-50 flex h-5 w-5 items-center justify-center rounded-full border ${selected ? "border-[#2f80ed] bg-[#2f80ed] text-white" : "border-white bg-black/25 text-transparent"}`}><RiCheckLine className="h-3.5 w-3.5" /></span>
+                                      {selected ? <span className="pointer-events-none absolute inset-0 z-50 border-2 border-[#2f80ed]" /> : null}
                                     </button>
                                   );
                                 })}
