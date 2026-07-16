@@ -1,5 +1,85 @@
 # Current Handover Changelog
 
+## 2026-07-19 生成链路服务端断线重连改造 + B_146/B_144 修复 + 后台失败原因聚合 + 阿里视频补同步 + 腾讯 BBR（✅ 全部已部署腾讯+同步阿里、四域名 200；**已 push GitHub**；无 Prisma 迁移）
+
+Reply style 简洁直接中文。本 session 从排查后台失败原因入手，修了两个真 bug + 一个后台统计 + 一批运维，最后做了**全生成链路的服务端断线重连改造**（用户明确"很重要，做完记录清楚，过段时间再来看失败原因里还有没有类似问题"）。
+
+**本 session 改动文件（均已部署腾讯+同步阿里、已 push GitHub）**：
+- 新增 `src/lib/transient-error.ts`、改 `src/lib/openrouter.ts`、`src/lib/error-message.ts`、`src/lib/admin-overview.ts`、`src/lib/generation-jobs.ts`、`src/lib/byteplus-assets.ts`、`src/app/api/video/route.ts`
+- 连同 07-18 遗留未推的 `chat-workbench.tsx` 一起，本次已 commit+push。
+
+### 0. ⭐ 生成链路服务端断线重连改造（重点，全部生成统一）
+- **背景**：现在全是服务端跑生成。线上频繁部署（重启 app 几十秒 502 窗口）+ 跨境网络瞬时抖动，会让"正在创建/生成"的请求撞上瞬时错误而**整单毙**，用户看到"服务器繁忙"。这类属于**服务端自己的断线重连范畴，不是用户问题**，服务端必须自愈、用户无感。
+- **梳理结论**（已有自愈 vs 缺口）：✅ 视频轮询(`runVideoJob` catch→scheduleJobRetry)、视频本地存盘(media-save-queue 退避重试)、任务被重启打断(claim 回收 lease>10min 的 running)、阿里同步(fire-and-forget) 本就有自愈。❌ 缺口=**图片任务 catch 一次异常立即毙**、**视频创建阶段(路由内同步一次性，无重试)**、**BytePlus 建素材(auto-review)一次失败即毙**。
+- **统一判定** `src/lib/transient-error.ts` `isTransientServerError(value)`：网络(fetch failed/ECONNRESET/…)、超时、HTTP 5xx/Bad Gateway、平台临时(Failed to download media/write to client error/Transaction API error/asset not found)、限流(429)、curl 传输抖动 = **可恢复→重试**；真人/隐私/敏感/版权(走送审机制)、参数/尺寸/比例/模型无效、401/403、模型拒绝/无输出 = **永久→不重试**；未知一律永久（不掩盖真 bug）。
+- **接线**：
+  1. **图片任务** `generation-jobs.ts runImageJob` catch：可恢复错误且 `attempts<MAX_IMAGE_JOB_ATTEMPTS(6)` → `scheduleJobRetry`（退避 5s×attempts 封顶 30s，记 `image-job-transient-retry` 诊断日志），不毙不记 failed；超上限才真失败。attempts 由 claim 递增天然封顶。
+  2. **视频创建** `video/route.ts`：新增 `createVideoTaskWithTransientRetry`（包 `createOpenRouterVideoTask`，可恢复错误退避重试 3 次 2s/4s），替换 3 处创建调用（初次 + 两处 auto-review 后重试）。永久错误(真人等)不重试、原样交给 auto-review/报错逻辑。
+  3. **BytePlus 建素材** `byteplus-assets.ts createBytePlusAsset`：CreateAsset 由平台来抓我们的 URL，遇我们瞬时 502/下载失败 → 退避重试 3 次（2s/4s）。这是"真人检测→送审重试→抓图失败→服务器繁忙"链条的根治点之一。
+- **为什么"真人检测"会显示成"服务器繁忙"**（本 session 排查明确，记牢别再误判）：真人检测**确实自动送审了**（auto-review 工作正常），但送审/建素材那步需要 **BytePlus 来抓我们的参考图 url**，那一刻我们 nginx 瞬时 502(Bad Gateway) → 抓不到图 → 重试失败 → 报 `Failed to download media`（英文无中文）→ 掉进 error-message 兜底"服务器繁忙"。**不是真人检测逻辑坏，是下游抓图瞬时抖动 + 没自愈**。本次 #3 的建素材重试 + #2 创建重试正是根治它。用户定调：不补映射（这是服务端断线重连范畴）。
+- **未改（本就有自愈/低风险）**：视频轮询、media-save 下载、lease 回收重启自愈。finalize/扣费幂等(requestId)——重启打断靠 lease 回收重跑。
+
+### 1. B_146 —— Seedream 5.0 Pro + 多参考图报"当前模型不支持这组参数"（代码 bug 根治）
+- **真因**：`openrouter.ts:1191` 多参考图(≥2)时无条件加 `sequential_image_generation:"disabled"`，但 Pro 不支持该参数 → BytePlus 400 `InvalidParameter: sequential_image_generation is not supported`。`useSequentialBatch` 已排除 Pro，但 else 的 disabled 分支漏了同样的 gate。
+- **修复**：disabled 分支加 `supportsSequentialBatch &&` 条件 → Pro 无论几张参考图都不发该参数。三模式(对话流/工作流/资产库)统一走 `generateBytePlusImage`，一处修全覆盖。已部署验证 Pro 2816×1584 出图成功。
+
+### 2. B_144 —— 参考图宽高比越界，映射成用户可读中文
+- **真因**：视频模型(Seedance)要求每张参考图宽高比在 0.4~2.5 之间，用户传了 1672×5644(≈0.30)的细长图 → BytePlus 报 `Aspect ratio must be between 0.4 and 2.5`(英文)→ 掉兜底"服务器繁忙"。**只视频模型有此限制，图片模型日志里 0 次**。
+- **修复**（`error-message.ts`）：加映射 → 红字"参考图太窄或太长了，当前视频模型无法使用。请换一张比例更接近常规尺寸（如 16:9、9:16、1:1、4:3）的参考图后重试。"（不提 0.4~2.5，用户只认常规比例）。
+
+### 3. 后台概览"失败原因"聚合统计（`admin-overview.ts`）
+- **问题**：`failureReason` 带自增 `(B_xx)` 前缀，同一原因每条都是不同字符串 → GROUP BY 分不到一组 → 列表越来越长；且 GPT 图片拒绝的长文本每条不同也不聚合。
+- **修复**：SQL 里 `regexp_replace` ①剥 `^\(B_[0-9]+\)\s*` 前缀 ②把"图片平台没有返回图片：…"整族归一成一个标签。失败原因 + 审核拦截两处都改。结果从一大堆收敛成 ~15 条聚合、按数量降序、不显示 B_xx、直接显示数量。
+
+### 4. 运维（非代码）
+- **腾讯宿主开 BBR**：迁移时漏了(一直 cubic)，腾讯→阿里跨境 RTT 278ms/丢包 20%，cubic 下大文件(视频)传输崩溃→超 120s→`aliSyncError`(图片小能过、视频不能)。开 BBR+fq 持久化后 6.8MB 视频 5 分钟传不完→4 秒传完。
+- **阿里视频补同步**：阿里缺约 92 视频，`rsync -a`(只补不删)补 539 文件/812MB；阿里 generated 现为腾讯超集不缺失；实测 6 视频响应头 `X-FlashMuse-Generated-Source: local`，确认走阿里本地镜像不回源腾讯。
+- **同步脚本 bug 修**：`docker cp` 到已存在目录会嵌套 `/tmp/next-static/static/` → 之前把旧 build chunk 推到阿里致工作台 ChunkLoadError 打不开；改为 `rm -rf /tmp/next-static` 再 cp。
+
+### 待办（下一个 AI）
+- **push GitHub**：本 session 7 文件 + 07-18 的 chat-workbench.tsx + handover 一起 commit+push。
+- **过段时间回来看失败原因**（用户交代）：BBR/断线重连/映射上线后，再查 `GenerationEvent` 失败原因聚合 + 诊断日志，看"服务器繁忙"是否大幅下降、还有没有新的可恢复错误没纳入 `isTransientServerError`（新增就加进去）。
+
+---
+
+## 2026-07-18 视频三处线上问题根治（BytePlus 参考素材审核瞬态容错 + 音频版权拦截走 Skip 素材 + 对话流强制@音频名根治）+ 历史回填（⚠️ 全部已部署腾讯+同步阿里、四域名 200；**代码未 push GitHub**；无 Prisma 迁移）
+
+Reply style 简洁直接中文。本 session 起因=排查线上错误码 B_122 / B_135，牵出三个真问题，全部根治 + 部署，并对第三个做了历史回填。**改动文件仅 2 个：`src/app/api/video/route.ts`、`src/components/chat-workbench.tsx`**（均已 scp 到腾讯 `/opt/flashmuse/app/src/...` + `docker compose up -d --build flashmuse-app` + 同步 `.next/static` 到阿里）。**下一个 AI：这 2 文件的改动 + 本次 handover 尚未 push GitHub，需 commit+push 保持三方同步。**
+
+> 错误码 B_xxx 是运行时顺序自增（`.runtime/error-code-counter.txt`），代码里查不到含义。真因在：容器日志 `docker logs flashmuse-flashmuse-app-1 | grep 'B_xxx'`、`GenerationEvent.failureCode` 列、`/opt/flashmuse/data/runtime/*-diagnostics-log.jsonl`。用户说的"12424740/868181"是 nickname，账号 id 形如 `ID_xxxxxx`，先查 `User` 表转换。
+
+### 1. B_122 —— BytePlus 参考素材审核等待"抢跑"瞬态被误判为失败（`waitForBytePlusAssetActive`）
+- **现象**：视频（Seedance 2.0，带多参考图走真人审核）偶发失败，用户看到"服务器繁忙，请稍候再试"。真因日志：`[B_122] video request failed Error: The specified asset asset-... is not found.`
+- **真根因**：真人审核流程 `createBytePlusAsset` 返回 asset id（状态 Processing）后，`waitForBytePlusAssetActive` 立刻轮询 `GetAsset` 查状态；BytePlus 后端 CreateAsset 刚返回、GetAsset 还没同步到（最终一致性/传播延迟），第一次查就回 "asset not found"。老代码 `while` 里第一次查询报错就直接抛出 → 整单毙 → 被 `error-message.ts` 兜底成"服务器繁忙"。间歇性（平台大多数时候查得到就正常，偶尔传播慢那一下撞上就崩）。
+- **修复**（`video/route.ts:185` `waitForBytePlusAssetActive`）：查询包 try/catch，**只有平台明确返回 `Status==="Failed"` 或超过 180s 总时限才算失败**；期间任何查询瞬态错误（not found / 网络抖动）当"还没就绪"继续每 5s 轮询。总时限维持 3 分钟（用户先要 10 分钟后改回 3 分钟；不动串行架构避免单请求超网关）。
+- **范围**：video 诊断日志（07-10~07-16）内此类失败 10 例、全是同一用户 ID_315163（多参考图真人审核用得最多）。修复后不再复发。
+
+### 2. B_135 —— 参考音频以原始链接直传被 BytePlus 版权检测拦截（真根因 + 已实测验证）
+- **现象**：带参考音频的 Seedance 2.0 视频失败，用户看到"生成结果可能涉及版权限制"。真因日志：`InputAudioSensitiveContentDetected.PolicyViolation ... input audio 'content[N]' may be related to copyright restrictions`。用户反馈"同一音频在别的平台 seedance 能生成"。
+- **实测双向验证**（在腾讯 app 容器内跑独立 BytePlus 脚本，用户桌面 `aaa/1_clean_44k16.wav` 音频 + 该用户参考图）：
+  - **实验 A**：音频用**原始公网 audio_url** 直传 → 复现一模一样的版权拒绝。
+  - **实验 B**：音频先 `CreateAsset`(AssetType=Audio, **Moderation=Skip**) 等 Active → 用 `asset://<id>` 引用 → **成功出片**（生成视频已交付用户桌面 `aaa/生成结果_audio_asset.mp4`）。
+- **真根因**：参考素材本应"上传成 Skip 免审素材 → `asset://` 引用"绕过检测（图片走的就是这套 `autoReviewBytePlusVideoReferences`，moderationStrategy Skip）。但这套是**被动触发**——只在第一次创建失败且被 `isBytePlusHumanReferenceError` 判为"真人/隐私"错误时才走，而该函数**特意排除了 copyright**（`&& !/output|copyright|版权/`）。音频撞"版权"→不触发→音频始终以原始 `audio_url` 直传（`openrouter-video.ts:250`）→被版权检测拦。→ **图片能过、音频不能过的真原因=送法不对，不是音频真侵权。**
+- **修复**（`video/route.ts`）：新增 `isBytePlusRecoverableReferenceError`——**输入参考素材（图/视频/音频）被真人/隐私/敏感/版权拦截都判"可恢复"**（走 Skip 素材 + `asset://` 重试，实验 B 已证有效）；**仅输出侧（生成结果本身）`output` 版权/敏感判不可恢复**（重传输入没用）。两处重试闸门（原 `isBytePlusHumanReferenceError`）改用新判定。下游 auto-review 机制（含音频以 `getBytePlusAssetType→Audio`+Skip 上传、返回 `asset://`）原样复用。
+- **注意**：本修复复用现有"首次失败→返回 `{status:"reviewing"}`→客户端带 `autoBytePlusAssetReview:true` 重试"的两轮机制（图片真人审核早已跑通），音频/视频版权错误现在也进这套。
+
+### 3. 对话流"参考音频 @文件名永远删不掉"根治（是**存**的问题，不是读）—— 用户 ID_868181「阿盛」报
+- **现象**：对话流生视频卡右键"使用提示词"→ 提示词最前面一定有个 `@音频名`（如 `@林野.mp3`/`@Haruka.mp3`）；手动删掉再发送 → 等待卡上又冒出来 → 永远删不掉；且部分是用户手打的图片 @名。
+- **定位（存 vs 读）**：查统一存储 `GenerationJob`，那条本该是"用户真实干净提示词"的 `extraJson.cleanPrompt` **开头就焊着 `@林野.mp3`**，后面才是用户正文（【参考图】/正文里的 `@图1`/`@Haruka` 等手打图片 @名）。→ **读是忠实的，是写的时候就把强制 @名当干净提示词存进去了。**
+- **真根因**（`chat-workbench.tsx`）：视频提交时 `ensureMediaFileMentions(rawText, ...)` 把"附带音频/视频但 @名不在文中"的媒体 @名**强制拼到提示词最前面**。而参考音频/视频其实是靠**附件数组 `referenceAudios`/`referenceVideos`** 送模型的（后端 `video/route.ts` 读 body 数组，不解析提示词 @名），这个强制 @名**纯多余**，却同时污染了：发给模型的 prompt（`text`→pendingRequest.prompt）、存档 `content`/`cleanPrompt`、等待卡显示；删了发送时 `ensureMediaFileMentions` 又检测到"附件在、@名不在"重新补上 → 死循环。
+- **修复**：**去掉 `ensureMediaFileMentions`（删函数+调用）**，视频提交直接用用户输入原文；音频/视频照常附件送达、缩略图照常显示、@名变用户可选可删。copyPrompt 原样读 `message.content`（用户手打 @名完整保留）。
+- **⚠️ 踩坑（已纠正）**：第一版曾在 copyPrompt 里剥离"所有附带媒体的 @名"，把用户手打的 @名也删了（用户投诉"确实@出来的也没了"）→ 已撤回，只保留写入端根治。**教训：媒体 @名对模型无意义（走附件），但用户手打的 @名是意图，读取端不许乱剥。**
+
+### 4. 历史回填（4 用户 50 视频 job；已执行+备份）
+- **范围核查**：全库扫"提示词开头是 `@xxx.<音视频扩展名>`"（=强制补名特征，抽查零误判）→ 4 用户 50 条：ID_315163「七月」28、ID_868181「阿盛」20、ID_193006 1、ID_332396 1（后两个是参考**视频** `.mp4` 被强制补名，证明音频视频都中招）。
+- **回填**（腾讯容器内 `@prisma/client` 脚本，规则=**只剥「开头、且带音视频扩展名」的 @名**，绝不动正文/手打图片 @名）：`GenerationJob.prompt`+`extraJson.cleanPrompt` 50 条；`WorkspaceSession.messagesJson`（copyPrompt 实际读源）49 条/5 会话；`WorkspaceMessage`（content+messageJson）51 条；`MediaAsset.sourcePrompt` 50 条。复查全库剩余 0。
+- **备份**：`/opt/flashmuse/data/runtime/backfill-forcedmention-2026-07-16T05-44-23-593Z.json`（+ 本地 temp 一份）。
+
+### 现状/教训（别当 bug 重查）
+- 上述 3 处代码修复 + 回填**只在腾讯线上**；GitHub 未推。改动文件：`src/app/api/video/route.ts`、`src/components/chat-workbench.tsx`。
+- BytePlus 素材库 API：AK/SK 走火山 HMAC-SHA256 签名（`byteplus-assets.ts`），host `ark.ap-southeast-1.byteplusapi.com`；视频创建走 Bearer API key + `ark.ap-southeast.bytepluses.com/api/v3/contents/generations/tasks`；`BYTEPLUS_UNLOCK_LIMITS=true` 时模型名直接用端点 id（seedance-2-0 = `ep-20260521133841-nn8bg`）；asset group `group-20260711043424-rvlc4`。
+- 服务器上临时调试文件（音频/结果 mp4/脚本/sql）已全部清理。
+
 ## 2026-07-17 上传文件命名全平台统一（服务端唯一权威）+ 资产库右侧按入库时间稳定排序（部署腾讯+同步阿里+push GitHub；无 Prisma 迁移；连同 07-16 那批一起部署/推送）
 
 Reply style 简洁直接中文。用户诉求：**同一张图（同 contentHash）在对话流/工作流/资产库所有地方显示的名字必须相同；项目里不能有同名文件；异图同原名在任何一处上传时就即时错开为 名_2；名字去扩展名；改名后引用名跟随当前名。** 根因=「上传取名/去重」此前三份各写各的（对话流 `makeUniqueReferenceName` 仅框内碰撞去扩展名 / 资产库 `getVersionedName` 全库碰撞吃标点 / 工作流直接用 `file.name` 带 `.jpg`），碰撞域+扩展名处理都不同，且上传文件没有像生成文件那样的服务端权威名（生成有 `generation-jobs.reservedNames`）。已收敛。

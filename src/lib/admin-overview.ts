@@ -253,13 +253,13 @@ export async function getAdminOverviewData(): Promise<AdminOverviewData> {
     FROM "GenerationEvent" GROUP BY 1 ORDER BY calls DESC`);
   const modelCalls = genModelRows.filter((row) => row.model).map((row) => ({ label: guessModelLabel(row.model as string), calls: num(row.calls), failed: num(row.failed), note: /video|seedance|kling|hailuo|wan|veo/i.test(row.model as string) ? "视频" : "图片" }));
 
-  const genFailureRows = await safeRows(() => prisma.$queryRaw<Array<{ failureReason: string | null; count: bigint }>>`
-    SELECT "failureReason", COUNT(*)::bigint AS count FROM "GenerationEvent" WHERE "status" = 'failed' AND "failureReason" IS NOT NULL GROUP BY 1 ORDER BY count DESC`);
-  const failureTop = genFailureRows.map((row) => ({ label: (row.failureReason as string).slice(0, 60), value: num(row.count) }));
+  const genFailureRows = await safeRows(() => prisma.$queryRaw<Array<{ reason: string | null; count: bigint }>>`
+    SELECT regexp_replace(regexp_replace("failureReason", '^\\(B_[0-9]+\\)\\s*', ''), '^(图片平台没有返回图片)：.*$', '\\1（模型未产出或拒绝生成）') AS reason, COUNT(*)::bigint AS count FROM "GenerationEvent" WHERE "status" = 'failed' AND "failureReason" IS NOT NULL GROUP BY 1 ORDER BY count DESC`);
+  const failureTop = genFailureRows.map((row) => ({ label: (row.reason as string).slice(0, 80), value: num(row.count) }));
 
-  const genModerationRows = await safeRows(() => prisma.$queryRaw<Array<{ failureReason: string | null; count: bigint }>>`
-    SELECT "failureReason", COUNT(*)::bigint AS count FROM "GenerationEvent" WHERE "status" = 'failed' AND "moderation" = true AND "failureReason" IS NOT NULL GROUP BY 1 ORDER BY count DESC LIMIT 8`);
-  const moderationBreakdown = genModerationRows.map((row) => ({ label: (row.failureReason as string).slice(0, 60), value: num(row.count) }));
+  const genModerationRows = await safeRows(() => prisma.$queryRaw<Array<{ reason: string | null; count: bigint }>>`
+    SELECT regexp_replace(regexp_replace("failureReason", '^\\(B_[0-9]+\\)\\s*', ''), '^(图片平台没有返回图片)：.*$', '\\1（模型未产出或拒绝生成）') AS reason, COUNT(*)::bigint AS count FROM "GenerationEvent" WHERE "status" = 'failed' AND "moderation" = true AND "failureReason" IS NOT NULL GROUP BY 1 ORDER BY count DESC LIMIT 8`);
+  const moderationBreakdown = genModerationRows.map((row) => ({ label: (row.reason as string).slice(0, 80), value: num(row.count) }));
 
   const genLatencyRows = await safeRows(() => prisma.$queryRaw<Array<{ model: string | null; avg: number | null }>>`
     SELECT "model", AVG("durationMs") AS avg FROM "GenerationEvent" WHERE "status" = 'success' AND "durationMs" IS NOT NULL AND "model" IS NOT NULL GROUP BY 1 ORDER BY avg DESC LIMIT 8`);

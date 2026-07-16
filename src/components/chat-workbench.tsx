@@ -6951,13 +6951,6 @@ function getUploadedMediaReferences(files?: UploadedFileEntry[]): MediaFileRefer
   });
 }
 
-function ensureMediaFileMentions(text: string, references: MediaFileReference[]) {
-  const missing = references.filter((reference) => !text.includes(`@${reference.name}`));
-  if (missing.length === 0) return text;
-  const prefix = missing.map((reference) => `@${reference.name}`).join(" ");
-  return [prefix, text].filter(Boolean).join(" ").trim();
-}
-
 function getDocumentOnlyUploadedFiles(files?: UploadedFileEntry[]) {
   return (files ?? []).filter((file) => !isUploadedMediaFile(file));
 }
@@ -12504,8 +12497,10 @@ export function ChatWorkbench() {
       showInputTip("有文件上传失败，请删除后重新上传");
       return;
     }
-    const uploadedMediaReferencesForText = getUploadedMediaReferences(availableUploadedFiles);
-    const rawTextWithMediaMentions = submitMode === "video" ? ensureMediaFileMentions(rawText, uploadedMediaReferencesForText) : rawText;
+    // 参考音频/视频是通过附件（referenceAudios/referenceVideos）送达模型的，与提示词里的 @名无关；
+    // 过去在视频模式下强制把媒体 @名补到提示词最前面，会污染模型提示词/存档 content/等待卡显示，
+    // 且用户删了又被自动补回（永远删不掉）。这里不再强制补名，@名由用户自行控制。
+    const rawTextWithMediaMentions = rawText;
     if ((!rawTextWithMediaMentions && availableUploadedImages.length === 0 && availableUploadedFiles.length === 0) || !activeSession || (submitMode !== "agent" && submitMode !== "general" && activeHasMaxPendingRequests) || sendingSessionIdsRef.current.has(activeSession.id)) return;
     if (workspaceStorageMode === "user" && currentUserCredits <= 0) {
       showInputTip("积分不足，请充值后再使用模型");

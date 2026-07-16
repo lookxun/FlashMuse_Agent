@@ -3,6 +3,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { getLocalEnvValue } from "@/lib/system-settings";
+import { isTransientServerError } from "@/lib/transient-error";
 
 type BytePlusAssetAction = "CreateAssetGroup" | "CreateAsset" | "GetAsset" | "ListAssets";
 
@@ -135,16 +136,30 @@ export async function getOrCreateBytePlusAssetGroup() {
 
 export async function createBytePlusAsset(input: { url: string; name?: string; assetType?: "Image" | "Video" | "Audio"; moderationStrategy?: "Default" | "Skip" }) {
   const groupId = await getOrCreateBytePlusAssetGroup();
-  const result = await requestBytePlusAsset<{ Id?: string }>("CreateAsset", {
-    GroupId: groupId,
-    URL: input.url,
-    Name: (input.name || "FlashMuse asset").slice(0, 64),
-    AssetType: input.assetType ?? "Image",
-    Moderation: { Strategy: input.moderationStrategy ?? "Skip" },
-    ProjectName: getCredential("BYTEPLUS_ASSET_PROJECT_NAME") || "default",
-  });
-  if (!result?.Id) throw new Error("BytePlus 没有返回素材 ID");
-  return { id: result.Id, groupId };
+  // 服务端断线重连：BytePlus CreateAsset 会由平台去下载我们传的 URL，若那一刻我们服务器
+  // 瞬时抖动（部署重启的 502 Bad Gateway / 下载超时 / 事务临时失败），会报"下载失败"。
+  // 这类是可恢复的瞬时错误，退避重试几次，绝大多数几秒内自愈，用户无感。
+  const maxAttempts = 3;
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const result = await requestBytePlusAsset<{ Id?: string }>("CreateAsset", {
+        GroupId: groupId,
+        URL: input.url,
+        Name: (input.name || "FlashMuse asset").slice(0, 64),
+        AssetType: input.assetType ?? "Image",
+        Moderation: { Strategy: input.moderationStrategy ?? "Skip" },
+        ProjectName: getCredential("BYTEPLUS_ASSET_PROJECT_NAME") || "default",
+      });
+      if (!result?.Id) throw new Error("BytePlus 没有返回素材 ID");
+      return { id: result.Id, groupId };
+    } catch (error) {
+      lastError = error;
+      if (attempt >= maxAttempts || !isTransientServerError(error)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 2000 * attempt));
+    }
+  }
+  throw lastError;
 }
 
 export async function getBytePlusAsset(id: string) {

@@ -1,5 +1,52 @@
 # Next Actions
 
+## ⚠️ 2026-07-19 (服务端断线重连改造 session) END-OF-SESSION —— 先读这条：**代码已上线腾讯，未 push GitHub**
+
+**状态**：全部已部署腾讯 + 同步阿里、四域名 200、`tsc` 通过、无 Prisma 迁移、**已 push GitHub**。详见 CHANGELOG / 01-current-status 顶条。
+
+**本 session 做完**：
+1. ⭐ **生成链路服务端断线重连**：`isTransientServerError` 统一判定 + 图片任务重试 + 视频创建重试 + BytePlus 建素材重试。
+2. B_146（Pro 多参考图 sequential 参数）、B_144（宽高比映射）修复。
+3. 后台失败原因聚合（剥 B_xx + 归一族、按量降序）。
+4. 运维：腾讯 BBR、阿里视频补同步、同步脚本嵌套 bug 修。
+5. 已 commit+push GitHub（本 session 7 文件 + 07-18 遗留 chat-workbench.tsx + handover）。
+
+**下一个 AI 待办**：
+1. **过段时间回来复查失败原因（用户明确交代，重点）**：断线重连/BBR/映射上线跑一阵后，再查 `GenerationEvent` 失败原因聚合 + `/opt/flashmuse/data/runtime/*-diagnostics-log.jsonl`，确认：①"服务器繁忙"占比是否大幅下降；②"真人检测→服务器繁忙"是否消失；③有没有**新的可恢复错误**没被 `isTransientServerError` 覆盖（有就补进去，它是唯一权威判定）。
+2. 非紧急：M018（对话流统一单轮询器）、M019（工作流 canvasJson 大字段重构）押后。
+
+**同步脚本注意**：`/tmp/syncali.sh` 已修（先 `rm -rf /tmp/next-static` 再 `docker cp`，避免嵌套 `static/static` 把旧 chunk 推上阿里）。部署后务必同步 `.next/static` 到阿里、验证首页+工作台 chunk 都 200（工作台是独立路由 chunk，别只测首页）。
+
+**部署流程**（腾讯）：scp 源码到 `/opt/flashmuse/app/src/...`（先 /tmp 再 `sudo cp`）→ `cd /opt/flashmuse && nohup sudo docker compose up -d --build flashmuse-app`（后台+轮询 `/tmp/build*.log`）→ `bash /tmp/syncali.sh` 同步阿里 → `bash /tmp/health.sh` 四域名 200。改中文源码用 edit 工具，禁 `Set-Content`。
+
+---
+
+## ⚠️ 2026-07-18 (视频三处根治 + 回填 session) END-OF-SESSION —— 先读这条：**代码已上线腾讯，但未 push GitHub**
+
+**状态**：三处代码修复 + 历史回填**全部已部署腾讯 + 同步阿里、四域名 200、`tsc` 通过、无 Prisma 迁移**。**代码未 commit/未 push GitHub**（腾讯线上领先）。详见 CHANGELOG / 01-current-status 顶条。
+
+**本 session 做完**：
+1. B_122：`waitForBytePlusAssetActive` 加瞬态容错（只 Failed/超时才失败）。
+2. B_135：新增 `isBytePlusRecoverableReferenceError`，参考音频/视频版权/敏感错误也走 Skip 素材 `asset://` 重试（实测验证有效）。
+3. 对话流去掉 `ensureMediaFileMentions` 强制补媒体 @名（根治"@音频名删不掉"）。
+4. 历史回填 4 用户 50 视频 job 的强制 @名（4 张表，已备份）。
+
+**下一个 AI 待办**：
+1. **push GitHub（重点）**：改动文件仅 2 个——`src/app/api/video/route.ts`、`src/components/chat-workbench.tsx` + 本次 handover。`git status`/`diff` 确认只带这些，别混入无关改动。push 后三方同步。
+2. **可选浏览器验证**（ali 硬刷）：① 带参考音频的 Seedance 2.0 视频能正常生成（首次可能返回 reviewing、客户端自动带 autoBytePlusAssetReview 重试）；② 对话流旧视频卡"使用提示词"提示词前不再有 @音频名、音频缩略图仍在、用户手打的图片 @名完整；③ 新生成视频删掉手动@的音频名、发送后等待卡不再自动冒出。
+3. **非紧急**：M018（对话流统一单轮询器）、M019（工作流 canvasJson 大字段重构）仍押后。
+
+**关键记忆（排查 BytePlus 错误码/视频问题必读）**：
+- B_xxx 是运行时自增码，查真因去：`sudo docker logs flashmuse-flashmuse-app-1 | grep 'B_xxx'`、`GenerationEvent.failureCode`、`/opt/flashmuse/data/runtime/{video,generation,upload}-diagnostics-log.jsonl`。
+- BytePlus 参考素材（图/视频/音频）要绕过版权/敏感/真人检测，必须"上传成 Moderation=Skip 素材 → `asset://<id>` 引用"，不能直传原始 url。图片/音频/视频同理，走统一 `autoReviewBytePlusVideoReferences`。
+- 素材库 API=AK/SK HMAC 签名（`byteplus-assets.ts`，host `ark.ap-southeast-1.byteplusapi.com`）；视频创建=Bearer key（`ark.ap-southeast.bytepluses.com/api/v3/contents/generations/tasks`）；`BYTEPLUS_UNLOCK_LIMITS=true` 时 seedance-2-0 模型名=端点 id `ep-20260521133841-nn8bg`。
+- 账号 id 形如 `ID_xxxxxx`，用户说的数字/邮箱前缀是 nickname/email，先查 `User` 表转换。
+- 在腾讯容器里跑一次性脚本：`sudo docker cp x.mjs flashmuse-flashmuse-app-1:/app/ && sudo docker exec -w /app flashmuse-flashmuse-app-1 node x.mjs`（`@prisma/client` 可用、DATABASE_URL 已在 env）。
+
+**部署流程**（腾讯，改代码必读）：scp 改动源码到 `/opt/flashmuse/app/src/...` → `cd /opt/flashmuse && nohup sudo docker compose up -d --build flashmuse-app`（后台+轮询 `/tmp/build*.log` 防 120s 超时）→ **必须**同步 `.next/static` 到阿里（否则全站 404）：`sudo docker cp flashmuse-flashmuse-app-1:/app/.next/static /tmp/next-static && sudo rsync -a --delete -e 'ssh -i /opt/flashmuse/data/runtime/flashmuse_to_ali_ed25519 -o StrictHostKeyChecking=no' /tmp/next-static/ root@101.37.129.164:/var/www/flashmuse-static/_next/static/` → 四域名 200。改源码用 edit 工具，禁 `Set-Content` 改中文文件。PowerShell 内联含引号/中文的 psql/bash 会被搅坏，一律 scp .sql/.sh/.mjs 再跑。
+
+---
+
 ## ✅ 2026-07-17 (上传命名统一 + 资产库排序 session) END-OF-SESSION —— 先读这条：三方已同步，无待部署
 
 **状态**：本 session 改动（上传文件命名全平台统一 `src/lib/upload-name.ts` + 资产库右侧按入库时间稳定排序）连同 07-16 输入框统一那批一起：`tsc`+`build` 通过、**已部署腾讯 flashmuse-app、已同步 `.next/static` 到阿里、四域名 200、已 push GitHub**。无 Prisma 迁移。工作树应干净（除本次 handover 提交）。详见 CHANGELOG / 01-current-status 顶条。

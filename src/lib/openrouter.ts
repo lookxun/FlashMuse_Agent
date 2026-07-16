@@ -1188,7 +1188,7 @@ async function generateBytePlusImage(prompt: string, referenceImages: string[] =
       model: bytePlusModel,
       prompt,
       ...(safeReferenceImages.length === 1 ? { image: safeReferenceImages[0] } : safeReferenceImages.length > 1 ? { image: safeReferenceImages } : {}),
-      ...(useSequentialBatch ? { sequential_image_generation: "auto", sequential_image_generation_options: { max_images: count } } : safeReferenceImages.length > 1 ? { sequential_image_generation: "disabled" } : {}),
+      ...(useSequentialBatch ? { sequential_image_generation: "auto", sequential_image_generation_options: { max_images: count } } : supportsSequentialBatch && safeReferenceImages.length > 1 ? { sequential_image_generation: "disabled" } : {}),
       size: bytePlusSize,
       watermark: false,
     };
