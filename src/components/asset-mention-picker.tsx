@@ -100,7 +100,7 @@ export function AssetMentionPicker({
                   {items.map((item) => (
                     <button key={item.id} type="button" onClick={() => onPick(item)} className="group relative aspect-square overflow-hidden rounded-[8px] bg-[#f4f4f4] text-left">
                     {item.kind === "audio" ? (
-                      <div className="h-full w-full overflow-hidden"><AudioWaveformPlayer key={item.url} url={getMediaSrc(item.url)} variant="card" /></div>
+                      <div className="h-full w-full overflow-hidden"><AudioWaveformPlayer key={item.url} url={getMediaSrc(item.url)} variant="card" secondsCountdown /></div>
                     ) : item.kind === "video" ? (
                       item.thumbnailUrl
                         ? /* eslint-disable-next-line @next/next/no-img-element */ <img src={item.thumbnailUrl} alt={item.name} draggable={false} className="h-full w-full object-cover" />
