@@ -1,5 +1,47 @@
 # Next Actions
 
+## ⚠️ 2026-07-21 (从资产库导入音视频 + @引用资产弹窗大改造 session) END-OF-SESSION —— 先读这条：**全部仅本地，用户要求下一个 AI 全部部署上线**
+
+**状态**：本 session 全部改动**只在本地**，`npx tsc --noEmit` 通过，**未 build / 未部署 / 未 commit / 未 push**。无 Prisma 迁移。无新增依赖。详见 CHANGELOG / 01-current-status 顶条。
+
+**⚠️ 关键：07-20 那批（资产库改造 + 新依赖 `wavesurfer.js`）也从未部署**，本 session 建立在其之上。所以要**一次性部署 07-20 + 07-21 两批全部改动**。
+
+**本 session 做完**：
+1. 「从资产库导入」补 上传视频/上传音频两分类（视频小缩略图+播放键、无封面首帧兜底、音频波形卡）；导入支持建音频节点；音频波形卡时间移左上。
+2. ⭐「@引用资产」弹窗三处统一改成迷你资产库（共享组件 `AssetMentionPicker`，左标签+右 5 列 80×80 小缩略图）；显示全部分类（资产库生成弹窗隐藏视频/音频）；视频/音频可引用（方案A，复用 + 号上传 `uploadRule` 校验，从 url 读元数据，不重新上传）；按标签懒加载（首次只加载当前标签 30+全部计数，切标签转圈、下拉流式）。
+3. 视频卡提示词 @媒体小图标：视频封面+播放键、音频统一深灰 `RiVoiceprintLine`，纯展示不可点。
+
+**下一个 AI 待办（用户明确：全部部署）**：
+1. **部署（07-20 + 07-21 一起）**：`git status`/`diff` 确认改动文件（07-20：新增 `audio-waveform-player.tsx`、改 `workflow-tldraw-canvas-inner.tsx`/`chat-workbench.tsx`/`api/workspace-state/route.ts`/`api/media-assets/route.ts`/`lib/generation-jobs.ts`/`package.json`+`package-lock.json`；07-21：新增 `asset-mention-picker.tsx`、改 `chat-workbench.tsx`/`workflow-tldraw-canvas-inner.tsx`/`workflow-tldraw-canvas.tsx`/`audio-waveform-player.tsx`）→ `npm run build` 本地过 → scp 源码到 `/opt/flashmuse/app/src/...`（`package.json`/`package-lock.json` 也要 scp）→ **服务器 `cd /opt/flashmuse/app && npm install`（装 wavesurfer.js）** → `cd /opt/flashmuse && nohup sudo docker compose up -d --build flashmuse-app`（后台+轮询 `/tmp/build*.log`）→ **必须同步 `.next/static` 到阿里**（`bash /tmp/syncali.sh`，否则全站 404）→ 四域名 200 → commit+push GitHub。无 Prisma 迁移。
+2. **浏览器验证（ali 硬刷）**：
+   - 从资产库导入：上传视频（小缩略图+播放键）、上传音频（波形）能显示、能导入工作流（音频进音频节点）。
+   - @引用弹窗三处：迷你资产库左右结构、首次打开只转圈一下就出（加载量小）、切标签转圈、下拉"正在加载中..."流式加载；三处弹窗大小一致。
+   - Seedance 2.0 融合模式：@引用视频/音频**能进杠**（@名变蓝、可删、能生成）；超时长/超尺寸被拦并提示；不支持视频/音频的模型 @引用它们时提示"当前模型不支持…"。
+   - 视频卡提示词里 @视频显封面+播放键、@音频深灰声纹图标，都点不出预览（纯展示）。
+3. 非紧急：清理旧 mention 死常量（`mentionAssetTypes` 等）；M018/M019 仍押后。
+
+**部署流程细节**同下方 07-19/07-18 条（scp→docker compose up -d --build→syncali→四域名 200；改中文源码用 edit 工具禁 `Set-Content`；一次性脚本走 scp+`docker exec`）。
+
+---
+
+
+## ⚠️ 2026-07-20 (资产库改造 session) END-OF-SESSION —— 先读这条：**全部仅本地，未部署/未 commit**
+
+**状态**：本 session 全部改动**只在本地**，`npx tsc --noEmit` 通过，**未 build / 未部署腾讯 / 未同步阿里 / 未 commit / 未 push**。无 Prisma 迁移。**新增 npm 依赖 `wavesurfer.js`（v7）**。详见 CHANGELOG / 01-current-status 顶条。
+
+**本 session 做完**：资产库改造（上传的资产分组=上传图片/视频/音频，对话流+工作流合并；上传视频 video-row+首帧封面、从生成视频移出；上传音频波形卡悬停播放）+ 抽共享音频波形播放器 `src/components/audio-waveform-player.tsx`（wavesurfer.js，工作流音频节点也改用）+ 图片生成"存盘慢就重排队绝不丢库"改造(`runImageJob`) + 手动补一张本地漏掉的分镜图。新增两条铁律进 `AGENTS.md`/`00-README.md`。
+
+**改动文件（均仅本地）**：新增 `src/components/audio-waveform-player.tsx`；改 `src/components/workflow-tldraw-canvas-inner.tsx`、`src/components/chat-workbench.tsx`、`src/app/api/workspace-state/route.ts`、`src/app/api/media-assets/route.ts`、`src/lib/generation-jobs.ts`、`package.json`/`package-lock.json`、`AGENTS.md`、`handover/*`。
+
+**下一个 AI 待办**：
+1. **⭐（用户点名，接着做）改造 `@引用资产` + `从资产库导入`**：目前 @提及弹窗（对话流+工作流输入框）和工作流"从资产库导入"弹窗（`ASSET_IMPORT_CATEGORIES`，`chat-workbench.tsx:~1109`；`mentionAssetTypeLabels`/`mentionGroupToAssetCountKey` 等）**只显示图+视频**，要让**音频（和视频）也显示出来**，和资产库这次改造对齐。⚠️ 交互需先和用户确认：音频卡在资产库已去掉"@到对话框"（大部分模型不支持音频/视频参考），那 @引用弹窗里音频要不要能选？导入弹窗里音频能否拖进工作流音频节点？动代码前先按铁律评估+问用户。
+2. **部署（用户说部署时才做）**：`npm run build`（本地先过）→ 服务器 **`npm install`（装 wavesurfer.js 原生依赖）** → scp 源码到 `/opt/flashmuse/app/src/...` → `cd /opt/flashmuse && nohup sudo docker compose up -d --build flashmuse-app`（后台+轮询 `/tmp/build*.log`）→ **必须**同步 `.next/static` 到阿里（否则全站 404）→ 四域名 200。无 Prisma 迁移。commit+push（git 攒够一起推）。
+3. **浏览器验证**（本 session 未跑 dev 全验）：上传的资产分组三类显示；音频卡悬停自动播放/移开停/拖红线无滞后/时间右上/纯文件名；上传视频首帧封面+一行4；切页面来回音频 4 个都在；上传图片滚到底加载补齐(计数=显示)；新生成分镜图 1~2 分钟后自动进库（本地跨境慢）。
+
+**关键记忆**：资产库过滤/计数在**服务端** `workspace-state` 路由（`getAssetPageWhere`/`getAssetCounts`），前端 `isAssetInFilter` 只做本地保留/计数——**改分类必须两处同步**否则计数/显示对不齐。`.bin` 存储的上传音频靠扩展名认不出，必须靠 `MediaAsset.mediaType`（两个资产接口 workspace-state + media-assets GET 都已透传）。本地 DB=docker `flashmuse-postgres`；一次性脚本复制进项目根再 `node`+设 `DATABASE_URL`。
+
+---
+
 ## ⚠️ 2026-07-19 (服务端断线重连改造 session) END-OF-SESSION —— 先读这条：**代码已上线腾讯，未 push GitHub**
 
 **状态**：全部已部署腾讯 + 同步阿里、四域名 200、`tsc` 通过、无 Prisma 迁移、**已 push GitHub**。详见 CHANGELOG / 01-current-status 顶条。

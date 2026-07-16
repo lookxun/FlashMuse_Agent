@@ -600,6 +600,59 @@ async function finalizeImageJobAsset(job: GenerationJobRow, images: string[], di
 }
 
 
+/**
+ * 把已生成、交付好的图片本地化后落库；本地没存好就重排队等待（不重新生成）。
+ * 跨境慢导致的存盘超时（>初始等待）会走这里重排队，直到本地存好或远程过期，保证成品图一定进库。
+ */
+async function localizeAndFinalizeImages(job: GenerationJobRow, deliveredImages: string[], deliveredImageDimensions: Record<string, { width: number; height: number }> | undefined, usage: unknown, providerReturnedImageCount: number, referenceImages: string[], settings: { ratio?: string; resolution?: string } | undefined, creditSource: string | undefined, requestedImageCount: number, startedAt: number, isResume: boolean) {
+  const waitMs = isResume ? 8_000 : 15_000;
+  const localized = await Promise.all(deliveredImages.map(async (imageUrl) => {
+    if (!/^https?:\/\//i.test(imageUrl)) return { url: imageUrl as string | undefined, dimensions: deliveredImageDimensions?.[imageUrl], expired: false };
+    const needsOpenRouterAuth = imageUrl.startsWith("https://openrouter.ai/api/v1/");
+    let saveJob = await enqueueRemoteAssetSave({ remoteUrl: imageUrl, type: "image", authProvider: needsOpenRouterAuth ? "openrouter" : undefined, requestId: job.requestId, model: job.model ?? undefined, prompt: job.prompt ?? "", userId: job.userId });
+    if (saveJob?.id && saveJob.status !== "saved") {
+      const waited = await waitForMediaSaveJob(saveJob.id, waitMs);
+      if (waited) saveJob = waited;
+    }
+    return { url: saveJob?.localUrl, dimensions: saveJob?.dimensions ?? deliveredImageDimensions?.[imageUrl], expired: saveJob?.status === "expired" };
+  }));
+
+  const allLocalized = localized.every((item) => item.url && !/^https?:\/\//i.test(item.url));
+  if (!allLocalized) {
+    if (localized.some((item) => item.expired)) {
+      const codedError = await createCodedApiError(new Error("图片下载保存失败（远程地址已过期）。"), GENERIC_MEDIA_ERROR_MESSAGE, "image local save expired");
+      await markJobFailed(job.id, codedError.error, codedError.errorCode);
+      void recordGenerationEvent({ userId: job.userId, requestId: job.requestId, kind: "image", creditSource, model: job.model ?? undefined, provider: job.provider ?? undefined, status: "failed", failureReason: codedError.error, failureCode: codedError.errorCode, durationMs: Date.now() - startedAt, referenceImageCount: referenceImages.length });
+      return;
+    }
+    // 还在下载/待重试：把已生成的交付快照存进 extraJson，重排队后跳过重新生成，只继续等本地存盘。
+    const nextExtra = { ...(job.extraJson ?? {}), pendingImageLocalize: { deliveredImages, deliveredImageDimensions: deliveredImageDimensions ?? null, usage: (usage ?? null) as Prisma.InputJsonValue, providerReturnedImageCount } };
+    await prisma.$executeRaw`UPDATE "GenerationJob" SET "extraJson" = ${jsonParam(nextExtra)}::jsonb, "updatedAt" = NOW() WHERE "id" = ${job.id}`;
+    await scheduleJobRetry(job.id, 15_000);
+    void appendGenerationDiagnosticsLog({ event: "image-job-awaiting-localize", requestId: job.requestId, conversationId: job.conversationId ?? undefined, userId: job.userId, mode: "image", model: job.model ?? undefined, prompt: job.prompt ?? undefined, settings, durationMs: Date.now() - startedAt, extra: { deliveredImages: deliveredImages.map((url, index) => summarizeGeneratedReference(url, index)), isResume } });
+    return;
+  }
+
+  const finalImages = localized.map((item) => item.url as string);
+  const finalImageDimensions = localized.reduce<Record<string, { width: number; height: number }>>((acc, item) => { if (item.url && item.dimensions) acc[item.url] = item.dimensions; return acc; }, {});
+  const hasFinalDimensions = Object.keys(finalImageDimensions).length > 0;
+  const user = job.userId ? await prisma.user.findUnique({ where: { id: job.userId }, select: { id: true } }) : null;
+  const credit = user ? await chargeCredits(user.id, "image", usage as Parameters<typeof chargeCredits>[2], {
+    conversationId: job.conversationId ?? undefined,
+    conversationTitle: job.conversationTitle ?? undefined,
+    requestId: job.requestId,
+    label: "图片生成",
+    model: job.model ?? undefined,
+    imageCount: finalImages.length,
+    metadata: mergeImageCreditMetadata(job.metadataJson as Prisma.InputJsonValue | undefined, { ...getImageCreditParameterMetadata(settings, hasFinalDimensions ? finalImageDimensions : deliveredImageDimensions), originalPrompt: job.prompt ?? "", requestedImageCount, returnedImageCount: finalImages.length, providerReturnedImageCount, billableImageCount: finalImages.length, mediaUrls: finalImages, allMediaUrls: finalImages, extraMediaUrls: [], delivered: true }),
+  }) : undefined;
+  const reservedNames = (job.reservedNames ?? []).slice(0, finalImages.length);
+  await finalizeImageJobAsset({ ...job, reservedNames }, finalImages, hasFinalDimensions ? finalImageDimensions : undefined);
+  await markJobSucceeded(job.id, { resultUrls: finalImages, reservedNames, resultDimensions: hasFinalDimensions ? finalImageDimensions : undefined, usage, credit });
+  void recordGenerationEvent({ userId: job.userId, requestId: job.requestId, kind: "image", creditSource, model: job.model ?? undefined, provider: job.provider ?? undefined, status: "success", durationMs: Date.now() - startedAt, referenceImageCount: referenceImages.length });
+  void appendGenerationDiagnosticsLog({ event: "image-job-success", requestId: job.requestId, conversationId: job.conversationId ?? undefined, userId: job.userId, mode: "image", model: job.model ?? undefined, prompt: job.prompt ?? undefined, settings, durationMs: Date.now() - startedAt, extra: { requestedImageCount, returnedImageCount: finalImages.length, providerReturnedImageCount, finalImages: finalImages.map((url, index) => summarizeGeneratedReference(url, index)), dimensions: finalImageDimensions, credit, isResume } });
+}
+
 /** 执行一条图片任务：调模型 → 挑选交付 → 扣费 → 落成功/失败。可安全重复调用（扣费按 requestId 幂等）。 */
 export async function runImageJob(job: GenerationJobRow) {
   const startedAt = Date.now();
@@ -609,11 +662,17 @@ export async function runImageJob(job: GenerationJobRow) {
   const requestedImageCount = Math.min(4, Math.max(1, Math.floor(job.count ?? 1)));
   try {
     job = { ...job, reservedNames: await ensureJobReservedNames(job) };
+    // 断线续跑：本图已生成好、正等本地存盘（跨境慢），只继续本地化+落库，跳过重新生成/attempts 上限。
+    const pending = job.extraJson?.pendingImageLocalize as { deliveredImages?: unknown; deliveredImageDimensions?: Record<string, { width: number; height: number }> | null; usage?: unknown; providerReturnedImageCount?: number } | undefined;
+    if (pending && Array.isArray(pending.deliveredImages) && pending.deliveredImages.length > 0) {
+      const deliveredImages = pending.deliveredImages.filter((url): url is string => typeof url === "string");
+      await localizeAndFinalizeImages(job, deliveredImages, pending.deliveredImageDimensions ?? undefined, pending.usage, pending.providerReturnedImageCount ?? deliveredImages.length, referenceImages, settings, creditSource, requestedImageCount, startedAt, true);
+      return;
+    }
     if (job.attempts > MAX_IMAGE_JOB_ATTEMPTS) {
       await markJobFailed(job.id, "生成任务多次尝试仍未完成。", "JOB_MAX_ATTEMPTS");
       return;
     }
-    const user = job.userId ? await prisma.user.findUnique({ where: { id: job.userId }, select: { id: true } }) : null;
     const result = await generateOpenRouterImage(job.prompt ?? "", referenceImages, {
       model: job.model ?? undefined,
       bytePlusProviderKey: getBytePlusProviderKey(job.model, creditSource),
@@ -633,36 +692,10 @@ export async function runImageJob(job: GenerationJobRow) {
       return;
     }
     const deliveredImageDimensions = pickImageDimensions(result.imageDimensions, deliveredImages);
-    // 统一持久化：有些图（如 byteplus 异步存盘）交付时还是远程 provider url。这里先等本地存盘拿到
-    // 稳定本地 url 再落库，保证服务端 finalizeImageJobAsset 是唯一权威出生入口、参数齐全（走
-    // buildMediaAssetRecord 存 model/settings/尺寸），避免客户端拿到本地 url 后凭空建空行。与视频同款。
-    const localizedImages = await Promise.all(deliveredImages.map(async (imageUrl) => {
-      if (!/^https?:\/\//i.test(imageUrl)) return { url: imageUrl, dimensions: deliveredImageDimensions?.[imageUrl] };
-      const needsOpenRouterAuth = imageUrl.startsWith("https://openrouter.ai/api/v1/");
-      let saveJob = await enqueueRemoteAssetSave({ remoteUrl: imageUrl, type: "image", authProvider: needsOpenRouterAuth ? "openrouter" : undefined, requestId: job.requestId, model: job.model ?? undefined, prompt: job.prompt ?? "", userId: job.userId });
-      if (saveJob?.id && saveJob.status !== "saved") {
-        const waited = await waitForMediaSaveJob(saveJob.id, 60_000);
-        if (waited) saveJob = waited;
-      }
-      return { url: saveJob?.localUrl ?? imageUrl, dimensions: saveJob?.dimensions ?? deliveredImageDimensions?.[imageUrl] };
-    }));
-    const finalImages = localizedImages.map((item) => item.url);
-    const finalImageDimensions = localizedImages.reduce<Record<string, { width: number; height: number }>>((acc, item) => { if (item.dimensions) acc[item.url] = item.dimensions; return acc; }, {});
-    const hasFinalDimensions = Object.keys(finalImageDimensions).length > 0;
-    const credit = user ? await chargeCredits(user.id, "image", result.usage, {
-      conversationId: job.conversationId ?? undefined,
-      conversationTitle: job.conversationTitle ?? undefined,
-      requestId: job.requestId,
-      label: "图片生成",
-      model: job.model ?? undefined,
-      imageCount: finalImages.length,
-      metadata: mergeImageCreditMetadata(job.metadataJson as Prisma.InputJsonValue | undefined, { ...getImageCreditParameterMetadata(settings, hasFinalDimensions ? finalImageDimensions : deliveredImageDimensions), originalPrompt: job.prompt ?? "", requestedImageCount, returnedImageCount: finalImages.length, providerReturnedImageCount, billableImageCount: finalImages.length, mediaUrls: finalImages, allMediaUrls: finalImages, extraMediaUrls: [], delivered: true }),
-    }) : undefined;
-    const reservedNames = (job.reservedNames ?? []).slice(0, finalImages.length);
-    await finalizeImageJobAsset({ ...job, reservedNames }, finalImages, hasFinalDimensions ? finalImageDimensions : undefined);
-    await markJobSucceeded(job.id, { resultUrls: finalImages, reservedNames, resultDimensions: hasFinalDimensions ? finalImageDimensions : undefined, usage: result.usage, credit });
-    void recordGenerationEvent({ userId: job.userId, requestId: job.requestId, kind: "image", creditSource, model: job.model ?? undefined, provider: job.provider ?? undefined, status: "success", durationMs: Date.now() - startedAt, referenceImageCount: referenceImages.length });
-    void appendGenerationDiagnosticsLog({ event: "image-job-success", requestId: job.requestId, conversationId: job.conversationId ?? undefined, userId: job.userId, mode: "image", model: job.model ?? undefined, prompt: job.prompt ?? undefined, settings, durationMs: Date.now() - startedAt, extra: { requestedImageCount, returnedImageCount: deliveredImages.length, providerReturnedImageCount, deliveredImages: deliveredImages.map((url, index) => summarizeGeneratedReference(url, index)), dimensions: deliveredImageDimensions, credit } });
+    // 统一持久化：byteplus 等异步存盘图交付时还是远程 url。先本地化再由 finalizeImageJobAsset 唯一权威落库
+    // （走 buildMediaAssetRecord，参数齐全）。本地没存好就把交付快照存进 extraJson、重排队等（跨境慢也一直等），
+    // 绝不用会过期的远程 url 落库、也绝不重新生成。与视频"没存好就重排队"同款思路。
+    await localizeAndFinalizeImages(job, deliveredImages, deliveredImageDimensions, result.usage, providerReturnedImageCount, referenceImages, settings, creditSource, requestedImageCount, startedAt, false);
   } catch (error) {
     // 服务端断线重连：网络/网关5xx/部署重启窗口/平台临时错误等"瞬时可恢复"错误不立即毙单，
     // 退避后重排队重试（attempts 由 claim 递增、超 MAX_IMAGE_JOB_ATTEMPTS 才真失败），用户无感。

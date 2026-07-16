@@ -1,5 +1,107 @@
 # Current Handover Changelog
 
+## 2026-07-21 从资产库导入补齐音视频 + @引用资产弹窗大改造（迷你资产库 + 视频/音频可引用 + 懒加载）+ 视频卡@媒体图标（⚠️ 全部**仅本地**，`npx tsc --noEmit` 通过；未 build/未部署/未 commit；无 Prisma 迁移；**无新增 npm 依赖**，但**上一 07-20 session 的 wavesurfer.js 也仍未部署**——见"部署"）
+
+Reply style 简洁直接中文。本 session 全程只做本地不部署（遵守铁律）。承接 07-20 资产库改造，把"上传的资产"三类打通到 `从资产库导入` 和 `@引用资产` 两处，并把 @引用弹窗重做成左右结构的迷你资产库、支持视频/音频引用（复用 + 号上传规则）、按标签懒加载。**下一个 AI：用户要求把全部更新（含 07-20 那批）一次性部署上线。**
+
+### 本 session 改动文件（均仅本地、未 commit）
+- 新增 `src/components/asset-mention-picker.tsx`（统一「@引用资产」选择器）
+- 改 `src/components/chat-workbench.tsx`、`src/components/workflow-tldraw-canvas-inner.tsx`、`src/components/workflow-tldraw-canvas.tsx`（wrapper prop 类型）、`src/components/audio-waveform-player.tsx`、`handover/*`
+
+### 1. 「从资产库导入」弹窗补齐上传视频/上传音频（`chat-workbench.tsx` + `workflow-tldraw-canvas-inner.tsx`）
+- `ASSET_IMPORT_CATEGORIES` 加 `上传视频`(`upload_videos`)/`上传音频`(`upload_audios`)（数据/计数直接走服务端 `workspace-state`，无需改后端）。
+- 导入网格：视频有封面显小缩略图、**中间加圆形播放按钮**（去掉左上角"视频"字样）、无封面用 `<video #t=0.1>` 首帧兜底；音频用 `AudioWaveformPlayer variant="card"` 波形卡。
+- 导入落地支持音频节点：`WorkflowImportAsset.kind`/`WorkflowAssetSummary.kind`/wrapper 三处类型加 `"audio"`；`toggleAssetImportSelection` 用 `isAudioAsset` 判 kind；`restoreWorkflowAssetToCanvas` 加 audio 分支（建 `audio` 节点、`data.audioUrl`、去重含 audioUrl）。
+- 音频波形卡时间从右上移到**左上**（避开导入弹窗右上角勾选框；改共享组件 `audio-waveform-player.tsx` 的 card variant，资产库音频卡左上为空不受影响）。
+
+### 2. ⭐「@引用资产」弹窗大改造（三处统一：对话流输入框 / 资产库生成弹窗输入框 / 工作流输入框）
+**用户拍板方案**：核心引用逻辑不变，只把资产库全部分类显示出来，UI 改成左右结构（迷你资产库）。
+- **新增共享组件 `AssetMentionPicker`**：左侧分类标签（图标+文字+计数），右侧 5 列 80×80 小缩略图，标题"@引用资产"。三处一律复用，禁止再各写一套。右侧高度固定 `h-[378px]`（对齐 10 分类左栏），三处弹窗大小一致；资产库那处分类少、下方留空。
+- **分类**：`MENTION_CATEGORIES`=全部 10 类（角色/场景/分镜图片、上传图片、上传视频、上传音频、对话流生成图/视频、工作流生成图/视频）用于对话流+工作流；`CHARACTER_MENTION_CATEGORIES`=去掉视频/音频的 6 类图片，用于资产库生成弹窗（纯图片模型）。
+- **视频/音频可引用（方案A，复用 + 号上传逻辑，不重新上传）**：点视频/音频 → 查当前模型 `uploadRule[kind]`（对话流 `currentUploadRule`、工作流 `uploadRule`）：`enabled` 不支持→提示"当前模型不支持上传视频/音频"；再查 `maxCount`；再**从 url 读元数据**（新增 `readMediaMetadataFromUrl` / `readWorkflowMediaMetadataFromUrl`）走 + 号同款校验 `validateMediaDuration`/`validateReferenceVideoDimensions`/`maxTotalSeconds`；全过→拿库 url 建一个 `status=ready` 的参考条目进"杠"（对话流 `addActiveUploadedMediaReference` 写 `uploadedFiles`；工作流建 `WorkflowUploadItem` kind video/audio 进节点 uploads），@名变蓝、可删、提交时同样转 `referenceVideos`/`referenceAudios`。**大小/格式不校验**（库文件已合规，和图片 @引用一致）。资产库生成弹窗隐藏视频/音频故不涉及。
+- **右侧缩略图（防加载卡）**：图片=`getMediaThumbnailUrl` 小缩略图；视频=封面小缩略图（有封面才显示播放键），**无封面用统一视频图标占位、不加载 `<video>`**；音频=波形（wavesurfer 需读音频本身，唯一会加载完整文件的，用户已接受）。
+- **按标签懒加载（和资产库右侧一致，关键性能改造）**：新增 `loadMentionFilterPage(filter, offset)` + `mentionFilterPaging`（每标签独立 loading/hasMore/nextOffset）。**首次点击只加载当前标签第一屏 30 个 + 服务端返回的全部标签计数**；切标签只加载该标签 30 个（右侧转圈"正在加载中..."）；右侧下拉流式加载（底部"正在加载中..."）；已加载标签秒切不重复请求。打开弹窗不再一次性加载全部 10 类。picker 加 `loading`(首屏整窗转圈)/`activeLoading`(当前标签加载) 两态。
+- **工作流接线**：`WorkflowCanvas` 新增 props `onLoadReferenceFilter`/`referenceFilterLoading`/`referenceFilterNextOffset`（wrapper `workflow-tldraw-canvas.tsx` + inner 的 props/runtime 类型都补齐），@按钮/@打字/切标签/下拉都走按标签懒加载；`WorkflowReferenceAsset` 加 `kind`。`onLoadReferenceAssets`(loadMentionAssetFilters 全量) 仅保留给"手打未解析 @名"的按需解析（罕见）。
+- **onPick 统一**：picker 只回 `MentionPickerItem`（id/name/url/kind/thumbnailUrl），调用方按 id 在当前标签 group 里找回原 asset 再插入。
+- **交互不变**：图片 @引用行为、@变蓝(`validReferenceNames`)、删@名、缩略图杠全部复用原逻辑未动。
+
+### 3. 视频卡提示词里的 @媒体小图标（`ReferencedTextContent`）
+- 视频：显示**封面首帧 + 中间小圆播放键**（18×18）；音频：统一用 `RiVoiceprintLine` + **深灰 `#8a8a8a`**（对齐输入框，不再蓝色/不再 `RiMusic2Line`）。
+- **纯展示、不可点**（去掉 `onClick` 预览，改 `<span>`）——按用户要求。
+
+### 踩坑/注意（下一个 AI）
+- 懒加载取舍：@输入框打字过滤只在"已加载的页"内匹配（省流量），不会跨未加载页搜索。
+- `@引用` 的杠里视频/音频是"库 url 直接引用、不重新上传"，`storageName`=url、`size:0`、`mediaKind` 已设；提交/校验都按现有 `getUploadedMediaReferences` 走。
+- 旧 mention 常量（`mentionAssetTypes`/`isMentionGroupAsset`/`mentionGroupToAssetCountKey`/`mentionAssetTypeLabels`/`MentionAssetGroupType`）已无引用、保留无害（未删以降风险，可择机清理）。
+
+### 部署（下一个 AI 必读——用户要求全部上线）
+- **本 session 无新增依赖**，但 **07-20 session 新增了 `wavesurfer.js` 且从未部署**，且 07-20 的资产库改造代码也仍只在本地。所以**本次部署要一次性带上 07-20 + 07-21 两批全部改动**。
+- 步骤：`npm run build`（本地先过）→ scp 全部改动源码到 `/opt/flashmuse/app/src/...` → 服务器 **`cd /opt/flashmuse/app && npm install`（装 wavesurfer.js）** → `cd /opt/flashmuse && nohup sudo docker compose up -d --build flashmuse-app`（后台+轮询 `/tmp/build*.log`）→ **必须**同步 `.next/static` 到阿里（`bash /tmp/syncali.sh` 或 03-deploy 的 rsync）→ 四域名 200。无 Prisma 迁移。commit+push GitHub。
+- 改中文源码一律用 edit 工具，禁 `Set-Content`。
+
+
+## 2026-07-20 资产库改造（上传的资产分组 + 音视频显示）+ 音频波形播放器 + 图片存盘不丢改造（⚠️ 全部**仅本地**，未 build/未部署/未 commit；`npx tsc --noEmit` 通过；无 Prisma 迁移；**新增 npm 依赖 wavesurfer.js**）
+
+Reply style 简洁直接中文。**本 session 起用户加了两条铁律（见下 §0），全程只做本地不部署。** 主线是**资产库改造**（让上传的图/视频/音频都能在资产库显示），中途做了工作流音频波形播放器、抽了共享组件、修了一个"图片生成成功却不进库"的真链路 bug、手动补了一张本地漏掉的图。**下一个 AI 接着改造 `@引用资产` 和 `从资产库导入` 两处（让它们也显示音频/视频，目前只显示图+视频）。**
+
+### 0. ⭐ 新增两条铁律（已写进 `AGENTS.md` 顶部 + `handover/00-README.md` 顶条，所有 AI 必须遵守）
+1. **动代码前先评估对既有功能的影响**：用户提需求时，动代码之前必须先排查会不会影响/破坏其它已有功能（对话流/工作流/资产库/Agent/通用模式本质相同、常共用同一份代码）；**有影响先别动代码，先把影响范围告诉用户、等确认再改**。
+2. **默认只做本地、不部署**：用户没明确说"部署"就只在本地改（`npx tsc --noEmit` 自查），不 build / 不上腾讯 / 不同步阿里 / 不 push；用户说"要部署"才走部署流程。**git 攒到一定程度再一次性推，不是每次都推。**
+
+### 1. 音频波形播放器（wavesurfer.js）+ 抽成共享组件
+- **新增依赖 `wavesurfer.js`（v7）**（`npm install wavesurfer.js`，已进 package.json；部署时服务器需 `npm install`）。
+- **新增共享组件 `src/components/audio-waveform-player.tsx`**：`AudioWaveformPlayer({ url, variant, stopWaveformPointer })`。基于 wavesurfer：`waveColor #b0b0b0`/`progressColor #1a1a1a`（已播放黑、未播放灰）/`barWidth`直角细条/`cursorWidth:0`（关自带光标，改叠自己的红线，独立控制高度）/`normalize`/`hideScrollbar`/`dragToSeek`。进度用 wavesurfer 内部 rAF + `timeupdate/seeking/interaction/drag` 事件驱动红线，**拖动/播放红线与黑色进度严格对齐、无滞后**。
+  - `variant="node"`（工作流画布音频节点）：灰底圆角、波形高 96、红线高 141(灰区94%)、底部大时间(20px灰)+圆底播放键；`stopWaveformPointer` 让点波形不移动画布节点、点白边可移动/选中节点。
+  - `variant="card"`（资产库方形小卡）：灰底**直角**、波形铺满居中、红线与波形同宽定位区(无滞后)、右上角小时间chip、中间黑圆底播放键在最上层(`z-20`，`pointer-events-none`不挡拖动)。**鼠标移入自动播放+隐藏播放键，移开暂停+显示播放键**。
+- **工作流** `workflow-tldraw-canvas-inner.tsx` 的 `AudioDisplayCard` 改用共享组件（删掉本地那份重复实现）；音频节点尺寸 500×200→**600×300**。
+- **图层面板** 音频节点：左图标 `RiVoiceprintLine`、标题后加文件名（`上传音频 文件名`）。
+- **对话流输入框** 上传音频缩略图图标 `RiMusic2Line`→`RiVoiceprintLine`（和工作流统一，仅改输入框缩略图那一处 `chat-workbench.tsx:~15698`）。
+
+### 2. ⭐ 资产库改造（核心）—— 上传的图/视频/音频都能显示
+**用户需求**：把"上传图片"从横线上面移到横线下面，新建圆点分组 `上传的资产`，里面依次 上传图片/上传视频/上传音频；右侧上传视频用和生成视频一样布局(一行4)、上传音频用波形播放器(一行5)。**上传资产范围=对话流+工作流所有上传合并**；**上传视频从"生成视频"里移出**（生成视频只留真正生成的）；音频卡=波形播放器。
+
+**关键认知**：资产库的过滤/计数是**服务端**（`workspace-state` 路由 `getAssetPageWhere`/`getAssetCounts`）做的，前端 `isAssetInFilter` 只做本地保留/计数。改必须**服务端+前端两处同步改，否则计数/显示对不齐**（本 session 踩过，见 §5）。
+
+- **服务端 `src/app/api/workspace-state/route.ts`**：
+  - `AssetFilterKey` + `isAssetFilterKey` 加 `upload_videos`/`upload_audios`。
+  - 常量：`UPLOAD_VIDEO_CATEGORIES=[conversation_upload_videos, workflow_upload_videos]`、`UPLOAD_AUDIO_CATEGORIES=[…_upload_audios]`、`UPLOAD_DOCUMENT_CATEGORIES=[…_upload_documents]`（文档永不显示）。
+  - `getAssetPageWhere`：加 upload_videos/upload_audios（按分类 in）；**`conversation_uploads` 收窄**为 `分类=conversation_uploads 或 (分类=conversation_images 且 url 含 /upload_image/)`（原来是过宽的 `或 url 含 /upload_image/`，会把已移动到角色/场景/工作流的上传图也拉进来）。
+  - `getAssetCounts`：先把 upload 视频/音频归到 upload_videos/upload_audios、文档 skip 不计；避免污染 conversation_images/videos 计数。
+  - `mediaStateToLegacyAsset` 返回加 `mediaType`。
+- **前端 `src/components/chat-workbench.tsx`**：
+  - `AssetItem` 加 `mediaType?: "image"|"video"|"audio"|"document"`；`AssetFilter`/`isAssetFilter` 加两新键。
+  - `isVideoAsset`/`isAudioAsset` **优先用 mediaType**（`.bin` 存储的音频靠扩展名认不出，必须靠 mediaType）；新增 `isUploadedMediaAsset`(promptSource==="upload"||占位提示词||upload url)；`isUploadPromptPlaceholder` 补 上传视频/音频/文档。
+  - `isAssetInFilter` 重写：文档恒不显示；有 mediaType 时音频只在 upload_audios 显示；`conversation_uploads = uploaded && 图 && 非音频 && !isAssetGenerationAsset`(排除已移动到角色/场景)；`conversation_videos/workflow_videos/images` 都加 `&& !uploaded`；新增 upload_videos/upload_audios。
+  - 侧栏：`上传图片` 移到横线下，新建 `上传的资产`(圆点)分组含 上传图片/上传视频/上传音频。侧栏图标对齐工作流上传节点：图=`RiImageLine`、视频=`RiVideoOnLine`、音频=`RiVoiceprintLine`。
+  - 右侧网格 `renderAssetGrid`：dispatch 把 upload_videos 走 video-row(一行4)、upload_audios 走 square(一行5)；title/emptyText 补两新分类。
+  - **上传视频封面**：无 posterUrl 时用 `<video src#t=0.1 muted preload=metadata>` 显示首帧（不再灰胶片图标）。
+  - **上传音频卡**：方形，`AudioWaveformPlayer variant="card"` 铺满，底部黑渐变+白色**纯文件名(无@、不可点插入，和视频一致)**、右下更多菜单(重命名/删除，白图标)，都 `z-30` 盖在红线上。
+- **`src/app/api/media-assets/route.ts` GET 也返回 `mediaType`**（工作流资产接口；见 §5 的 bug 根治）。
+
+### 3. ⭐ 图片生成"存盘慢就重排队、绝不丢库"改造（`src/lib/generation-jobs.ts runImageJob`，全生成链路统一）
+- **真 bug**：`runImageJob` 拿到 BytePlus 远程 url 后靠 `waitForMediaSaveJob(60_000)` 等本地存盘，**超 60s 就回退用远程 url 去 finalize**，而 `finalizeImageJobAsset` 对远程 url（`resolvePersistableMediaAssetUrl` 返回 null）**建不了 MediaAsset**→job 标记成功但**库里没记录**。国内本地跨境下载常 >60s（实测 110s），必现；线上新加坡快(<60s)一般不现，但抖动时线上也会漏。
+- **根治**（用户拍板"上线更稳"，仿视频"没存好就重排队"）：抽 `localizeAndFinalizeImages(job, deliveredImages, dims, usage, providerReturnedImageCount, …, isResume)`：本地化每张（初次等 15s、resume 等 8s）→ **全部本地化才扣费+finalize+成功**；**没全好就把交付快照(远程url+尺寸+usage)存进 `extraJson.pendingImageLocalize`、`scheduleJobRetry(15s)`**；远程真过期才判失败。`runImageJob` 顶部先检测 `extraJson.pendingImageLocalize`→resume 路径**跳过重新生成、跳过 attempts 上限**，只继续本地化。worker 每 2.5s tick、`scheduleJobRetry` 置 `leaseAt=NULL` 会被重新 claim。扣费按 `requestId` 幂等→重排不重复扣；`enqueueRemoteAssetSave` 按 url+userId 去重→重排不重复下载、不重新调模型。
+- **效果**：本地生成后约 1~2 分钟(等跨境下载完)图自动进库；线上快网络无感、抖动也不丢图=更稳。视频本就这套，现在图片统一。
+
+### 4. 手动补一张本地漏掉的分镜图
+- 本地那张"生成成功却看不到"的分镜图（requestId `97ca7e72-…`，job `1e988fdc`，creditSource `shot_image_generation`，名 `asset_1_storyboard`，1600×2848，Seedream 4.5，cleanPrompt「生成美女吵架」）：本地文件其实 110s 时已存好（`media-save-jobs.json` 里 localUrl `…/images/1784205613893-8aea3a58-….jpg`），只是 60s 超时没落库。用 Prisma 脚本按 `buildMediaAssetRecord` 同款格式补了 `MediaAsset`(`cmrnimu7f0001w6ewpfx9fn3g`)+`UserAssetState`，归类 shot_image。**这是历史个案，§3 改造后新图不会再漏。**
+
+### 5. 踩坑记录（下一个 AI 注意）
+- 资产库"计数/分页/前端过滤"三处定义必须一致，否则出现"左侧 39、右侧只显示 30 且滚动不加载"。本 session 修：`conversation_uploads` 三处统一为 `分类=conversation_uploads 或 (conversation_images 且 upload url)`=39（原分页过宽=55、且我重构中途误删前端 `!isAssetGenerationAsset` 判断）。本地实测：page 查询由 55 收窄到 39=计数。
+- "切页面音频只剩 1 个"根因=`/api/media-assets`(工作流资产接口)GET **没返回 mediaType**，切工作流时用它覆盖了带 mediaType 的音频副本，切回后 `.bin` 音频靠扩展名认不出被过滤，只剩 `.mp3/.wav` 那 1 个。已给该接口补 mediaType。
+- 本地 DB=docker 容器 `flashmuse-postgres`（`localhost:5432`，flashmuse/flashmuse_dev_password）；跑一次性脚本要把 .cjs **复制进项目根目录**再 `node`（temp 目录找不到 `@prisma/client`）+ 设 `DATABASE_URL` 环境变量；psql 用 `docker cp .sql` + `-f` 跑（PowerShell 内联双引号会被吞）。
+
+### 本 session 改动文件清单（均仅本地、未 commit）
+- 新增：`src/components/audio-waveform-player.tsx`
+- 改：`src/components/workflow-tldraw-canvas-inner.tsx`、`src/components/chat-workbench.tsx`、`src/app/api/workspace-state/route.ts`、`src/app/api/media-assets/route.ts`、`src/lib/generation-jobs.ts`、`package.json`/`package-lock.json`(wavesurfer.js)、`AGENTS.md`、`handover/*`
+
+### 下一个 AI 待办（用户点名）
+1. **改造 `@引用资产`（对话流+工作流输入框的 @提及弹窗）和 `从资产库导入`（工作流导入弹窗 `ASSET_IMPORT_CATEGORIES`，`chat-workbench.tsx:~1109`）**：目前只显示图+视频，要**把音频也显示出来**（和资产库改造一致）。注意音频在这两处的用途——大部分模型不支持音频/视频参考，UI 上音频卡已去掉 @到对话框（只显示文件名）；导入弹窗要不要允许把音频拖进工作流音频节点，需和用户确认交互。
+2. 部署（用户说部署时）：`npm run build` + 服务器 `npm install`(wavesurfer.js) + scp 源码 + `docker compose up -d --build flashmuse-app` + 同步 `.next/static` 到阿里 + 四域名 200。无 Prisma 迁移。
+3. 浏览器验证（本 session 未跑 dev 全验，用户在验）：上传的资产分组图/视频/音频显示、音频悬停播放/拖动、上传视频首帧封面、切页面音频 4 个都在、滚动加载补齐、分镜图新生成能自动进库。
+
+---
+
 ## 2026-07-19 生成链路服务端断线重连改造 + B_146/B_144 修复 + 后台失败原因聚合 + 阿里视频补同步 + 腾讯 BBR（✅ 全部已部署腾讯+同步阿里、四域名 200；**已 push GitHub**；无 Prisma 迁移）
 
 Reply style 简洁直接中文。本 session 从排查后台失败原因入手，修了两个真 bug + 一个后台统计 + 一批运维，最后做了**全生成链路的服务端断线重连改造**（用户明确"很重要，做完记录清楚，过段时间再来看失败原因里还有没有类似问题"）。
