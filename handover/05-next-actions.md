@@ -1,5 +1,38 @@
 # Next Actions
 
+## ✅ 2026-07-22 (部署 07-20+07-21 全部上线 + 一批工作流/UI 小改动 session) END-OF-SESSION —— 先读这条：三方已同步，无待部署
+
+**状态**：全部已部署腾讯 + 同步阿里、四域名 200、`tsc`+`build` 通过、无 Prisma 迁移、**已 push GitHub（三方同步 `ac4c38f`）**。`wavesurfer.js` 已随镜像 build 装入。工作树应干净（除本次 handover 提交）。详见 CHANGELOG / 01-current-status 顶条。
+
+**本 session 做完**：
+1. 部署 07-20（资产库改造 + wavesurfer.js）+ 07-21（@引用迷你资产库 + 从资产库导入音视频 + 视频卡@图标）两批全部上线。
+2. 工作流空生成节点删除确认弹窗（输入框有内容才弹，三删除入口全覆盖）。
+3. 图层面板右键不出菜单。
+4. @引用弹窗视频无封面用首帧（上传视频不再只显图标）。
+5. @引用音频卡时间改"倒计时秒/总秒数"两位数、移右上（仅 @引用弹窗，加 `secondsCountdown` prop 隔离）。
+6. 从资产库导入弹窗选中蓝框/勾层级修复（z-50 + DOM 末尾，盖住渐变黑）。
+7. 核查这些改动不影响生成主链路/扣积分。
+
+**下一个 AI 待办 / 可优化（都非紧急）**：
+1. **浏览器全面验证（ali 硬刷，本 session 未逐项跑 dev）**：
+   - 从资产库导入：上传视频（缩略图+播放键/无封面首帧）、上传音频（波形）显示、能导入工作流（音频进音频节点）。
+   - @引用弹窗三处（对话流/资产库生成/工作流）：迷你资产库左右结构、首次只转圈一下、切标签转圈、下拉流式；三处大小一致。
+   - Seedance 2.0 融合模式 @引用视频/音频进杠（@名变蓝/可删/能生成）、超时长/超尺寸被拦、不支持的模型提示。
+   - 视频卡提示词 @视频封面+播放键、@音频深灰声纹图标（纯展示不可点）。
+   - **本 session 新增**：工作流空图片/视频节点（输入框有字）删除弹确认框、确定按钮黑色宽度对齐导入弹窗；输入框空直接删；图层面板右键不出菜单；@引用上传视频显首帧封面；@引用音频卡右上"倒计时/总秒数"；从资产库导入选中蓝框/勾不被渐变挡。
+2. **清理旧 mention 死常量**（`mentionAssetTypes`/`isMentionGroupAsset`/`mentionGroupToAssetCountKey`/`mentionAssetTypeLabels`/`MentionAssetGroupType`，已无引用、保留无害）。
+3. M018（对话流统一单轮询器）、M019（工作流 canvasJson 大字段重构）仍押后。
+
+**部署流程 & 踩坑（下个 AI 改代码必读）**：
+- ssh：`ssh -i "C:\Users\ASUS\AppData\Local\Temp\opencode\CinematicFlow.pem" ubuntu@119.28.116.16`。
+- scp 源码到 `/opt/flashmuse/app/`（新文件也要，先 /tmp 再 `sudo cp`；改 package.json/lock 也 scp）→ `cd /opt/flashmuse && nohup sudo docker compose up -d --build flashmuse-app > /tmp/build.log 2>&1 &`（后台+轮询防 120s 超时；Dockerfile 内会 `npm install`，新增 npm 依赖随 build 自动装，无需宿主 npm install）→ `bash /tmp/syncali.sh`（同步 `.next/static` 到阿里，否则全站 404）→ `bash /tmp/health.sh`（四域名 200）。
+- **`/tmp/syncali.sh`、`/tmp/health.sh` 重启后会清，需重建**（内容见 CHANGELOG 顶条 §1）。
+- **Ali 同步 key 属主 root，一切 ssh/rsync 到阿里都要 `sudo`**（非 sudo `Permission denied`）。
+- **改中文源码一律用 edit 工具，禁 `Set-Content`（整文件 mojibake）**；PowerShell 内联含 `$(...)`/`%{}`/引号/中文的 bash/curl/psql 会被本地 PS 先解释坏 → 一律 scp .sh/.sql/.mjs 再 `sed -i 's/\r$//'` + 跑。
+- **部署窗口旧标签会报 ChunkLoadError**，硬刷即可，非 bug。
+
+---
+
 ## ⚠️ 2026-07-21 (从资产库导入音视频 + @引用资产弹窗大改造 session) END-OF-SESSION —— 先读这条：**全部仅本地，用户要求下一个 AI 全部部署上线**
 
 **状态**：本 session 全部改动**只在本地**，`npx tsc --noEmit` 通过，**未 build / 未部署 / 未 commit / 未 push**。无 Prisma 迁移。无新增依赖。详见 CHANGELOG / 01-current-status 顶条。
