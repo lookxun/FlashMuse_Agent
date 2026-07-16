@@ -1,6 +1,26 @@
 # Current Status
 
-Last checked: 2026-07-17 China time.
+Last checked: 2026-07-19 China time.
+
+## 2026-07-19 生成链路服务端断线重连改造 + B_146/B_144 修复 + 后台失败原因聚合 + 运维 — 见 CHANGELOG 顶条为权威。速记：
+
+**⚠️ 全部已部署腾讯 + 同步阿里、四域名 200；`tsc` 通过；无 Prisma 迁移；已 push GitHub。** 改动文件：新增 `src/lib/transient-error.ts`；改 `src/lib/openrouter.ts`、`src/lib/error-message.ts`、`src/lib/admin-overview.ts`、`src/lib/generation-jobs.ts`、`src/lib/byteplus-assets.ts`、`src/app/api/video/route.ts`（连同 07-18 遗留的 `chat-workbench.tsx` 一起已 push）。
+
+1. **⭐ 生成链路服务端断线重连（重点）**：新增统一判定 `isTransientServerError`（网络/超时/5xx/Bad Gateway/平台临时[Failed to download media/Transaction API/asset not found]/限流=可恢复；真人/版权/参数/审核拒绝/未知=永久）。接线三处缺口：① 图片任务 `runImageJob` catch 可恢复错误→`scheduleJobRetry`（退避，attempts 封顶 6 才真失败）；② 视频创建 `createVideoTaskWithTransientRetry` 包创建调用重试 3 次；③ `createBytePlusAsset`(auto-review 建素材)重试 3 次。**"真人检测→服务器繁忙"真因=送审重试时 BytePlus 抓我们参考图 url 撞我们瞬时 502→抓图失败→兜底；不是真人逻辑坏。用户定调不补映射、服务端自愈。**
+2. **B_146**：Seedream 5.0 Pro + 多参考图报错 → `openrouter.ts` disabled 分支加 `supportsSequentialBatch` gate，Pro 不再发它不支持的 `sequential_image_generation`（三模式统一）。
+3. **B_144**：参考图宽高比越界(仅视频模型) → `error-message.ts` 映射成"参考图太窄或太长…换 16:9/9:16/1:1/4:3"。
+4. **后台失败原因聚合**：`admin-overview.ts` SQL `regexp_replace` 剥 B_xx 前缀 + 归一"图片平台没有返回图片"族 → 同原因合并成一条、按数量降序、不显示 B_xx。
+5. **运维**：腾讯宿主开 BBR(迁移漏了→跨境大文件传输崩溃致视频 aliSyncError 根因)；阿里补同步 92 视频(现为超集、走本地镜像不回源)；同步脚本修 `docker cp` 嵌套 bug（曾致工作台 ChunkLoadError）。
+
+
+## 2026-07-18 视频三处线上问题根治 + 历史回填 — 见 CHANGELOG 顶条为权威。速记：
+
+**⚠️ 全部已部署腾讯 + 同步阿里、四域名 200；`tsc` 通过；无 Prisma 迁移；代码未 push GitHub。** 改动文件仅 2 个：`src/app/api/video/route.ts`、`src/components/chat-workbench.tsx`。**下一个 AI：这 2 文件改动 + 本次 handover 需 commit+push GitHub 保持三方同步。**
+
+1. **B_122 修复**：真人审核 `waitForBytePlusAssetActive` 在 CreateAsset 刚返回、GetAsset 尚未同步时第一次查到 "asset not found" 就整单毙 → 改成**只有平台 `Failed` 或超 180s 才失败**，瞬态 not found/抖动当"没就绪"继续轮询。此类失败历史 10 例全 ID_315163。
+2. **B_135 修复（实测验证过）**：参考音频以原始 `audio_url` 直传被 BytePlus 版权检测拦（`InputAudioSensitiveContentDetected`）；图片走的"上传 Skip 免审素材→`asset://`"能绕过，但音频没走（`isBytePlusHumanReferenceError` 特意排除 copyright）。新增 `isBytePlusRecoverableReferenceError`：**输入素材(图/视频/音频)真人/隐私/敏感/版权都判可恢复→走 Skip 素材重试**，仅 output 侧不可恢复。实验证据：原始链接=复现失败、Skip 素材=成功出片（视频已交付用户桌面 aaa 文件夹）。**"别的平台能过、我们不能"真因=送法不对，非音频侵权。**
+3. **对话流"@音频名删不掉"根治（存问题非读问题）**：`ensureMediaFileMentions` 视频提交时强制把媒体 @名拼到提示词最前面，污染了模型prompt/存档content/cleanPrompt/等待卡，删了发送又被重补。音频视频本靠附件数组 `referenceAudios/referenceVideos` 送达、与@名无关。**去掉强制补名**（删函数），copyPrompt 原样读。⚠️ 第一版误在 copyPrompt 剥"所有媒体@名"把用户手打的也删了→已撤回。
+4. **历史回填**：4 用户 50 视频 job（ID_315163 28/ID_868181 20/ID_193006 1/ID_332396 1；含 .mp4 参考视频被强制补名）。只剥"开头带音视频扩展名的 @名"，回填 GenerationJob(50)/WorkspaceSession messages(49,5会话)/WorkspaceMessage(51)/MediaAsset.sourcePrompt(50)，复查全库剩 0。备份 `/opt/flashmuse/data/runtime/backfill-forcedmention-2026-07-16T05-44-23-593Z.json`。
 
 ## 2026-07-17 上传文件命名全平台统一 + 资产库右侧按入库时间稳定排序 — 见 CHANGELOG 顶条为权威。速记：
 

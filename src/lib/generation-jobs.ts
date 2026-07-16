@@ -4,6 +4,7 @@ import { prisma } from "@/lib/prisma";
 import { chargeCredits } from "@/lib/credits";
 import { generateOpenRouterImage } from "@/lib/openrouter";
 import { createCodedApiError } from "@/lib/error-code";
+import { isTransientServerError } from "@/lib/transient-error";
 import { getBytePlusProviderKey } from "@/lib/byteplus-provider-key";
 import { GENERIC_MEDIA_ERROR_MESSAGE } from "@/lib/error-message";
 import { getBytePlusVideoPricePerMillionUsd, getExpectedImageDimensions } from "@/lib/models";
@@ -663,6 +664,14 @@ export async function runImageJob(job: GenerationJobRow) {
     void recordGenerationEvent({ userId: job.userId, requestId: job.requestId, kind: "image", creditSource, model: job.model ?? undefined, provider: job.provider ?? undefined, status: "success", durationMs: Date.now() - startedAt, referenceImageCount: referenceImages.length });
     void appendGenerationDiagnosticsLog({ event: "image-job-success", requestId: job.requestId, conversationId: job.conversationId ?? undefined, userId: job.userId, mode: "image", model: job.model ?? undefined, prompt: job.prompt ?? undefined, settings, durationMs: Date.now() - startedAt, extra: { requestedImageCount, returnedImageCount: deliveredImages.length, providerReturnedImageCount, deliveredImages: deliveredImages.map((url, index) => summarizeGeneratedReference(url, index)), dimensions: deliveredImageDimensions, credit } });
   } catch (error) {
+    // 服务端断线重连：网络/网关5xx/部署重启窗口/平台临时错误等"瞬时可恢复"错误不立即毙单，
+    // 退避后重排队重试（attempts 由 claim 递增、超 MAX_IMAGE_JOB_ATTEMPTS 才真失败），用户无感。
+    if (isTransientServerError(error) && job.attempts < MAX_IMAGE_JOB_ATTEMPTS) {
+      const delayMs = Math.min(30000, 5000 * Math.max(1, job.attempts));
+      await scheduleJobRetry(job.id, delayMs);
+      void appendGenerationDiagnosticsLog({ event: "image-job-transient-retry", requestId: job.requestId, conversationId: job.conversationId ?? undefined, userId: job.userId, mode: "image", model: job.model ?? undefined, prompt: job.prompt ?? undefined, settings, durationMs: Date.now() - startedAt, error, extra: { attempts: job.attempts, delayMs } });
+      return;
+    }
     const codedError = await createCodedApiError(error, GENERIC_MEDIA_ERROR_MESSAGE, "image-job failed");
     await markJobFailed(job.id, codedError.error, codedError.errorCode);
     void recordGenerationEvent({ userId: job.userId, requestId: job.requestId, kind: "image", creditSource, model: job.model ?? undefined, provider: job.provider ?? undefined, status: "failed", failureReason: codedError.error, failureCode: codedError.errorCode, durationMs: Date.now() - startedAt, referenceImageCount: referenceImages.length });

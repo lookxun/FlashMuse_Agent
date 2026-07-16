@@ -3,6 +3,7 @@ import { getCurrentUser } from "@/lib/auth";
 import { assertUserCanUseCredits, chargeCredits } from "@/lib/credits";
 import { createOpenRouterVideoTask, getBytePlusEffectiveReferenceImages, getOpenRouterVideoTask, type VideoReferenceMode } from "@/lib/openrouter-video";
 import { createCodedApiError } from "@/lib/error-code";
+import { isTransientServerError } from "@/lib/transient-error";
 import { getBytePlusProviderKey } from "@/lib/byteplus-provider-key";
 import { GENERIC_MEDIA_ERROR_MESSAGE } from "@/lib/error-message";
 import { getUploadRule, validateReferenceImageCount } from "@/lib/upload-rules";
@@ -88,6 +89,36 @@ function summarizeVideoReferencesForLog(references: string[], mode?: VideoRefere
 function isBytePlusHumanReferenceError(value: unknown) {
   const message = value instanceof Error ? value.message : typeof value === "string" ? value : JSON.stringify(value ?? "");
   return /input(?:image|video|audio)?sensitivecontentdetected|privacyinformation|input (?:image|video|audio).*real person|real person|privacy information|真人|隐私/i.test(message) && !/output|copyright|版权/i.test(message);
+}
+
+// 输入参考素材（图/视频/音频）被平台真人/隐私/敏感/版权检测拦截时，可通过
+// "先把素材上传为 Skip 审核素材、再以 asset:// 引用" 绕过（与图片走同一套自动审核机制）。
+// 仅输出侧（生成结果本身）的版权/敏感问题无法靠重传输入素材解决，视为不可恢复。
+function isBytePlusRecoverableReferenceError(value: unknown) {
+  if (isBytePlusHumanReferenceError(value)) return true;
+  const message = value instanceof Error ? value.message : typeof value === "string" ? value : JSON.stringify(value ?? "");
+  if (/\boutput\b/i.test(message)) return false;
+  return /input(?:image|video|audio)?sensitivecontentdetected|copyright|版权/i.test(message);
+}
+
+// 服务端断线重连：视频"创建任务"调用对瞬时可恢复错误（网络/网关5xx/部署重启窗口/
+// 平台抓我们素材临时失败/事务超时）自动退避重试，用户无感。真人/版权/参数等永久错误
+// 由 isTransientServerError 判为 false → 不重试，交给上层 auto-review / 报错处理。
+async function createVideoTaskWithTransientRetry(
+  ...args: Parameters<typeof createOpenRouterVideoTask>
+): ReturnType<typeof createOpenRouterVideoTask> {
+  const maxAttempts = 3;
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await createOpenRouterVideoTask(...args);
+    } catch (error) {
+      lastError = error;
+      if (attempt >= maxAttempts || !isTransientServerError(error)) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 2000 * attempt));
+    }
+  }
+  throw lastError;
 }
 
 function normalizeMediaUrlForMatch(value: string) {
@@ -185,13 +216,24 @@ async function toReviewablePublicAssetUrl(value: string, userId?: string) {
 async function waitForBytePlusAssetActive(assetId: string) {
   const startedAt = Date.now();
   let lastAsset: Awaited<ReturnType<typeof getBytePlusAsset>> | undefined;
+  let lastQueryError: unknown;
+  // 只有平台明确返回 Failed 或超过总时限才算失败；
+  // 期间任何查询瞬态错误（刚创建时 GetAsset 尚未同步而 "not found"、网络抖动等）
+  // 都当作"还没就绪"，继续轮询，直到 Active / Failed / 超时。
   while (Date.now() - startedAt < 180_000) {
-    lastAsset = await getBytePlusAsset(assetId);
+    try {
+      lastAsset = await getBytePlusAsset(assetId);
+    } catch (error) {
+      lastQueryError = error;
+      await new Promise((resolve) => setTimeout(resolve, 5_000));
+      continue;
+    }
     if (lastAsset.Status === "Active") return lastAsset;
     if (lastAsset.Status === "Failed") throw new Error(lastAsset.Error?.Message || "参考图审核未通过，无法作为该视频模型的真人参考图使用。");
     await new Promise((resolve) => setTimeout(resolve, 5_000));
   }
-  throw new Error(lastAsset?.Error?.Message || "参考图审核仍在处理中，请稍后重试。");
+  const timeoutDetail = lastAsset?.Error?.Message || (lastQueryError instanceof Error ? lastQueryError.message : lastQueryError ? String(lastQueryError) : "");
+  throw new Error(timeoutDetail ? `参考图审核仍在处理中，请稍后重试。（${timeoutDetail}）` : "参考图审核仍在处理中，请稍后重试。");
 }
 
 async function patchWorkspaceBytePlusAssets(userId: string | undefined, updates: AutoBytePlusAssetReviewItem[]) {
@@ -743,9 +785,9 @@ export async function POST(request: Request) {
     let autoBytePlusAssetReview: Awaited<ReturnType<typeof autoReviewBytePlusVideoReferences>> | undefined;
     let task: Awaited<ReturnType<typeof createOpenRouterVideoTask>>;
     try {
-      task = await createOpenRouterVideoTask(prompt, modelReferenceImages, body.settings, body.model, { bytePlusProviderKey: getBytePlusProviderKey(body.model, creditSource), referenceMode: body.referenceMode, referenceVideos: modelReferenceVideos, referenceAudios: modelReferenceAudios, requestId: body.requestId });
+      task = await createVideoTaskWithTransientRetry(prompt, modelReferenceImages, body.settings, body.model, { bytePlusProviderKey: getBytePlusProviderKey(body.model, creditSource), referenceMode: body.referenceMode, referenceVideos: modelReferenceVideos, referenceAudios: modelReferenceAudios, requestId: body.requestId });
     } catch (error) {
-      if (!isBytePlusHumanReferenceError(error) || (effectiveReferenceImages.length === 0 && referenceVideos.length === 0 && referenceAudios.length === 0)) throw error;
+      if (!isBytePlusRecoverableReferenceError(error) || (effectiveReferenceImages.length === 0 && referenceVideos.length === 0 && referenceAudios.length === 0)) throw error;
       void appendVideoDiagnosticsLog({
         event: "byteplus-create-human-reference-error",
         requestId: body.requestId,
@@ -768,7 +810,7 @@ export async function POST(request: Request) {
       logVideoTiming("BytePlus human reference auto review started", { model: body.model, requestId: body.requestId, referenceCount: effectiveReferenceImages.length + referenceVideos.length + referenceAudios.length });
       autoBytePlusAssetReview = await autoReviewBytePlusVideoReferences({ userId: user?.id, model: body.model, referenceImages: effectiveReferenceImages, referenceVideos, referenceAudios, requestId: body.requestId, referenceMode: body.referenceMode, settings: body.settings, conversationId: body.conversationId, conversationTitle: body.conversationTitle });
       if (!autoBytePlusAssetReview) throw error;
-      task = await createOpenRouterVideoTask(prompt, autoBytePlusAssetReview.referenceImages, body.settings, body.model, { bytePlusProviderKey: getBytePlusProviderKey(body.model, creditSource), referenceMode: body.referenceMode, referenceVideos: autoBytePlusAssetReview.referenceVideos, referenceAudios: autoBytePlusAssetReview.referenceAudios, requestId: body.requestId });
+      task = await createVideoTaskWithTransientRetry(prompt, autoBytePlusAssetReview.referenceImages, body.settings, body.model, { bytePlusProviderKey: getBytePlusProviderKey(body.model, creditSource), referenceMode: body.referenceMode, referenceVideos: autoBytePlusAssetReview.referenceVideos, referenceAudios: autoBytePlusAssetReview.referenceAudios, requestId: body.requestId });
       logVideoTiming("BytePlus human reference auto review completed", { model: body.model, requestId: body.requestId, reviewedCount: autoBytePlusAssetReview.updates.length });
     }
     const createDoneAt = Date.now();
@@ -794,12 +836,12 @@ export async function POST(request: Request) {
           error: videoError,
         });
       }
-      if (isBytePlusHumanReferenceError(videoError) && (effectiveReferenceImages.length > 0 || referenceVideos.length > 0 || referenceAudios.length > 0)) {
+      if (isBytePlusRecoverableReferenceError(videoError) && (effectiveReferenceImages.length > 0 || referenceVideos.length > 0 || referenceAudios.length > 0)) {
         if (!body.autoBytePlusAssetReview) return NextResponse.json({ status: "reviewing", autoBytePlusAssetReview: { triggered: true } });
         logVideoTiming("BytePlus human reference auto review started", { model: body.model, requestId: body.requestId, referenceCount: effectiveReferenceImages.length + referenceVideos.length + referenceAudios.length });
         autoBytePlusAssetReview = await autoReviewBytePlusVideoReferences({ userId: user?.id, model: body.model, referenceImages: effectiveReferenceImages, referenceVideos, referenceAudios, requestId: body.requestId, referenceMode: body.referenceMode, settings: body.settings, conversationId: body.conversationId, conversationTitle: body.conversationTitle });
         if (autoBytePlusAssetReview) {
-          task = await createOpenRouterVideoTask(prompt, autoBytePlusAssetReview.referenceImages, body.settings, body.model, { bytePlusProviderKey: getBytePlusProviderKey(body.model, creditSource), referenceMode: body.referenceMode, referenceVideos: autoBytePlusAssetReview.referenceVideos, referenceAudios: autoBytePlusAssetReview.referenceAudios, requestId: body.requestId });
+          task = await createVideoTaskWithTransientRetry(prompt, autoBytePlusAssetReview.referenceImages, body.settings, body.model, { bytePlusProviderKey: getBytePlusProviderKey(body.model, creditSource), referenceMode: body.referenceMode, referenceVideos: autoBytePlusAssetReview.referenceVideos, referenceAudios: autoBytePlusAssetReview.referenceAudios, requestId: body.requestId });
           logVideoTiming("BytePlus human reference auto review completed", { model: body.model, requestId: body.requestId, reviewedCount: autoBytePlusAssetReview.updates.length });
         }
       }
