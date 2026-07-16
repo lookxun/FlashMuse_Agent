@@ -1,7 +1,7 @@
 "use client";
 
 import type { IconType } from "react-icons";
-import { RiLoader4Line, RiPlayLargeFill, RiVideoOnLine } from "react-icons/ri";
+import { RiLoader4Line, RiPlayLargeFill } from "react-icons/ri";
 import { AudioWaveformPlayer } from "@/components/audio-waveform-player";
 
 export type MentionPickerCategory = { label: string; value: string; icon: IconType };
@@ -104,11 +104,11 @@ export function AssetMentionPicker({
                     ) : item.kind === "video" ? (
                       item.thumbnailUrl
                         ? /* eslint-disable-next-line @next/next/no-img-element */ <img src={item.thumbnailUrl} alt={item.name} draggable={false} className="h-full w-full object-cover" />
-                        : <div className="flex h-full w-full items-center justify-center bg-[#e9e9e9] text-[#b0b0b0]"><RiVideoOnLine className="h-7 w-7" aria-hidden="true" /></div>
+                        : <video src={`${getMediaSrc(item.url)}#t=0.1`} muted playsInline preload="metadata" className="h-full w-full object-cover" />
                     ) : (
                       /* eslint-disable-next-line @next/next/no-img-element */ <img src={item.thumbnailUrl ?? getMediaSrc(item.url)} alt={item.name} draggable={false} className="h-full w-full object-cover" />
                     )}
-                    {item.kind === "video" && item.thumbnailUrl ? (
+                    {item.kind === "video" ? (
                       <span className="pointer-events-none absolute left-1/2 top-1/2 flex h-9 w-9 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-black/42 text-white shadow-[0_8px_24px_rgba(0,0,0,0.22)] backdrop-blur-[4px]"><RiPlayLargeFill className="ml-0.5 h-4 w-4" aria-hidden="true" /></span>
                     ) : null}
                       <div className="pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t from-black/75 to-transparent" />
