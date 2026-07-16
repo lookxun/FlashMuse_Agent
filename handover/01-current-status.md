@@ -1,6 +1,29 @@
 # Current Status
 
-Last checked: 2026-07-19 China time.
+Last checked: 2026-07-21 China time.
+
+## 2026-07-21 从资产库导入补音视频 + @引用资产弹窗大改造 + 视频卡@媒体图标 — 见 CHANGELOG 顶条为权威。速记：
+
+**⚠️ 全部仅本地：`npx tsc --noEmit` 过；未 build / 未部署 / 未 commit；无 Prisma 迁移；无新增依赖。但 07-20 那批（资产库改造 + `wavesurfer.js`）也仍未部署——用户要求下一个 AI 把 07-20+07-21 全部一次性部署上线。**
+
+1. **「从资产库导入」弹窗**：加 上传视频/上传音频两分类；视频显小缩略图+中间播放键（去"视频"字样）、无封面 `<video>` 首帧；音频波形卡；导入落地支持建音频节点（`restoreWorkflowAssetToCanvas` audio 分支 + kind 类型三处加 audio）。音频波形卡时间移左上（避开勾选框）。
+2. **⭐「@引用资产」弹窗三处统一大改造**（对话流输入框 / 资产库生成弹窗 / 工作流输入框）：新增共享组件 `src/components/asset-mention-picker.tsx`（左标签+右 5 列 80×80 小缩略图，标题@引用资产，固定高 378）。显示资产库全部分类（对话流/工作流 10 类；资产库生成弹窗隐藏视频/音频=6 类图片）。**视频/音频可引用=方案A**：复用 + 号上传的 `uploadRule` 判断（enabled/maxCount/时长/尺寸/总时长，从 url 读元数据校验），支持就建 ready 参考进杠（不重新上传）、不支持提示。右侧图片/视频=小缩略图（视频无封面用图标占位不加载 video）、音频=波形。**按标签懒加载**：首次只加载当前标签 30 个+全部计数，切标签转圈、下拉流式加载（`loadMentionFilterPage`+`mentionFilterPaging`；工作流经新 props `onLoadReferenceFilter`/`referenceFilterLoading`/`referenceFilterNextOffset`）。
+3. **视频卡提示词里 @媒体小图标**（`ReferencedTextContent`）：视频显封面+播放键、音频统一 `RiVoiceprintLine` 深灰 `#8a8a8a`，**纯展示不可点**。
+4. 改动文件：新增 `asset-mention-picker.tsx`；改 `chat-workbench.tsx`、`workflow-tldraw-canvas-inner.tsx`、`workflow-tldraw-canvas.tsx`、`audio-waveform-player.tsx`、`handover/*`。
+
+
+## 2026-07-20 资产库改造 + 音频波形播放器 + 图片存盘不丢改造 — 见 CHANGELOG 顶条为权威。速记：
+
+**⚠️ 全部仅本地：`npx tsc --noEmit` 过；未 build / 未部署 / 未 commit；无 Prisma 迁移；新增 npm 依赖 `wavesurfer.js`（部署时服务器要 `npm install`）。** 本 session 起用户加两条铁律（见下）。
+
+1. **两条铁律**（已写进 `AGENTS.md` 顶部 + `00-README.md` 顶条）：① 动代码前先评估对既有功能的影响、有影响先说清等确认再改；② 默认只做本地不部署，说部署才部署；git 攒够再一次性推。
+2. **资产库改造（核心）**：侧栏"上传图片"移到横线下、新建 `上传的资产`(圆点)分组含 上传图片/上传视频/上传音频（对话流+工作流所有上传合并）；上传视频=video-row(一行4)+无 poster 用视频首帧封面、从"生成视频"移出；上传音频=波形播放器方卡(一行5，悬停播放、纯文件名无@)。服务端(`workspace-state` 过滤/计数)+前端(`isAssetInFilter`)同步改，`MediaAsset.mediaType` 透传到前端（含 `media-assets` GET）。`conversation_uploads` 分页收窄到与计数一致(39)。
+3. **共享波形播放器** `src/components/audio-waveform-player.tsx`（wavesurfer.js，variant node/card），工作流音频节点改用它；音频节点 600×300；图层音频图标/文件名；对话流输入框音频缩略图图标统一 `RiVoiceprintLine`。
+4. **图片存盘不丢改造** `runImageJob`：本地没存好就把交付快照存 `extraJson.pendingImageLocalize` 重排队等到存好再落库（跳过重新生成、扣费幂等），不再 60s 回退远程 url 导致"成功却不进库"。国内本地跨境慢必现、线上抖动偶现，现根治=更稳。
+5. **手动补** 一张本地漏掉的分镜图（历史个案，见 CHANGELOG §4）。
+6. **下一个 AI 待办（用户点名）**：改造 `@引用资产` 和 `从资产库导入`（目前只图+视频）让音频/视频也显示；交互（音频能否导入工作流音频节点）需和用户确认。
+
+
 
 ## 2026-07-19 生成链路服务端断线重连改造 + B_146/B_144 修复 + 后台失败原因聚合 + 运维 — 见 CHANGELOG 顶条为权威。速记：
 

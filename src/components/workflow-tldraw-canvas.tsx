@@ -40,14 +40,17 @@ type WorkflowCanvasProps = {
   leftSidebarVisible?: boolean;
   onToggleLeftSidebar?: () => void;
   workflowAssets?: Array<{ id: string; name: string; url: string; posterUrl?: string; kind: "image" | "video"; nodeId?: string; sourcePrompt?: string; ratio?: string; resolution?: string; duration?: string; dimensions?: { width: number; height: number } }>;
-  referenceAssets?: Array<{ id: string; name: string; url: string; thumbnailUrl?: string; groupType: string; groupLabel: string }>;
+  referenceAssets?: Array<{ id: string; name: string; url: string; thumbnailUrl?: string; kind?: "image" | "video" | "audio"; groupType: string; groupLabel: string }>;
   referenceAssetsLoadStatus?: "idle" | "loading" | "loaded" | "failed";
   referenceAssetCounts?: Record<string, number>;
   onLoadReferenceAssets?: () => void;
+  onLoadReferenceFilter?: (value: string, offset: number) => void;
+  referenceFilterLoading?: Record<string, boolean>;
+  referenceFilterNextOffset?: Record<string, number>;
   onLoadMoreReferenceAssets?: (groupType: string, loadedCount: number) => void;
   onExternalFilesDrop?: (files: File[]) => void;
   onOpenAssetImport?: () => void;
-  assetsToImport?: Array<{ id: string; name: string; url: string; posterUrl?: string; kind: "image" | "video"; sourcePrompt?: string; model?: ModelName; ratio?: string; resolution?: string; duration?: string; dimensions?: { width: number; height: number }; origin?: "generated" | "upload" }>;
+  assetsToImport?: Array<{ id: string; name: string; url: string; posterUrl?: string; kind: "image" | "video" | "audio"; sourcePrompt?: string; model?: ModelName; ratio?: string; resolution?: string; duration?: string; dimensions?: { width: number; height: number }; origin?: "generated" | "upload" }>;
   onAssetsImported?: () => void;
 };
 

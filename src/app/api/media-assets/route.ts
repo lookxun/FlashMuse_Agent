@@ -151,6 +151,7 @@ export async function GET(request: Request) {
       id: row.id,
       mediaId: media.id,
       type: mediaCategoryToLegacyType(row.currentCategory, media.mediaType),
+      mediaType: media.mediaType,
       name: row.currentName || media.systemName || media.initialName || "未命名资产",
       systemName: media.systemName || media.initialName || undefined,
       url: media.url,

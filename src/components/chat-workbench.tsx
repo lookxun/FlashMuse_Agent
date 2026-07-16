@@ -67,6 +67,8 @@ import {
   RiVipCrown2Line,
   RiVipDiamondLine,
   RiVideoLine,
+  RiVideoOnLine,
+  RiVoiceprintLine,
   RiQuillPenAiLine,
   RiAccountBoxLine,
   RiAccountCircleLine,
@@ -101,6 +103,8 @@ import { getMentionRangeForDeletion as getSharedMentionRangeForDeletion, getMent
 import { createUploadProgressTracker } from "@/lib/upload-progress";
 import { useBodyScrollLock } from "@/components/use-body-scroll-lock";
 import { BytePlusIcon } from "@/components/byteplus-icon";
+import { AudioWaveformPlayer } from "@/components/audio-waveform-player";
+import { AssetMentionPicker, type MentionPickerItem } from "@/components/asset-mention-picker";
 import { WorkflowCanvas, type WorkflowCanvasState, type WorkflowNode } from "@/components/workflow-tldraw-canvas";
 import { getSupportedUploadTypeLabel, getUploadAcceptValue, getUploadKindFromFileName, getUploadRule, type UploadRuleOverrides } from "@/lib/upload-rules";
 import { sanitizeModelOutputText } from "@/lib/text-cleanup";
@@ -206,6 +210,7 @@ type AssetItem = {
   id: string;
   mediaId?: string;
   type: AssetType;
+  mediaType?: "image" | "video" | "audio" | "document";
   name: string;
   systemName?: string;
   userName?: string;
@@ -234,7 +239,7 @@ type AssetItem = {
 };
 type UploadableImageAssetType = "character_image" | "scene_image" | "shot_image";
 
-type WorkflowImportAsset = { id: string; name: string; url: string; posterUrl?: string; kind: "image" | "video"; sourcePrompt?: string; model?: ModelName; ratio?: string; resolution?: string; duration?: string; dimensions?: { width: number; height: number }; origin?: "generated" | "upload" };
+type WorkflowImportAsset = { id: string; name: string; url: string; posterUrl?: string; kind: "image" | "video" | "audio"; sourcePrompt?: string; model?: ModelName; ratio?: string; resolution?: string; duration?: string; dimensions?: { width: number; height: number }; origin?: "generated" | "upload" };
 
 type AssetGenerationImageType = "character_image" | "scene_image" | "shot_image";
 type AssetGenerateRatio = "single" | "three-view" | "scene-grid";
@@ -414,7 +419,7 @@ type UserDialogTab = "profile" | "credits" | "security" | "settings";
 type WorkspaceStorageMode = "loading" | "user";
 type WorkspaceLoadStatus = "loading" | "retrying" | "loaded" | "failed";
 type UserLanguage = "简体中文" | "繁体中文";
-type AssetFilter = AssetType | "conversation_images" | "conversation_uploads" | "conversation_videos" | "workflow_images" | "workflow_videos";
+type AssetFilter = AssetType | "conversation_images" | "conversation_uploads" | "conversation_videos" | "workflow_images" | "workflow_videos" | "upload_videos" | "upload_audios";
 type AssetCategoryTarget = UploadableImageAssetType | "conversation_image";
 type WorkSession = {
   id: string;
@@ -1111,11 +1116,20 @@ const ASSET_IMPORT_CATEGORIES: { label: string; value: AssetFilter; icon: typeof
   { label: "场景图片", value: "scene_image", icon: RiLandscapeLine },
   { label: "分镜图片", value: "shot_image", icon: RiMultiImageLine },
   { label: "上传图片", value: "conversation_uploads", icon: ImageUploadLineIcon },
+  { label: "上传视频", value: "upload_videos", icon: RiVideoOnLine },
+  { label: "上传音频", value: "upload_audios", icon: RiVoiceprintLine },
   { label: "对话流生成图片", value: "conversation_images", icon: RiImageAiLine },
   { label: "对话流生成视频", value: "conversation_videos", icon: RiFilmAiLine },
   { label: "工作流生成图片", value: "workflow_images", icon: RiImageAiLine },
   { label: "工作流生成视频", value: "workflow_videos", icon: RiFilmAiLine },
 ];
+// "@引用资产" 弹窗（迷你版资产库）的分类：对话流/工作流显示全部资产库分类；
+// 资产库生成弹窗是纯图片模型，隐藏视频/音频分类。三处一律复用这两份定义。
+const MENTION_CATEGORIES = ASSET_IMPORT_CATEGORIES;
+const MENTION_CATEGORY_FILTERS: AssetFilter[] = MENTION_CATEGORIES.map((cat) => cat.value);
+const MENTION_VIDEO_AUDIO_FILTERS: AssetFilter[] = ["upload_videos", "upload_audios", "conversation_videos", "workflow_videos"];
+const CHARACTER_MENTION_CATEGORIES = ASSET_IMPORT_CATEGORIES.filter((cat) => !MENTION_VIDEO_AUDIO_FILTERS.includes(cat.value));
+
 // Maps an @-mention group to the server `assetCounts` key so the popup can show the SAME real
 // total as the asset-library sidebar (instead of only the locally-loaded, page-capped count).
 const mentionGroupToAssetCountKey: Record<MentionAssetGroupType, string> = {
@@ -1243,6 +1257,16 @@ function getAssetCardImageUrl(asset: Pick<AssetItem, "url" | "thumbnailUrl" | "p
 
 function getAssetCardPosterUrl(asset: Pick<AssetItem, "url" | "posterUrl">) {
   return asset.posterUrl ?? getLocalVideoPosterUrl(asset.url);
+}
+
+// AssetItem → 「@引用资产」选择器条目（统一投影，三处 mention 弹窗复用）。
+function assetToMentionPickerItem(asset: AssetItem): MentionPickerItem {
+  if (isAudioAsset(asset)) return { id: asset.id, name: asset.name, url: asset.url, kind: "audio" };
+  if (isVideoAsset(asset)) {
+    const poster = getAssetCardPosterUrl(asset);
+    return { id: asset.id, name: asset.name, url: asset.url, thumbnailUrl: poster ? getMediaThumbnailUrl(poster) : undefined, kind: "video" };
+  }
+  return { id: asset.id, name: asset.name, url: asset.url, thumbnailUrl: getMediaThumbnailUrl(asset.url), kind: "image" };
 }
 
 // Thumbnail image with graceful fallback. When the (usually CDN-served, possibly not-yet-synced)
@@ -3422,7 +3446,7 @@ function isAssetTargetType(value: unknown): value is AssetTargetType {
 }
 
 function isAssetFilter(value: unknown): value is AssetFilter {
-  return typeof value === "string" && (assetTypeOrder.includes(value as AssetType) || value === "conversation_images" || value === "conversation_uploads" || value === "conversation_videos" || value === "workflow_images" || value === "workflow_videos");
+  return typeof value === "string" && (assetTypeOrder.includes(value as AssetType) || value === "conversation_images" || value === "conversation_uploads" || value === "conversation_videos" || value === "workflow_images" || value === "workflow_videos" || value === "upload_videos" || value === "upload_audios");
 }
 
 type StoredWorkspaceUiState = {
@@ -3819,7 +3843,7 @@ function isUploadedAssetUrl(url: string) {
 }
 
 function isUploadPromptPlaceholder(value: string | undefined) {
-  return value === UPLOAD_IMAGE_PROMPT_PLACEHOLDER || value === "资产库上传" || value === "对话流上传";
+  return value === UPLOAD_IMAGE_PROMPT_PLACEHOLDER || value === "资产库上传" || value === "对话流上传" || value === "上传视频" || value === "上传音频" || value === "上传文档";
 }
 
 function isUploadedAsset(asset: Pick<AssetItem, "url" | "sourcePrompt">) {
@@ -3831,14 +3855,26 @@ function isConversationUploadedAsset(asset: AssetItem) {
 }
 
 function isAssetInFilter(asset: AssetItem, filter: AssetFilter) {
-  if (isUnhostedRemoteAssetUrl(asset.url) || isNonDisplayableFileAsset(asset.url)) return false;
+  if (isUnhostedRemoteAssetUrl(asset.url)) return false;
+  const isAudio = isAudioAsset(asset);
+  if (asset.mediaType === "document") return false;
+  if (asset.mediaType) {
+    // 新数据：mediaType 权威。音频只在 upload_audios 分类显示、别处不出现。
+    if (isAudio && filter !== "upload_audios") return false;
+  } else if (isNonDisplayableFileAsset(asset.url)) {
+    // 老数据无 mediaType：保持原行为（/files/ 下非视频=音频/文档，一律不显示）。
+    return false;
+  }
   if (filter !== "trash" && (asset.type === "trash" || asset.deletedAt)) return false;
   if (filter === "trash") return asset.type === "trash" || Boolean(asset.deletedAt);
+  const uploaded = isUploadedMediaAsset(asset);
+  if (filter === "upload_videos") return uploaded && isVideoAsset(asset);
+  if (filter === "upload_audios") return uploaded && isAudio;
   if (filter === "conversation_images") return isConversationAsset(asset) && !isVideoAsset(asset) && !isConversationUploadedAsset(asset);
-  if (filter === "conversation_uploads") return isConversationUploadedAsset(asset);
-  if (filter === "conversation_videos") return isConversationAsset(asset) && isVideoAsset(asset);
-  if (filter === "workflow_images") return isWorkflowAsset(asset) && !isVideoAsset(asset);
-  if (filter === "workflow_videos") return isWorkflowAsset(asset) && isVideoAsset(asset);
+  if (filter === "conversation_uploads") return uploaded && !isVideoAsset(asset) && !isAudio && !isAssetGenerationAsset(asset) && asset.type !== "trash";
+  if (filter === "conversation_videos") return isConversationAsset(asset) && isVideoAsset(asset) && !uploaded;
+  if (filter === "workflow_images") return isWorkflowAsset(asset) && !isVideoAsset(asset) && !uploaded;
+  if (filter === "workflow_videos") return isWorkflowAsset(asset) && isVideoAsset(asset) && !uploaded;
   if (assetGenerationTypes.includes(filter as UploadableImageAssetType)) return isAssetGenerationAsset(asset) && asset.type === filter;
   return asset.type === filter;
 }
@@ -4650,12 +4686,19 @@ function getAssetReferencesText(assets: AssetItem[]) {
   return `\n\n已引用资产：${assets.map((asset) => `@${asset.name}（${assetTypeLabels[asset.type]}）`).join("，")}。生成时请保持这些参考资产的一致性。`;
 }
 
-function isVideoAsset(asset: Pick<AssetItem, "type" | "url">) {
+function isVideoAsset(asset: Pick<AssetItem, "type" | "url" | "mediaType">) {
+  if (asset.mediaType) return asset.mediaType === "video";
   return asset.type === "shot_video" || /\.(mp4|webm|mov)(\?|$)/i.test(asset.url);
 }
 
-function isAudioAsset(asset: Pick<AssetItem, "url">) {
+function isAudioAsset(asset: Pick<AssetItem, "url" | "mediaType">) {
+  if (asset.mediaType) return asset.mediaType === "audio";
   return /\.(mp3|wav)(\?|$)/i.test(asset.url);
+}
+
+// 上传的资产（对话流+工作流所有上传）：靠出生标记 promptSource==="upload"，退化时看占位提示词/上传 url。
+function isUploadedMediaAsset(asset: Pick<AssetItem, "url" | "sourcePrompt" | "promptSource">) {
+  return asset.promptSource === "upload" || isUploadPromptPlaceholder(asset.sourcePrompt) || isUploadedAssetUrl(asset.url);
 }
 
 // Uploaded audio/documents are stored under the `/generated/.../files/` directory (often with a
@@ -5706,12 +5749,26 @@ function ReferencedTextContent({ content, references, mediaReferences, onPreview
 
         if (!reference) return <span key={`${part.text}-${index}`}>{part.text}</span>;
         if ("mediaKind" in reference) {
-          const Icon = reference.mediaKind === "video" ? RiVideoLine : RiMusic2Line;
+          const mediaSrc = getStaticMediaUrl(reference.url) ?? reference.url;
+          if (reference.mediaKind === "video") {
+            return (
+              <span key={`${part.text}-${index}`} className="mx-0.5 inline-flex items-center gap-1 align-[-4px] leading-none text-[#367cee]">
+                <span className="relative inline-flex h-[18px] w-[18px] shrink-0 items-center justify-center overflow-hidden rounded bg-black/5 ring-1 ring-[#e5e5e5]">
+                  {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+                  <video src={`${mediaSrc}#t=0.1`} muted playsInline preload="metadata" className="pointer-events-none h-full w-full object-cover" />
+                  <span className="pointer-events-none absolute inset-0 flex items-center justify-center">
+                    <span className="flex h-2.5 w-2.5 items-center justify-center rounded-full bg-black/45"><span className="ml-[1px] h-0 w-0 border-y-[3px] border-l-[4px] border-y-transparent border-l-white" /></span>
+                  </span>
+                </span>
+                <span className="max-w-[180px] truncate leading-[18px]">{part.text}</span>
+              </span>
+            );
+          }
           return (
             <span key={`${part.text}-${index}`} className="mx-0.5 inline-flex items-center gap-1 align-[-4px] leading-none text-[#367cee]">
-              <button type="button" onClick={() => onPreviewMedia?.(reference.file)} className="inline-flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded bg-[#eef3ff] text-[#367cee] ring-1 ring-[#dbe5ff] transition hover:bg-white" aria-label={`预览${reference.name}`}>
-                <Icon className="h-3.5 w-3.5" aria-hidden="true" />
-              </button>
+              <span className="inline-flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded bg-black/5 text-[#8a8a8a] ring-1 ring-[#e5e5e5]">
+                <RiVoiceprintLine className="h-3.5 w-3.5" aria-hidden="true" />
+              </span>
               <span className="max-w-[180px] truncate leading-[18px]">{part.text}</span>
             </span>
           );
@@ -5902,12 +5959,16 @@ function AssetManagementPanel({
     if (isAssetTrashExpired(asset, now)) return false;
     return isAssetInFilter(asset, assetFilter);
   }).sort((left, right) => (right.createdAt ?? 0) - (left.createdAt ?? 0)), [assets, assetFilter, now]);
-  const visibleTypes: AssetType[] = assetFilter === "conversation_images" || assetFilter === "conversation_uploads" || assetFilter === "conversation_videos" || assetFilter === "workflow_images" || assetFilter === "workflow_videos" ? assetTypeOrder : [assetFilter];
-  const title = assetFilter === "conversation_images" ? "生成图片" : assetFilter === "conversation_uploads" ? "上传图片" : assetFilter === "conversation_videos" ? "生成视频" : assetFilter === "workflow_images" ? "工作流生成图片" : assetFilter === "workflow_videos" ? "工作流生成视频" : assetTypeLabels[assetFilter];
+  const visibleTypes: AssetType[] = assetFilter === "conversation_images" || assetFilter === "conversation_uploads" || assetFilter === "conversation_videos" || assetFilter === "workflow_images" || assetFilter === "workflow_videos" || assetFilter === "upload_videos" || assetFilter === "upload_audios" ? assetTypeOrder : [assetFilter];
+  const title = assetFilter === "conversation_images" ? "生成图片" : assetFilter === "conversation_uploads" ? "上传图片" : assetFilter === "conversation_videos" ? "生成视频" : assetFilter === "workflow_images" ? "工作流生成图片" : assetFilter === "workflow_videos" ? "工作流生成视频" : assetFilter === "upload_videos" ? "上传视频" : assetFilter === "upload_audios" ? "上传音频" : assetTypeLabels[assetFilter];
   const canUploadImages = assetFilter === "conversation_uploads";
   const canGenerateImages = assetGenerationTypes.includes(assetFilter as UploadableImageAssetType);
   const emptyText = assetFilter === "conversation_uploads"
     ? "在对话流上传的图片会出现在这里。"
+      : assetFilter === "upload_videos"
+        ? "上传的视频会出现在这里。"
+      : assetFilter === "upload_audios"
+        ? "上传的音频会出现在这里。"
       : assetFilter === "conversation_images"
         ? "对话流生成的图片会出现在这里。"
       : assetFilter === "conversation_videos"
@@ -6043,13 +6104,41 @@ function AssetManagementPanel({
         </button>
       ))}
       {renderableTypeAssets.map((asset) => {
+        if (isAudioAsset(asset)) {
+          return (
+            <div key={asset.id} className="group relative aspect-square overflow-visible bg-[#f4f4f4]">
+              <div className="h-full w-full overflow-hidden"><AudioWaveformPlayer key={asset.url} url={getStaticMediaUrl(asset.url) ?? asset.url} variant="card" /></div>
+              <div className="pointer-events-none absolute inset-x-0 bottom-0 z-30 h-10 bg-gradient-to-t from-black/75 to-transparent" />
+              <div className="absolute bottom-2 left-2 z-30 max-w-[calc(100%-48px)] truncate text-white">
+                <span className="text-[13px] font-medium leading-none">{asset.name}</span>
+              </div>
+              <div className="absolute bottom-2 right-2 z-30" onClick={(event) => event.stopPropagation()}>
+                <button type="button" onClick={(event) => handleAssetActionMenuClick(event, asset.id)} className="flex h-7 w-7 items-center justify-center rounded-md text-white transition hover:bg-black/25" aria-label="资产操作">
+                  <RiMoreLine className="h-4 w-4" aria-hidden="true" />
+                </button>
+                {openAssetActionMenuId === asset.id ? (
+                  <div className={`absolute bottom-8 z-50 w-32 rounded-xl border border-[#eeeeee] bg-white p-1 shadow-[0_12px_28px_rgba(15,23,42,0.16)] ${getAssetActionMenuPlacement(asset.id) === "left" ? "right-0" : "left-0"}`}>
+                    <button type="button" onClick={() => onRename(asset)} className="flex h-9 w-full items-center gap-2.5 rounded-lg px-2 text-left text-[#333333] hover:bg-[#f5f5f5]">
+                      <RiEditBoxLine className="h-4 w-4 shrink-0 text-[#777777]" aria-hidden="true" />
+                      <span className="text-[13px] leading-none">重命名</span>
+                    </button>
+                    <button type="button" onClick={() => (asset.type === "trash" ? onRestore(asset.id) : onDelete(asset.id))} className={asset.type === "trash" ? "flex h-9 w-full items-center gap-2.5 rounded-lg px-2 text-left text-[#333333] hover:bg-[#f5f5f5]" : "flex h-9 w-full items-center gap-2.5 rounded-lg px-2 text-left text-red-500 hover:bg-red-50"}>
+                      {asset.type === "trash" ? <RiResetRightLine className="h-4 w-4 shrink-0 text-[#777777]" aria-hidden="true" /> : <RiDeleteBinLine className="h-4 w-4 shrink-0" aria-hidden="true" />}
+                      <span className="text-[13px] leading-none">{asset.type === "trash" ? "恢复" : "删除"}</span>
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          );
+        }
         const assetCardPosterUrl = isVideoAsset(asset) ? getAssetCardPosterUrl(asset) : undefined;
 
         return (
         <div key={asset.id} className={variant === "video-row" ? "group relative aspect-video overflow-visible bg-[#f4f4f4]" : "group relative aspect-square overflow-visible bg-[#f4f4f4]"}>
           <button type="button" onClick={() => onPreview(asset)} className="block h-full w-full overflow-hidden bg-[#f4f4f4] text-left">
             {isVideoAsset(asset) ? (
-              assetCardPosterUrl ? <AssetThumbnailImage thumbnailSrc={getMediaThumbnailUrl(assetCardPosterUrl)} fallbackSrc={getStaticMediaUrl(assetCardPosterUrl)} alt={asset.name} className="h-full w-full object-cover" style={{ width: "100%", height: "100%" }} /> : <div className="flex h-full w-full items-center justify-center bg-[#ededed] text-[#8a8a8a]"><RiFilmLine className="h-8 w-8" aria-hidden="true" /></div>
+              assetCardPosterUrl ? <AssetThumbnailImage thumbnailSrc={getMediaThumbnailUrl(assetCardPosterUrl)} fallbackSrc={getStaticMediaUrl(assetCardPosterUrl)} alt={asset.name} className="h-full w-full object-cover" style={{ width: "100%", height: "100%" }} /> : <video src={`${getStaticMediaUrl(asset.url) ?? asset.url}#t=0.1`} muted playsInline preload="metadata" className="h-full w-full object-cover" />
             ) : (
               <AssetThumbnailImage thumbnailSrc={getAssetCardImageUrl(asset)} fallbackSrc={getStaticMediaUrl(asset.url)} alt={asset.name} className="h-full w-full object-cover" style={{ width: "100%", height: "100%" }} />
             )}
@@ -6153,8 +6242,8 @@ function AssetManagementPanel({
 
       {visibleAssets.length === 0 && assetFilter !== "character_image" && assetFilter !== "scene_image" && assetFilter !== "shot_image" ? (
         <div className="rounded-2xl border border-dashed border-[#d8d8d8] bg-[#fafafa] px-6 py-12 text-center text-sm text-[#8a8a8a]">{emptyText}</div>
-      ) : assetFilter === "conversation_images" || assetFilter === "conversation_uploads" || assetFilter === "conversation_videos" || assetFilter === "workflow_images" || assetFilter === "workflow_videos" ? (
-        renderAssetGrid(getRenderableAssets(visibleAssets), assetFilter === "conversation_videos" || assetFilter === "workflow_videos" ? "video-row" : "square")
+      ) : assetFilter === "conversation_images" || assetFilter === "conversation_uploads" || assetFilter === "conversation_videos" || assetFilter === "workflow_images" || assetFilter === "workflow_videos" || assetFilter === "upload_videos" || assetFilter === "upload_audios" ? (
+        renderAssetGrid(getRenderableAssets(visibleAssets), assetFilter === "conversation_videos" || assetFilter === "workflow_videos" || assetFilter === "upload_videos" ? "video-row" : "square")
       ) : assetFilter === "character_image" ? (
         renderAssetGrid(getRenderableAssets(visibleAssets), "square", "character_image")
       ) : assetFilter === "scene_image" ? (
@@ -6930,6 +7019,7 @@ function getUploadedFilePreviewAsset(file: UploadedFileEntry): AssetItem | undef
   return {
     id: getUploadedFileKey(file),
     type: kind === "video" ? "shot_video" : "other",
+    mediaType: kind === "video" ? "video" : "audio",
     name,
     systemName: name,
     url,
@@ -7080,6 +7170,24 @@ function readMediaFileMetadata(file: File, kind: "video" | "audio") {
   });
 }
 
+// 从已托管的 url 读取视频/音频元数据（@引用库资产用，不重新上传）。校验规则和 + 号上传共用。
+function readMediaMetadataFromUrl(url: string, kind: "video" | "audio") {
+  return new Promise<{ durationSeconds?: number; dimensions?: ImageDimensions }>((resolve, reject) => {
+    const element = kind === "video" ? document.createElement("video") : document.createElement("audio");
+    element.preload = "metadata";
+    element.crossOrigin = "anonymous";
+    element.onloadedmetadata = () => {
+      const durationSeconds = Number.isFinite(element.duration) ? element.duration : undefined;
+      const dimensions = kind === "video"
+        ? { width: Math.floor((element as HTMLVideoElement).videoWidth), height: Math.floor((element as HTMLVideoElement).videoHeight) }
+        : undefined;
+      resolve({ durationSeconds, dimensions: dimensions?.width && dimensions.height ? dimensions : undefined });
+    };
+    element.onerror = () => reject(new Error(kind === "video" ? "视频信息读取失败" : "音频信息读取失败"));
+    element.src = url;
+  });
+}
+
 function readDocumentFileText(file: File, onProgress: (progress: number) => void) {
   return new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
@@ -7138,6 +7246,8 @@ export function ChatWorkbench() {
   const [assetImportSelected, setAssetImportSelected] = useState<Record<string, WorkflowImportAsset>>({});
   const [assetsToImport, setAssetsToImport] = useState<WorkflowImportAsset[]>([]);
   const [mentionLoadingMore, setMentionLoadingMore] = useState(false);
+  // 「@引用资产」弹窗按标签懒加载分页（和资产库右侧一致）：每标签独立 loading/hasMore/nextOffset。
+  const [mentionFilterPaging, setMentionFilterPaging] = useState<Partial<Record<AssetFilter, { loading: boolean; hasMore: boolean; nextOffset: number }>>>({});
   const [assetsHasMore, setAssetsHasMore] = useState(false);
   const [assetsNextOffset, setAssetsNextOffset] = useState(0);
   const [assetScrollTopByFilter, setAssetScrollTopByFilter] = useState<Partial<Record<AssetFilter, number>>>(() => initialWorkspaceUiStateRef.current?.assetScrollTopByFilter ?? {});
@@ -7265,7 +7375,7 @@ export function ChatWorkbench() {
   const [renamingAssetId, setRenamingAssetId] = useState("");
   const [assetRenameInput, setAssetRenameInput] = useState("");
   const [openAssetActionMenuId, setOpenAssetActionMenuId] = useState("");
-  const [atAssetFilter, setAtAssetFilter] = useState<MentionAssetGroupType>("character_image");
+  const [atAssetFilter, setAtAssetFilter] = useState<AssetFilter>("character_image");
   const [isAtAssetMenuOpen, setIsAtAssetMenuOpen] = useState(false);
   const [openControlMenu, setOpenControlMenu] = useState<ControlMenuName | ModeMenuName | "">("");
   const [isLoaded, setIsLoaded] = useState(false);
@@ -7314,7 +7424,7 @@ export function ChatWorkbench() {
   const [isInputPromptOptimizing, setIsInputPromptOptimizing] = useState(false);
   const [isCharacterPromptOptimizing, setIsCharacterPromptOptimizing] = useState(false);
   const [characterPromptCursorOffset, setCharacterPromptCursorOffset] = useState(0);
-  const [characterAtAssetFilter, setCharacterAtAssetFilter] = useState<MentionAssetGroupType>("character_image");
+  const [characterAtAssetFilter, setCharacterAtAssetFilter] = useState<AssetFilter>("character_image");
   const [isCharacterAtAssetMenuOpen, setIsCharacterAtAssetMenuOpen] = useState(false);
   const [assetUploadSlots, setAssetUploadSlots] = useState<AssetUploadSlot[]>(() => createAssetUploadSlots("character_image"));
   const [activeAssetUploadIndex, setActiveAssetUploadIndex] = useState(0);
@@ -7924,13 +8034,13 @@ export function ChatWorkbench() {
   const characterAtQuery = getAtQueryAtCursor(characterGeneratePrompt, characterPromptCursorOffset);
   const characterAtAssetSearch = characterAtQuery?.query ?? "";
   const characterAtAssetGroups = isCharacterAtAssetMenuOpen
-    ? mentionAssetTypes.map((type) => ({
-        type,
-        assets: assets.filter((asset) => isMentionGroupAsset(asset, type) && asset.name.includes(characterAtAssetSearch)),
+    ? CHARACTER_MENTION_CATEGORIES.map((cat) => ({
+        type: cat.value,
+        assets: assets.filter((asset) => isAssetInFilter(asset, cat.value) && asset.name.includes(characterAtAssetSearch)),
       }))
     : [];
   const hasCharacterAtAssetOptions = characterAtAssetGroups.some((group) => group.assets.length > 0) && isCharacterAtAssetMenuOpen;
-  const activeCharacterAtAssetGroup = characterAtAssetGroups.find((group) => group.type === characterAtAssetFilter && group.assets.length > 0) ?? characterAtAssetGroups.find((group) => group.assets.length > 0);
+  const activeCharacterAtAssetGroup = characterAtAssetGroups.find((group) => group.type === characterAtAssetFilter) ?? characterAtAssetGroups.find((group) => group.assets.length > 0) ?? characterAtAssetGroups[0];
   const characterGenerateStyleLabel = characterGenerateStyle === "2d" ? "2D风格" : characterGenerateStyle === "3d" ? "3D风格" : "写实风格";
   const characterPreviewMeta: PreviewMediaMeta = useMemo(() => ({
     modelLabel: getGenerationModelLabel("image", characterGenerateModel),
@@ -8912,6 +9022,44 @@ export function ChatWorkbench() {
     );
   }, [activeSessionId, currentUploadRule.image.maxCount]);
 
+  // 从资产库 @引用一个视频/音频：不重新上传，直接拿库里已有 url 建一个 ready 参考条目进"杠"，
+  // 校验规则复用 currentUploadRule（和 + 号上传同一套：enabled / maxCount）。仅在支持的模型可加。
+  const addActiveUploadedMediaReference = useCallback((asset: AssetItem, kind: "video" | "audio", media: { durationSeconds?: number; dimensions?: ImageDimensions }, options?: { draftBase?: string; draftSuffix?: string }) => {
+    const extension = getFileExtension(asset.url) || (kind === "video" ? "mp4" : "mp3");
+    const dimensions = media.dimensions ?? getPreviewMetaDimensions(asset.previewMeta);
+    setSessions((current) =>
+      current.map((session) => {
+        if (session.id !== activeSessionId) return session;
+        const existingFiles = session.uploadedFiles ?? [];
+        const existing = existingFiles.find((item) => typeof item !== "string" && Boolean(item.url) && normalizeMediaUrlForMatch(item.url!) === normalizeMediaUrlForMatch(asset.url));
+        const usedNames = new Set(existingFiles.map((item) => (typeof item === "string" ? "" : item.name)).filter(Boolean));
+        const referenceName = existing && typeof existing !== "string" ? existing.name : makeUniqueReferenceName(getUploadedReferenceBaseName(asset.name), usedNames);
+        const nextFiles: UploadedFileEntry[] = existing
+          ? existingFiles
+          : [...existingFiles, {
+              id: createClientId(),
+              name: referenceName,
+              storageName: asset.url,
+              size: 0,
+              extension,
+              mediaKind: kind,
+              durationSeconds: media.durationSeconds,
+              dimensions,
+              url: asset.url,
+              uploadStatus: "ready" as const,
+              status: "ready" as const,
+              progress: 100,
+            }];
+        const referenceText = `@${referenceName}`;
+        const currentDraft = options?.draftBase ?? session.draftInput ?? "";
+        const draftSuffix = options?.draftSuffix ?? "";
+        const rawNextDraft = `${currentDraft}${currentDraft && !/\s$/.test(currentDraft) ? " " : ""}${referenceText} ${draftSuffix}`;
+        const nextDraft = Array.from(rawNextDraft).slice(0, MAX_DRAFT_INPUT_LENGTH).join("");
+        return { ...session, uploadedFiles: nextFiles, draftInput: nextDraft, updatedAt: Date.now() };
+      }),
+    );
+  }, [activeSessionId]);
+
   const removeActiveUploadedImage = useCallback((imageId: string) => {
     const image = activeUploadedImages.find((item) => item.id === imageId);
     inputImageUploadAbortControllersRef.current.get(imageId)?.abort();
@@ -9177,7 +9325,7 @@ export function ChatWorkbench() {
         name: asset.systemName || asset.name,
         url: asset.url,
         posterUrl: asset.posterUrl,
-        kind: isVideoAsset(asset) ? "video" : "image",
+        kind: isAudioAsset(asset) ? "audio" : isVideoAsset(asset) ? "video" : "image",
         sourcePrompt: asset.sourcePrompt,
         model: asset.model as ModelName | undefined,
         ratio: asset.previewMeta?.ratio,
@@ -9211,58 +9359,65 @@ export function ChatWorkbench() {
   }, [assetImportSelected]);
 
   const loadMentionAssetFilters = useCallback(async () => {
-    const filters: AssetFilter[] = ["character_image", "scene_image", "shot_image", "conversation_uploads"];
+    const filters: AssetFilter[] = MENTION_CATEGORY_FILTERS;
     const missingFilters = filters.filter((filter) => !loadedAssetFilters[filter] || !assets.some((asset) => isAssetInFilter(asset, filter)));
     if (missingFilters.length === 0 || assetsLoadStatus === "loading") return;
     setAssetsLoadStatus("loading");
     try {
-      const loadedFilters: Partial<Record<AssetFilter, boolean>> = {};
-      for (const filter of missingFilters) {
+      const results = await Promise.all(missingFilters.map(async (filter) => {
         const { data } = await fetchJsonWithRetry<{ state?: WorkspaceStatePayload | null }>(`/api/workspace-state?assetsOnly=1&assetFilter=${encodeURIComponent(filter)}&assetOffset=0&assetLimit=30`, { cache: "no-store" }, 2, 45_000);
-        const state = data.state ?? {};
-        const nextAssets = Array.isArray(state.assets)
-          ? applyAssetGenerationSystemNames(applySessionMediaSystemNamesToAssets(normalizeStoredAssets(state.assets).map((asset) => replaceAssetMediaUrls(asset, legacyMediaUrlReplacements)), sessionsRef.current))
-          : [];
-        setAssets((current) => {
-          const incomingByKey = new Map(nextAssets.map((asset) => [getAssetIdentityKey(asset), asset]));
-          const currentKeys = new Set(current.map(getAssetIdentityKey));
-          const updatedCurrent = current.map((asset) => incomingByKey.get(getAssetIdentityKey(asset)) ?? asset);
-          return [...updatedCurrent, ...nextAssets.filter((asset) => !currentKeys.has(getAssetIdentityKey(asset)))];
-        });
-        if (state.assetCounts && typeof state.assetCounts === "object") setAssetCounts(state.assetCounts);
-        loadedFilters[filter] = true;
+        return { filter, state: data.state ?? {} };
+      }));
+      const merged: AssetItem[] = [];
+      let mergedCounts: Record<string, number> | undefined;
+      for (const { state } of results) {
+        if (Array.isArray(state.assets)) {
+          merged.push(...applyAssetGenerationSystemNames(applySessionMediaSystemNamesToAssets(normalizeStoredAssets(state.assets).map((asset) => replaceAssetMediaUrls(asset, legacyMediaUrlReplacements)), sessionsRef.current)));
+        }
+        if (state.assetCounts && typeof state.assetCounts === "object") mergedCounts = { ...mergedCounts, ...state.assetCounts };
       }
-      setLoadedAssetFilters((current) => ({ ...current, ...loadedFilters }));
+      setAssets((current) => {
+        const incomingByKey = new Map(merged.map((asset) => [getAssetIdentityKey(asset), asset]));
+        const currentKeys = new Set(current.map(getAssetIdentityKey));
+        const updatedCurrent = current.map((asset) => incomingByKey.get(getAssetIdentityKey(asset)) ?? asset);
+        return [...updatedCurrent, ...merged.filter((asset) => !currentKeys.has(getAssetIdentityKey(asset)))];
+      });
+      if (mergedCounts) setAssetCounts((current) => ({ ...current, ...mergedCounts }));
+      setLoadedAssetFilters((current) => ({ ...current, ...Object.fromEntries(missingFilters.map((filter) => [filter, true])) }));
       setAssetsLoadStatus("loaded");
     } catch {
-      setAssetsLoadStatus(assets.some((asset) => mentionAssetTypes.some((type) => isMentionGroupAsset(asset, type))) ? "loaded" : "failed");
+      setAssetsLoadStatus(assets.some((asset) => MENTION_CATEGORY_FILTERS.some((filter) => isAssetInFilter(asset, filter))) ? "loaded" : "failed");
       showInputTip("资产引用加载失败，请稍后重试");
     }
   }, [assets, assetsLoadStatus, loadedAssetFilters, showInputTip]);
 
-  // Scroll-load more assets for one @-mention group so the popup list can grow past the initial
-  // page (matching what the asset library shows). Best-effort: failures are ignored silently.
-  const loadMoreMentionGroup = useCallback(async (groupType: MentionAssetGroupType, loadedCount: number) => {
-    if (mentionLoadingMore) return;
-    const filter: AssetFilter = groupType === "conversation_upload" ? "conversation_uploads" : groupType;
-    setMentionLoadingMore(true);
+  // 「@引用资产」按标签懒加载一页（offset=0 首屏；offset>0 下拉加载更多）。合并进共享 assets，
+  // 更新计数/已加载标记/分页状态。首次只加载当前标签一屏 + 服务端返回的全部标签计数。
+  const loadMentionFilterPage = useCallback(async (filter: AssetFilter, offset = 0) => {
+    setMentionFilterPaging((current) => ({ ...current, [filter]: { loading: true, hasMore: current[filter]?.hasMore ?? false, nextOffset: current[filter]?.nextOffset ?? 0 } }));
     try {
-      const { data } = await fetchJsonWithRetry<{ state?: WorkspaceStatePayload | null }>(`/api/workspace-state?assetsOnly=1&assetFilter=${encodeURIComponent(filter)}&assetOffset=${loadedCount}&assetLimit=30`, { cache: "no-store" }, 2, 45_000);
+      const { data } = await fetchJsonWithRetry<{ state?: WorkspaceStatePayload | null }>(`/api/workspace-state?assetsOnly=1&assetFilter=${encodeURIComponent(filter)}&assetOffset=${offset}&assetLimit=30`, { cache: "no-store" }, 2, 45_000);
       const state = data.state ?? {};
       const nextAssets = Array.isArray(state.assets)
         ? applyAssetGenerationSystemNames(applySessionMediaSystemNamesToAssets(normalizeStoredAssets(state.assets).map((asset) => replaceAssetMediaUrls(asset, legacyMediaUrlReplacements)), sessionsRef.current))
         : [];
-      if (state.assetCounts && typeof state.assetCounts === "object") setAssetCounts(state.assetCounts);
+      if (state.assetCounts && typeof state.assetCounts === "object") setAssetCounts((current) => ({ ...current, ...state.assetCounts }));
       setAssets((current) => {
-        const existingKeys = new Set(current.map(getAssetIdentityKey));
-        return [...current, ...nextAssets.filter((asset) => !existingKeys.has(getAssetIdentityKey(asset)))];
+        const incomingByKey = new Map(nextAssets.map((asset) => [getAssetIdentityKey(asset), asset]));
+        const currentKeys = new Set(current.map(getAssetIdentityKey));
+        const updatedCurrent = current.map((asset) => incomingByKey.get(getAssetIdentityKey(asset)) ?? asset);
+        return [...updatedCurrent, ...nextAssets.filter((asset) => !currentKeys.has(getAssetIdentityKey(asset)))];
       });
+      setLoadedAssetFilters((current) => ({ ...current, [filter]: true }));
+      setMentionFilterPaging((current) => ({ ...current, [filter]: { loading: false, hasMore: Boolean(state.assetsHasMore), nextOffset: Math.floor(Number(state.assetsNextOffset ?? offset + nextAssets.length)) } }));
     } catch {
-      // ignore; scroll-load is best-effort
-    } finally {
-      setMentionLoadingMore(false);
+      setMentionFilterPaging((current) => ({ ...current, [filter]: { loading: false, hasMore: current[filter]?.hasMore ?? false, nextOffset: current[filter]?.nextOffset ?? 0 } }));
     }
-  }, [mentionLoadingMore]);
+  }, []);
+  const loadMoreMentionGroup = useCallback(async (groupType: AssetFilter, loadedCount: number) => {
+    if (mentionFilterPaging[groupType]?.loading) return;
+    await loadMentionFilterPage(groupType, loadedCount);
+  }, [loadMentionFilterPage, mentionFilterPaging]);
 
   const loadWorkflowAssets = useCallback(async (workflowId: string) => {
     if (!workflowId) return;
@@ -13713,32 +13868,81 @@ export function ChatWorkbench() {
       window.removeEventListener("resize", updateAssetGenerateReferenceScrollState);
     };
   }, [assetGenerateReferenceImages.length, isCharacterGenerateOpen, updateAssetGenerateReferenceScrollState]);
-  const hasMentionAssetImages = assets.some((asset) => mentionAssetTypes.some((type) => isMentionGroupAsset(asset, type)));
+  const hasMentionAssetImages = assets.some((asset) => MENTION_CATEGORY_FILTERS.some((filter) => isAssetInFilter(asset, filter)));
   const atAssetSearch = activeAtQuery?.query ?? "";
   const atAssetGroups = activeAtQuery || isAtAssetMenuOpen
-    ? mentionAssetTypes.map((type) => ({
-        type,
-        assets: assets.filter((asset) => isMentionGroupAsset(asset, type) && asset.name.includes(atAssetSearch)),
+    ? MENTION_CATEGORIES.map((cat) => ({
+        type: cat.value,
+        assets: assets.filter((asset) => isAssetInFilter(asset, cat.value) && asset.name.includes(atAssetSearch)),
       }))
     : [];
   const hasAtAssetOptions = atAssetGroups.some((group) => group.assets.length > 0) && isAtAssetMenuOpen;
-  const activeAtAssetGroup = atAssetGroups.find((group) => group.type === atAssetFilter && group.assets.length > 0) ?? atAssetGroups.find((group) => group.assets.length > 0);
+  const activeAtAssetGroup = atAssetGroups.find((group) => group.type === atAssetFilter) ?? atAssetGroups.find((group) => group.assets.length > 0) ?? atAssetGroups[0];
   const insertAssetReference = (asset: AssetItem) => {
+    const selection = getCurrentDraftSelection();
+    const insertBase = activeAtQuery ? activeInput.slice(0, activeAtQuery.index) : activeInput.slice(0, selection.start);
+    const insertSuffix = activeAtQuery ? activeInput.slice(activeAtQuery.cursor) : activeInput.slice(selection.end);
+    if (isVideoAsset(asset) || isAudioAsset(asset)) {
+      const kind = isAudioAsset(asset) ? "audio" : "video";
+      const rule = currentUploadRule[kind];
+      setIsAtAssetMenuOpen(false);
+      if (!rule.enabled) {
+        showInputTip(kind === "audio" ? "当前模型不支持上传音频" : "当前模型不支持上传视频");
+        return;
+      }
+      const already = activeUploadedFiles.some((file) => typeof file !== "string" && Boolean(file.url) && normalizeMediaUrlForMatch(file.url!) === normalizeMediaUrlForMatch(asset.url));
+      if (already) {
+        addActiveUploadedMediaReference(asset, kind, {}, { draftBase: insertBase, draftSuffix: insertSuffix });
+        focusEditorAt(Math.min(MAX_DRAFT_INPUT_LENGTH, insertBase.length + `@${asset.name} `.length));
+        return;
+      }
+      const existingCount = activeUploadedFiles.filter((file) => getUploadedFileMediaKind(file) === kind).length;
+      if (existingCount >= rule.maxCount) {
+        showInputTip(kind === "audio" ? `当前模型最多支持 ${rule.maxCount} 个参考音频` : `当前模型最多支持 ${rule.maxCount} 个参考视频`);
+        return;
+      }
+      const kindLabel = kind === "audio" ? "音频" : "视频";
+      void (async () => {
+        let media: { durationSeconds?: number; dimensions?: ImageDimensions };
+        try {
+          media = await readMediaMetadataFromUrl(getStaticMediaUrl(asset.url) ?? asset.url, kind);
+        } catch {
+          showInputTip(`${kindLabel}信息读取失败`);
+          return;
+        }
+        const durationError = validateMediaDuration(kindLabel, media.durationSeconds, rule);
+        if (durationError) { showInputTip(durationError); return; }
+        if (kind === "video") {
+          const dimensionError = validateReferenceVideoDimensions(media.dimensions);
+          if (dimensionError) { showInputTip(dimensionError); return; }
+        }
+        const existingDuration = activeUploadedFiles.filter((file) => getUploadedFileMediaKind(file) === kind).reduce((sum, file) => sum + getUploadedMediaDuration(file), 0);
+        if (rule.maxTotalSeconds !== undefined && existingDuration + (media.durationSeconds ?? 0) > rule.maxTotalSeconds + MEDIA_DURATION_EPSILON_SECONDS) {
+          showInputTip(kind === "audio" ? `参考音频总时长不能超过 ${rule.maxTotalSeconds} 秒` : `参考视频总时长不能超过 ${rule.maxTotalSeconds} 秒`);
+          return;
+        }
+        addActiveUploadedMediaReference(asset, kind, media, { draftBase: insertBase, draftSuffix: insertSuffix });
+        focusEditorAt(Math.min(MAX_DRAFT_INPUT_LENGTH, insertBase.length + `@${asset.name} `.length));
+      })();
+      return;
+    }
     if (activeUploadedImages.length >= currentMaxReferenceImages && !activeUploadedImages.some((image) => image.url === asset.url)) {
       showInputTip(`当前模型最多支持 ${currentMaxReferenceImages} 张参考图，不能上传更多图片`);
       setIsAtAssetMenuOpen(false);
       return;
     }
 
-    const selection = getCurrentDraftSelection();
-    const insertBase = activeAtQuery ? activeInput.slice(0, activeAtQuery.index) : activeInput.slice(0, selection.start);
-    const insertSuffix = activeAtQuery ? activeInput.slice(activeAtQuery.cursor) : activeInput.slice(selection.end);
     const referenceText = `@${asset.name} `;
     addActiveUploadedImages([toUploadedAssetReference(asset)], { draftBase: insertBase, draftSuffix: insertSuffix, insertReferenceText: true });
     setIsAtAssetMenuOpen(false);
     focusEditorAt(Math.min(MAX_DRAFT_INPUT_LENGTH, insertBase.length + referenceText.length));
   };
   const insertCharacterAssetReference = (asset: AssetItem) => {
+    if (isVideoAsset(asset) || isAudioAsset(asset)) {
+      setIsCharacterAtAssetMenuOpen(false);
+      showInputTip(isAudioAsset(asset) ? "当前模型不支持上传音频" : "当前模型不支持上传视频");
+      return;
+    }
     if (assetGenerateReferenceImages.length >= assetGenerateMaxReferenceImages && !assetGenerateReferenceImages.some((image) => image.url === asset.url)) {
       showInputTip(`当前模型最多支持 ${assetGenerateMaxReferenceImages} 张参考图，不能上传更多图片`);
       setIsCharacterAtAssetMenuOpen(false);
@@ -13768,21 +13972,9 @@ export function ChatWorkbench() {
     focusCharacterEditorAt(Math.min(MAX_DRAFT_INPUT_LENGTH, insertBase.length + referenceText.length));
   };
   const openCharacterMentionAssetMenu = () => {
-    const needsMentionAssetLoad = ["character_image", "scene_image", "shot_image", "conversation_uploads"].some((filter) => !loadedAssetFilters[filter as AssetFilter] || !assets.some((asset) => isAssetInFilter(asset, filter as AssetFilter)));
-    if (assetsLoadStatus !== "loaded" || needsMentionAssetLoad) {
-      setCharacterPromptCursorOffset(getCurrentCharacterPromptCursor());
-      setIsCharacterAtAssetMenuOpen(true);
-      void loadMentionAssetFilters();
-      return;
-    }
-    if (!hasMentionAssetImages) {
-      setIsCharacterAtAssetMenuOpen(false);
-      showInputTip("当前资产库没有图片");
-      return;
-    }
-
     setCharacterPromptCursorOffset(getCurrentCharacterPromptCursor());
     setIsCharacterAtAssetMenuOpen(true);
+    if (!loadedAssetFilters[characterAtAssetFilter] && !mentionFilterPaging[characterAtAssetFilter]?.loading) void loadMentionFilterPage(characterAtAssetFilter, 0);
   };
   const resetCharacterGenerateWorkspace = useCallback(() => {
     setActiveAssetGenerateJobId("");
@@ -14132,19 +14324,8 @@ export function ChatWorkbench() {
   };
   const openMentionAssetMenu = () => {
     closeAllPopupMenus("mention");
-    const needsMentionAssetLoad = ["character_image", "scene_image", "shot_image", "conversation_uploads"].some((filter) => !loadedAssetFilters[filter as AssetFilter] || !assets.some((asset) => isAssetInFilter(asset, filter as AssetFilter)));
-    if (assetsLoadStatus !== "loaded" || needsMentionAssetLoad) {
-      setIsAtAssetMenuOpen(true);
-      void loadMentionAssetFilters();
-      return;
-    }
-    if (!hasMentionAssetImages) {
-      setIsAtAssetMenuOpen(false);
-      showInputTip("当前资产库没有图片");
-      return;
-    }
-
     setIsAtAssetMenuOpen(true);
+    if (!loadedAssetFilters[atAssetFilter] && !mentionFilterPaging[atAssetFilter]?.loading) void loadMentionFilterPage(atAssetFilter, 0);
   };
   const getDefaultDocumentPreviewWidth = useCallback(() => {
     const sidebarWidth = isSidebarVisible ? isSidebarCollapsed ? 80 : 262 : 0;
@@ -14302,7 +14483,15 @@ export function ChatWorkbench() {
                   </button>
                 );
               })}
-              {[{ label: "上传图片", value: "conversation_uploads" as const, count: getAssetCount("conversation_uploads", assets.filter(isConversationUploadedAsset).length), icon: ImageUploadLineIcon }].map((item) => {
+              {!isSidebarCollapsed ? <div className="mx-3 my-3 h-px bg-[#e5e5e5]" aria-hidden="true" /> : <div className="mx-auto my-2 h-px w-12 bg-[#e5e5e5]" aria-hidden="true" />}
+              {!isSidebarCollapsed ? <div className="flex items-center px-3 pb-1 pt-4 text-xs text-[#8a8a8a]">
+                <span className="inline-flex items-center gap-1.5"><span className="h-1.5 w-1.5 rounded-full bg-[#b7b7b7]" aria-hidden="true" />上传的资产</span>
+              </div> : <div className="h-2" />}
+              {[
+                { label: "上传图片", value: "conversation_uploads" as const, count: getAssetCount("conversation_uploads", assets.filter((asset) => isUploadedMediaAsset(asset) && !isVideoAsset(asset) && !isAudioAsset(asset) && !isAssetGenerationAsset(asset) && asset.type !== "trash").length), icon: RiImageLine },
+                { label: "上传视频", value: "upload_videos" as const, count: getAssetCount("upload_videos", assets.filter((asset) => isUploadedMediaAsset(asset) && isVideoAsset(asset)).length), icon: RiVideoOnLine },
+                { label: "上传音频", value: "upload_audios" as const, count: getAssetCount("upload_audios", assets.filter((asset) => isUploadedMediaAsset(asset) && isAudioAsset(asset)).length), icon: RiVoiceprintLine },
+              ].map((item) => {
                 const isActive = assetFilter === item.value;
                 const AssetIcon = item.icon;
 
@@ -14328,13 +14517,12 @@ export function ChatWorkbench() {
                   </button>
                 );
               })}
-              {!isSidebarCollapsed ? <div className="mx-3 my-3 h-px bg-[#e5e5e5]" aria-hidden="true" /> : <div className="mx-auto my-2 h-px w-12 bg-[#e5e5e5]" aria-hidden="true" />}
               {!isSidebarCollapsed ? <div className="flex items-center px-3 pb-1 pt-4 text-xs text-[#8a8a8a]">
                 <span className="inline-flex items-center gap-1.5"><span className="h-1.5 w-1.5 rounded-full bg-[#b7b7b7]" aria-hidden="true" />对话流资产</span>
               </div> : <div className="h-2" />}
               {[
                 { label: "生成图片", value: "conversation_images" as const, count: getAssetCount("conversation_images", assets.filter((asset) => isConversationAsset(asset) && !isVideoAsset(asset) && !isConversationUploadedAsset(asset)).length), icon: RiImageAiLine },
-                { label: "生成视频", value: "conversation_videos" as const, count: getAssetCount("conversation_videos", assets.filter((asset) => isConversationAsset(asset) && isVideoAsset(asset)).length), icon: RiFilmAiLine },
+                { label: "生成视频", value: "conversation_videos" as const, count: getAssetCount("conversation_videos", assets.filter((asset) => isConversationAsset(asset) && isVideoAsset(asset) && !isUploadedMediaAsset(asset)).length), icon: RiFilmAiLine },
               ].map((item) => {
                 const isActive = assetFilter === item.value;
                 const AssetIcon = item.icon;
@@ -14365,8 +14553,8 @@ export function ChatWorkbench() {
                 <span className="inline-flex items-center gap-1.5"><span className="h-1.5 w-1.5 rounded-full bg-[#b7b7b7]" aria-hidden="true" />工作流资产</span>
               </div> : <div className="h-2" />}
               {[
-                { label: "生成图片", value: "workflow_images" as const, count: getAssetCount("workflow_images", assets.filter((asset) => isWorkflowAsset(asset) && !isVideoAsset(asset)).length), icon: RiImageAiLine },
-                { label: "生成视频", value: "workflow_videos" as const, count: getAssetCount("workflow_videos", assets.filter((asset) => isWorkflowAsset(asset) && isVideoAsset(asset)).length), icon: RiFilmAiLine },
+                { label: "生成图片", value: "workflow_images" as const, count: getAssetCount("workflow_images", assets.filter((asset) => isWorkflowAsset(asset) && !isVideoAsset(asset) && !isUploadedMediaAsset(asset)).length), icon: RiImageAiLine },
+                { label: "生成视频", value: "workflow_videos" as const, count: getAssetCount("workflow_videos", assets.filter((asset) => isWorkflowAsset(asset) && isVideoAsset(asset) && !isUploadedMediaAsset(asset)).length), icon: RiFilmAiLine },
               ].map((item) => {
                 const isActive = assetFilter === item.value;
                 const AssetIcon = item.icon;
@@ -15001,16 +15189,14 @@ export function ChatWorkbench() {
                   leftSidebarVisible={isSidebarVisible}
                   onToggleLeftSidebar={toggleSidebarVisibility}
                   workflowAssets={assets.filter((asset) => isWorkflowAsset(asset) && (asset.workflowId || asset.sessionId) === activeWorkflow.id).map((asset) => ({ id: asset.id, name: asset.name, url: asset.url, posterUrl: asset.posterUrl, kind: isVideoAsset(asset) ? "video" : "image", nodeId: asset.workflowNodeId, sourcePrompt: asset.sourcePrompt, model: asset.model as ModelName | undefined, ratio: asset.previewMeta?.ratio, resolution: asset.previewMeta?.resolution, duration: asset.previewMeta?.duration, dimensions: getPreviewMetaDimensions(asset.previewMeta) }))}
-                  referenceAssets={[
-                    ...assets.filter((asset) => isAssetInFilter(asset, "character_image")).map((asset) => ({ id: asset.id, name: asset.name, url: asset.url, thumbnailUrl: getMediaThumbnailUrl(asset.url), groupType: "character_image", groupLabel: mentionAssetTypeLabels.character_image })),
-                    ...assets.filter((asset) => isAssetInFilter(asset, "scene_image")).map((asset) => ({ id: asset.id, name: asset.name, url: asset.url, thumbnailUrl: getMediaThumbnailUrl(asset.url), groupType: "scene_image", groupLabel: mentionAssetTypeLabels.scene_image })),
-                    ...assets.filter((asset) => isAssetInFilter(asset, "shot_image")).map((asset) => ({ id: asset.id, name: asset.name, url: asset.url, thumbnailUrl: getMediaThumbnailUrl(asset.url), groupType: "shot_image", groupLabel: mentionAssetTypeLabels.shot_image })),
-                    ...assets.filter((asset) => isAssetInFilter(asset, "conversation_uploads")).map((asset) => ({ id: asset.id, name: asset.name, url: asset.url, thumbnailUrl: getMediaThumbnailUrl(asset.url), groupType: "conversation_upload", groupLabel: mentionAssetTypeLabels.conversation_upload })),
-                  ]}
+                  referenceAssets={MENTION_CATEGORIES.flatMap((cat) => assets.filter((asset) => isAssetInFilter(asset, cat.value)).map((asset) => { const item = assetToMentionPickerItem(asset); return { id: asset.id, name: asset.name, url: asset.url, thumbnailUrl: item.thumbnailUrl, kind: item.kind, groupType: cat.value, groupLabel: cat.label }; }))}
                   referenceAssetsLoadStatus={assetsLoadStatus}
-                  referenceAssetCounts={{ character_image: Number(assetCounts.character_image ?? 0), scene_image: Number(assetCounts.scene_image ?? 0), shot_image: Number(assetCounts.shot_image ?? 0), conversation_upload: Number(assetCounts.conversation_uploads ?? 0) }}
+                  referenceAssetCounts={Object.fromEntries(MENTION_CATEGORIES.map((cat) => [cat.value, Number(assetCounts[cat.value] ?? 0)]))}
                   onLoadReferenceAssets={() => { void loadMentionAssetFilters(); }}
-                  onLoadMoreReferenceAssets={(groupType, loadedCount) => { void loadMoreMentionGroup(groupType as MentionAssetGroupType, loadedCount); }}
+                  onLoadReferenceFilter={(value, offset) => { if (offset > 0 || (!loadedAssetFilters[value as AssetFilter] && !mentionFilterPaging[value as AssetFilter]?.loading)) void loadMentionFilterPage(value as AssetFilter, offset); }}
+                  referenceFilterLoading={Object.fromEntries(MENTION_CATEGORIES.map((cat) => [cat.value, mentionFilterPaging[cat.value]?.loading ?? false]))}
+                  referenceFilterNextOffset={Object.fromEntries(MENTION_CATEGORIES.map((cat) => [cat.value, mentionFilterPaging[cat.value]?.nextOffset ?? 0]))}
+                  onLoadMoreReferenceAssets={(groupType, loadedCount) => { void loadMoreMentionGroup(groupType as AssetFilter, loadedCount); }}
                   onExternalFilesDrop={() => {
                     clearDragUploadOverlay();
                   }}
@@ -15109,12 +15295,17 @@ export function ChatWorkbench() {
                                   const key = normalizeMediaUrlForMatch(asset.url);
                                   const selected = Boolean(assetImportSelected[key]);
                                   const isVideo = isVideoAsset(asset);
+                                  const isAudio = isAudioAsset(asset);
                                   const localPoster = getLocalVideoPosterUrl(asset.url);
-                                  const poster = isVideo ? (asset.posterUrl ? getMediaThumbnailUrl(asset.posterUrl) : localPoster ? getMediaThumbnailUrl(localPoster) : undefined) : getMediaThumbnailUrl(asset.url);
+                                  const poster = isAudio ? undefined : isVideo ? (asset.posterUrl ? getMediaThumbnailUrl(asset.posterUrl) : localPoster ? getMediaThumbnailUrl(localPoster) : undefined) : getMediaThumbnailUrl(asset.url);
                                   return (
                                     <button key={asset.id} type="button" onClick={() => toggleAssetImportSelection(asset)} className="group relative aspect-square overflow-hidden bg-[#f4f4f4] text-left">
-                                      {poster ? <img src={poster} alt={asset.systemName || asset.name} draggable={false} className="h-full w-full object-cover" /> : <div className="flex h-full w-full items-center justify-center text-[12px] text-[#aaa]">无预览</div>}
-                                      {isVideo ? <span className="pointer-events-none absolute left-2 top-2 rounded bg-black/55 px-1 py-0.5 text-[10px] text-white">视频</span> : null}
+                                      {isAudio ? (
+                                        <div className="h-full w-full overflow-hidden"><AudioWaveformPlayer key={asset.url} url={getStaticMediaUrl(asset.url) ?? asset.url} variant="card" /></div>
+                                      ) : isVideo ? (
+                                        poster ? <img src={poster} alt={asset.systemName || asset.name} draggable={false} className="h-full w-full object-cover" /> : <video src={`${getStaticMediaUrl(asset.url) ?? asset.url}#t=0.1`} muted playsInline preload="metadata" className="h-full w-full object-cover" />
+                                      ) : poster ? <img src={poster} alt={asset.systemName || asset.name} draggable={false} className="h-full w-full object-cover" /> : <div className="flex h-full w-full items-center justify-center text-[12px] text-[#aaa]">无预览</div>}
+                                      {isVideo ? <span className="pointer-events-none absolute left-1/2 top-1/2 flex h-11 w-11 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-black/42 text-white shadow-[0_8px_24px_rgba(0,0,0,0.22)] backdrop-blur-[4px]"><RiPlayLargeFill className="ml-0.5 h-5 w-5" aria-hidden="true" /></span> : null}
                                       <span className={`absolute right-2 top-2 flex h-5 w-5 items-center justify-center rounded-full border ${selected ? "border-[#2f80ed] bg-[#2f80ed] text-white" : "border-white bg-black/25 text-transparent"}`}><RiCheckLine className="h-3.5 w-3.5" /></span>
                                       {selected ? <span className="pointer-events-none absolute inset-0 border-2 border-[#2f80ed]" /> : null}
                                       <div className="pointer-events-none absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-black/75 to-transparent" />
@@ -15695,7 +15886,7 @@ export function ChatWorkbench() {
                               </>
                             ) : (
                               <div className="flex h-full w-full items-center justify-center text-[#8a8a8a]">
-                                {mediaKind === "audio" ? <RiMusic2Line className="h-7 w-7" aria-hidden="true" /> : <RiVideoLine className="h-7 w-7" aria-hidden="true" />}
+                                {mediaKind === "audio" ? <RiVoiceprintLine className="h-7 w-7" aria-hidden="true" /> : <RiVideoLine className="h-7 w-7" aria-hidden="true" />}
                               </div>
                             )}
                             <button
@@ -15748,44 +15939,20 @@ export function ChatWorkbench() {
                   <span>资产，描述生成内容...</span>
                 </div>
               ) : null}
-              {isAtAssetMenuOpen && (hasAtAssetOptions || assetsLoadStatus === "loading") ? (
-                <div onClick={(event) => event.stopPropagation()} onScroll={(event) => { const el = event.currentTarget; if (!atAssetSearch && activeAtAssetGroup && el.scrollTop + el.clientHeight >= el.scrollHeight - 48) { const serverCount = Number(assetCounts[mentionGroupToAssetCountKey[activeAtAssetGroup.type]]); if (Number.isFinite(serverCount) && activeAtAssetGroup.assets.length < serverCount) void loadMoreMentionGroup(activeAtAssetGroup.type, activeAtAssetGroup.assets.length); } }} className="absolute bottom-full left-2 z-50 mb-4 max-h-80 w-[380px] overflow-y-auto rounded-[12px] bg-white p-2 shadow-[0_18px_44px_rgba(0,0,0,0.14)]">
-                  <div className="px-2 pb-2 text-[12px] text-[#8a8a8a]">引用资产</div>
-                  {assetsLoadStatus === "loading" ? <div className="flex min-h-[180px] items-center justify-center gap-2 text-[13px] font-medium text-[#367cee]"><LoadingSpinner size={18} /><span>加载中...</span></div> : null}
-                  {assetsLoadStatus !== "loading" ? <>
-                  <div className="mb-2 flex flex-nowrap gap-1.5 px-1">
-                    {atAssetGroups.map((group) => {
-                      const serverCount = Number(assetCounts[mentionGroupToAssetCountKey[group.type]]);
-                      const count = Number.isFinite(serverCount) ? Math.max(serverCount, group.assets.length) : group.assets.length;
-                      const isActive = activeAtAssetGroup?.type === group.type;
-
-                      return (
-                        <button
-                          key={group.type}
-                          type="button"
-                          disabled={count === 0}
-                          onClick={() => setAtAssetFilter(group.type)}
-                            className={isActive ? "h-7 shrink-0 whitespace-nowrap rounded-[8px] bg-[#111111] px-2 text-[12px] font-medium text-white disabled:cursor-not-allowed disabled:opacity-40" : "h-7 shrink-0 whitespace-nowrap rounded-[8px] bg-[#f4f4f4] px-2 text-[12px] font-medium text-[#666666] transition hover:bg-[#ececec] disabled:cursor-not-allowed disabled:opacity-40"}
-                        >
-                          <span className="whitespace-nowrap text-[12px] leading-none">{mentionAssetTypeLabels[group.type]}({count})</span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                  {activeAtAssetGroup?.assets.map((asset) => (
-                    <button key={asset.id} type="button" onClick={() => insertAssetReference(asset)} className="flex h-12 w-full items-center gap-3 rounded-[8px] px-2 text-left transition hover:bg-[#f5f5f5]">
-                      <div className="h-8 w-8 overflow-hidden rounded-[8px] bg-[#eeeeee]">
-                        <HoverImagePreview src={asset.url} alt={asset.name} wrapperClassName="block h-full w-full">
-                          <Image src={getMediaThumbnailUrl(asset.url)} alt={asset.name} width={32} height={32} unoptimized className="h-full w-full object-cover" style={{ width: "100%", height: "100%" }} />
-                        </HoverImagePreview>
-                      </div>
-                      <div className="min-w-0">
-                        <div className="truncate text-[13px] font-medium text-[#222222]">@{asset.name}</div>
-                        <div className="text-[11px] text-[#999999]">{activeAtAssetGroup ? mentionAssetTypeLabels[activeAtAssetGroup.type] : ""}</div>
-                      </div>
-                    </button>
-                  ))}
-                  </> : null}
+              {isAtAssetMenuOpen ? (
+                <div onClick={(event) => event.stopPropagation()} className="absolute bottom-full left-2 z-50 mb-4">
+                  <AssetMentionPicker
+                    categories={MENTION_CATEGORIES}
+                    activeValue={atAssetFilter}
+                    onSelectCategory={(value) => { setAtAssetFilter(value as AssetFilter); if (!loadedAssetFilters[value as AssetFilter] && !mentionFilterPaging[value as AssetFilter]?.loading) void loadMentionFilterPage(value as AssetFilter, 0); }}
+                    itemsFor={(value) => (atAssetGroups.find((group) => group.type === value)?.assets ?? []).map(assetToMentionPickerItem)}
+                    counts={assetCounts}
+                    loading={(mentionFilterPaging[atAssetFilter]?.loading ?? false) && Object.keys(assetCounts).length === 0}
+                    activeLoading={mentionFilterPaging[atAssetFilter]?.loading ?? false}
+                    getMediaSrc={(url) => getStaticMediaUrl(url) ?? url}
+                    onScrollLoadMore={(value, loadedCount) => { if (!atAssetSearch) void loadMentionFilterPage(value as AssetFilter, mentionFilterPaging[value as AssetFilter]?.nextOffset ?? loadedCount); }}
+                    onPick={(item) => { const asset = (atAssetGroups.find((group) => group.type === atAssetFilter)?.assets ?? []).find((candidate) => candidate.id === item.id); if (asset) insertAssetReference(asset); }}
+                  />
                 </div>
               ) : null}
               <PlainMentionEditor
@@ -16140,38 +16307,20 @@ export function ChatWorkbench() {
                         <span>清空输入框</span>
                       </button>
                     </div>
-                    {isCharacterAtAssetMenuOpen && (hasCharacterAtAssetOptions || assetsLoadStatus === "loading") && !isCharacterGenerateInputDisabled ? (
-                      <div onClick={(event) => event.stopPropagation()} onScroll={(event) => { const el = event.currentTarget; if (!characterAtAssetSearch && activeCharacterAtAssetGroup && el.scrollTop + el.clientHeight >= el.scrollHeight - 48) { const serverCount = Number(assetCounts[mentionGroupToAssetCountKey[activeCharacterAtAssetGroup.type]]); if (Number.isFinite(serverCount) && activeCharacterAtAssetGroup.assets.length < serverCount) void loadMoreMentionGroup(activeCharacterAtAssetGroup.type, activeCharacterAtAssetGroup.assets.length); } }} className="absolute right-0 top-10 z-[90] max-h-80 w-[380px] overflow-y-auto rounded-[12px] bg-white p-2 shadow-[0_18px_44px_rgba(0,0,0,0.14)]">
-                        <div className="px-2 pb-2 text-[12px] text-[#8a8a8a]">引用资产</div>
-                        {assetsLoadStatus === "loading" ? <div className="flex min-h-[180px] items-center justify-center gap-2 text-[13px] font-medium text-[#367cee]"><LoadingSpinner size={18} /><span>加载中...</span></div> : null}
-                        {assetsLoadStatus !== "loading" ? <>
-                        <div className="mb-2 flex flex-nowrap gap-1.5 px-1">
-                          {characterAtAssetGroups.map((group) => {
-                            const serverCount = Number(assetCounts[mentionGroupToAssetCountKey[group.type]]);
-                            const count = Number.isFinite(serverCount) ? Math.max(serverCount, group.assets.length) : group.assets.length;
-                            const isActive = activeCharacterAtAssetGroup?.type === group.type;
-
-                            return (
-                              <button key={group.type} type="button" disabled={count === 0} onClick={() => setCharacterAtAssetFilter(group.type)} className={isActive ? "h-7 shrink-0 whitespace-nowrap rounded-[8px] bg-[#111111] px-2 text-[12px] font-medium text-white disabled:cursor-not-allowed disabled:opacity-40" : "h-7 shrink-0 whitespace-nowrap rounded-[8px] bg-[#f4f4f4] px-2 text-[12px] font-medium text-[#666666] transition hover:bg-[#ececec] disabled:cursor-not-allowed disabled:opacity-40"}>
-                                <span className="whitespace-nowrap text-[12px] leading-none">{mentionAssetTypeLabels[group.type]}({count})</span>
-                              </button>
-                            );
-                          })}
-                        </div>
-                        {activeCharacterAtAssetGroup?.assets.map((asset) => (
-                          <button key={asset.id} type="button" onClick={() => insertCharacterAssetReference(asset)} className="flex h-12 w-full items-center gap-3 rounded-[8px] px-2 text-left transition hover:bg-[#f5f5f5]">
-                            <div className="h-8 w-8 overflow-hidden rounded-[8px] bg-[#eeeeee]">
-                              <HoverImagePreview src={asset.url} alt={asset.name} wrapperClassName="block h-full w-full">
-                                <Image src={getMediaThumbnailUrl(asset.url)} alt={asset.name} width={32} height={32} unoptimized className="h-full w-full object-cover" style={{ width: "100%", height: "100%" }} />
-                              </HoverImagePreview>
-                            </div>
-                            <div className="min-w-0">
-                              <div className="truncate text-[13px] font-medium text-[#222222]">@{asset.name}</div>
-                              <div className="text-[11px] text-[#999999]">{activeCharacterAtAssetGroup ? mentionAssetTypeLabels[activeCharacterAtAssetGroup.type] : ""}</div>
-                            </div>
-                          </button>
-                        ))}
-                        </> : null}
+                    {isCharacterAtAssetMenuOpen && !isCharacterGenerateInputDisabled ? (
+                      <div onClick={(event) => event.stopPropagation()} className="absolute right-0 top-10 z-[90]">
+                        <AssetMentionPicker
+                          categories={CHARACTER_MENTION_CATEGORIES}
+                          activeValue={characterAtAssetFilter}
+                          onSelectCategory={(value) => { setCharacterAtAssetFilter(value as AssetFilter); if (!loadedAssetFilters[value as AssetFilter] && !mentionFilterPaging[value as AssetFilter]?.loading) void loadMentionFilterPage(value as AssetFilter, 0); }}
+                          itemsFor={(value) => (characterAtAssetGroups.find((group) => group.type === value)?.assets ?? []).map(assetToMentionPickerItem)}
+                          counts={assetCounts}
+                          loading={(mentionFilterPaging[characterAtAssetFilter]?.loading ?? false) && Object.keys(assetCounts).length === 0}
+                          activeLoading={mentionFilterPaging[characterAtAssetFilter]?.loading ?? false}
+                          getMediaSrc={(url) => getStaticMediaUrl(url) ?? url}
+                          onScrollLoadMore={(value, loadedCount) => { if (!characterAtAssetSearch) void loadMentionFilterPage(value as AssetFilter, mentionFilterPaging[value as AssetFilter]?.nextOffset ?? loadedCount); }}
+                          onPick={(item) => { const asset = (characterAtAssetGroups.find((group) => group.type === characterAtAssetFilter)?.assets ?? []).find((candidate) => candidate.id === item.id); if (asset) insertCharacterAssetReference(asset); }}
+                        />
                       </div>
                     ) : null}
                     {assetGenerateReferenceImages.length > 0 ? (

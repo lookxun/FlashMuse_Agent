@@ -230,6 +230,7 @@ function mediaStateToLegacyAsset(item: {
     id: item.id,
     mediaId: media.id,
     type,
+    mediaType: media.mediaType,
     name: isWorkflowTemporaryName ? media.systemName || media.initialName || item.currentName || "未命名资产" : item.currentName || media.initialName || media.systemName || "未命名资产",
     systemName: media.systemName || media.initialName || undefined,
     url: media.url,
@@ -257,20 +258,27 @@ function mediaStateToLegacyAsset(item: {
   };
 }
 
-type AssetFilterKey = "character_image" | "scene_image" | "shot_image" | "shot_video" | "other" | "trash" | "conversation_images" | "conversation_uploads" | "conversation_videos" | "workflow_images" | "workflow_uploads" | "workflow_videos";
+type AssetFilterKey = "character_image" | "scene_image" | "shot_image" | "shot_video" | "other" | "trash" | "conversation_images" | "conversation_uploads" | "conversation_videos" | "workflow_images" | "workflow_uploads" | "workflow_videos" | "upload_videos" | "upload_audios";
 
 function isAssetFilterKey(value: unknown): value is AssetFilterKey {
-  return typeof value === "string" && ["character_image", "scene_image", "shot_image", "shot_video", "other", "trash", "conversation_images", "conversation_uploads", "conversation_videos", "workflow_images", "workflow_uploads", "workflow_videos"].includes(value);
+  return typeof value === "string" && ["character_image", "scene_image", "shot_image", "shot_video", "other", "trash", "conversation_images", "conversation_uploads", "conversation_videos", "workflow_images", "workflow_uploads", "workflow_videos", "upload_videos", "upload_audios"].includes(value);
 }
+
+// 上传媒体的分类名（对话流 + 工作流）。文档分类刻意不放进任何可见过滤，永不显示。
+const UPLOAD_VIDEO_CATEGORIES = ["conversation_upload_videos", "workflow_upload_videos"];
+const UPLOAD_AUDIO_CATEGORIES = ["conversation_upload_audios", "workflow_upload_audios"];
+const UPLOAD_DOCUMENT_CATEGORIES = ["conversation_upload_documents", "workflow_upload_documents"];
 
 function getAssetPageWhere(userId: string, filter: AssetFilterKey): Prisma.UserAssetStateWhereInput {
   const visible: Prisma.UserAssetStateWhereInput = { userId, hiddenAt: null, mediaAsset: { archivedAt: null } };
   if (filter === "trash") return { ...visible, deletedAt: { not: null }, OR: [{ purgeAt: null }, { purgeAt: { gt: new Date() } }] };
   if (["character_image", "scene_image", "shot_image"].includes(filter)) return { ...visible, deletedAt: null, currentCategory: filter };
+  if (filter === "upload_videos") return { ...visible, deletedAt: null, currentCategory: { in: UPLOAD_VIDEO_CATEGORIES } };
+  if (filter === "upload_audios") return { ...visible, deletedAt: null, currentCategory: { in: UPLOAD_AUDIO_CATEGORIES } };
   if (filter === "workflow_uploads") return { ...visible, deletedAt: null, currentCategory: "workflow_uploads" };
   if (filter === "workflow_videos") return { ...visible, deletedAt: null, currentCategory: "workflow_videos" };
   if (filter === "workflow_images") return { ...visible, deletedAt: null, currentCategory: "workflow_images" };
-  if (filter === "conversation_uploads") return { ...visible, deletedAt: null, OR: [{ currentCategory: "conversation_uploads" }, { mediaAsset: { archivedAt: null, url: { contains: "/upload_image/" } } }] };
+  if (filter === "conversation_uploads") return { ...visible, deletedAt: null, OR: [{ currentCategory: "conversation_uploads" }, { currentCategory: "conversation_images", mediaAsset: { archivedAt: null, url: { contains: "/upload_image/" } } }] };
   if (filter === "conversation_videos") return { ...visible, deletedAt: null, currentCategory: "conversation_videos" };
   if (filter === "conversation_images") return { ...visible, deletedAt: null, currentCategory: "conversation_images", NOT: { mediaAsset: { url: { contains: "/upload_image/" } } } };
   return { ...visible, deletedAt: null, currentCategory: "conversation_images", NOT: { mediaAsset: { url: { contains: "/upload_image/" } } } };
@@ -318,7 +326,7 @@ async function getAssetCounts(userId: string) {
       mediaAsset: { select: { url: true } },
     },
   });
-  const counts: Record<string, number> = { character_image: 0, scene_image: 0, shot_image: 0, trash: 0, conversation_images: 0, conversation_uploads: 0, conversation_videos: 0, workflow_images: 0, workflow_uploads: 0, workflow_videos: 0, asset_generation: 0, conversation: 0, workflow: 0 };
+  const counts: Record<string, number> = { character_image: 0, scene_image: 0, shot_image: 0, trash: 0, conversation_images: 0, conversation_uploads: 0, conversation_videos: 0, workflow_images: 0, workflow_uploads: 0, workflow_videos: 0, upload_videos: 0, upload_audios: 0, asset_generation: 0, conversation: 0, workflow: 0 };
   const now = Date.now();
   for (const row of rows) {
     const url = row.mediaAsset.url;
@@ -330,6 +338,16 @@ async function getAssetCounts(userId: string) {
       counts.trash += 1;
       continue;
     }
+    // 上传视频/音频（对话流+工作流）单独归类；上传文档永不显示、不计数。
+    if (UPLOAD_VIDEO_CATEGORIES.includes(row.currentCategory)) {
+      counts.upload_videos += 1;
+      continue;
+    }
+    if (UPLOAD_AUDIO_CATEGORIES.includes(row.currentCategory)) {
+      counts.upload_audios += 1;
+      continue;
+    }
+    if (UPLOAD_DOCUMENT_CATEGORIES.includes(row.currentCategory)) continue;
     if (type === "character_image" || type === "scene_image" || type === "shot_image") {
       counts.asset_generation += 1;
       counts[type] = (counts[type] ?? 0) + 1;
