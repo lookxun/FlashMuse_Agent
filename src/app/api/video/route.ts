@@ -20,6 +20,7 @@ import { recordGenerationEvent } from "@/lib/analytics-events";
 import { createVideoJob } from "@/lib/generation-jobs";
 import { getBytePlusVideoPricePerMillionUsd } from "@/lib/models";
 import { Prisma } from "@prisma/client";
+import { validateMediaUploadMetadata } from "@/lib/media-upload-validation";
 
 type UsageMeta = {
   promptTokens?: number;
@@ -731,6 +732,33 @@ export async function POST(request: Request) {
 
     const user = await getCurrentUser();
     await assertUserCanUseCredits(user, "video");
+    // Reference video/audio URLs must be assets owned by this user. Do not trust client-side
+    // metadata or arbitrary URLs; persisted upload metadata is the generation authority.
+    const validateOwnedReferences = async (urls: string[], kind: "video" | "audio") => {
+      if (!user?.id || urls.length === 0) return undefined;
+      const plainUrls = urls.filter((url) => !url.startsWith("asset://"));
+      const assetIds = urls.filter((url) => url.startsWith("asset://")).map((url) => url.slice("asset://".length));
+      const assets = await prisma.mediaAsset.findMany({
+        where: { userId: user.id, mediaType: kind, archivedAt: null, normalizedUrl: { in: plainUrls.map(normalizeMediaUrlForMatch) }, userStates: { some: { userId: user.id, deletedAt: null, hiddenAt: null } } },
+        select: { normalizedUrl: true, durationSeconds: true, width: true, height: true },
+      });
+      if (assets.length !== plainUrls.length) return `参考${kind === "video" ? "视频" : "音频"}必须来自当前账号已上传的资产`;
+      if (assetIds.length > 0) {
+        const ownedAssetCount = await prisma.userAssetState.count({ where: { userId: user.id, deletedAt: null, hiddenAt: null, bytePlusAssetId: { in: assetIds }, mediaAsset: { mediaType: kind, archivedAt: null } } });
+        if (ownedAssetCount !== assetIds.length) return `参考${kind === "video" ? "视频" : "音频"}必须来自当前账号已上传的资产`;
+      }
+      const total = assets.reduce((sum, asset) => sum + (asset.durationSeconds ?? 0), 0);
+      if (total > 15.05) return `参考${kind === "video" ? "视频" : "音频"}总时长不能超过 15 秒`;
+      for (const asset of assets) {
+        const error = validateMediaUploadMetadata(kind, { durationSeconds: asset.durationSeconds ?? undefined, width: asset.width ?? undefined, height: asset.height ?? undefined });
+        if (error) return error;
+      }
+      return undefined;
+    };
+    const ownedVideoError = await validateOwnedReferences(referenceVideos, "video");
+    if (ownedVideoError) return NextResponse.json({ error: ownedVideoError }, { status: 400 });
+    const ownedAudioError = await validateOwnedReferences(referenceAudios, "audio");
+    if (ownedAudioError) return NextResponse.json({ error: ownedAudioError }, { status: 400 });
     const referenceMode = body.referenceMode;
     void appendGenerationDiagnosticsLog({
       event: "video-route-create-start",

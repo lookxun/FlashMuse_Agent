@@ -31,10 +31,12 @@ function getProviderLabel(modelId: string) {
   return "OpenRouter";
 }
 
-function getEditableUploadRuleRows(): EditableUploadRuleRow[] {
-  const openRouterImageRows = frontendImageGenerationModels.filter((model) => !model.id.startsWith("byteplus:")).map((model) => makeModelRow(model, "图片模型", { mode: "image", modelId: model.id, transportMode: "local-base64" }));
-  const openRouterVideoRows = videoGenerationModels.map((model) => makeModelRow(model, "视频模型", { mode: "video", modelId: model.id, transportMode: "local-base64" }));
-  const bytePlusImageRows = frontendImageGenerationModels.filter((model) => model.id.startsWith("byteplus:")).map((model) => makeModelRow(model, "图片模型", { mode: "image", modelId: model.id, transportMode: "local-base64" }));
+function getEditableUploadRuleRows(enabledImageModelIds: string[], enabledVideoModelIds: string[]): EditableUploadRuleRow[] {
+  const imageEnabled = new Set(enabledImageModelIds);
+  const videoEnabled = new Set(enabledVideoModelIds);
+  const openRouterImageRows = frontendImageGenerationModels.filter((model) => !model.id.startsWith("byteplus:") && imageEnabled.has(model.id)).map((model) => makeModelRow(model, "图片模型", { mode: "image", modelId: model.id, transportMode: "local-base64" }));
+  const openRouterVideoRows = videoGenerationModels.filter((model) => videoEnabled.has(model.id)).map((model) => makeModelRow(model, "视频模型", { mode: "video", modelId: model.id, transportMode: "local-base64" }));
+  const bytePlusImageRows = frontendImageGenerationModels.filter((model) => model.id.startsWith("byteplus:") && imageEnabled.has(model.id)).map((model) => makeModelRow(model, "图片模型", { mode: "image", modelId: model.id, transportMode: "local-base64" }));
   const bytePlusVideoRows: EditableUploadRuleRow[] = [
     { key: BYTEPLUS_SEEDANCE_UPLOAD_RULE_KEYS.reference, providerType: "BytePlus · 视频模型", modelName: "Seedance 2.0 / Fast / Mini · 融合模式", context: { mode: "video", modelId: "byteplus:video.seedance-2-0", transportMode: "local-base64", videoReferenceMode: "reference" } },
     { key: BYTEPLUS_SEEDANCE_UPLOAD_RULE_KEYS.firstFrame, providerType: "BytePlus · 视频模型", modelName: "Seedance 2.0 / Fast / Mini · 首帧模式", context: { mode: "video", modelId: "byteplus:video.seedance-2-0", transportMode: "local-base64", videoReferenceMode: "first_frame" } },
@@ -142,7 +144,7 @@ const uploadRuleRows: UploadRuleRow[] = [
     note: "Seedance 2.0 / Fast / Mini 共用同一套上传规则。融合模式支持图片、视频、音频参考上传；首帧/首尾帧模式只支持图片。参考视频/音频按服务器公网 URL 传入模型。",
     details: {
       image: seedanceImageReferenceRuleText,
-      video: "视频参考完整规则：mp4/mov；最多 3 个；单个 2-15 秒、≤50MB；总时长≤15秒；宽高比 0.4-2.5；宽高 300-6000px；总像素 409600-2086876。",
+      video: "视频参考完整规则：mp4/mov；最多 3 个；单个 2-15 秒、≤200MB；总时长≤15秒；宽高比 0.4-2.5；宽高 300-6000px；总像素 409600-8295044。",
       audio: "音频参考完整规则：mp3/wav；最多 3 个；单个 2-15 秒、≤15MB；总时长≤15秒；不能单独输入，必须同时有参考图片或参考视频。",
     },
   },
@@ -191,8 +193,8 @@ function EditableUploadRuleCell({ row, kind, fallback, draft, disabled, onChange
   );
 }
 
-export function AdminUploadRulesPanel({ initialUploadRuleOverrides = {} }: { initialUploadRuleOverrides?: UploadRuleOverrides }) {
-  const rows = useMemo(() => getEditableUploadRuleRows(), []);
+export function AdminUploadRulesPanel({ initialUploadRuleOverrides = {}, enabledImageModelIds = [], enabledVideoModelIds = [] }: { initialUploadRuleOverrides?: UploadRuleOverrides; enabledImageModelIds?: string[]; enabledVideoModelIds?: string[] }) {
+  const rows = useMemo(() => getEditableUploadRuleRows(enabledImageModelIds, enabledVideoModelIds), [enabledImageModelIds, enabledVideoModelIds]);
   const [draft, setDraft] = useState<UploadRuleOverrides>(initialUploadRuleOverrides);
   const [message, setMessage] = useState("");
   const [isPending, startTransition] = useTransition();

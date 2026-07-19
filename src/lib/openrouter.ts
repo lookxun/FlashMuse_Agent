@@ -1,11 +1,11 @@
 import { execFile } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { writeFile, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { extname, join } from "node:path";
 import { promisify } from "node:util";
 import type { ConversationModel, ModelName } from "@/lib/models";
-import { ADVANCED_CHAT_MODEL, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, getExpectedImageDimensions, getImageModelRule, models, resolveImageSettingsForModel } from "@/lib/models";
+import { ADVANCED_CHAT_MODEL, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, getExpectedImageDimensions, getImageModelRule, GPT_IMAGE2_MODEL_ID, isGptImage2Model, models, normalizeImageQuality, resolveImageSettingsForModel, resolveOpenRouterImageModelName } from "@/lib/models";
 import { createGeneratedImageThumbnail, getLocalImageDimensions, saveGeneratedAsset, type ImageDimensions } from "@/lib/local-assets";
 import { enqueueRemoteAssetSave } from "@/lib/media-save-queue";
 import { syncGeneratedFilesToAli } from "@/lib/ali-sync";
@@ -77,6 +77,7 @@ export type AgentPlan = {
 };
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
+const OPENROUTER_IMAGES_URL = "https://openrouter.ai/api/v1/images";
 const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models";
 const execFileAsync = promisify(execFile);
 const IMAGE_PROVIDER_TIMEOUT_MS = 5 * 60 * 1000;
@@ -556,6 +557,70 @@ function toDataUrlIfLocalPublicAsset(url: string) {
   return `data:${getMimeType(filePath)};base64,${data.toString("base64")}`;
 }
 
+// gpt-5.4-image-2 走 OpenRouter 新图片接口时，参考图改传公网 URL（不再内联 base64，更稳更快）。
+// OpenRouter 新接口只认 HTTPS URL（http 会报 "Only HTTPS URLs are allowed"）。
+// 因此：① 本地相对 /generated/xxx → 拼公网 https base；
+//       ② 自家服务器的绝对地址(含 http，如 http://101.37.129.164/generated/...) → 只取路径重新拼到 https base，
+//          杜绝 http 被拒（不然这套 URL 方案同步到正式服后 img2img 同样会挂）；
+//       ③ data: 与其它外部 https 地址原样返回。
+const OWN_HOST_ABSOLUTE_RE = /^https?:\/\/(?:101\.47\.19\.109|101\.37\.129\.164|119\.28\.116\.16|main\.venusface\.com|api\.venusface\.com|ali\.venusface\.com|static\.venusface\.com)(?::\d+)?(\/.*)$/i;
+function toPublicGeneratedImageUrl(value: string) {
+  const url = value.trim();
+  if (!url) return url;
+  if (url.startsWith("data:")) return url;
+  const base = (process.env.NEXT_PUBLIC_PRIMARY_BASE_URL || process.env.NEXT_PUBLIC_UPLOAD_BASE_URL || "https://main.venusface.com").replace(/\/$/, "");
+  if (url.startsWith("/generated/")) return `${base}${url}`;
+  const ownHostMatch = url.match(OWN_HOST_ABSOLUTE_RE);
+  if (ownHostMatch) return `${base}${ownHostMatch[1]}`;
+  return url;
+}
+
+// 把参考图转成 base64 data URL（URL 方案失败时的回退）。
+// 优先把"自家 /generated 资产"映射到本地文件直接读；本地找不到再抓取远程字节。
+function resolveOwnLocalAssetPath(url: string): string | undefined {
+  if (url.startsWith("/generated/")) return join(process.cwd(), "public", url.replace(/^\//, ""));
+  const m = url.match(OWN_HOST_ABSOLUTE_RE);
+  if (m && m[1].startsWith("/generated/")) return join(process.cwd(), "public", m[1].replace(/^\//, ""));
+  return undefined;
+}
+async function referenceToDataUrl(value: string): Promise<string> {
+  const url = value.trim();
+  if (!url || url.startsWith("data:")) return url;
+  const localPath = resolveOwnLocalAssetPath(url);
+  if (localPath && existsSync(localPath)) {
+    const buf = readFileSync(localPath);
+    return `data:${getMimeType(localPath)};base64,${buf.toString("base64")}`;
+  }
+  try {
+    const resp = await fetch(toPublicGeneratedImageUrl(url));
+    if (resp.ok) {
+      const arrayBuf = await resp.arrayBuffer();
+      const contentType = resp.headers.get("content-type") || "image/png";
+      return `data:${contentType};base64,${Buffer.from(arrayBuf).toString("base64")}`;
+    }
+  } catch {
+    // 抓取失败 → 原样返回，交由上层报错
+  }
+  return url;
+}
+
+// 记录参考图体积，便于以后把"单张/总量"上限改成真实值。传 URL 模式下只能量到本地 /generated 文件。
+function measureReferenceImageSize(url: string): number | undefined {
+  try {
+    if (url.startsWith("data:")) {
+      const base64 = url.split(",")[1] ?? "";
+      return Math.floor((base64.length * 3) / 4);
+    }
+    if (url.startsWith("/generated/")) {
+      const filePath = join(process.cwd(), "public", url.replace(/^\//, ""));
+      if (existsSync(filePath)) return statSync(filePath).size;
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
 function getReferenceImageDebugInfo(url: string, index: number) {
   if (url.startsWith("data:")) return { index, type: "data-url", exists: true };
   if (/^https?:\/\//i.test(url)) return { index, type: "remote-url", exists: true };
@@ -1029,6 +1094,7 @@ type ImageGenerationOptions = {
   settings?: {
     ratio?: string;
     resolution?: string;
+    quality?: string;
   };
   count?: number;
   candidateMode?: "all" | "best";
@@ -1403,6 +1469,242 @@ async function generateBytePlusImage(prompt: string, referenceImages: string[] =
   };
 }
 
+type OpenRouterImagesApiResponse = {
+  created?: number;
+  data?: Array<{ b64_json?: string; media_type?: string }>;
+  usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number; cost?: number };
+  error?: { message?: string; code?: number };
+};
+
+// gpt-5.4-image-2 专用：走 OpenRouter 新图片接口 POST /api/v1/images。
+// 只影响该模型，其它 OpenRouter/BytePlus 模型仍走各自老路径。
+async function generateGptImage2(prompt: string, referenceImages: string[], options: ImageGenerationOptions, apiKey: string) {
+  const model = options.model || GPT_IMAGE2_MODEL_ID;
+  const quality = normalizeImageQuality(options.settings?.quality);
+  const count = Math.min(10, Math.max(1, Math.floor(options.count ?? 1)));
+
+  // 智能比例 → 不传 size，让模型自动出尺寸（有参考图时跟随参考图比例）；
+  // 具体比例 → 映射成精确像素通过 size 传（1K/2K/4K 尺寸表已按新接口约束校准）。
+  const rawRatio = options.settings?.ratio;
+  const isSmartRatio = !rawRatio || rawRatio === "智能比例";
+  const targetDimensions = getExpectedImageDimensions(model, options.settings?.resolution, rawRatio);
+  const size = !isSmartRatio && targetDimensions.width > 0 && targetDimensions.height > 0
+    ? `${targetDimensions.width}x${targetDimensions.height}`
+    : undefined;
+
+  // 参考图：传公网 URL（不再内联 base64），上限 16 张（后台可 override，这里做安全上限）。
+  const safeReferenceImages = referenceImages.filter(Boolean).slice(0, 16).map(toPublicGeneratedImageUrl);
+  const referenceSizes = referenceImages.filter(Boolean).slice(0, 16).map(measureReferenceImageSize);
+  const measuredSizes = referenceSizes.filter((n): n is number => typeof n === "number");
+  const totalRefBytes = measuredSizes.reduce((sum, n) => sum + n, 0);
+  const maxRefBytes = measuredSizes.length > 0 ? Math.max(...measuredSizes) : 0;
+
+  // 记录参考图体积，便于以后把"单张/总量"上限改成真实值（当前规则单张 10MB）。
+  console.log("[image-generation][gpt-image-2] reference sizes", {
+    model,
+    referenceCount: safeReferenceImages.length,
+    measuredCount: measuredSizes.length,
+    maxSingleMB: maxRefBytes ? Number((maxRefBytes / 1024 / 1024).toFixed(3)) : 0,
+    totalMB: totalRefBytes ? Number((totalRefBytes / 1024 / 1024).toFixed(3)) : 0,
+    perImageMB: measuredSizes.map((n) => Number((n / 1024 / 1024).toFixed(3))),
+  });
+  void appendGenerationDiagnosticsLog({
+    event: "image-provider-reference-sizes",
+    requestId: options.requestId,
+    userId: options.userId,
+    mode: "image",
+    provider: "openrouter",
+    model,
+    references: safeReferenceImages.map((image, index) => summarizeGeneratedReference(image, index)),
+    extra: { referenceCount: safeReferenceImages.length, measuredCount: measuredSizes.length, maxSingleBytes: maxRefBytes, totalBytes: totalRefBytes, perImageBytes: measuredSizes },
+  });
+
+  const startedAt = Date.now();
+  const headers = getOpenRouterHeaders(apiKey);
+
+  const buildInputReferences = (urls: string[]) =>
+    urls.map((url) => ({ type: "image_url", image_url: { url } }));
+  const buildBody = (inputRefs: Array<{ type: string; image_url: { url: string } }>): Record<string, unknown> => ({
+    model,
+    prompt,
+    n: count,
+    quality,
+    ...(size ? { size } : {}),
+    ...(inputRefs.length > 0 ? { input_references: inputRefs } : {}),
+  });
+
+  // 发送一次请求并解析（fetch/JSON 出错直接 throw；HTTP/业务错误由返回值判定，交上层决定是否回退）。
+  const sendOnce = async (inputRefs: Array<{ type: string; image_url: { url: string } }>, refMode: string) => {
+    void appendGenerationDiagnosticsLog({
+      event: "image-provider-request-start",
+      requestId: options.requestId,
+      userId: options.userId,
+      mode: "image",
+      provider: "openrouter",
+      model,
+      prompt,
+      settings: options.settings,
+      references: safeReferenceImages.map((image, index) => summarizeGeneratedReference(image, index)),
+      extra: { url: OPENROUTER_IMAGES_URL, size: size ?? "auto", quality, n: count, api: "images", refMode },
+    });
+    let resp: Response;
+    try {
+      resp = await fetchWithTimeout(OPENROUTER_IMAGES_URL, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(buildBody(inputRefs)),
+      }, IMAGE_PROVIDER_TIMEOUT_MS, "图片生成");
+    } catch (error) {
+      void appendGenerationDiagnosticsLog({
+        event: "image-provider-fetch-error",
+        requestId: options.requestId,
+        userId: options.userId,
+        mode: "image",
+        provider: "openrouter",
+        model,
+        prompt,
+        settings: options.settings,
+        durationMs: Date.now() - startedAt,
+        error,
+        extra: { url: OPENROUTER_IMAGES_URL, api: "images", refMode },
+      });
+      throw error;
+    }
+    const text = await resp.text();
+    let parsed: OpenRouterImagesApiResponse;
+    try {
+      parsed = JSON.parse(text) as OpenRouterImagesApiResponse;
+    } catch (parseError) {
+      void appendGenerationDiagnosticsLog({
+        event: "image-provider-json-parse-failed",
+        requestId: options.requestId,
+        userId: options.userId,
+        mode: "image",
+        provider: "openrouter",
+        model,
+        status: resp.status,
+        prompt,
+        settings: options.settings,
+        durationMs: Date.now() - startedAt,
+        error: parseError,
+        extra: { url: OPENROUTER_IMAGES_URL, api: "images", body: text.slice(0, 400), refMode },
+      });
+      throw new Error(`图片平台响应解析失败：${parseError instanceof Error ? parseError.message : "unknown"}`);
+    }
+    return { response: resp, data: parsed, responseText: text };
+  };
+
+  // 参考图方案：优先传公网 URL（请求体小、快）；失败且用了参考图 → 回退 base64 内联再试一次（两端同一套）。
+  let { response, data, responseText } = await sendOnce(buildInputReferences(safeReferenceImages), "url");
+
+  if ((!response.ok || data.error) && safeReferenceImages.length > 0) {
+    void appendGenerationDiagnosticsLog({
+      event: "image-provider-url-fallback-base64",
+      requestId: options.requestId,
+      userId: options.userId,
+      mode: "image",
+      provider: "openrouter",
+      model,
+      status: response.status,
+      prompt,
+      settings: options.settings,
+      durationMs: Date.now() - startedAt,
+      upstream: { url: OPENROUTER_IMAGES_URL, statusText: response.statusText, body: responseText.slice(0, 300) },
+    });
+    const base64Refs = await Promise.all(
+      referenceImages.filter(Boolean).slice(0, 16).map(referenceToDataUrl),
+    );
+    ({ response, data, responseText } = await sendOnce(buildInputReferences(base64Refs), "base64"));
+  }
+
+  if (!response.ok || data.error) {
+    const reason = cleanNoImageReason(data.error?.message) || `${response.status}`;
+    void appendGenerationDiagnosticsLog({
+      event: "image-provider-non-ok",
+      requestId: options.requestId,
+      userId: options.userId,
+      mode: "image",
+      provider: "openrouter",
+      model,
+      status: response.status,
+      prompt,
+      settings: options.settings,
+      durationMs: Date.now() - startedAt,
+      upstream: { url: OPENROUTER_IMAGES_URL, statusText: response.statusText, body: responseText.slice(0, 600) },
+    });
+    throw new Error(`图片生成失败：${reason}`);
+  }
+
+  const rawImages = (data.data ?? [])
+    .map((item) => (item.b64_json ? `data:${item.media_type || "image/png"};base64,${item.b64_json}` : undefined))
+    .filter((url): url is string => Boolean(url));
+
+  let displayImages: string[] = [];
+  try {
+    displayImages = await Promise.all(rawImages.map((image) => saveImageForDisplay(image, { requestId: options.requestId, model, userId: options.userId })));
+  } catch (saveError) {
+    if (saveError instanceof Error) throw saveError;
+    throw new Error("Image asset save failed");
+  }
+
+  if (displayImages.length === 0) {
+    void appendGenerationDiagnosticsLog({
+      event: "image-provider-empty-result",
+      requestId: options.requestId,
+      userId: options.userId,
+      mode: "image",
+      provider: "openrouter",
+      model,
+      status: response.status,
+      prompt,
+      settings: options.settings,
+      durationMs: Date.now() - startedAt,
+      upstream: { reason: "empty image result" },
+    });
+    throw new Error("图片平台没有返回图片，且没有返回可用原因。");
+  }
+
+  const imageDimensions = Object.fromEntries(
+    displayImages
+      .map((image) => [image, getLocalImageDimensions(image)] as const)
+      .filter((item): item is readonly [string, ImageDimensions] => Boolean(item[1])),
+  );
+
+  // 计费：新接口直接返回美元 cost，塞进 usd，沿用现有"美元→人民币→积分"公式。
+  const usd = typeof data.usage?.cost === "number" && data.usage.cost > 0 ? data.usage.cost : undefined;
+  const usage: UsageMeta | undefined = (data.usage || usd !== undefined)
+    ? {
+        promptTokens: Math.max(0, Math.floor(data.usage?.prompt_tokens ?? 0)),
+        completionTokens: Math.max(0, Math.floor(data.usage?.completion_tokens ?? 0)),
+        totalTokens: Math.max(0, Math.floor(data.usage?.total_tokens ?? 0)),
+        usd,
+      }
+    : undefined;
+
+  void appendGenerationDiagnosticsLog({
+    event: "image-provider-success",
+    requestId: options.requestId,
+    userId: options.userId,
+    mode: "image",
+    provider: "openrouter",
+    model,
+    status: response.status,
+    prompt,
+    settings: options.settings,
+    references: safeReferenceImages.map((image, index) => summarizeGeneratedReference(image, index)),
+    durationMs: Date.now() - startedAt,
+    extra: { returnedImages: rawImages.length, displayImages: displayImages.length, size: size ?? "auto", quality, usd, dimensions: imageDimensions, api: "images" },
+  });
+
+  return {
+    content: "",
+    images: displayImages,
+    imageDimensions,
+    failureReasons: [] as string[],
+    usage,
+  };
+}
+
 export async function generateOpenRouterImage(prompt: string, referenceImages: string[] = [], options: ImageGenerationOptions = {}) {
   const model = options.model || process.env.OPENROUTER_IMAGE_MODEL || DEFAULT_IMAGE_MODEL;
   const bytePlusImageModel = getBytePlusImageModelName(model, options.bytePlusProviderKey);
@@ -1413,9 +1715,15 @@ export async function generateOpenRouterImage(prompt: string, referenceImages: s
     throw new Error("缺少 API Key");
   }
 
+  if (isGptImage2Model(model)) {
+    return generateGptImage2(prompt, referenceImages, { ...options, model }, apiKey);
+  }
+
   const safeReferenceImages = referenceImages.filter(Boolean).slice(0, 3);
   const count = Math.min(4, Math.max(1, Math.floor(options.count ?? 1)));
   const { modalities, imageConfig, targetDimensions } = getImageRequestConfig(model, options.settings);
+  // GPT版(openai/gpt-5.4-image-2-agent)走老接口，但发往 OpenRouter 时用真实模型名。
+  const apiModel = resolveOpenRouterImageModelName(model) || model;
 
   console.log("[image-generation] OpenRouter request params", {
     model,
@@ -1431,7 +1739,7 @@ export async function generateOpenRouterImage(prompt: string, referenceImages: s
   const createOne = async (useImageConfig = true) => {
     const startedAt = Date.now();
     const body = {
-      model,
+      model: apiModel,
       messages: [
         {
           role: "user",

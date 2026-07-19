@@ -8,6 +8,15 @@ Historical docs were checked on 2026-06-21. Old items that are already done or c
 
 ## Active Memo Tasks
 
+### [待办] M018 刚上传媒体不刷新自动切阿里镜像（2026-07-22 定，用户说保持现状以后再说）
+
+**背景**：视频/音频上传后采用「方案 A」——同步阿里是后台异步；本会话刚上传的 `/generated` 路径由 `src/lib/recent-upload-origin.ts` 记录，前端 `chat-workbench` 的 `getStaticMediaUrl` 一律读腾讯主源（保证成功即可播放/看封面）。
+**为什么现在不做**：没有轮询，所以阿里同步完成后，本会话内这几个刚上传的媒体不会自动切到阿里镜像，**除非用户刷新页面**。用户确认功能无碍（腾讯兜底一直能读），只是本会话内这几个加载稍慢，决定保持现状。
+**以后要做（二选一）**：
+- 轻量（推荐）：上传成功后起一个定时器（约 10~20 秒）把该 url 从 recent 集合移除，之后自然回到读阿里。简单、无需后端；缺点时间是估的。
+- 精确（方案 B）：加「阿里同步状态」接口，前端轮询到已同步再把地址切到阿里。最准但要写后端状态 + 前端轮询，参照生成视频「先远程 URL、落盘后替换」模式。
+**相关文件**：`src/lib/recent-upload-origin.ts`、`src/components/chat-workbench.tsx`(`getStaticMediaUrl`/`preloadUploadedMedia`/`selectAssetMediaUploadFiles`)、`src/app/api/upload-file/route.ts`(同步阿里已改回 `void`)。
+
 ### [进行中] M016 资产入库/显示统一大改造（2026-07-11 定调，2026-07-12 阶段1/2/3a/4 已部署腾讯）
 
 **进度（2026-07-12）**：阶段 1/2/3a/4 已完成并部署腾讯线上（GitHub 未推/本地未 commit）。**剩阶段3b（图片上传去重客户端接线，见 M017）待做**。详见 CHANGELOG 2026-07-12 顶条。

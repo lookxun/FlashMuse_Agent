@@ -8,6 +8,34 @@ export type GenerationModel = ConversationModel & {
 };
 
 export type ImageResolution = "1K" | "2K" | "3K" | "4K";
+export type ImageQuality = "auto" | "low" | "medium" | "high";
+export const IMAGE_QUALITY_OPTIONS: ImageQuality[] = ["auto", "low", "medium", "high"];
+export const IMAGE_QUALITY_LABELS: Record<ImageQuality, string> = { auto: "自动", low: "低", medium: "中", high: "高" };
+export const DEFAULT_IMAGE_QUALITY: ImageQuality = "high";
+// 仅 gpt-5.4-image-2 走 OpenRouter 新图片接口(/api/v1/images)，支持 quality 画质档。
+export const GPT_IMAGE2_MODEL_ID = "openai/gpt-5.4-image-2";
+export function isGptImage2Model(modelId?: string) {
+  return modelId === GPT_IMAGE2_MODEL_ID;
+}
+// gpt-5.4-image-2（GPT版）走 OpenRouter 老接口(/chat/completions + modalities)，即经 GPT 语言模型优化提示词后再生图。
+// 内部另起 id，发往 OpenRouter 时映射回真实模型名 GPT_IMAGE2_MODEL_ID。不支持 4K、不支持画质档。
+export const GPT_IMAGE2_AGENT_MODEL_ID = "openai/gpt-5.4-image-2-agent";
+export function isGptImage2AgentModel(modelId?: string) {
+  return modelId === GPT_IMAGE2_AGENT_MODEL_ID;
+}
+// 把 GPT版 内部 id 解析成发往 OpenRouter 的真实模型名。
+export function resolveOpenRouterImageModelName(modelId?: string) {
+  return isGptImage2AgentModel(modelId) ? GPT_IMAGE2_MODEL_ID : modelId;
+}
+// 模型选择弹窗里显示的小灰字说明（仅 GPT-5.4 Image 2 两款有）。
+export function getImageModelSelectHint(modelId?: string): string | null {
+  if (isGptImage2AgentModel(modelId)) return "老接口，会有GPT Agent 理解优化后传给图片模型，适合新手使用";
+  if (isGptImage2Model(modelId)) return "直接把提示词原封不动传给图片模型，支持带16张参考图，支持画质选择和4K出图";
+  return null;
+}
+export function normalizeImageQuality(value?: string): ImageQuality {
+  return IMAGE_QUALITY_OPTIONS.includes(value as ImageQuality) ? (value as ImageQuality) : DEFAULT_IMAGE_QUALITY;
+}
 export type ImageRatio = "智能比例" | "16:9" | "9:16" | "1:1" | "4:3" | "3:4" | "21:9";
 type ConcreteImageRatio = Exclude<ImageRatio, "智能比例">;
 type ImageDimensions = { width: number; height: number };
@@ -59,6 +87,7 @@ export const imageGenerationModels: GenerationModel[] = [
   { label: "Seedream 4.5", id: "bytedance-seed/seedream-4.5" },
   { label: "Gemini 3.1 Flash Image Preview", id: "google/gemini-3.1-flash-image-preview" },
   { label: "Gemini 3 Pro Image Preview", id: "google/gemini-3-pro-image-preview" },
+  { label: "GPT-5.4 Image 2（GPT版）", id: "openai/gpt-5.4-image-2-agent" },
   { label: "GPT-5.4 Image 2", id: "openai/gpt-5.4-image-2" },
 ] as const;
 
@@ -203,6 +232,17 @@ const gpt542KDimensions: Record<ConcreteImageRatio, ImageDimensions> = {
   "3:4": { width: 1728, height: 2304 },
 };
 
+// gpt-5.4-image-2 新接口(/api/v1/images)硬约束：宽高都被 16 整除、最长边 ≤ 3840、总像素 ≤ 8,294,400。
+// 以下 4K 尺寸均已按约束取到该比例下的最大可用值（已实测通过）。
+const gpt544KDimensions: Record<ConcreteImageRatio, ImageDimensions> = {
+  "1:1": { width: 2880, height: 2880 },
+  "16:9": { width: 3840, height: 2160 },
+  "9:16": { width: 2160, height: 3840 },
+  "21:9": { width: 3808, height: 1632 },
+  "4:3": { width: 3264, height: 2448 },
+  "3:4": { width: 2448, height: 3264 },
+};
+
 export const imageModelRules: Record<string, ImageModelRule> = {
   "bytedance-seed/seedream-4.5": {
     resolutions: ["2K", "4K"],
@@ -262,6 +302,16 @@ export const imageModelRules: Record<string, ImageModelRule> = {
     },
   },
   "openai/gpt-5.4-image-2": {
+    resolutions: ["1K", "2K", "4K"],
+    defaultResolution: "1K",
+    modalities: ["image", "text"],
+    dimensions: {
+      "1K": gpt541KDimensions,
+      "2K": gpt542KDimensions,
+      "4K": gpt544KDimensions,
+    },
+  },
+  "openai/gpt-5.4-image-2-agent": {
     resolutions: ["1K", "2K"],
     defaultResolution: "1K",
     modalities: ["image", "text"],
@@ -510,6 +560,29 @@ export function isNonStandardVideoSize(modelId: string | undefined, resolution: 
 
 export function getImageModelRule(modelId?: string) {
   return modelId ? imageModelRules[modelId] ?? fallbackImageModelRule : fallbackImageModelRule;
+}
+
+// 按模型的尺寸表把实际输出尺寸归到最接近的分辨率档（按总像素最近匹配）。
+// 用于展示实际分辨率：gpt-5.4-image-2 的 4K 只有 8.29MP，通用阈值会误判成 3K，用模型表可正确显示 4K。
+export function classifyImageResolutionByModel(modelId: string | undefined, dimensions?: { width: number; height: number }): ImageResolution | undefined {
+  if (!dimensions || dimensions.width <= 0 || dimensions.height <= 0) return undefined;
+  const rule = getImageModelRule(modelId);
+  const total = dimensions.width * dimensions.height;
+  let best: ImageResolution | undefined;
+  let bestScore = Number.POSITIVE_INFINITY;
+  for (const resolution of rule.resolutions) {
+    const ratios = rule.dimensions[resolution];
+    if (!ratios) continue;
+    for (const dim of Object.values(ratios)) {
+      if (!dim) continue;
+      const score = Math.abs(dim.width * dim.height - total);
+      if (score < bestScore) {
+        bestScore = score;
+        best = resolution;
+      }
+    }
+  }
+  return best;
 }
 
 export function getSupportedImageResolutions(modelId?: string) {

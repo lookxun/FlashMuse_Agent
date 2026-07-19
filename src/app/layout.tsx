@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import Script from "next/script";
 import { GlobalScrollbarController } from "@/components/global-scrollbar-controller";
+import { IS_TEST_SERVER } from "@/lib/app-version";
 import "tldraw/tldraw.css";
 import "./globals.css";
 
@@ -16,7 +17,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "闪念 FlashMuse",
+  title: `${IS_TEST_SERVER ? "(测试服)" : ""}闪念 FlashMuse`,
   description: "简单版即梦，聊天式生图生视频工作台",
   icons: {
     icon: [{ url: "/home-assets/logo.png?v=20260518", type: "image/png" }],

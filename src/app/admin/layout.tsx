@@ -1,7 +1,8 @@
 import type { Metadata } from "next";
+import { IS_TEST_SERVER } from "@/lib/app-version";
 
 export const metadata: Metadata = {
-  title: "闪念后台 Management",
+  title: `${IS_TEST_SERVER ? "(测试服)" : ""}闪念后台 Management`,
 };
 
 export default function AdminLayout({ children }: Readonly<{ children: React.ReactNode }>) {

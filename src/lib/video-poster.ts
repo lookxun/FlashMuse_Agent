@@ -44,6 +44,31 @@ export async function createVideoPosterFromLocalVideo(publicVideoUrl: string) {
 }
 
 /**
+ * 为"上传视频"生成封面。上传视频落在 /generated/.../files/ 下（不进 /videos/），
+ * 故封面就放在同目录、同名加 .poster.jpg，客户端 getLocalVideoPosterUrl 用同一规则推算。
+ * 与生成视频的 /video-posters/ 方案并存，互不影响。
+ */
+export async function createUploadedVideoPoster(publicVideoUrl: string) {
+  const { default: ffmpegPath } = await import("ffmpeg-static");
+  if (!ffmpegPath) return undefined;
+
+  const videoPath = getLocalGeneratedFilePath(publicVideoUrl);
+  if (!videoPath || !existsSync(videoPath)) return undefined;
+
+  const cleanUrl = publicVideoUrl.split("?")[0].split("#")[0];
+  const posterPublicUrl = cleanUrl.replace(/\.(mp4|mov|webm)$/i, ".poster.jpg");
+  if (posterPublicUrl === cleanUrl) return undefined;
+  const posterPath = getLocalGeneratedFilePath(posterPublicUrl);
+  if (!posterPath) return undefined;
+
+  if (!existsSync(posterPath)) {
+    await execFileAsync(ffmpegPath, ["-y", "-ss", "0", "-i", videoPath, "-vf", "scale=640:640:force_original_aspect_ratio=decrease", "-frames:v", "1", "-q:v", "3", posterPath], { maxBuffer: 20 * 1024 * 1024 });
+  }
+
+  return posterPublicUrl;
+}
+
+/**
  * 读取本地视频的真实宽高（用 ffmpeg 解析流信息，无需 ffprobe）。封面被降采样到 640，不能拿来当尺寸，
  * 所以视频尺寸一律走这里。解析不到返回 undefined。
  */

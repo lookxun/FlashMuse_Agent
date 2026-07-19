@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { RiAccountCircleLine, RiArrowUpLine, RiCornerDownLeftLine, RiLogoutBoxRLine, RiSettingsLine, RiShieldUserLine, RiVipDiamondLine } from "react-icons/ri";
 import { useBodyScrollLock } from "@/components/use-body-scroll-lock";
+import { IS_TEST_SERVER, versionLabel } from "@/lib/app-version";
 
 const homeAssetVersion = "home-lite-carousel-20260605";
 const HOME_VIDEO_CACHE_KEY = `flashmuse-home-videos-ready-${homeAssetVersion}`;
@@ -479,6 +480,7 @@ export default function Home() {
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src={staticAssetUrl("/home-assets/logo-text.png")} alt="闪念" className="w-auto object-contain drop-shadow-[0_0_18px_rgba(255,255,255,0.2)]" style={{ height: 30, filter: "brightness(0) invert(1)" }} />
             {showInternationalBadge ? <span className="pb-[1px] text-[13px] font-medium leading-none tracking-[0.02em] text-white/68">Intl.</span> : null}
+            {IS_TEST_SERVER ? <span className="pb-[1px] text-[13px] font-semibold leading-none tracking-[0.02em] text-[#ffcf3f]">测试服</span> : null}
           </span>
         </button>
         <div className="flex items-center gap-3">
@@ -656,6 +658,8 @@ export default function Home() {
         <span>© 2026 闪念 FlashMuse</span>
         <span>|</span>
         <span>本站内容均由AI生成</span>
+        <span>|</span>
+        <span>{versionLabel()}</span>
       </footer>
 
       {isLoginOpen ? (

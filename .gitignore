@@ -41,6 +41,9 @@ yarn-error.log*
 /FlashMuse_Agent_Project Planning/
 /tmp/*.tgz
 
+# playwright mcp session artifacts
+/.playwright-mcp/
+
 # vercel
 .vercel
 

@@ -217,6 +217,7 @@ const MODEL_DISPLAY_LABELS: Record<string, string> = {
   "google/gemini-3.1-flash-image-preview": "Gemini 3.1 Flash",
   "google/gemini-3-pro-image-preview": "Gemini 3 Pro",
   "openai/gpt-5.4-image-2": "GPT-5.4 Image 2",
+  "openai/gpt-5.4-image-2-agent": "GPT-5.4 Image 2（GPT版）",
   "bytedance/seedance-2.0-fast": "Seedance 2.0 Fast",
   "bytedance/seedance-2.0": "Seedance 2.0",
   "google/veo-3.1": "Veo 3.1",
