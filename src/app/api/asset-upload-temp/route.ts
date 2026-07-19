@@ -9,6 +9,7 @@ import { recordUploadEvent } from "@/lib/analytics-events";
 import { syncGeneratedFilesToAli } from "@/lib/ali-sync";
 import { prisma } from "@/lib/prisma";
 import { resolveUploadName } from "@/lib/upload-name";
+import { validateImageUploadFile } from "@/lib/image-upload-validation";
 
 /** 按内容哈希查以前上传过的同一张图（字节完全一致），命中就复用其地址+权威名、不重复落库。 */
 async function findDedupImage(userId: string, contentHash: string) {
@@ -82,6 +83,11 @@ export async function POST(request: Request) {
     fileName = file.name;
     mimeType = file.type || "image/jpeg";
     fileSize = file.size;
+    const validationError = validateImageUploadFile(file);
+    if (validationError) {
+      void appendUploadDiagnosticsLog({ event: "asset-upload-temp-post-invalid-file", requestId, userId, fileName, mimeType, fileSize, forceReencode, status: 400, durationMs: Date.now() - startedAt, extra: { userMessage: validationError } });
+      return NextResponse.json({ error: validationError }, { status: 400, headers });
+    }
     void appendUploadDiagnosticsLog({ event: "asset-upload-temp-post-file-received", requestId, userId, fileName, mimeType, fileSize, forceReencode, durationMs: Date.now() - startedAt });
     const originalBuffer = Buffer.from(await file.arrayBuffer());
     // 内容哈希（原始字节，转码前）：判定"同一文件"用。

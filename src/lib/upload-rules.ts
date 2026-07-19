@@ -1,3 +1,5 @@
+import { IMAGE_UPLOAD_ACCEPT } from "@/lib/image-upload-validation";
+
 export type UploadRuleMode = "agent" | "general" | "image" | "video" | "asset-image";
 export type UploadTransportMode = "local-base64" | "server-url";
 
@@ -119,6 +121,13 @@ function getBaseUploadRule(context: UploadRuleContext): UploadRule {
       });
     }
 
+    // gpt-5.4-image-2 走新图片接口(/api/v1/images)，参考图最多 16 张、单张 10MB（后台仍可 override）。
+    if (context.modelId === "openai/gpt-5.4-image-2") {
+      return makeRule({
+        image: kindRule({ enabled: true, maxCount: 16, maxSizeMb: 10, formats: commonImageFormats }),
+      });
+    }
+
     return makeRule({
       image: kindRule({ enabled: true, maxCount: 3, maxSizeMb: 8, formats: commonImageFormats }),
     });
@@ -128,7 +137,7 @@ function getBaseUploadRule(context: UploadRuleContext): UploadRule {
     if (isBytePlusVideoModel(context.modelId)) {
       const imageMaxCount = context.videoReferenceMode === "first_last_frame" ? 2 : context.videoReferenceMode === "first_frame" ? 1 : 9;
       const referenceMediaRule = context.videoReferenceMode === "first_frame" || context.videoReferenceMode === "first_last_frame" ? {} : {
-        video: kindRule({ enabled: true, maxCount: 3, maxSizeMb: 50, formats: ["mp4", "mov"], minSeconds: 2, maxSeconds: 15, maxTotalSeconds: 15, requiresServerUrl: true }),
+        video: kindRule({ enabled: true, maxCount: 3, maxSizeMb: 200, formats: ["mp4", "mov"], minSeconds: 2, maxSeconds: 15, maxTotalSeconds: 15, requiresServerUrl: true }),
         audio: kindRule({ enabled: true, maxCount: 3, maxSizeMb: 15, formats: ["mp3", "wav"], minSeconds: 2, maxSeconds: 15, maxTotalSeconds: 15, requiresServerUrl: true }),
       };
       return makeRule({
@@ -159,7 +168,7 @@ export function getAllowedDocumentCount(context: UploadRuleContext, overrides?: 
 
 export function getUploadAcceptValue(rule: UploadRule) {
   const values: string[] = [];
-  if (rule.image.enabled) values.push(...rule.image.formats.map((format) => `.${format}`));
+  if (rule.image.enabled) values.push(IMAGE_UPLOAD_ACCEPT);
   if (rule.document.enabled) values.push(...rule.document.formats.map((format) => `.${format}`));
   if (rule.video.enabled) values.push(...rule.video.formats.map((format) => `.${format}`));
   if (rule.audio.enabled) values.push(...rule.audio.formats.map((format) => `.${format}`));

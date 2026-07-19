@@ -61,6 +61,11 @@ const mimeExtensions: Record<string, string> = {
   "video/mp4": "mp4",
   "video/webm": "webm",
   "video/quicktime": "mov",
+  "audio/mpeg": "mp3",
+  "audio/mp3": "mp3",
+  "audio/wav": "wav",
+  "audio/x-wav": "wav",
+  "audio/wave": "wav",
   "text/plain": "txt",
   "text/markdown": "md",
   "text/csv": "csv",
@@ -96,13 +101,15 @@ function getExtensionFromUrl(url: string) {
     return getExtensionFromMime(match?.[1]);
   }
 
+  let pathname = url;
   try {
-    const pathname = new URL(url).pathname;
-    const extension = extname(pathname).replace(/^\./, "").toLowerCase();
-    return extension || undefined;
+    pathname = new URL(url).pathname;
   } catch {
-    return undefined;
+    // Uploads pass ordinary filenames such as "voice.wav", not only absolute URLs.
+    pathname = url.split(/[?#]/, 1)[0] ?? url;
   }
+  const extension = extname(pathname).replace(/^\./, "").toLowerCase();
+  return extension || undefined;
 }
 
 function parseDataUrl(dataUrl: string) {

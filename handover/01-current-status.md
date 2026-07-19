@@ -1,6 +1,96 @@
 # Current Status
 
-Last checked: 2026-07-22 China time.
+Last checked: 2026-07-19 China time（later session；最新一条排最上）.
+
+## ⭐ 最新 session（later，2026-07-19）：gpt-5.4-image-2 img2img 修复（http→https + URL优先/base64回退）+ safety 错误映射 + 对话流重试卡槽定位 & 红字1:1 大修 + 免费HTTPS验证（✅ 已部署测试服 v1.0.0.13；⚠️ 未同步正式服、未 commit/push；无迁移）
+
+**详见 CHANGELOG 顶条为权威。速记：**
+
+1. **B_1~B_12 真因**=gpt-5.4-image-2 img2img 参考图传 `http://101.37.129.164/...`，OpenRouter 新接口只认 https → 被拒（兜底成"服务器繁忙"）。修 `toPublicGeneratedImageUrl` 把自家 http 绝对地址改写成 https（v1.0.0.9）。
+2. **参考图 URL 优先 → 失败回退 base64**（`generateGptImage2` 两段式 + 新 `referenceToDataUrl`，v1.0.0.10）。实测测试服：URL 失败(404)→base64 成功出图，16 张参考图全送达(base64 总~3MB)。
+3. **B_13/B_14 真因**=OpenAI 安全系统直接拒绝"生成美女"(`safety_violations=[sexu…]`)。请求阶段拒、未生成、**失败不扣费**、同句有概率过。加错误映射（v1.0.0.11）：`模型拒绝了本次生成请求，可能是因为提示词中包含了【<原文类别>】的原因！…`。
+4. **⭐ 对话流"申请多张+重试"卡槽定位 bug**（严重）：重试结果的 `targetSlotIndex` 误用"失败卡序号"当绝对下标 → 覆盖了成功图位。修：重试传 `undefined` 让走 `retryFailedIndex→第N个失败slot` 定位（v1.0.0.12）。
+5. **⭐ 红字与失败卡 1:1**：原因挂到 `ImageResultSlot.failed.reason`，渲染从失败 slot 派生、排除重试中的（v1.0.0.13）。
+6. **免费 HTTPS 验证**：uguu.se 直链(image/jpeg) → gpt-5.4-image-2 返回 200 出图=**方向1可行**。测试服无域名做不了可信 https、借正式服域名不行(存储隔离)。**用户明天加子域名 `staging-static.venusface.com`**（阿里云 DNS）。
+7. **正式服现状**：仍 v1.0.0.2、缺 v1.0.0.2 之后全部改动；两服迁移一致(30个)=部署无需跑迁移；基础设施文件两服一致；正式服 `UPLOAD_RULE_OVERRIDES` gpt-5.4-image-2=`maxCount:5` 部署后需手动改 16。**部署正式服=一次性同步测试服整份 `/app` 源码。用户说还没改完、暂不部署。**
+8. **状态**：测试服 v1.0.0.13（tsc 过、无迁移、阿里测试镜像同步、外网 200）。改动文件：`src/lib/openrouter.ts`、`src/lib/error-message.ts`、`src/components/chat-workbench.tsx`、`src/lib/app-version.ts`。全部未 push GitHub、未同步正式服。
+
+## 上一 session：gpt-5.4-image-2 迁 OpenRouter 新图片接口 /api/v1/images + 4K + 画质档三处 + 输入框/资产库 UI + 后台上传规则清理（✅ 已部署测试服 v1.0.0.8；⚠️ 未同步正式服、未 commit/push）
+
+**详见 CHANGELOG 顶条为权威。速记：**
+
+1. **只改 gpt-5.4-image-2 一个生成模型**（其它 OpenRouter/BytePlus/视频零改动），从 `/chat/completions`+`modalities` 迁到专用 `POST /api/v1/images`（`generateGptImage2`）。
+2. **尺寸**：新接口该模型只认 `size`(精确像素)，K数/比例被忽略；智能比例=不传 size 自动。加了 **4K 尺寸表**；`classifyImageResolutionByModel` 修 4K 显示成 3K 的 bug。
+3. **画质档**（auto/low/medium/high，**默认高**，仅该模型显示）三处：对话流比例弹窗尺寸下方（按钮标题显示"16:9/高清2K/画质高"）、资产库模型行 K数后下拉菜单（K数与画质等宽、选模型按钮让宽）、工作流图片节点画质菜单。
+4. **参考图**：默认 **16 张 / 10MB**（后台可 override）+ 改传公网 URL（不再内联 base64）+ 体积日志 `image-provider-reference-sizes`。
+5. **扣费**：新接口 `usage.cost`(美元)→`usd`，公式不动。原生 `n`(1-10)。
+6. **对话流输入框撑宽重写**：删掉按模型名长度估算的旧逻辑（会把发送按钮顶出框），改 `ResizeObserver` 实测左侧按钮组 `offsetWidth`（不含弹窗），宽度=max(800, 左组+80, 800+文字增长)。
+7. **后台上传规则面板**：过滤掉已弃用的 3 个 OpenRouter 重复款（Seedream 4.5 OR / Seedance 2.0 / Seedance 2.0 Fast，生成界面本就选不到）；**没动共享模型数组**，改由服务端 page.tsx 传"可用模型 ID"给面板过滤（安全，不影响 DEFAULT 模型/生成下拉）。
+8. **GPT-5.4 Image 2 上传默认 16 张 + 开启**：代码默认已是 16；面板显示 5 的真凶=**env override**（`UPLOAD_RULE_OVERRIDES` 里存了 5，优先于代码），已把本地 `.env.local` 和测试服 `data/.env.local`（挂载进容器）都改 16。⚠️ **正式服 env 独立，部署时需同样改 16**。
+9. **⚠️ 暂缓**：对话流"最多4张"改原生 n=1请求——未做（多图 orchestration 与 Agent 共用、单槽位/重试结构改动风险高）；当前仍申请4次(每次n=1)功能正常。
+10. **状态**：测试服 v1.0.0.8（tsc 过、无迁移、阿里测试镜像同步、外网 200）。未同步正式服/未 push。全量实测数据在桌面 `gpt54-image2-test/测试结论.md`。改动文件见 CHANGELOG §7。
+
+## 上一 session：上传规则校正 + 拦截文案通用化 + 资产库拖拽上传 + 17 音频回填 + AI 可直读全网站（✅ 已部署测试服 v1.0.0.5；⚠️ 未同步正式服）
+
+**详见 CHANGELOG 顶条为权威。速记：**
+
+1. **⭐⭐ AI 现在能用浏览器工具（playwright）直读全网站正文**（火山这种 JS 渲染的也行）。查官网一律用浏览器工具，`webfetch` 对 JS 站只拿到空壳=没读到。**别再拿本地旧复制文档当权威**（本 session 就因此踩坑：把加 4k 前的旧本地 .md 当权威，误报视频上限 50MB，后用浏览器核对当前官网是 200MB 才改回）。已写进 `00-README.md` 顶条。
+2. **删除** `E:\project\【1】Api key\Byteplus\` 全部网站复制文档（10 个），只留 `Byteplus api key.md`（密钥+端点映射）。
+3. **17 个历史音频 `durationSeconds` 回填（正式服线上 DB 已改）**：修复 3 账号（ID_315163/ID_686996/ID_868181）@引用旧音频生视频报红字"音频时长读取失败"（根因=旧上传通道没存时长，`/api/video` 复校读到 NULL）。
+4. **视频上传规则按当前官网校正（代码，已部署测试服）**：视频 ≤200MB / 总像素 ≤8295044（含 4k）；把 3 处过时的 50MB/2086876 改成官网值。音频 15MB、图片 10MB 未动。
+5. **拦截文案通用化**：格式不符提示去掉"当前模型"口径，改成"仅支持 MP4、MOV 格式的视频"/"…MP3、WAV…音频"/"…JPG、JPEG、PNG、WebP…图片"（资产库/对话流/工作流通用）。
+6. **资产库拖拽上传**：以前拖文件走错路径（对话流输入框）没反应；现按当前标签路由（上传图片/视频/音频三标签各自上传+校验+黑底提示），遮罩只在这三个标签弹、文案只显示当前类型。
+7. **状态**：代码全在测试服（`v1.0.0.5`，`tsc` 过、无迁移、阿里测试镜像已同步），**未同步正式服、未 commit/push**。改动文件见 CHANGELOG §6。等用户说"部署正式服"再原样同步。
+
+## 最新（大改动）：独立测试服 staging 搭建 + 版本号体系 + 部署铁律 + swap 缓解
+
+**✅ 测试服已上线；✅ 版本号功能已按铁律一次性部署测试服+正式服，两边 `v1.0.0.2`；⚠️ 全部未 commit/未 push GitHub。** 见 CHANGELOG 顶条为权威。速记：
+
+1. **新增独立测试服（staging）**，和正式服完全隔离（独立容器/库/网络/镜像/端口），用于线上验证不影响真实用户，完整模拟"正式服连阿里"。
+   - 入口（IP、无域名）：前端 `http://101.37.129.164:8080/`、后台 `http://101.37.129.164:8080/admin`。
+   - 腾讯 `/opt/flashmuse-staging/`（staging-app/db/nginx，宿主 5001）+ 阿里 `/var/www/flashmuse-static-test/`（nginx 8080）+ 独立 ali-sync。
+   - 测试库当前**空库**（已清），用户重新注册；白名单 `lookxun@163.com`/`176107103@qq.com` 走 env 不受影响。
+2. **⭐ 部署铁律（已写进 AGENTS.md 顶部，必守）**：用户说"部署掉/部署一下"**默认只部署测试服，绝不动正式服**；只有明确说"部署正式服/更新正式服/上线正式服"才走"先测试服→验证→再原样同步正式服"完整顺序，不跳过测试服、不直接改正式服。
+3. **版本号体系**：`src/lib/app-version.ts` 的 `APP_VERSION`（四段100进制 `vAA.BB.CC.DD`）；`scripts/bump-version.mjs` 自增（**只在部署测试服时跑**，正式服绝不自增只原样同步）→ 保证"版本号一样=代码一样"。显示于首页底部 footer / 工作台设置版本信息 / 后台左侧当前管理员上方。测试服 `NEXT_PUBLIC_IS_TEST=true` 额外显示 logo"测试服"、`(t)` 后缀、标签标题 `(测试服)` 前缀。**当前测试服+正式服均 v1.0.0.2**。
+4. **OpenRouter 新图片接口迁移=本 session 原始需求，尚未做**（只调研+建好测试环境）。下一步在测试服里做迁移，见 05-next-actions 顶条。
+5. **运维**：宿主 2核/8G，`next build` 构建期吃满资源致同机服务短暂卡顿（非耦合、无 OOM，构建完自动恢复）。已加 6G swap（总 7.9G，swappiness=10）缓解；桌面 `服务器升级建议.md` 建议升 8核/16G。
+
+## 历史：2026-07-22（延续 session）视频/音频上传全链路修复 + 体验优化，✅ 已部署上线
+
+**✅ 全部已部署腾讯 + 同步阿里、main/api/ali/static 四域名 200、`npx tsc --noEmit` 通过、无 Prisma 迁移。⚠️ 未 commit/未 push；本地工作树 = 线上最终代码，GitHub 落后。部署是打单文件 tgz scp 覆盖 `/opt/flashmuse/app` + `docker compose build/up`，非 git 流程。**
+
+1. **上传 500 已修**：视频/音频上传 `Cannot read 'split'` 两段根因（空 MIME + `{...file}` 展开丢 `File.name/type`）已改；对话流/资产库/工作流共用 `/api/upload-file`，一处修全好。之前"对话流能传"其实是 @引用已有资产。
+2. **秒回**：客户端算 SHA-256 → `GET /api/upload-file?contentHash=` 预检，命中旧文件直接复用免重传（`src/lib/upload-content-hash.ts`）。
+3. **视频封面**：服务端上传视频即时生成同目录 `.poster.jpg`（`createUploadedVideoPoster`）并写 `posterUrl`；只用真实存在的封面（旧视频无封面则回退 `<video>` 首帧）。
+4. **资产库临时卡**：上传期间显示首帧/图标铺底 + 黑透遮罩 + 蓝色进度，完成替换正式卡。
+5. **时长**：放宽到 ≤16.01 秒（刚好 15 秒可传）。
+6. **方案 A（读源策略）**：同步阿里后台异步（不卡 91%）；本会话刚上传的读腾讯主源（成功即可播放），刷新后走阿里镜像（`src/lib/recent-upload-origin.ts`）。
+7. **音频 CORS**：腾讯 nginx `/generated` 加 `Access-Control-Allow-Origin: *`（wavesurfer 跨域 fetch 需要）。
+8. **待办 M018**：不刷新不自动切阿里镜像，用户暂保持现状。
+
+## 历史：视频/音频上传收尾，用户要求下一个 AI 直接部署（已被上条取代——现已部署并修复）
+
+**⚠️ 仅本地：`npx tsc --noEmit` 通过；未 build / 部署 / commit / push；无 Prisma 迁移。不可把本批当作线上已生效。**
+
+1. **统一上传规则已实现**：`src/lib/media-upload-validation.ts` 统一前端/后端视频与音频格式、大小、时长、尺寸、比例、像素、FPS、编码规则；`src/lib/media-upload-probe.ts` 用项目已有 `ffmpeg-static` 探测真实文件属性；`/api/upload-file` 在落盘前强制鉴权及服务端验证。对话流、工作流、资产库均复用该路径。
+2. **资产归属与生成防绕过**：工作流上传传递 flow/workflowId/nodeId，避免错误记为对话流；`/api/video` 只接受当前用户可见的已入库音视频参考，并复验已存元数据。融合模式仅支持音视频；首帧/首尾帧和其它模型继续拒绝。
+3. **音频 `.bin` 命名已修**：`src/lib/local-assets.ts` 现在能从普通文件名直接提取扩展名，并补齐 MP3/WAV MIME 映射；新上传音频会落为 `.mp3`/`.wav`，不再因 `new URL()` 解析普通文件名失败而落为 `.bin`。历史 `.bin` 文件不回填、不改名。
+4. **输入框视频缩略图已统一**：新增 `src/components/video-upload-thumbnail.tsx`；对话流与工作流输入框共用，优先显示封面、没有封面时尝试视频首帧，封面/视频均加载失败才显示视频图标。资产库视频/音频分类也已有直传按钮。
+5. **未完成真实验收**：用户曾在资产库看到“文件上传失败”，但没有提供 `/api/upload-file` 的状态码/响应，且可能在公网域名测试，因此尚未定位该现象。不能宣称上传已验证成功。
+6. **用户指令**：下一个 AI 直接部署。生产 Nginx 目前历史上限为20MB，部署前必须提高到至少200MB并同步上传超时，否则新的视频上限在公网无效。
+
+## 2026-07-22 视频/音频上传限制统一 + 资产库直传入口
+
+**⚠️ 全部仅本地：`npx tsc --noEmit` 通过；未 build / 未部署 / 未 commit / 未 push；无 Prisma 迁移。** 已按 BytePlus Seedance 2.0/Fast/Mini 融合模式官方规则统一视频/音频校验；服务端 ffmpeg 实测媒体属性、上传 API 补 token/登录鉴权、视频生成复验用户资产；资产库上传视频/音频分类右上已有直传按钮。生产 Nginx 仍是20MB历史限制，未获部署批准前不改服务器；部署前必须评估并调到至少200MB及对应上传超时。
+
+## 2026-07-22 本地资产库直传 + 左右实时计数 + 图片上传格式/大小统一 — 见 CHANGELOG 顶条为权威。速记：
+
+**⚠️ 全部仅本地：`npx tsc --noEmit` 通过；未 build / 未部署 / 未 commit / 未 push；无 Prisma 迁移。** 改动：新增 `src/lib/image-upload-validation.ts`；修改 `src/components/chat-workbench.tsx`、`src/components/workflow-tldraw-canvas-inner.tsx`、`src/app/api/asset-upload-temp/route.ts`、`src/lib/upload-rules.ts`、`handover/*`。
+
+1. **资产库图片直传**：右上上传按钮不再弹 `AssetUploadDialog`，直接选图；临时卡直接进上传图片网格，保留黑透遮罩+蓝色圆形进度、失败重试、移除、自动 JPEG 转码重试、SHA-256 去重、服务端唯一命名。全部完成自动 commit+入库；用户删除仍为软删除；取消上传前改名。单次上限 8→**10**，超出仍为黑底 toast。
+2. **资产库实时计数**：新增统一 `getAssetCountFilter`/`adjustAssetCounts` 本地增量层。上传图片、对话流图片上传/图视频生成、工作流图视频生成、资产库角色/场景/分镜生成、删除/恢复/移动分类都会即时更新左侧和 `@引用资产` 的共用 `assetCounts`；服务端 `/api/workspace-state` 响应仍覆盖为权威校准，避免分页只加载一页导致计数错误。
+3. **图片规则唯一化**：`IMAGE_UPLOAD_ACCEPT=.jpg,.jpeg,.png,.webp`、`IMAGE_UPLOAD_MAX_BYTES=10MB`。`validateImageUploadFile` 同时核扩展名/MIME/原始文件大小；后端 `asset-upload-temp` 400 强制拦截（不可绕过）；资产库、对话流、工作流选择时提前拦截；工作流旧 5MB 限制及模型专属 image formats/maxSize 分叉已移除。模型 `uploadRule.image` 仍只控制 enabled/maxCount。历史图片不回填；视频/音频/文档、头像独立上传接口未动。
+4. **下一个 AI（用户点名）**：继续统一**视频、音频、文档**上传：先审计资产库/对话流/工作流/API 各自的格式、大小、时长、数量与保存路径；向用户报告影响并确认各类统一产品规则；再按图片模式实现「后端唯一强制校验 + 三前端入口同一即时校验」，不复制校验逻辑，不改已经确认的图片规则。
 
 ## 2026-07-22 部署 07-20+07-21 全部上线 + 工作流删除确认弹窗 + 图层右键拦截 + @引用视频首帧/音频倒计时 + 导入选中蓝框层级 — 见 CHANGELOG 顶条为权威。速记：
 

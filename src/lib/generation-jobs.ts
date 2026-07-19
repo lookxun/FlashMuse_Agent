@@ -37,7 +37,7 @@ export type GenerationJobRow = {
   model: string | null;
   provider: string | null;
   prompt: string | null;
-  settingsJson: { ratio?: string; resolution?: string; duration?: string } | null;
+  settingsJson: { ratio?: string; resolution?: string; quality?: string; duration?: string } | null;
   referenceImages: string[] | null;
   referenceVideos: string[] | null;
   referenceAudios: string[] | null;
@@ -142,7 +142,7 @@ export type CreateImageJobInput = {
   prompt: string;
   model?: string;
   referenceImages?: string[];
-  settings?: { ratio?: string; resolution?: string };
+  settings?: { ratio?: string; resolution?: string; quality?: string };
   count?: number;
   candidateMode?: "all" | "best";
   creditSource?: string;

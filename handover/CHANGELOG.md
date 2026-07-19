@@ -1,5 +1,289 @@
 # Current Handover Changelog
 
+## 2026-07-19（later session：gpt-5.4-image-2 参考图 http→https 改写修复 + URL优先/base64回退 + safety 错误映射 + 对话流重试卡槽定位 & 红字1:1 大修 + 免费HTTPS原理验证）（✅ 已部署测试服 `v1.0.0.13`；⚠️ 未同步正式服、未 commit/push；无 Prisma 迁移）
+
+回复风格：简洁直接中文。承接同日上一 session（gpt-5.4-image-2 迁新接口，测试服 v1.0.0.8）。本 session 从"查测试服 B_1~B_14 红字真因"入手，修了一串 gpt-5.4-image-2 img2img / 对话流重试的真 bug，并把免费 HTTPS 方案验证清楚。**下一个 AI 以本条为最新。**
+
+### ⭐ 用户两个最终目标（务必记住）
+1. **请求方案**：参考图**优先传 URL、URL 不行回退 base64**（已实现，见下）。
+2. **测试服 = 正式服完全对齐**：以后更新正式服 = **一次性把测试服整份源码同步过去**，保持"版本号一样=代码一样"。用户拿测试服先验证、验证 OK 再一次性全量更新正式服。
+
+### ⭐ 本 session 版本演进（测试服，代码逐批叠加）
+- `v1.0.0.9`：`toPublicGeneratedImageUrl` 修 http 绝对地址不改写 bug（自家 http 绝对地址 → 剥路径重拼 https base）。
+- `v1.0.0.10`：`generateGptImage2` 改"URL 优先 → 失败回退 base64"两段式 + 新增 `referenceToDataUrl`。
+- `v1.0.0.11`：`error-message.ts` 加 OpenAI 安全拒绝映射。
+- `v1.0.0.12`：对话流重试**卡槽定位 bug** 修复（重试结果不再覆盖成功位）。
+- `v1.0.0.13`：对话流**红字与失败卡 1:1**（原因挂到 slot 上）。
+
+### 1. B_1~B_14 红字真因排查（都在 gpt-5.4-image-2）
+- **B_1~B_12**：img2img 报 `Only HTTPS URLs are allowed`（400）。真因=参考图传的是 `http://101.37.129.164/...`（阿里 IP，HTTP），OpenRouter 新接口 `/api/v1/images` **只认 HTTPS**，被兜底映射成"服务器繁忙"盖住真因。纯文生图（无参考图）正常。
+- **B_13/B_14**：提示词"生成美女" 被 **OpenAI 安全系统直接拒绝**（`rejected by the safety system ... safety_violations=[sexu…]`，provider=OpenAI，400）。**请求阶段就拒、未生成图**（不是"生成了再审核丢弃"）。同一句话有概率过（安全判定带随机性），所以同批 4 张常 2 成 2 败。**失败的不扣费**（只成功的 finalize 时扣，按 requestId 幂等）。OpenAI 只回缩写类别 `sexu…`（它自己截断），拿不到完整精确原因。
+
+### 2. `toPublicGeneratedImageUrl` http→https 改写修复（`src/lib/openrouter.ts`）
+- 新增 `OWN_HOST_ABSOLUTE_RE`（匹配 101.47.19.109/101.37.129.164/119.28.116.16/main|api|ali|static.venusface.com，含端口）。
+- 逻辑：data: 原样；`/generated/...` 拼 https base；**自家 http/https 绝对地址 → 剥出路径重拼到 https base**（杜绝 http 被拒）；其它外部地址原样。
+- 意义：这套 URL 方案就算同步正式服，客户端传 http 绝对地址也不会挂（正式服有 https 域名，改写后能抓到）。
+
+### 3. URL 优先 → base64 回退（`src/lib/openrouter.ts` `generateGptImage2`）
+- 新增 `referenceToDataUrl`：本地 `/generated` 资产（含自家绝对 URL 映射本地）直接读文件转 base64；本地没有再 fetch 远程字节兜底。
+- `generateGptImage2` 重构成两段式：先用公网 URL 发（小、快）；**只要用了参考图且 URL 那次失败，自动回退 base64 再发一次**。诊断日志加 `refMode`(url/base64) + 新事件 `image-provider-url-fallback-base64`。
+- **实测验证（测试服真实 OpenRouter 调用）**：STEP1 URL（测试服默认拼成 `https://main.venusface.com/...`，正式服上无此文件 → 404）→ STEP2 base64（读本地文件）→ HTTP 200 出图。用户真实生成也确认：16 张参考图全部送达（`referenceCount:16`，base64 总 ~3MB，未爆），4 张里 URL 全失败→base64 全成功。
+
+### 4. OpenAI 安全拒绝错误映射（`src/lib/error-message.ts`）
+- 在兜底(无中文→服务器繁忙)之前加：命中 `rejected by the safety system|safety_violations|safety system` →
+  文案：`模型拒绝了本次生成请求，可能是因为提示词中包含了【<原文类别>】的原因！直接重试有可能会成功，修改提示词后成功率更高。`
+- 【】里从 `safety_violations=[...]` 原样抽 OpenAI 类别（如 `sexu…`）；抽不到则用不带【】的通用句。保留 `(B_xx)` 前缀。
+
+### 5. ⭐ 对话流"申请多张图 + 重试"卡槽定位 bug（严重，`src/components/chat-workbench.tsx`）
+- **现象**：申请 4 张、2 成 2 败；点失败卡重试后又失败，新失败卡**没覆盖原失败位，反而把之前成功的图覆盖掉了**。
+- **根因**：重试结果回填时第 8 参数 `targetSlotIndex` 传了 `pendingRequest.retryFailedIndex ?? index`。`retryFailedIndex` 是"失败卡序号"（在失败卡里排第几），却被当成**绝对 slot 下标**，于是 `[成功,成功,失败,失败]` 里重试第 0 个失败卡 → 覆盖 slot 0（成功图）。
+- **修复**：重试时 `targetSlotIndex` 传 `undefined`，让回填走 `retryFailedIndex → 第 N 个失败 slot` 的正确定位；初次生成仍用 `index`（绝对下标）。改两处：`appendImagesToAssistantMessage` 调用(12541)、`markAssistantImageFailure` 调用(12547)。
+
+### 6. ⭐ 红字（失败原因）与失败卡真正 1:1（`src/components/chat-workbench.tsx`）
+- **要求**：N 个失败卡 → N 段红字分页、位置一一对应；重试第 k 个卡 → 第 k 段红字消失(该位显等待卡)、其它不变；成功→该段消失显图；失败→该位显新红字。
+- **根因**：红字原存独立数组 `mediaErrorReasons`，靠序号对齐；但 finalize 用**请求下标顺序**覆盖它、失败卡按**完成顺序**排，会错位；重试中的那条也没从分页排除。
+- **修复**：把失败原因**挂到失败卡自己的 slot 上**（`ImageResultSlot.failed` 加 `reason?`）。① 类型加 reason；② `markAssistantImageFailure` 写 reason 进 slot；③ `retryFailedMedia` 进重试态保留 reason；④ `finalizeAssistantImageFailures` 收尾保留各 slot reason；⑤ 渲染：红字分页从失败 slot 派生（**排除 retryingStartedAt 的**），按位置取 slot.reason（回退 mediaErrorReasons[ord] → 通用）。两处 `currentSlots` 加 `ImageResultSlot[]` 类型标注修 tsc。
+
+### 7. ⭐ 免费 HTTPS 方案验证（测试服无域名问题的原理结论）
+- **背景**：测试服纯 IP 无域名，做不了"被 OpenRouter 信任的 HTTPS"（自签证书 OpenRouter 抓取会拒、公信 CA 不给纯 IP 发证）。"借正式服 https 域名传图"也不行——**存储隔离**：测试服上传图只在测试服本地 `/opt/flashmuse-staging/data/generated/...`，正式服上没有 → 传正式服域名 OpenRouter 抓到 404。
+- **实验（测试服上跑真实 OpenRouter）**：trycloudflare 匿名快速隧道当天服务端故障(1101)、URL 每次变、不稳；0x0.st 已关闭；catbox 拒服务器 IP；tmpfiles 直链返回 HTML 中转页(mimetype text/html 被拒)；**uguu.se 直链**(content-type image/jpeg) → gpt-5.4-image-2 返回 **HTTP 200 + b64_json 图片、成功**。
+- **结论/原理**：只要参考图是**公网可达 HTTPS + 直接返回原图字节 + image/* content-type**，img2img 就成功。报错逐层排除：http被拒→530抓不到→html类型→200成功，**HTTPS 本身全程被接受**。所以**方向1可行**：给测试服配稳定免费 HTTPS 前门（sslip.io+Let's Encrypt 或 Cloudflare 命名隧道；匿名快速隧道不稳不用）指向本地文件服务，两端跑同一份 URL 代码、仅 env base 不同。
+- **用户决定**：DNS 在阿里云(hichina)非 Cloudflare。**明天加子域名**（如 `staging-static.venusface.com` → 101.37.129.164 + Let's Encrypt），加好后只需：给测试服设 `NEXT_PUBLIC_PRIMARY_BASE_URL=https://<子域名>` + 配 nginx 443 证书 + 验证走 URL 分支。代码不用再动（当前 base64 回退已保证测试服能用）。
+
+### 8. 正式服现状核实（为将来"整份对齐"准备）
+- 正式服仍 **v1.0.0.2**，经查**完全没有** gpt-5.4-image-2 新接口/base64回退/safety映射/slotFailedReasons（`grep -c` 全 0）。即正式服落后 v1.0.0.2 之后**全部**改动。
+- **部署正式服 = 一次性同步测试服整份 `/app` 源码到正式服**（不是只更新最近几批）。两服 Prisma 迁移一致(各 30 个、最新 `20260714100000`)=**无需跑迁移**；`docker-compose.yml`/`Dockerfile`/`entrypoint` 两服一致（真正区分两服的 compose 在父目录 `/opt/flashmuse` vs `/opt/flashmuse-staging`，不在 `/app`）；正式服 `/app` 无 `.env.local`(挂载自 `data/`)。**正式服 `UPLOAD_RULE_OVERRIDES` 里 gpt-5.4-image-2 是 `maxCount:5`，部署后需手动改 16**。**用户明确：现在还没改完，暂不部署正式服。**
+
+### 本 session 改动文件（均仅测试服 + 本地，未 push）
+- `src/lib/openrouter.ts`（http→https 改写 + referenceToDataUrl + URL/base64 两段式）
+- `src/lib/error-message.ts`（safety 映射）
+- `src/components/chat-workbench.tsx`（重试卡槽定位 + 红字 slot 1:1）
+- `src/lib/app-version.ts`（v1.0.0.8 → v1.0.0.13）
+
+---
+
+## 2026-07-19（gpt-5.4-image-2 迁 OpenRouter 新图片接口 /api/v1/images + 4K + 画质档三处 + 一批输入框/资产库 UI + 后台上传规则清理）（✅ 已部署测试服 `v1.0.0.8`；⚠️ 未同步正式服、未 commit/push）
+
+回复风格：简洁直接中文。本 session 只改 **gpt-5.4-image-2** 一个生成模型（其它 OpenRouter/BytePlus/视频模型零改动），迁到 OpenRouter **专用图片接口 `POST /api/v1/images`**，并做了一批相关 UI（画质档三处、4K、输入框撑宽逻辑、资产库等宽按钮）与后台上传规则面板清理。**下一个 AI 以本条为最新。**
+
+### ⭐ 本 session 分批部署演进（测试服版本号，代码逐批叠加）
+- `v1.0.0.6`：gpt-5.4-image-2 新接口 + 4K 尺寸表 + 画质档三处初版（默认 auto，横排按钮）。
+- `v1.0.0.7`：5 项 UI 修正（4K 显示成 4K、对话流按钮显示"画质X"、三处默认改高、资产库画质改下拉+等宽、工作流比例弹窗内部点不关）+ 输入框撑宽逻辑重写（真实测量）+ 资产库 K数/画质等宽按钮。
+- `v1.0.0.8`：后台上传规则面板过滤弃用模型 + gpt-5.4-image-2 上传默认 16 张。
+- 另有服务器 env 数据修正（非代码、不改版本号）：测试服 `data/.env.local` 的 `UPLOAD_RULE_OVERRIDES` 把 gpt-5.4-image-2 从 5 改成 16。
+
+### ⭐ gpt-5.4-image-2 新接口实测规格（全量在桌面 `gpt54-image2-test/测试结论.md`）
+- **尺寸只能用 `size`（"宽x高"精确像素）**；`resolution`(K数)/`aspect_ratio`(比例) 传了被忽略。约束：宽高都被 16 整除、最长边 ≤3840、总像素 0.65MP~8,294,400。任意比例可用。
+- **智能比例 = 不传 size**（模型自动，有参考图跟随参考图比例）；不传时默认 1536×1024。
+- **画质 quality**：auto/low/medium/high；auto≈low 便宜，medium≈8×、high≈33× 价且慢(high~110s)。
+- **n 原生 1-10**；**参考图 input_references 上限 16**；`usage.cost`(美元) 直接可用。
+
+### 1. 后端（gpt-5.4-image-2 迁新接口）
+- `models.ts`：gpt-5.4-image-2 `resolutions` 加 `4K` + `gpt544KDimensions`（1:1 2880²/16:9 3840×2160/9:16 2160×3840/21:9 3808×1632/4:3 3264×2448/3:4 2448×3264，按约束取该比例最大）。加 `ImageQuality`/`IMAGE_QUALITY_OPTIONS`/`IMAGE_QUALITY_LABELS`/`DEFAULT_IMAGE_QUALITY`(=**high**)/`GPT_IMAGE2_MODEL_ID`/`isGptImage2Model`/`normalizeImageQuality`。加 `classifyImageResolutionByModel`（按模型尺寸表把实际像素归档，修 4K 显示成 3K）。
+- `openrouter.ts`：`generateOpenRouterImage` 检测 gpt-5.4-image-2 走新 `generateGptImage2()`（POST /api/v1/images）。智能比例不传 size / 具体比例映射精确 size；quality 透传；原生 n；参考图**改传公网 URL**（`toPublicGeneratedImageUrl`，复用 video 的 `NEXT_PUBLIC_PRIMARY_BASE_URL`，不再内联 base64）；`b64_json` 存盘；`usage.cost→usd`，扣费公式(美元→人民币→积分)不动。加参考图体积日志 `image-provider-reference-sizes`（`measureReferenceImageSize`，记单张 max/总量，供以后改真实上限）。
+- `upload-rules.ts`：gpt-5.4-image-2 参考图默认 **16 张 / 单张 10MB / enabled**（Gemini 仍 3/8；后台仍可 override）。
+- `generation-jobs.ts`：settings 类型加 `quality` 透传。
+
+### 2. 前端画质档三处（自动/低/中/高，默认高，仅 gpt-5.4-image-2 显示）
+- 对话流：输入框比例弹窗「尺寸」下方画质组；按钮标题显示 `16:9 / 高清2K / 画质高`。
+- 资产库生图：模型选择器所在行、K数后面**下拉菜单**；K数与画质**等宽**（`inline-grid grid-cols-2`，等宽轨道取较宽者），选模型按钮 `flex-1` 让出宽度；两按钮文字不换行完整显示；两菜单宽度=跨两按钮(`w-[calc(200%+8px)]`，K数 left-0 / 画质 right-0)。
+- 工作流：图片节点新增 `WorkflowImageQualityMenuSingle`（存 `node.data.quality`）；工作流比例弹窗(`WorkflowSettingsMenuSingle`)去掉选择即关闭，改为点弹窗内不关、点外部才关。
+
+### 3. 对话流输入框撑宽逻辑重写（原则化，替代旧的"按模型名长度估算"）
+- 删掉旧 `toolbarRequiredWidth`（`label.length*8` 估算，没算画质按钮 → 发送按钮被顶出框）。
+- 改为**真实测量**左侧按钮组 `offsetWidth`（`ResizeObserver` + `toolbarLeftGroupRef`，用 offsetWidth 不含绝对定位弹窗，避免点开菜单间距突然拉大）。
+- 宽度公式：`max(800, 左组自然宽 + 80, 800+文字增长)`，`80=间距8+发送36+卡片内边距32+边框4`。默认 800、发送按钮右对齐且始终在框内、左组与发送最小间距=按钮间距。
+
+### 4. 后台上传规则面板清理弃用模型（不动共享数组，安全）
+- 现象/结论：OpenRouter 平台侧图片/视频模型**都还在**（实测），但面板用原始数组显示，含了项目已弃用、生成界面已选不到的 3 个 OpenRouter 重复款：图片 `bytedance-seed/seedream-4.5`、视频 `bytedance/seedance-2.0-fast`、`bytedance/seedance-2.0`（`system-settings.ts:265/278/279` 已 `return false`）。
+- 做法：**没动 `models.ts` 共享数组**（避免改到 `DEFAULT_IMAGE_MODEL`/`DEFAULT_VIDEO_MODEL` 和生成下拉）。改成 `admin/page.tsx`（服务端）用 `isConversationImageModelEnabled`/`isAssetImageModelEnabled`/`isConversationVideoModelEnabled` 算出可用模型 ID 传给 `admin-upload-rules-panel.tsx`，面板据此过滤。以后任何模型被关掉/弃用会自动不显示。
+- 保留：BytePlus Seedream 4.5/Lite/Pro、Gemini 3.1/3 Pro、GPT-5.4 Image 2、Kling×3、Veo 3.1、BytePlus Seedance 三模式。
+
+### 5. GPT-5.4 Image 2 上传默认 16 + 开启
+- 代码默认已在 `upload-rules.ts` 设 16/enabled。但**面板显示 5 的真凶=env override**：`UPLOAD_RULE_OVERRIDES`（env 数据，优先于代码默认）里存了一条 gpt-5.4-image-2 image maxCount:5（早前后台保存过）。已把**本地 `.env.local`** 和**测试服 `/opt/flashmuse-staging/data/.env.local`**（挂载进容器 `/app/.env.local`）都改成 16 并重建测试服容器。⚠️ **正式服的这条 override 是独立 env 数据，部署时需同样在正式服 env 里改成 16**（详见 05-next-actions）。
+
+### 6. ⚠️ 暂缓项（下一个 AI，已按铁律先评估影响）
+- **对话流"最多出4张"改原生 n=1请求**：未做。原因=对话流多图 orchestration（`Promise.allSettled` 循环 + `appendImagesToAssistantMessage` **单槽位填充** + 失败索引重试）**与 Agent 模式共用**、且是"一图一槽位一请求"结构，改成一次 n=4 返回多图需重写槽位/重试放置逻辑，风险高。当前仍"申请4次"(每次 n=1)，功能正常只是 4 次调用。
+
+### 7. 改动文件（本 session 全部）
+`src/lib/models.ts`、`src/lib/openrouter.ts`、`src/lib/upload-rules.ts`、`src/lib/generation-jobs.ts`、`src/components/chat-workbench.tsx`、`src/components/workflow-tldraw-canvas-inner.tsx`、`src/app/admin/page.tsx`、`src/app/admin/admin-upload-rules-panel.tsx`、`src/lib/app-version.ts`。另：本地 `.env.local`（override 5→16，仅本地/服务器 env 数据，不进 git）。
+
+### 8. 状态 & 下一步（详见 05-next-actions 顶条）
+- ✅ 测试服 `v1.0.0.8`（tsc 过、无迁移、阿里测试镜像已同步、外网 200）。⚠️ **未同步正式服、未 commit/push GitHub**。
+- 下一步：用户验收测试服 → 说"部署正式服"才原样同步（不 bump、不从头传、把测试服 `/opt/flashmuse-staging/app` 那份复制到正式服 + build + 同步阿里**正式**镜像 `/var/www/flashmuse-static/` + 四域名 200 + **正式服 env 也把 UPLOAD_RULE_OVERRIDES 改 16**）。
+
+## 2026-07-18（音视频上传规则按当前官网校正 + 拦截文案通用化 + 资产库拖拽上传 + 历史音频回填 + AI 可直读全网站）（✅ 代码已部署测试服 `v1.0.0.5`；⚠️ 未同步正式服、未 commit/push；正式服仅第 1 条音频回填=线上数据已改）
+
+回复风格：简洁直接中文。本 session 起因：查一个红字"音频时长读取失败"（无 B_xxx），一路牵出上传规则校正、拦截文案、资产库拖拽上传。**下一个 AI 以本条为最新（排在下面"测试服 staging 搭建"那条之后）。**
+
+### 0. ⭐⭐ AI 现在能用浏览器工具直读全网站（已写进 00-README 顶条，必读）
+- 以前 AI 读不了外网，用户把火山官网文档复制成本地 .md 给看；现在装了 **playwright 浏览器工具**可直接读 JS 渲染的官网正文。**查官网一律用浏览器工具（`playwright_browser_navigate` + `playwright_browser_find`/`snapshot`），`webfetch` 对 JS 站只拿到导航空壳、不算读过官网。别再拿本地旧复制文档当权威。**
+- 已删除 `E:\project\【1】Api key\Byteplus\` 里全部网站复制文档（10 个 tutorial/接口/pricing/多模态），**只保留 `Byteplus api key.md`（密钥+端点映射，非网站文件）**。以后要火山文档直接开浏览器读官网。
+
+### 1. ⭐ "音频时长读取失败"红字根因 + 17 音频回填（✅ 正式服线上数据已改）
+- 该红字**不是生成错误、无 B_xxx**，是 `/api/video`(约 L753) 调 BytePlus 前的服务端复校：@引用已入库音频生视频时读 `MediaAsset.durationSeconds`，为 NULL → `validateMediaUploadMetadata` 返回"音频时长读取失败"整单拦下。
+- 根因：这些音频是 07-13~07-16 旧上传通道传的（`.bin` 扩展名 + 从没探测过时长）。受影响 3 账号：**ID_315163(10)、ID_686996(6)、ID_868181(1)，共 17 个**。
+- **已用容器内 ffmpeg 实测真实时长回填 `durationSeconds`（正式服线上 DB，只补空值，不动 url/名字/文件；脚本跑完已清）**。复查全库音频缺时长=0。`.bin` 不改名（改 url 爆炸半径大、违反"原始数据冻结"铁律，且与报错无关）。
+
+### 2. ⭐ `.bin` 兜底问题的最终结论（不做扩展映射，靠格式白名单拦）
+- 用户拍板：音视频只有 Seedance 2.0/Fast/Mini 三个融合模型能用，格式官方固定（视频 mp4/mov、音频 mp3/wav），**不需要扩展 .bin 兜底/补 MIME 映射**，只要上传时把不合规格式拦下、提示即可。新上传合规文件不会再落 `.bin`（07-22 已修 `local-assets.ts`）；历史 `.bin` 不动。
+
+### 3. ⭐ 视频/音频上传规则按【当前官网】校正（✅ 已部署测试服）
+- **用浏览器打开当前火山官网确认**（Create a video generation task, ModelArk/1520757）：参考视频 mp4/mov、480p/720p/1080p/**4k**、时长2-15秒/最多3/总≤15、宽高300-6000、**总像素[409600,8295044]**、**单个≤200MB**、FPS24-60、H.264/H.265+AAC/MP3；参考音频 wav/mp3、≤15MB、2-15秒/最多3/总≤15、请求体≤64MB。
+- **教训（重要）**：本 session 一度用 webfetch 读官网只拿到空壳，就退回去拿用户早前复制的**旧本地 .md**（那份是加 4k 之前的旧版：50MB/2086876/无4k）当权威，错误地告诉用户"该改成 50MB"，还先改了代码。后用浏览器实读当前官网发现 **200MB/8295044/含4k 才是对的**（是过去从官网如实抄的），把 4 处改回。**结论：读不到正文就用浏览器工具，绝不拿旧本地文件冒充官网。**
+- 最终代码统一到官网值（6 处）：`media-upload-validation.ts`(200MB/8295044) + `upload-rules.ts`(maxSizeMb 200) + `workflow-tldraw-canvas-inner.tsx`(8295044) 本就对；把 3 处**过时的**改对——`chat-workbench.tsx`(@引用视频像素 2086876→8295044、上传节点提示文案 50→200MB)、`admin-upload-rules-panel.tsx`(50MB/2086876→200MB/8295044)。音频 15MB 全对未动；图片 10MB/JPG·JPEG·PNG·WebP 是 07-22 用户确认的全平台产品规则、未动（≠官网参考图 30MB）。
+
+### 4. 拦截文案通用化（✅ 已部署测试服）
+- 格式不符提示原为"当前模型不支持该X格式…"，用户指出资产库里说"模型"不合适（资产库跟模型无关）→ 改成**通用、放哪都通顺**的黑底提示：`media-upload-validation.ts` 视频→"仅支持 MP4、MOV 格式的视频"、音频→"仅支持 MP3、WAV 格式的音频"；`image-upload-validation.ts` 图片→"仅支持 JPG、JPEG、PNG、WebP 格式的图片"。三入口（对话流/工作流/资产库）共用这两个校验函数。
+- 注意：工作流/对话流另有一层 `uploadRule.formats` 的模型可用性检查（`workflow-tldraw-canvas-inner.tsx` 约 L839、`chat-workbench.tsx` 约 L13678）仍是"当前模型不支持该X格式/上传X"——那是"模型是否支持这类上传"的语义，保留合理，资产库不走这层。
+
+### 5. ⭐ 资产库拖拽上传（✅ 已部署测试服）
+- 现象：资产库拖文件没反应；中间遮罩文案在"上传图片"标签里错误显示"图片/视频/音频"三种；遮罩在所有标签都弹。
+- 根因：`handleChatDrop` 在资产库模式下走的是 `addFilesToInput`（对话流输入框上传路径），不是资产库上传。
+- 改 `chat-workbench.tsx` 4 处：① 新增 `assetsUploadKind`(按当前 assetFilter：`conversation_uploads`→image / `upload_videos`→video / `upload_audios`→audio，其它=null) + `assetsUploadTypeLabel`；② `handleChatDragEnter` 资产库模式下 `!assetsUploadKind` 直接 return（**只在三个上传标签才弹遮罩**）；③ `handleChatDrop` 资产库模式按 kind 路由到 `selectAssetUploadFiles`(图) / `selectAssetMediaUploadFiles("video"/"audio")`（各自带格式/大小/时长校验+黑底提示）；④ 遮罩文案资产库模式改用 `assetsUploadTypeLabel`（只显示当前标签类型）。
+
+### 6. 状态 / 下一个 AI 必读
+- **本 session 代码改动全部已部署测试服**（`v1.0.0.2→v1.0.0.5`，四次自增），外网 `http://101.37.129.164:8080/` 200、阿里测试镜像已同步、`npx tsc --noEmit` 通过、无 Prisma 迁移。改动文件：`src/lib/media-upload-validation.ts`、`src/lib/image-upload-validation.ts`、`src/lib/upload-rules.ts`、`src/components/chat-workbench.tsx`、`src/components/workflow-tldraw-canvas-inner.tsx`、`src/app/admin/admin-upload-rules-panel.tsx`、`src/lib/app-version.ts`。
+- **未同步正式服**（等用户明确说"部署正式服"再走：不跑 bump、把测试服 `/opt/flashmuse-staging/app` 那份源码原样 scp 到正式服 `/opt/flashmuse/app` + build + 同步阿里正式镜像 `/var/www/flashmuse-static/_next/static/`）。**未 commit/未 push GitHub。**
+- 正式服目前只有第 1 条的音频 `durationSeconds` 回填生效（数据，非代码）。
+- 部署测试服流程：打 tgz → scp `/tmp` → `sudo tar -xzf -C /opt/flashmuse-staging/app` → `cd /opt/flashmuse-staging && nohup sudo docker compose up -d --build staging-app > /tmp/sb.log 2>&1 &`（后台+轮询防超时）→ `bash /opt/flashmuse-staging/sync-ali-test.sh` → curl `http://101.37.129.164:8080/` 验版本号。改中文源码用 edit/write 工具，禁 PowerShell `Set-Content`。
+
+## 2026-07-18（大改动｜测试服 staging 全套搭建 + 版本号体系 + 部署铁律 + swap 缓解）（✅ 测试服已上线；✅ 版本号功能已一次性部署测试服+正式服，两边 `v1.0.0.2`；⚠️ 全部未 commit/未 push GitHub）
+
+> ⚠️ 日期说明：本 session 实际发生在 07-22 那批之后（对话延续），文件头写 07-18 是版本号/铁律里沿用的锚点日期，**实际是最新一次 session、排在 07-22 之后**。下一个 AI 以本条为最新。
+
+回复风格：简洁直接中文。本 session 是**基础设施级大改动**，核心是"给项目建了一套独立测试服，并定死了测试服→正式服的部署铁律 + 版本号对比体系"。起因：用户要换 OpenRouter 新图片接口（高风险、只能线上测），但正式服不能拿真实用户冒险 → 先建测试服。
+
+### 0. ⚠️ 给下一个 AI 的状态提醒（务必先读）
+- **新增了一套测试服（staging），和正式服完全隔离**。以后**"部署掉/部署一下"默认只部署测试服**；**只有用户明确说"部署正式服/更新正式服/上线正式服"**才走"先测试服→验证→再原样同步正式服"的完整顺序。铁律已写进 `AGENTS.md` 顶部 + `03-deploy-and-servers.md` 顶部 + `00-README.md` 顶条，**必须遵守**。
+- **本地改动全部未 commit/未 push**（GitHub 落后）。新增文件：`src/lib/app-version.ts`、`scripts/bump-version.mjs`、`deploy/staging/{docker-compose.yml,flashmuse-staging.conf,flashmuse-test-8080.conf,sync-ali-test.sh,make-staging-env.sh,README.md}`。改动文件：`src/app/page.tsx`、`src/components/chat-workbench.tsx`、`src/app/admin/page.tsx`、`src/app/layout.tsx`、`src/app/admin/layout.tsx`、`Dockerfile`、`AGENTS.md`、`handover/*`。
+- **OpenRouter 新图片接口迁移（本 session 的原始需求）还没做**——只做了调研+建好测试环境。下一步就是在测试服里做这个迁移，见 `05-next-actions.md` 顶条。
+
+### 1. OpenRouter 新专用 Image API 调研（未改代码）
+- OpenRouter 推出独立图片接口 `POST /api/v1/images`（取代我们现在用的 `chat/completions`+`modalities` 老写法）。新特性：`input_references` 结构化参考图、原生 `n`(≤10)、`resolution/aspect_ratio/size`、`output_format`、`stream`、模型/定价发现接口 `/api/v1/images/models`、provider 路由、计费全有或全无(失败 502 不计费)。
+- 我们现状：`src/lib/openrouter.ts` 走 `OPENROUTER_URL=/api/v1/chat/completions`（:79/:1460）+ `modalities`+`image_config`，参考图塞 message content（只取前3张）、多图靠申请N次(上限4)；OpenRouter 图价读响应 `usage.cost`（无硬编码）。受影响 OpenRouter 图片模型：`bytedance-seed/seedream-4.5`、`google/gemini-3.1-flash-image-preview`、`google/gemini-3-pro-image-preview`、`openai/gpt-5.4-image-2`（BytePlus 直连 `/images/generations` 不受影响）。
+- 用户定调：**必须迁移**（以后新模型只走新接口 + gpt-5.4-image-2 是当前最强图片模型必须接）。因风险高、生成主链路只能线上测，先建测试服再在测试服迁移。
+
+### 2. ⭐ 测试服（staging）全套搭建（本 session 主体）
+- **目标**：和正式服跑同一份代码、数据/环境/端口/镜像完全隔离，线上验证不影响真实用户，完整模拟"正式服连阿里"链路。
+- **腾讯**：新目录 `/opt/flashmuse-staging/`，独立 Docker 栈 `flashmuse-staging`（`staging-app`/`staging-db`/`staging-nginx`，网络 `flashmuse_staging_default`，宿主端口 **5001**→容器80）。`staging-db` 独立空库（密码 `stg_5k2p9v7q3xz8`）。数据卷 `/opt/flashmuse-staging/data/{pgdata,generated,runtime,home-assets,nginx}`。app 代码 = `cp -a` 正式服 `/opt/flashmuse/app` 作基线 + 后续 scp 增量。
+- **阿里**：新 nginx 块 `/etc/nginx/sites-enabled/flashmuse-test-8080`（listen **8080**，静态从 `/var/www/flashmuse-static-test/` 读、其余反代腾讯 `119.28.116.16:5001`）；独立测试镜像目录；独立同步脚本 `/opt/flashmuse-staging/sync-ali-test.sh`（测试服 `_next/static`+`home-assets`+`generated`→阿里测试镜像）。
+- **入口地址（IP、无域名）**：前端 `http://101.37.129.164:8080/`、后台 `http://101.37.129.164:8080/admin`。
+- **端口**：用户已在云控制台放行 腾讯 **5001**（阿里→腾讯）、阿里 **8080**（浏览器→阿里）。均已实测连通。
+- **测试服 .env 关键差异**（`/opt/flashmuse-staging/data/.env.local`，`make-staging-env.sh` 从正式服 .env 派生）：`FORCE_INSECURE_AUTH_COOKIE=true`（http/IP，cookie 不能 Secure）、`AUTH_COOKIE_DOMAIN=`（空）、`NEXT_PUBLIC_PRIMARY_BASE_URL=http://101.37.129.164:8080`、`NEXT_PUBLIC_STATIC_BASE_URL=`（空=同源）、`ALI_SYNC_DEST_ROOT=/var/www/flashmuse-static-test/generated`、`UPLOAD_CORS_ORIGINS=http://101.37.129.164:8080`、`NEXT_PUBLIC_IS_TEST=true`。DATABASE_URL 由 compose 指向 staging-db。
+- **重要架构发现**：`NEXT_PUBLIC_*` 在客户端是**构建期 bake**，而 `.dockerignore` 排除 `.env*`，所以正式服客户端里 base URL 其实是**空=同源**（各 nginx 本地服务静态）。→ 测试服客户端天然同源（浏览器开 `:8080` 就全走 `:8080`），无需为客户端设 base URL。
+- **数据**：先把本地库 `pg_dump`（本地 docker `flashmuse-postgres`，user/db=flashmuse）导入测试服（102 账号含 lookxun@163.com/12424740 + 100 测试号、736 资产、50 会话）；**后按用户要求清空**（`DROP SCHEMA public CASCADE;CREATE SCHEMA public;`+重启 app 触发 entrypoint migrate deploy 重建空表），供用户重新注册。白名单走 env `ADMIN_EMAILS=lookxun@163.com,176107103@qq.com`，不受清库影响。媒体文件按用户要求**没搬**（老图打不开正常，测新生成）。
+
+### 3. ⭐ 版本号体系 + 测试服标识（已部署测试服+正式服，两边 v1.0.0.2）
+- 新增 `src/lib/app-version.ts`：`APP_VERSION`（四段 100 进制 `vAA.BB.CC.DD`，最右段+1满100进位）、`IS_TEST_SERVER=process.env.NEXT_PUBLIC_IS_TEST==="true"`、`versionLabel()`（正式`版本号:vX`/测试`版本号(t):vX`）。
+- 新增 `scripts/bump-version.mjs`：自增脚本（Node writeFileSync 写 UTF-8 不乱码；**只在部署测试服时跑**）。已测 +1 与进位正确。
+- **显示位置**：首页底部 footer（`本站内容均由AI生成 | 版本号:vX`，page.tsx）、工作台设置→版本信息（chat-workbench.tsx:16838，原写死"v0.1.0 内测版"）、后台左侧"当前管理员"上方（admin/page.tsx:257）。
+- **"测试服"标识**（金黄字，仅测试服 `NEXT_PUBLIC_IS_TEST=true` 时显示）：首页 logo 后（page.tsx:481 仿 Intl. 标识）、工作台 logo 后（chat-workbench.tsx:14570）、后台标题后（admin/page.tsx:240）。
+- **浏览器标签标题**：测试服加 `(测试服)` 前缀（layout.tsx / admin/layout.tsx）。
+- **Dockerfile**：加 `ARG NEXT_PUBLIC_IS_TEST=`（默认空）+ `ENV`，测试服 compose 传 `NEXT_PUBLIC_IS_TEST: "true"` bake 进客户端；正式服不传→false→不显示测试标识/(t)。
+- **部署结果**（严格按铁律：先测试服自增→验证→原样同步正式服不再自增）：测试服 `版本号(t):v1.0.0.2`、正式服 main+ali `版本号:v1.0.0.2`。三处数字一致=同码，证明体系成立。正式服四域名 200、api/workspace/static 均 200。正式服被覆盖文件备份在 `/opt/flashmuse/app-backups/verbadge-20260718-175006`。
+
+### 4. 部署铁律（已写进 AGENTS.md 顶部）
+- **"部署掉/部署一下"默认只部署测试服，绝不动正式服。** 只有明确说"部署正式服/更新正式服/上线正式服"才走完整顺序：**先一次性部署测试服（含版本号自增）→验证→再把测试服那份代码原样同步到正式服（绝不再自增）**。任何情况不跳过测试服、不直接改正式服代码。
+- 保证"版本号一样=代码一样，不一样=代码不一样"。破坏此保证的操作（正式服再自增/独立改代码/跳过测试服）一律禁止。
+
+### 5. 运维：宿主 swap 缓解 + 升级建议
+- **根因**：宿主只 **2 核 / 8G**（还跑 CinematicFlow + VibeSocial + FlashMuse 正式+测试）。部署时 `next build` 极吃 CPU/内存 → 构建那几分钟把同机其它服务（含测试服/正式服）压到变慢/打不开，**构建完自动恢复**。不是耦合、无 OOM 记录，纯共用一台机器的构建期资源争抢。运行时两服互不影响。
+- **已做**：给腾讯宿主加 6G swapfile `/swapfile-flashmuse`（总 swap 1.9G→7.9G，`vm.swappiness=10`，写入 fstab+sysctl 开机自动）。缓解构建期卡死。
+- **建议**（用户下周升级）：桌面已放 `C:\Users\ASUS\Desktop\服务器升级建议.md`——推荐升到 **8 核 / 16G**，之后测试服/正式服各自部署互不影响。升级需关机调配置。
+
+### 6. 关键操作记忆（下一个 AI 必读，避免踩坑）
+- **ssh 腾讯**：`ssh -i "C:\Users\ASUS\AppData\Local\Temp\opencode\CinematicFlow.pem" ubuntu@119.28.116.16`（docker 命令加 `sudo`）。
+- **阿里 key（root 属主，一切到阿里的 ssh/rsync 必须 sudo）**：`/opt/flashmuse/data/runtime/flashmuse_to_ali_ed25519`。测试服同步脚本也用它。
+- **PowerShell 坑（本 session 反复踩）**：ssh 内联命令里的 `$(...)`/`$VAR`/`%{...}`/嵌套双引号/中文，会被本地 PowerShell 先解释坏 → **一律把服务端脚本写成本地 .sh/.sql，scp 到 /tmp，`sed -i 's/\r$//'` 去 CRLF，再 bash 跑**。psql 查 CamelCase 表名带双引号也会被搅坏，用 .sql 文件 `-f` 跑。
+- **改中文源码只用 edit/write 工具，禁 PowerShell `Set-Content`/`(gc)|sc`**（会把整文件中文变 mojibake，本 session 踩过一次，用 write 工具重写修复）。
+- **测试服部署命令**：scp 源码→`/opt/flashmuse-staging/app`→`cd /opt/flashmuse-staging && nohup sudo docker compose up -d --build staging-app`（后台+轮询 /tmp/*.log 防 120s 超时）→`bash /opt/flashmuse-staging/sync-ali-test.sh`→curl `http://127.0.0.1:5001/` + `http://101.37.129.164:8080/` 验证。
+- **正式服部署命令**：scp 同一份源码→`/opt/flashmuse/app`→`cd /opt/flashmuse && nohup sudo docker compose up -d --build flashmuse-app`→同步 `.next/static` 到阿里正式镜像 `/var/www/flashmuse-static/_next/static/`→四域名 200 验证。
+- 仓库 `deploy/staging/` 存了测试服全部基础设施文件 + README，可据此重建。
+
+---
+
+## 2026-07-22（延续 session）视频/音频上传线上修复全链路 + 上传体验（封面/临时卡/秒回/时长/CORS）（✅ 全部已部署腾讯 + 同步阿里、main/api/ali/static 四域名 200、`npx tsc --noEmit` 通过、无 Prisma 迁移；⚠️ 未 commit/未 push，本地工作树有未提交改动；⚠️ 部署方式=打包单文件 scp 到 `/opt/flashmuse/app` 覆盖 + `docker compose build/up`，不是走 git，所以线上有这些改动但 GitHub 没有）
+
+回复风格：简洁直接中文。本 session 全程遵守铁律「先评估影响、用户确认才改、能统一一律统一」。上一批（视频/音频上传规则统一）此前只在本地，本 session 部署后发现真实 bug 并一路修到可用。**所有改动都是"改单文件→`tsc`→打 tgz→scp `/tmp`→`sudo cp` 进 `/opt/flashmuse/app`→`docker compose build flashmuse-app`→`up -d`→`docker cp .next/static` rsync 到阿里→四域名 curl 健康检查"。每步都在腾讯留了备份 `/opt/flashmuse/app-backups/20260722{,-media-validation-fix,b,c,d,e,f}`。**
+
+### 0. ⚠️ 给下一个 AI 的状态提醒
+- 线上（腾讯镜像内 `/opt/flashmuse/app`）= 本 session 最终代码；**本地工作树也 = 最终代码（未 commit）**；**GitHub 落后**。若要 push，需把本地未提交改动 commit 后推，内容应与线上一致。
+- 涉及文件：`src/lib/media-upload-validation.ts`、`src/lib/media-upload-probe.ts`(未改)、`src/app/api/upload-file/route.ts`、`src/lib/video-poster.ts`、`src/lib/upload-content-hash.ts`(新)、`src/lib/recent-upload-origin.ts`(新)、`src/components/chat-workbench.tsx`、`src/components/workflow-tldraw-canvas-inner.tsx`。
+- 服务器改动（不在 git）：腾讯 nginx `/opt/flashmuse/data/nginx/flashmuse.conf` 给两个 `/generated/` 块加了 CORS 头（备份 `.bak.20260722f`），已 `nginx -t` + reload。
+
+### 1. 视频/音频上传线上 500 根因修复（"文件上传失败"）
+- 症状：资产库/工作流上传视频音频全部 500 `TypeError: Cannot read properties of undefined (reading 'split')`；对话流看似能成功其实是 @引用已有资产、没走上传。三处都走同一个 `/api/upload-file`。
+- 两段根因：
+  1. 部分文件浏览器 MIME 为空 → `file.type.split(...)` 崩。修：`media-upload-validation.ts` 全部 `(file.type ?? "").split(...)`、`extensionOf(name ?? "")` 空值安全。
+  2. **真正根因**：`validateMediaUploadBuffer` 用 `{ ...file, size }` 展开 `File`——`File` 的 `name`/`type` 是原型 getter，展开后丢失变 `undefined` → `extensionOf(undefined).split` 崩。修：改成显式 `{ name: file.name, type: file.type, size: buffer.byteLength }`；`/api/upload-file` 调用处也显式传 `{ name, type: file.type, size: file.size }`。
+- 修一处三条链路（对话流/资产库/工作流）一起好。已用腾讯诊断日志 `/(-runtime)/upload-diagnostics-log.jsonl` 的 `upload-file-post-failed` 事件坐实（`upload-file-post-success` 数为 0，证明之前真实上传全崩）。
+
+### 2. 三个上传体验问题一次修（用户点名，一次部署）
+- **工作流卡 1% + 相同文件不能秒回**：`uploadWorkflowFile` 补 `onProgress?.(2)` 起步；新增 `src/lib/upload-content-hash.ts`（`computeFileContentHashHex` 客户端算 SHA-256 + `precheckUploadedFileDedup` 调 `GET /api/upload-file?contentHash=`）；`/api/upload-file` 新增 GET 预检 handler + CORS 放行 GET。对话流/资产库/工作流上传前先哈希预检，命中旧文件直接秒回、免整包重传。
+- **对话流上传视频无封面**：服务端 `src/lib/video-poster.ts` 新增 `createUploadedVideoPoster`（上传视频落在 `/generated/.../files/`，封面同目录同名 `.poster.jpg`）；`/api/upload-file` 视频上传后生成封面、写入 `mediaAsset.posterUrl`、响应带 `posterUrl`。
+- **资产库上传无临时卡**：新增 `AssetMediaUploadCard` 类型 + 状态 `assetMediaUploadCards`；`selectAssetMediaUploadFiles` 上传期间显示临时卡（视频用 `VideoUploadThumbnail` + `URL.createObjectURL` 首帧铺底 / 音频图标铺底，其上叠 `UploadProgressOverlay` 黑透遮罩 + 蓝色 `#367cee` 进度，与上传图片一致），完成后替换正式卡。
+
+### 3. 回归修复：旧上传视频封面丢失
+- 上一步给所有 `/files/` 上传视频"推算" `.poster.jpg`，但旧视频没有封面文件 → 404 且资产卡不回退 `<video>` → 空白。
+- 修：撤掉 `getLocalVideoPosterUrl` 的 `/files/` 推算，**只用真实存在的封面**（新上传由服务端生成并写入 `asset.posterUrl`）。新上传：`selectAssetMediaUploadFiles` 给资产带 `posterUrl`；对话流把 `uploaded.posterUrl` 塞进 `UploadedDocumentFile.posterUrl` 并在附件卡优先用它。旧视频：`posterUrl` 空 → 回退 `<video>` 首帧（恢复原样）。读取路径 `workspace-state` 已带 `posterUrl`，刷新后仍在。
+
+### 4. 时长阈值放宽
+- 刚好 15 秒的视频/音频被拦。`validateMediaUploadMetadata` 上限 15.05→**16.01**、下限 1.95→1.9（文案仍"2 到 15 秒"）。三处共用一起生效。
+
+### 5. "进度条消失即成功可播放"→ 最终定为方案 A（本会话读腾讯、刷新走阿里）
+- 中间试过：服务端 `await` 同步阿里 + 前端预热 → 但导致上传卡在 91%（91% 后最耗时就是"把整包再 rsync 到阿里"）。
+- **最终方案 A（已上线）**：`/api/upload-file` 同步阿里改回**后台异步 `void`**（腾讯本地做完探测/校验/去重/落盘/截封面就立刻返回，不卡 91%）；新增 `src/lib/recent-upload-origin.ts`（`markRecentUploadOrigin`/`isRecentUploadOrigin`）——本会话刚上传的 `/generated` 路径，`chat-workbench` 的 `getStaticMediaUrl` 一律返回腾讯主源（`uploadApiBaseUrl || https://api.venusface.com`），保证"成功即可播放/看封面"；刷新后集合清空、阿里也早同步好，自动走阿里镜像。前端 `preloadUploadedMedia` 在撤临时卡前预热腾讯源。
+- 生成视频"先给 URL、落盘后替换"是同思路。
+
+### 6. 音频跨域 CORS 修复（nginx，非应用代码）
+- 方案 A 让刚上传音频读腾讯 `api.venusface.com`，但腾讯 `/generated` 之前**无 CORS 头**；音频波形播放器 wavesurfer 要跨域 fetch 整段音频解码 → 被拦 → 永远画不出/不能播（视频封面是 `<img>` 不需 CORS 所以没事）。刷新读有 CORS 的 static 才好。
+- 修：腾讯 nginx 两个 `/generated/` 块加 `add_header Access-Control-Allow-Origin "*" always;`，`nginx -t` + reload。现 main/api/static 三源 `/generated` 都带 CORS。
+
+### 7. 待办（用户说保持现状、以后再说）→ 见 06-memo-tasks.md M018
+- 现状无轮询：本会话刚上传的视频/音频会一直读腾讯主源，**即使阿里同步好也不会自动切到阿里，除非刷新**。功能无碍（腾讯兜底），只是本会话内这几个加载稍慢。用户决定保持现状，记为待办（可选：上传成功后起个 10~20s 定时器把 url 移出 recent 集合；或方案 B 加同步状态轮询）。
+
+## 最新：视频/音频上传收尾，等待直接部署（⚠️ 仅本地，`npx tsc --noEmit` 通过；未 build/部署/commit/push；无 Prisma 迁移）
+
+- **音频错误落盘 `.bin` 已修复**：`src/lib/local-assets.ts` 的 `getExtensionFromUrl` 现可处理普通文件名（如 `voice.wav`），不再只依赖 `new URL()`；补齐 `audio/mpeg`、`audio/mp3`、`audio/wav`、`audio/x-wav`、`audio/wave` MIME→扩展名映射。新上传 MP3/WAV 会正确落盘；历史 `.bin` 不改名。
+- **输入框视频缩略图统一**：新增共享 `src/components/video-upload-thumbnail.tsx`，对话流 `chat-workbench.tsx` 与工作流 `workflow-tldraw-canvas-inner.tsx` 共用。优先 poster，缺 poster 时显示视频首帧，海报/视频加载失败时显示 `RiVideoLine` 图标兜底；保留播放覆盖图标。
+- 统一视频/音频上传改造仍包含：`media-upload-validation.ts`、`media-upload-probe.ts`、`/api/upload-file` 服务端鉴权与真实媒体校验、工作流上传归属、`/api/video` 参考资产归属/元数据复验、资产库直传入口。
+- **未完成验收**：资产库曾报“文件上传失败”，未获取 Network response，且可能实际在测公网旧接口；因此没有真实成功上传证据。下一位按用户要求直接部署，但部署后必须执行 `05-next-actions.md` 顶条验证；生产 Nginx 必须先支持至少200MB和更长上传超时。
+
+## 2026-07-22 视频/音频上传规则统一 + 资产库直传入口（⚠️ 仅本地，`npx tsc --noEmit` 通过；未 build/部署/commit/push；无 Prisma 迁移）
+
+- 按 BytePlus ModelArk Seedance 2.0 / Fast / Mini 融合模式官方规则统一：视频仅 MP4/MOV、单个≤200MB、2-15秒、最多3个、总≤15秒、宽高300-6000、比例0.4-2.5、像素409600-8295044、FPS 24-60、H.264/H.265 视频编码与 AAC/MP3 音轨；音频仅 MP3/WAV、单个≤15MB、2-15秒、最多3个、总≤15秒。首帧/首尾帧及其它模型仍不支持音视频参考。
+- 新增统一 `src/lib/media-upload-validation.ts`（前端即时校验与后端规则复用）及 `src/lib/media-upload-probe.ts`（服务器用 bundled ffmpeg 从真实文件读取时长、尺寸、FPS、编码，禁止信任客户端 metadata）。
+- `/api/upload-file` 现验证 Bearer upload token 或登录态，未登录不能落盘；视频/音频在落盘前强制按真实媒体属性校验，统一原始字节哈希去重、服务端权威命名、入库。工作流上传首次写入即带 workflow flow/id/nodeId，删除了后续重复入库造成的对话流错误归类。
+- `/api/video` 对参考视频/音频要求当前用户可见资产，按入库元数据复验时长、尺寸和总时长，禁止任意外部 URL 绕过前端限制。
+- 资产库在「上传视频」「上传音频」分类右上增加与上传图片同位置、同视觉样式的直传按钮；选中文件即上传、自动入库、实时更新相应分类计数，视频/音频卡沿用现有首帧/波形展示。
+- 图片和文档既定规则未动。尚未部署；生产要支持200MB视频还需用户明确批准后同步调整 Nginx 上传体上限与超时。
+
+## 2026-07-22 本地资产库图片直传（去弹窗）+ 全资产库实时计数 + 图片上传格式/大小统一（⚠️ 仅本地，`tsc`通过；未 build/部署/commit/push；无 Prisma 迁移）
+
+本 session 遵守「先评估影响、用户确认才改、默认只本地」：资产库直传 UI 只改前端，实时计数改共享前端状态，格式/大小由后端统一强制并让三处前端即时校验；不动生成、扣积分、现有媒体、视频/音频/文档规则。
+
+### 1. 资产库上传图片取消弹窗（`chat-workbench.tsx`）
+- 原右上按钮打开 `AssetUploadDialog`，选图后还要点击「确定上传」。现改为原生选择文件后**直接在上传图片右侧网格**显示临时卡。
+- 卡片沿用原逻辑：黑色半透明遮罩、蓝色环形进度（字节阶段60~70、服务端阶段爬到99、响应100）、失败黑层+重试、右上移除；成功后自动 `commitTemporaryAssetImage` + `/api/media-assets` 入库，卡片替换为正常资产卡。
+- 去掉上传前改名。服务端权威命名、SHA-256 原始字节判重、JPEG 转码探测/重试、已存在提示均原样保留；入库后删除继续是现有软删除。
+- `ASSET_UPLOAD_SLOT_COUNT` 8→**10**；超量 toast 改「最多同时上传10张」。
+
+### 2. 左侧/右侧/@引用资产计数实时同步（`chat-workbench.tsx`）
+- 根因：左侧和 @ 弹窗读 `assetCounts`（服务端快照），右侧读本地 `assets`，本地新增后没同步前者，必须等刷新。
+- 新增 `getAssetCountFilter` + `adjustAssetCounts`：即时处理资产库直传、对话流图片上传、对话流图/视频生成、工作流图/视频生成、角色/场景/分镜生成、软删除/恢复、移动分类。
+- 服务器 `workspace-state.assetCounts` 仍是最终权威；下一次加载覆盖本地增量，解决分页仅加载30条时不能用本地数组直接重算总数的问题。
+
+### 3. 图片格式和大小唯一规则（新增 `src/lib/image-upload-validation.ts`）
+- 用户确认产品规则：只支持 **JPG/JPEG/PNG/WebP**；按**原始文件**单图最多 **10MB**；不限制宽高/分辨率/像素；资产库一次10张不变；对话流/工作流数量仍由模型 `uploadRule.image.enabled/maxCount` 控制。
+- 新唯一纯函数 `validateImageUploadFile(file)`：同时检查文件扩展名、MIME（防 `.jpg` 假后缀）和大小，统一错误文本「上传图片只支持 JPG、JPEG、PNG、WebP 格式」「上传图片不能超过10MB」；`IMAGE_UPLOAD_ACCEPT` 统一选择器。
+- **后端权威**：`/api/asset-upload-temp` POST 在读 buffer、计算哈希、临时落盘前强制校验，返回 400；不可通过旧前端/手工请求绕过。
+- **前端即时**：资产库直传、对话流输入、工作流节点上传共用同一函数；工作流从原 jpg/jpeg/png/webp+5MB 提升为10MB，聊天输入不再按模型 `formats/maxSizeMb` 各自分叉。`getUploadAcceptValue`、工作流 accept 同步限定四格式。
+- 合规 PNG/WebP 与异常 JPEG 的既有服务端 JPG 转存/`forceReencode=1` 自动重试不变；Nginx 20MB 仅网关兜底。历史媒体、视频/音频/文档与用户头像独立接口未动。
+
+### 4. 下一步（用户点名）
+- 下一个 AI 继续统一**视频、音频、文档上传**。先审计资产库/对话流/工作流和服务端各路径的限制、保存、去重、命名差异；有影响先告知用户并等规则确认；随后复用「后端唯一强制 + 前端共用即时校验」模式。视频/音频的模型时长、尺寸、数量规则不能未经确认删除或按图片10MB照搬。
+
 ## 2026-07-22 部署 07-20+07-21 两批全部上线 + 工作流空生成节点删除确认弹窗 + 图层面板右键拦截 + @引用弹窗视频首帧封面/音频倒计时显示 + 导入弹窗选中蓝框层级修复（✅ 全部已部署腾讯 + 同步阿里、四域名 200、`tsc`+`build` 通过、无 Prisma 迁移、已 push GitHub；`wavesurfer.js` 已随镜像 build 装入）
 
 Reply style 简洁直接中文。本 session 主线=**把积压的 07-20（资产库改造 + `wavesurfer.js`）+ 07-21（@引用资产迷你资产库 + 从资产库导入音视频 + 视频卡@图标）两批一次性部署上线**，并顺带做了几个工作流/UI 小改动。三方同步于 `ac4c38f`。

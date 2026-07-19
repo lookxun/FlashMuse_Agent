@@ -1,10 +1,11 @@
 import { getAdminEmails, isAdminEmail } from "@/lib/admin";
 import { getCurrentAdminEmail } from "@/lib/admin-auth";
-import { bytePlusImageGenerationModels, bytePlusVideoGenerationModels, imageGenerationModels, videoGenerationModels } from "@/lib/models";
+import { bytePlusImageGenerationModels, bytePlusVideoGenerationModels, frontendImageGenerationModels, imageGenerationModels, videoGenerationModels } from "@/lib/models";
 import { prisma } from "@/lib/prisma";
 import Link from "next/link";
 import { AdminActivityTracker } from "./admin-activity-tracker";
 import { AdminLogoutButton } from "./admin-logout-button";
+import { IS_TEST_SERVER, versionLabel } from "@/lib/app-version";
 import { AdminLoginForm } from "./admin-login-form";
 import { AdminCreditsPanel, type AdminCreditUser } from "./admin-credits-panel";
 import { AdminRecordsPanel, type AdminRecordSummary } from "./admin-records-panel";
@@ -17,7 +18,7 @@ import { getAdminOverviewData } from "@/lib/admin-overview";
 import { AdminUsersPanel, type AdminUserRow } from "./admin-users-panel";
 import { AdminGptImageThumbnail } from "./admin-gpt-image-thumbnail";
 import { getCreditSettings } from "@/lib/credits";
-import { getAdminSystemSettings, getUploadRuleOverrides } from "@/lib/system-settings";
+import { getAdminSystemSettings, getUploadRuleOverrides, isAssetImageModelEnabled, isConversationImageModelEnabled, isConversationVideoModelEnabled } from "@/lib/system-settings";
 import type { IconType } from "react-icons";
 import { RiDashboardLine, RiFileList3Line, RiListSettingsLine, RiServerLine, RiSettingsLine, RiToggleLine, RiUser3Line, RiVipDiamondLine } from "react-icons/ri";
 
@@ -237,7 +238,7 @@ function AdminShell({ adminEmail, activeTab, children }: { adminEmail: string; a
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img src="/home-assets/logo.png" alt="闪念" className="h-9 w-9 rounded-[9px] object-contain" />
               <div>
-                <div className="text-[15px] font-semibold leading-5">闪念后台</div>
+                <div className="text-[15px] font-semibold leading-5">闪念后台{IS_TEST_SERVER ? <span className="ml-1.5 text-[12px] font-semibold text-[#e0a400]">测试服</span> : null}</div>
                 <div className="text-[11px] text-[#8a8a8a]">FlashMuse Admin</div>
               </div>
             </div>
@@ -255,6 +256,7 @@ function AdminShell({ adminEmail, activeTab, children }: { adminEmail: string; a
             </nav>
           </div>
           <div className="mt-auto rounded-[14px] border border-[#eeeeee] bg-[#fafafa] p-3">
+            <div className="mb-2 text-[11px] font-medium text-[#9a9a9a]">{versionLabel()}</div>
             <div className="text-[12px] text-[#999999]">当前管理员</div>
             <div className="mt-1 truncate text-[13px] font-medium text-[#333333]">{adminEmail}</div>
             <AdminLogoutButton />
@@ -385,7 +387,11 @@ export default async function AdminPage({ searchParams }: { searchParams?: Promi
   if (activeTab === "upload-rules") {
     return (
       <AdminShell adminEmail={currentAdminEmail} activeTab={activeTab}>
-        <AdminUploadRulesPanel initialUploadRuleOverrides={getUploadRuleOverrides()} />
+        <AdminUploadRulesPanel
+          initialUploadRuleOverrides={getUploadRuleOverrides()}
+          enabledImageModelIds={frontendImageGenerationModels.filter((model) => isConversationImageModelEnabled(model.id) || isAssetImageModelEnabled(model.id)).map((model) => model.id)}
+          enabledVideoModelIds={videoGenerationModels.filter((model) => isConversationVideoModelEnabled(model.id)).map((model) => model.id)}
+        />
       </AdminShell>
     );
   }

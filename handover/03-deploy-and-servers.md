@@ -1,5 +1,49 @@
 # Deploy And Servers
 
+## ⭐⭐ 2026-07-18 起：测试服（staging）+ 部署铁律（所有 AI 必读，已同步进 AGENTS.md 顶部）
+
+有一套**独立测试服**，和正式服跑同一份代码、但数据/环境/端口完全隔离，用来在**不影响正式服真实用户**的前提下做线上验证（尤其换接口这类高风险改动）。
+
+### 部署语义铁律（务必遵守）
+- **用户说"部署掉 / 部署一下"等，默认只部署【测试服】，绝不动正式服。**
+- **只有用户明确说"把正式服部署掉 / 更新正式服 / 上线正式服"这类话**，才执行完整顺序：**先一次性部署测试服 → 验证 OK → 再把测试服那份代码原样同步到正式服**。任何情况都**不跳过测试服**、**不直接改正式服代码**。
+- **版本号自增只在"部署测试服"这一步**：部署测试服前先 `node scripts/bump-version.mjs`（四段 100 进制 `vAA.BB.CC.DD` 最右段 +1、满 100 进位，写回 `src/lib/app-version.ts`）。**正式服部署绝不跑自增脚本**，只把测试服代码（含已写好的版本号）原样带过去 → 保证"**版本号一样 = 代码一样**"。
+
+### 测试服架构（完整模拟正式服连阿里）
+```
+你的浏览器 → http://101.37.129.164:8080/  (阿里, 测试服前端)
+             http://101.37.129.164:8080/admin (测试服后台)
+  → 阿里 nginx 测试块(listen 8080, /etc/nginx/sites-enabled/flashmuse-test-8080)
+     ├ /home-assets /_next/static /generated → 阿里测试镜像 /var/www/flashmuse-static-test/
+     └ 其余反代 → 腾讯 119.28.116.16:5001
+腾讯: /opt/flashmuse-staging/ 独立 Docker 栈(compose name=flashmuse-staging, 网络 flashmuse_staging_default)
+      staging-nginx(host 5001→容器80) + staging-app(容器3000) + staging-db(独立库, 内部5432)
+      数据卷 /opt/flashmuse-staging/data/{pgdata,generated,runtime,home-assets,nginx}
+腾讯测试生成的图 → 自动 ali-sync 到 /var/www/flashmuse-static-test/generated (独立目录, 不碰正式服镜像)
+```
+- **端口**：腾讯安全组放行 **5001**（阿里→腾讯）、阿里安全组放行 **8080**（浏览器→阿里）。两个端口专供测试服。
+- **数据**：测试服是**独立空库**（`staging-db`，POSTGRES_PASSWORD=`stg_5k2p9v7q3xz8`）。首次曾导入本地库，后按用户要求清空（`DROP SCHEMA public CASCADE; CREATE SCHEMA public;` + 重启 app 触发 entrypoint migrate deploy 重建空表）。白名单 `lookxun@163.com`/`176107103@qq.com` 走 env `ADMIN_EMAILS`，与清库无关，注册即管理员。
+- **测试服环境差异**（`/opt/flashmuse-staging/data/.env.local`，从正式服 .env.local 派生）：`FORCE_INSECURE_AUTH_COOKIE=true`（http/IP 访问，cookie 不能 Secure）、`AUTH_COOKIE_DOMAIN=`（空，IP 无域名）、`NEXT_PUBLIC_PRIMARY_BASE_URL=http://101.37.129.164:8080`、`NEXT_PUBLIC_STATIC_BASE_URL=`（空=同源）、`ALI_SYNC_DEST_ROOT=/var/www/flashmuse-static-test/generated`、`UPLOAD_CORS_ORIGINS=http://101.37.129.164:8080`、`NEXT_PUBLIC_IS_TEST=true`。DATABASE_URL 由 compose environment 指向 staging-db。
+- **测试服标识**：`NEXT_PUBLIC_IS_TEST=true` 作为 **compose build arg**（Dockerfile `ARG NEXT_PUBLIC_IS_TEST`）bake 进客户端 → 首页/工作台/后台 logo 后显示"测试服"、版本号显示 `版本号(t):vX`、浏览器标签标题前缀 `(测试服)`。正式服不传此 arg → 不显示这些。
+- **版本号显示位置**：首页底部 footer（`本站内容均由AI生成 | 版本号:vX`）、工作台设置→版本信息、后台左侧"当前管理员"上面。代码在 `src/lib/app-version.ts`（`APP_VERSION`/`IS_TEST_SERVER`/`versionLabel()`）。
+
+### 测试服部署流程（"部署掉"默认走这个）
+1. 本地 `node scripts/bump-version.mjs`（版本号 +1，改中文源码只用 edit 工具，禁 Set-Content）。
+2. 本地 `npx tsc --noEmit` 通过。
+3. 打包改动源码 scp 到腾讯 `/tmp` → `sudo tar -xzf` 到 `/opt/flashmuse-staging/app`。
+4. `cd /opt/flashmuse-staging && nohup sudo docker compose up -d --build staging-app > /tmp/sb.log 2>&1 &`（后台+轮询防 120s 超时；entrypoint 自动 migrate deploy）。
+5. 同步测试服静态到阿里镜像：`bash /opt/flashmuse-staging/sync-ali-test.sh`（同步 `_next/static`+`home-assets`+`generated` 到 `/var/www/flashmuse-static-test/`，否则 chunk 404）。
+6. 验证：`curl http://127.0.0.1:5001/`(200)、外网 `http://101.37.129.164:8080/`(200) + 底部版本号变了。
+- ssh：`ssh -i "C:\Users\ASUS\AppData\Local\Temp\opencode\CinematicFlow.pem" ubuntu@119.28.116.16`。阿里 key（root 属主，一切到阿里的 ssh/rsync 要 sudo）：`/opt/flashmuse/data/runtime/flashmuse_to_ali_ed25519`（正式服的，测试服同步脚本也用它）。
+- **PowerShell 坑**：ssh 内联 `\$VAR`/`%{...}`/嵌套引号会被本地 PS 搅坏 → 一律 scp .sh/.sql 再 `sed -i 's/\r$//'` + 跑。改中文源码禁 Set-Content（会 mojibake，本次踩过）。
+
+### 正式服部署流程（仅当用户明确说"部署正式服"）
+1. **先**完整部署测试服（含版本号自增）并验证 OK。
+2. **不再跑 bump 脚本**，把测试服 `/opt/flashmuse-staging/app` 里那份源码（含已定版本号）原样同步到正式服 `/opt/flashmuse/app`（或用同一份本地源码），保证与测试服一字不差。
+3. 走下面正式服（腾讯）Docker 部署流程。
+
+---
+
 ## ⭐ 2026-07-11 起：主服务器 = 腾讯云新加坡（马来已停 app，仅当反代壳）
 
 **现在真正跑 app 的是腾讯 `119.28.116.16`（Docker 栈）。下面"HOW TO DEPLOY（马来 PM2）"已过时——马来 app 已停。除非只改 nginx，否则部署要走腾讯 Docker 流程。**

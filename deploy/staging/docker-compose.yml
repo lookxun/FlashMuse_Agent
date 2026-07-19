@@ -1,0 +1,50 @@
+name: flashmuse-staging
+services:
+  staging-db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: flashmuse
+      POSTGRES_PASSWORD: "stg_5k2p9v7q3xz8"
+      POSTGRES_DB: flashmuse
+    volumes:
+      - /opt/flashmuse-staging/data/pgdata:/var/lib/postgresql/data
+    networks: [staging]
+
+  staging-app:
+    build:
+      context: ./app
+      args:
+        NEXT_PUBLIC_WORKFLOW_MODE_ENABLED: "true"
+        NEXT_PUBLIC_IS_TEST: "true"
+        NEXT_PUBLIC_UPLOAD_BASE_URL: "http://101.37.129.164:8080"
+    restart: unless-stopped
+    depends_on: [staging-db]
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      DATABASE_URL: "postgresql://flashmuse:stg_5k2p9v7q3xz8@staging-db:5432/flashmuse?schema=public"
+    volumes:
+      - /opt/flashmuse-staging/data/.env.local:/app/.env.local
+      - /opt/flashmuse-staging/data/generated:/app/public/generated
+      - /opt/flashmuse-staging/data/runtime:/app/.runtime
+      - /opt/flashmuse-staging/data/home-assets:/app/public/home-assets
+    expose:
+      - "3000"
+    networks: [staging]
+
+  staging-nginx:
+    image: nginx:alpine
+    restart: unless-stopped
+    depends_on: [staging-app]
+    volumes:
+      - /opt/flashmuse-staging/data/nginx/flashmuse-staging.conf:/etc/nginx/conf.d/default.conf:ro
+      - /opt/flashmuse-staging/data/generated:/srv/generated:ro
+      - /opt/flashmuse-staging/data/home-assets:/srv/home-assets:ro
+    ports:
+      - "5001:80"
+    networks: [staging]
+
+networks:
+  staging:
+    name: flashmuse_staging_default

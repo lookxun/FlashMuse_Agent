@@ -1,5 +1,183 @@
 # Next Actions
 
+## ⭐⭐ 最新 END-OF-SESSION（later 2026-07-19：gpt-5.4-image-2 img2img 修复 + 对话流重试大修 + 免费HTTPS验证）—— 先读这条
+
+**状态**：✅ 已部署测试服 `v1.0.0.13`（外网 `http://101.37.129.164:8080/` 200、阿里测试镜像同步、`tsc` 过、无迁移）；**未同步正式服、未 commit/push**。改动文件：`src/lib/openrouter.ts`、`src/lib/error-message.ts`、`src/components/chat-workbench.tsx`、`src/lib/app-version.ts`。详见 CHANGELOG / 01-current-status 顶条。
+
+**本 session 做完**：
+1. gpt-5.4-image-2 img2img：`toPublicGeneratedImageUrl` http→https 改写（v9）；参考图 **URL 优先→失败回退 base64**（`referenceToDataUrl` + 两段式，v10，测试服实测通过）。
+2. OpenAI 安全拒绝错误映射（v11）：`模型拒绝了本次生成请求…【原文类别】…直接重试有可能成功，修改提示词后成功率更高。`
+3. ⭐ 对话流"申请多张+重试"**卡槽定位 bug** 修复（重试结果不再覆盖成功位，v12）。
+4. ⭐ 对话流**红字与失败卡 1:1**（原因挂 slot、排除重试中的，v13）。
+5. 免费 HTTPS 验证：uguu.se 直链 → gpt-5.4-image-2 img2img 200 成功=方向1可行。
+
+**下一个 AI / 用户 待办（按优先级）**：
+1. **⭐ 用户还在改（本 session 没改完）**：用户明确"还没改完、暂不部署正式服"。继续接需求、都先在测试服做+验证。
+2. **⭐ 明天加子域名给测试服配 https（用户要做的）**：阿里云(hichina) DNS 加 `staging-static.venusface.com` → `101.37.129.164` + Let's Encrypt。加好后（代码不用动）：① 测试服 env 设 `NEXT_PUBLIC_PRIMARY_BASE_URL=https://staging-static.venusface.com`；② 测试服 nginx 配 443 + 证书、服务本地 `/generated`；③ 跑一次真实 img2img 确认日志 `refMode":"url"` 成功、无回退。这样测试服也真实走 URL 分支=与正式服完全对齐。
+3. **浏览器验证测试服 v1.0.0.13**（ali 硬刷）：跑"生成美女"4 张(2成2败) → 重试失败卡：卡片位置固定、红字页与失败卡一一对应、重试中该红字消失、成功/失败正确更新、成功的两张不动；safety 拒绝显示新文案不再"服务器繁忙"；img2img（当前走 base64 回退）能出图。
+4. **⭐⭐ 部署正式服（用户说"部署正式服"才做）= 一次性整份对齐**：把测试服 `/opt/flashmuse-staging/app` 整份源码同步正式服 `/opt/flashmuse/app`（不 bump，正式服直接到 v1.0.0.13）。详见下方"正式服整份对齐流程"。
+5. **push GitHub**：本 session + 之前 staging 全部批次(v3~v13)都未推。
+
+### ⭐ 正式服整份对齐流程（用户明确"部署正式服"才执行；已核实无需跑迁移）
+1. 备份：`sudo cp -r /opt/flashmuse/app /opt/flashmuse/app-backups/<ts>-presync-v13`。
+2. 本地 rsync（同机，测试服→正式服）：`/opt/flashmuse-staging/app/` → `/opt/flashmuse/app/`，排除 `node_modules`/`.next`/`tmp`/`*.log`/`.git`/`.env.local`（`docker-compose.yml`/`Dockerfile`/`entrypoint` 两服一致、真正区分两服的 compose 在父目录 `/opt/flashmuse` vs `/opt/flashmuse-staging`，不在 `/app`；正式服 `/app` 无 `.env.local`，env 挂载自 `data/`）。同步后正式服自动 = v1.0.0.13。
+3. 重建：`cd /opt/flashmuse && nohup sudo docker compose up -d --build flashmuse-app`（后台+轮询；entrypoint `migrate deploy` 因迁移一致=空操作）。
+4. **改正式服 env**：`/opt/flashmuse/data/.env.local` 的 `UPLOAD_RULE_OVERRIDES` gpt-5.4-image-2 `maxCount:5`→`16`，`docker compose up -d --force-recreate flashmuse-app` 重载。
+5. 同步 `.next/static` 到阿里**正式**镜像 `/var/www/flashmuse-static/_next/static/`（key `/opt/flashmuse/data/runtime/flashmuse_to_ali_ed25519`，root@101.37.129.164）——**不是**测试服的 `flashmuse-static-test`。
+6. 验证：四域名(main/api/ali/static) 200；正式服 footer 版本号 v1.0.0.13(无 `(t)`)；抽测 gpt-5.4-image-2 img2img(URL分支)、画质档、重试卡槽定位、红字。
+- 风险：一次性上线 v3→v13 全部改动（都在测试服验过），最大变化=gpt-5.4-image-2 换接口；部署窗口老标签 ChunkLoadError 硬刷即可；无 DB 迁移。
+
+### 关键操作记忆（本 session 踩坑）
+- ssh：`ssh -i "C:\Users\ASUS\AppData\Local\Temp\opencode\CinematicFlow.pem" ubuntu@119.28.116.16`（docker 加 sudo）。
+- 测试服部署=本地 `node scripts/bump-version.mjs` → 打 tgz(改动源码+app-version.ts) → scp `/tmp` → `sudo tar -xzf -C /opt/flashmuse-staging/app` → `cd /opt/flashmuse-staging && nohup sudo docker compose up -d --build staging-app > /tmp/sb.log 2>&1 &`（后台轮询防 120s 超时）→ `bash /opt/flashmuse-staging/sync-ali-test.sh` → `curl http://127.0.0.1:5001/` 验版本号 + 外网 `http://101.37.129.164:8080/` 200。
+- 测试服 DB：容器 `flashmuse-staging-staging-db-1`，`psql -U flashmuse -d flashmuse`（**不是 postgres 用户**）。OpenRouter key 在 `/opt/flashmuse-staging/data/.env.local`（sudo 读）。
+- 诊断日志：`/opt/flashmuse-staging/data/runtime/generation-diagnostics-log.jsonl`（事件 `image-provider-non-ok`/`image-provider-url-fallback-base64`/`image-provider-success`/`image-provider-reference-sizes`，含 `refMode`）。
+- ⚠️ PowerShell 里 ssh 内联命令**禁用** `\"`、中文、`$()`——会被 PS 解析坏。复杂命令写成本地 .sh scp 上去 `sed -i 's/\r$//'` 再 `sudo bash`；grep 正则用 `.` 代替 `"`、避免反斜杠。改中文源码只用 edit 工具。
+
+---
+
+## ⭐⭐ 上一 END-OF-SESSION（gpt-5.4-image-2 迁 OpenRouter 新图片接口 + 4K + 画质档三处 + 输入框/资产库 UI + 后台上传规则清理）
+
+**状态**：本 session 只改 **gpt-5.4-image-2**（其它模型零改动），**已部署测试服 `v1.0.0.8`**（外网 `http://101.37.129.164:8080/` 200、阿里测试镜像已同步、`tsc` 过、无迁移）。**未同步正式服、未 commit/push**。详见 CHANGELOG / 01-current-status 顶条。改动文件：`src/lib/{models,openrouter,upload-rules,generation-jobs,app-version}.ts`、`src/components/{chat-workbench,workflow-tldraw-canvas-inner}.tsx`、`src/app/admin/{page.tsx,admin-upload-rules-panel.tsx}`；另本地 `.env.local`（override 5→16，env 数据不进 git）。
+
+**本 session 做完**：
+1. gpt-5.4-image-2 走新 `POST /api/v1/images`（size 精确像素/智能比例不传 size/quality/原生 n/参考图公网 URL/`usage.cost→usd`）+ 4K 尺寸表 + `classifyImageResolutionByModel` 修 4K 显示。
+2. 画质档三处（对话流/资产库/工作流，默认**高**，仅该模型显示）；对话流按钮标题显示"画质X"；资产库 K数/画质等宽下拉、选模型按钮让宽。
+3. 对话流输入框撑宽逻辑重写（ResizeObserver 实测 offsetWidth，发送按钮不出框、点菜单不抖）。
+4. 工作流比例弹窗内部点击不关、点外部才关。
+5. 后台上传规则面板过滤弃用的 3 个 OpenRouter 重复款（不动共享数组，服务端传可用 ID）。
+6. gpt-5.4-image-2 上传默认 16/开启（代码 + 测试服 env 都改，正式服 env 待改）。
+
+**下一个 AI 待办**：
+1. **浏览器验证测试服（ali 硬刷）**：三处画质档显示+默认高；gpt-5.4-image-2 各比例×1K/2K/4K 出图尺寸对（4K 用 size 精确像素、参数框显 4K 不是 3K）；智能比例=模型自动尺寸；参考图 img2img（URL 模式）；n 多图；扣费随档位/尺寸；后台上传规则页看不到 3 个弃用款、GPT-5.4 Image 2 显 16/开启；对话流输入框选画质/模型时发送按钮不被顶出、点菜单间距不抖；资产库 K数/画质等宽不换行。回归：Gemini/BytePlus 出图、视频、其它模式不受影响。
+2. **⚠️ 暂缓项：对话流"最多4张"改原生 n=1请求**——多图 orchestration 与 Agent 共用、`appendImagesToAssistantMessage` 单槽位/失败索引重试，改成一次返回多图需重写放置逻辑，风险高。当前申请4次(每次n=1)功能正常。要做需单独改+验证。
+3. **参考图真实上限**：跑一阵后看日志 `image-provider-reference-sizes`，把 gpt-5.4-image-2 参考图单张/总量上限从 10MB/16张 改成 provider 真实支持值（`upload-rules.ts`）。
+4. **等用户说"部署正式服"才同步**（详见下方"部署正式服流程"）。
+5. **push GitHub**：本 session + 之前 staging 那几批全部未 push。
+6. Gemini 两个图片模型本次**故意没动**（用户只让改 gpt-5.4-image-2）。
+
+**⭐ 部署正式服流程（用户明确要求"部署正式服"才执行）**：
+- **不 bump 版本号、不从本地重新传**（可以，但没必要）：把**测试服 `/opt/flashmuse-staging/app` 那份源码原样复制到正式服 `/opt/flashmuse/app`**（服务器到服务器），保持 v1.0.0.8 → "版本号一样=代码一样"。
+- 正式服 `cd /opt/flashmuse && nohup sudo docker compose up -d --build flashmuse-app`。
+- 同步 `.next/static` 到阿里**正式**镜像 `/var/www/flashmuse-static/_next/static/`（**不是**测试服的 `flashmuse-static-test`）。
+- 四域名 200。
+- **⚠️ 正式服 env 数据**：`UPLOAD_RULE_OVERRIDES` 是每台服务器独立的 env 数据（不随代码同步）。正式服若也存了 gpt-5.4-image-2 maxCount:5（早前线上后台保存过），部署后仍显示 5，需在正式服的 env 文件（对照测试服是 `/opt/flashmuse-staging/data/.env.local` 挂载 `/app/.env.local`；正式服对应 `/opt/flashmuse/data/.env.local`）把 `:5}}}` 改成 `:16}}}` 并重建/重启容器，或到正式服后台面板把它改 16 保存一次。部署前可先只读查一下正式服该值。
+
+**部署/踩坑记忆**：ssh `ssh -i "C:\Users\ASUS\AppData\Local\Temp\opencode\CinematicFlow.pem" ubuntu@119.28.116.16`（docker 加 sudo）；测试服部署=bump→打 tgz→scp /tmp→`sudo tar -xzf -C /opt/flashmuse-staging/app`→`cd /opt/flashmuse-staging && nohup sudo docker compose up -d --build staging-app > /tmp/sb.log 2>&1 &`（后台+轮询防 120s 超时）→`bash /opt/flashmuse-staging/sync-ali-test.sh`→curl 验版本号；改中文源码用 edit/write 工具禁 `Set-Content`；PowerShell 里 grep 用不了、含中文/`$()`的内联命令会坏，写 .sh/.mjs scp 或用 Grep/Read 工具。测试服 `UPLOAD_RULE_OVERRIDES` 在 `/opt/flashmuse-staging/data/.env.local`（挂载进容器 `/app/.env.local`），改后 `docker compose up -d --force-recreate staging-app` 重载。
+
+---
+
+## ⭐⭐ 上一 END-OF-SESSION（上传规则校正 + 文案通用化 + 资产库拖拽 + 音频回填 + 浏览器读网站）
+
+**状态**：本 session 代码改动**全部已部署测试服 `v1.0.0.5`**（外网 `http://101.37.129.164:8080/` 200、阿里测试镜像已同步、`tsc` 过、无迁移）；**未同步正式服、未 commit/push**。正式服仅"17 音频回填"这条线上数据已改。详见 CHANGELOG / 01-current-status 顶条。
+
+**本 session 做完**：
+1. 17 音频 `durationSeconds` 回填（正式服 DB）——修 3 账号生视频"音频时长读取失败"。
+2. 视频上传规则按当前官网校正为 ≤200MB / 像素 ≤8295044（含4k），改掉 3 处过时 50MB/2086876。
+3. 上传格式拦截文案通用化（"仅支持 X 格式的Y"，不再说"当前模型"）。
+4. 资产库拖拽上传（三个上传标签各自路由+校验，遮罩只在这三标签弹、文案按标签）。
+5. 删除 Byteplus 文件夹网站复制文档；`00-README` 顶条记录"AI 可用浏览器工具直读全网站"。
+
+**下一个 AI 待办**：
+1. **等用户验收测试服后同步正式服**（用户说"部署正式服"才做）：不跑 bump 脚本，把测试服 `/opt/flashmuse-staging/app` 那份源码（本 session 6 个改动文件 + `src/lib/app-version.ts` 版本号 v1.0.0.5）原样 scp 到正式服 `/opt/flashmuse/app` → `cd /opt/flashmuse && nohup sudo docker compose up -d --build flashmuse-app` → 同步 `.next/static` 到阿里正式镜像 `/var/www/flashmuse-static/_next/static/` → 四域名 200。改动文件清单见 CHANGELOG §6。
+2. **push GitHub**：本 session + 之前 staging 那批全部改动仍未 push（GitHub 落后）。
+3. **原始需求仍未做**：OpenRouter 新图片接口迁移（见下方"测试服搭建"那条 END-OF-SESSION 的待办①），在测试服里做。
+4. 非紧急：清理旧 mention 死常量；M018/M019 押后。
+
+**部署/踩坑记忆**：ssh `ssh -i "C:\Users\ASUS\AppData\Local\Temp\opencode\CinematicFlow.pem" ubuntu@119.28.116.16`（docker 加 sudo）；测试服部署=打 tgz→scp /tmp→`sudo tar -xzf -C /opt/flashmuse-staging/app`→`cd /opt/flashmuse-staging && nohup sudo docker compose up -d --build staging-app > /tmp/sb.log 2>&1 &`（后台+轮询防 120s 超时）→`bash /opt/flashmuse-staging/sync-ali-test.sh`→curl 验版本号；阿里 key root 属主一切到阿里 ssh/rsync 加 sudo；改中文源码用 edit/write 工具禁 `Set-Content`；PowerShell 内联含 `$()`/中文的 psql/bash 会被搅坏，写成 .sh/.sql/.mjs scp 后 `sed -i 's/\r$//'` 再跑；容器内跑一次性脚本 `sudo docker cp x.mjs 容器:/app/ && sudo docker exec -w /app 容器 node x.mjs`。
+
+---
+
+## ⭐⭐ 2026-07-18（测试服搭建 + 版本号体系 + 部署铁律）END-OF-SESSION —— 先读这条
+
+**状态**：测试服已上线；版本号功能已按铁律部署测试服+正式服（两边 `v1.0.0.2`）；**全部未 commit/未 push GitHub**。详见 CHANGELOG / 01-current-status 顶条。
+
+### 🔒 部署铁律（每次动手前必读，已在 AGENTS.md 顶部）
+- 用户说 **"部署掉/部署一下"** = **只部署测试服**，绝不动正式服。
+- 只有用户明确说 **"部署正式服/更新正式服/上线正式服"** 才走：**先跑 `node scripts/bump-version.mjs` 自增 → 部署测试服 → 验证 → 再把测试服那份代码原样同步正式服（不再自增）**。永不跳过测试服、永不直接改正式服代码。
+- 目标：版本号一样=代码一样。
+
+### 测试服部署流程（"部署掉"走这个）
+1. 本地 `node scripts/bump-version.mjs`（版本号+1）+ `npx tsc --noEmit`。
+2. 打包改动源码 scp 到腾讯 `/tmp` → `sudo tar -xzf` 到 `/opt/flashmuse-staging/app`。
+3. `cd /opt/flashmuse-staging && nohup sudo docker compose up -d --build staging-app > /tmp/sb.log 2>&1 &`（后台+轮询防超时）。
+4. `bash /opt/flashmuse-staging/sync-ali-test.sh`（同步阿里测试镜像，否则 chunk 404）。
+5. 验证：`curl http://127.0.0.1:5001/`、外网 `http://101.37.129.164:8080/`（含底部版本号已 +1）。
+
+### 正式服部署流程（仅当用户明确要求）
+1. **先**完整部署测试服（含自增）并验证。
+2. **不跑 bump 脚本**，把测试服 `/opt/flashmuse-staging/app` 那份源码（含已定版本号）原样 scp 到正式服 `/opt/flashmuse/app`（本 session 用的是同一份本地源码 + `app-backups/verbadge-*` 备份）。
+3. `cd /opt/flashmuse && nohup sudo docker compose up -d --build flashmuse-app` → 同步 `.next/static` 到阿里**正式**镜像 `/var/www/flashmuse-static/_next/static/` → 四域名 200 验证。
+
+### 下一个 AI 待办（按优先级）
+1. **⭐ OpenRouter 新图片接口迁移（本 session 原始需求，重点）**：把 `src/lib/openrouter.ts` 的生图从 `chat/completions`+`modalities` 老写法迁到新专用接口 `POST /api/v1/images`（`input_references`/原生 `n`/`resolution`/`aspect_ratio`/定价发现/provider 路由）。**必须先在测试服反复验证，OK 后经用户同意才同步正式服。** 建议低风险策略：新旧并存、按模型路由（新模型/gpt-5.4-image-2 走新接口，老模型可先留旧接口或加自动回退）。受影响模型见 CHANGELOG 顶条 §1。用户强调 gpt-5.4-image-2 必接（当前最强图片模型）。
+2. **push GitHub**：本 session 全部改动未推。文件清单见 CHANGELOG 顶条 §0。
+3. **服务器升级**（用户下周做）：桌面 `服务器升级建议.md`，升 8核/16G 后测试服/正式服部署互不影响。
+4. 非紧急：清理旧 mention 死常量；M018/M019 押后。
+
+### 关键操作记忆（防踩坑）
+- 改中文源码只用 edit/write 工具，**禁 PowerShell Set-Content/`(gc)|sc`**（mojibake）。
+- ssh 内联含 `$(...)`/`$VAR`/`%{}`/嵌套引号/中文 → 写成本地 .sh/.sql，scp + `sed -i 's/\r$//'` 再跑。
+- 阿里 key `root` 属主，一切到阿里 ssh/rsync 加 `sudo`。
+- 仓库 `deploy/staging/` 有测试服全套基础设施文件 + README，可重建。
+
+---
+
+## ✅ 2026-07-22（延续 session）视频/音频上传全链路修复 + 体验优化 END-OF-SESSION
+
+**状态**：✅ 全部已部署腾讯 + 同步阿里、main/api/ali/static 四域名 200、`npx tsc --noEmit` 通过、无 Prisma 迁移。**⚠️ 未 commit / 未 push；本地工作树 = 线上最终代码；GitHub 落后。部署是打单文件 tgz scp 覆盖 `/opt/flashmuse/app` + `docker compose build/up`，不是走 git。** 详见 CHANGELOG 顶条。
+
+**本 session 做完**：
+1. 修视频/音频上传线上 500（`Cannot read 'split'`）：MIME 空值安全 + `File` 展开丢 `name/type` 根因（改显式传字段）。三条链路（对话流/资产库/工作流）共用 `/api/upload-file`，一处修全好。
+2. 三体验问题：工作流进度起步 + 内容哈希秒回预检（新 `upload-content-hash.ts` + GET 预检 handler）；对话流视频封面（服务端 `createUploadedVideoPoster` 生成 `.poster.jpg` + 写 `posterUrl`）；资产库上传临时卡（`AssetMediaUploadCard` + `UploadProgressOverlay`）。
+3. 修回归：旧上传视频封面丢失 → 撤 `/files/` 封面推算，只用真实 `asset.posterUrl`（新上传服务端生成）。
+4. 时长阈值放宽 15.05→16.01（刚好 15 秒可传）。
+5. 方案 A：同步阿里改回后台异步（不卡 91%）+ `recent-upload-origin.ts`（本会话读腾讯、刷新走阿里）+ 前端预热。
+6. 音频跨域：腾讯 nginx `/generated` 加 CORS 头（wavesurfer 需要），已 reload。
+
+**下次若要 push GitHub**：把本地未提交改动 commit（应与线上一致）再推。涉及文件见 CHANGELOG 顶条第 0 条。
+
+**未决待办**：M018（06-memo-tasks.md）——刚上传媒体不刷新不会自动切阿里镜像，用户暂时保持现状。
+
+**若继续做上传相关**：工作流的 `getStaticMediaUrl`（`workflow-tldraw-canvas-inner.tsx:1625`）是另一套（直接同源、不走阿里 static base），本 session 未动；若工作流上传的音视频也需要「本会话读腾讯」处理，需另行统一。
+
+## 🚀 最新：用户要求下一个 AI 直接部署视频/音频上传改造
+
+**当前状态**：仅本地，`npx tsc --noEmit` 已通过；未 build / 部署 / commit / push；无 Prisma 迁移。新增文件：`src/lib/media-upload-validation.ts`、`src/lib/media-upload-probe.ts`、`src/components/video-upload-thumbnail.tsx`。改动同时包含统一服务端上传限制、资产库音视频直传、工作流归属、音频扩展名 `.bin` 修复、对话流/工作流输入框视频封面与图标兜底。
+
+**部署前必须做**：
+1. 检查 `git status` 与 diff，不要带 `.playwright-mcp/`。
+2. 生产 Nginx 的 `client_max_body_size` 从历史20MB提高到至少**200MB**，并增加客户端请求/代理上传读取超时；否则 MP4/MOV 200MB 规则不能在线上工作。
+3. 运行 `npx tsc --noEmit`；用户已明确要求部署，随后按 `03-deploy-and-servers.md` 的腾讯构建、阿里 `.next/static` 同步、四域名健康检查流程执行。无 Prisma 迁移。
+
+**部署后立即验证，不可跳过**：
+1. 资产库上传 MP4/MOV 和 MP3/WAV：成功入库、分类及左侧计数正确、视频显示封面/首帧，加载失败显示视频图标。
+2. 对话流和工作流上传同样四种文件：服务端返回权威名；工作流归入 workflow 分类；重复文件复用而不重复入库。
+3. 验证拒绝：错误格式、视频>200MB、音频>15MB、时长不在2-15秒、视频尺寸/FPS/编码不合规。
+4. Seedance 2.0/Fast/Mini 融合模式可引用合规视频/音频；首帧/首尾帧和其它模型仍拒绝。
+5. 若资产库仍显示“文件上传失败”，在浏览器 Network 保存 `POST /api/upload-file` 的状态码和 response，并查看应用容器日志后再改代码，禁止猜测修复。
+
+## ⚠️ 2026-07-22 视频/音频上传限制统一 + 资产库直传入口 END-OF-SESSION
+
+**状态**：仅本地，`npx tsc --noEmit` 通过；未 build / 部署 / commit / push；无 Prisma 迁移。完成：BytePlus 官方融合模式视频/音频规则统一、真实文件 ffmpeg 校验、`upload-file` token/登录鉴权、工作流归属首次写入、`/api/video` 用户资产复验、资产库上传视频/音频按钮。
+
+**下次优先验证**：本地浏览器测试资产库 MP4/MOV/MP3/WAV 直传、格式/200MB/15MB/时长/视频尺寸提示、重复文件复用、对话流/工作流融合模式上传、首帧/首尾帧拒绝音视频、工作流上传后归入工作流分类。未部署前不要改 Nginx；若用户要求部署，先说明200MB视频必须同步调整网关 body size/timeout。
+
+## ⚠️ 2026-07-22 本地资产库直传 + 实时计数 + 图片上传限制统一 END-OF-SESSION —— 先读这条：未部署、下一个 AI 继续视频/音频/文档
+
+**状态**：全部仅本地，`npx tsc --noEmit` 已通过；**未 build / 未部署 / 未 commit / 未 push**；无 Prisma 迁移。代码改动=新增 `src/lib/image-upload-validation.ts`，改 `chat-workbench.tsx`、`workflow-tldraw-canvas-inner.tsx`、`api/asset-upload-temp/route.ts`、`lib/upload-rules.ts`；另有本次 handover。禁止把本批当成线上已生效。
+
+**本 session 做完**：
+1. 资产库「上传图片」改成右侧网格内直传：无上传弹窗、选图即显进度卡、完成自动入库、软删除不变、去掉上传前改名；一次最多10张。
+2. 资产库数字实时同步：新增/删除/恢复/移动、对话流上传/生成、工作流生成均即时更新左侧与 `@引用资产`；服务端读数仍最终校准。
+3. 图片格式/大小统一：只允许 JPG/JPEG/PNG/WebP，原始单图 ≤10MB；后端强制+资产库/对话流/工作流前端即时校验；模型只控制图片是否可用与数量；PNG/WebP 和异常 JPEG 仍转 JPG 落盘。
+
+**下一个 AI 优先待办（用户点名）**：统一视频、音频、文档上传。必须先做影响排查并向用户确认，禁止直接猜规则：
+1. 列出资产库、对话流、工作流三端和 `/api/upload-file` 等服务端入口当前的格式、单文件大小、时长/分辨率、总时长、数量、内容哈希去重、命名、入库分类差异。
+2. 与用户确认视频/音频/文档分别允许哪些格式和大小，以及是否保留视频/音频的模型相关时长、尺寸、数量限制。不要把图片 10MB 机械套到其它媒体。
+3. 用户确认后抽统一纯校验模块，后端为唯一强制入口，三前端提前提示并复用；所有模式同规则，保留既有 `uploadRule` 的模型 enabled/数量及视频音频时长/尺寸语义。
+4. 浏览器验证本批图片：资产库直传1张/10张/第11张提示、PNG/WebP/JPG、GIF/HEIC/AVIF拒绝、10MB临界与超限、对话流/工作流同规则、上传成功/删除/恢复/移动分类时左侧与@引用数字立即变化。
+
 ## ✅ 2026-07-22 (部署 07-20+07-21 全部上线 + 一批工作流/UI 小改动 session) END-OF-SESSION —— 先读这条：三方已同步，无待部署
 
 **状态**：全部已部署腾讯 + 同步阿里、四域名 200、`tsc`+`build` 通过、无 Prisma 迁移、**已 push GitHub（三方同步 `ac4c38f`）**。`wavesurfer.js` 已随镜像 build 装入。工作树应干净（除本次 handover 提交）。详见 CHANGELOG / 01-current-status 顶条。
