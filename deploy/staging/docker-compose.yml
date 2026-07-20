@@ -17,7 +17,7 @@ services:
       args:
         NEXT_PUBLIC_WORKFLOW_MODE_ENABLED: "true"
         NEXT_PUBLIC_IS_TEST: "true"
-        NEXT_PUBLIC_UPLOAD_BASE_URL: "http://101.37.129.164:8080"
+        NEXT_PUBLIC_UPLOAD_BASE_URL: "https://staging-static.venusface.com"
     restart: unless-stopped
     depends_on: [staging-db]
     environment:

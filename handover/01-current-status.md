@@ -1,8 +1,48 @@
 # Current Status
 
-Last checked: 2026-07-19 China time（later session；最新一条排最上）.
+## ⭐⭐ 最新（2026-07-20 收尾）：v1.0.0.25 已整份对齐部署【正式服】+ 测试服；⚠️ 未 commit/push GitHub
 
-## ⭐ 最新 session（later，2026-07-19）：gpt-5.4-image-2 img2img 修复（http→https + URL优先/base64回退）+ safety 错误映射 + 对话流重试卡槽定位 & 红字1:1 大修 + 免费HTTPS验证（✅ 已部署测试服 v1.0.0.13；⚠️ 未同步正式服、未 commit/push；无迁移）
+- **三方状态**：正式服 = 测试服 = 本地 = **v1.0.0.25**；**GitHub 落后（v20~v25 全部未 commit/push）**。正式服由测试服 `/app` 原样 rsync 而来（不 bump、版本号带过去），四域名 main/api/ali/static 全 200，无 Prisma 迁移。备份 `/opt/flashmuse/app-backups/20260721-023921-presync-v25`。
+- **本次上线内容（v20→v25 积压，均在测试服验过）**：① 测试服 HTTPS 域名相关（env，正式服本就走 https）；② gpt-5.4-image-2 参考图失败分流（瞬时错误不切 base64/安全拒绝秒失败）；③ 视频音视频参考组合校验三处统一（`upload-rules.ts`）；④ 使用提示词只读自己那份引用包 + 媒体由累加改整体替换；⑤ **工作流断线漏删@名→死循环卡死输入框修复**（自愈 effect + @名有效性=有缩略图 `validReferenceNames`=visibleUploads + 去掉读整库/转圈 + `loadMentionAssetFilters` missingFilters 兜底）；⑥ **B_42 修复**（工作流 @引用的视频/音频被当参考图发 BytePlus → 按 asset.kind 路由）。
+- **实测**（测试服 12424740）：裸@名无效不加载、@按钮出缩略图+蓝字、删缩略图@名同步删、融合生视频图/视频/音频各归各槽 BytePlus 创建成功。正式服首页 200、0 console 报错。
+- **测试账号（明文，见 03）**：`12424740@qq.com`/`dragonstar`（主测试号，普通用户）、`lookxun@163.com`/`dragonstar`（白名单）。
+- **下一个 AI**：`git commit`（v20~v25 全部源码 + `deploy/staging/*` + handover）并 push，让 GitHub 三方同步。改动源码文件：`src/lib/{openrouter,transient-error,upload-rules,app-version}.ts`、`src/app/api/video/route.ts`、`src/components/{chat-workbench,workflow-tldraw-canvas-inner}.tsx`、`deploy/staging/*`。
+
+## 上一 session（2026-07-20 later）：工作流 @引用三修 + 使用提示词媒体替换（测试服 v1.0.0.24 起，已随 v25 上正式服）
+
+1. **状态**：测试服 `v1.0.0.24`（正式服仍 `v1.0.0.19`）。`tsc` 过、无 Prisma 迁移、未 commit/push、未同步正式服。改动 `workflow-tldraw-canvas-inner.tsx`、`chat-workbench.tsx`、`app-version.ts`。
+2. **修的 bug**：工作流断连线后输入框永久转圈"加载引用资产..."。真因=断线漏删 @名（canvas 层用原始基名删、输入框用去重名）→ 孤儿 @名 → `hasUnresolvedMention` 反复触发 `loadMentionAssetFilters`（空分类恒算缺失）→ 无限重载卡死。
+3. **修法**（全平台统一规则落地）：有效@名=当前输入框有缩略图撑腰；`validReferenceNames` 只认 `visibleUploads`；新增自愈 effect（validRefs 收缩就删对应孤儿@名，覆盖断线/删节点/删缩略图/切模式）；去掉读整库机制+转圈 spinner；取名统一去重名；`loadMentionAssetFilters` missingFilters 兜底。附带对话流"使用提示词"媒体累加改替换。
+4. **实测**（测试服 `12424740@qq.com`）：裸@名 0 请求不变蓝、@按钮出缩略图+蓝字、删缩略图@名同步消失，3 项通过。
+5. **测试账号（明文）**：`12424740@qq.com`/`dragonstar`（主测试号 ID_535317）、`lookxun@163.com`/`dragonstar`（白名单 ID_176407）。详见 03。
+6. **下一个 AI**：用户验完（尤其真·断线）后 commit（含 v20~24 积压 + handover），是否上正式服由用户拍板。
+
+## 上一 session（2026-07-20）：测试服 HTTPS 域名 staging-static.venusface.com + 参考图失败分流 + 音视频组合校验三处统一 + 使用提示词只读自己那份（测试服 v1.0.0.23）
+
+**详见 CHANGELOG 顶条为权威。速记：**
+
+1. **状态**：测试服 `v1.0.0.23`（入口 `https://staging-static.venusface.com/` 或 `http://101.37.129.164:8080/`），正式服仍 `v1.0.0.19`。全部改动 `tsc` 过、无 Prisma 迁移、**未 commit/push GitHub、未同步正式服**。本地工作树领先。
+2. **测试服 HTTPS 域名**：`staging-static.venusface.com`（阿里 DNS→101.37.129.164 + Let's Encrypt 到 2026-10-18 + 阿里 nginx 443 server 块 `flashmuse-staging-static-ssl`）。测试服 env 的 `NEXT_PUBLIC_PRIMARY_BASE_URL`+`NEXT_PUBLIC_UPLOAD_BASE_URL` 都改成它。⚠️ 拼参考图 URL 的 base 优先 `NEXT_PUBLIC_PRIMARY_BASE_URL`，只改 UPLOAD 无效（本 session 踩过）。img2img 实测走 https URL 分支成功。
+3. **gpt-5.4-image-2 参考图失败分流**（v20/v21，`openrouter.ts`+`transient-error.ts`）：上游瞬时错误(5xx/429/408)不切 base64、抛「上游服务暂时不可用」标记走服务端重连继续用 URL 重排队；安全/内容审核拒绝(safety system)秒级失败不切 base64。其它 4xx/未知仍回退 base64。
+4. **症状B 音视频参考组合校验统一**（v22/v23）：唯一权威 `upload-rules.ts` 的 `validateVideoReferenceCombination`/`getVideoAudioUploadDisabledMessage`+`VIDEO_REFERENCE_MESSAGES`；对话流/工作流/服务端三处共用。首帧/首尾帧带音视频→「只有融合模式才支持上传视频和音频」；融合只带音频→「音频不能单独上传，必须带图片或视频」。v23 补齐附加/上传时入口。线上 ID_868181 "带音频就出错"真因=带音频请求都在早期 400 gate 被拦（首帧/首尾帧模式或只传音频）。
+5. **症状A 使用提示词只读自己那份**（v22，`chat-workbench.tsx`）：删 4 处"翻上一条用户消息"兜底（copyPrompt/提示词显示/Agent面板/regenerate）+ `setActiveDraftInputWithMentionCards` 有显式 restore 时不拿@文字重造媒体卡。每张生成图/视频出生即钉完整引用包、独立、软删不影响、引用没了显示裂开。
+6. **下一个 AI**：用户验完后 commit（源码 + `deploy/staging/*` + handover）；是否上正式服由用户拍板（走测试服→整份同步正式服铁律，无迁移）。
+
+## 上一 session（2026-07-19）：GPT版老接口并存 + 对话流优化规则 + 预览页参考缩略图/使用提示词统一 + 测试服视频封面NEXT_PUBLIC修复 + ✅整份对齐部署正式服 v1.0.0.19 + push GitHub
+
+**详见 CHANGELOG 顶条为权威。速记：**
+
+1. **三方已同步：正式服=测试服=本地=GitHub，均 `v1.0.0.19` / commit `d85fa92`。** 正式服从 v1.0.0.2 一次性整份对齐（rsync staging/app→正式/app），四域名 200、无 Prisma 迁移。GitHub `489da13..d85fa92`（含 v3~v19 全部积压 + 本 session）。`.playwright-mcp/` 已 gitignore、`deploy/` 已入库。
+2. **GPT-5.4 Image 2（GPT版）** id `openai/gpt-5.4-image-2-agent`：走老接口/agent（`isGptImage2Model` 不匹配→老路径；发送时 `resolveOpenRouterImageModelName` 映射回真实名 `openai/gpt-5.4-image-2`）。天然无4K/无画质/参考图3张(fallback)/不金色/不进Agent。显示名已配。排在新接口上方。
+3. **三处模型弹窗小灰字**（`getImageModelSelectHint`）：仅对话流+工作流显示（资产库不显示）。GPT版="老接口，会有GPT Agent 理解优化后传给图片模型，适合新手使用"；新接口="直接把提示词原封不动传给图片模型，支持带16张参考图，支持画质选择和4K出图"。
+4. **对话流优化提示词**加规则（图+视频）："不改变原意，发现逻辑错误要更正"。
+5. **预览页右侧**：顶部 80×80 参考缩略图（图/视频/音频统一）、提示词 @名蓝色、「使用提示词」统一走 `copyPrompt`（带回图/视频/音频/文档；copyPrompt 改跨 session 查找源消息）。
+6. **测试服上传视频无封面根因**=`NEXT_PUBLIC_UPLOAD_BASE_URL` 构建期未注入→回退硬编码生产 `api.venusface.com`→404。修：Dockerfile 加 ARG（默认空、正式服零影响）+ 测试服 compose 传 `http://101.37.129.164:8080`。封面本身生成正常（ffmpeg 在）。
+7. **扣费已实测正常**（测试服 ledger）：GPT版 usd~$0.127→9积分/张、新接口 avg usd$0.138→~10积分/张，usd 都>0、无扣0/漏扣。计费按 `usage.usd(cost)→积分`，非按 model id 查价。
+8. **正式服 env**：`UPLOAD_RULE_OVERRIDES` gpt-5.4-image-2 已改 `maxCount:16`（精确正则，未动 -agent）。
+9. **状态**：改动文件=`src/lib/{models,openrouter,media-asset-record,app-version}.ts`、`src/components/{chat-workbench,workflow-tldraw-canvas-inner}.tsx`、`Dockerfile`、`deploy/staging/docker-compose.yml`、`.gitignore`。
+
+## 上一 session：gpt-5.4-image-2 img2img 修复 + 对话流重试大修（测试服 v1.0.0.13，已被 v1.0.0.19 整份对齐覆盖上线）
 
 **详见 CHANGELOG 顶条为权威。速记：**
 

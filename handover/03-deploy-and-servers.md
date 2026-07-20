@@ -22,6 +22,11 @@
 腾讯测试生成的图 → 自动 ali-sync 到 /var/www/flashmuse-static-test/generated (独立目录, 不碰正式服镜像)
 ```
 - **端口**：腾讯安全组放行 **5001**（阿里→腾讯）、阿里安全组放行 **8080**（浏览器→阿里）。两个端口专供测试服。
+- **⭐ 测试服登录账号（明文，供 AI 直接登录测试；密码都是 `dragonstar`；登录页选"密码登录"、先填邮箱点"提交邮箱"再填密码）**：
+  - **`12424740@qq.com`（主测试号，普通用户，`ID_535317`，昵称"测试服龙星"）—— 优先用这个模拟真实用户测试**，有资产（角色图 2、上传图 34、对话流生成图 76 等）。
+  - `lookxun@163.com`（白名单/管理员，`ID_176407`，昵称"测试服空空希洛"）——白名单号一般**不**用来做真实模拟测试。
+  - 另 `176107103@qq.com` 也是白名单（env `ADMIN_EMAILS`）。
+  - 用浏览器工具（playwright）登录：入口 `https://staging-static.venusface.com/`；切账号先 `context.clearCookies()` 再重登。**测试内容不要删除**（用户交代）。
 - **数据**：测试服是**独立空库**（`staging-db`，POSTGRES_PASSWORD=`stg_5k2p9v7q3xz8`）。首次曾导入本地库，后按用户要求清空（`DROP SCHEMA public CASCADE; CREATE SCHEMA public;` + 重启 app 触发 entrypoint migrate deploy 重建空表）。白名单 `lookxun@163.com`/`176107103@qq.com` 走 env `ADMIN_EMAILS`，与清库无关，注册即管理员。
 - **测试服环境差异**（`/opt/flashmuse-staging/data/.env.local`，从正式服 .env.local 派生）：`FORCE_INSECURE_AUTH_COOKIE=true`（http/IP 访问，cookie 不能 Secure）、`AUTH_COOKIE_DOMAIN=`（空，IP 无域名）、`NEXT_PUBLIC_PRIMARY_BASE_URL=http://101.37.129.164:8080`、`NEXT_PUBLIC_STATIC_BASE_URL=`（空=同源）、`ALI_SYNC_DEST_ROOT=/var/www/flashmuse-static-test/generated`、`UPLOAD_CORS_ORIGINS=http://101.37.129.164:8080`、`NEXT_PUBLIC_IS_TEST=true`。DATABASE_URL 由 compose environment 指向 staging-db。
 - **测试服标识**：`NEXT_PUBLIC_IS_TEST=true` 作为 **compose build arg**（Dockerfile `ARG NEXT_PUBLIC_IS_TEST`）bake 进客户端 → 首页/工作台/后台 logo 后显示"测试服"、版本号显示 `版本号(t):vX`、浏览器标签标题前缀 `(测试服)`。正式服不传此 arg → 不显示这些。

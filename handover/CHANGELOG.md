@@ -1,5 +1,166 @@
 # Current Handover Changelog
 
+## 2026-07-20 收尾：v1.0.0.25 整份对齐部署正式服（+测试服），⚠️ 未 commit/push GitHub
+
+用户拍板"同步到正式服"。把测试服 `/opt/flashmuse-staging/app`（v1.0.0.25）原样 `rsync -a --delete`（排除 node_modules/.next/tmp/*.log/.git/.env.local/.runtime）到正式服 `/opt/flashmuse/app`（不 bump、版本号带过去=正式服也 v1.0.0.25，不显 `(t)`）→ `docker compose up -d --build flashmuse-app` → `.next/static` 同步阿里**正式**镜像 `/var/www/flashmuse-static/_next/static/`（key `flashmuse_to_ali_ed25519`）→ 四域名 main/api/ali/static 全 200、正式版本 `版本号:v1.0.0.25`、首页 0 console 报错。无 Prisma 迁移。备份 `/opt/flashmuse/app-backups/20260721-023921-presync-v25`。
+- **上线内容**=v20→v25 全部积压（HTTPS域名 env / gpt-5.4-image-2 参考图失败分流 / 音视频参考组合校验统一 / 使用提示词只读自己那份+媒体替换 / 工作流断线漏删@名→死循环修复+@名有效性=有缩略图+死循环兜底 / B_42 视频音频参考路由）。均在测试服验过。
+- **三方状态**：正式服=测试服=本地=v1.0.0.25；**GitHub 仍落后、未 commit/push**（下一个 AI 需 commit+push）。
+
+
+## 2026-07-20 later2（工作流 B_42 修复：@引用的视频/音频被当成参考图发给 BytePlus；已部署测试服 v1.0.0.25，实测通过）
+
+承接 v1.0.0.24。**已部署测试服 v1.0.0.25**（正式服仍 v1.0.0.19，未 commit/push）。`tsc` 过、无 Prisma 迁移。改动仅 `src/components/workflow-tldraw-canvas-inner.tsx` + `app-version.ts`。
+
+- **现象**：工作流融合模式生视频、@引用了 1图+1视频+1音频 → BytePlus 报 `content[2].image_url.url ... not an image` → **B_42**。
+- **真因**（原有老 bug，与当天 @引用改动无关）：`getWorkflowPromptReferenceUrls`（`:811`）从资产库目录按 @名解析时，**只在 `kind==="image"` 分支 push url、且不看 asset 真实类型** → @的视频/音频被塞进 `referenceImages`（image slot），video/audio 列表为空 → BytePlus 收到 image_url=mp3/mp4 报错。诊断 `uploadSummary` 当时 `imageCount:3, videoCount:0, audioCount:0`。
+- **为何以前没暴露**：工作流"从资产库 @引用视频/音频"是 2026-07-21 才加的（方案A）；在那之前视频/音频参考只能"+上传"，走 `node.data.uploads` 按 kind 分类的正确分支，从不碰这段目录分支。且 07-21 上线时"Seedance 融合 @视频+@音频真实生视频"验证一直挂着没跑。
+- **修法**：`getWorkflowPromptReferenceUrls` 改为 `(asset.kind ?? "image") === kind` 才 push → 图→图槽、视频→视频槽、音频→音频槽。
+- **实测**（测试服 12424740，重跑同一节点）：日志 `byteplus-create-request/success` 三个引用分别 `reference_image`/`reference_video`/`reference_audio`，taskId `cgt-20260721022817-tl5m6`，BytePlus 创建成功、不再 B_42 ✅。
+
+
+## 2026-07-20 later（工作流 @引用三修：断线漏删@名→死循环卡死输入框 + @名有效性=有缩略图撑腰 + 死循环兜底；使用提示词媒体改替换；已部署测试服 v1.0.0.24）
+
+回复风格：简洁直接中文。承接同日 v1.0.0.23。**已部署【测试服】v1.0.0.24（未 commit/push、未同步正式服，正式服仍 v1.0.0.19）。** `tsc` 过、无 Prisma 迁移。已用浏览器工具登录测试服 `12424740@qq.com` 实测三项通过。
+
+### 0. 三方状态 & 改动文件
+- 测试服 = **v1.0.0.24**；正式服 = v1.0.0.19（未动）。本地工作树领先、未 commit/push。
+- 改动：`src/components/workflow-tldraw-canvas-inner.tsx`、`src/components/chat-workbench.tsx`、`src/lib/app-version.ts`（连同 v23 那批一起未 push）。
+- 测试服登录账号（明文）见 `03-deploy-and-servers.md`：主测试号 `12424740@qq.com` / `dragonstar`。
+
+### 1. 用户报的 bug：工作流断连线后输入框永久转圈"加载引用资产..."读不完
+真因（两个 bug 叠加）：
+- **断线漏删 @名**：`removeConnectedReferenceNames`（canvas 层）用**原始基名** `getWorkflowUploadReferenceName` 删，而输入框插入/显示/有效集用的是**去重名** `getVisibleUploadReferenceName`（撞名会 `名_2`）→ 撞名时删不掉 → 留孤儿 @名。
+- **孤儿 @名触发死循环**：`hasUnresolvedMention` 永真 → effect 反复调 `loadMentionAssetFilters` → 其 `missingFilters` 判断把"空分类"永远算缺失 → `assetsLoadStatus` loading↔loaded 抖 → effect 依赖它反复重触发 → **无限重载**（快网也复现：一轮 11 个 `/api/workspace-state?assetsOnly` 请求无限刷；慢网/阿里则 spinner 顶掉输入框永不恢复）。
+
+### 2. 修法（全平台统一规则落地，都只动前端）
+- **规则**：有效(变蓝)的 @名 = **当前输入框里有缩略图撑腰**的引用（@按钮点出、缩略图下点出、使用提示词带入都在 `visibleUploads`）。复制粘贴的裸 @名无效：不变蓝、不读库、不转圈、当普通文字。**没缩略图，@名一定一起没。**
+- `validReferenceNames` 改成**只认 `visibleUploads`**（去掉 `referenceAssets` 目录），→ 裸 @名不再仅凭"库里有同名"就变蓝。
+- **自愈 effect**（`WorkflowPromptBox`）：`validReferenceNames` 收缩时（断线/删源节点/删缩略图/切模式裁剪上传），把"之前有效、现在无效"的 @名从提示词删掉；不碰用户手打/粘贴的裸 @名、不碰正在输入的 @。→ 断线/删节点等所有路径统一保证"没缩略图=没@名"。
+- **去掉**工作流"发现解析不了 @名就读整个资产库"的机制 + 顶掉输入框的转圈"加载引用资产..."（改成永远渲染编辑器）。
+- 取名统一：`insertAssetReference`/`removeUpload` 都改用去重名 `getVisibleUploadReferenceName`；`uploadReferenceNameById` 修"资产库那张被 @ 进来的图跟自己撞名错成 _2"（同 url 保留本名）。
+- **兜底**：`chat-workbench` `loadMentionAssetFilters` 的 `missingFilters` 改成只按"是否加载过"判，不再把空分类永远算缺失（斩断 loading↔loaded 死循环）。
+- **附带**（上一条需求）：对话流"使用提示词"再点别条时，媒体（图/视频/音频）由**累加改为整体替换**（和文字一致）。`setActiveDraftInputWithMentionCards` 有显式 restore 时不保留输入框原有媒体。
+
+### 3. 测试服实测（浏览器工具登录 12424740@qq.com，工作流图片节点）
+- 打库里没有的 `@不存在的资产名` → 黑字无效、**0 个 assetsOnly 请求**、输入框正常（旧版几十轮风暴+转圈顶掉输入框）✅。
+- @按钮选 `asset_1_role` → 出缩略图 + `@asset_1_role` 变蓝 ✅。
+- 点缩略图"移除上传文件" → 缩略图没了、`@asset_1_role` 同步从提示词删除 ✅（断线走同一自愈机制）。
+
+### 4. 待办
+- 用户继续在测试服验（尤其真·断线：连线两节点→点缩略图下@名→断线→@名应消失且不转圈）。验完 commit（含 v23 那批 + 本批 + handover），是否上正式服由用户拍板（走测试服→整份同步铁律，无迁移）。
+
+
+## 2026-07-20（测试服 HTTPS 域名 staging-static.venusface.com 搭建 + gpt-5.4-image-2 参考图失败分流(瞬时错误不切base64/安全拒绝秒失败) + 视频音视频参考组合校验三处统一 + 使用提示词只读自己那份引用包；全部只到测试服 v1.0.0.23，未 commit/push，正式服仍 v1.0.0.19）
+
+回复风格：简洁直接中文。本 session 承接 2026-07-19（正式服 v1.0.0.19）。**全部改动只部署到【测试服】迭代 v1.0.0.20→v1.0.0.23，均未 commit/未 push GitHub、未同步正式服（正式服仍 v1.0.0.19）。** `npx tsc --noEmit` 每步通过、无 Prisma 迁移。**下一个 AI 以本条为最新。**
+
+### 0. ⚠️ 三方状态 & 待办
+- **测试服 = v1.0.0.23**（腾讯 `/opt/flashmuse-staging` + 阿里测试镜像，入口 `https://staging-static.venusface.com/` 或 `http://101.37.129.164:8080/`）。
+- **正式服 = v1.0.0.19**（未动）。**本地工作树领先，但未 commit/push。** 下一个 AI：用户验完后需 `git commit`（本 session 改的源码 + `deploy/staging/*` + handover），要不要上正式服由用户拍板（走"先测试服→再整份同步正式服"铁律）。
+- 改动源码文件汇总：`src/lib/openrouter.ts`、`src/lib/transient-error.ts`、`src/lib/upload-rules.ts`、`src/app/api/video/route.ts`、`src/components/chat-workbench.tsx`、`src/components/workflow-tldraw-canvas-inner.tsx`、`src/lib/app-version.ts`；deploy 配置 `deploy/staging/{docker-compose.yml,make-staging-env.sh,flashmuse-staging-static-ssl.conf(新增),README.md}`。
+
+### 1. ⭐ 测试服 HTTPS 域名 `staging-static.venusface.com` 搭建完成（历史待办，本 session 做掉）
+目的：给测试服上传/静态/generated 一个可信 https 地址，让 gpt-5.4-image-2 img2img 参考图走真实 URL 分支（OpenRouter 新接口只认 https，否则回退 base64）。
+- **DNS**（用户已加）：`staging-static.venusface.com` → `101.37.129.164`（阿里）。
+- **阿里 nginx**（root key 在腾讯 `/opt/flashmuse/data/runtime/flashmuse_to_ali_ed25519`，从腾讯跳阿里 `sudo ssh -i ... root@101.37.129.164`）：
+  - `certbot certonly --nginx -d staging-static.venusface.com` 签 Let's Encrypt（`/etc/letsencrypt/live/staging-static.venusface.com/`，到 2026-10-18，自动续期）。
+  - 新增 443 server 块 `/etc/nginx/sites-available/flashmuse-staging-static-ssl`（软链到 sites-enabled）：克隆 8080 那套行为（本地静态镜像 `/var/www/flashmuse-static-test` + 反代腾讯 `119.28.116.16:5001`）+ SSL 证书 + 80→443 跳转 + acme-challenge。本地存档在 `deploy/staging/flashmuse-staging-static-ssl.conf`。
+- **测试服 env/compose**（腾讯 `/opt/flashmuse-staging`）：`docker-compose.yml` build-arg `NEXT_PUBLIC_UPLOAD_BASE_URL` + `data/.env.local` 的 `NEXT_PUBLIC_UPLOAD_BASE_URL` **和 `NEXT_PUBLIC_PRIMARY_BASE_URL`** 都改成 `https://staging-static.venusface.com`；`UPLOAD_CORS_ORIGINS` 加该域名。备份 `*.bak.<时间戳>`。
+  - **⚠️⚠️ 关键坑**：`toPublicGeneratedImageUrl`（`openrouter.ts:571`）拼参考图 URL 的 base **优先级 = `NEXT_PUBLIC_PRIMARY_BASE_URL` → `NEXT_PUBLIC_UPLOAD_BASE_URL` → 兜底**。第一次只改了 UPLOAD 没改 PRIMARY（PRIMARY 还是 `http://101.37.129.164:8080`）→ 参考图仍拼成 http → OpenRouter 400 `Only HTTPS URLs are allowed` → 回退 base64。**必须两个都改。** `.env.local` 是服务端运行时读，改完 `docker compose up -d --force-recreate staging-app` 即生效（NEXT_PUBLIC 服务端逻辑无需重 build；纯客户端展示才需 build）。
+- **实测验证 OK**（诊断日志 `/opt/flashmuse-staging/data/runtime/generation-diagnostics-log.jsonl`）：改后 img2img 参考图 `host=staging-static.venusface.com`、`refMode=url` → `image-provider-success`，不再回退 base64。
+- **正式服本来就在走 URL**（`host=main.venusface.com` https，PRIMARY 已是 https），无需动。
+
+### 2. ⭐ gpt-5.4-image-2 参考图失败分流改造（v1.0.0.20 + v1.0.0.21）
+起因：用户测出带参考图那批里，OpenAI 上游返回 **520** 时代码也切了 base64（白等），且"生成美女"被 OpenAI **安全系统 400 拒绝**时也切 base64 重试（同样被拒、白等 ~2 分钟）。
+- **改 `openrouter.ts` `generateGptImage2` 参考图失败回退分流**（原来"任何失败+有参考图"就一律切 base64）：
+  - 新增 `isTransientUpstream(resp,parsed)`：status/errCode 属 5xx/429/408 = 上游瞬时抖动 → **不切 base64**，抛带稳定标记「上游服务暂时不可用，稍后重试」的错误，交由服务端断线重连（`runImageJob` catch→`isTransientServerError`→`scheduleJobRetry`，继续用 URL 重排队重试，超 `MAX_IMAGE_JOB_ATTEMPTS` 才真失败）。
+  - 新增 `isContentRejection(parsed)`：`safety system`/`content policy`/违规等 = 内容审核拒绝 → **不切 base64、秒级直接失败**（base64 一样被拒）。
+  - 其它 4xx/未知失败 → 仍回退 base64 再试一次（原行为不变，兼容真·URL 问题如 400 https）。
+- **改 `transient-error.ts`**：`isTransientServerError` 认识新标记「上游服务暂时不可用 / service temporarily unavailable」（原 `\b50[0-4]\b` 不认 520 等 Cloudflare 52x）；`isPermanentError` 加"safety system/content policy/安全系统"归永久失败。
+
+### 3. ⭐ 症状B：视频"音视频参考组合"校验三处统一（v1.0.0.22 + v1.0.0.23）
+线上用户 ID_868181 反映"只要带音频就出错生成不了"。**排查真因**：该用户 `GenerationEvent` 里 `referenceAudioCount>0` 记录=0 条 → 带音频请求都在服务端早期 400 gate 被拦（记录 event 之前 return）。音频只有 **BytePlus Seedance 视频模型 + 融合(reference)模式**才 enabled；首帧/首尾帧模式、或只传音频不带图/视频 → 拦。原提示各处不统一、且笼统（"当前模型不支持上传音频"）。
+- **统一到唯一权威 `upload-rules.ts`**（铁律：能统一一律统一）：
+  - `VIDEO_REFERENCE_MESSAGES` 文案常量：`modelNoVideoAudio="当前模型不支持上传视频或音频"` / `onlyFusionSupportsVideoAudio="只有融合模式才支持上传视频和音频"` / `audioNeedsImageOrVideo="音频不能单独上传，必须带图片或视频"`。
+  - `validateVideoReferenceCombination({modelId,referenceMode,imageCount,videoCount,audioCount})`：非 Seedance+带音视频→modelNoVideoAudio；Seedance 首帧/首尾帧+带音视频→onlyFusion；Seedance 融合+只音频→audioNeedsImageOrVideo。
+  - `getVideoAudioUploadDisabledMessage({modelId,videoReferenceMode})`：上传/附加被拒时用（首帧/首尾帧→onlyFusion，否则→modelNoVideoAudio）。
+- **收敛调用点**（对话流客户端 / 工作流客户端 / 服务端三处共用同一份，删掉各自旧文案）：
+  - 服务端 `video/route.ts`：原 4 条 gate（722/723/724/727）→ `validateVideoReferenceCombination` 一条（count 上限仍单独判）。
+  - 对话流 `chat-workbench.tsx`：发送时组合校验（v22）+ **附加时**（v23，之前漏了）@引用音视频 `insertAssetReference`/`insertCharacterAssetReference`、+上传/拖拽校验、切模式送出前聚合校验。
+  - 工作流 `workflow-tldraw-canvas-inner.tsx`：`runVideoNode` 校验（v22）+ `validateWorkflowUploadsForSubmit`、@引用 `insertAssetReference`、`handleUploadFiles`（v23）。
+- **v22→v23 教训**：v22 只改了"发送时"文案，用户仍看到旧提示——因为真正先弹的是"**附加/上传时**"的拦截（点 @引用/+上传那一刻），v23 才把 attach 入口补齐。
+
+### 4. ⭐ 症状A：使用提示词/提示词显示"只读自己那份引用包"（v1.0.0.22）
+线上反映：没上传的音频被带进"使用提示词"、以前上传的音频删掉再发下次还在。**真因**（代码）：① `copyPrompt`/提示词显示/Agent面板/`regenerate` 在"自己 `uploadedFiles` 为空时兜底去翻**上一条用户消息**"（Agent 一条用户消息生多个结果时尤其串）；② `setActiveDraftInputWithMentionCards` 还原时会拿提示词文字里的 **@名去当前资产库重造媒体卡**（删了卡→@文字还在→又被重造，死循环）。
+- **用户定的原则**：每张生成的图/视频都是独立个体，出生即把完整提示词包（文字+图+视频+音频+蓝色@名）钉在自己身上；任何地方显示/使用提示词只读它自己那份，绝不翻邻居、不拿@文字去库里重造；引用素材没了就显示裂开；软删除不影响（存进去的引用包一直可读）。
+- **改 `chat-workbench.tsx`**：
+  - 删掉 4 处 `previousUserMessage`/`previousUserMessageForMedia` 兜底（`copyPrompt`、提示词区 `mediaPromptFileReferences` 显示、Agent 媒体面板"使用提示词"、`regenerate` 的 `replayUploadedFiles`）→ 一律只用 `message.uploadedFiles` / `message.imageReferences`。
+  - `setActiveDraftInputWithMentionCards`：有显式 `restore`（使用提示词/预览还原）时跳过 @名派生（`hasExplicitRestore` 时 `mentionedAssets/mentionedImages/mentionedFiles` 置空），只用权威 restore 包。
+  - 已核实：video 生成消息出生即存自己 `uploadedFiles`（13298）+ `imageReferences`；完成更新 `appendVideoToAssistantMessage` 是 `...message` 展开式、不冲掉；预览弹窗"使用提示词"已走 `copyPrompt(sourceMessage)`；后台本就按 requestId 从 `GenerationJob` 读自己那份（`buildJobReferenceItems`）；工作流本就读后端 job。
+
+## 2026-07-19（GPT版老接口并存 + 对话流优化规则 + 预览页参考缩略图/使用提示词统一 + 测试服视频封面NEXT_PUBLIC修复 + ✅整份对齐部署正式服 v1.0.0.19 + push GitHub）
+
+回复风格：简洁直接中文。本 session 承接"gpt-5.4-image-2 迁新接口"之后，用户说新接口没别的问题了，然后提了一串新需求，全部先在测试服迭代（v1.0.0.14→v1.0.0.19），最后**用户拍板整份对齐部署正式服并 push GitHub**。**下一个 AI 以本条为最新。**
+
+### ⭐⭐ 三方已同步：正式服 = 测试服 = 本地 = GitHub，均 `v1.0.0.19` / commit `d85fa92`
+- 正式服从 v1.0.0.2 一次性整份对齐到 v1.0.0.19（rsync `staging/app`→`正式/app`，非逐文件）。无 Prisma 迁移。
+- GitHub `489da13..d85fa92 HEAD -> main`，涵盖 v3~v19 全部积压改动 + 本 session。
+- `.playwright-mcp/` 已加进 `.gitignore`（不提交）；`deploy/` staging 基础设施一并入库（与仓库既有惯例一致——正式服 docker-compose.yml 早已提交内网 DB 密码，DB 不对外暴露）。
+
+### 1. ⭐ GPT-5.4 Image 2「GPT版」老接口并存（本 session 主需求）
+用户想保留迁移前的**老接口/agent 体验**（老接口其实是 GPT agent，先帮用户优化提示词再交给 image2 模型，新手友好、出错率低、报错更详细），与新接口（直连 image2、支持 4K/画质/16参考图、更快）并存。
+- **新增模型** `GPT-5.4 Image 2（GPT版）`，内部 id **`openai/gpt-5.4-image-2-agent`**，排在现有 `openai/gpt-5.4-image-2` **上方**。
+- **走老接口**：`isGptImage2Model` 只精确匹配新 id，GPT版不匹配→自动落到 `openrouter.ts` 老路径 `/chat/completions`+modalities；发往 OpenRouter 时经新增 `resolveOpenRouterImageModelName(models.ts)` **映射回真实模型名 `openai/gpt-5.4-image-2`**（`openrouter.ts:1726` `apiModel`，body.model 用 apiModel）。
+- **GPT版天然**：不金色（新 id 不匹配 `isGoldGenerationModel`）、无画质按钮（只 `isGptImage2Model` 显示）、无 4K（`imageModelRules["openai/gpt-5.4-image-2-agent"]` 只 `["1K","2K"]`）、参考图 fallback 3 张（`upload-rules.ts` 只精确匹配新 id，GPT版落 fallback 3/8MB，与老接口 `slice(0,3)` 一致）。
+- **显示名** `media-asset-record.ts` 加 `"openai/gpt-5.4-image-2-agent": "GPT-5.4 Image 2（GPT版）"`。
+- **上线前审查+实测（关键）**：整条链路（校验/路由/byteplus误判/扣费/画质4K/入库显示/Agent）全部安全。**扣费实测**（测试服 ledger）：GPT版 4 单每单 usd~$0.127→9 积分，新接口 57 单 avg usd$0.138→~10 积分，**usd 都>0、无扣0/漏扣**。GPT版走的就是迁移前老路径，`getUsageMeta` 从老接口 `usage.cost` 取 usd。计费按 `usage.usd → cny → 积分`（`usd×72`，默认7.2×10），非按 model id 查价表。
+- GPT版**未**加入 Agent 自动选择（`isAgentImageModelEnabled` 对它 return false）/通用模式。
+
+### 2. 三处模型弹窗小灰字说明（仅对话流+工作流，资产库不显示）
+- `models.ts` 新增 `getImageModelSelectHint(modelId)`：GPT版="老接口，会有GPT Agent 理解优化后传给图片模型，适合新手使用"；新接口="直接把提示词原封不动传给图片模型，支持带16张参考图，支持画质选择和4K出图"。
+- 对话流 `renderModelMenu`、工作流 `WorkflowModelMenuSingle`：两 GPT 模型行加高（有 hint 用 `py-2`，否则 `h-11`）+ 下方灰字（`text-[#a0a0a0]`）。**资产库 `renderCharacterImageModelMenu` 用户要求不显示灰字**（保持原样单行）。
+
+### 3. 对话流「优化提示词」规则加一条（`chat-workbench.tsx` `getProfessionalPromptOptimizationRuleText`）
+- 图片+视频两套都加："**不要改变用户原提示词的意思，如果发现有逻辑错误要更正错误。**"（资产库角色/场景/分镜三套未动）。
+- 背景：优化提示词功能=用户手动按钮，走 `/api/chat`，模型候选链 GPT-5.5→GPT-5.4→Seed2.0Pro→Seed2.0Lite，结果替换输入框。
+
+### 4. ⭐ 预览页右侧提示词大改（`chat-workbench.tsx` 预览 aside ~17364）
+- **顶部加 80×80 参考缩略图**（统一显示图/视频/音频三类）：图片=`<img>`+HoverImagePreview；视频=`<video #t=0.1>`首帧+播放三角；音频=`RiVoiceprintLine` 深灰图标。
+- **下方提示词改用 `ReferencedTextContent`**：`@文件名` 蓝色 `#367cee`（与消息卡统一）、支持换行（`whitespace-pre-wrap break-words`）。顺序=缩略图上、提示词下。
+- **数据来源**：新增两个 memo `previewPromptReferences`(ImageReference[]) / `previewPromptMediaReferences`(MediaFileReference[])，按 `previewAsset.sessionId+messageId` 跨 `sessions` 反查源消息的 `imageReferences`（无则 `getOrderedExplicitImageReferences` 从@名解析）+ `uploadedFiles`（视频/音频，回退上一条 user 消息）。资产库/工作流无源消息时优雅不显示（不报错）。
+
+### 5. ⭐ 预览页「使用提示词」统一到 `copyPrompt`（`chat-workbench.tsx`）
+- 原来只调 `setActiveDraftInputWithMentionCards(sourcePrompt)`（只带文字，靠@名反查）。改为按 sessionId+messageId 找到源消息→调用**统一的 `copyPrompt(sourceMessage)`**，把提示词+图片参考+视频/音频/文档上传全部带回输入框（查不到源消息才回退仅文字）。
+- **`copyPrompt` 改稳健**：消息定位从"仅 activeSession"改成**跨全部 `sessions` 按消息 id 查找**（超集，不影响原消息卡行为），跨会话预览也能正确回溯素材。
+
+### 6. ⭐ 测试服上传视频无封面根因修复（构建期 NEXT_PUBLIC 未注入）
+- **现象**：测试服对话流上传视频缩略图只显示灰底▶无封面。
+- **真因**（非 ffmpeg 问题，封面其实生成正常）：`getStaticMediaUrl` 对"本会话刚上传"的媒体会指向"主源上传地址" `NEXT_PUBLIC_UPLOAD_BASE_URL`；但 `NEXT_PUBLIC_*` 是**构建期内联**（运行期 `.env.local` 改它无效），测试服 Docker build 没把它作为 build arg 注入→空值→回退硬编码生产 `https://api.venusface.com`→那边没有测试服刚上传的文件→404→回退失败→显示▶。正式服恰好 api.venusface.com 就是它真实主源所以不炸。
+- **修复**：`Dockerfile` 加 `ARG NEXT_PUBLIC_UPLOAD_BASE_URL=`（默认空，正式服零影响）+ ENV；`deploy/staging/docker-compose.yml` 与服务器 `/opt/flashmuse-staging/docker-compose.yml` 的 build args 加 `NEXT_PUBLIC_UPLOAD_BASE_URL: "http://101.37.129.164:8080"`。重建后 build arg 已内联进客户端 bundle（确认 `.next/static` 含 `101.37.129.164:8080`）。
+- 核实：同源 `http://101.37.129.164:8080/.../poster.jpg`=200；生产=404。正式服 compose 不传此 arg→维持 api.venusface.com（正确）。
+
+### 7. GPT版给用户的公告文案（未做进产品，仅文字交付）
+两版本对比：GPT版(老接口)=GPT Agent 优化后再出图、新手友好、出错少、最高2K/3参考图；直连版(新接口)=原封不动直传、更快、支持4K/画质档/16参考图。实测速度&消耗（默认1536×1024，积分=usd×72）：低/自动~20s ~1积分、中~40s ~3积分、高~110s ~12积分；4K约76s、2K约33s。"画质越高越清晰越慢越贵"。
+
+### 8. 本 session 版本演进（测试服逐批）
+- `v1.0.0.14`：GPT版模型定义+老接口路由+灰字（三处）。
+- `v1.0.0.15`：灰字文案改。
+- `v1.0.0.16`：资产库去灰字 + 对话流优化规则 + 预览页缩略图/@蓝字。
+- `v1.0.0.17`：预览页使用提示词统一 copyPrompt。
+- `v1.0.0.18`：测试服视频封面 NEXT_PUBLIC_UPLOAD_BASE_URL 构建注入修复（Dockerfile+compose）。
+- `v1.0.0.19`：预览页缩略图补齐视频/音频（原只图片）→**整份对齐部署正式服**。
+
+### 9. 改动文件（本 session）
+`src/lib/models.ts`、`src/lib/openrouter.ts`、`src/lib/media-asset-record.ts`、`src/components/chat-workbench.tsx`、`src/components/workflow-tldraw-canvas-inner.tsx`、`Dockerfile`、`deploy/staging/docker-compose.yml`、`src/lib/app-version.ts`、`.gitignore`。
+
+### 10. 部署/操作记忆（沿用，本 session 已验证）
+- 测试服部署=`node scripts/bump-version.mjs`→打 tgz(改动源码+app-version.ts)→scp `/tmp`→`sudo tar -xzf -C /opt/flashmuse-staging/app`→`cd /opt/flashmuse-staging && nohup sudo docker compose up -d --build staging-app > /tmp/sb.log 2>&1 &`(后台轮询)→`bash /opt/flashmuse-staging/sync-ali-test.sh`→curl 5001 验版本 + 外网 8080 200。
+- 正式服整份对齐=备份 `app-backups/<ts>-presync-vXX`→`sudo rsync -a --delete --exclude node_modules --exclude .next --exclude tmp --exclude '*.log' --exclude .git --exclude .env.local --exclude .runtime /opt/flashmuse-staging/app/ /opt/flashmuse/app/`→`cd /opt/flashmuse && nohup sudo docker compose up -d --build flashmuse-app`→改 `/opt/flashmuse/data/.env.local`（UPLOAD_RULE_OVERRIDES）+`docker compose up -d --force-recreate flashmuse-app`→`bash /tmp/syncali.sh`(同步阿里**正式**镜像 flashmuse-static)→四域名 200。
+- **PowerShell 踩坑**：ssh 内联 `$(...)` 会被本地 PS 解释（backup 时踩到，TS 变空）；含 `/`/中文/引号的 sed/grep 会坏 → 改中文源码用 edit 工具，复杂服务器操作写 .py/.sh scp 上去跑（本 session 用 python 精确改 compose 和 env）。
+- 正式服 env `UPLOAD_RULE_OVERRIDES` 里 `gpt-5.4-image-2` 已改 `maxCount:16`（精确正则只改精确 key，未动 -agent）。
+
+---
+
 ## 2026-07-19（later session：gpt-5.4-image-2 参考图 http→https 改写修复 + URL优先/base64回退 + safety 错误映射 + 对话流重试卡槽定位 & 红字1:1 大修 + 免费HTTPS原理验证）（✅ 已部署测试服 `v1.0.0.13`；⚠️ 未同步正式服、未 commit/push；无 Prisma 迁移）
 
 回复风格：简洁直接中文。承接同日上一 session（gpt-5.4-image-2 迁新接口，测试服 v1.0.0.8）。本 session 从"查测试服 B_1~B_14 红字真因"入手，修了一串 gpt-5.4-image-2 img2img / 对话流重试的真 bug，并把免费 HTTPS 方案验证清楚。**下一个 AI 以本条为最新。**

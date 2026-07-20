@@ -1,22 +1,87 @@
 # Next Actions
 
-## ⭐⭐ 最新 END-OF-SESSION（later 2026-07-19：gpt-5.4-image-2 img2img 修复 + 对话流重试大修 + 免费HTTPS验证）—— 先读这条
+## ⭐⭐ 最新 END-OF-SESSION（2026-07-20 收尾：v1.0.0.25 已部署正式服+测试服）—— 先读这条
 
-**状态**：✅ 已部署测试服 `v1.0.0.13`（外网 `http://101.37.129.164:8080/` 200、阿里测试镜像同步、`tsc` 过、无迁移）；**未同步正式服、未 commit/push**。改动文件：`src/lib/openrouter.ts`、`src/lib/error-message.ts`、`src/components/chat-workbench.tsx`、`src/lib/app-version.ts`。详见 CHANGELOG / 01-current-status 顶条。
+**状态**：正式服 = 测试服 = 本地 = **v1.0.0.25**，四域名 200，无 Prisma 迁移。**GitHub 落后（v20~v25 全部未 commit/push）。** 详见 CHANGELOG / 01 顶条。
+
+**下一个 AI 待办**：
+1. **`git commit` + `push`**（让 GitHub 三方同步）。改动源码：`src/lib/{openrouter,transient-error,upload-rules,app-version}.ts`、`src/app/api/video/route.ts`、`src/components/{chat-workbench,workflow-tldraw-canvas-inner}.tsx`、`deploy/staging/*`（含新增 `flashmuse-staging-static-ssl.conf`）、handover。`git status` 确认别带 `.playwright-mcp/`（已 gitignore）。
+2. 非紧急：对话流"最多4张"改原生 n（暂缓）；清理旧 mention 死常量；M018/M019；回头复查 GenerationEvent"服务器繁忙"占比。
+
+**部署记忆**：正式服整份对齐 = `sudo rsync -a --delete --exclude node_modules --exclude .next --exclude tmp --exclude '*.log' --exclude .git --exclude .env.local --exclude .runtime /opt/flashmuse-staging/app/ /opt/flashmuse/app/` → `cd /opt/flashmuse && nohup sudo docker compose up -d --build flashmuse-app` → docker cp `.next/static` + rsync 到阿里正式镜像 `/var/www/flashmuse-static/_next/static/`（**不是** test 那个）→ 四域名 200。测试账号明文见 03。ssh `ssh -i "C:\Users\ASUS\AppData\Local\Temp\opencode\CinematicFlow.pem" ubuntu@119.28.116.16`；PowerShell 里 curl 是别名/含中文引号会坏 → 写 .sh scp + `sed -i 's/\r$//'` 再跑；改中文源码只用 edit 工具。
+
+---
+
+## ⭐⭐ 最新 END-OF-SESSION（2026-07-20 later：工作流 @引用三修 + 使用提示词媒体替换；已部署测试服 v1.0.0.24）—— 先读这条
+
+**状态**：已部署【测试服 `v1.0.0.24`】，`tsc` 过、无 Prisma 迁移。**未 commit/push、未同步正式服（正式服仍 v1.0.0.19）。** 详见 CHANGELOG 顶条。
+
+**做完**：修工作流"断线后输入框永久转圈'加载引用资产...'"——① 断线/删节点/删缩略图统一自愈删 @名（新增 effect，治本，贯彻"没缩略图=没@名"）；② @名有效性改为"只认当前缩略图"(`validReferenceNames`=`visibleUploads`)，裸/粘贴 @名无效不变蓝不加载；③ 死循环兜底（去掉读整库机制+转圈；`loadMentionAssetFilters` missingFilters 修）。附带：对话流"使用提示词"媒体由累加改为整体替换。改动文件：`workflow-tldraw-canvas-inner.tsx`、`chat-workbench.tsx`、`app-version.ts`。已登录测试服 `12424740@qq.com` 实测 3 项通过。
+
+**下一个 AI / 用户待办**：
+1. 用户在测试服（`https://staging-static.venusface.com/`，账号见 `03-deploy-and-servers.md`）继续验，尤其**真·断线**：连线两个节点 → 点缩略图下 @名插入 → 断掉连线 → @名应立即消失、不转圈、不请求风暴。
+2. 验完 `git commit`（含 v1.0.0.20~24 全部积压源码 + `deploy/staging/*` + handover），攒够一起 push。
+3. 是否上正式服由用户拍板（先测试服→再把测试服 `/app` 整份 rsync 同步正式服，无 Prisma 迁移）。
+
+**测试服部署流程**：`node scripts/bump-version.mjs` → `tsc` → 打改动源码 tgz → scp `/tmp` → `sudo tar -xzf -C /opt/flashmuse-staging/app` → `cd /opt/flashmuse-staging && nohup sudo docker compose up -d --build staging-app > /tmp/sb.log 2>&1 &`（后台轮询）→ `sudo bash /opt/flashmuse-staging/sync-ali-test.sh` → 浏览器验版本号+功能。ssh `ssh -i "C:\Users\ASUS\AppData\Local\Temp\opencode\CinematicFlow.pem" ubuntu@119.28.116.16`（docker 加 sudo）。改中文源码只用 edit 工具、禁 Set-Content；PowerShell 里 curl 是别名会坏、含中文/引号的 psql 写成 .sql scp+`docker cp`+`psql -f`。
+
+---
+
+## ⭐⭐ 最新 END-OF-SESSION（2026-07-20：测试服 HTTPS 域名 + 参考图失败分流 + 音视频组合校验统一 + 使用提示词只读自己那份）—— 先读这条
+
+**状态**：全部只到【测试服 `v1.0.0.23`】，`tsc` 通过、无 Prisma 迁移。**未 commit/push GitHub、未同步正式服（正式服仍 `v1.0.0.19`）。** 本地工作树领先。详见 CHANGELOG / 01-current-status 顶条。
 
 **本 session 做完**：
-1. gpt-5.4-image-2 img2img：`toPublicGeneratedImageUrl` http→https 改写（v9）；参考图 **URL 优先→失败回退 base64**（`referenceToDataUrl` + 两段式，v10，测试服实测通过）。
-2. OpenAI 安全拒绝错误映射（v11）：`模型拒绝了本次生成请求…【原文类别】…直接重试有可能成功，修改提示词后成功率更高。`
-3. ⭐ 对话流"申请多张+重试"**卡槽定位 bug** 修复（重试结果不再覆盖成功位，v12）。
-4. ⭐ 对话流**红字与失败卡 1:1**（原因挂 slot、排除重试中的，v13）。
-5. 免费 HTTPS 验证：uguu.se 直链 → gpt-5.4-image-2 img2img 200 成功=方向1可行。
+1. 测试服 HTTPS 域名 `staging-static.venusface.com`（阿里 DNS + Let's Encrypt + nginx 443）；测试服 env `PRIMARY`+`UPLOAD` base 都改它 → img2img 实测走 https URL 分支成功。
+2. gpt-5.4-image-2 参考图失败分流：瞬时错误(5xx/429/408)不切 base64 走服务端重连重试 URL；安全审核拒绝秒失败不切 base64。
+3. 症状B：音视频参考组合校验抽唯一 `upload-rules.ts`，对话流/工作流/服务端三处统一文案（发送时 v22 + 附加/上传时 v23）。
+4. 症状A：使用提示词/显示只读自己那份引用包（删 4 处翻上一条兜底 + 还原不拿@文字重造卡）。
 
-**下一个 AI / 用户 待办（按优先级）**：
-1. **⭐ 用户还在改（本 session 没改完）**：用户明确"还没改完、暂不部署正式服"。继续接需求、都先在测试服做+验证。
-2. **⭐ 明天加子域名给测试服配 https（用户要做的）**：阿里云(hichina) DNS 加 `staging-static.venusface.com` → `101.37.129.164` + Let's Encrypt。加好后（代码不用动）：① 测试服 env 设 `NEXT_PUBLIC_PRIMARY_BASE_URL=https://staging-static.venusface.com`；② 测试服 nginx 配 443 + 证书、服务本地 `/generated`；③ 跑一次真实 img2img 确认日志 `refMode":"url"` 成功、无回退。这样测试服也真实走 URL 分支=与正式服完全对齐。
-3. **浏览器验证测试服 v1.0.0.13**（ali 硬刷）：跑"生成美女"4 张(2成2败) → 重试失败卡：卡片位置固定、红字页与失败卡一一对应、重试中该红字消失、成功/失败正确更新、成功的两张不动；safety 拒绝显示新文案不再"服务器繁忙"；img2img（当前走 base64 回退）能出图。
-4. **⭐⭐ 部署正式服（用户说"部署正式服"才做）= 一次性整份对齐**：把测试服 `/opt/flashmuse-staging/app` 整份源码同步正式服 `/opt/flashmuse/app`（不 bump，正式服直接到 v1.0.0.13）。详见下方"正式服整份对齐流程"。
-5. **push GitHub**：本 session + 之前 staging 全部批次(v3~v13)都未推。
+**下一个 AI / 用户 待办**：
+1. **用户在测试服验收**（`https://staging-static.venusface.com/`）：① img2img 参考图走 URL、瞬时错误自动重试、安全拒绝秒失败；② 首帧/首尾帧挂音视频→"只有融合模式才支持上传视频和音频"、融合只挂音频→"音频不能单独上传，必须带图片或视频"（@引用/+上传/发送 各入口）；③ 使用提示词只还原该图/视频自己那份、删了不复活、Agent 批量各自独立、引用没了显示裂开。
+2. **验完 commit**：本 session 源码（`openrouter.ts`/`transient-error.ts`/`upload-rules.ts`/`video/route.ts`/`chat-workbench.tsx`/`workflow-tldraw-canvas-inner.tsx`/`app-version.ts`）+ `deploy/staging/*`（含新增 `flashmuse-staging-static-ssl.conf`）+ handover。攒到一定程度一次性 push。
+3. **是否上正式服由用户拍板**：走"先测试服→验证→再把测试服 `/app` 整份 rsync 同步正式服"铁律，无 Prisma 迁移。正式服本来就在走 https URL（PRIMARY=main.venusface.com），env 无需额外改。
+4. 非紧急历史待办：对话流"最多4张"改原生 n（暂缓）；清理旧 mention 死常量；M018/M019 押后；回头复查 GenerationEvent"服务器繁忙"是否下降。
+
+### 关键操作记忆（本 session 已验证）
+- **腾讯 ssh**：`ssh -i "C:\Users\ASUS\AppData\Local\Temp\opencode\CinematicFlow.pem" ubuntu@119.28.116.16`（docker 加 sudo）。**从腾讯跳阿里**：`sudo ssh -o StrictHostKeyChecking=no -i /opt/flashmuse/data/runtime/flashmuse_to_ali_ed25519 root@101.37.129.164 '...'`。
+- **PowerShell 坑**：ssh 内联含中文/`$()`/引号会被 PS 解析坏 → 一律把命令写成本地 .sh，`[Convert]::ToBase64String(...)` 传过去 `echo <b64> | base64 -d | sudo bash`（本 session 全程这么干）。psql 查询同理写脚本。
+- **测试服部署**：本地 `node scripts/bump-version.mjs` → 打 tgz（改动源码+app-version.ts）→ scp `/tmp` → `sudo tar -xzf -C /opt/flashmuse-staging/app` → `cd /opt/flashmuse-staging && nohup sudo docker compose up -d --build staging-app > /tmp/xx.log 2>&1 &`（后台轮询防 120s 超时，build~3min）→ `sudo bash /opt/flashmuse-staging/sync-ali-test.sh` → `curl http://127.0.0.1:5001/` 验版本号 + 外网 200。
+- **测试服 DB**：容器 `flashmuse-flashmuse-db-1`（正式）/ `flashmuse-staging-staging-db-1`（测试），`psql -U flashmuse -d flashmuse`。User.id 就是 `ID_xxxxx`（没有 userCode 列）。诊断日志 `data/runtime/generation-diagnostics-log.jsonl`（事件 `image-provider-request-start/url-fallback-base64/success/reference-sizes`，含 `refMode`/`host`）。
+- **改中文源码只用 edit/write 工具，禁 `Set-Content`（乱码）。**
+
+---
+
+## （历史）⭐⭐ END-OF-SESSION（2026-07-19：GPT版并存 + 预览页 + 测试服封面修复 + 整份对齐部署正式服 v1.0.0.19 + push）
+
+**状态**：✅ **已整份对齐部署正式服 `v1.0.0.19`**（四域名 200、无 Prisma 迁移）+ **已 push GitHub `d85fa92`**。三方同步：正式服=测试服=本地=GitHub。改动文件：`src/lib/{models,openrouter,media-asset-record,app-version}.ts`、`src/components/{chat-workbench,workflow-tldraw-canvas-inner}.tsx`、`Dockerfile`、`deploy/staging/docker-compose.yml`、`.gitignore`。详见 CHANGELOG / 01-current-status 顶条。
+
+**本 session 做完**：
+1. GPT-5.4 Image 2（GPT版）`openai/gpt-5.4-image-2-agent` 走老接口并存（映射回真实名，无4K/画质/16图/金色/Agent）。
+2. 三处弹窗小灰字（仅对话流+工作流）。
+3. 对话流优化提示词加"不改原意+纠错"规则。
+4. 预览页顶部 80×80 参考缩略图（图/视频/音频）+ @名蓝色 + 使用提示词统一 copyPrompt（跨 session）。
+5. 测试服视频封面根因（NEXT_PUBLIC_UPLOAD_BASE_URL 构建注入）修复。
+6. 扣费实测正常（GPT版9积分/张、新接口~10积分/张）。
+7. 正式服 UPLOAD_RULE_OVERRIDES gpt-5.4-image-2 改 16。
+
+**下一个 AI / 用户 待办**：
+1. **正式服抽测（用户/下一个 AI）**：GPT版出图+扣费、新接口 img2img/画质/4K、预览页缩略图（图/视频/音频）+ 使用提示词带全素材、对话流重试卡槽/红字。
+2. **测试服配真 https 仍未做（历史待办，非阻塞）**：阿里云 DNS 加 `staging-static.venusface.com`→`101.37.129.164` + Let's Encrypt，让测试服 img2img 真实走 URL 分支（当前测试服走 base64 回退，功能正常）。加好后设测试服 env + nginx 443。
+3. 非紧急：对话流"最多4张"改原生 n（暂缓，风险高）；清理旧 mention 死常量；M018/M019 押后。
+4. **备份**：本次正式服部署前备份在 `/opt/flashmuse/app-backups/20260719-presync-v19`。
+
+### 关键操作记忆（本 session 已验证）
+- 正式服整份对齐：`sudo rsync -a --delete --exclude node_modules --exclude .next --exclude tmp --exclude '*.log' --exclude .git --exclude .env.local --exclude .runtime /opt/flashmuse-staging/app/ /opt/flashmuse/app/` → `cd /opt/flashmuse && nohup sudo docker compose up -d --build flashmuse-app` → 改 `/opt/flashmuse/data/.env.local` UPLOAD_RULE_OVERRIDES + `docker compose up -d --force-recreate flashmuse-app` → `bash /tmp/syncali.sh`（阿里正式镜像 flashmuse-static）→ 四域名 200。
+- 正式服 compose（`/opt/flashmuse/docker-compose.yml`）只传 `NEXT_PUBLIC_WORKFLOW_MODE_ENABLED`，**不传** IS_TEST/UPLOAD_BASE_URL（正确：无(t)、upload base 回退 api.venusface.com=真实主源）。
+- ssh 内联禁 `$(...)`（PS 会解释）；含 `/`/中文/引号的 sed/grep/psql 写成 .py/.sh scp 上去跑；改中文源码用 edit 工具。
+- 测试服部署=bump→tgz→scp→`tar -xzf -C /opt/flashmuse-staging/app`→`docker compose up -d --build staging-app`(后台轮询)→`sync-ali-test.sh`。
+
+---
+
+## （历史）END-OF-SESSION（later 2026-07-19：gpt-5.4-image-2 img2img 修复 + 对话流重试大修 + 免费HTTPS验证）
+
+**状态**：测试服 `v1.0.0.13`（已被 v1.0.0.19 整份对齐覆盖上线）。
 
 ### ⭐ 正式服整份对齐流程（用户明确"部署正式服"才执行；已核实无需跑迁移）
 1. 备份：`sudo cp -r /opt/flashmuse/app /opt/flashmuse/app-backups/<ts>-presync-v13`。

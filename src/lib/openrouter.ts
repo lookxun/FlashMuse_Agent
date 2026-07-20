@@ -1594,10 +1594,25 @@ async function generateGptImage2(prompt: string, referenceImages: string[], opti
     return { response: resp, data: parsed, responseText: text };
   };
 
+  // 上游瞬时抖动（5xx/429/408）：与参考图 URL 无关，切 base64 没用，应交由服务端断线重连继续用 URL 重排队重试。
+  const isTransientUpstream = (resp: Response, parsed: OpenRouterImagesApiResponse) => {
+    const statusIsTransient = (s?: number) => typeof s === "number" && (s === 408 || s === 429 || s >= 500);
+    const errCode = typeof parsed.error?.code === "number" ? parsed.error.code : undefined;
+    return statusIsTransient(resp.status) || statusIsTransient(errCode);
+  };
+
+  // 内容/安全审核拒绝：与参考图 URL 无关，base64 同样会被拒，切 base64 只会让用户白等一次（~2min）。
+  // 这类直接不回退、快速失败（永久失败，重试/换编码都没用）。
+  const isContentRejection = (parsed: OpenRouterImagesApiResponse) => {
+    const msg = (parsed.error?.message || "").toLowerCase();
+    return /safety system|rejected by the safety|content policy|content_policy|violat|not allowed|安全系统|内容|违规|禁止/.test(msg);
+  };
+
   // 参考图方案：优先传公网 URL（请求体小、快）；失败且用了参考图 → 回退 base64 内联再试一次（两端同一套）。
+  // 但仅当失败是"URL/参考图相关"（4xx/未知）才回退；上游瞬时错误、内容审核拒绝都不回退。
   let { response, data, responseText } = await sendOnce(buildInputReferences(safeReferenceImages), "url");
 
-  if ((!response.ok || data.error) && safeReferenceImages.length > 0) {
+  if ((!response.ok || data.error) && safeReferenceImages.length > 0 && !isTransientUpstream(response, data) && !isContentRejection(data)) {
     void appendGenerationDiagnosticsLog({
       event: "image-provider-url-fallback-base64",
       requestId: options.requestId,
@@ -1632,7 +1647,9 @@ async function generateGptImage2(prompt: string, referenceImages: string[], opti
       durationMs: Date.now() - startedAt,
       upstream: { url: OPENROUTER_IMAGES_URL, statusText: response.statusText, body: responseText.slice(0, 600) },
     });
-    throw new Error(`图片生成失败：${reason}`);
+    // 上游瞬时错误：附稳定标记，让 isTransientServerError 识别 → 服务端断线重连继续用 URL 重排队重试。
+    const transientSuffix = isTransientUpstream(response, data) ? "（上游服务暂时不可用，稍后重试）" : "";
+    throw new Error(`图片生成失败：${reason}${transientSuffix}`);
   }
 
   const rawImages = (data.data ?? [])
