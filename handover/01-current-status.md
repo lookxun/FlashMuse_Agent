@@ -1,12 +1,12 @@
 # Current Status
 
-## ⭐⭐ 最新（2026-07-20 收尾）：v1.0.0.25 已整份对齐部署【正式服】+ 测试服；⚠️ 未 commit/push GitHub
+## ⭐⭐ 最新（2026-07-20 收尾）：v1.0.0.25 已整份对齐部署【正式服】+ 测试服 + ✅ 已 push GitHub（四方同步 `c19ecca`）
 
-- **三方状态**：正式服 = 测试服 = 本地 = **v1.0.0.25**；**GitHub 落后（v20~v25 全部未 commit/push）**。正式服由测试服 `/app` 原样 rsync 而来（不 bump、版本号带过去），四域名 main/api/ali/static 全 200，无 Prisma 迁移。备份 `/opt/flashmuse/app-backups/20260721-023921-presync-v25`。
+- **四方状态**：正式服 = 测试服 = 本地 = GitHub = **v1.0.0.25** / commit `c19ecca`，工作树干净。正式服由测试服 `/app` 原样 rsync 而来（不 bump、版本号带过去），四域名 main/api/ali/static 全 200，无 Prisma 迁移。备份 `/opt/flashmuse/app-backups/20260721-023921-presync-v25`。
 - **本次上线内容（v20→v25 积压，均在测试服验过）**：① 测试服 HTTPS 域名相关（env，正式服本就走 https）；② gpt-5.4-image-2 参考图失败分流（瞬时错误不切 base64/安全拒绝秒失败）；③ 视频音视频参考组合校验三处统一（`upload-rules.ts`）；④ 使用提示词只读自己那份引用包 + 媒体由累加改整体替换；⑤ **工作流断线漏删@名→死循环卡死输入框修复**（自愈 effect + @名有效性=有缩略图 `validReferenceNames`=visibleUploads + 去掉读整库/转圈 + `loadMentionAssetFilters` missingFilters 兜底）；⑥ **B_42 修复**（工作流 @引用的视频/音频被当参考图发 BytePlus → 按 asset.kind 路由）。
 - **实测**（测试服 12424740）：裸@名无效不加载、@按钮出缩略图+蓝字、删缩略图@名同步删、融合生视频图/视频/音频各归各槽 BytePlus 创建成功。正式服首页 200、0 console 报错。
 - **测试账号（明文，见 03）**：`12424740@qq.com`/`dragonstar`（主测试号，普通用户）、`lookxun@163.com`/`dragonstar`（白名单）。
-- **下一个 AI**：`git commit`（v20~v25 全部源码 + `deploy/staging/*` + handover）并 push，让 GitHub 三方同步。改动源码文件：`src/lib/{openrouter,transient-error,upload-rules,app-version}.ts`、`src/app/api/video/route.ts`、`src/components/{chat-workbench,workflow-tldraw-canvas-inner}.tsx`、`deploy/staging/*`。
+- **下一个 AI**：本 session 已 commit+push（`c19ecca`），GitHub 已同步，无遗留待推。非紧急待办见 05 顶条。
 
 ## 上一 session（2026-07-20 later）：工作流 @引用三修 + 使用提示词媒体替换（测试服 v1.0.0.24 起，已随 v25 上正式服）
 
