@@ -1,10 +1,21 @@
 # Current Handover Changelog
 
-## 2026-07-20 收尾：v1.0.0.25 整份对齐部署正式服（+测试服），⚠️ 未 commit/push GitHub
+## 2026-07-20 收尾：v1.0.0.25 整份对齐部署正式服（+测试服）+ ✅ 已 push GitHub（四方同步 `c19ecca`）
 
-用户拍板"同步到正式服"。把测试服 `/opt/flashmuse-staging/app`（v1.0.0.25）原样 `rsync -a --delete`（排除 node_modules/.next/tmp/*.log/.git/.env.local/.runtime）到正式服 `/opt/flashmuse/app`（不 bump、版本号带过去=正式服也 v1.0.0.25，不显 `(t)`）→ `docker compose up -d --build flashmuse-app` → `.next/static` 同步阿里**正式**镜像 `/var/www/flashmuse-static/_next/static/`（key `flashmuse_to_ali_ed25519`）→ 四域名 main/api/ali/static 全 200、正式版本 `版本号:v1.0.0.25`、首页 0 console 报错。无 Prisma 迁移。备份 `/opt/flashmuse/app-backups/20260721-023921-presync-v25`。
-- **上线内容**=v20→v25 全部积压（HTTPS域名 env / gpt-5.4-image-2 参考图失败分流 / 音视频参考组合校验统一 / 使用提示词只读自己那份+媒体替换 / 工作流断线漏删@名→死循环修复+@名有效性=有缩略图+死循环兜底 / B_42 视频音频参考路由）。均在测试服验过。
-- **三方状态**：正式服=测试服=本地=v1.0.0.25；**GitHub 仍落后、未 commit/push**（下一个 AI 需 commit+push）。
+用户拍板"同步到正式服"+"推一次 GitHub"。**四方同步：正式服 = 测试服 = 本地 = GitHub = `v1.0.0.25` / commit `c19ecca`。** 工作树干净。
+
+### 本 session（本对话）从头到尾做了什么（给下一个 AI 的完整记忆）
+1. **使用提示词媒体改替换**（对话流）：`setActiveDraftInputWithMentionCards` 有显式 restore 时，图/视频/音频由"累加到输入框原有媒体"改为"整体替换"（与文字一致）。`chat-workbench.tsx`。
+2. **排查"有些国内用户连 main(腾讯新加坡)比 ali 快"**：真相=`ali`/`static.venusface.com` 走阿里 nginx，**只是静态镜像(`/generated` `/_next/static` `/home-assets`)+ 反代**，所有动态/API 请求 `proxy_pass → 腾讯 119.28.116.16:5000`(新加坡)。走 ali 的动态请求=用户→阿里(国内)→新加坡→阿里→用户（多一跳+阿里国际出口那段跨境），对直连新加坡线路好的用户反而比直连 main 慢。**ali 不是国内 app 服务器**。
+3. **排查"工作流输入框转圈'加载引用资产...'永不恢复"**：真因两个 bug 叠加——(a) 断线/删缩略图漏删对应 @名(命名去重 vs 原始不一致)→ 孤儿 @名；(b) 孤儿 @名 → `hasUnresolvedMention` 反复触发 `loadMentionAssetFilters`，其 `missingFilters` 把"空分类"永远算缺失 → `assetsLoadStatus` loading↔loaded 抖 → effect 反复重触发 → **无限重载**（浏览器实测：快网全 200 OK 也一轮轮无限刷 11 个 assetsOnly 请求；慢网 spinner 顶掉输入框永不恢复）。
+4. **工作流 @引用三修**（`workflow-tldraw-canvas-inner.tsx` + `chat-workbench.tsx` 兜底）：① **自愈 effect**（validReferenceNames 收缩就删"之前有效现在无效"的 @名，覆盖断线/删节点/删缩略图/切模式，不碰用户手打/正在输入的）；② **@名有效性 = 有缩略图撑腰**（`validReferenceNames` 改成只认 `visibleUploads`，去掉 referenceAssets 目录；粘贴/无缩略图裸@名不变蓝、不加载、不转圈）；③ **去掉**"发现解析不了@名就读整库"机制 + 顶掉输入框的转圈；④ 取名统一去重名(`insertAssetReference`/`removeUpload` 用 `getVisibleUploadReferenceName`；`uploadReferenceNameById` 修"资产库那张被@进来的图跟自己撞名错成_2")；⑤ 兜底：`loadMentionAssetFilters` `missingFilters` 只按"是否加载过"判。全平台统一规则=**有缩略图才有效变蓝；没缩略图@名一定一起没**。
+5. **B_42 修复**：工作流融合生视频、@引用 1图+1视频+1音频 → BytePlus 报 `content[2].image_url not an image`。真因=`getWorkflowPromptReferenceUrls`(`:811`)从资产库目录解析@名时**只在 kind==="image" 分支 push、不看 asset 真实类型** → @的视频/音频塞进 image slot。修=`(asset.kind ?? "image") === kind` 才 push。为何以前没暴露：工作流"@引用视频/音频"是 07-21 才加的，之前只能+上传(走 uploads 按 kind 正确分支)，且该验证一直挂着没跑。
+6. **测试服部署 v24→v25** 逐步验证；**整份对齐部署正式服 v1.0.0.25**；**push GitHub `c19ecca`**。
+7. **测试服账号明文记入 `03-deploy-and-servers.md`**（供后续 AI 登录测试）：主测试号 `12424740@qq.com`/`dragonstar`（普通用户 ID_535317）、`lookxun@163.com`/`dragonstar`（白名单 ID_176407）。用户要求：**优先用 12424740 模拟真实测试、白名单号不做真实测试、测试内容不要删**。
+
+### 部署与验证事实
+- 正式服由测试服 `/app` 原样 `rsync -a --delete`（排除 node_modules/.next/tmp/*.log/.git/.env.local/.runtime）而来，不 bump（版本号带过去），四域名 main/api/ali/static 全 200，正式版本 `版本号:v1.0.0.25`（不显 `(t)`），首页 0 console 报错。无 Prisma 迁移。备份 `/opt/flashmuse/app-backups/20260721-023921-presync-v25`。
+- 测试服实测（12424740）：裸@名无效不加载、@按钮出缩略图+蓝字、删缩略图@名同步删、融合生视频 image/video/audio 各归各槽 BytePlus 创建成功(taskId `cgt-20260721022817-tl5m6`)。
 
 
 ## 2026-07-20 later2（工作流 B_42 修复：@引用的视频/音频被当成参考图发给 BytePlus；已部署测试服 v1.0.0.25，实测通过）

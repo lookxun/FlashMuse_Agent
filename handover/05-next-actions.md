@@ -1,14 +1,19 @@
 # Next Actions
 
-## ⭐⭐ 最新 END-OF-SESSION（2026-07-20 收尾：v1.0.0.25 已部署正式服+测试服）—— 先读这条
+## ⭐⭐ 最新 END-OF-SESSION（2026-07-20 收尾：v1.0.0.25 已部署正式服+测试服 + push GitHub）—— 先读这条
 
-**状态**：正式服 = 测试服 = 本地 = **v1.0.0.25**，四域名 200，无 Prisma 迁移。**GitHub 落后（v20~v25 全部未 commit/push）。** 详见 CHANGELOG / 01 顶条。
+**状态**：正式服 = 测试服 = 本地 = GitHub = **v1.0.0.25** / `c19ecca`，四域名 200，无 Prisma 迁移，工作树干净。**四方已同步，无遗留待推/待部署。** 详见 CHANGELOG / 01 顶条（含本对话全部工作的完整记忆）。
 
-**下一个 AI 待办**：
-1. **`git commit` + `push`**（让 GitHub 三方同步）。改动源码：`src/lib/{openrouter,transient-error,upload-rules,app-version}.ts`、`src/app/api/video/route.ts`、`src/components/{chat-workbench,workflow-tldraw-canvas-inner}.tsx`、`deploy/staging/*`（含新增 `flashmuse-staging-static-ssl.conf`）、handover。`git status` 确认别带 `.playwright-mcp/`（已 gitignore）。
-2. 非紧急：对话流"最多4张"改原生 n（暂缓）；清理旧 mention 死常量；M018/M019；回头复查 GenerationEvent"服务器繁忙"占比。
+**下一个 AI 待办（都非紧急）**：
+1. 对话流"最多4张"改原生 n（暂缓，风险高）。
+2. 清理旧 mention 死常量（`mentionAssetTypes` 等，无引用）。
+3. M018（对话流统一单轮询器）、M019（工作流 canvasJson 大字段重构）押后。
+4. 回头复查 `GenerationEvent` "服务器繁忙"占比是否下降、有无新可恢复错误要补进 `isTransientServerError`。
+5. **架构认知（排查"某些用户 ali 比 main 慢"用得上）**：`ali`/`static.venusface.com` = 阿里 nginx **静态镜像 + 反代回腾讯新加坡**，动态/API 全 `proxy_pass → 119.28.116.16:5000`；对直连新加坡线路好的用户，走 ali 反而多一跳跨境更慢。ali 不是国内 app 服务器。
 
-**部署记忆**：正式服整份对齐 = `sudo rsync -a --delete --exclude node_modules --exclude .next --exclude tmp --exclude '*.log' --exclude .git --exclude .env.local --exclude .runtime /opt/flashmuse-staging/app/ /opt/flashmuse/app/` → `cd /opt/flashmuse && nohup sudo docker compose up -d --build flashmuse-app` → docker cp `.next/static` + rsync 到阿里正式镜像 `/var/www/flashmuse-static/_next/static/`（**不是** test 那个）→ 四域名 200。测试账号明文见 03。ssh `ssh -i "C:\Users\ASUS\AppData\Local\Temp\opencode\CinematicFlow.pem" ubuntu@119.28.116.16`；PowerShell 里 curl 是别名/含中文引号会坏 → 写 .sh scp + `sed -i 's/\r$//'` 再跑；改中文源码只用 edit 工具。
+**测试服账号（明文，供 AI 登录测试，见 03）**：主测试号 `12424740@qq.com` / `dragonstar`（普通用户 ID_535317，模拟真实用户优先用它）；`lookxun@163.com` / `dragonstar`（白名单 ID_176407，不做真实模拟测试）。**测试内容不要删。**
+
+**部署记忆**：正式服整份对齐 = `sudo rsync -a --delete --exclude node_modules --exclude .next --exclude tmp --exclude '*.log' --exclude .git --exclude .env.local --exclude .runtime /opt/flashmuse-staging/app/ /opt/flashmuse/app/` → `cd /opt/flashmuse && nohup sudo docker compose up -d --build flashmuse-app` → docker cp `.next/static` + rsync 到阿里正式镜像 `/var/www/flashmuse-static/_next/static/`（**不是** test 那个）→ 四域名 200。ssh `ssh -i "C:\Users\ASUS\AppData\Local\Temp\opencode\CinematicFlow.pem" ubuntu@119.28.116.16`；PowerShell 里 curl 是别名、含中文/引号的 bash/psql 会坏 → 写 .sh scp + `sed -i 's/\r$//'` 再跑；改中文源码只用 edit 工具（禁 Set-Content）。
 
 ---
 
