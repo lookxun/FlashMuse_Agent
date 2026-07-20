@@ -28,6 +28,8 @@ function isPermanentError(message: string): boolean {
   if (/\b401\b|unauthorized|invalid api key|\bapi key\b|\b403\b|not available in your region/.test(lower)) return true;
   // 模型拒绝生成 / 内容被过滤 / 无输出（GPT 拒绝类）
   if (/content.*filtered|filtered|no output|completed with no output|抱歉，我不能|没有返回图片|没有返回视频/.test(lower)) return true;
+  // 内容 / 安全审核拒绝（OpenAI safety system 等）——base64/重试都没用，永久失败
+  if (/safety system|rejected by the safety|content policy|content_policy|安全系统/.test(lower)) return true;
   return false;
 }
 
@@ -48,6 +50,8 @@ export function isTransientServerError(value: unknown): boolean {
   if (/timeout|timed out|aborted/.test(lower)) return true;
   // HTTP 5xx / 网关（部署重启窗口的典型表现）
   if (/\b50[0-4]\b|bad gateway|gateway time-?out|service unavailable|internal server error|server error/.test(lower)) return true;
+  // 上游服务暂时不可用（图片新接口对 5xx/429/408 附的稳定标记，含 Cloudflare 52x 等非 500-504 的 5xx）
+  if (/上游服务暂时不可用|service temporarily unavailable/.test(lower)) return true;
   // 平台临时性：抓不到我们的素材 url、写回客户端错误、事务无法开启、素材尚未同步
   if (/failed to download media|please check if the link is accessible|write to client error|transaction api error|unable to start a transaction|asset .*is not found|not found/.test(lower)) return true;
   // 限流（退避后重试）

@@ -31,10 +31,10 @@ PY
 
 set_kv FORCE_INSECURE_AUTH_COOKIE true
 set_kv AUTH_COOKIE_DOMAIN ""
-set_kv NEXT_PUBLIC_PRIMARY_BASE_URL "http://101.37.129.164:8080"
-set_kv NEXT_PUBLIC_UPLOAD_BASE_URL "http://101.37.129.164:8080"
+set_kv NEXT_PUBLIC_PRIMARY_BASE_URL "https://staging-static.venusface.com"
+set_kv NEXT_PUBLIC_UPLOAD_BASE_URL "https://staging-static.venusface.com"
 set_kv NEXT_PUBLIC_STATIC_BASE_URL ""
-set_kv UPLOAD_CORS_ORIGINS "http://101.37.129.164:8080"
+set_kv UPLOAD_CORS_ORIGINS "http://101.37.129.164:8080,https://staging-static.venusface.com"
 set_kv ALI_SYNC_GENERATED_ENABLED true
 set_kv ALI_SYNC_DEST_ROOT "/var/www/flashmuse-static-test/generated"
 set_kv NEXT_PUBLIC_IS_TEST true

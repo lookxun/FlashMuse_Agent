@@ -112,7 +112,7 @@ import { AudioWaveformPlayer } from "@/components/audio-waveform-player";
 import { AssetMentionPicker, type MentionPickerItem } from "@/components/asset-mention-picker";
 import { VideoUploadThumbnail } from "@/components/video-upload-thumbnail";
 import { WorkflowCanvas, type WorkflowCanvasState, type WorkflowNode } from "@/components/workflow-tldraw-canvas";
-import { getSupportedUploadTypeLabel, getUploadAcceptValue, getUploadKindFromFileName, getUploadRule, type UploadRuleOverrides } from "@/lib/upload-rules";
+import { getSupportedUploadTypeLabel, getUploadAcceptValue, getUploadKindFromFileName, getUploadRule, getVideoAudioUploadDisabledMessage, validateVideoReferenceCombination, type UploadRuleOverrides } from "@/lib/upload-rules";
 import { sanitizeModelOutputText } from "@/lib/text-cleanup";
 
 const HISTORY_INITIAL_SESSION_COUNT = 10;
@@ -8905,8 +8905,11 @@ export function ChatWorkbench() {
   const setActiveDraftInputWithMentionCards = useCallback((value: string, restore?: { images?: UploadedImage[]; files?: UploadedDocumentFile[] }) => {
     const nextValue = Array.from(value).slice(0, MAX_DRAFT_INPUT_LENGTH).join("");
     if (value !== nextValue) showInputTip("最多输入2000字");
-    const mentionedAssets = getMentionedAssets(nextValue, assets);
-    const mentionedConversationImages = getMentionNames(nextValue)
+    // 有显式 restore（使用提示词/预览还原）= 该媒体自己出生时钉下的完整引用包就是唯一权威，
+    // 只用它，绝不再拿提示词文字里的 @名去当前资产库重新派生卡片（否则删了又被@文字重造、或库里换了名会串）。
+    const hasExplicitRestore = restore !== undefined;
+    const mentionedAssets = hasExplicitRestore ? [] : getMentionedAssets(nextValue, assets);
+    const mentionedConversationImages = hasExplicitRestore ? [] : getMentionNames(nextValue)
       .map((name) => activeConversationImageReferences.find((reference) => reference.name === name))
       .filter((reference): reference is ImageReference => Boolean(reference))
       .map((reference) => ({ id: createClientId(), name: reference.name, referenceName: reference.name, url: reference.url, source: "asset" as const }));
@@ -8918,8 +8921,10 @@ export function ChatWorkbench() {
 
     setSessions((current) => current.map((session) => {
       if (session.id !== activeSessionId) return session;
-      const existingImages = session.uploadedImages ?? [];
-      const existingFiles = session.uploadedFiles ?? [];
+      // 使用提示词/预览还原（有显式 restore）：媒体整个替换成该条自己的引用包，不保留输入框原有的图/视频/音频。
+      // 无显式 restore（普通 @ 派生）：在现有基础上累加。
+      const existingImages = hasExplicitRestore ? [] : (session.uploadedImages ?? []);
+      const existingFiles = hasExplicitRestore ? [] : (session.uploadedFiles ?? []);
       const maxImages = currentUploadRule.image.maxCount;
       const nextImages = [...existingImages];
       [...restoreImages, ...mentionedImages].forEach((image) => {
@@ -9531,7 +9536,9 @@ export function ChatWorkbench() {
 
   const loadMentionAssetFilters = useCallback(async () => {
     const filters: AssetFilter[] = MENTION_CATEGORY_FILTERS;
-    const missingFilters = filters.filter((filter) => !loadedAssetFilters[filter] || !assets.some((asset) => isAssetInFilter(asset, filter)));
+    // 兜底护栏：只按"是否加载过"判缺失。原来还带 `|| !assets.some(...)`，会把"空分类"永远算成缺失，
+    // 一旦有解析不了的 @名反复触发本函数，就 loading↔loaded 无限重载卡死输入框（工作流曾踩坑）。
+    const missingFilters = filters.filter((filter) => !loadedAssetFilters[filter]);
     if (missingFilters.length === 0 || assetsLoadStatus === "loading") return;
     setAssetsLoadStatus("loading");
     try {
@@ -12867,12 +12874,12 @@ export function ChatWorkbench() {
     const uploadedDocumentFiles = availableUploadedFiles.filter((file) => getUploadedFileMediaKind(file) === "document");
     // 切换模式后当前模型可能整类不支持（如从视频模式切到图片模式，图片模型不支持视频/音频/文件）。
     // 直接提示"当前模型不支持视频/音频/文件"，而不是含糊的"最多支持 0 个文件"。
-    const unsupportedUploadKinds: string[] = [];
-    if (uploadedVideoFiles.length > 0 && !submitUploadRule.video.enabled) unsupportedUploadKinds.push("视频");
-    if (uploadedAudioFiles.length > 0 && !submitUploadRule.audio.enabled) unsupportedUploadKinds.push("音频");
-    if (uploadedDocumentFiles.length > 0 && !submitUploadRule.document.enabled) unsupportedUploadKinds.push("文件");
-    if (unsupportedUploadKinds.length > 0) {
-      showInputTip(`当前模型不支持${unsupportedUploadKinds.join("/")}`);
+    if ((uploadedVideoFiles.length > 0 && !submitUploadRule.video.enabled) || (uploadedAudioFiles.length > 0 && !submitUploadRule.audio.enabled)) {
+      showInputTip(getVideoAudioUploadDisabledMessage({ modelId: generationModelsForSubmit.video, videoReferenceMode: submitMode === "video" && isBytePlusSeedanceVideoModel(generationModelsForSubmit.video) ? selectedVideoReferenceMode : undefined }));
+      return;
+    }
+    if (uploadedDocumentFiles.length > 0 && !submitUploadRule.document.enabled) {
+      showInputTip("当前模型不支持文件");
       return;
     }
     if (uploadedVideoFiles.length > submitUploadRule.video.maxCount) {
@@ -13018,12 +13025,15 @@ export function ChatWorkbench() {
     const displayImageReferences = (namedImageReferences.length > 0 ? namedImageReferences : referenceImages.map((url, index) => ({ name: `图片${index + 1}`, url }))).slice(0, currentMaxReferenceImages);
     const text = rawTextWithMediaMentions || getImageOnlyPrompt(submitMode);
     const generationMode: WorkMode = submitMode;
-    if (generationMode === "video" && referenceAudios.length > 0 && referenceImages.length === 0 && referenceVideos.length === 0) {
-      showInputTip("参考音频不能单独用于生视频，请同时上传参考图片或参考视频");
-      setSessionSending(sessionId, false);
-      return;
-    }
     const directVideoReferenceMode = generationMode === "video" && isBytePlusSeedanceVideoModel(generationModelsForSubmit.video) ? selectedVideoReferenceMode : undefined;
+    if (generationMode === "video") {
+      const referenceComboError = validateVideoReferenceCombination({ modelId: generationModelsForSubmit.video, referenceMode: directVideoReferenceMode, imageCount: referenceImages.length, videoCount: referenceVideos.length, audioCount: referenceAudios.length });
+      if (referenceComboError) {
+        showInputTip(referenceComboError);
+        setSessionSending(sessionId, false);
+        return;
+      }
+    }
     if (directVideoReferenceMode === "first_frame" && referenceImages.length < 1) {
       showInputTip("首帧生视频需要至少一张参考图");
       setSessionSending(sessionId, false);
@@ -13423,14 +13433,11 @@ export function ChatWorkbench() {
     try {
       // Restore the exact media the user generated with (images/videos/audio/documents),
       // not just what can be re-derived from @-mentions against the asset library.
-      const ownerSession = sessions.find((session) => session.messages.some((item) => item.id === message.id)) ?? activeSession;
-      const messages = ownerSession?.messages ?? [];
-      const messageIndex = messages.findIndex((item) => item.id === message.id);
-      const previousUserMessage = messageIndex >= 0 ? [...messages.slice(0, messageIndex)].reverse().find((item) => item.role === "user") : undefined;
       const restoreImages = (message.imageReferences ?? [])
         .filter((reference) => Boolean(reference.url))
         .map((reference) => toUploadedAssetReference({ name: reference.name, url: reference.url }));
-      const sourceFiles = (message.uploadedFiles?.length ? message.uploadedFiles : previousUserMessage?.uploadedFiles) ?? [];
+      // 每条生成消息出生即钉下自己完整的引用包；使用提示词只读它自己那份，绝不回头翻上一条用户消息。
+      const sourceFiles = message.uploadedFiles ?? [];
       const restoreFiles = sourceFiles
         .filter((file): file is UploadedDocumentFile => typeof file !== "string" && Boolean(file.url ?? file.storageName))
         .map((file) => ({ ...file, id: createClientId() }));
@@ -13467,7 +13474,7 @@ export function ChatWorkbench() {
 
     const sessionId = activeSession.id;
     const replaySettings = replayMeta?.settings;
-    const replayUploadedFiles = message.uploadedFiles ?? previousUserMessage?.uploadedFiles ?? [];
+    const replayUploadedFiles = message.uploadedFiles ?? [];
     const replayReferenceVideos = getUploadedMediaReferences(replayUploadedFiles).filter((reference) => reference.mediaKind === "video").map((reference) => reference.url);
     const replayReferenceAudios = getUploadedMediaReferences(replayUploadedFiles).filter((reference) => reference.mediaKind === "audio").map((reference) => reference.url);
     const replayMessages: ChatPayloadMessage[] = activeSession.messages
@@ -13801,7 +13808,7 @@ export function ChatWorkbench() {
 
       if (kind === "video") {
         if (!currentUploadRule.video.enabled) {
-          tips.add("当前模型不支持上传视频");
+          tips.add(getVideoAudioUploadDisabledMessage({ modelId: selectedGenerationModel, videoReferenceMode: mode === "video" && isSelectedBytePlusSeedanceVideoModel ? selectedVideoReferenceMode : undefined }));
         } else if (validateMediaUploadFile(file, "video")) {
           tips.add(validateMediaUploadFile(file, "video")!);
         } else if (acceptedVideoCount >= currentUploadRule.video.maxCount) {
@@ -13832,7 +13839,7 @@ export function ChatWorkbench() {
 
       if (kind === "audio") {
         if (!currentUploadRule.audio.enabled) {
-          tips.add("当前模型不支持上传音频");
+          tips.add(getVideoAudioUploadDisabledMessage({ modelId: selectedGenerationModel, videoReferenceMode: mode === "video" && isSelectedBytePlusSeedanceVideoModel ? selectedVideoReferenceMode : undefined }));
         } else if (validateMediaUploadFile(file, "audio")) {
           tips.add(validateMediaUploadFile(file, "audio")!);
         } else if (acceptedAudioCount >= currentUploadRule.audio.maxCount) {
@@ -14165,7 +14172,7 @@ export function ChatWorkbench() {
       const rule = currentUploadRule[kind];
       setIsAtAssetMenuOpen(false);
       if (!rule.enabled) {
-        showInputTip(kind === "audio" ? "当前模型不支持上传音频" : "当前模型不支持上传视频");
+        showInputTip(getVideoAudioUploadDisabledMessage({ modelId: selectedGenerationModel, videoReferenceMode: mode === "video" && isSelectedBytePlusSeedanceVideoModel ? selectedVideoReferenceMode : undefined }));
         return;
       }
       const already = activeUploadedFiles.some((file) => typeof file !== "string" && Boolean(file.url) && normalizeMediaUrlForMatch(file.url!) === normalizeMediaUrlForMatch(asset.url));
@@ -14218,7 +14225,7 @@ export function ChatWorkbench() {
   const insertCharacterAssetReference = (asset: AssetItem) => {
     if (isVideoAsset(asset) || isAudioAsset(asset)) {
       setIsCharacterAtAssetMenuOpen(false);
-      showInputTip(isAudioAsset(asset) ? "当前模型不支持上传音频" : "当前模型不支持上传视频");
+      showInputTip(getVideoAudioUploadDisabledMessage({}));
       return;
     }
     if (assetGenerateReferenceImages.length >= assetGenerateMaxReferenceImages && !assetGenerateReferenceImages.some((image) => image.url === asset.url)) {
@@ -15751,7 +15758,6 @@ export function ChatWorkbench() {
                 const isActiveImagePending = activeMessagePendingRequest?.mode === "image" && imagePendingCount > 0;
                 const isActiveMediaPending = isActiveVideoPending || isActiveImagePending;
                 const userImageReferences = message.role === "user" ? getDisplayImageReferences(message) : undefined;
-                const previousUserMessageForMedia = message.role === "assistant" ? [...messages.slice(0, messageIndex)].reverse().find((item) => item.role === "user") : undefined;
                 const isAgentMediaMessage = message.role === "assistant" && isAgentGeneratedMedia(message);
                 const mediaPromptReferences = message.role === "assistant" && (message.mode === "image" || message.mode === "video") ? (message.imageReferences?.length ? message.imageReferences : getOrderedExplicitImageReferences(message.content, assets, [], activeConversationImageReferences)) : undefined;
                 const imageVariantGroups = message.role === "assistant" && message.mode === "image" && !isAgentMediaMessage ? getImageVariantPages(message) : [];
@@ -15767,7 +15773,7 @@ export function ChatWorkbench() {
                 const displayedFailedImageCount = showImageStatusOnCurrentPage ? imageFailedCount : 0;
                 const displayedMessageVideos = getMessageVideos(message);
                 const userMediaReferences = message.role === "user" ? getUploadedMediaReferences(message.uploadedFiles) : [];
-                const mediaPromptFileReferences = message.role === "assistant" && (message.mode === "image" || message.mode === "video") ? getUploadedMediaReferences(message.uploadedFiles?.length ? message.uploadedFiles : previousUserMessageForMedia?.uploadedFiles) : [];
+                const mediaPromptFileReferences = message.role === "assistant" && (message.mode === "image" || message.mode === "video") ? getUploadedMediaReferences(message.uploadedFiles) : [];
                 const documentUploadedFiles = getDocumentOnlyUploadedFiles(message.uploadedFiles);
                 const agentPromptItems = isAgentMediaMessage ? getAgentMediaPromptItems(message) : [];
                 const agentPromptPageIndex = Math.min(agentPromptPageIndexes[message.id] ?? 0, Math.max(0, agentPromptItems.length - 1));
@@ -15877,7 +15883,7 @@ export function ChatWorkbench() {
                           const restoreImages = (message.imageReferences ?? [])
                             .filter((reference) => Boolean(reference.url))
                             .map((reference) => toUploadedAssetReference({ name: reference.name, url: reference.url }));
-                          const sourceFiles = (message.uploadedFiles?.length ? message.uploadedFiles : previousUserMessageForMedia?.uploadedFiles) ?? [];
+                          const sourceFiles = message.uploadedFiles ?? [];
                           const restoreFiles = sourceFiles
                             .filter((file): file is UploadedDocumentFile => typeof file !== "string" && Boolean(file.url ?? file.storageName))
                             .map((file) => ({ ...file, id: createClientId() }));

@@ -204,3 +204,49 @@ export function validateReferenceImageCount(context: UploadRuleContext, count: n
   if (count > maxCount) return `当前模型最多支持 ${maxCount} 张参考图，不能上传更多图片`;
   return undefined;
 }
+
+// 视频参考素材组合校验的统一文案（对话流客户端 / 工作流客户端 / 服务端共用同一份，禁止各写各的）。
+export const VIDEO_REFERENCE_MESSAGES = {
+  modelNoVideoAudio: "当前模型不支持上传视频或音频",
+  onlyFusionSupportsVideoAudio: "只有融合模式才支持上传视频和音频",
+  audioNeedsImageOrVideo: "音频不能单独上传，必须带图片或视频",
+} as const;
+
+// 视频参考素材"组合规则"的唯一权威校验：
+// - 非 BytePlus Seedance 视频模型：不支持视频/音频。
+// - Seedance 首帧/首尾帧模式：只支持参考图，带视频或音频一律拦。
+// - Seedance 融合模式：音频不能单独上传，必须同时带图片或视频。
+// 返回错误文案（应拦截）或 undefined（放行）。客户端与服务端都调用它，保证判定与文案完全一致。
+export function validateVideoReferenceCombination(input: {
+  modelId?: string;
+  referenceMode?: "reference" | "first_frame" | "first_last_frame" | string | null;
+  imageCount: number;
+  videoCount: number;
+  audioCount: number;
+}): string | undefined {
+  const hasVideoOrAudio = input.videoCount > 0 || input.audioCount > 0;
+  if (!isBytePlusVideoModel(input.modelId)) {
+    return hasVideoOrAudio ? VIDEO_REFERENCE_MESSAGES.modelNoVideoAudio : undefined;
+  }
+  const isFusionMode = input.referenceMode !== "first_frame" && input.referenceMode !== "first_last_frame";
+  if (!isFusionMode) {
+    return hasVideoOrAudio ? VIDEO_REFERENCE_MESSAGES.onlyFusionSupportsVideoAudio : undefined;
+  }
+  if (input.audioCount > 0 && input.imageCount === 0 && input.videoCount === 0) {
+    return VIDEO_REFERENCE_MESSAGES.audioNeedsImageOrVideo;
+  }
+  return undefined;
+}
+
+// 上传/附加视频·音频被拒时的统一文案：
+// - Seedance 首帧/首尾帧模式（非融合）→「只有融合模式才支持上传视频和音频」。
+// - 其它（非视频模型/非 Seedance 等本就不支持）→「当前模型不支持上传视频或音频」。
+export function getVideoAudioUploadDisabledMessage(input: {
+  modelId?: string;
+  videoReferenceMode?: "reference" | "first_frame" | "first_last_frame" | string | null;
+}): string {
+  if (isBytePlusVideoModel(input.modelId) && (input.videoReferenceMode === "first_frame" || input.videoReferenceMode === "first_last_frame")) {
+    return VIDEO_REFERENCE_MESSAGES.onlyFusionSupportsVideoAudio;
+  }
+  return VIDEO_REFERENCE_MESSAGES.modelNoVideoAudio;
+}

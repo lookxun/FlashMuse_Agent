@@ -15,7 +15,7 @@ import { buildReferenceHint } from "@/lib/reference-hint";
 import { getMentionNames as getSharedMentionNames, getMentionRangeForDeletion as getSharedMentionRangeForDeletion, getMentionRanges as getSharedMentionRanges, removeMentionName } from "@/lib/mention-text";
 import { createUploadProgressTracker } from "@/lib/upload-progress";
 import { sanitizeModelOutputText } from "@/lib/text-cleanup";
-import { getUploadKindFromFileName, getUploadRule, type UploadKind, type UploadKindRule, type UploadRule, type UploadRuleOverrides } from "@/lib/upload-rules";
+import { getUploadKindFromFileName, getUploadRule, getVideoAudioUploadDisabledMessage, validateVideoReferenceCombination, type UploadKind, type UploadKindRule, type UploadRule, type UploadRuleOverrides } from "@/lib/upload-rules";
 import { IMAGE_UPLOAD_ACCEPT, validateImageUploadFile } from "@/lib/image-upload-validation";
 import { AUDIO_UPLOAD_ACCEPT, validateMediaUploadFile, validateMediaUploadMetadata, VIDEO_UPLOAD_ACCEPT } from "@/lib/media-upload-validation";
 import { computeFileContentHashHex, precheckUploadedFileDedup } from "@/lib/upload-content-hash";
@@ -812,7 +812,9 @@ function getWorkflowPromptReferenceUrls(prompt: string, node: WorkflowNode, refe
   const names = new Set(getWorkflowMentionNames(prompt));
   const urls: string[] = [];
   referenceAssets.forEach((asset) => {
-    if (kind === "image" && names.has(asset.name) && !urls.includes(asset.url)) urls.push(asset.url);
+    // 按资产真实类型(图/视频/音频)归入对应参考列表——原来只在 image 分支 push、且不看 asset.kind，
+    // 导致 @的视频/音频被当成"参考图"塞进 image slot，BytePlus 报 content[N].image_url 不是图片(B_42)。
+    if ((asset.kind ?? "image") === kind && names.has(asset.name) && !urls.includes(asset.url)) urls.push(asset.url);
   });
   (node.data.uploads ?? []).forEach((upload) => {
     if (upload.status !== "ready" || !upload.url || upload.kind !== kind) return;
@@ -831,7 +833,7 @@ function validateWorkflowUploadsForSubmit(node: WorkflowNode, overrides?: Upload
     const kindUploads = uploads.filter((upload) => upload.kind === kind);
     const kindRule = uploadRule[kind];
     if (kindUploads.length === 0) continue;
-    if (!kindRule.enabled) return kind === "image" ? "当前模型不支持上传图片" : kind === "video" ? "当前模型不支持上传视频" : kind === "audio" ? "当前模型不支持上传音频" : "当前模型不支持上传文件";
+    if (!kindRule.enabled) return kind === "image" ? "当前模型不支持上传图片" : kind === "video" || kind === "audio" ? getVideoAudioUploadDisabledMessage({ modelId: node.data.model, videoReferenceMode: node.kind === "video" && isWorkflowBytePlusSeedanceVideoModel(node.data.model) ? (videoReferenceMode ?? node.data.videoReferenceMode ?? "reference") : undefined }) : "当前模型不支持上传文件";
     if (kindUploads.length > kindRule.maxCount) return kind === "image" ? `当前模型最多支持 ${kindRule.maxCount} 张参考图，不能上传更多图片` : kind === "video" ? `当前模型最多支持 ${kindRule.maxCount} 个参考视频` : kind === "audio" ? `当前模型最多支持 ${kindRule.maxCount} 个参考音频` : `当前类型最多支持 ${kindRule.maxCount} 个文件`;
     const badFormat = kindUploads.find((upload) => {
       const extension = getWorkflowUploadExtension(upload);
@@ -3842,7 +3844,8 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
       if (referenceImages.length < allReferenceImages.length) onShowTip?.(getWorkflowBytePlusVideoReferenceLimitHint(videoReferenceMode));
       if (isWorkflowBytePlusSeedanceVideoModel(model) && videoReferenceMode === "first_frame" && referenceImages.length < 1) throw new Error("首帧生视频需要至少一张参考图");
       if (isWorkflowBytePlusSeedanceVideoModel(model) && videoReferenceMode === "first_last_frame" && referenceImages.length < 2) throw new Error("首尾帧生视频需要至少两张参考图");
-      if (referenceAudios.length > 0 && referenceImages.length === 0 && referenceVideos.length === 0) throw new Error("上传音频需要同时提供参考图片或参考视频");
+      const referenceComboError = validateVideoReferenceCombination({ modelId: model, referenceMode: isWorkflowBytePlusSeedanceVideoModel(model) ? videoReferenceMode : undefined, imageCount: referenceImages.length, videoCount: referenceVideos.length, audioCount: referenceAudios.length });
+      if (referenceComboError) throw new Error(referenceComboError);
       const modelPrompt = appendWorkflowReferenceHint(prompt, getReferenceImageNames(node, referenceImages));
       const referenceImageNameByUrl = new Map<string, string>();
       for (const source of getIncomingNodes(node.id)) for (const url of source.data.images ?? []) if (url && source.data.mediaSystemNames?.[url]) referenceImageNameByUrl.set(url, source.data.mediaSystemNames[url]);
@@ -5563,10 +5566,13 @@ function WorkflowPromptBox({ node, value, placeholder, maxPromptHeight, onChange
   const visibleUploads = mergeWorkflowUploadItems([...connectedUploads, ...uploads]);
   // 给同时出现的上传/连线素材分配唯一引用名：不同文件即使同名也错开成 名_2/名_3，避免 @文件名 撞名无法区分。
   const uploadReferenceNameById = useMemo(() => {
+    const assetUrls = new Set(runtime.referenceAssets.map((asset) => asset.url).filter(Boolean));
     const used = new Set(runtime.referenceAssets.map((asset) => asset.name));
     const map = new Map<string, string>();
     visibleUploads.forEach((upload) => {
       const base = getWorkflowUploadReferenceName(upload);
+      // 这个 upload 就是资产库里被 @ 进来的那个资产(同 url)：保留它本名，不跟"自己"撞名错开成 _2。
+      if (upload.url && assetUrls.has(upload.url)) { map.set(upload.id, base); used.add(base); return; }
       let name = base;
       let index = 2;
       while (used.has(name)) { name = `${base}_${index}`; index += 1; }
@@ -5670,11 +5676,11 @@ function WorkflowPromptBox({ node, value, placeholder, maxPromptHeight, onChange
       const rule = uploadRule[kind];
       setIsReferenceMenuOpen(false);
       if (!rule.enabled) {
-        showLocalTip(kind === "audio" ? "当前模型不支持上传音频" : "当前模型不支持上传视频");
+        showLocalTip(getVideoAudioUploadDisabledMessage({ modelId: node.data.model, videoReferenceMode: showVideoReferenceModeMenu ? selectedVideoReferenceMode : undefined }));
         return;
       }
       const existing = visibleUploads.find((upload) => upload.kind === kind && upload.url === asset.url);
-      if (existing) { insertReferenceText(getWorkflowUploadReferenceName(existing)); return; }
+      if (existing) { insertReferenceText(getVisibleUploadReferenceName(existing)); return; }
       const kindCount = visibleUploads.filter((upload) => upload.kind === kind).length;
       if (kindCount >= rule.maxCount) {
         showLocalTip(kind === "audio" ? `当前模型最多支持 ${rule.maxCount} 个参考音频` : `当前模型最多支持 ${rule.maxCount} 个参考视频`);
@@ -5702,7 +5708,7 @@ function WorkflowPromptBox({ node, value, placeholder, maxPromptHeight, onChange
         }
         const nextMedia: WorkflowUploadItem = { id: createId("workflow_upload_asset"), kind, name: asset.name, url: asset.url, previewUrl: kind === "video" ? asset.thumbnailUrl : undefined, status: "ready", progress: 100, durationSeconds: media.durationSeconds, dimensions: media.dimensions };
         updateUploads((uploads) => [...uploads, nextMedia]);
-        insertReferenceText(getWorkflowUploadReferenceName(nextMedia));
+        insertReferenceText(getVisibleUploadReferenceName(nextMedia));
       })();
       return;
     }
@@ -5715,18 +5721,18 @@ function WorkflowPromptBox({ node, value, placeholder, maxPromptHeight, onChange
       return;
     }
     if (!existingUpload) updateUploads((uploads) => [...uploads, nextUpload]);
-    insertReferenceText(getWorkflowUploadReferenceName(nextUpload));
+    insertReferenceText(getVisibleUploadReferenceName(nextUpload));
   };
   const removeUpload = (uploadId: string) => {
     const removing = (node.data.uploads ?? []).find((upload) => upload.id === uploadId);
     if (removing?.previewUrl?.startsWith("blob:")) URL.revokeObjectURL(removing.previewUrl);
-    if (removing) onChange(removeWorkflowUploadReferenceText(value, getWorkflowUploadReferenceName(removing)));
+    if (removing) onChange(removeWorkflowUploadReferenceText(value, getVisibleUploadReferenceName(removing)));
     updateUploads((uploads) => uploads.filter((upload) => upload.id !== uploadId));
   };
   const handleUploadFiles = async (kind: WorkflowUploadKind, files: File[]) => {
     const kindRule = uploadRule[kind];
     if (!kindRule.enabled) {
-      showLocalTip(kind === "image" ? "当前模型不支持上传图片" : kind === "video" ? "当前模型不支持上传视频" : kind === "audio" ? "当前模型不支持上传音频" : "当前模型不支持上传文件");
+      showLocalTip(kind === "image" ? "当前模型不支持上传图片" : kind === "video" || kind === "audio" ? getVideoAudioUploadDisabledMessage({ modelId: node.data.model, videoReferenceMode: showVideoReferenceModeMenu ? selectedVideoReferenceMode : undefined }) : "当前模型不支持上传文件");
       return;
     }
     const tips = new Set<string>();
@@ -5786,21 +5792,33 @@ function WorkflowPromptBox({ node, value, placeholder, maxPromptHeight, onChange
     }
     runtime.uploadFilesAsConnectedNodes(node.id, accepted.map(({ file }) => file), showLocalTip);
   };
-  const validReferenceNames = useMemo(() => new Set([...runtime.referenceAssets.map((asset) => asset.name), ...visibleUploads.filter((upload) => upload.status === "ready").map(getVisibleUploadReferenceName)]), [runtime.referenceAssets, visibleUploads, getVisibleUploadReferenceName]);
+  // 有效(变蓝)的 @名 = 当前输入框里有缩略图撑腰的引用(上传/连线/@按钮/使用提示词带入的都在 visibleUploads)。
+  // 资产库目录(referenceAssets)只是 @菜单可浏览的候选，本身不算"已附加"，不能只凭它就把裸 @名变蓝。
+  const validReferenceNames = useMemo(() => new Set(visibleUploads.filter((upload) => upload.status === "ready").map(getVisibleUploadReferenceName)), [visibleUploads, getVisibleUploadReferenceName]);
   const referenceSearch = activeAtQuery?.query ?? "";
   const referenceItemsFor = (value: string): MentionPickerItem[] => runtime.referenceAssets
     .filter((asset) => asset.groupType === value && (!referenceSearch || asset.name.includes(referenceSearch)))
     .map((asset) => ({ id: asset.id, name: asset.name, url: asset.url, thumbnailUrl: asset.thumbnailUrl, kind: asset.kind ?? "image" }));
   const referenceAssetById = (id: string) => runtime.referenceAssets.find((asset) => asset.id === id);
-  const isReferenceAssetsLoading = runtime.referenceAssetsLoadStatus === "loading";
-  // 只有"本地解析不了的 @mention"(即资产库里的引用，需要读库解析)才触发加载/转圈。
-  // 连线到画布上的图/视频在 validReferenceNames 里，点它的 @文件名 直接插入蓝字，不读库、不转圈。
-  const hasUnresolvedMention = useMemo(() => getWorkflowMentionNames(value).some((name) => !validReferenceNames.has(name)), [value, validReferenceNames]);
-  const isWaitingForMentionReferences = hasUnresolvedMention && (runtime.referenceAssetsLoadStatus === "idle" || runtime.referenceAssetsLoadStatus === "loading");
+  // 全平台统一规则：只有"当前输入框里确有缩略图撑腰"的 @文件名才有效(变蓝、真正作用到)——
+  // 即通过 @按钮点出(同时出现缩略图+@名)、缩略图下点出、或"使用提示词"带入的引用。
+  // 从别处复制粘贴、没有对应缩略图的裸 @名一律无效：不变蓝、不读库、不转圈，只当普通文字。
+  // 因此这里不再"发现解析不了的 @名就去读整个资产库"(那会在慢网/孤儿@名下无限重载卡死输入框)。
+  //
+  // 自愈：任何原因(断线/删源节点/删缩略图/切模式裁剪上传)导致某个"曾经有效的 @名"失去缩略图后，
+  // 同步把它从提示词里删掉——贯彻"没缩略图，@文件名一定一起没"。只删"之前有效、现在无效"的，
+  // 不碰用户手打/粘贴的裸 @名，也不碰正在输入中的 @。
+  const prevValidReferenceNamesRef = useRef(validReferenceNames);
   useEffect(() => {
-    if (!hasUnresolvedMention) return;
-    runtime.onLoadReferenceAssets?.();
-  }, [hasUnresolvedMention, runtime.onLoadReferenceAssets]);
+    const prev = prevValidReferenceNamesRef.current;
+    prevValidReferenceNamesRef.current = validReferenceNames;
+    const orphanedNames = [...prev].filter((name) => !validReferenceNames.has(name));
+    if (orphanedNames.length === 0) return;
+    const presentNames = new Set(getWorkflowMentionNames(value));
+    let next = value;
+    orphanedNames.forEach((name) => { if (presentNames.has(name)) next = removeWorkflowUploadReferenceText(next, name); });
+    if (next !== value) onChange(next);
+  }, [validReferenceNames, value, onChange]);
   const closeMenusIfOutsideMenu = (target: EventTarget | null) => {
     if (!(target as HTMLElement | null)?.closest("[data-workflow-menu]")) closeWorkflowPopups();
   };
@@ -5875,14 +5893,7 @@ function WorkflowPromptBox({ node, value, placeholder, maxPromptHeight, onChange
           </label>
         )) : null}
       </div>
-      {isWaitingForMentionReferences ? (
-        <div className="flex min-h-[52px] items-center gap-2 px-2 py-1 text-[13px] leading-6 text-[#8a8a8a]" style={{ font: "14px / 24px var(--font-geist-sans), Arial, Helvetica, sans-serif" }}>
-          <RiLoader4Line className="h-4 w-4 animate-spin text-[#367cee]" aria-hidden="true" />
-          <span>加载引用资产...</span>
-        </div>
-      ) : (
-        <WorkflowMentionEditor value={value} placeholder={placeholder} running={running} maxHeight={maxPromptHeight} maxLength={Math.max(0, MAX_WORKFLOW_PROMPT_LENGTH - connectedTextLength)} validReferences={validReferenceNames} externalEditorRef={editorElementRef} onChange={onChange} onRun={runFromPromptBox} onPasteImages={(files) => { void handleUploadFiles("image", files); }} onLimit={() => showLocalTip("输入框和连接文本合计最多2000字")} onCursorChange={setCursorOffset} onAtTrigger={(query) => { if (Date.now() < suppressAtTriggerUntilRef.current) return; runtime.onLoadReferenceFilter?.(referenceGroupType, 0); setActiveAtQuery(query); setIsReferenceMenuOpen(true); }} onAtClose={() => { setActiveAtQuery(null); setIsReferenceMenuOpen(false); }} />
-      )}
+      <WorkflowMentionEditor value={value} placeholder={placeholder} running={running} maxHeight={maxPromptHeight} maxLength={Math.max(0, MAX_WORKFLOW_PROMPT_LENGTH - connectedTextLength)} validReferences={validReferenceNames} externalEditorRef={editorElementRef} onChange={onChange} onRun={runFromPromptBox} onPasteImages={(files) => { void handleUploadFiles("image", files); }} onLimit={() => showLocalTip("输入框和连接文本合计最多2000字")} onCursorChange={setCursorOffset} onAtTrigger={(query) => { if (Date.now() < suppressAtTriggerUntilRef.current) return; runtime.onLoadReferenceFilter?.(referenceGroupType, 0); setActiveAtQuery(query); setIsReferenceMenuOpen(true); }} onAtClose={() => { setActiveAtQuery(null); setIsReferenceMenuOpen(false); }} />
       <div className="mt-3 flex min-w-0 flex-nowrap items-center justify-between gap-3 pb-0.5">
         <div className="flex min-w-0 flex-1 flex-nowrap items-center gap-2 text-[12px]">
           <div data-workflow-menu className="relative shrink-0" onPointerDown={(event) => event.stopPropagation()}>
