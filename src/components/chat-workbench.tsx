@@ -37,6 +37,7 @@ import {
   RiErrorWarningLine,
   RiFolderLine,
   RiFolderOpenLine,
+  RiBellLine,
   RiFormatClear,
   RiLandscapeLine,
   RiImage2Line,
@@ -112,7 +113,7 @@ import { AudioWaveformPlayer } from "@/components/audio-waveform-player";
 import { AssetMentionPicker, type MentionPickerItem } from "@/components/asset-mention-picker";
 import { VideoUploadThumbnail } from "@/components/video-upload-thumbnail";
 import { WorkflowCanvas, type WorkflowCanvasState, type WorkflowNode } from "@/components/workflow-tldraw-canvas";
-import { getSupportedUploadTypeLabel, getUploadAcceptValue, getUploadKindFromFileName, getUploadRule, getVideoAudioUploadDisabledMessage, validateVideoReferenceCombination, type UploadRuleOverrides } from "@/lib/upload-rules";
+import { getSupportedUploadTypeLabel, getUploadAcceptValue, getUploadKindFromFileName, getUploadRule, getVideoAudioUploadDisabledMessage, validateReferenceTotalDuration, validateVideoReferenceCombination, type UploadRuleOverrides } from "@/lib/upload-rules";
 import { sanitizeModelOutputText } from "@/lib/text-cleanup";
 
 const HISTORY_INITIAL_SESSION_COUNT = 10;
@@ -203,7 +204,7 @@ type AssetGenerateJob = {
   result: CharacterGenerationResult;
 };
 
-type AssetType = "character_image" | "scene_image" | "shot_image" | "shot_video" | "other" | "trash";
+type AssetType = "character_image" | "scene_image" | "prop_image" | "shot_image" | "shot_video" | "other" | "trash";
 type AssetTargetType = AssetType;
 type SuggestionItem = {
   label: string;
@@ -243,12 +244,12 @@ type AssetItem = {
   deletedAt?: number;
   purgeAt?: number;
 };
-type UploadableImageAssetType = "character_image" | "scene_image" | "shot_image";
+type UploadableImageAssetType = "character_image" | "scene_image" | "prop_image" | "shot_image";
 
 type WorkflowImportAsset = { id: string; name: string; url: string; posterUrl?: string; kind: "image" | "video" | "audio"; sourcePrompt?: string; model?: ModelName; ratio?: string; resolution?: string; duration?: string; dimensions?: { width: number; height: number }; origin?: "generated" | "upload" };
 
-type AssetGenerationImageType = "character_image" | "scene_image" | "shot_image";
-type AssetGenerateRatio = "single" | "three-view" | "scene-grid";
+type AssetGenerationImageType = "character_image" | "scene_image" | "prop_image" | "shot_image";
+type AssetGenerateRatio = "single" | "three-view" | "scene-grid" | "grid-square";
 
 const UPLOAD_IMAGE_PROMPT_PLACEHOLDER = "上传图片";
 
@@ -521,7 +522,7 @@ type UsageSummary = {
 
 type UsageMeta = Partial<UsageSummary>;
 type CreditMeta = { chargedCredits?: number; balance?: number; skipped?: boolean };
-type UserCreditSource = "conversation" | "character_image_generation" | "scene_image_generation" | "shot_image_generation" | "image_prompt_reverse" | "prompt_optimization" | "signup" | "admin_adjust" | "recharge" | "activity";
+type UserCreditSource = "conversation" | "character_image_generation" | "scene_image_generation" | "prop_image_generation" | "shot_image_generation" | "image_prompt_reverse" | "prompt_optimization" | "signup" | "admin_adjust" | "recharge" | "activity";
 type UserCreditConversation = {
   conversationId: string;
   source?: UserCreditSource;
@@ -538,6 +539,7 @@ const userCreditSourceIcons: Record<UserCreditSource, typeof RiImageLine> = {
   conversation: RiChat3Line,
   character_image_generation: RiFolderLine,
   scene_image_generation: RiFolderLine,
+  prop_image_generation: RiFolderLine,
   shot_image_generation: RiFolderLine,
   image_prompt_reverse: RiQuillPenAiLine,
   prompt_optimization: RiQuillPenAiLine,
@@ -550,6 +552,7 @@ const userCreditSourceIcons: Record<UserCreditSource, typeof RiImageLine> = {
 const userCreditSourceLabels: Partial<Record<UserCreditSource, string>> = {
   character_image_generation: "资产库_角色图片",
   scene_image_generation: "资产库_场景图片",
+  prop_image_generation: "资产库_道具图片",
   shot_image_generation: "资产库_分镜图片",
   signup: "注册送积分",
   admin_adjust: "赠送积分",
@@ -1101,21 +1104,23 @@ const DEFAULT_AGENT_VIDEO_SUGGESTIONS: SuggestionInput[] = [
 const assetTypeLabels: Record<AssetType, string> = {
   character_image: "角色图片",
   scene_image: "场景图片",
+  prop_image: "道具图片",
   shot_image: "分镜图片",
   shot_video: "分镜视频",
   other: "待分类",
   trash: "回收站",
 };
-const assetTypeOrder: AssetType[] = ["character_image", "scene_image", "shot_image", "shot_video", "other", "trash"];
-const assetGenerationTypes: UploadableImageAssetType[] = ["character_image", "scene_image", "shot_image"];
+const assetTypeOrder: AssetType[] = ["character_image", "scene_image", "prop_image", "shot_image", "shot_video", "other", "trash"];
+const assetGenerationTypes: UploadableImageAssetType[] = ["character_image", "scene_image", "prop_image", "shot_image"];
 type MentionAssetGroupType = UploadableImageAssetType | "conversation_upload";
-const mentionAssetTypes: MentionAssetGroupType[] = ["character_image", "scene_image", "shot_image", "conversation_upload"];
-const assetUploadTypes: UploadableImageAssetType[] = ["character_image", "scene_image", "shot_image"];
+const mentionAssetTypes: MentionAssetGroupType[] = ["character_image", "scene_image", "prop_image", "shot_image", "conversation_upload"];
+const assetUploadTypes: UploadableImageAssetType[] = ["character_image", "scene_image", "prop_image", "shot_image"];
 const ASSET_UPLOAD_SLOT_COUNT = 10;
 const ASSET_RENDER_PAGE_SIZE = 30;
 const assetTypeIcons: Record<AssetType, typeof RiImageLine> = {
   character_image: RiAccountBoxLine,
   scene_image: RiLandscapeLine,
+  prop_image: RiBellLine,
   shot_image: RiMultiImageLine,
   shot_video: RiFilmLine,
   other: RiFolderLine,
@@ -1124,12 +1129,14 @@ const assetTypeIcons: Record<AssetType, typeof RiImageLine> = {
 const assetCategoryTargetLabels: Record<AssetCategoryTarget, string> = {
   character_image: "角色图片",
   scene_image: "场景图片",
+  prop_image: "道具图片",
   shot_image: "分镜图片",
   conversation_image: "上传图片",
 };
 const mentionAssetTypeLabels: Record<MentionAssetGroupType, string> = {
   character_image: "角色图片",
   scene_image: "场景图片",
+  prop_image: "道具图片",
   shot_image: "分镜图片",
   conversation_upload: "上传图片",
 };
@@ -1137,6 +1144,7 @@ const mentionAssetTypeLabels: Record<MentionAssetGroupType, string> = {
 const ASSET_IMPORT_CATEGORIES: { label: string; value: AssetFilter; icon: typeof RiImageLine }[] = [
   { label: "角色图片", value: "character_image", icon: RiAccountBoxLine },
   { label: "场景图片", value: "scene_image", icon: RiLandscapeLine },
+  { label: "道具图片", value: "prop_image", icon: RiBellLine },
   { label: "分镜图片", value: "shot_image", icon: RiMultiImageLine },
   { label: "上传图片", value: "conversation_uploads", icon: ImageUploadLineIcon },
   { label: "上传视频", value: "upload_videos", icon: RiVideoOnLine },
@@ -1158,12 +1166,14 @@ const CHARACTER_MENTION_CATEGORIES = ASSET_IMPORT_CATEGORIES.filter((cat) => !ME
 const mentionGroupToAssetCountKey: Record<MentionAssetGroupType, string> = {
   character_image: "character_image",
   scene_image: "scene_image",
+  prop_image: "prop_image",
   shot_image: "shot_image",
   conversation_upload: "conversation_uploads",
 };
 const assetCategoryTargetIcons: Record<AssetCategoryTarget, typeof RiImageLine> = {
   character_image: RiAccountBoxLine,
   scene_image: RiLandscapeLine,
+  prop_image: RiBellLine,
   shot_image: RiMultiImageLine,
   conversation_image: ImageUploadLineIcon,
 };
@@ -2137,6 +2147,19 @@ function getWorkflowMediaCounts(workflow?: WorkflowItem | null) {
   }
 
   return { images: imageUrls.size, videos: videoUrls.size };
+}
+
+// 收集工作流里"生成媒体"的归一化 URL(排除上传节点，口径与 getWorkflowMediaCounts 一致)，
+// 用于给累计计数的已计数集合做初始播种。
+function getWorkflowGeneratedMediaUrls(workflow?: WorkflowItem | null) {
+  const images: string[] = [];
+  const videos: string[] = [];
+  for (const node of workflow?.canvas?.nodes ?? []) {
+    if (node.title?.startsWith("上传")) continue;
+    node.data.images?.filter(Boolean).forEach((url) => images.push(normalizeMediaUrlForMatch(url)));
+    if (node.data.videoUrl) videos.push(normalizeMediaUrlForMatch(node.data.videoUrl));
+  }
+  return { images, videos };
 }
 
 function getLocalVideoPosterUrl(url: string | undefined) {
@@ -3795,10 +3818,12 @@ function getAssetTypeFromText(text: string, mode: WorkMode, assetTargetType?: As
   const hasShotTarget = /(镜头|分镜|第一镜|第二镜|第三镜|下一镜|第\d+镜|第[一二三四五六七八九十]+镜)/.test(normalized);
   const hasCharacterTarget = /(角色图|角色图片|人物设定|人物图|男主|女主|主角|角色|人物|反派|配角|三视图|立绘)/.test(normalized);
   const hasSceneTarget = /(场景图|场景图片|背景图|环境图|场景|背景|房间|街道|巷子|办公室|教室|医院|楼道|室内|室外|多角度)/.test(normalized);
+  const hasPropTarget = /(道具图|道具图片|道具设定|道具)/.test(normalized);
 
   if (mode === "video") return hasShotTarget ? "shot_video" : "other";
   if (hasShotTarget) return "shot_image";
   if (hasCharacterTarget) return "character_image";
+  if (hasPropTarget) return "prop_image";
   if (hasSceneTarget) return "scene_image";
 
   return "other";
@@ -4087,6 +4112,10 @@ function getAssetBaseName(type: AssetType, sourcePrompt: string, assets: AssetIt
     return getNextNumberedBase(/多角度|三视图/.test(normalized) ? "场景多角度" : "场景", assets, 1);
   }
 
+  if (type === "prop_image") {
+    return getNextNumberedBase(/多角度|三视图/.test(normalized) ? "道具多角度" : "道具", assets, 1);
+  }
+
   if (type === "shot_image") {
     return getNextNumberedBase("分镜", assets, 1);
   }
@@ -4106,9 +4135,9 @@ function getAssetBaseName(type: AssetType, sourcePrompt: string, assets: AssetIt
 // asset-generation images (any type), so the same file never gets two numbers. Once assigned it is
 // stored on the MediaAsset and NEVER recomputed (see applyAssetGenerationSystemNames). Legacy assets
 // keep their old 角色N/场景N/分镜N names untouched.
-const ASSET_GENERATION_NAME_PATTERN = /^asset_(\d+)_(?:role|scene|storyboard)$/;
+const ASSET_GENERATION_NAME_PATTERN = /^asset_(\d+)_(?:role|scene|prop|storyboard)$/;
 function getNextAssetGenerationName(type: AssetGenerationImageType, assets: AssetItem[]) {
-  const suffix = type === "scene_image" ? "scene" : type === "shot_image" ? "storyboard" : "role";
+  const suffix = type === "scene_image" ? "scene" : type === "prop_image" ? "prop" : type === "shot_image" ? "storyboard" : "role";
   let maxNumber = 0;
   for (const asset of assets) {
     if (asset.librarySource !== "asset_generation") continue;
@@ -4128,7 +4157,8 @@ function getNextAssetName(type: AssetType, sourcePrompt: string, assets: AssetIt
 
 function getReferencedAssets(text: string, assets: AssetItem[]) {
   const mentions = new Set([...text.matchAll(/@([^@\s，。！？；;、]+)/g)].map((match) => match[1]));
-  return assets.filter((asset) => mentions.has(asset.name) && !isVideoAsset(asset));
+  // 图片参考只收真正的图片：排除视频、音频、以及 /files/ 下非视频的音频/文档（历史 .bin 扩展名靠扩展名认不出）。
+  return assets.filter((asset) => mentions.has(asset.name) && !isVideoAsset(asset) && !isAudioAsset(asset) && !isNonDisplayableFileAsset(asset.url));
 }
 
 function getMentionedAssets(text: string, assets: AssetItem[]) {
@@ -4542,6 +4572,7 @@ function getUploadedAssetType(imageName: string, contextText: string): AssetType
 
   if (/(分镜|镜头|第一镜|第二镜|第三镜|下一镜|第\d+镜|第[一二三四五六七八九十]+镜|storyboard|shot)/i.test(normalized)) return "shot_image";
   if (/(角色|人物|男主|女主|主角|反派|配角|立绘|三视图|全身|半身|character|person|hero)/i.test(normalized)) return "character_image";
+  if (/(道具|道具图|prop)/i.test(normalized)) return "prop_image";
   if (/(场景|背景|环境|地点|房间|街道|医院|教室|办公室|室内|室外|多角度|scene|background|location)/i.test(normalized)) return "scene_image";
 
   return "other";
@@ -4568,7 +4599,7 @@ function getConversationImageReferences(messages: Message[]) {
 
 function getOrderedExplicitImageReferences(text: string, assets: AssetItem[], uploadedImages: UploadedImage[], conversationReferences: ImageReference[]) {
   const uploadedReferences = uploadedImages.map((image) => ({ name: getUploadedImageReferenceName(image, uploadedImages), url: image.url }));
-  const assetReferences = assets.filter((asset) => !isVideoAsset(asset)).map((asset) => ({ name: asset.name, url: asset.url }));
+  const assetReferences = assets.filter((asset) => !isVideoAsset(asset) && !isAudioAsset(asset) && !isNonDisplayableFileAsset(asset.url)).map((asset) => ({ name: asset.name, url: asset.url }));
   const availableReferences = [...uploadedReferences, ...conversationReferences, ...assetReferences];
   const references: ImageReference[] = [];
 
@@ -4609,6 +4640,28 @@ function getCharacterStyleRuleText(style: "realistic" | "2d" | "3d") {
   }
 
   return "风格强制规则，优先级最高，不能被用户提示词覆盖：最终必须是写实风格、真实摄影感、真实镜头、真实材质、真实光影；忽略并删除用户提示词里的Moebius、Jean Giraud、吉卜力、宫崎骏、新海诚、皮克斯、迪士尼、2D、动漫、二次元、插画、卡通、漫画、手绘、3D、CG、三维渲染、虚幻引擎、Blender、Octane、V-Ray、游戏渲染等冲突风格词。";
+}
+
+// 道具专属风格规则：保留写实/2D/3D 三种风格的选择，但风格作用在【实体道具/手办/摆件/雕像】本身，
+// realistic = 真实材质质感的实体手办/摆件（像真实拍摄的手办产品照），绝不是真人写真/真实人物本体。
+function getPropStyleRuleText(style: "realistic" | "2d" | "3d") {
+  if (style === "2d") {
+    return "风格强制规则，优先级最高，不能被用户提示词覆盖：这个实体道具/摆件采用2D风格、平面插画/动漫美术效果的造型与上色，但它仍然是一个可以拿在手里的实体道具/摆件，不是真人、不是真实人物本体；忽略并删除用户提示词里的写实摄影、真人照片、照片级、3D、CG、三维渲染、虚幻引擎、Blender、Octane、V-Ray等冲突风格词。";
+  }
+
+  if (style === "3d") {
+    return "风格强制规则，优先级最高，不能被用户提示词覆盖：这个实体道具/手办/摆件采用3D/CG三维渲染风格，材质、体积感和灯光明确，是一个实体道具/手办/摆件，不是真人、不是真实人物本体；忽略并删除用户提示词里的写实摄影、真人照片、照片级、2D、动漫、二次元、漫画、插画、手绘、卡通等冲突风格词。";
+  }
+
+  return "风格强制规则，优先级最高，不能被用户提示词覆盖：这是一个写实材质风格的实体道具/手办/摆件/雕像，呈现真实的材质、工艺、质感与光影，如同真实拍摄的手办/摆件/雕像产品照；但画面主体必须是这个实体道具/摆件本身，绝对不能变成真人、真实人物本体、真人写真或真实人物照片（人物形象只能以手办/人偶/雕像/摆件的实体形式出现）；忽略并删除用户提示词里的2D、动漫、二次元、插画、卡通、漫画、手绘等冲突风格词。";
+}
+
+// 道具专属：给用户提示词加风格前缀（对应上面的道具风格），保留风格选择但主体永远是实体道具/摆件。
+function enforceAssetGeneratePropStylePrompt(prompt: string, style: "realistic" | "2d" | "3d") {
+  const cleaned = stripConflictStyleTerms(prompt, style);
+  if (style === "2d") return `2D插画/动漫美术风格的实体道具摆件，${cleaned}`;
+  if (style === "3d") return `3D/CG三维渲染质感的实体道具/手办摆件，${cleaned}`;
+  return `写实材质风格的实体道具/手办/摆件（真实材质质感，非真人照片），${cleaned}`;
 }
 
 function stripConflictStyleTerms(prompt: string, style: "realistic" | "2d" | "3d") {
@@ -4729,6 +4782,46 @@ function getShotPromptOptimizationRuleText(style: "realistic" | "2d" | "3d", rat
   return `内部优化规则，优先级最高，不要复述规则本身：这是分镜图片生成。请把用户输入优化成一张电影或电视剧单帧截图的提示词，只保留当前镜头里的画面信息：人物/主体、场景、动作瞬间、景别、机位、镜头语言、光线、色调、氛围和情绪。删除角色设定图、三视图、纯场景多角度、海报、文字说明、分镜表、视频时长、剪辑说明和多镜头任务。最终提示词必须是一张单镜头画面，不能包含字幕、文字、Logo、边框、分割线、宫格、海报排版或UI。${ratioRule}${styleRule}如果用户输入不是分镜提示词，提取其中可用于一个影视镜头截图的主体、场景、动作和情绪；无法提取时，生成一个简洁可用的电影截图提示词。只输出优化后的提示词正文，不要解释。`;
 }
 
+function getPropGenerationRuleText(style: "realistic" | "2d" | "3d", ratio: AssetGenerateRatio, model?: ModelName) {
+  const styleRule = getPropStyleRuleText(style);
+  // 道具化转换规则：本功能只产出"实体道具/物件"。理解范围要宽——照片/海报/画作/书刊等平面印刷品/影像制品
+  // 本身就是实体道具，直接生成该实物（其表面可印人物/场景）；只有"没有载体的活体主体本身"才转手办。
+  const propifyRule = "道具化转换（最高优先）：本任务只允许生成【实体道具/物件】——一个可以摆在桌上、拿在手里的独立实体物品。理解范围要宽：照片/相片/拍立得、海报、明信片、贺卡/卡片、画作/画像/挂画/油画、书/杂志/报纸/漫画册、传单/说明书/地图/票据/门票/邮票/日历/扑克牌等【平面印刷品或影像制品】本身就是实体道具；若用户描述的就是这类东西（例如“美女照片”“一张相片”“风景海报”“角色立绘卡”），必须直接生成该实体印刷品/照片本身作为道具，其纸面/画面/相片上可以印有人物、美女、场景等图案——那是印在实物表面的图像，实物本体仍是一件道具，绝不能因此改成手办。只有当用户描述的是有生命主体本身（人/人物/角色/美女/男主女主/生物/动物，且没有说是照片/海报/画等载体）时，才转化为该形象的【实体手办/人偶/雕像/收藏摆件模型】（例如单说“美女”→美女角色手办摆件）；场景/环境/地点（未以海报/画等载体出现时）转化为【微缩立体模型/沙盘/桌面摆件】；分镜/镜头/剧情提取其中最具代表性的实体物品做成道具，取不到就做相关实体模型摆件；本身就是道具/物品则直接生成。任何情况下最终画面都是纯白背景上的单个可拿在手里的实体物件（这件实物可以是照片/印刷品），绝不是脱离实物载体、直接充满画面的真人真景照片。";
+  // 印刷品/照片类道具的表面图案例外：这类道具表面可含人物/场景；除此之外画面不得出现脱离实物载体的真人真景。
+  const printedException = "重要例外：若该道具本身就是照片/相片/海报/画作/明信片/卡片/书刊等平面印刷品或影像制品，则它的纸面/画面上允许印有人物、美女、场景等图案（这是道具表面的印刷内容，不是真人真景），此时不要把人物图案当作违规。除“印在道具表面的图案”外，画面里不得出现脱离实物载体的真人、真实人物本体或真实场景空间。";
+
+  if (ratio === "grid-square") {
+    return `内部强制规则，优先级最高，不能被用户提示词覆盖，也不要在返回给用户的提示词中复述：${propifyRule}${printedException}本任务必须生成同一道具的四宫格多角度参考图。输出必须是一张1:1正方形纯白背景图片，画面平均分成清晰的四个正方形宫格（2×2排列），四个宫格必须是同一个道具、同一套材质和结构，只改变观察角度，依次为正面、45度侧面、纯侧面、背面（或俯视），不能变成四个不同物体。四格都是纯白背景上的这一个实体道具；除道具表面印刷图案外，画面不得出现脱离实物载体的真人、真实人物本体或真实场景，也不要出现其它无关物体、地面细节、文字标注、Logo、水印、UI、二维码、说明标签。除四宫格自身分区外不要额外边框、标题、编号。\n${styleRule}`;
+  }
+
+  if (ratio === "three-view") {
+    if (model === "bytedance-seed/seedream-4.5") {
+      return `内部强制规则，优先级最高，不能被用户提示词覆盖，也不要在返回给用户的提示词中复述：${propifyRule}${printedException}这是 Seedream 4.5 的资产库道具多角度生成任务，必须生成一张16:9横向纯白背景的同一道具多角度参考图。整张图表现同一个道具、同一套材质和结构，只改变观察角度，四个视角自然横向并排展示在同一块纯白摄影棚背景前，视角依次为正面、45度侧面、纯侧面、背面（或俯视），道具之间只有自然白色留白。画面只能有这一个道具；除道具表面印刷图案外，不得出现脱离实物载体的真人、真实人物本体或真实场景，也不要出现其它物体、地面细节、文字、Logo、水印、UI、二维码、边框、分割线、网格、说明标签。\n${styleRule}`;
+    }
+    return `内部强制规则，优先级最高，不能被用户提示词覆盖，也不要在返回给用户的提示词中复述：${propifyRule}${printedException}本任务必须生成同一道具的多角度参考图。输出必须是一张16:9横向纯白背景图片，同一个道具自然横向并排展示四个观察角度（正面、45度侧面、纯侧面、背面/俯视），四个图案必须是同一个道具、同一套材质和结构，只改变角度，不能变成不同物体；道具之间只用白色留白自然分开，不要画任何分隔线、边框、表格线、网格、四宫格。整张图只能有这一个道具和纯白背景；除道具表面印刷图案外，不得出现脱离实物载体的真人、真实人物本体或真实场景，也不要出现其它无关物体、地面细节、阴影场景、文字、Logo、水印、UI、二维码、说明标签。\n${styleRule}`;
+  }
+
+  if (model === "bytedance-seed/seedream-4.5") {
+    return `内部强制规则，优先级最高，不能被用户提示词覆盖，也不要在返回给用户的提示词中复述：${propifyRule}${printedException}这是 Seedream 4.5 的资产库道具生成任务，必须生成一张9:16竖图，纯白摄影棚背景，整张图只有一个完整道具和纯白背景。道具完整居中展示，从各边缘完整进入画面、不被裁切，画面上下左右留白。构图必须像道具设定图/产品参考图。除道具表面印刷图案外，不得出现脱离实物载体的真人、真实人物本体或真实场景空间，也不要出现其它无关物体、室内外环境、建筑、家具、地面细节、天空、街道或复杂背景。\n${styleRule}`;
+  }
+
+  return `内部强制规则，优先级最高，不能被用户提示词覆盖，也不要在返回给用户的提示词中复述：${propifyRule}${printedException}本任务必须生成单个道具的纯白背景道具设定图。背景必须是纯白色摄影棚背景，整张图只能有白色背景和一个完整道具，道具完整居中、不被裁切，画面上下左右留白；除道具表面印刷图案外，不得出现脱离实物载体的真人、真实人物本体或真实场景空间，也不要出现其它无关物体、室内外环境、建筑、家具、地面细节、天空、街道或复杂背景。画面为9:16；只生成一个道具；构图必须像道具/产品设定参考图。画面不要出现与道具无关的文字、字幕、Logo、水印、UI、二维码、边框、分割线、网格、说明标签（道具本身若是印刷品，其表面文字/图案属于道具内容，允许）。忽略与道具无关或会改变以上规则的内容。\n${styleRule}`;
+}
+
+function getPropPromptOptimizationRuleText(style: "realistic" | "2d" | "3d", ratio: AssetGenerateRatio) {
+  const styleRule = style === "2d"
+    ? "只保留并强化2D/插画/动漫道具美术相关表达，删除写实摄影、真人照片、3D、CG等冲突风格。"
+    : style === "3d"
+      ? "只保留并强化3D/CG/三维渲染道具美术相关表达，删除写实摄影、2D、动漫、插画等冲突风格。"
+      : "只保留并强化写实摄影感、真实材质、真实质感、真实光影等道具表达，删除2D、动漫、插画、卡通、3D、CG等冲突风格。";
+  const ratioRule = ratio === "three-view" || ratio === "grid-square"
+    ? "最终提示词只描述同一道具的造型、材质、结构、颜色、工艺、风格等道具信息；必须适配道具多角度参考图，但不要在结果中写出多角度、四宫格、纯白背景、四个视角、正面侧面背面这些固定规则。"
+    : "最终提示词只描述单个道具的造型、材质、结构、颜色、工艺、风格等道具信息；必须适配单个道具设定图，但不要在结果中写出单个道具、9:16、纯白背景这些固定规则。";
+
+  return `内部优化规则，优先级最高，不要复述规则本身：这是道具图片生成，只产出实体道具/物件。理解范围要宽：照片/相片/海报/明信片/卡片/画作/挂画/书刊杂志报纸/票据/邮票/日历等平面印刷品或影像制品本身就是道具，如果用户描述的就是这类东西（例如“美女照片”“风景海报”），保留它作为实体印刷品/照片来优化，可以描述其纸面/画面上印着的人物、场景等图案（那是道具表面的印刷内容）。只有当用户描述的是没有载体的活体主体（人/人物/角色/生物，且没说是照片/海报/画等载体）时，才改写成该形象的实体手办/人偶/雕像/收藏摆件（例如单说“美女”改写成“美女角色手办摆件”）；场景/环境/地点改写成微缩立体模型/沙盘摆件；分镜/剧情提取其中最具代表性的实体物品，取不到就改写成相关的实体模型摆件；本身是道具就直接优化。删除脱离实物载体的真人真景、剧情、镜头、动作等无关内容，只保留可用于实体道具/摆件（含照片/印刷品这类实物道具）的物体、材质、造型、工艺、表面图案和风格。${ratioRule}${styleRule}无法提取任何可用信息时，生成一个简洁可用的实体道具/摆件设定提示词。只输出优化后的提示词正文，不要解释。`;
+}
+
+
 function getProfessionalPromptOptimizationRuleText(mode: "image" | "video") {
   if (mode === "video") {
     return "内部优化规则，优先级最高，不要复述规则本身：这是视频生成专业模式。请把用户输入优化成可直接用于视频生成模型的提示词，只保留画面主体、场景、动作变化、镜头运动、景别、光线、氛围、节奏和风格。不要改变用户原提示词的意思，如果发现有逻辑错误要更正错误。不要写解释，不要写多方案，不要写标题，不要写参数说明，不要写时长/分辨率/比例按钮值。用户提到参考图或@资产时，保留对参考主体、外观、场景或构图的描述。只输出优化后的提示词正文。";
@@ -4779,7 +4872,7 @@ function isNonDisplayableFileAsset(url: string | undefined) {
 }
 
 function getAssetCategoryTargets(asset: Pick<AssetItem, "type" | "url">): AssetCategoryTarget[] {
-  return isVideoAsset(asset) ? [] : ["character_image", "scene_image", "shot_image", "conversation_image"];
+  return isVideoAsset(asset) ? [] : ["character_image", "scene_image", "prop_image", "shot_image", "conversation_image"];
 }
 
 function getSelectedAssetCategoryTarget(asset: AssetItem): AssetCategoryTarget {
@@ -4814,6 +4907,7 @@ function getRestoreAssetType(asset: AssetItem): AssetType {
   if (isVideoAsset(asset)) return "shot_video";
   if (asset.librarySource === "asset_generation" && asset.systemName?.startsWith("角色")) return "character_image";
   if (asset.librarySource === "asset_generation" && asset.systemName?.startsWith("场景")) return "scene_image";
+  if (asset.librarySource === "asset_generation" && asset.systemName?.startsWith("道具")) return "prop_image";
   if (asset.librarySource === "asset_generation" && asset.systemName?.startsWith("分镜")) return "shot_image";
   return "other";
 }
@@ -4854,13 +4948,15 @@ function normalizeStoredAssetGenerateJobs(value: unknown): AssetGenerateJob[] {
     if (!job.id || typeof job.id !== "string") return [];
     if (!job.prompt || typeof job.prompt !== "string") return [];
     if (!assetGenerationTypes.includes(job.type as UploadableImageAssetType)) return [];
-    if (job.ratio !== "single" && job.ratio !== "three-view" && job.ratio !== "scene-grid") return [];
+    if (job.ratio !== "single" && job.ratio !== "three-view" && job.ratio !== "scene-grid" && job.ratio !== "grid-square") return [];
     if (job.style !== "realistic" && job.style !== "2d" && job.style !== "3d") return [];
     const model = job.model && generationModelOptions.image.some((item) => item.id === job.model) ? job.model : DEFAULT_CHARACTER_IMAGE_MODEL;
     const result = job.result?.status === "failed"
       ? { status: "failed" as const, error: job.result.error || GENERIC_MEDIA_ERROR_MESSAGE }
       : job.result?.status === "generating"
-        ? { status: "failed" as const, error: "页面刷新导致生成任务中断，请重新生成。" }
+        // 生成中的任务不再刷新就判失败：服务端 job 仍在跑（生成/扣费/存盘与前端无关），
+        // 恢复后保留"生成中"，由 resume 逻辑按 requestId 续 poll → 出图（对齐对话流/工作流）。
+        ? { status: "generating" as const, startedAt: typeof job.result.startedAt === "number" ? job.result.startedAt : Date.now() }
         : undefined;
 
     if (!result) return [];
@@ -5989,6 +6085,7 @@ function AssetManagementPanel({
   onRetryUploadSlot,
   onOpenCharacterGenerate,
   onOpenSceneGenerate,
+  onOpenPropGenerate,
   onOpenShotGenerate,
   onOpenPendingGenerate,
   onDismissGenerateJob,
@@ -6015,6 +6112,7 @@ function AssetManagementPanel({
   onRetryUploadSlot: (index: number) => void;
   onOpenCharacterGenerate: () => void;
   onOpenSceneGenerate: () => void;
+  onOpenPropGenerate: () => void;
   onOpenShotGenerate: () => void;
   onOpenPendingGenerate: (jobId: string) => void;
   onDismissGenerateJob: (jobId: string) => void;
@@ -6059,10 +6157,11 @@ function AssetManagementPanel({
           : "还没有生成资产。生成角色图、场景图或分镜图后会自动出现在这里。";
   const currentGenerateType = canGenerateImages ? assetFilter as AssetGenerationImageType : undefined;
   const CurrentGenerateIcon = currentGenerateType ? assetTypeIcons[currentGenerateType] : RiImageAddLine;
-  const currentGenerateLabel = currentGenerateType === "character_image" ? "角色生成" : currentGenerateType === "scene_image" ? "场景生成" : currentGenerateType === "shot_image" ? "分镜生成" : "生成图片";
+  const currentGenerateLabel = currentGenerateType === "character_image" ? "角色生成" : currentGenerateType === "scene_image" ? "场景生成" : currentGenerateType === "prop_image" ? "道具生成" : currentGenerateType === "shot_image" ? "分镜生成" : "生成图片";
   const openCurrentGenerate = () => {
     if (currentGenerateType === "character_image") onOpenCharacterGenerate();
     if (currentGenerateType === "scene_image") onOpenSceneGenerate();
+    if (currentGenerateType === "prop_image") onOpenPropGenerate();
     if (currentGenerateType === "shot_image") onOpenShotGenerate();
   };
   let remainingRenderCount = renderLimit;
@@ -6107,9 +6206,9 @@ function AssetManagementPanel({
         </div>
       )) : null}
       {generateButtonType ? (
-        <button type="button" onClick={generateButtonType === "scene_image" ? onOpenSceneGenerate : generateButtonType === "shot_image" ? onOpenShotGenerate : onOpenCharacterGenerate} className="flex aspect-square flex-col items-center justify-center gap-2 border border-dashed border-[#cfcfcf] bg-[#fafafa] text-[#777777] transition hover:border-[#b8b8b8] hover:bg-[#f5f5f5] hover:text-[#111111]" aria-label={generateButtonType === "scene_image" ? "生成场景图片" : generateButtonType === "shot_image" ? "生成分镜图片" : "生成角色图片"}>
+        <button type="button" onClick={generateButtonType === "scene_image" ? onOpenSceneGenerate : generateButtonType === "prop_image" ? onOpenPropGenerate : generateButtonType === "shot_image" ? onOpenShotGenerate : onOpenCharacterGenerate} className="flex aspect-square flex-col items-center justify-center gap-2 border border-dashed border-[#cfcfcf] bg-[#fafafa] text-[#777777] transition hover:border-[#b8b8b8] hover:bg-[#f5f5f5] hover:text-[#111111]" aria-label={generateButtonType === "scene_image" ? "生成场景图片" : generateButtonType === "prop_image" ? "生成道具图片" : generateButtonType === "shot_image" ? "生成分镜图片" : "生成角色图片"}>
           <RiAddLargeLine className="h-8 w-8" aria-hidden="true" />
-          <span className="text-[13px] font-medium leading-none">{generateButtonType === "scene_image" ? "场景生成" : generateButtonType === "shot_image" ? "分镜生成" : "角色生成"}</span>
+          <span className="text-[13px] font-medium leading-none">{generateButtonType === "scene_image" ? "场景生成" : generateButtonType === "prop_image" ? "道具生成" : generateButtonType === "shot_image" ? "分镜生成" : "角色生成"}</span>
         </button>
       ) : null}
       {typeJobs.map((job) => job.result.status === "succeeded" && job.result.url ? (() => {
@@ -6360,7 +6459,7 @@ function AssetManagementPanel({
         </div>
       </div>
 
-      {visibleAssets.length === 0 && pendingUploadSlots.length === 0 && (!uploadMediaKind || mediaUploadCards.filter((card) => card.kind === uploadMediaKind).length === 0) && assetFilter !== "character_image" && assetFilter !== "scene_image" && assetFilter !== "shot_image" ? (
+      {visibleAssets.length === 0 && pendingUploadSlots.length === 0 && (!uploadMediaKind || mediaUploadCards.filter((card) => card.kind === uploadMediaKind).length === 0) && assetFilter !== "character_image" && assetFilter !== "scene_image" && assetFilter !== "prop_image" && assetFilter !== "shot_image" ? (
         <div className="rounded-2xl border border-dashed border-[#d8d8d8] bg-[#fafafa] px-6 py-12 text-center text-sm text-[#8a8a8a]">{emptyText}</div>
       ) : assetFilter === "conversation_images" || assetFilter === "conversation_uploads" || assetFilter === "conversation_videos" || assetFilter === "workflow_images" || assetFilter === "workflow_videos" || assetFilter === "upload_videos" || assetFilter === "upload_audios" ? (
         renderAssetGrid(getRenderableAssets(visibleAssets), assetFilter === "conversation_videos" || assetFilter === "workflow_videos" || assetFilter === "upload_videos" ? "video-row" : "square")
@@ -6368,6 +6467,8 @@ function AssetManagementPanel({
         renderAssetGrid(getRenderableAssets(visibleAssets), "square", "character_image")
       ) : assetFilter === "scene_image" ? (
         renderAssetGrid(getRenderableAssets(visibleAssets), "square", "scene_image")
+      ) : assetFilter === "prop_image" ? (
+        renderAssetGrid(getRenderableAssets(visibleAssets), "square", "prop_image")
       ) : assetFilter === "shot_image" ? (
         renderAssetGrid(getRenderableAssets(visibleAssets), "square", "shot_image")
       ) : (
@@ -7514,7 +7615,7 @@ export function ChatWorkbench() {
   const [assetRenderLimit, setAssetRenderLimit] = useState(ASSET_RENDER_PAGE_SIZE);
   const getAssetCountFilter = useCallback((asset: AssetItem): AssetFilter => {
     if (asset.type === "trash") return "trash";
-    const filters: AssetFilter[] = ["character_image", "scene_image", "shot_image", "conversation_uploads", "upload_videos", "upload_audios", "conversation_images", "conversation_videos", "workflow_images", "workflow_videos"];
+    const filters: AssetFilter[] = ["character_image", "scene_image", "prop_image", "shot_image", "conversation_uploads", "upload_videos", "upload_audios", "conversation_images", "conversation_videos", "workflow_images", "workflow_videos"];
     return filters.find((filter) => isAssetInFilter(asset, filter)) ?? "conversation_images";
   }, []);
   const adjustAssetCounts = useCallback((changes: Array<{ filter: AssetFilter; delta: number }>) => {
@@ -7532,10 +7633,10 @@ export function ChatWorkbench() {
   const [isCharacterGenerateOpen, setIsCharacterGenerateOpen] = useState(false);
   const [assetGenerateType, setAssetGenerateType] = useState<AssetGenerationImageType>("character_image");
   const [characterGeneratePrompt, setCharacterGeneratePrompt] = useState("");
-  const [assetGeneratePromptDrafts, setAssetGeneratePromptDrafts] = useState<Record<AssetGenerationImageType, string>>({ character_image: "", scene_image: "", shot_image: "" });
+  const [assetGeneratePromptDrafts, setAssetGeneratePromptDrafts] = useState<Record<AssetGenerationImageType, string>>({ character_image: "", scene_image: "", prop_image: "", shot_image: "" });
   // 资产库生成的参考图作为独立状态（对齐对话流/工作流：缩略图独立于 @文件名 文本，删 @ 文本不删图、删图清净所有 @）。
-  const [assetGenerateReferenceDrafts, setAssetGenerateReferenceDrafts] = useState<Record<AssetGenerationImageType, ImageReference[]>>({ character_image: [], scene_image: [], shot_image: [] });
-  const [assetGenerateRatioSelections, setAssetGenerateRatioSelections] = useState<Record<AssetGenerationImageType, AssetGenerateRatio>>({ character_image: "single", scene_image: "single", shot_image: "single" });
+  const [assetGenerateReferenceDrafts, setAssetGenerateReferenceDrafts] = useState<Record<AssetGenerationImageType, ImageReference[]>>({ character_image: [], scene_image: [], prop_image: [], shot_image: [] });
+  const [assetGenerateRatioSelections, setAssetGenerateRatioSelections] = useState<Record<AssetGenerationImageType, AssetGenerateRatio>>({ character_image: "single", scene_image: "single", prop_image: "single", shot_image: "single" });
   const [characterGenerateRatio, setCharacterGenerateRatio] = useState<AssetGenerateRatio>("single");
   const [characterGenerateStyle, setCharacterGenerateStyle] = useState<"realistic" | "2d" | "3d">("realistic");
   const [characterGenerateModel, setCharacterGenerateModel] = useState<ModelName>(DEFAULT_CHARACTER_IMAGE_MODEL);
@@ -7573,6 +7674,8 @@ export function ChatWorkbench() {
   const [assetUploadTip, setAssetUploadTip] = useState<ReminderMessage | undefined>();
   const [generationCompleteReminder, setGenerationCompleteReminder] = useState<ReminderMessage | undefined>();
   const [previewAsset, setPreviewAsset] = useState<AssetItem | null>(null);
+  // 预览页参考素材：唯一权威从数据库(GenerationJob)按媒体 url 读，图/视频/音频统一。避免靠内存消息或 @名匹配（会因未加载/改名而丢）。
+  const [previewJobReferences, setPreviewJobReferences] = useState<Array<{ url: string; name?: string; kind: "image" | "video" | "audio" }>>([]);
   const [previewDocumentFile, setPreviewDocumentFile] = useState<UploadedFileEntry | null>(null);
   const [previewDocumentWidth, setPreviewDocumentWidth] = useState(0);
   const [hasCustomPreviewDocumentWidth, setHasCustomPreviewDocumentWidth] = useState(false);
@@ -7628,6 +7731,7 @@ export function ChatWorkbench() {
   const inputImageUploadAbortControllersRef = useRef<Map<string, AbortController>>(new Map());
   const previewDragStartRef = useRef({ pointerX: 0, pointerY: 0, panX: 0, panY: 0 });
   const activeAssetGenerateJobIdRef = useRef("");
+  const assetGenerateJobPollersRef = useRef<Set<string>>(new Set());
   const runningRequestIdsRef = useRef<Set<string>>(new Set());
   const sendingSessionIdsRef = useRef<Set<string>>(new Set());
   const requestAbortControllersRef = useRef<Map<string, AbortController>>(new Map());
@@ -7682,21 +7786,24 @@ export function ChatWorkbench() {
   const currentDurationOptions = getVideoDurationOptions(selectedGenerationModels.video);
   const selectedVideoDuration = currentDurationOptions.includes(selectedDurations.video) ? selectedDurations.video : currentDurationOptions[0];
   const isSceneGeneration = assetGenerateType === "scene_image";
+  const isPropGeneration = assetGenerateType === "prop_image";
   const isShotGeneration = assetGenerateType === "shot_image";
-  const characterGenerateDisplayRatio = characterGenerateRatio === "single" ? "9:16" : "16:9";
+  const characterGenerateDisplayRatio = characterGenerateRatio === "single" ? "9:16" : characterGenerateRatio === "grid-square" ? "1:1" : "16:9";
   const characterGenerateDisplayResolution = normalizeImageResolutionForModel(characterGenerateModel, characterGenerateResolution);
   const assetGenerateUploadRule = useMemo(() => getUploadRule({ mode: "asset-image", modelId: characterGenerateModel, transportMode: "local-base64" }, uploadRuleOverrides), [characterGenerateModel, uploadRuleOverrides]);
   const assetGenerateMaxReferenceImages = assetGenerateUploadRule.image.maxCount;
   const characterGenerateDisplayDimensions = getDisplayDimensions(characterGenerateDisplayRatio, characterGenerateDisplayResolution, "image", characterGenerateModel);
   const characterGenerateQualityBadgeLabel = getImageQualityBadgeLabel(characterGenerateDisplayResolution);
-  const assetGenerateTitle = isShotGeneration ? "分镜生成" : isSceneGeneration ? "场景生成" : "角色生成";
-  const assetGenerateAreaTitle = isShotGeneration ? "分镜图片生成区" : isSceneGeneration ? "场景图片生成区" : "角色图片生成区";
-  const assetGeneratePlaceholder = isShotGeneration ? "描述一个电影或电视剧截图感的镜头画面..." : isSceneGeneration ? "描述要生成的纯场景画面..." : "描述要生成的角色形象...";
-  const AssetGenerateIcon = isShotGeneration ? RiMultiImageLine : isSceneGeneration ? RiLandscapeLine : RiAccountBoxLine;
+  const assetGenerateTitle = isShotGeneration ? "分镜生成" : isSceneGeneration ? "场景生成" : isPropGeneration ? "道具生成" : "角色生成";
+  const assetGenerateAreaTitle = isShotGeneration ? "分镜图片生成区" : isSceneGeneration ? "场景图片生成区" : isPropGeneration ? "道具图片生成区" : "角色图片生成区";
+  const assetGeneratePlaceholder = isShotGeneration ? "描述一个电影或电视剧截图感的镜头画面..." : isSceneGeneration ? "描述要生成的纯场景画面..." : isPropGeneration ? "描述要生成的道具/物品..." : "描述要生成的角色形象...";
+  const AssetGenerateIcon = isShotGeneration ? RiMultiImageLine : isSceneGeneration ? RiLandscapeLine : isPropGeneration ? RiBellLine : RiAccountBoxLine;
   const assetGenerateRatioLabel = isShotGeneration
     ? characterGenerateRatio === "single" ? "竖屏分镜9:16" : "横屏分镜16:9"
     : isSceneGeneration
     ? characterGenerateRatio === "scene-grid" ? "四宫格16:9" : characterGenerateRatio === "single" ? "单场景9:16" : "单场景16:9"
+    : isPropGeneration
+    ? characterGenerateRatio === "grid-square" ? "四宫格1:1" : characterGenerateRatio === "single" ? "单道具9:16" : "多角度16:9"
     : characterGenerateRatio === "single" ? "单人9:16" : "三视图16:9";
   const setActiveAssetGeneratePrompt = useCallback((value: string) => {
     setCharacterGeneratePrompt(value);
@@ -7705,6 +7812,17 @@ export function ChatWorkbench() {
   const setActiveAssetGenerateReferences = useCallback((updater: (current: ImageReference[]) => ImageReference[]) => {
     setAssetGenerateReferenceDrafts((current) => ({ ...current, [assetGenerateType]: updater(current[assetGenerateType] ?? []) }));
   }, [assetGenerateType]);
+  // 资产库生成引用以"提示词 @名"为唯一真源：@名从文字里删掉时，同步剪掉对应的参考图缩略图草稿
+  // （贯彻"没@名=没缩略图"，与对话流一致），杜绝"草稿与@名脱钩"导致发出去的参考图与@的不是同一张。
+  useEffect(() => {
+    const names = new Set(getMentionNames(characterGeneratePrompt));
+    setAssetGenerateReferenceDrafts((current) => {
+      const drafts = current[assetGenerateType];
+      if (!drafts || drafts.length === 0) return current;
+      const pruned = drafts.filter((reference) => names.has(reference.name));
+      return pruned.length === drafts.length ? current : { ...current, [assetGenerateType]: pruned };
+    });
+  }, [characterGeneratePrompt, assetGenerateType]);
   const setActiveAssetGenerateRatio = useCallback((value: AssetGenerateRatio) => {
     setCharacterGenerateRatio(value);
     setAssetGenerateRatioSelections((current) => ({ ...current, [assetGenerateType]: value }));
@@ -8168,24 +8286,52 @@ export function ChatWorkbench() {
   const previewHasReversedUploadPrompt = Boolean(previewAsset?.sourcePrompt.trim()) && previewAsset?.promptSource === "reverse" && previewIsUploadedAsset;
   const previewHasUsablePrompt = Boolean(previewAsset?.sourcePrompt.trim()) && !isUploadPromptPlaceholder(previewAsset?.sourcePrompt) && (!previewIsUploadedAsset || previewHasReversedUploadPrompt);
   const previewPromptText = previewHasUsablePrompt ? previewAsset?.sourcePrompt.trim() ?? "" : "";
+  const previewAssetUrl = previewAsset?.url;
+  useEffect(() => {
+    if (!previewAssetUrl) { setPreviewJobReferences([]); return; }
+    let cancelled = false;
+    setPreviewJobReferences([]);
+    void (async () => {
+      try {
+        const response = await fetch("/api/generation-references", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mediaUrl: previewAssetUrl }) });
+        const data = await readJson<{ references?: Array<{ url: string; name?: string; kind: "image" | "video" | "audio" }> }>(response);
+        if (!cancelled && Array.isArray(data.references)) setPreviewJobReferences(data.references);
+      } catch {
+        if (!cancelled) setPreviewJobReferences([]);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [previewAssetUrl]);
   const previewPromptReferences = useMemo<ImageReference[]>(() => {
-    if (!previewAsset?.sessionId || !previewAsset?.messageId) return [];
-    const session = sessions.find((item) => item.id === previewAsset.sessionId);
-    const message = session?.messages.find((item) => item.id === previewAsset.messageId);
-    if (!session || !message) return [];
-    if (message.imageReferences?.length) return message.imageReferences;
-    return getOrderedExplicitImageReferences(message.content, assets, [], getConversationImageReferences(session.messages));
-  }, [previewAsset, sessions, assets]);
+    // 权威优先：数据库里这张图真正用过的参考图（GenerationJob）。
+    const jobImages = previewJobReferences.filter((item) => item.kind === "image");
+    if (jobImages.length > 0) return jobImages.map((item, index) => ({ name: item.name || `参考图${index + 1}`, url: item.url }));
+    const session = previewAsset?.sessionId ? sessions.find((item) => item.id === previewAsset.sessionId) : undefined;
+    const message = session?.messages.find((item) => item.id === previewAsset?.messageId);
+    if (message?.imageReferences?.length) return message.imageReferences;
+    // 回退：会话不在内存(从资产库打开)且 DB 也没查到时，按 sourcePrompt 的 @名从资产库解析。
+    const content = message?.content || previewAsset?.sourcePrompt || "";
+    if (!content) return [];
+    const conversationRefs = session ? getConversationImageReferences(session.messages) : [];
+    return getOrderedExplicitImageReferences(content, assets, [], conversationRefs);
+  }, [previewAsset, sessions, assets, previewJobReferences]);
   const previewPromptMediaReferences = useMemo<MediaFileReference[]>(() => {
-    if (!previewAsset?.sessionId || !previewAsset?.messageId) return [];
-    const session = sessions.find((item) => item.id === previewAsset.sessionId);
-    if (!session) return [];
-    const messageIndex = session.messages.findIndex((item) => item.id === previewAsset.messageId);
-    if (messageIndex < 0) return [];
-    const message = session.messages[messageIndex];
-    const previousUser = [...session.messages.slice(0, messageIndex)].reverse().find((item) => item.role === "user");
-    return getUploadedMediaReferences(message.uploadedFiles?.length ? message.uploadedFiles : previousUser?.uploadedFiles);
-  }, [previewAsset, sessions]);
+    // 权威优先：数据库里这张图真正用过的参考视频/音频（GenerationJob）。
+    const jobMedia = previewJobReferences.filter((item) => item.kind === "video" || item.kind === "audio");
+    if (jobMedia.length > 0) {
+      return jobMedia.map((item) => ({ name: item.name || "", url: item.url, mediaKind: item.kind as "video" | "audio", file: { id: createClientId(), name: item.name || "", url: item.url, mediaKind: item.kind as "video" | "audio", uploadStatus: "ready", uploadProgress: 100, status: "ready", size: 0, extension: getFileExtension(item.url), storageName: item.url } }));
+    }
+    const session = previewAsset?.sessionId ? sessions.find((item) => item.id === previewAsset.sessionId) : undefined;
+    const messageIndex = session ? session.messages.findIndex((item) => item.id === previewAsset?.messageId) : -1;
+    const message = messageIndex >= 0 && session ? session.messages[messageIndex] : undefined;
+    const previousUser = session && messageIndex > 0 ? [...session.messages.slice(0, messageIndex)].reverse().find((item) => item.role === "user") : undefined;
+    const fromMessage = message ? getUploadedMediaReferences(message.uploadedFiles?.length ? message.uploadedFiles : previousUser?.uploadedFiles) : [];
+    if (fromMessage.length > 0) return fromMessage;
+    const content = message?.content || previewAsset?.sourcePrompt || "";
+    if (!content) return [];
+    const mentionedFiles = getMentionedAssets(content, assets).map(toUploadedFileAssetReference).filter((file): file is UploadedDocumentFile => Boolean(file));
+    return getUploadedMediaReferences(mentionedFiles);
+  }, [previewAsset, sessions, assets, previewJobReferences]);
   const canReversePreviewPrompt = Boolean(previewAsset && !isVideoAsset(previewAsset) && previewIsUploadedAsset && !previewHasUsablePrompt);
   const previewPromptErrorText = previewPromptError && previewPromptError.assetId === previewAssetId ? previewPromptError.message : "";
   const previewBytePlusErrorText = bytePlusAssetError && bytePlusAssetError.assetId === previewAssetId ? bytePlusAssetError.message : "";
@@ -8913,7 +9059,7 @@ export function ChatWorkbench() {
       .map((name) => activeConversationImageReferences.find((reference) => reference.name === name))
       .filter((reference): reference is ImageReference => Boolean(reference))
       .map((reference) => ({ id: createClientId(), name: reference.name, referenceName: reference.name, url: reference.url, source: "asset" as const }));
-    const mentionedImages = [...mentionedAssets.filter((asset) => !isVideoAsset(asset) && !isAudioAsset(asset)).map(toUploadedAssetReference), ...mentionedConversationImages];
+    const mentionedImages = [...mentionedAssets.filter((asset) => !isVideoAsset(asset) && !isAudioAsset(asset) && !isNonDisplayableFileAsset(asset.url)).map(toUploadedAssetReference), ...mentionedConversationImages];
     const mentionedFiles = mentionedAssets.map(toUploadedFileAssetReference).filter((file): file is UploadedDocumentFile => Boolean(file));
     // Restore items (from the source message's real attachments) take priority over re-derived @-mentions.
     const restoreImages = restore?.images ?? [];
@@ -9431,7 +9577,13 @@ export function ChatWorkbench() {
       setAssetsHasMore(Boolean(state.assetsHasMore));
       setAssetsNextOffset(Math.floor(Number(state.assetsNextOffset ?? nextAssets.length)));
       setAssetRenderLimit((current) => Math.max(current, offset + nextAssets.length, ASSET_RENDER_PAGE_SIZE));
-      setAssetGenerateJobs(nextAssetGenerateJobs);
+      // 合并：以服务端持久值为准，但保留内存里仍在"生成中"、服务端响应还没包含的任务（防抖持久化未落库的竞态），
+      // 避免资产库加载把刚点生成、等待卡还在的任务覆盖掉。
+      setAssetGenerateJobs((current) => {
+        const nextIds = new Set(nextAssetGenerateJobs.map((job) => job.id));
+        const survivingGenerating = current.filter((job) => job.result.status === "generating" && !nextIds.has(job.id));
+        return [...survivingGenerating, ...nextAssetGenerateJobs];
+      });
       setLoadedAssetFilters((current) => ({ ...current, [filter]: true }));
       setAssetsLoadStatus("loaded");
       setAssetLoadingReason("");
@@ -10119,7 +10271,7 @@ export function ChatWorkbench() {
           const sourcePrompt = isVideo
             ? promptDetail?.prompt ?? message?.videoPrompts?.[job.remoteUrl] ?? message?.generationMeta?.originalPrompt ?? workflowPrompt ?? fromAsset?.sourcePrompt ?? message?.content
             : promptDetail?.prompt ?? message?.imagePrompts?.[job.remoteUrl] ?? workflowPrompt ?? fromAsset?.sourcePrompt ?? message?.content;
-          const assetGenerationCategory = fromAsset && ["character_image", "scene_image", "shot_image"].includes(fromAsset.type) ? fromAsset.type : undefined;
+          const assetGenerationCategory = fromAsset && ["character_image", "scene_image", "prop_image", "shot_image"].includes(fromAsset.type) ? fromAsset.type : undefined;
           const currentCategory = fromWorkflow
             ? isVideo ? "workflow_videos" : "workflow_images"
             : fromAsset?.librarySource === "asset_generation" && assetGenerationCategory
@@ -10909,6 +11061,12 @@ export function ChatWorkbench() {
         { value: "three-view", label: "单场景16:9", iconClassName: "h-[9px] w-4" },
         { value: "scene-grid", label: "四宫格16:9", iconClassName: "h-[9px] w-4" },
       ]
+      : isPropGeneration
+      ? [
+        { value: "single", label: "单道具9:16", iconClassName: "h-4 w-[9px]" },
+        { value: "three-view", label: "多角度16:9", iconClassName: "h-[9px] w-4" },
+        { value: "grid-square", label: "四宫格1:1", iconClassName: "h-3.5 w-3.5" },
+      ]
       : [
         { value: "single", label: "单人9:16", iconClassName: "h-4 w-[9px]" },
         { value: "three-view", label: "三视图16:9", iconClassName: "h-[9px] w-4" },
@@ -11228,7 +11386,7 @@ export function ChatWorkbench() {
       }
       const textChanged = getWorkflowTextSnapshot(target.canvas) !== getWorkflowTextSnapshot(canvas);
       const meaningfulChanged = getWorkflowMeaningfulSnapshot(target.canvas) !== getWorkflowMeaningfulSnapshot(canvas);
-      const next = current.map((item) => item.id === workflowId ? { ...item, workflowCode, title, canvas: { ...canvas, generatedMediaCounts: canvas.generatedMediaCounts ?? item.canvas?.generatedMediaCounts }, updatedAt: meaningfulChanged ? Date.now() : (item.updatedAt ?? Date.now()) } : item);
+      const next = current.map((item) => item.id === workflowId ? { ...item, workflowCode, title, canvas: { ...canvas, generatedMediaCounts: canvas.generatedMediaCounts ?? item.canvas?.generatedMediaCounts, countedGeneratedUrls: canvas.countedGeneratedUrls ?? item.canvas?.countedGeneratedUrls }, updatedAt: meaningfulChanged ? Date.now() : (item.updatedAt ?? Date.now()) } : item);
       if (textChanged && workspaceStorageMode === "user") {
         if (workflowTextSaveTimerRef.current !== null) window.clearTimeout(workflowTextSaveTimerRef.current);
         const payload: WorkspaceStatePayload = {
@@ -11814,7 +11972,7 @@ export function ChatWorkbench() {
 
       return nextAssets;
     });
-    const generatedFilter: AssetFilter = type === "character_image" || type === "scene_image" || type === "shot_image"
+    const generatedFilter: AssetFilter = type === "character_image" || type === "scene_image" || type === "prop_image" || type === "shot_image"
       ? type
       : mode === "video" ? "conversation_videos" : "conversation_images";
     if (addedAssetCount > 0) adjustAssetCounts([{ filter: generatedFilter, delta: addedAssetCount }]);
@@ -11941,15 +12099,30 @@ export function ChatWorkbench() {
     const systemNamesByUrl = Object.fromEntries(items.map((item) => [item.url, item.name]));
     setWorkflowItems((current) => current.map((workflow) => {
       if (workflow.id !== workflowId || !workflow.canvas?.nodes?.length) return workflow;
-      const prevCounts = workflow.canvas.generatedMediaCounts ?? getWorkflowMediaCounts(workflow);
-      const nextCounts = workflow.canvas.generatedMediaCounts
-        ? { images: prevCounts.images + (media.kind === "image" ? newlyGeneratedCount : 0), videos: prevCounts.videos + (media.kind === "video" ? newlyGeneratedCount : 0) }
-        : prevCounts;
+      // 已计数集合是唯一去重权威(随 canvasJson 持久化)：并发双收尾都跑进这个函数式更新里、串行看到彼此结果，
+      // 不再依赖外层可能过期的 assets 闭包，故同一 URL 只会计一次。
+      const seed = getWorkflowGeneratedMediaUrls(workflow);
+      const hasCountedSet = Array.isArray(workflow.canvas.countedGeneratedUrls);
+      const countedSet = new Set(hasCountedSet ? workflow.canvas.countedGeneratedUrls : [...seed.images, ...seed.videos]);
+      // 旧数据没有已计数集合时，累计基数按当前真实节点重新播种(忽略可能被旧 bug 累加虚高的历史值)，让计数自愈为真实值。
+      const baseCounts = hasCountedSet && workflow.canvas.generatedMediaCounts
+        ? workflow.canvas.generatedMediaCounts
+        : { images: new Set(seed.images).size, videos: new Set(seed.videos).size };
+      const freshUrls = media.silent
+        ? []
+        : cleanUrls.map((url) => normalizeMediaUrlForMatch(url)).filter((url) => !countedSet.has(url));
+      freshUrls.forEach((url) => countedSet.add(url));
+      const increment = freshUrls.length;
+      const nextCounts = {
+        images: baseCounts.images + (media.kind === "image" ? increment : 0),
+        videos: baseCounts.videos + (media.kind === "video" ? increment : 0),
+      };
       return {
         ...workflow,
         canvas: {
           ...workflow.canvas,
           generatedMediaCounts: nextCounts,
+          countedGeneratedUrls: Array.from(countedSet),
           nodes: workflow.canvas.nodes.map((node) => node.id === nodeId ? { ...node, data: { ...node.data, mediaSystemNames: { ...(node.data.mediaSystemNames ?? {}), ...systemNamesByUrl } } } : node),
         },
       };
@@ -12894,14 +13067,14 @@ export function ChatWorkbench() {
       showInputTip(`当前模型最多支持 ${submitUploadRule.document.maxCount} 个文件`);
       return;
     }
-    const uploadedVideoDuration = uploadedVideoFiles.reduce((sum, file) => sum + getUploadedMediaDuration(file), 0);
-    const uploadedAudioDuration = uploadedAudioFiles.reduce((sum, file) => sum + getUploadedMediaDuration(file), 0);
-    if (submitUploadRule.video.maxTotalSeconds !== undefined && uploadedVideoDuration > submitUploadRule.video.maxTotalSeconds + MEDIA_DURATION_EPSILON_SECONDS) {
-      showInputTip(`参考视频总时长不能超过 ${submitUploadRule.video.maxTotalSeconds} 秒`);
+    const videoTotalDurationError = validateReferenceTotalDuration("video", uploadedVideoFiles.map((file) => getUploadedMediaDuration(file)));
+    if (videoTotalDurationError) {
+      showInputTip(videoTotalDurationError);
       return;
     }
-    if (submitUploadRule.audio.maxTotalSeconds !== undefined && uploadedAudioDuration > submitUploadRule.audio.maxTotalSeconds + MEDIA_DURATION_EPSILON_SECONDS) {
-      showInputTip(`参考音频总时长不能超过 ${submitUploadRule.audio.maxTotalSeconds} 秒`);
+    const audioTotalDurationError = validateReferenceTotalDuration("audio", uploadedAudioFiles.map((file) => getUploadedMediaDuration(file)));
+    if (audioTotalDurationError) {
+      showInputTip(audioTotalDurationError);
       return;
     }
     if (hasReadingUploadedFiles && !isSuggestionSend) {
@@ -14328,7 +14501,7 @@ export function ChatWorkbench() {
             body: JSON.stringify({
               model,
               mode: "image",
-              messages: [{ role: "user", content: `${isShotGeneration ? getShotPromptOptimizationRuleText(characterGenerateStyle, characterGenerateRatio) : isSceneGeneration ? getScenePromptOptimizationRuleText(characterGenerateStyle, characterGenerateRatio) : getCharacterPromptOptimizationRuleText(characterGenerateRatio, characterGenerateStyle)}\n\n用户输入：${referencedAssets.length > 0 ? `${rawPrompt}${getAssetReferencesText(referencedAssets)}` : rawPrompt}` }],
+              messages: [{ role: "user", content: `${isShotGeneration ? getShotPromptOptimizationRuleText(characterGenerateStyle, characterGenerateRatio) : isSceneGeneration ? getScenePromptOptimizationRuleText(characterGenerateStyle, characterGenerateRatio) : isPropGeneration ? getPropPromptOptimizationRuleText(characterGenerateStyle, characterGenerateRatio) : getCharacterPromptOptimizationRuleText(characterGenerateRatio, characterGenerateStyle)}\n\n用户输入：${referencedAssets.length > 0 ? `${rawPrompt}${getAssetReferencesText(referencedAssets)}` : rawPrompt}` }],
               settings: {
                 ratio: characterGenerateDisplayRatio,
                 resolution: characterGenerateDisplayResolution,
@@ -14409,7 +14582,7 @@ export function ChatWorkbench() {
     }).catch((error) => console.warn("[media-assets] failed to persist generated asset", error));
   }, [activeSessionIdValue, adjustAssetCounts, assetGenerateType, assets, characterGenerateDisplayRatio, characterGenerateDisplayResolution, characterGenerateModel, characterGenerateStyleLabel, characterPreviewMeta]);
   const generateCharacterImage = async () => {
-    const rawPrompt = characterGeneratePrompt.trim();
+    let rawPrompt = characterGeneratePrompt.trim();
     if (!rawPrompt || characterGenerateResult.status === "generating") return;
     if (workspaceStorageMode === "user" && currentUserCredits <= 0) {
       showInputTip("积分不足，请充值后再使用模型");
@@ -14423,15 +14596,34 @@ export function ChatWorkbench() {
     const requestId = createClientId();
     const jobId = activeAssetGenerateJobId && characterGenerateResult.status === "failed" ? activeAssetGenerateJobId : requestId;
     const startedAt = Date.now();
-    const references = getCharacterPromptReferences();
+    // 以提示词里的 @名为唯一真源：参考图 = 文字里 @到、且有缩略图草稿的资产（按 @名匹配草稿）；
+    // 去掉没有缩略图草稿的悬空 @名，保证 sourcePrompt 的每个 @名都精确对应它实际发送的参考图，
+    // 杜绝"@的是这张、发的是那张"的脱钩（历史 bug 根因）。参考图与 @名从此一一对应，预览 @名天然变蓝。
+    const draftReferences = getCharacterPromptReferences();
+    const draftByName = new Map(draftReferences.map((reference) => [reference.name, reference]));
+    const mentionNames = getMentionNames(rawPrompt);
+    const references = mentionNames.map((name) => draftByName.get(name)).filter((reference): reference is ImageReference => Boolean(reference));
+    const validReferenceNames = new Set(references.map((reference) => reference.name));
+    const danglingNames = mentionNames.filter((name) => !validReferenceNames.has(name));
+    if (danglingNames.length > 0) {
+      let cleaned = rawPrompt;
+      for (const name of danglingNames) cleaned = removeMentionName(cleaned, name, { trim: true });
+      rawPrompt = cleaned.trim();
+      if (!rawPrompt) { showInputTip("请输入提示词"); return; }
+    }
+    // 同步可见输入框：文字清掉悬空 @名、草稿只留被 @到的（保持 UI 与提交一致）。
+    if (danglingNames.length > 0 || references.length !== draftReferences.length) {
+      setActiveAssetGeneratePrompt(rawPrompt);
+      setActiveAssetGenerateReferences(() => references);
+    }
     if (references.length > assetGenerateMaxReferenceImages) {
       showInputTip(`当前模型最多支持 ${assetGenerateMaxReferenceImages} 张参考图，不能上传更多图片`);
       return;
     }
     const referenceHint = getReferenceHint(references, rawPrompt);
-    const ruleText = isShotGeneration ? getShotGenerationRuleText(characterGenerateStyle, characterGenerateRatio, characterGenerateModel) : isSceneGeneration ? getSceneGenerationRuleText(characterGenerateStyle, characterGenerateRatio, characterGenerateModel) : getCharacterGenerationRuleText(characterGenerateRatio, characterGenerateStyle, characterGenerateModel);
-    const styledPrompt = enforceAssetGenerateStylePrompt(rawPrompt, characterGenerateStyle);
-    const prompt = [ruleText, referenceHint, `${isShotGeneration ? "用户分镜提示词" : isSceneGeneration ? "用户场景提示词" : "用户角色提示词"}：${styledPrompt}`].filter(Boolean).join("\n\n");
+    const ruleText = isShotGeneration ? getShotGenerationRuleText(characterGenerateStyle, characterGenerateRatio, characterGenerateModel) : isSceneGeneration ? getSceneGenerationRuleText(characterGenerateStyle, characterGenerateRatio, characterGenerateModel) : isPropGeneration ? getPropGenerationRuleText(characterGenerateStyle, characterGenerateRatio, characterGenerateModel) : getCharacterGenerationRuleText(characterGenerateRatio, characterGenerateStyle, characterGenerateModel);
+    const styledPrompt = isPropGeneration ? enforceAssetGeneratePropStylePrompt(rawPrompt, characterGenerateStyle) : enforceAssetGenerateStylePrompt(rawPrompt, characterGenerateStyle);
+    const prompt = [ruleText, referenceHint, `${isShotGeneration ? "用户分镜提示词" : isSceneGeneration ? "用户场景提示词" : isPropGeneration ? "用户道具提示词" : "用户角色提示词"}：${styledPrompt}`].filter(Boolean).join("\n\n");
     const previewMetaSnapshot = characterPreviewMeta;
     const settings: GenerationSettings = {
       ratio: characterGenerateDisplayRatio,
@@ -14463,6 +14655,7 @@ export function ChatWorkbench() {
     };
 
     setActiveAssetGenerateJobId(jobId);
+    assetGenerateJobPollersRef.current.add(jobId);
     setAssetGenerateJobs((current) => {
       const existingIndex = current.findIndex((job) => job.id === jobId);
       if (existingIndex < 0) return [jobSnapshot, ...current];
@@ -14485,7 +14678,7 @@ export function ChatWorkbench() {
             conversationId: activeSessionIdValue,
             conversationTitle: activeSession?.title,
             requestId,
-          metadata: { creditSource: isShotGeneration ? "shot_image_generation" : isSceneGeneration ? "scene_image_generation" : "character_image_generation" },
+          metadata: { creditSource: isShotGeneration ? "shot_image_generation" : isSceneGeneration ? "scene_image_generation" : isPropGeneration ? "prop_image_generation" : "character_image_generation" },
         }),
       });
       const submitted = await readJson<{ jobId?: string; error?: string; reservedNames?: string[] }>(response);
@@ -14531,8 +14724,61 @@ export function ChatWorkbench() {
         return current.map((job) => job.id === jobId ? { ...job, result: failedResult } : job);
       });
       if (activeAssetGenerateJobIdRef.current === jobId) setCharacterGenerateResult(failedResult);
+    } finally {
+      assetGenerateJobPollersRef.current.delete(jobId);
     }
   };
+  // 资产库生成"重启/刷新/重登录"恢复：服务端 job 与前端无关地继续生成/扣费/存盘，前端恢复后
+  // 按 requestId(=job.id) 续 poll，出图后翻卡+入库；找不到（老数据/已清）则判失败。对齐对话流/工作流。
+  const resumeAssetGenerateJob = useCallback(async (job: AssetGenerateJob) => {
+    const requestId = job.id;
+    if (assetGenerateJobPollersRef.current.has(requestId)) return;
+    assetGenerateJobPollersRef.current.add(requestId);
+    try {
+      let data: { resultUrls?: string[]; reservedNames?: string[]; resultDimensions?: Record<string, ImageDimensions>; usage?: UsageMeta; credit?: CreditMeta; error?: string } | undefined;
+      let notFound = 0;
+      while (!data) {
+        await new Promise((resolve) => window.setTimeout(resolve, 3000));
+        const statusResponse = await fetch("/api/generation-status", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ requestIds: [requestId] }) });
+        const status = await readJson<{ jobs?: Array<{ status?: string; resultUrls?: string[]; reservedNames?: string[]; resultDimensions?: Record<string, ImageDimensions>; usage?: UsageMeta; credit?: CreditMeta; error?: string }> }>(statusResponse);
+        const remote = status.jobs?.[0];
+        if (!remote) {
+          notFound += 1;
+          if (notFound > 40) throw new Error("生成任务已过期或被清理，请重新生成。");
+          continue;
+        }
+        notFound = 0;
+        if (remote.status === "failed") throw new Error(remote.error || GENERIC_MEDIA_ERROR_MESSAGE);
+        if (remote.status === "succeeded") data = remote;
+      }
+      const url = data.resultUrls?.[0];
+      if (!url) throw new Error(GENERIC_MEDIA_ERROR_MESSAGE);
+      const dimensions = data.resultDimensions?.[url];
+      addSessionUsage(activeSessionIdValue, data.usage);
+      applyCreditResult(activeSessionIdValue, data.credit);
+      const succeededResult: CharacterGenerationResult = { status: "succeeded", url, dimensions };
+      setAssetGenerateJobs((current) => current.map((item) => item.id === job.id ? { ...item, result: succeededResult } : item));
+      if (activeAssetGenerateJobIdRef.current === job.id) {
+        setCharacterGenerateResult(succeededResult);
+        if (dimensions) setCharacterImageNaturalSize(dimensions);
+      }
+      addCharacterGeneratedAsset(url, job.prompt, dimensions, job.type, job.previewMeta, data.reservedNames?.[0]);
+      notifyGenerationCompleteOnce(requestId, "图片生成已完成");
+    } catch (error) {
+      const message = normalizeMediaErrorText(toUserErrorMessage(error, GENERIC_MEDIA_ERROR_MESSAGE), "image") ?? GENERIC_MEDIA_ERROR_MESSAGE;
+      const failedResult: CharacterGenerationResult = { status: "failed", error: message };
+      setAssetGenerateJobs((current) => current.map((item) => item.id === job.id ? { ...item, result: failedResult } : item));
+      if (activeAssetGenerateJobIdRef.current === job.id) setCharacterGenerateResult(failedResult);
+    } finally {
+      assetGenerateJobPollersRef.current.delete(requestId);
+    }
+  }, [addCharacterGeneratedAsset, activeSessionIdValue, addSessionUsage, applyCreditResult, notifyGenerationCompleteOnce]);
+  useEffect(() => {
+    if (!isLoaded) return;
+    for (const job of assetGenerateJobs) {
+      if (job.result.status === "generating" && !assetGenerateJobPollersRef.current.has(job.id)) void resumeAssetGenerateJob(job);
+    }
+  }, [assetGenerateJobs, isLoaded, resumeAssetGenerateJob]);
   const clearActiveInput = () => {
     closeInputMenus();
     activeUploadedImages.forEach((image) => {
@@ -15443,6 +15689,14 @@ export function ChatWorkbench() {
               setCharacterGeneratePrompt(assetGeneratePromptDrafts.scene_image);
               setCharacterPromptCursorOffset(assetGeneratePromptDrafts.scene_image.length);
               setIsCharacterGenerateOpen(true);
+            }} onOpenPropGenerate={() => {
+              closeAllPopupMenus();
+              setAssetGenerateType("prop_image");
+              setCharacterGenerateRatio(assetGenerateRatioSelections.prop_image === "scene-grid" ? "single" : assetGenerateRatioSelections.prop_image);
+              resetCharacterGenerateWorkspace();
+              setCharacterGeneratePrompt(assetGeneratePromptDrafts.prop_image);
+              setCharacterPromptCursorOffset(assetGeneratePromptDrafts.prop_image.length);
+              setIsCharacterGenerateOpen(true);
             }} onOpenShotGenerate={() => {
               closeAllPopupMenus();
               setAssetGenerateType("shot_image");
@@ -15556,7 +15810,7 @@ export function ChatWorkbench() {
                     <ReminderToast reminder={inputReminder} />
                   </div>
                 ) : null}
-                <UsageSummaryButton summary={activeWorkflow.usageSummary} mediaCounts={activeWorkflow.canvas?.generatedMediaCounts ?? getWorkflowMediaCounts(activeWorkflow)} className="absolute right-4 top-4 z-30" />
+                <UsageSummaryButton summary={activeWorkflow.usageSummary} mediaCounts={activeWorkflow.canvas?.countedGeneratedUrls ? (activeWorkflow.canvas.generatedMediaCounts ?? getWorkflowMediaCounts(activeWorkflow)) : getWorkflowMediaCounts(activeWorkflow)} className="absolute right-4 top-4 z-30" />
                 {assetImportOpen ? (
                   <div className="fixed inset-0 z-[10050] flex items-center justify-center bg-black/40" onClick={() => setAssetImportOpen(false)}>
                     <div className="flex h-[80vh] w-[1080px] max-w-[94vw] flex-col overflow-hidden rounded-[16px] bg-white shadow-2xl" onClick={(event) => event.stopPropagation()}>
@@ -16866,7 +17120,7 @@ export function ChatWorkbench() {
                         <tbody>
                           {rows.length > 0 ? rows.map((row) => {
                             const SourceIcon = userCreditSourceIcons[row.source ?? "conversation"] ?? RiChatSmileAiLine;
-                            const isImageGenerationSource = row.source === "character_image_generation" || row.source === "scene_image_generation" || row.source === "shot_image_generation";
+                            const isImageGenerationSource = row.source === "character_image_generation" || row.source === "scene_image_generation" || row.source === "prop_image_generation" || row.source === "shot_image_generation";
                             const isTextOnlySource = row.source === "image_prompt_reverse" || row.source === "prompt_optimization";
                             const isIncreaseRow = row.direction === "increase";
                             const tokenCount = Math.max(0, Math.floor(row.totalTokens ?? 0));

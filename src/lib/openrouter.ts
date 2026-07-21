@@ -42,7 +42,7 @@ export type UsageMeta = {
 };
 
 export type AgentReplyIntent = "chat" | "film_knowledge" | "creative_consult" | "creative_structure" | "off_topic";
-export type AssetTargetType = "character_image" | "scene_image" | "shot_image" | "shot_video" | "other";
+export type AssetTargetType = "character_image" | "scene_image" | "prop_image" | "shot_image" | "shot_video" | "other";
 export type SuggestionItem = {
   label: string;
   action?: string;
@@ -210,7 +210,7 @@ type StructuredAgentReply = {
 
 const agentReplyIntents: AgentReplyIntent[] = ["chat", "film_knowledge", "creative_consult", "creative_structure", "off_topic"];
 
-const assetTargetTypes: AssetTargetType[] = ["character_image", "scene_image", "shot_image", "shot_video", "other"];
+const assetTargetTypes: AssetTargetType[] = ["character_image", "scene_image", "prop_image", "shot_image", "shot_video", "other"];
 const fallbackAgentSuggestions: SuggestionInput[] = ["让我写一个短剧故事", "讲讲电影是怎么做出来的", { label: "帮我拆一版分镜", assetTargetType: "shot_image" }];
 let modelPricingCache: { expiresAt: number; prices: Record<string, { prompt: number; completion: number }> } | null = null;
 

@@ -21,7 +21,7 @@ export type MediaSaveJob = {
   thumbnailUrl?: string;
   posterUrl?: string;
   posterThumbnailUrl?: string;
-  dimensions?: ImageDimensions;
+  dimensions?: ImageDimensions & { durationSeconds?: number };
   aliSynced?: boolean;
   aliSyncedAt?: number;
   aliSyncError?: string;

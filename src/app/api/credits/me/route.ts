@@ -4,12 +4,13 @@ import { prisma } from "@/lib/prisma";
 
 export const runtime = "nodejs";
 
-type CreditSource = "conversation" | "character_image_generation" | "scene_image_generation" | "shot_image_generation" | "image_prompt_reverse" | "prompt_optimization";
+type CreditSource = "conversation" | "character_image_generation" | "scene_image_generation" | "prop_image_generation" | "shot_image_generation" | "image_prompt_reverse" | "prompt_optimization";
 type CreditRowSource = CreditSource | "signup" | "admin_adjust" | "recharge" | "activity";
 
 const generationSourceLabels: Record<Exclude<CreditSource, "conversation">, string> = {
   character_image_generation: "角色图片生成",
   scene_image_generation: "场景图片生成",
+  prop_image_generation: "道具图片生成",
   shot_image_generation: "分镜图片生成",
   image_prompt_reverse: "图片反推提示词",
   prompt_optimization: "优化提示词",
@@ -25,7 +26,7 @@ const increaseSourceLabels: Record<Exclude<CreditRowSource, CreditSource>, strin
 function getCreditSource(metadata: unknown): CreditSource {
   if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return "conversation";
   const source = (metadata as { creditSource?: unknown }).creditSource;
-  if (source === "character_image_generation" || source === "scene_image_generation" || source === "shot_image_generation" || source === "image_prompt_reverse" || source === "prompt_optimization") return source;
+  if (source === "character_image_generation" || source === "scene_image_generation" || source === "prop_image_generation" || source === "shot_image_generation" || source === "image_prompt_reverse" || source === "prompt_optimization") return source;
   return "conversation";
 }
 
@@ -97,9 +98,10 @@ function getWorkspaceSessionMediaCounts(messages: unknown) {
 }
 
 async function getWorkspaceAssetGenerationCounts(userId: string) {
-  const counts: Record<"character_image_generation" | "scene_image_generation" | "shot_image_generation", number> = {
+  const counts: Record<"character_image_generation" | "scene_image_generation" | "prop_image_generation" | "shot_image_generation", number> = {
     character_image_generation: 0,
     scene_image_generation: 0,
+    prop_image_generation: 0,
     shot_image_generation: 0,
   };
   const rows = await prisma.userAssetState.findMany({
@@ -109,15 +111,18 @@ async function getWorkspaceAssetGenerationCounts(userId: string) {
   const urls = {
     character_image_generation: new Set<string>(),
     scene_image_generation: new Set<string>(),
+    prop_image_generation: new Set<string>(),
     shot_image_generation: new Set<string>(),
   };
   for (const row of rows) {
     if (row.currentCategory === "character_image") urls.character_image_generation.add(row.mediaAsset.normalizedUrl);
     if (row.currentCategory === "scene_image") urls.scene_image_generation.add(row.mediaAsset.normalizedUrl);
+    if (row.currentCategory === "prop_image") urls.prop_image_generation.add(row.mediaAsset.normalizedUrl);
     if (row.currentCategory === "shot_image") urls.shot_image_generation.add(row.mediaAsset.normalizedUrl);
   }
   counts.character_image_generation = urls.character_image_generation.size;
   counts.scene_image_generation = urls.scene_image_generation.size;
+  counts.prop_image_generation = urls.prop_image_generation.size;
   counts.shot_image_generation = urls.shot_image_generation.size;
   return counts;
 }
@@ -210,7 +215,7 @@ export async function GET() {
   }
 
   for (const item of map.values()) {
-    if (item.source === "character_image_generation" || item.source === "scene_image_generation" || item.source === "shot_image_generation") {
+    if (item.source === "character_image_generation" || item.source === "scene_image_generation" || item.source === "prop_image_generation" || item.source === "shot_image_generation") {
       item.imageCount = workspaceAssetGenerationCounts[item.source];
       item.videoCount = 0;
       continue;

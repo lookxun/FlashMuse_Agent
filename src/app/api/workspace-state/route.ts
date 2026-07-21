@@ -162,7 +162,7 @@ function getImageResolutionFromDimensions(width: number | null | undefined, heig
 }
 
 function categoryToLegacyType(value: unknown) {
-  return typeof value === "string" && ["character_image", "scene_image", "shot_image", "shot_video", "other", "trash"].includes(value) ? value : "other";
+  return typeof value === "string" && ["character_image", "scene_image", "prop_image", "shot_image", "shot_video", "other", "trash"].includes(value) ? value : "other";
 }
 
 function mediaStateToLegacyAsset(item: {
@@ -211,7 +211,7 @@ function mediaStateToLegacyAsset(item: {
   const type = categoryToLegacyType(item.deletedAt ? "trash" : item.currentCategory);
   const isUploadCategory = item.currentCategory === "conversation_uploads" || item.currentCategory === "workflow_uploads";
   const sourcePrompt = media.reversePrompt || media.sourcePrompt || (isUploadCategory || media.sourceKind.includes("upload") ? UPLOAD_IMAGE_PROMPT_PLACEHOLDER : "");
-  const isAssetCategory = ["character_image", "scene_image", "shot_image"].includes(type);
+  const isAssetCategory = ["character_image", "scene_image", "prop_image", "shot_image"].includes(type);
   const isWorkflowCategory = item.currentCategory === "workflow_images" || item.currentCategory === "workflow_uploads" || item.currentCategory === "workflow_videos";
   const librarySource = isAssetCategory ? "asset_generation" : isWorkflowCategory ? "workflow" : "conversation";
   const isWorkflowTemporaryName = isWorkflowCategory && (item.currentName === "图片生成" || item.currentName === "视频生成");
@@ -258,10 +258,10 @@ function mediaStateToLegacyAsset(item: {
   };
 }
 
-type AssetFilterKey = "character_image" | "scene_image" | "shot_image" | "shot_video" | "other" | "trash" | "conversation_images" | "conversation_uploads" | "conversation_videos" | "workflow_images" | "workflow_uploads" | "workflow_videos" | "upload_videos" | "upload_audios";
+type AssetFilterKey = "character_image" | "scene_image" | "prop_image" | "shot_image" | "shot_video" | "other" | "trash" | "conversation_images" | "conversation_uploads" | "conversation_videos" | "workflow_images" | "workflow_uploads" | "workflow_videos" | "upload_videos" | "upload_audios";
 
 function isAssetFilterKey(value: unknown): value is AssetFilterKey {
-  return typeof value === "string" && ["character_image", "scene_image", "shot_image", "shot_video", "other", "trash", "conversation_images", "conversation_uploads", "conversation_videos", "workflow_images", "workflow_uploads", "workflow_videos", "upload_videos", "upload_audios"].includes(value);
+  return typeof value === "string" && ["character_image", "scene_image", "prop_image", "shot_image", "shot_video", "other", "trash", "conversation_images", "conversation_uploads", "conversation_videos", "workflow_images", "workflow_uploads", "workflow_videos", "upload_videos", "upload_audios"].includes(value);
 }
 
 // 上传媒体的分类名（对话流 + 工作流）。文档分类刻意不放进任何可见过滤，永不显示。
@@ -272,7 +272,7 @@ const UPLOAD_DOCUMENT_CATEGORIES = ["conversation_upload_documents", "workflow_u
 function getAssetPageWhere(userId: string, filter: AssetFilterKey): Prisma.UserAssetStateWhereInput {
   const visible: Prisma.UserAssetStateWhereInput = { userId, hiddenAt: null, mediaAsset: { archivedAt: null } };
   if (filter === "trash") return { ...visible, deletedAt: { not: null }, OR: [{ purgeAt: null }, { purgeAt: { gt: new Date() } }] };
-  if (["character_image", "scene_image", "shot_image"].includes(filter)) return { ...visible, deletedAt: null, currentCategory: filter };
+  if (["character_image", "scene_image", "prop_image", "shot_image"].includes(filter)) return { ...visible, deletedAt: null, currentCategory: filter };
   if (filter === "upload_videos") return { ...visible, deletedAt: null, currentCategory: { in: UPLOAD_VIDEO_CATEGORIES } };
   if (filter === "upload_audios") return { ...visible, deletedAt: null, currentCategory: { in: UPLOAD_AUDIO_CATEGORIES } };
   if (filter === "workflow_uploads") return { ...visible, deletedAt: null, currentCategory: "workflow_uploads" };
@@ -326,7 +326,7 @@ async function getAssetCounts(userId: string) {
       mediaAsset: { select: { url: true } },
     },
   });
-  const counts: Record<string, number> = { character_image: 0, scene_image: 0, shot_image: 0, trash: 0, conversation_images: 0, conversation_uploads: 0, conversation_videos: 0, workflow_images: 0, workflow_uploads: 0, workflow_videos: 0, upload_videos: 0, upload_audios: 0, asset_generation: 0, conversation: 0, workflow: 0 };
+  const counts: Record<string, number> = { character_image: 0, scene_image: 0, prop_image: 0, shot_image: 0, trash: 0, conversation_images: 0, conversation_uploads: 0, conversation_videos: 0, workflow_images: 0, workflow_uploads: 0, workflow_videos: 0, upload_videos: 0, upload_audios: 0, asset_generation: 0, conversation: 0, workflow: 0 };
   const now = Date.now();
   for (const row of rows) {
     const url = row.mediaAsset.url;
@@ -348,7 +348,7 @@ async function getAssetCounts(userId: string) {
       continue;
     }
     if (UPLOAD_DOCUMENT_CATEGORIES.includes(row.currentCategory)) continue;
-    if (type === "character_image" || type === "scene_image" || type === "shot_image") {
+    if (type === "character_image" || type === "scene_image" || type === "prop_image" || type === "shot_image") {
       counts.asset_generation += 1;
       counts[type] = (counts[type] ?? 0) + 1;
       continue;
@@ -449,7 +449,7 @@ function mergeWorkspaceAssets(existingState: unknown, nextState: unknown) {
     const existingSource = typeof existingAsset.librarySource === "string" ? existingAsset.librarySource : "";
     const isIncomingDelete = incomingType === "trash" || toFiniteNumber(asset.deletedAt) > 0;
     const shouldPreserveClassification = !isIncomingDelete && existingSource === "asset_generation" && incomingSource !== "asset_generation";
-    const shouldPreserveTypedAsset = !isIncomingDelete && ["character_image", "scene_image", "shot_image"].includes(existingType) && (incomingType === "other" || incomingType === "");
+    const shouldPreserveTypedAsset = !isIncomingDelete && ["character_image", "scene_image", "prop_image", "shot_image"].includes(existingType) && (incomingType === "other" || incomingType === "");
     return shouldPreserveClassification || shouldPreserveTypedAsset ? { ...asset, type: existingAsset.type, librarySource: existingAsset.librarySource, name: existingAsset.name, systemName: existingAsset.systemName, userName: existingAsset.userName, lockedType: existingAsset.lockedType } : asset;
   });
   if (nextAssets.length >= existingState.assets.length) return { ...nextRecord, assets: nextAssets };
@@ -513,6 +513,11 @@ export async function GET(request: Request) {
   let baseState: unknown = workspace?.state ?? null;
 
   if (assetsOnly) {
+    // 生成中的资产任务(等待卡)也随 assetsOnly 精简响应返回，否则资产库加载会把前端 assetGenerateJobs
+    // 覆盖成空 → 刷新后"生成中等待卡"消失（服务端 job 仍在跑）。与对话流/工作流的持久恢复一致。
+    const storedAssetGenerateJobs = baseState && typeof baseState === "object" && Array.isArray((baseState as { assetGenerateJobs?: unknown }).assetGenerateJobs)
+      ? (baseState as { assetGenerateJobs: unknown[] }).assetGenerateJobs
+      : [];
     const assetFilter = isAssetFilterKey(params.get("assetFilter")) ? params.get("assetFilter") as AssetFilterKey : undefined;
     const assetLimit = getPositiveInteger(params.get("assetLimit"), 60, 120) || 60;
     const assetOffset = getPositiveInteger(params.get("assetOffset"), 0, 100000);
@@ -533,6 +538,7 @@ export async function GET(request: Request) {
           assetsHasMore: sortedRows.length > assetOffset + assetLimit,
           assetsNextOffset: assetOffset + pageRows.length,
           assetFilter,
+          assetGenerateJobs: storedAssetGenerateJobs,
         },
       });
     }
@@ -546,6 +552,7 @@ export async function GET(request: Request) {
       state: {
         assets: sortAssetRows(assetRows.filter((item) => isVisiblePersistedMediaUrl(item.mediaAsset.url))).map(mediaStateToLegacyAsset),
         assetCounts,
+        assetGenerateJobs: storedAssetGenerateJobs,
       },
     });
   }

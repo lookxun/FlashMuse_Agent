@@ -13,7 +13,7 @@ export type GenerationEventSource = "conversation" | "workflow" | "asset" | "age
 function mapCreditSourceToEventSource(creditSource: string | undefined): GenerationEventSource {
   if (!creditSource) return "conversation";
   if (creditSource.startsWith("workflow_")) return "workflow";
-  if (creditSource === "character_image_generation" || creditSource === "scene_image_generation" || creditSource === "shot_image_generation") return "asset";
+  if (creditSource === "character_image_generation" || creditSource === "scene_image_generation" || creditSource === "prop_image_generation" || creditSource === "shot_image_generation") return "asset";
   if (creditSource === "agent_image_generation" || creditSource === "agent_video_generation") return "agent";
   return "conversation";
 }

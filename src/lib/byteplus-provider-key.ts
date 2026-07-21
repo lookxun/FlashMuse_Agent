@@ -8,6 +8,7 @@
 const ASSET_IMAGE_CREDIT_SOURCES = new Set([
   "character_image_generation",
   "scene_image_generation",
+  "prop_image_generation",
   "shot_image_generation",
 ]);
 

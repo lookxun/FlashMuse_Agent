@@ -106,7 +106,7 @@ model MediaAsset {
   storagePath          String?
   width                Int?
   height               Int?
-  durationSeconds      Int?
+  durationSeconds      Float?
   mimeType             String?
   fileSize             Int?
   sourceKind           String

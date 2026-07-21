@@ -4,7 +4,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { createPortal } from "react-dom";
 import { BaseBoxShapeUtil, BindingUtil, CubicBezier2d, HTMLContainer, Mat, Rectangle2d, SVGContainer, SelectionForegroundOverlayUtil, ShapeUtil, T, Tldraw, Vec, createShapeId, defaultBindingUtils, defaultOverlayUtils, defaultShapeUtils, resizeBox, useActions, useEditor, useValue, vecModelValidator, type Editor, type IndexKey, type RecordProps, type TLBinding, type TLComponents, type TLHandle, type TLHandleDragInfo, type TLResizeInfo, type TLShape, type TLShapeId, type TLUiOverrides, type TldrawOptions, type VecModel } from "tldraw";
 import { type IconType } from "react-icons";
-import { RiAccountBoxLine, RiAddLine, RiArrowDownSLine, RiArrowUpLine, RiBringForward, RiBringToFront, RiCheckLine, RiCheckboxBlankCircleLine, RiCheckboxMultipleLine, RiClipboardLine, RiCloseLine, RiCursorLine, RiDeleteBinLine, RiDownloadLine, RiEmotionSadLine, RiExportFill, RiExportLine, RiEyeLine, RiEyeOffLine, RiFileCodeLine, RiFileCopy2Line, RiFileCopyLine, RiFileImageLine, RiFileTextLine, RiFilmAiLine, RiFocus3Line, RiGoogleFill, RiHand, RiHistoryLine, RiImage2Line, RiImageAiLine, RiImageCircleLine, RiImageLine, RiInformation2Line, RiLandscapeLine, RiLayoutLeft2Line, RiLayoutLeftLine, RiLoader4Line, RiLockLine, RiLockUnlockLine, RiMoreLine, RiMultiImageLine, RiNodeTree, RiOpenaiFill, RiResetLeftLine, RiRoadMapLine, RiScissorsCutLine, RiSendBackward, RiSendToBack, RiShining2Line, RiStackLine, RiTBoxLine, RiTextBlock, RiTextSnippet, RiTimeLine, RiTiktokFill, RiUpload2Line, RiVideoLine, RiVideoOnLine, RiVoiceprintLine, RiZoomInLine, RiZoomOutLine } from "react-icons/ri";
+import { RiAccountBoxLine, RiBellLine, RiAddLine, RiArrowDownSLine, RiArrowUpLine, RiBringForward, RiBringToFront, RiCheckLine, RiCheckboxBlankCircleLine, RiCheckboxMultipleLine, RiClipboardLine, RiCloseLine, RiCursorLine, RiDeleteBinLine, RiDownloadLine, RiEmotionSadLine, RiExportFill, RiExportLine, RiEyeLine, RiEyeOffLine, RiFileCodeLine, RiFileCopy2Line, RiFileCopyLine, RiFileImageLine, RiFileTextLine, RiFilmAiLine, RiFocus3Line, RiGoogleFill, RiHand, RiHistoryLine, RiImage2Line, RiImageAiLine, RiImageCircleLine, RiImageLine, RiInformation2Line, RiLandscapeLine, RiLayoutLeft2Line, RiLayoutLeftLine, RiLoader4Line, RiLockLine, RiLockUnlockLine, RiMoreLine, RiMultiImageLine, RiNodeTree, RiOpenaiFill, RiResetLeftLine, RiRoadMapLine, RiScissorsCutLine, RiSendBackward, RiSendToBack, RiShining2Line, RiStackLine, RiTBoxLine, RiTextBlock, RiTextSnippet, RiTimeLine, RiTiktokFill, RiUpload2Line, RiVideoLine, RiVideoOnLine, RiVoiceprintLine, RiZoomInLine, RiZoomOutLine } from "react-icons/ri";
 import { BytePlusIcon } from "@/components/byteplus-icon";
 import { AudioWaveformPlayer } from "@/components/audio-waveform-player";
 import { AssetMentionPicker, type MentionPickerCategory, type MentionPickerItem } from "@/components/asset-mention-picker";
@@ -15,7 +15,7 @@ import { buildReferenceHint } from "@/lib/reference-hint";
 import { getMentionNames as getSharedMentionNames, getMentionRangeForDeletion as getSharedMentionRangeForDeletion, getMentionRanges as getSharedMentionRanges, removeMentionName } from "@/lib/mention-text";
 import { createUploadProgressTracker } from "@/lib/upload-progress";
 import { sanitizeModelOutputText } from "@/lib/text-cleanup";
-import { getUploadKindFromFileName, getUploadRule, getVideoAudioUploadDisabledMessage, validateVideoReferenceCombination, type UploadKind, type UploadKindRule, type UploadRule, type UploadRuleOverrides } from "@/lib/upload-rules";
+import { getUploadKindFromFileName, getUploadRule, getVideoAudioUploadDisabledMessage, validateReferenceTotalDuration, validateVideoReferenceCombination, type UploadKind, type UploadKindRule, type UploadRule, type UploadRuleOverrides } from "@/lib/upload-rules";
 import { IMAGE_UPLOAD_ACCEPT, validateImageUploadFile } from "@/lib/image-upload-validation";
 import { AUDIO_UPLOAD_ACCEPT, validateMediaUploadFile, validateMediaUploadMetadata, VIDEO_UPLOAD_ACCEPT } from "@/lib/media-upload-validation";
 import { computeFileContentHashHex, precheckUploadedFileDedup } from "@/lib/upload-content-hash";
@@ -105,6 +105,9 @@ export type WorkflowCanvasState = {
   historicalMediaNodes?: WorkflowNode[];
   // 累计生成计数(只增不减)。存在 canvas 里随 canvasJson 持久化，刷新/删节点都不丢、不减。
   generatedMediaCounts?: { images: number; videos: number };
+  // 已计入 generatedMediaCounts 的媒体 URL(归一化)。用于并发收尾(轮询/reconcile/resume 双收尾)时按持久集合去重，
+  // 杜绝同一张图/视频被重复累加导致计数虚高。随 canvasJson 持久化。
+  countedGeneratedUrls?: string[];
 };
 
 const workflowUploadApiBaseUrl = (process.env.NEXT_PUBLIC_UPLOAD_BASE_URL ?? "").replace(/\/$/, "");
@@ -209,6 +212,7 @@ type WorkflowReferenceAsset = {
 const WORKFLOW_MENTION_CATEGORIES: MentionPickerCategory[] = [
   { label: "角色图片", value: "character_image", icon: RiAccountBoxLine },
   { label: "场景图片", value: "scene_image", icon: RiLandscapeLine },
+  { label: "道具图片", value: "prop_image", icon: RiBellLine },
   { label: "分镜图片", value: "shot_image", icon: RiMultiImageLine },
   { label: "上传图片", value: "conversation_uploads", icon: RiImageLine },
   { label: "上传视频", value: "upload_videos", icon: RiVideoOnLine },
@@ -3846,6 +3850,16 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
       if (isWorkflowBytePlusSeedanceVideoModel(model) && videoReferenceMode === "first_last_frame" && referenceImages.length < 2) throw new Error("首尾帧生视频需要至少两张参考图");
       const referenceComboError = validateVideoReferenceCombination({ modelId: model, referenceMode: isWorkflowBytePlusSeedanceVideoModel(model) ? videoReferenceMode : undefined, imageCount: referenceImages.length, videoCount: referenceVideos.length, audioCount: referenceAudios.length });
       if (referenceComboError) throw new Error(referenceComboError);
+      // 参考视频/音频总时长即时校验（连线的上传节点带精确时长；@引用库资产客户端无时长，交服务端权威兜底）。
+      const referenceMediaDurationByUrl = new Map<string, number>();
+      for (const source of getIncomingNodes(node.id)) {
+        if (source.data.videoUrl && typeof source.data.durationSeconds === "number") referenceMediaDurationByUrl.set(source.data.videoUrl, source.data.durationSeconds);
+        if (source.data.audioUrl && typeof source.data.durationSeconds === "number") referenceMediaDurationByUrl.set(source.data.audioUrl, source.data.durationSeconds);
+      }
+      const videoTotalDurationError = validateReferenceTotalDuration("video", referenceVideos.map((url) => referenceMediaDurationByUrl.get(url)));
+      if (videoTotalDurationError) throw new Error(videoTotalDurationError);
+      const audioTotalDurationError = validateReferenceTotalDuration("audio", referenceAudios.map((url) => referenceMediaDurationByUrl.get(url)));
+      if (audioTotalDurationError) throw new Error(audioTotalDurationError);
       const modelPrompt = appendWorkflowReferenceHint(prompt, getReferenceImageNames(node, referenceImages));
       const referenceImageNameByUrl = new Map<string, string>();
       for (const source of getIncomingNodes(node.id)) for (const url of source.data.images ?? []) if (url && source.data.mediaSystemNames?.[url]) referenceImageNameByUrl.set(url, source.data.mediaSystemNames[url]);
