@@ -1,6 +1,29 @@
 # Next Actions
 
-## ⭐⭐ 最新 END-OF-SESSION（2026-07-21 later 测试服迭代）—— 先读这条：用户要求【下一个 AI 直接部署正式服】
+## ⭐⭐ 最新 END-OF-SESSION（2026-07-21 部署 session）—— 先读这条：四方已同步 v1.0.0.36，无遗留待推/待部署
+
+**状态**：正式服 = 测试服 = 本地 = GitHub = **v1.0.0.36 / commit `dd37a78`**，四域名 200，工作树干净，无本对话新增 Prisma 迁移。详见 CHANGELOG / 01-current-status 顶条。
+
+**本 session 做完**：① 把上一 session 的 v1.0.0.34 整份部署上正式服（含迁移 `20260721000000_media_asset_duration_float` 自动 apply + 正式服 DB 回填 `backfill-prompt-mentions.js` fixed0/ok84/skip3，commit `5bb0fc2`）；② @引用资产弹窗左侧分类"滚动条常驻"（v35，共享组件 `asset-mention-picker.tsx`，`overflow-y-auto`+非叠加滚动条，溢出常显不加高，三处共用）；③ 修「@引用资产同一视频/资产显示成两个」（v36，`getAssetIdentityKey` 改 url 优先，合并"消息内嵌引用(无mediaId) vs 资产库权威记录(有mediaId)"，一处改全覆盖）；④ 再部署正式服 v1.0.0.36 + push `dd37a78`。已用测试号浏览器复现+验证。
+
+**下一个 AI 待办（都非紧急）**：
+1. 用户可到正式服硬刷抽验：@引用资产三处（视频/资产不再重复、左侧分类多时滚动条溢出常驻可下拉）；其它分类无重复。
+2. 对话流"最多4张"改原生 n（暂缓，风险高）。
+3. 清理旧 mention 死常量（`mentionAssetTypes` 等，无引用）。
+4. M018（对话流统一单轮询器）、M019（工作流 canvasJson 大字段重构）押后。
+5. 回头复查 `GenerationEvent`"服务器繁忙"占比是否下降、有无新可恢复错误要补进 `isTransientServerError`。
+
+**测试账号（明文，见 03）**：主测试号 `12424740@qq.com`/`dragonstar`（普通用户 ID_535317，模拟真实用户优先用它）；`lookxun@163.com`/`dragonstar`（白名单，不做真实模拟）。测试内容不要删。
+
+**部署记忆（本 session 已验证）**：
+- 正式服整份对齐 = 备份 → `sudo rsync -a --delete --exclude node_modules --exclude .next --exclude tmp --exclude '*.log' --exclude .git --exclude .env.local --exclude .runtime /opt/flashmuse-staging/app/ /opt/flashmuse/app/` → `cd /opt/flashmuse && nohup sudo docker compose up -d --build flashmuse-app`（entrypoint 自动 migrate deploy）→ `bash /tmp/syncali.sh`（阿里**正式**镜像 flashmuse-static，非 test）→ `bash /tmp/health.sh` 四域名 200。正式服**原样带测试服版本号、不自增**。
+- 测试服部署 = 本地 `node scripts/bump-version.mjs` → 打改动源码 tgz → scp `/tmp` → `sudo tar -xzf -C /opt/flashmuse-staging/app` → `nohup sudo docker compose up -d --build staging-app`（后台轮询）→ `sudo bash /opt/flashmuse-staging/sync-ali-test.sh`。
+- `/tmp/syncali.sh`+`/tmp/health.sh` 重启清、需重建（内容见 CHANGELOG 顶条§关键操作记忆）；阿里 key `/opt/flashmuse/data/runtime/flashmuse_to_ali_ed25519` root 属主必 sudo。
+- ⚠️ **PowerShell 内联 ssh 里 `$()`/中文/引号会被本地 PS 解释坏**（本 session 备份目录名丢了时间戳=踩这个）→ 一律写 .sh scp + `sed -i 's/\r$//'` + `bash`。改中文源码只用 edit/write 禁 Set-Content；本地用 Grep/Read 工具。ssh `ssh -i "C:\Users\ASUS\AppData\Local\Temp\opencode\CinematicFlow.pem" ubuntu@119.28.116.16`（docker 加 sudo）。
+
+---
+
+## （历史）⭐⭐ END-OF-SESSION（2026-07-21 later 测试服迭代）—— 用户要求下一个 AI 直接部署正式服（本对话已完成部署）
 
 **状态**：测试服 = **v1.0.0.34**；正式服仍 **v1.0.0.25**（`c19ecca`）；GitHub 仍 `c19ecca`；本地代码 = v1.0.0.34 **未 commit**。`tsc` 通过。**有 1 个新 Prisma 迁移 `20260721000000_media_asset_duration_float`**（durationSeconds Int→Float，测试服已 apply）。本 session 全部工作详见 CHANGELOG 顶条（B_232 时长精度 / B_252 音频误入图片槽 / 资产库等待卡恢复 / 预览缩略图从DB读 / 道具风格·印刷品 / 道具@名脱钩根治+回填）。
 

@@ -1,5 +1,35 @@
 # Current Handover Changelog
 
+## 2026-07-21（部署 session：部署正式服 v1.0.0.34 + @引用资产弹窗左侧滚动条常驻 + 修@引用资产同一视频/资产显示成两个）—— ✅ 全部已部署【正式服=测试服=本地=GitHub v1.0.0.36】，四域名 200，四方同步 `dd37a78`
+
+**状态**：承接上一条（测试服 v1.0.0.34、正式服还停在 v1.0.0.25）。本对话按用户指令**先把 v1.0.0.34 整份部署上正式服**，随后又做了两个 @引用资产弹窗的改动（v35、v36）并**再次部署正式服**。最终四方全部同步 **v1.0.0.36 / commit `dd37a78`**，无遗留待推。无本对话新增 Prisma 迁移（v34 那个 `20260721000000_media_asset_duration_float` 在部署 v34 时已 apply）。
+
+### 1. 部署正式服 v1.0.0.34（上一 session 积压的一大批）
+- 流程（严格按铁律）：确认测试服=v34 / 正式服=v25 / 仅差 1 个迁移 `20260721000000_media_asset_duration_float`（正式服 DB 应用到 v14 的 `20260714100000`）→ 备份 `/opt/flashmuse/app-backups/-presync-v34`（PowerShell 把 `$()` 吃了导致目录名少了时间戳，但 cp 成功、内容 5MB 完整）→ `sudo rsync -a --delete --exclude node_modules --exclude .next --exclude tmp --exclude '*.log' --exclude .git --exclude .env.local --exclude .runtime /opt/flashmuse-staging/app/ /opt/flashmuse/app/` → `cd /opt/flashmuse && nohup sudo docker compose up -d --build flashmuse-app`（entrypoint 自动 `migrate deploy` 应用了 duration_float，核验 `MediaAsset.durationSeconds` 列类型=`double precision`）→ 同步阿里正式镜像 → 四域名 200、正式服公网版本 v1.0.0.34。**正式服原样带 v34、未自增。**
+- **正式服 DB 回填** `backfill-prompt-mentions.js`（docker cp 进 `flashmuse-flashmuse-app-1:/app` 跑）：结果 **fixed=0 / alreadyOk=84 / skipped=3 / total=262**（正式服数据本就基本干净；3 个是@名与参考图数量不匹配，脚本安全跳过，不猜）。
+- commit+push GitHub `8986fe1..5bb0fc2`（29 文件，含道具 prop_image 全套 + 工作流用量计数修复 + B_232/B_252 + 迁移 + `/api/generation-references` 等），四方同步 v34。
+
+### 2. @引用资产弹窗左侧分类"滚动条常驻"（v1.0.0.35，共享组件 `src/components/asset-mention-picker.tsx`）
+- 需求：新增"道具图片"分类后，@引用资产弹窗左侧分类**显示不全**；用户不想加高弹窗（仍 378px），要靠滚动条下拉，且**溢出时滚动条常显不自动隐藏**（提示用户还有更多分类）。
+- 改动：左侧分类列表 div 加类 `mention-cat-scroll`，注入 `<style>`：`scrollbar-width:thin` + `::-webkit-scrollbar{width:8px}` + thumb `#c7c7c7`。用 `overflow-y-auto`（**不是 overflow-y-scroll**，避免无溢出时也占滚动条 gutter）—— 定义了 `::-webkit-scrollbar` 后浏览器改用**非叠加式**滚动条，溢出时常驻可见、无溢出（如资产库生成弹窗只 6 个图片分类）时不显示。
+- **覆盖三处**：对话流输入框 / 资产库生成弹窗 / 工作流输入框全部走这个共享组件（chat-workbench 用两处 16505+16863，workflow-inner 5920），一处改全覆盖。
+
+### 3. 修「@引用资产同一上传视频/资产显示成两个」（v1.0.0.36，`src/components/chat-workbench.tsx`）
+- **现象（用户报，已用测试号 12424740 浏览器复现）**：测试服"上传视频"实际 2 个，点开 @引用资产 → 其中一个视频（`@1784181320556-1d99e327-c`）变成两个、共显示 3 个；回资产库刷新即恢复。
+- **定位过程**：服务端 `/api/workspace-state?assetsOnly=1&assetFilter=upload_videos` 只返回 2 条（干净）→ 说明是**前端 `assets` 里同一文件存了两份**。查两个重复 DOM：一份渲染成 `<video>` 首帧（无 posterUrl），一份渲染成 `<img>` poster（有 posterUrl），**底层 url 完全相同**（同一个 `.mp4`）。
+- **根因**：同一媒体文件在客户端可能同时来自 ① **消息里内嵌的引用**（只有 url、**没有 mediaId**）② **资产库懒加载的权威记录**（有 mediaId + posterUrl）。去重函数 `getAssetIdentityKey`(`chat-workbench.tsx:2617`) 原为 `mediaId || 归一化url || id`——**mediaId 优先**；两份一个按 mediaId、一个按 url 生成身份 key，key 不同 → 漏判成两条。切标签懒加载 `loadMentionFilterPage` 合并时（按 key 去重）就把权威那份当新条目追加进去 → 同一视频 2 张。刷新时 workspace-state 权威覆盖才复原。
+- **修法（治本、通用）**：把 `getAssetIdentityKey` 改成 **`归一化url || mediaId || id`（url 优先）**。url 才是每个文件真正唯一的身份，两种来源的同一文件 url 相同 → 必定合并成一条（且合并会用带 posterUrl 的权威版覆盖）。因对话流/工作流/资产库生成弹窗三处 @引用资产都共用同一份 `assets` + 这个函数 + `isAssetInFilter`，**一处改全覆盖所有分类和三处弹窗**（"上传图片"等同类"消息内嵌引用 vs 权威记录"隐患一并根治）。
+- **验证**：测试服硬刷后，上传视频=正好 2（无重复）、上传图片首屏 30 条无重复。
+
+### 4. 部署正式服 v1.0.0.36 + push
+- v35（滚动条）先 bump+打 patch 部署测试服；v36（去重修复）bump+打 patch 部署测试服并浏览器复验通过；随后用户拍板**部署正式服**：备份 `/opt/flashmuse/app-backups/20260721-201737-presync-v36` → rsync staging→prod → build → 同步阿里正式镜像 → 四域名 200、正式服公网 v1.0.0.36。commit+push `5bb0fc2..dd37a78`（3 文件：`asset-mention-picker.tsx`/`chat-workbench.tsx`/`app-version.ts`）。**无 Prisma 迁移。**
+
+### 关键操作记忆（本 session 已验证）
+- 腾讯 ssh：`ssh -i "C:\Users\ASUS\AppData\Local\Temp\opencode\CinematicFlow.pem" ubuntu@119.28.116.16`（docker 加 sudo）。**PowerShell 内联 ssh 命令里的 `$(...)`/中文/引号会被本地 PS 先解释坏**（备份目录名丢时间戳就是踩这个）→ 一律把命令写成本地 .sh，scp 到 `/tmp`，`sed -i 's/\r$//'` 后 `bash /tmp/x.sh`。同理 psql/node 一次性脚本写文件 scp。
+- `/tmp/syncali.sh`、`/tmp/health.sh` 重启会清、本 session 已重建：syncali=`sudo rm -rf /tmp/next-static; sudo docker cp flashmuse-flashmuse-app-1:/app/.next/static /tmp/next-static; sudo rsync -a --delete -e 'ssh -i /opt/flashmuse/data/runtime/flashmuse_to_ali_ed25519 -o StrictHostKeyChecking=no' /tmp/next-static/ root@101.37.129.164:/var/www/flashmuse-static/_next/static/`（阿里**正式**镜像，测试服是另一个 `sync-ali-test.sh`）；health=循环 curl main/api/ali/static.venusface.com。
+- 测试服部署=本地 `node scripts/bump-version.mjs` → 打**改动源码** tgz（本 session 只改前端组件，patch 里就 `app-version.ts`+改动的组件）→ scp `/tmp` → `sudo tar -xzf -C /opt/flashmuse-staging/app` → `cd /opt/flashmuse-staging && nohup sudo docker compose up -d --build staging-app`（后台轮询 build~2.5min）→ `sudo bash /opt/flashmuse-staging/sync-ali-test.sh` → `curl http://127.0.0.1:5001/` 验版本号 + 外网 8080 200。
+- 改中文源码只用 edit/write 工具，**禁 Set-Content**（乱码）；本地用 Grep/Read 工具而非 PowerShell grep。
+
 ## 2026-07-21（later，测试服迭代 session：B_232 时长精度 + B_252 音频误入图片槽 + 资产库等待卡刷新恢复 + 预览页参考缩略图从DB读 + 道具风格/印刷品 + 道具生成@名脱钩根治+回填）—— ✅ 全部已部署【测试服 v1.0.0.34】；⚠️ 未 commit/push、正式服仍 v1.0.0.25；`tsc` 通过；**有 1 个新 Prisma 迁移**
 
 **状态**：承接线上 v1.0.0.25（`c19ecca`）。本对话把"上一条 07-21 本地批（道具图片 prop_image + 工作流用量计数修复，之前未部署）" **连同下面这一堆新修复一起迭代部署到了测试服**，版本从 v1.0.0.25 一路升到 **v1.0.0.34**。**正式服仍 v1.0.0.25、GitHub 仍 `c19ecca`、本地代码=v1.0.0.34 未 commit。** 用户明确交代：**下一个 AI 直接部署正式服**（走"先测试服→整份 rsync 同步正式服"铁律，正式服不自增版本、原样带 v1.0.0.34）。
