@@ -1,172 +1,59 @@
-# Architecture And Data
+# Architecture And Data（2026-07-21 重建）
 
-## Upload Chain (上传链路，2026-07-08 重构后现状 — 改上传前必读)
+> 详细历史在 `historical-handover-docs-last-used-2026-07-21/02-architecture-and-data.md`。这里保留仍有效的核心。
 
-两个上传后端接口：
-- **图片** → `POST /api/asset-upload-temp`(multipart 二进制, field `image`)存临时区返回 token → `PATCH /api/asset-upload-temp`({token}) commit 到 `/generated/users/<uid>/upload_image/<hash>.jpg` 返回正式 URL。服务端 `saveTemporaryUploadedImageBuffer`(`src/lib/local-assets.ts`；JPEG 需转码时**内联转码**，不再抛错让客户端重传) + `commitTemporaryUploadedImage`。PATCH 后 fire-and-forget `syncGeneratedFilesToAli`。
-- **视频/音频/文档** → `POST /api/upload-file`(**multipart 二进制**, field `file`+`name`/`mediaKind`/`conversationId`/`durationSeconds`/`dimensions`；旧 base64 JSON 分支保留兼容)。服务端 `saveUploadedFileBufferAsset` 直接写 Buffer 到 `/generated/users/<uid>/files/<hash>.<ext>`，写 MediaAsset/UserAssetState(conversation_upload_videos/audios/documents)，fire-and-forget `syncGeneratedFilesToAli`。
+## 数据表（核心）
 
-客户端上传函数：
-- 对话流(`chat-workbench.tsx`)：图片 `uploadTemporaryAssetImage`；文档/视频/音频 `uploadDocumentFileAsset`(FormData 二进制)。进度 XHR `uploadFormDataWithProgress`(180s)。
-- 工作流(`workflow-tldraw-canvas-inner.tsx`)：图片 `uploadWorkflowImage`；视频/音频/文档 `uploadWorkflowFile`(FormData 二进制)。进度 XHR `uploadWorkflowFormDataWithProgress`(180s)。上传中节点显示 `UploadingNodeOverlay`(蓝圆环=最窄边30%+首帧`uploadPreviewUrl`+黑层)。
+- `User`：账号、积分、登录审计。`Session`：登录会话 + 活动 workspace 实例。
+- `CreditLedger`：计费记录（text/image/video/prompt 工具 + 媒体成本 metadata）=**计费唯一来源**。
+- `WorkspaceSession`（一行=一个对话）+ `WorkspaceMessage`（一行=一条消息，分页/媒体提取用）=对话结构来源。
+- `WorkspaceWorkflow`（一行=一个工作流，`canvasJson` 大字段存整张画布 + `workflowCode`/`nextImageNumber`/`nextVideoNumber`）=工作流历史来源。
+- `MediaAsset`：**媒体固定事实**（url、归一化 url、类型、来源、prompt、model、尺寸、poster、成本、conversation/message/workflow id、`contentHash`、`durationSeconds`(Float)、archive 状态）。
+- `UserAssetState`：**每用户可变状态**（当前名、分类、排序、软删、hidden、BytePlus 审核态）。
+- `GenerationJob`：生成任务（worker 驱动真正生成/挑图/扣费/落库），存 `referenceImages`/`referenceNames`/`extraJson.cleanPrompt` 等。
+- `UserWorkspaceState`：仅存 shell 字段（`activeWorkflowId`/`nextWorkflowNumber` 等），**`state.assets` 不再是权威来源**。
+- `GptImagePromptOptimizationCase`：GPT 生图安全改写成功案例（见归档 08）。
 
-两条独立路由(务必分清)：
-- **上传路由**：ali 用户 base=`""`(同源)→`ali.venusface.com/api/...`→Ali nginx `location /` 反代 `http://101.47.19.109`(马来默认块 80m→Node 3000)。main 用户直连 `api.venusface.com`。判断在 `getUploadApiBaseUrl`/`getWorkflowUploadApiBaseUrl`(ali/static/阿里IP hostname→同源)。`NEXT_PUBLIC_UPLOAD_BASE_URL=https://api.venusface.com`(被 ali 同源判断优先覆盖)。
-- **读取路由**：`/generated/` 在 ali 由本地镜像 serve，miss 则回源代理马来(慢 ~50KB/s)。所以上传落盘后必须 `syncGeneratedFilesToAli`(`src/lib/ali-sync.ts`, rsync 到 `root@101.37.129.164:/var/www/flashmuse-static/generated`, 需 env `ALI_SYNC_GENERATED_ENABLED=true`+`ALI_SYNC_HOST`)把文件推到 ali 本地。**"上传走哪"≠"存哪"：nginx 反代只转发不落盘，文件始终在马来生成，读取要快必须回传 ali。**
+**数据权威**：媒体固定事实→`MediaAsset`；用户可变状态→`UserAssetState`；对话→`WorkspaceSession+Message`；计费→`CreditLedger`。新生成/上传媒体统一走 `src/lib/media-asset-record.ts`（`buildMediaAssetRecord`/`classifyAsset`）入库；出生即冻结，之后只有改名/移动/删除（只写 `UserAssetState`）。
 
-body 上限：Ali ssl block 80m；马来 `server_name 101.47.19.109` 默认块 80m；马来 `main/api` block 仅 20m。
+## 核心媒体生成链路（图/视频统一，工作流复用同一套）
 
-后续改造点见 05-next-actions"上传链路后续"。
+- 生成由服务端 `GenerationJob` worker 唯一权威 finalize 出生；provider 临时 URL 可先给前端显示提速，但**绝不能存进 `MediaAsset.url`**。
+- 后台存盘（`.runtime/media-save-jobs.json` 跟踪）；存好后前端轮询 `/api/media-save-status` 把临时 URL 换成本地 `/generated/...`。
+- **图片存盘不丢改造**（`runImageJob`）：本地没存好就把交付快照重排队等到存好再落库（扣费幂等、只 finalize 扣一次），不再回退远程 url → 国内跨境慢也不丢库。
+- **断线重连**（`src/lib/transient-error.ts` `isTransientServerError`）：网络/超时/5xx/平台临时/限流=可恢复重试；真人/版权/参数/审核拒绝=永久不重试。图片任务退避重排队、视频创建重试、BytePlus 建素材重试。
+- 生成参数与真实媒体属性分开：`ratio`(如16:9)是生成设置；真实像素在 `imageDimensions`/`videoDimensions`/`width/height`；视频真实时长 `durationSeconds`(Float)，请求时长 `videoDuration`(如8秒)。
 
-## ⚠️ 跨境链路是本架构的固有软肋 (2026-07-08 确认)
+## 上传链路
 
-- 马来(源站/模型/API/DB/媒体)↔ 阿里(国内入口/镜像/反代) 之间走的是**公网跨境链路**。2026-07-08 实测该链路**丢包 20~50%、RTT ~282ms**(双向)。用户全走 `ali.venusface.com`，所有动态请求(登录/资产库/workspace-state/上传)都要 Ali→马来转发一趟，丢包下靠 TCP 重传→全站卡、上传慢、缓存 miss 灰屏。
-- 这是双服务器方案与生俱来的痛点(早有记录:"走阿里入口 1MB 约 61.99s、瓶颈是阿里反代上传到马来这一跳")，**不是应用 bug**。丢包可能随 ISP 路由波动。
-- **已做的治标**：两台开 BBR(扛丢包，快6~10倍，见 03-deploy)；马来 nginx `client_body_timeout 300s`(防上传 408)。
-- **治本方向**：见 05-next-actions"长期优化方向"——把马来 BytePlus 换成阿里海外(新加坡)，两台阿里走私有骨干(CEN/GA)。香港排除(被当国内、模型 403)。跨境带宽费任何中国云都躲不掉。GA vs CEN 价格对比见桌面 `跨境加速方案对比_GA_vs_CEN.md`。
+- **图片** → `POST /api/asset-upload-temp`(multipart, field `image`)存临时区返 token → `PATCH`({token}) commit 到 `/generated/users/<uid>/upload_image/<hash>.jpg`。服务端 ffmpeg 统一转 JPG。校验唯一权威 `src/lib/image-upload-validation.ts`（只 JPG/JPEG/PNG/WebP、原始单图 ≤10MB）。
+- **视频/音频/文档** → `POST /api/upload-file`(multipart, field `file`)。服务端 `saveUploadedFileBufferAsset` 写 `/generated/users/<uid>/files/<hash>.<ext>` + MediaAsset/UserAssetState。校验/探测：`src/lib/media-upload-validation.ts` + `src/lib/media-upload-probe.ts`(ffmpeg 真实属性)。视频上传即时生成 `.poster.jpg`。
+- **命名唯一权威** `src/lib/upload-name.ts`（`resolveUploadName`：contentHash 命中复用旧名；否则去扩展名+sanitize+全局唯一 base/base_2）。三条上传接口都返回权威 `name`，前端只显示服务端返回名。
+- **内容去重**：按原始字节 SHA-256（`src/lib/upload-content-hash.ts`）+ `MediaAsset.contentHash`，命中直接复用不重传。
+- **读取要快必须回传阿里**：`syncGeneratedFilesToAli`（`src/lib/ali-sync.ts`，rsync 到阿里镜像）。"上传走哪≠存哪"，文件始终在腾讯生成，读取快靠阿里本地镜像。`src/lib/recent-upload-origin.ts`：本会话刚上传的读腾讯主源，刷新后走阿里（见 M018）。
 
-## Core Tables
+## 资产分类（AssetFilter）
 
-- `User`: account, profile, credits, flags, login audit fields.
-- `Session`: login sessions and active workspace instance tracking.
-- `CreditLedger`: billing records for text, image, video, prompt tools, and media cost metadata.
-- `UserWorkspaceState`: legacy workspace shell JSON and UI/workflow settings. Do not treat `state.assets` as the source of truth anymore.
-- `WorkspaceSession`: one row per conversation, with title, soft delete state, summary/memory fields, and legacy JSON.
-- `WorkspaceMessage`: one row per message, used for paged message loading and media extraction.
-- `WorkspaceWorkflow`: workflow history table. One row per workflow with title, soft delete state, `canvasJson`, optional usage summary, and workflow media naming fields `workflowCode`, `nextImageNumber`, and `nextVideoNumber`. Deployed on 2026-06-23 through migrations `20260623043000_workspace_workflows` and `20260623044000_backfill_workspace_workflows`; migration `20260624090000_workflow_media_names` was deployed on 2026-06-24. Production workflow UI entry remains disabled.
-- `MediaAsset`: fixed media facts: URL, normalized URL, type, source, prompt, model, dimensions, poster/thumbnail, cost share, conversation/message IDs, workflow placeholders, archive status.
-- `UserAssetState`: per-user mutable state for a media item: current name, category, sort order, soft delete, hidden state, BytePlus review state.
+- 第 1 组（资产库生成，同组同款）：`character_image` / `scene_image` / `prop_image`（道具，2026-07-21 新增）/ `shot_image`。图标/比例/propify 见 04 + 代码。
+- 对话流：`conversation_images` / `conversation_videos` / `conversation_uploads`(上传图片) / `upload_videos` / `upload_audios`。
+- 工作流：`workflow_images` / `workflow_videos` / `workflow_uploads`（及 `workflow_upload_videos/audios/documents`）。
+- `workspaceKind`=`conversation`/`workflow`/`asset_generation` + `workspaceId` 标记来源；工作流资产不混进对话流筛选。
+- **资产分类过滤在服务端** `workspace-state` 路由（`getAssetPageWhere`/`getAssetCounts`），前端 `isAssetInFilter` 做本地保留/计数——**改分类必须两处同步**。`.bin` 存的上传音频靠扩展名认不出，必须靠 `MediaAsset.mediaType`（workspace-state + media-assets GET 都已透传）。
 
-## Media Source Of Truth
+## ⭐ 关键去重规则：`getAssetIdentityKey`（2026-07-21 修）
 
-- Fixed media facts belong in `MediaAsset`.
-- User-visible mutable asset state belongs in `UserAssetState`.
-- Conversation structure belongs in `WorkspaceSession + WorkspaceMessage`.
-- Billing belongs in `CreditLedger`.
-- Old workspace JSON is shell state only for current code. Do not use `UserWorkspaceState.state.assets` as UI source of truth. Production `assetsOnly` currently reads `MediaAsset + UserAssetState` for all users with new-table rows; online audit on 2026-06-23 found `fallbackUsers=0`.
-- Uploaded-image reverse prompts belong in `MediaAsset.reversePrompt`; display paths should prefer `reversePrompt` over upload placeholders and original `sourcePrompt`.
-- New conversation uploads, generated conversation media, workflow media, and uploaded video/audio/document files should be persisted into `MediaAsset + UserAssetState`. Generated conversation media is still recoverable from `WorkspaceMessage` sync.
+- `chat-workbench.tsx:2617`：`getAssetIdentityKey = 归一化url || mediaId || id`（**url 优先**）。
+- 原因：同一媒体文件在客户端可能同时来自"消息内嵌引用（只有 url、无 mediaId）"和"资产库懒加载权威记录（有 mediaId）"。若 mediaId 优先，两份 key 不同 → @引用资产弹窗把同一视频/资产显示成两个。url 才是文件唯一身份 → url 优先必合并。三处 @引用资产共用同一 `assets` + 此函数 + `isAssetInFilter`。
 
-## Core Media Generation Chain
+## @引用资产弹窗（三处统一）
 
-The image/video generation chain is a core product path. Future workflow media must reuse this same flow.
+- 共享组件 `src/components/asset-mention-picker.tsx`（左分类标签+右 5 列 80×80 缩略图，高 378px；左侧分类溢出时滚动条常驻=`mention-cat-scroll` 样式）。对话流输入框(chat-workbench)、资产库生成弹窗(chat-workbench)、工作流输入框(workflow-inner)三处共用。
+- 懒加载：首次只加载当前标签 30 个 + 全部计数，切标签/下拉再各自加载（`loadMentionFilterPage`/`mentionFilterPaging`）。视频/音频可引用（复用 + 号上传的 uploadRule 校验，从 url 读元数据）。
 
-- Provider temporary URLs may be shown immediately to users for speed.
-- Temporary URLs can appear in chat messages, previews, and download controls while local saving is still running.
-- Temporary provider URLs must not be stored as `MediaAsset.url` or `MediaAsset.normalizedUrl`.
-- Background saving is tracked in `.runtime/media-save-jobs.json`.
-- When a temporary URL is saved to local `/generated/...`, the local URL becomes the durable media URL.
-- Frontend polling through `/api/media-save-status` replaces temporary URLs with local URLs in chat messages, preview state, download source, asset list entries, asset-generation jobs, and workflow canvas nodes.
-- Saved local media is persisted to `MediaAsset + UserAssetState` even if UI replacement is delayed by preload/static-sync readiness.
-- Saved workflow media should use `workflow_images` / `workflow_videos` and include `workflowId` / `workflowNodeId` when available.
-- Workflow history source of truth is now deployed `WorkspaceWorkflow`. `UserWorkspaceState` keeps workflow shell fields such as `activeWorkflowId` and `nextWorkflowNumber`; do not rely on `UserWorkspaceState.state.workflowItems` as the durable history source going forward.
-- `/api/workspace-state` summary shell returns workflow items loaded from `WorkspaceWorkflow`. It should continue to include `workflowItems`, `activeWorkflowId`, and `nextWorkflowNumber` for the frontend shell.
-- Workflow media source of truth follows the same media chain as conversation media. Local workflow images/videos should be upserted through `/api/media-assets` using categories `workflow_images` / `workflow_videos`, and should include `workflowId` and `workflowNodeId`. Frontend legacy assets returned from `mediaStateToLegacyAsset()` use `librarySource="workflow"` so they do not mix into conversation asset filters.
-- Workflow media naming mirrors conversation naming but uses workflow codes: `工作流_01 -> w1`, `工作流_02 -> w2`, then `image_N_wX` / `video_N_wX`. Each workflow has independent counters stored on `WorkspaceWorkflow.nextImageNumber` and `nextVideoNumber`. A successful generation reserves a name immediately; failed generations do not consume a name; names should not be recomputed when assets are loaded or refreshed.
-- Workflow nodes now carry `data.mediaSystemNames` keyed by media URL, analogous to conversation `Message.mediaSystemNames`. `data.imageDimensions`, `data.videoDimensions`, `data.durationSeconds`, `data.videoCurrentTime`, `data.visualSize`, and `data.mediaSystemNames` must survive refresh/autosave. Server workflow save merges existing node media fields when the incoming client canvas lacks them, specifically preserving `images`, `imageDimensions`, `mediaSystemNames`, `videoUrl`, and `posterUrl`.
-- Workflow generated media persistence should keep generation parameters and true media attributes separate. `data.ratio` / `MediaAsset.ratio` are generation settings such as `16:9`; actual pixel size belongs in `imageDimensions`, `videoDimensions`, `MediaAsset.width/height`, `visualSize`, or preview `sizeText`. Video true duration belongs in `data.durationSeconds` and `MediaAsset.durationSeconds`, while requested generation duration remains `data.duration` / `MediaAsset.videoDuration` such as `8秒`.
-- Runtime workflow node scanning/re-posting should not be used as the primary persistence path. It caused duplicate POSTs, name drift, and counter jumps. Workflow generated media should be handled at generation-success time through the `onGeneratedMedia` callback and then through remote-to-local replacement polling.
-- Workflow preview thumbnails should be built from the current workflow canvas nodes when previewing workflow media. Do not show all historical `workflow_images` or `workflow_videos` from the asset table in the preview rail; only media currently visible in that workflow's canvas should appear.
-- `.runtime/media-url-map.md` is an operational runtime mapping from remote temporary URLs to local URLs. It may contain signed provider URLs and must not be committed or copied into docs.
-- Data URLs and unsaved remote provider URLs should be skipped by asset-table sync. They are display/transient inputs, not durable asset identities.
-- Agent-generated media prompt details now split main prompt and hard constraints. `MediaAsset.sourcePrompt` stores the main asset prompt. `MediaAsset.sourceDetail` may contain JSON like `{ "agentConstraints": [...] }`; admin displays `sourcePrompt` in black and constraints in gray. Preserve per-URL mapping for multi-image and multi-video results.
-- Remote provider temporary URLs must not be inserted as `MediaAsset.url` / `normalizedUrl`. Use runtime mapping/debug files, especially `.runtime/media-url-map.md`, to associate remote URLs with saved local media and `mediaAssetId` where possible.
+## 跨境链路固有软肋
 
-## Current User Asset Categories
+- 腾讯新加坡（源）↔ 阿里（国内入口）走公网跨境，有丢包/延迟。两台已开 BBR 缓解。这是双服务器方案固有痛点、非 bug。长期优化方向见归档。
 
-User asset library categories:
+## 迁移脚本 / 一次性脚本
 
-- `character_image`
-- `scene_image`
-- `shot_image`
-- UI also shows `上传图片` in the upper asset area, but its storage category is still `conversation_uploads`.
-
-Conversation media categories:
-
-- `conversation_uploads`
-- `conversation_images`
-- `conversation_videos`
-- `conversation_upload_videos`
-- `conversation_upload_audios`
-- `conversation_upload_documents`
-
-The three upload-file categories are internal new-table categories deployed on 2026-06-23. They are written by `/api/upload-file` but are not yet exposed as asset-library UI groups.
-
-Workflow categories are now actively used by local workflow work, though production workflow entry still remains feature-gated:
-
-- `workflow_uploads`
-- `workflow_images`
-- `workflow_videos`
-
-Workspace source markers are deployed:
-
-- `workspaceKind="conversation"` and `workspaceId=conversationId` for conversation rows.
-- `workspaceKind="workflow"` and `workspaceId=workflowId` for workflow rows.
-- `workspaceKind="asset_generation"` for role/scene/shot asset generation media where appropriate.
-
-Do not reintroduce old user-facing `shot_video` or `other` as primary asset library categories unless the user explicitly changes the product decision.
-
-## Upload Image Rule
-
-- `conversation_uploads` is the single unified upload-image bucket.
-- Asset-library uploads, conversation-flow uploads, and future workflow uploads should all appear under the user-facing `上传图片` category.
-- Moving a generated image to `上传图片` writes `UserAssetState.currentCategory="conversation_uploads"`, even if the media URL remains under `/generated/users/.../images/...` rather than `/upload_image/`.
-- Upload category filtering must not rely only on URLs containing `/upload_image/`. It must also respect `currentCategory="conversation_uploads"` and frontend legacy flags like `promptSource="upload"`.
-- Assistant message `imageReferences` can contain upload-image URLs used as references. These must also be synced into `MediaAsset + UserAssetState`; otherwise referenced uploads can exist on disk and in messages but be missing from the asset library.
-- Fresh upload cards should use `/api/media-thumbnail?url=...` fallback when no stored `thumbnailUrl` exists, so missing thumbnail files do not render broken images.
-- The upload-image placeholder text is now `上传图片`. Legacy placeholders `资产库上传` and `对话流上传` are recognized only for backward compatibility.
-- All upload-image entries should start in `conversation_uploads`; do not infer role/scene/shot from upload filenames or prompt context.
-- Uploaded videos, uploaded audios, and uploaded documents are now written into `MediaAsset + UserAssetState` by `/api/upload-file` with `sourcePrompt` values `上传视频`, `上传音频`, and `上传文档`. Their current categories are `conversation_upload_videos`, `conversation_upload_audios`, and `conversation_upload_documents`. UI groups for these categories are future work.
-- Browser image upload now uses same-origin `/api/asset-upload-temp` for temporary image uploads. Do not reintroduce cross-origin temporary image upload to `NEXT_PUBLIC_UPLOAD_BASE_URL` unless there is a verified need and browser/network behavior is retested from `ali.venusface.com` and `main.venusface.com`.
-- Frontend image conversion is best-effort. If canvas JPEG conversion fails or takes more than 5 seconds, the original file is uploaded and the server re-encodes it. Server upload saving intentionally re-encodes all uploaded images through ffmpeg into standard JPG, even when the input MIME is JPEG.
-- User asset category is mutable user state. Ordinary media upserts must not overwrite `UserAssetState.currentCategory` after a user has manually moved an asset. Use `/api/media-assets` `PATCH` for explicit moves; `POST` should preserve locked/user-recategorized existing state.
-
-## Seedance Reference Media Rule
-
-- BytePlus Seedance 2.0 and Seedance 2.0 Fast support uploaded reference videos and audio through existing `uploadedFiles` entries.
-- Files are saved by `/api/upload-file` under `/generated/users/{userId}/files/` and then passed to BytePlus as public URLs.
-- Reference videos are sent as `content` items with `type="video_url"` and `role="reference_video"`.
-- Reference audio is sent as `content` items with `type="audio_url"` and `role="reference_audio"`.
-- Audio cannot be used alone. It must be accompanied by at least one reference image or reference video.
-- Frontend limits mirror BytePlus docs: video `mp4/mov`, max 3 files, each 2-15 seconds and <=50MB, total video duration <=15 seconds, aspect ratio 0.4-2.5, dimensions 300-6000px, total pixels 409600-2086876; audio `mp3/wav`, max 3 files, each 2-15 seconds and <=15MB, total audio duration <=15 seconds.
-- A 0.35 second tolerance is intentionally allowed for browser media metadata rounding around exact 15 second files.
-- Replay and failed-media retry must preserve `referenceVideos` and `referenceAudios`; this was fixed after `video_5_d24` was found to have lost its uploaded video/audio references during replay.
-
-## Duplicate Media Rule
-
-When `.runtime/media-save-jobs.json` says a remote URL was saved to local `/generated/...`:
-
-- Keep the local `/generated/...` media as the official visible record.
-- Merge costs, tokens, ledger IDs, request IDs, model, settings, prompt, and metadata from the remote record into the local record when local fields are missing.
-- Archive the remote record with `archiveReason=duplicate_remote_url` and `duplicateOfMediaAssetId`.
-- Hide the remote `UserAssetState` with `hiddenReason=duplicate_remote_url`.
-- Do not hard delete either record.
-
-This runtime path is implemented in `src/lib/media-assets.ts` and called from media save status, `/api/media-assets`, and workspace message upsert.
-
-## Asset Sorting Rule
-
-- Normal sorting is latest first by `MediaAsset.firstSeenAt desc`, then `createdAt desc`, then `id desc`.
-- User move operations write `UserAssetState.sortOrder` as a timestamp-level integer.
-- Only timestamp-level `sortOrder` values should override latest-first sorting. Small legacy sort orders must not reorder the whole category.
-- The virtual generation card in asset categories stays first; latest real media appears after it.
-
-## Migration Scripts
-
-Current important scripts:
-
-- `scripts/rebuild-media-asset-registry.mjs`
-- `scripts/migrate-user-media-assets.mjs`
-- `scripts/migrate-selected-media-users.mjs`
-- `scripts/audit-visible-duplicate-media.mjs`
-- `scripts/audit-user-media-cost-gaps.mjs`
-- `scripts/README-media-assets.md`
-
-Historical online migration result:
-
-- Trial account `ID_636611` was migrated, de-duplicated, enriched, and audited.
-- 20 additional online media accounts were migrated and audited.
-- Final reported result: `visibleDuplicateGroups=0` and `unmatchedLedgers=0` for migrated accounts.
-- Logs are on Malaysia server under `/var/www/flashmuse/.runtime/media-migration-logs/`.
-
-Do not run broad destructive migrations. If more migration work is needed, dry-run first and keep logs.
+- `scripts/` 下有 media 迁移/审计脚本（见 `scripts/README-media-assets.md`）。`scripts/backfill-prompt-mentions.js`=资产库生成图 sourcePrompt @名与参考图对齐回填（仅 1:1 才改）。**不跑广泛破坏性迁移**；先 dry-run + 备份 + 保留日志。
