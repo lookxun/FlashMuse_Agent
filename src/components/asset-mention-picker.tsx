@@ -55,12 +55,19 @@ export function AssetMentionPicker({
   const items = itemsFor(activeValue);
   return (
     <div className={`flex w-[560px] max-w-[86vw] flex-col overflow-hidden rounded-[12px] bg-white p-2 shadow-[0_18px_44px_rgba(0,0,0,0.14)] ${className ?? ""}`}>
+      {/* 左侧分类列表：内容溢出时滚动条常驻显示（不自动隐藏），提示用户还有更多分类可下拉 */}
+      <style>{`
+        .mention-cat-scroll{scrollbar-width:thin;scrollbar-color:#c7c7c7 transparent;}
+        .mention-cat-scroll::-webkit-scrollbar{width:8px;-webkit-appearance:none;}
+        .mention-cat-scroll::-webkit-scrollbar-thumb{background-color:#c7c7c7;border-radius:8px;}
+        .mention-cat-scroll::-webkit-scrollbar-track{background:transparent;}
+      `}</style>
       <div className="px-1 pb-2 text-[12px] font-medium text-[#8a8a8a]">@引用资产</div>
       {loading ? (
         <div className="flex min-h-[220px] items-center justify-center gap-2 text-[13px] font-medium text-[#367cee]"><RiLoader4Line className="h-[18px] w-[18px] animate-spin" /><span>正在加载中...</span></div>
       ) : (
         <div className="flex h-[378px] items-stretch">
-          <div className="w-[128px] shrink-0 space-y-0.5 overflow-y-auto border-r border-[#eee] pr-1.5">
+          <div className="mention-cat-scroll w-[128px] shrink-0 space-y-0.5 overflow-y-auto border-r border-[#eee] pr-1.5">
             {categories.map((cat) => {
               const isActive = cat.value === activeValue;
               const count = Number(counts?.[cat.value] ?? 0);

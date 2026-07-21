@@ -2615,7 +2615,11 @@ function normalizeMediaUrlForMatch(value: string) {
 }
 
 function getAssetIdentityKey(asset: Pick<AssetItem, "id" | "mediaId" | "url">) {
-  return asset.mediaId || normalizeMediaUrlForMatch(asset.url) || asset.id;
+  // 以「归一化 url」为首要身份：同一个媒体文件在客户端可能同时来自
+  // ① 消息里内嵌的引用（只有 url、没有 mediaId）和 ② 资产库懒加载的权威记录（有 mediaId）。
+  // 若按 mediaId 优先去重，这两份 key 不同会漏判成两条 → @引用资产弹窗里同一视频/资产被显示成两个。
+  // url 才是每个文件真正唯一的身份，故 url 优先、缺 url 时再回退 mediaId/id。
+  return normalizeMediaUrlForMatch(asset.url) || asset.mediaId || asset.id;
 }
 
 function messageHasMediaUrl(message: Message, url: string) {
