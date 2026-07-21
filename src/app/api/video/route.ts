@@ -6,7 +6,7 @@ import { createCodedApiError } from "@/lib/error-code";
 import { isTransientServerError } from "@/lib/transient-error";
 import { getBytePlusProviderKey } from "@/lib/byteplus-provider-key";
 import { GENERIC_MEDIA_ERROR_MESSAGE } from "@/lib/error-message";
-import { getUploadRule, validateReferenceImageCount, validateVideoReferenceCombination } from "@/lib/upload-rules";
+import { getUploadRule, validateReferenceImageCount, validateReferenceTotalDuration, validateVideoReferenceCombination } from "@/lib/upload-rules";
 import { enqueueRemoteAssetSave } from "@/lib/media-save-queue";
 import { getMediaSaveStatuses } from "@/lib/media-save-queue";
 import { upsertVideoManifestEntry } from "@/lib/video-manifest";
@@ -713,7 +713,7 @@ export async function POST(request: Request) {
     }
     const creditSource = body.metadata?.creditSource;
     if (body.model && !(creditSource === "agent_video_generation" ? (isAgentVideoModelEnabled(body.model) || isConversationVideoModelEnabled(body.model)) : isConversationVideoModelEnabled(body.model))) return NextResponse.json({ error: "连接不到模型，请联系管理员！" }, { status: 400 });
-    const referenceImages = Array.isArray(body.referenceImages) ? body.referenceImages : [];
+    let referenceImages = Array.isArray(body.referenceImages) ? body.referenceImages : [];
     const referenceVideos = Array.isArray(body.referenceVideos) ? body.referenceVideos.filter((url) => typeof url === "string" && url.trim()) : [];
     const referenceAudios = Array.isArray(body.referenceAudios) ? body.referenceAudios.filter((url) => typeof url === "string" && url.trim()) : [];
     const uploadRuleOverrides = getUploadRuleOverrides();
@@ -730,6 +730,22 @@ export async function POST(request: Request) {
 
     const user = await getCurrentUser();
     await assertUserCanUseCredits(user, "video");
+    // 参考图槽只接受真正的图片资产：@引用/附加时若把音频/视频（尤其历史 .bin 扩展名的音频）漏进了
+    // referenceImages，这里按库里真实 mediaType 剔除，避免当图片发给 BytePlus（content[N].image_url
+    // not an image）。对话流/工作流共用本路由，统一在服务端权威按 kind 归位，不靠文件扩展名猜。
+    if (user?.id && referenceImages.length > 0) {
+      const plainImageUrls = referenceImages.filter((url) => typeof url === "string" && !url.startsWith("asset://") && !url.startsWith("data:"));
+      if (plainImageUrls.length > 0) {
+        const nonImageAssets = await prisma.mediaAsset.findMany({
+          where: { userId: user.id, mediaType: { in: ["video", "audio"] }, normalizedUrl: { in: plainImageUrls.map(normalizeMediaUrlForMatch) } },
+          select: { normalizedUrl: true },
+        });
+        if (nonImageAssets.length > 0) {
+          const nonImageSet = new Set(nonImageAssets.map((asset) => asset.normalizedUrl));
+          referenceImages = referenceImages.filter((url) => typeof url === "string" && (url.startsWith("asset://") || url.startsWith("data:") || !nonImageSet.has(normalizeMediaUrlForMatch(url))));
+        }
+      }
+    }
     // Reference video/audio URLs must be assets owned by this user. Do not trust client-side
     // metadata or arbitrary URLs; persisted upload metadata is the generation authority.
     const validateOwnedReferences = async (urls: string[], kind: "video" | "audio") => {
@@ -745,8 +761,8 @@ export async function POST(request: Request) {
         const ownedAssetCount = await prisma.userAssetState.count({ where: { userId: user.id, deletedAt: null, hiddenAt: null, bytePlusAssetId: { in: assetIds }, mediaAsset: { mediaType: kind, archivedAt: null } } });
         if (ownedAssetCount !== assetIds.length) return `参考${kind === "video" ? "视频" : "音频"}必须来自当前账号已上传的资产`;
       }
-      const total = assets.reduce((sum, asset) => sum + (asset.durationSeconds ?? 0), 0);
-      if (total > 15.05) return `参考${kind === "video" ? "视频" : "音频"}总时长不能超过 15 秒`;
+      const totalDurationError = validateReferenceTotalDuration(kind, assets.map((asset) => asset.durationSeconds));
+      if (totalDurationError) return totalDurationError;
       for (const asset of assets) {
         const error = validateMediaUploadMetadata(kind, { durationSeconds: asset.durationSeconds ?? undefined, width: asset.width ?? undefined, height: asset.height ?? undefined });
         if (error) return error;

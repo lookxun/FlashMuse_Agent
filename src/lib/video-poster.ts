@@ -72,7 +72,7 @@ export async function createUploadedVideoPoster(publicVideoUrl: string) {
  * 读取本地视频的真实宽高（用 ffmpeg 解析流信息，无需 ffprobe）。封面被降采样到 640，不能拿来当尺寸，
  * 所以视频尺寸一律走这里。解析不到返回 undefined。
  */
-export async function getLocalVideoDimensions(publicVideoUrl: string): Promise<{ width: number; height: number } | undefined> {
+export async function getLocalVideoDimensions(publicVideoUrl: string): Promise<{ width: number; height: number; durationSeconds?: number } | undefined> {
   const { default: ffmpegPath } = await import("ffmpeg-static");
   if (!ffmpegPath) return undefined;
   const videoPath = getLocalGeneratedFilePath(publicVideoUrl);
@@ -89,5 +89,10 @@ export async function getLocalVideoDimensions(publicVideoUrl: string): Promise<{
   if (!match) return undefined;
   const width = Number.parseInt(match[1], 10);
   const height = Number.parseInt(match[2], 10);
-  return Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0 ? { width, height } : undefined;
+  if (!(Number.isFinite(width) && Number.isFinite(height) && width > 0 && height > 0)) return undefined;
+  // 同时解析真实时长（精确到 0.1 秒），供参考视频总时长校验用。
+  const durationMatch = stderr.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
+  const durationRaw = durationMatch ? Number(durationMatch[1]) * 3600 + Number(durationMatch[2]) * 60 + Number(durationMatch[3]) : undefined;
+  const durationSeconds = typeof durationRaw === "number" && Number.isFinite(durationRaw) && durationRaw > 0 ? Math.round(durationRaw * 10) / 10 : undefined;
+  return { width, height, durationSeconds };
 }

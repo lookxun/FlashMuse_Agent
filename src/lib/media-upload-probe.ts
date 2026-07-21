@@ -19,7 +19,9 @@ export async function probeUploadedMedia(buffer: Buffer, extension: string, kind
       .then((result) => `${result.stdout}${result.stderr}`)
       .catch((error: { stdout?: string; stderr?: string }) => `${error.stdout ?? ""}${error.stderr ?? ""}`);
     const duration = output.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
-    const durationSeconds = duration ? Number(duration[1]) * 3600 + Number(duration[2]) * 60 + Number(duration[3]) : undefined;
+    const durationRaw = duration ? Number(duration[1]) * 3600 + Number(duration[2]) * 60 + Number(duration[3]) : undefined;
+    // 精确到 0.1 秒：总时长校验按此算，取整会漏拦。
+    const durationSeconds = typeof durationRaw === "number" && Number.isFinite(durationRaw) ? Math.round(durationRaw * 10) / 10 : undefined;
     if (kind === "audio") return { durationSeconds };
     const videoLine = output.split("\n").find((line) => /Stream #.*Video:/.test(line));
     const size = videoLine?.match(/,\s*(\d{2,5})x(\d{2,5})/);

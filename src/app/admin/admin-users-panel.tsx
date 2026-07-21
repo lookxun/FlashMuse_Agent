@@ -46,7 +46,7 @@ export type AdminMediaItem = {
   workflowNodeId?: string;
   type: "image" | "video";
   systemName?: string;
-  assetType?: "character_image" | "scene_image" | "shot_image";
+  assetType?: "character_image" | "scene_image" | "prop_image" | "shot_image";
   isUploadedAsset?: boolean;
   isReversePrompt?: boolean;
   isDeleted?: boolean;
@@ -271,7 +271,7 @@ const MEDIA_DIALOG_PAGE_SIZE = 12;
 export function AdminMediaDialog({ userId, userLabel, mediaType, onClose }: { userId: string; userLabel: string; mediaType: AdminMediaDialogType; onClose: () => void }) {
   useBodyScrollLock(true);
 
-  const [assetFilter, setAssetFilter] = useState<"character_image" | "scene_image" | "shot_image">("character_image");
+  const [assetFilter, setAssetFilter] = useState<"character_image" | "scene_image" | "prop_image" | "shot_image">("character_image");
   const isAssetImage = mediaType === "asset_image";
   const [items, setItems] = useState<AdminMediaItem[]>([]);
   const [total, setTotal] = useState(0);
@@ -326,9 +326,10 @@ export function AdminMediaDialog({ userId, userLabel, mediaType, onClose }: { us
   const activeMedia = items.find((item) => item.id === activeMediaId) ?? items[0];
   const title = `${userLabel}${isAssetImage ? "资产库图片" : mediaType === "all_image" ? "所有生成图片" : mediaType === "all_video" ? "所有生成视频" : mediaType === "workflow_image" ? "工作流图片" : mediaType === "workflow_video" ? "工作流视频" : mediaType === "upload_image" ? "对话流上传图片" : mediaType === "image" ? "对话流图片" : "对话流视频"}`;
   const activeMediaName = activeMedia?.name || activeMedia?.systemName || (activeMedia?.type === "video" ? "视频" : "图片");
-  const assetFilterItems: Array<{ key: "character_image" | "scene_image" | "shot_image"; label: string }> = [
+  const assetFilterItems: Array<{ key: "character_image" | "scene_image" | "prop_image" | "shot_image"; label: string }> = [
     { key: "character_image", label: "角色" },
     { key: "scene_image", label: "场景" },
+    { key: "prop_image", label: "道具" },
     { key: "shot_image", label: "分镜" },
   ];
 

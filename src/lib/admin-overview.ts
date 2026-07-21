@@ -228,7 +228,7 @@ export async function getAdminOverviewData(): Promise<AdminOverviewData> {
       : "对话 / 规划";
     featureMap.set(feature, (featureMap.get(feature) ?? 0) + 1);
     // 对话生成模式（仅对话流，非工作流、非资产、非工具）
-    if (!source.startsWith("workflow_") && source !== "image_prompt_reverse" && source !== "prompt_optimization" && source !== "character_image_generation" && source !== "scene_image_generation" && source !== "shot_image_generation") {
+    if (!source.startsWith("workflow_") && source !== "image_prompt_reverse" && source !== "prompt_optimization" && source !== "character_image_generation" && source !== "scene_image_generation" && source !== "prop_image_generation" && source !== "shot_image_generation") {
       const mode = ledger.kind === "image" ? "图片生成" : ledger.kind === "video" ? "视频生成" : (ledger.label === "Agent 规划" || ledger.requestId?.endsWith(":plan")) ? "Agent 规划" : "普通对话";
       chatModeMap.set(mode, (chatModeMap.get(mode) ?? 0) + 1);
     }

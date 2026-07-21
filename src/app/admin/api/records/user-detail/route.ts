@@ -108,6 +108,7 @@ function getCreditLedgerReason(kind: string, label: string | null, metadata: unk
   const creditSource = getCreditSource(metadata);
   if (creditSource === "character_image_generation") return "资产库_角色图片";
   if (creditSource === "scene_image_generation") return "资产库_场景图片";
+  if (creditSource === "prop_image_generation") return "资产库_道具图片";
   if (creditSource === "shot_image_generation") return "资产库_分镜图片";
   if (creditSource === "image_prompt_reverse") return "图片反推提示词";
   if (creditSource === "prompt_optimization") return "优化提示词";
@@ -238,7 +239,7 @@ function isVideoPosterLikeMedia(url: string, name: string, mediaType: string) {
   return mediaType !== "video" && (/\/video-posters\//.test(normalizeMediaUrlForAdmin(url)) || /^video_/i.test(name));
 }
 
-const MEDIA_ASSET_CATEGORIES = new Set(["character_image", "scene_image", "shot_image"]);
+const MEDIA_ASSET_CATEGORIES = new Set(["character_image", "scene_image", "prop_image", "shot_image"]);
 
 // Single source of truth for which "scope" (bucket) an asset row belongs to. Precedence matches
 // getFastMediaSummary (workflow before asset) so the paginated list length stays consistent with
@@ -279,7 +280,7 @@ function getMediaAssetItems(assetStates: any[], scope: "conversation" | "asset" 
       workflowId: getString(media.workflowId),
       workflowNodeId: getString(media.workflowNodeId),
       type,
-      assetType: isAssetCategory ? category as "character_image" | "scene_image" | "shot_image" : undefined,
+      assetType: isAssetCategory ? category as "character_image" | "scene_image" | "prop_image" | "shot_image" : undefined,
       isDeleted: Boolean(deletedAt),
       deletedAtLabel: deletedAt ? formatDate(deletedAt) : undefined,
       isUploadedAsset,
@@ -376,12 +377,14 @@ function addCategoryItem(map: Map<string, AdminCreditCategoryDetail>, id: string
 function getAssetCategory(source: string) {
   if (source === "character_image_generation") return { id: "character", title: "角色" };
   if (source === "scene_image_generation") return { id: "scene", title: "场景" };
+  if (source === "prop_image_generation") return { id: "prop", title: "道具" };
   return { id: "shot", title: "分镜" };
 }
 
 function getAssetUploadCategory(assetType: string | undefined) {
   if (assetType === "character_image") return { id: "character", title: "角色" };
   if (assetType === "scene_image") return { id: "scene", title: "场景" };
+  if (assetType === "prop_image") return { id: "prop", title: "道具" };
   if (assetType === "shot_image") return { id: "shot", title: "分镜" };
   return undefined;
 }
@@ -398,7 +401,7 @@ const UPLOAD_IMAGE_CATEGORIES = new Set(["conversation_uploads", "workflow_uploa
 const UPLOAD_VIDEO_CATEGORIES = new Set(["conversation_upload_videos", "workflow_upload_videos"]);
 const UPLOAD_AUDIO_CATEGORIES = new Set(["conversation_upload_audios", "workflow_upload_audios"]);
 const UPLOAD_DOCUMENT_CATEGORIES = new Set(["conversation_upload_documents", "conversation_upload_files", "workflow_upload_documents"]);
-const ASSET_UPLOAD_IMAGE_CATEGORIES = new Set(["character_image", "scene_image", "shot_image"]);
+const ASSET_UPLOAD_IMAGE_CATEGORIES = new Set(["character_image", "scene_image", "prop_image", "shot_image"]);
 
 function classifyUploadKind(state: any): "image" | "video" | "audio" | "document" | null {
   const media = state?.mediaAsset;
@@ -450,7 +453,7 @@ function buildUploadRecords(assetStates: any[]): Array<{ id: string; kind: "imag
 
 function getFastMediaSummary(assetStates: any[]) {
   const summary = { conversationImageCount: 0, conversationVideoCount: 0, conversationUploadImageCount: 0, assetImageCount: 0, assetGeneratedImageCount: 0, assetUploadImageCount: 0, workflowImageCount: 0, workflowVideoCount: 0, uploadImageCount: 0, uploadVideoCount: 0, uploadAudioCount: 0, uploadDocumentCount: 0 };
-  const assetCategories = new Set(["character_image", "scene_image", "shot_image"]);
+  const assetCategories = new Set(["character_image", "scene_image", "prop_image", "shot_image"]);
   for (const state of assetStates) {
     const media = state?.mediaAsset;
     if (!media?.url || media.archivedAt || state.hiddenAt) continue;
@@ -505,7 +508,7 @@ function getFastCreditSummary(ledgers: any[], creditsPerCny: number) {
     summary.consumedUsd += item.usd;
     summary.consumedCny += item.cny;
     const source = getCreditSource(item.metadata);
-    if (source === "character_image_generation" || source === "scene_image_generation" || source === "shot_image_generation") summary.assetGenerationConsumedCredits += item.credits;
+    if (source === "character_image_generation" || source === "scene_image_generation" || source === "prop_image_generation" || source === "shot_image_generation") summary.assetGenerationConsumedCredits += item.credits;
     else if (source === "image_prompt_reverse" || source === "prompt_optimization") summary.promptToolConsumedCredits += item.credits;
     else if (source.startsWith("workflow_")) summary.workflowConsumedCredits += item.credits;
     else summary.conversationConsumedCredits += item.credits;
@@ -967,7 +970,7 @@ export async function GET(request: Request) {
       creditLookup.set(normalizeMediaUrlForAdmin(flowItem.url), flowItem);
     }
 
-    if (creditSource === "character_image_generation" || creditSource === "scene_image_generation" || creditSource === "shot_image_generation") {
+    if (creditSource === "character_image_generation" || creditSource === "scene_image_generation" || creditSource === "prop_image_generation" || creditSource === "shot_image_generation") {
       assetGenerationConsumedCredits += item.credits;
       const category = getAssetCategory(creditSource);
       addCategoryItem(assetCategoryDetails, category.id, category.title, flowItem);

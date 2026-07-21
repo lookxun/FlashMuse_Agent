@@ -1,5 +1,81 @@
 # Current Handover Changelog
 
+## 2026-07-21（later，测试服迭代 session：B_232 时长精度 + B_252 音频误入图片槽 + 资产库等待卡刷新恢复 + 预览页参考缩略图从DB读 + 道具风格/印刷品 + 道具生成@名脱钩根治+回填）—— ✅ 全部已部署【测试服 v1.0.0.34】；⚠️ 未 commit/push、正式服仍 v1.0.0.25；`tsc` 通过；**有 1 个新 Prisma 迁移**
+
+**状态**：承接线上 v1.0.0.25（`c19ecca`）。本对话把"上一条 07-21 本地批（道具图片 prop_image + 工作流用量计数修复，之前未部署）" **连同下面这一堆新修复一起迭代部署到了测试服**，版本从 v1.0.0.25 一路升到 **v1.0.0.34**。**正式服仍 v1.0.0.25、GitHub 仍 `c19ecca`、本地代码=v1.0.0.34 未 commit。** 用户明确交代：**下一个 AI 直接部署正式服**（走"先测试服→整份 rsync 同步正式服"铁律，正式服不自增版本、原样带 v1.0.0.34）。
+
+### 铁律提醒（本 session 踩坑）
+- **本地 dev 改 API route/被引入的 lib 后必须删 `.next` 干净重启**，否则单路由跑旧编译产物静默出错（本 session 一开始"起不来"其实是残留 node 占 3000 端口 + 旧 .next；已杀干净 node + 删 .next）。
+- 有一个新 **Prisma 迁移 `20260721000000_media_asset_duration_float`**（`MediaAsset.durationSeconds` Int→Float/DOUBLE PRECISION）。测试服 entrypoint 已 `migrate deploy` 应用（已核验列类型=double precision）。**正式服部署时 entrypoint 会自动 apply，无需手动。**
+
+### 1. 道具生成"风格作用在道具本身"修正（写实=手办不出真人）
+- 现象：资产库道具生成写"美女"用**写实**风格 → 出**真人美女照片**。真因=道具规则里复用了角色的 `styleRule`（"真实摄影感/真实镜头/真实光影"）作用在主体"美女"上 → 真人照。
+- 修：新增 `getPropStyleRuleText`（道具版写实/2D/3D：写实=真实材质质感的实体手办/摆件/雕像产品照，人物形象只能以手办/雕像形式出现）+ `enforceAssetGeneratePropStylePrompt`（道具版前缀）。`getPropGenerationRuleText` 改用道具版。保留三种风格选择，只是作用在"道具实物"上。
+
+### 2. 道具化 propify 扩展：照片/印刷品/影像制品本身就是道具（v1.0.0.29）
+- 需求：写"美女照片"应出一张**印着美女的实体相片**（照片本身就是道具），不该转手办。
+- 修 `getPropGenerationRuleText` 的 propifyRule + 新增 printedException + `getPropPromptOptimizationRuleText`：**照片/相片/拍立得、海报、明信片、卡片、画作/挂画、书刊杂志报纸、传单/说明书/地图/票据/邮票/日历/扑克牌**等平面印刷品/影像制品**本身就是实体道具**，直接生成该实物、其表面可印人物/场景；只有"没有载体的活体主体本身"（单说人/角色/美女/生物）才转手办；场景→微缩模型/沙盘。各分支负向约束从"绝对无人"改为"除道具表面印刷图案外，不得出现脱离实物载体的真人真景"。
+
+### 3. B_232 —— 参考视频总时长精度全平台修复（v1.0.0.26，**含 Prisma 迁移**）
+- **B_232 真因**：Seedance 2.0 融合(r2v)生视频，2 段参考视频（上传的）真实总时长≈15.7s，但库里 `durationSeconds` **向下取整**存的（13+2=15）→ 过了我们 `>15.05` 的判断 → 发给 BytePlus → BytePlus 按精确时长、r2v 上限 **≤15.2s** 拒（`error-message.ts:49` 把上游 InvalidParameter/not valid 归一成"当前模型不支持这组参数"，文案误导）。
+- **全平台修**（对话流/工作流/资产库共用）：
+  - `prisma/schema.prisma` `durationSeconds Int?`→`Float?` + 迁移 `20260721000000_media_asset_duration_float`。
+  - 存精确到 **0.1 秒**（不再 floor）：`media-upload-probe`、`upload-file/route`、`media-assets/route`；`getLocalVideoDimensions`(video-poster) 加解析 Duration，`generation-jobs.finalizeVideoJobAsset` 写 `durationSeconds`（生成视频以前根本没存时长=null）；`media-save-queue` dimensions 类型加 durationSeconds。
+  - 唯一权威校验 `src/lib/upload-rules.ts` 新增 `validateReferenceTotalDuration`/`sumReferenceDurations`/`formatSecondsOneDecimal`：总时长四舍五入到 0.1s **> 15.0 就拦**，文案带实际秒数`当前视频加起来是 15.7 秒，超过视频参考总时长上限 15 秒…`。
+  - 接入三处：服务端 `video/route`（权威，两条流都走它，替换旧的 15.05 整数判断）+ 对话流发送前(`chat-workbench`)+工作流发送前(`workflow-tldraw-canvas-inner`，连线上传节点带精确时长即时拦；@引用库资产客户端无时长→交服务端兜底)。
+
+### 4. B_252 —— 音频(.bin 扩展名)被塞进图片槽发BytePlus（v1.0.0.27）
+- **B_252 真因**：对话流融合生视频，@引用了一个**扩展名是 `.bin` 的音频**（`林野.mp3` 存成 `...-林野.bin`，mediaType=audio）。对话流收集参考素材**按文件扩展名判类型**，`.bin` 认不出音频→兜底当图片→同一音频同时进图片槽+音频槽→图片槽那条发 BytePlus 被拒 `content[3].image_url ... not an image`。属 B_42 同类，当时只修了工作流。
+- 修（两条流一起）：服务端 `video/route`（权威，共用）发送前按库里真实 `mediaType` 把混进 referenceImages 的 video/audio **剔除**（不靠扩展名）；对话流 `chat-workbench` 三处图片引用过滤（`getReferencedAssets`/`getOrderedExplicitImageReferences`/@提及 `mentionedImages`）加 `!isAudioAsset && !isNonDisplayableFileAsset`；工作流本就按 `asset.kind` 路由=双保险。
+
+### 5. 资产库生成"刷新/重登录/服务端重启"恢复统一（v1.0.0.28 + v1.0.0.30）
+- 根因：① `normalizeStoredAssetGenerateJobs` 恢复时把 `generating` 任务**直接判失败**，但服务端 job 仍在跑/扣费/存盘 → 误导重生成、重复扣费。② 更深：`workspace-state` 的 **`assetsOnly` 精简响应不返回 `assetGenerateJobs`** → 资产库 tab 加载 `setAssetGenerateJobs([])` 清空等待卡。
+- 修：① 恢复保留 `generating`；新增 `resumeAssetGenerateJob` + 恢复 effect 按 requestId 续 poll → 出图翻卡+入库，找不到才判失败；`assetGenerateJobPollersRef` 防双 poll。② 服务端 `assetsOnly` 两分支都返回持久化 `assetGenerateJobs`；③ 客户端加载改**合并**（保留内存里仍 generating、响应还没包含的，防"点生成→防抖未落库→切tab/刷新 assetsOnly 重载"覆盖竞态）。
+- 附注：worker 回收卡在 running 的 job 条件 `leaseAt <= NOW()-10min`（`claimImageJobs`），部署重启后约 10 分钟内自动续跑，图不丢。
+
+### 6. 预览页参考缩略图回归 + 真·从数据库读 + @名蓝色根治（v1.0.0.31→32→34）
+- **回归真因**：预览页 `previewPromptReferences`/`previewPromptMediaReferences` 原硬依赖内存会话消息；从资产库打开时会话常没加载→空。而**道具/角色/场景/分镜资产库生成图根本没有对话消息**，参考只权威存在 `GenerationJob`。
+- **真·统一从 DB 读（v32）**：新增 `src/app/api/generation-references/route.ts`（POST `{mediaUrl}`→`getGenerationJobByMediaUrl`+`buildJobReferenceItems`→`{url,name,kind}[]`，与后台弹窗/工作流"使用提示词"同一权威函数）；预览打开资产按 url 拉它，缩略图**优先用 DB 参考**，查不到才回退。
+- **@名不蓝根因（v34 根治）**：查库发现 `asset_12_prop` sourcePrompt `@image_28_d2` 但实际参考图 `image_41_d2`（两张不同图）；`asset_14_prop` `@image_15_d2` vs `image_25_d2`。即**生成时"提示词@名"与"实际挂的参考图"脱钩**。真因=资产库生成把"@名文字"和"参考图缩略图草稿"当两份独立状态，提交参考取自草稿、sourcePrompt 存文字，而改文字时不同步草稿（对话流有 `getMentionedAssets` 重算，资产库缺）。
+  - **治本**：① 新增实时 effect：文字删 @名时同步剪掉对应草稿缩略图（"没@名=没缩略图"）。② 提交 `generateCharacterImage` 以"文字@名为唯一真源"构造参考图（按@名匹配草稿）、去掉悬空@名、同步可见输入框。从此 sourcePrompt 每个@名与实际参考图一一对应，预览@名天然变蓝。撤掉 v33 无效上色 band-aid。
+  - **回填历史坏数据**：`backfill-prompt-mentions.js`（在 `C:\Users\ASUS\AppData\Local\Temp\opencode\`）扫资产库生成图，把 sourcePrompt 里对不上的@名按 job 实际 referenceNames 改正（仅 1:1 才改、否则跳过）。**测试服 DB 已回填 2 张**，4 张本就一致、0 跳过。**⚠️ 正式服 DB 还没回填，下一个 AI 部署正式服时要在正式服 DB 同样跑一遍。**
+
+### 下一个 AI 待办（用户要求：直接部署正式服）
+1. **整份对齐部署正式服**：`sudo rsync -a --delete --exclude node_modules --exclude .next --exclude tmp --exclude '*.log' --exclude .git --exclude .env.local --exclude .runtime /opt/flashmuse-staging/app/ /opt/flashmuse/app/` → `cd /opt/flashmuse && nohup sudo docker compose up -d --build flashmuse-app`（entrypoint 自动 apply 新迁移）→ docker cp `.next/static` + rsync 到阿里**正式**镜像 `/var/www/flashmuse-static/_next/static/`（不是 test）→ 四域名 200。正式服**原样带 v1.0.0.34、不自增版本**。
+2. **正式服 DB 回填**：`docker cp backfill.js flashmuse-flashmuse-app-1:/app/backfill.js` → `docker exec -w /app flashmuse-flashmuse-app-1 node backfill.js`（脚本自带 1:1 才改的安全逻辑）。
+3. **commit + push GitHub**：本对话全部源码 + handover + **更早那批未 commit 的道具图片 prop_image + 工作流用量计数修复**（一起 commit）。改动文件清单：`prisma/schema.prisma`+`prisma/migrations/20260721000000_media_asset_duration_float/`、`src/lib/{upload-rules,media-upload-probe,video-poster,generation-jobs,media-save-queue,app-version}.ts`、`src/app/api/{video,upload-file,media-assets,workspace-state,generation-references,image}/route.ts`、`src/app/admin/*`（道具批）、`src/components/chat-workbench.tsx`、`src/components/workflow-tldraw-canvas-inner.tsx` 等（以 `git status` 为准）。
+4. 正式服抽验：道具三档比例/写实出手办/"美女照片"出实体相片；融合生视频参考视频>15s 弹"当前视频加起来是XX.X秒…"；@引用 .bin 音频不再报 not an image；资产库生成刷新等待卡续跑；预览页图/视频/音频缩略图 + @名蓝色（含回填两张）。
+5. 操作记忆：腾讯 ssh `ssh -i "C:\Users\ASUS\AppData\Local\Temp\opencode\CinematicFlow.pem" ubuntu@119.28.116.16`（docker 加 sudo）；测试服容器 `flashmuse-staging-staging-{app,db}-1`、正式服 `flashmuse-flashmuse-{app,db}-1`（psql -U flashmuse -d flashmuse）；PowerShell ssh 内联含中文/引号/`$()` 会坏→用 base64 传或写 .sql/.js scp+docker cp；改中文源码只用 edit/write 禁 Set-Content；node 一次性脚本放进 `/app` 里跑（`docker exec -w /app`）才找得到 `@prisma/client`。
+
+## 2026-07-21（本地开发 session：工作流用量视频计数虚高修复 + 资产库新增"道具图片"整套类目）—— ⚠️ 全部仅本地，未 build/部署/commit/push，`npx tsc --noEmit` 通过，无 Prisma 迁移
+
+**状态**：全部改动**只在本地**（承接线上 v1.0.0.25，正式服=测试服=GitHub 仍 `c19ecca`）。`tsc` 通过。未部署、未提交。用户在本地 dev 测试。**下一个 AI：本批未上线，需用户验收后再走"测试服→正式服"部署铁律。**
+
+### 1. 工作流右上角用量面板"视频计数虚高"修复（`chat-workbench.tsx`、`workflow-tldraw-canvas-inner.tsx`）
+- **现象**：测试服工作流_01 用量面板显示 🎞视频=6，但实际只生成过 2 个视频（画布 2 个"视频生成"节点；DB `GenerationJob` 工作流视频 succeeded=2）。图片=0 正确（画布上的图是上传的，不算生成）。
+- **真因**：累计计数 `canvas.generatedMediaCounts` 靠 `addWorkflowGeneratedAssets`(`:11914` 附近)累加，而"是否新增"用**外层 stale 的 `assets` 闭包**去重。视频成功回调被多个收尾路径（前台轮询/reconcile/resume 双收尾）几乎同时触发，都读到同一份还没更新的 `assets` → 同一 URL 每次都通过去重、各 +1（2 个视频×约3次回调=6）。累计只增不减 → 永久虚高、刷新不改。
+- **修法**：① `WorkflowCanvasState` 新增持久化字段 `countedGeneratedUrls?: string[]`（随 canvasJson 存/读回，`mergeWorkflowCanvasMedia` 的 `{...incomingCanvas}` 天然保留；`updateWorkflowCanvas` 编辑器 onChange 处同 `generatedMediaCounts` 一样显式保留）。② 把"是否新增"的去重判断**挪进 `setWorkflowItems` 函数式更新里**，基于这个持久集合判断——并发回调串行进同一更新、看到彼此结果，同一 URL 只计一次。③ 旧数据（无 `countedGeneratedUrls`）累计基数按**当前真实节点重新播种**（忽略被旧 bug 污染的历史值），面板对旧数据直接用实时 `getWorkflowMediaCounts` 显示 → 立即自愈成真实值。新增辅助 `getWorkflowGeneratedMediaUrls`。
+- **影响面**：只动工作流媒体计数；对话流 `UsageSummaryButton`/`getSessionMediaCounts` 未碰；无后端改动、无迁移。
+
+### 2. 资产库第 1 组新增"道具图片"类目（`prop_image`，与角色/场景/分镜同组同款，位置=场景后分镜前）
+- **需求**：生成里第 1 组（资产库自身生成：角色/场景/分镜）加第 4 个"道具图片"，功能一模一样，但生成的是**白底道具 / 多角度道具**。图标 `RiBellLine`（最初用 basketball，后按用户要求改铃铛）。
+- **牵连排查结论（三类共用点，道具全部跟上）**：BytePlus 端点键三类共用 `asset-image` 前缀 → `byteplus-provider-key.ts` 加 `prop_image_generation` 即可，**无需新端点/不动 system-settings**；计价只按模型+分辨率、不分类目 → 自动同价；@引用/从资产库导入/参考图三处类目列表、后台统计/用户明细/积分记录、命名、归类/过滤/计数、移动分类/恢复全部要加 prop。`currentCategory`/`creditSource` 均 text 列 → **无 Prisma 迁移**。
+- **改动文件（约 10 个）**：
+  - 前端 `chat-workbench.tsx`：`AssetType`/`UploadableImageAssetType`/`AssetGenerationImageType`/`UserCreditSource` 加 `prop_image`/`prop_image_generation`；`assetTypeLabels`/`assetTypeOrder`/`assetGenerationTypes`(顺序=角色/场景/**道具**/分镜，驱动侧栏第1组顺序)/`assetUploadTypes`/`mentionAssetTypes`/`assetTypeIcons`/`assetCategoryTargetLabels`/`assetCategoryTargetIcons`/`mentionAssetTypeLabels`/`mentionGroupToAssetCountKey`/`ASSET_IMPORT_CATEGORIES`(@引用/导入弹窗自动继承) 全加道具；命名 `ASSET_GENERATION_NAME_PATTERN` 正则+后缀 `prop`、`getAssetBaseName`(单张"道具"/多角度"道具多角度")；意图识别加"道具"关键词；生成弹窗 `isPropGeneration`、标题/占位/图标/比例label/drafts/refs/ratio 初值、ruleText/优化词/creditSource/prompt标签、`onOpenPropGenerate` 处理器+面板 props；渲染网格、生成按钮、`isAssetInFilter`、`getAssetCountFilter`、`canReviewBytePlusAsset`(道具**不显示**送审按钮，跟场景一致，因无人物)。
+  - 前端 `workflow-tldraw-canvas-inner.tsx`：`WorkflowCanvasState`(见上第1条)；`WORKFLOW_MENTION_CATEGORIES` 加道具。
+  - 后端：`byteplus-provider-key.ts`(端点前缀集合)、`generation-jobs.ts`(命名后缀/`isAssetImageCreditSource`/`assetKind`)、`media-asset-record.ts`(`AssetGenerationKind` 加 `"prop"` + classifyAsset→`prop_image`)、`image/route.ts`、`analytics-events.ts`、`admin-overview.ts`、`admin/api/records/user-detail/route.ts`(标签/集合/cast 多处)、`credits/me/route.ts`(类型/文案/计数聚合)、`workspace-state/route.ts`(过滤/计数/类型校验 8 处)、`media-assets/route.ts`(类目校验/sourceKind/librarySource)、`openrouter.ts`(`AssetTargetType`)。
+- **比例档**：道具 3 档 **单道具9:16(single) / 多角度16:9(three-view) / 四宫格1:1(grid-square)**。新增 `AssetGenerateRatio` 值 `"grid-square"`（→显示比例 `1:1`）。四宫格与多角度是**同样四个面**（正/45侧/纯侧/背），只是排布：多角度=横排、四宫格=2×2。改了 `characterGenerateDisplayRatio`(grid-square→1:1)、比例菜单、比例label、job.ratio 白名单、prop 提示词规则的 grid-square 分支。
+- **⭐ 道具化转换方法（propify，写进 `getPropGenerationRuleText` + `getPropPromptOptimizationRuleText`）**：本功能只产出"实体道具/物件"，绝不产出真人/真实角色/真实场景。用户提示词若是**人/角色/生物/美女**→转成该形象的**手办/人偶/雕像/收藏摆件模型**（"美女"→美女角色手办摆件）；**场景/环境/地点**→该场景的**微缩立体模型/沙盘/桌面摆件**；**分镜/镜头/剧情**→提取其中最具代表性的实体物品做道具，取不到就做相关实体摆件；本身是道具→直接生成。最终永远是纯白背景上单个可拿在手里的实体物件。优化提示词按钮也内置同一改写。
+
+### 3. 本地 DB 修数据（仅本地库 `flashmuse-postgres`）
+- 用户本地测试时生成的 10 张道具图（`asset_1_prop`~`asset_10_prop`）被误落成 `conversation_images`（**原因=本地 dev `.next` 没清干净、`/api/media-assets` 路由跑旧编译，`currentCategoryFromBody` 不认 `prop_image` → 兜底 conversation_images；代码本身是对的**）。已手动 UPDATE 回 `currentCategory=prop_image` + `sourceKind=asset_generation_image` + `workspaceKind=asset_generation`。
+- **已替用户删除本地 `.next` 文件夹**，让其干净重启 dev（`npm run dev` + 浏览器 Ctrl+Shift+R 硬刷）。
+
+### 下一个 AI 待办
+1. 用户干净重启 dev + 硬刷后本地验收：道具生成三档比例出图正确、"生成美女"出手办/摆件（propify 生效）、刷新后道具落 `prop_image` 不丢、@引用/导入/后台统计含道具。
+2. 验收 OK 后走部署铁律：先测试服(bump 版本号)→验证→整份同步正式服。无 Prisma 迁移。commit+push。
+3. 若干净重启+硬刷后仍落 conversation_images 或仍出真人（非 stale），才是真 bug，再查。
+
 ## 2026-07-20 收尾：v1.0.0.25 整份对齐部署正式服（+测试服）+ ✅ 已 push GitHub（四方同步 `c19ecca`）
 
 用户拍板"同步到正式服"+"推一次 GitHub"。**四方同步：正式服 = 测试服 = 本地 = GitHub = `v1.0.0.25` / commit `c19ecca`。** 工作树干净。

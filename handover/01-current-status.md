@@ -1,6 +1,29 @@
 # Current Status
 
-## ⭐⭐ 最新（2026-07-20 收尾）：v1.0.0.25 已整份对齐部署【正式服】+ 测试服 + ✅ 已 push GitHub（四方同步 `c19ecca`）
+## ⭐⭐ 最新（2026-07-21 later 测试服迭代 session）：B_232/B_252 + 资产库等待卡恢复 + 预览缩略图从DB读 + 道具风格/印刷品 + 道具@名脱钩根治+回填 —— ✅ 已到【测试服 v1.0.0.34】；⚠️ 正式服仍 v1.0.0.25、GitHub 仍 c19ecca、本地未 commit；**有 1 个新 Prisma 迁移**
+
+**承接线上 v1.0.0.25（`c19ecca`）。本对话把上一条 07-21 本地批（道具图片 prop_image + 工作流用量计数修复）连同一堆新修复一起部署到测试服，v1.0.0.25→v1.0.0.34。详见 CHANGELOG 顶条为权威。** 用户明确交代：**下一个 AI 直接部署正式服**（先测试服→整份 rsync 同步正式服，正式服不自增版本、原样带 v1.0.0.34）。速记：
+1. **道具生成风格修正**：写实/2D/3D 作用在"道具实物"上（写实=手办/摆件产品照，不出真人）；`getPropStyleRuleText`/`enforceAssetGeneratePropStylePrompt`。
+2. **道具 propify 扩展**：照片/海报/画作/书刊等印刷品·影像制品本身就是道具（表面可印人物/场景），只有无载体的活体主体才转手办。
+3. **B_232 参考视频总时长精度全平台修**：`durationSeconds` Int→Float（迁移 `20260721000000_media_asset_duration_float`）+ 存精确 0.1s（probe/upload-file/media-assets/生成视频 finalize）+ 唯一校验 `validateReferenceTotalDuration`（>15.0 拦、文案带 XX.X 秒）+ 三处接入（video/route 权威 + 对话流/工作流发送前）。
+4. **B_252 音频(.bin)误入图片槽修**：服务端 video/route 按真实 mediaType 剔除混进图片槽的音视频（两流共用）+ 对话流三处图片引用过滤加 `!isAudioAsset && !isNonDisplayableFileAsset`。
+5. **资产库生成刷新/重启恢复统一**：恢复保留 generating + `resumeAssetGenerateJob` 续 poll；`assetsOnly` 响应返回 `assetGenerateJobs` + 客户端合并（修等待卡刷新消失）。
+6. **预览页参考缩略图**：新增 `/api/generation-references`（按 mediaUrl 从 GenerationJob 权威读图/视频/音频参考）；@名蓝色靠"@名==真实参考名"，靠**根治资产库生成@名与参考图脱钩**（实时剪草稿 + 提交按@名为唯一真源）+ **回填历史坏数据**（测试服已回填 asset_12/14_prop，正式服待回填）。
+
+## ⭐⭐ 最新（2026-07-21 本地 session）：工作流用量视频计数修复 + 资产库新增"道具图片"整套 —— ⚠️ 全部仅本地，未部署/未 commit，`tsc` 过，无 Prisma 迁移
+
+**承接线上 v1.0.0.25（`c19ecca`，正式服=测试服=GitHub 未动）。本对话所有改动只在本地。** 详见 CHANGELOG 顶条为权威。速记：
+
+1. **工作流右上角用量面板"视频计数虚高"修复**：真因=`addWorkflowGeneratedAssets` 累计 `generatedMediaCounts` 用外层 stale `assets` 闭包去重，并发双收尾重复 +1（2 视频→显示 6）。修=`WorkflowCanvasState` 加持久化 `countedGeneratedUrls`、去重挪进 `setWorkflowItems` 函数式更新、旧数据按真实节点重播种自愈。只动工作流计数，无后端改动。
+
+2. **资产库第 1 组新增"道具图片"（`prop_image`）**，与角色/场景/分镜同组同款、位置在场景后分镜前，图标 `RiBellLine`。三档比例：单道具9:16 / 多角度16:9 / **四宫格1:1**（新增 `AssetGenerateRatio="grid-square"`，四宫格=多角度同四面的 2×2 排布）。改了约 10 个前后端文件（类型/映射/图标/命名/归类/过滤/计数/@引用/导入/后台统计/端点前缀），`currentCategory`/`creditSource` 均 text → **无 Prisma 迁移**。
+   - **⭐ 道具化转换（propify）**：本功能只产实体道具，用户若输入人/角色/生物→转手办/人偶/雕像摆件；场景→微缩模型/沙盘摆件；分镜/剧情→代表性实体物品；本身是道具→直接生成。写进 `getPropGenerationRuleText`/`getPropPromptOptimizationRuleText`。道具无人物 → `canReviewBytePlusAsset` 不显示真人送审按钮（同场景）。
+
+3. **本地 DB 修数据**：10 张道具图曾因本地 dev `.next` 未清（`/api/media-assets` 跑旧编译把 `prop_image` 兜底成 `conversation_images`，**代码本身正确**）误分类，已 UPDATE 回 `prop_image`+asset sourceKind/workspaceKind。**已替用户删除本地 `.next`**，待其干净重启 dev + 浏览器硬刷（Ctrl+Shift+R）再验收。
+
+**下一个 AI**：用户干净重启验收（道具三档出图、"生成美女"出手办、刷新落 prop_image 不丢、@引用/导入/后台含道具）→ OK 后走"测试服 bump→正式服整份同步"部署铁律 + commit+push。若干净重启+硬刷后仍落 conversation_images 或仍出真人，才是真 bug。
+
+## （上一线上态，2026-07-20 收尾）：v1.0.0.25 已整份对齐部署【正式服】+ 测试服 + ✅ 已 push GitHub（四方同步 `c19ecca`）
 
 - **四方状态**：正式服 = 测试服 = 本地 = GitHub = **v1.0.0.25** / commit `c19ecca`，工作树干净。正式服由测试服 `/app` 原样 rsync 而来（不 bump、版本号带过去），四域名 main/api/ali/static 全 200，无 Prisma 迁移。备份 `/opt/flashmuse/app-backups/20260721-023921-presync-v25`。
 - **本次上线内容（v20→v25 积压，均在测试服验过）**：① 测试服 HTTPS 域名相关（env，正式服本就走 https）；② gpt-5.4-image-2 参考图失败分流（瞬时错误不切 base64/安全拒绝秒失败）；③ 视频音视频参考组合校验三处统一（`upload-rules.ts`）；④ 使用提示词只读自己那份引用包 + 媒体由累加改整体替换；⑤ **工作流断线漏删@名→死循环卡死输入框修复**（自愈 effect + @名有效性=有缩略图 `validReferenceNames`=visibleUploads + 去掉读整库/转圈 + `loadMentionAssetFilters` missingFilters 兜底）；⑥ **B_42 修复**（工作流 @引用的视频/音频被当参考图发 BytePlus → 按 asset.kind 路由）。

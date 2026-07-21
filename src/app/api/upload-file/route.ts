@@ -162,7 +162,8 @@ export async function POST(request: Request) {
       const width = typeof dimensions?.width === "number" ? Math.floor(dimensions.width) : undefined;
       const height = typeof dimensions?.height === "number" ? Math.floor(dimensions.height) : undefined;
       const normalizedUrl = normalizeMediaAssetUrl(url);
-      const normalizedDuration = typeof durationSeconds === "number" && Number.isFinite(durationSeconds) ? Math.max(0, Math.floor(durationSeconds)) : undefined;
+      // 保留 0.1 秒精度（不再向下取整）：参考视频/音频总时长校验按精确值算，取整会漏拦（BytePlus r2v 约 15 秒上限）。
+      const normalizedDuration = typeof durationSeconds === "number" && Number.isFinite(durationSeconds) ? Math.max(0, Math.round(durationSeconds * 10) / 10) : undefined;
       // 命名与写入放进同一个持锁事务，服务端权威定名（去扩展名 + 全局唯一），杜绝并发撞名。
       resolvedName = await withUploadNameLock(userId, async (tx) => {
         const resolved = await resolveUploadNameInTx(tx, { userId, originalFileName: name, contentHash });

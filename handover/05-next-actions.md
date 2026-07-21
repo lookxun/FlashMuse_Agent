@@ -1,6 +1,45 @@
 # Next Actions
 
-## ⭐⭐ 最新 END-OF-SESSION（2026-07-20 收尾：v1.0.0.25 已部署正式服+测试服 + push GitHub）—— 先读这条
+## ⭐⭐ 最新 END-OF-SESSION（2026-07-21 later 测试服迭代）—— 先读这条：用户要求【下一个 AI 直接部署正式服】
+
+**状态**：测试服 = **v1.0.0.34**；正式服仍 **v1.0.0.25**（`c19ecca`）；GitHub 仍 `c19ecca`；本地代码 = v1.0.0.34 **未 commit**。`tsc` 通过。**有 1 个新 Prisma 迁移 `20260721000000_media_asset_duration_float`**（durationSeconds Int→Float，测试服已 apply）。本 session 全部工作详见 CHANGELOG 顶条（B_232 时长精度 / B_252 音频误入图片槽 / 资产库等待卡恢复 / 预览缩略图从DB读 / 道具风格·印刷品 / 道具@名脱钩根治+回填）。
+
+**下一个 AI 必做（按序）**：
+1. **整份对齐部署正式服**（铁律）：`sudo rsync -a --delete --exclude node_modules --exclude .next --exclude tmp --exclude '*.log' --exclude .git --exclude .env.local --exclude .runtime /opt/flashmuse-staging/app/ /opt/flashmuse/app/` → `cd /opt/flashmuse && nohup sudo docker compose up -d --build flashmuse-app`（entrypoint 自动 apply 新迁移）→ 同步 `.next/static` 到阿里**正式**镜像 `/var/www/flashmuse-static/_next/static/`（`bash /tmp/syncali.sh` 或正式同步脚本，**不是** test 那个）→ 四域名(main/api/ali/static) 200。正式服**原样带 v1.0.0.34、绝不自增版本**。
+2. **正式服 DB 回填历史坏数据**（sourcePrompt @名脱钩）：把 `C:\Users\ASUS\AppData\Local\Temp\opencode\backfill-prompt-mentions.js` scp 上去 → `docker cp` 进 **正式 app 容器 `flashmuse-flashmuse-app-1`** 的 `/app/backfill.js` → `sudo docker exec -w /app flashmuse-flashmuse-app-1 node backfill.js`（脚本自带"仅 1:1 才改、否则跳过"的安全逻辑；若临时目录已清，可按 CHANGELOG 描述重写）。
+3. **commit + push GitHub**：本对话全部源码 + handover + **更早那批未 commit 的道具图片 prop_image + 工作流用量计数修复**（都在工作树里，一起 commit，以 `git status` 为准）。
+4. **正式服抽验**：道具三档比例 / 写实出手办 / "美女照片"出实体相片；融合生视频参考视频总时长>15s 弹"当前视频加起来是 XX.X 秒…"；@引用 .bin 音频不再报 not an image；资产库生成刷新等待卡续跑；预览页图/视频/音频缩略图 + @名蓝色（含回填的 asset_12/14_prop）。
+5. **测试服账号**（模拟真实用户，见 03）：`12424740@qq.com`/`dragonstar`（ID_535317）。
+6. 非紧急历史待办不变：对话流"最多4张"改原生 n（暂缓）、清理旧 mention 死常量、M018/M019、复查 GenerationEvent"服务器繁忙"。
+
+**关键操作记忆**：腾讯 ssh `ssh -i "C:\Users\ASUS\AppData\Local\Temp\opencode\CinematicFlow.pem" ubuntu@119.28.116.16`（docker 加 sudo）；测试服容器 `flashmuse-staging-staging-{app,db}-1`、正式服 `flashmuse-flashmuse-{app,db}-1`（`psql -U flashmuse -d flashmuse`）；PowerShell 里 ssh 内联含中文/引号/`$()` 会被解析坏 → 用 `[Convert]::ToBase64String(...)` 传或写 .sql/.js scp+`docker cp`+`psql -f`/`node`；改中文源码只用 edit/write 工具、禁 Set-Content；node 一次性脚本必须放进容器 `/app` 里跑（`docker exec -w /app ...`）才找得到 `@prisma/client`。测试服部署=本地 `node scripts/bump-version.mjs`→打改动源码 tgz→scp→`sudo tar -xzf -C /opt/flashmuse-staging/app`→`nohup docker compose up -d --build staging-app`（后台轮询）→`sudo bash /opt/flashmuse-staging/sync-ali-test.sh`。
+
+---
+
+## ⭐⭐ END-OF-SESSION（2026-07-21 本地 session：工作流用量计数修复 + 资产库"道具图片"）—— （已随上面测试服迭代一起上测试服）
+
+**状态**：承接线上 v1.0.0.25（`c19ecca` 未动）。本对话所有改动**只在本地**，`npx tsc --noEmit` 通过，无 Prisma 迁移。用户在本地 dev 测试中。详见 CHANGELOG / 01-current-status 顶条。
+
+**本 session 做完**：
+1. 工作流用量面板视频计数虚高修复（`countedGeneratedUrls` 持久去重 + 函数式更新内判断 + 旧数据自愈）。
+2. 资产库新增"道具图片"`prop_image`（第1组场景后分镜前，图标 `RiBellLine`，三档比例含新增 `grid-square` 四宫格1:1，propify 道具化转换）。约 10 个前后端文件，无迁移。
+3. 本地 DB：10 张误分类道具图已修回 `prop_image`；已删本地 `.next` 供干净重启。
+
+**下一个 AI / 用户 待办**：
+1. **用户干净重启 dev（已替删 `.next`）+ 浏览器 Ctrl+Shift+R 硬刷**，本地验收：
+   - 道具生成三档比例（单道具9:16/多角度16:9/四宫格1:1）出图正确；四宫格=四面 2×2。
+   - "生成美女"等非道具提示词 → 出**手办/摆件**（propify 生效），不是真人四面。
+   - 刷新后道具图仍在"道具图片"tab（落 `prop_image` 不丢）。
+   - @引用资产/从资产库导入/后台用户明细统计都含道具类目。
+2. 验收 OK → 走部署铁律：**测试服 `node scripts/bump-version.mjs` → 部署验证 → 整份同步正式服**（无 Prisma 迁移）→ commit+push GitHub（本批含工作流计数修复 + 道具全套）。
+3. **若干净重启 + 硬刷后仍落 `conversation_images` 或仍出真人**（排除 stale 后），才是真 bug，再查 `/api/media-assets` 写入路径与客户端 POST 时序 / propify 提示词是否真进了 `/api/image`。
+4. 非紧急历史待办（对话流"最多4张"改原生 n、清理旧 mention 死常量、M018/M019、复查 GenerationEvent"服务器繁忙"）不变。
+
+**关键记忆（本 session 踩坑）**：本地 dev 改了 API route / 被其引入的 lib 后，**必须删 `.next` 干净重启**，否则单个路由模块跑旧编译产物会静默把 `prop_image` 兜底成 `conversation_images`（症状：名字带 `prop` 后缀对、但分类落 conversation）。本地库=docker `flashmuse-postgres`，`DATABASE_URL` 见根目录 `.env`；一次性 SQL 写 .sql → `docker cp` → `psql -f`。
+
+---
+
+## ⭐⭐ END-OF-SESSION（2026-07-20 收尾：v1.0.0.25 已部署正式服+测试服 + push GitHub）
 
 **状态**：正式服 = 测试服 = 本地 = GitHub = **v1.0.0.25** / `c19ecca`，四域名 200，无 Prisma 迁移，工作树干净。**四方已同步，无遗留待推/待部署。** 详见 CHANGELOG / 01 顶条（含本对话全部工作的完整记忆）。
 

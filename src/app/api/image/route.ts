@@ -58,7 +58,7 @@ function pickRequestedImages(images: string[], dimensions: Record<string, { widt
 }
 
 function isAssetImageCreditSource(source: string | undefined) {
-  return source === "character_image_generation" || source === "scene_image_generation" || source === "shot_image_generation";
+  return source === "character_image_generation" || source === "scene_image_generation" || source === "prop_image_generation" || source === "shot_image_generation";
 }
 
 function isAgentImageCreditSource(source: string | undefined) {

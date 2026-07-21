@@ -29,7 +29,7 @@ export type AssetFlow = "conversation" | "workflow" | "asset";
 /** 媒体类型 */
 export type AssetMediaType = "image" | "video" | "audio" | "document";
 /** 资产库生成图的种类 */
-export type AssetGenerationKind = "character" | "scene" | "shot";
+export type AssetGenerationKind = "character" | "scene" | "prop" | "shot";
 
 /** classifyAsset 的输出：归类三件套 */
 export interface AssetClassification {
@@ -56,7 +56,7 @@ export function classifyAsset(input: {
   if (origin === "generated") {
     if (flow === "asset") {
       const kind = input.assetKind ?? "character";
-      const initialCategory = kind === "scene" ? "scene_image" : kind === "shot" ? "shot_image" : "character_image";
+      const initialCategory = kind === "scene" ? "scene_image" : kind === "prop" ? "prop_image" : kind === "shot" ? "shot_image" : "character_image";
       return { promptSource: "generated", sourceKind: "asset_generation_image", initialCategory };
     }
     if (flow === "workflow") {

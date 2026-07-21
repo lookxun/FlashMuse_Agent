@@ -19,11 +19,11 @@ function mediaTypeFromUrl(url: string) {
 }
 
 function currentCategoryFromBody(value: unknown) {
-  return typeof value === "string" && ["character_image", "scene_image", "shot_image", "conversation_images", "conversation_uploads", "conversation_videos", "conversation_upload_videos", "conversation_upload_audios", "conversation_upload_documents", "conversation_upload_files", "workflow_images", "workflow_uploads", "workflow_videos", "workflow_upload_images", "workflow_upload_videos", "workflow_upload_audios", "workflow_upload_documents"].includes(value) ? value : "conversation_images";
+  return typeof value === "string" && ["character_image", "scene_image", "prop_image", "shot_image", "conversation_images", "conversation_uploads", "conversation_videos", "conversation_upload_videos", "conversation_upload_audios", "conversation_upload_documents", "conversation_upload_files", "workflow_images", "workflow_uploads", "workflow_videos", "workflow_upload_images", "workflow_upload_videos", "workflow_upload_audios", "workflow_upload_documents"].includes(value) ? value : "conversation_images";
 }
 
 function sourceKindFromCategory(category: string, mediaType: string, promptSource: string | undefined) {
-  if (category === "character_image" || category === "scene_image" || category === "shot_image") return mediaType === "video" ? "asset_generation_video" : promptSource === "upload" ? "asset_upload_image" : "asset_generation_image";
+  if (category === "character_image" || category === "scene_image" || category === "prop_image" || category === "shot_image") return mediaType === "video" ? "asset_generation_video" : promptSource === "upload" ? "asset_upload_image" : "asset_generation_image";
   if (category.startsWith("workflow_")) return category.includes("upload") ? "workflow_upload" : "workflow_generation";
   if (category === "conversation_upload_videos") return "conversation_upload_video";
   if (category === "conversation_upload_audios") return "conversation_upload_audio";
@@ -35,7 +35,7 @@ function sourceKindFromCategory(category: string, mediaType: string, promptSourc
 
 function workspaceKindFromInput(category: string, body: Record<string, unknown>) {
   if (typeof body.workflowId === "string" || category.startsWith("workflow_")) return "workflow";
-  if (category === "character_image" || category === "scene_image" || category === "shot_image") return "asset_generation";
+  if (category === "character_image" || category === "scene_image" || category === "prop_image" || category === "shot_image") return "asset_generation";
   return "conversation";
 }
 
@@ -65,7 +65,7 @@ function dbDateToMs(value: Date | null | undefined) {
 
 function mediaCategoryToLegacyType(category: string, mediaType: string) {
   if (category === "workflow_videos" || mediaType === "video") return "shot_video";
-  if (category === "character_image" || category === "scene_image" || category === "shot_image") return category;
+  if (category === "character_image" || category === "scene_image" || category === "prop_image" || category === "shot_image") return category;
   if (category === "trash") return "trash";
   return "other";
 }
@@ -224,7 +224,7 @@ export async function POST(request: Request) {
   const dimensions = isRecord(body.dimensions) ? body.dimensions : undefined;
   const width = typeof dimensions?.width === "number" ? Math.floor(dimensions.width) : undefined;
   const height = typeof dimensions?.height === "number" ? Math.floor(dimensions.height) : undefined;
-  const durationSeconds = typeof body.durationSeconds === "number" && Number.isFinite(body.durationSeconds) && body.durationSeconds > 0 ? body.durationSeconds : undefined;
+  const durationSeconds = typeof body.durationSeconds === "number" && Number.isFinite(body.durationSeconds) && body.durationSeconds > 0 ? Math.round(body.durationSeconds * 10) / 10 : undefined;
   const settings = isRecord(body.settings) ? body.settings : undefined;
   const settingsJson = settings as Prisma.InputJsonValue | undefined;
   const previewMetaJson = (isRecord(body.previewMeta) ? body.previewMeta : undefined) as Prisma.InputJsonValue | undefined;
@@ -346,7 +346,7 @@ export async function POST(request: Request) {
 
 function stateCategoryFromBody(value: unknown, mediaUrl: string) {
   if (value === "conversation_image") return /\/generated\/(?:users\/[^/]+\/)?upload_image\//.test(mediaUrl) ? "conversation_uploads" : "conversation_images";
-  return typeof value === "string" && ["character_image", "scene_image", "shot_image", "conversation_images", "conversation_uploads", "conversation_videos", "conversation_upload_videos", "conversation_upload_audios", "conversation_upload_documents", "conversation_upload_files", "workflow_images", "workflow_uploads", "workflow_videos", "workflow_upload_images", "workflow_upload_videos", "workflow_upload_audios", "workflow_upload_documents"].includes(value) ? value : undefined;
+  return typeof value === "string" && ["character_image", "scene_image", "prop_image", "shot_image", "conversation_images", "conversation_uploads", "conversation_videos", "conversation_upload_videos", "conversation_upload_audios", "conversation_upload_documents", "conversation_upload_files", "workflow_images", "workflow_uploads", "workflow_videos", "workflow_upload_images", "workflow_upload_videos", "workflow_upload_audios", "workflow_upload_documents"].includes(value) ? value : undefined;
 }
 
 export async function PATCH(request: Request) {

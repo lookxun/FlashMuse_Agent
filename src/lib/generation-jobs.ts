@@ -75,7 +75,7 @@ function jsonParam(value: unknown): string | null {
 }
 
 function assetNameSuffix(source: string | null | undefined) {
-  return source === "scene_image_generation" ? "scene" : source === "shot_image_generation" ? "storyboard" : "role";
+  return source === "scene_image_generation" ? "scene" : source === "prop_image_generation" ? "prop" : source === "shot_image_generation" ? "storyboard" : "role";
 }
 
 async function reserveJobNames(tx: Prisma.TransactionClient, input: { userId: string; kind: GenerationJobKind; count: number; flow?: string; workflowId?: string; conversationId?: string; conversationCode?: string; creditSource?: string }) {
@@ -377,7 +377,7 @@ export async function getActiveGenerationJobs(userId: string, sinceMs = 6 * 60 *
 // ---- image helpers (mirrors src/app/api/image/route.ts, kept in sync) ----
 
 function isAssetImageCreditSource(source: string | null | undefined) {
-  return source === "character_image_generation" || source === "scene_image_generation" || source === "shot_image_generation";
+  return source === "character_image_generation" || source === "scene_image_generation" || source === "prop_image_generation" || source === "shot_image_generation";
 }
 
 function isSameImageDimensions(a: { width: number; height: number } | undefined, b: { width: number; height: number } | undefined) {
@@ -556,7 +556,7 @@ async function finalizeImageJobAsset(job: GenerationJobRow, images: string[], di
   const sourcePrompt = (job.extraJson?.cleanPrompt as string | undefined) || job.prompt || undefined;
   const settings = job.settingsJson ?? undefined;
   const flow = isAsset ? "asset" : isWorkflow ? "workflow" : "conversation";
-  const assetKind: AssetGenerationKind | undefined = isAsset ? (job.creditSource === "scene_image_generation" ? "scene" : job.creditSource === "shot_image_generation" ? "shot" : "character") : undefined;
+  const assetKind: AssetGenerationKind | undefined = isAsset ? (job.creditSource === "scene_image_generation" ? "scene" : job.creditSource === "prop_image_generation" ? "prop" : job.creditSource === "shot_image_generation" ? "shot" : "character") : undefined;
   const initialCategory = classifyAsset({ origin: "generated", flow, mediaType: "image", assetKind }).initialCategory;
 
   await prisma.$transaction(async (tx) => {
@@ -733,7 +733,7 @@ export async function claimImageJobs(limit = 3): Promise<GenerationJobRow[]> {
   `;
 }
 
-async function finalizeVideoJobAsset(job: GenerationJobRow, videoUrl: string, posterUrl?: string, dimensions?: { width: number; height: number }) {
+async function finalizeVideoJobAsset(job: GenerationJobRow, videoUrl: string, posterUrl?: string, dimensions?: { width: number; height: number; durationSeconds?: number }) {
   const isWorkflow = job.flow === "workflow" && Boolean(job.workflowId);
   const sourcePrompt = (job.extraJson?.cleanPrompt as string | undefined) || job.prompt || undefined;
   const settings = job.settingsJson ?? undefined;
@@ -752,7 +752,7 @@ async function finalizeVideoJobAsset(job: GenerationJobRow, videoUrl: string, po
         posterUrl, thumbnailUrl: posterUrl, name, sourcePrompt,
         model: job.model ?? undefined, ratio: settings?.ratio, resolution: settings?.resolution, videoDuration: settings?.duration,
         generationSettings: (settings ?? undefined) as Prisma.InputJsonValue | undefined,
-        width: dimensions?.width, height: dimensions?.height,
+        width: dimensions?.width, height: dimensions?.height, durationSeconds: dimensions?.durationSeconds,
         conversationId: job.conversationId ?? undefined, messageId: job.messageId ?? undefined,
         workflowId: job.workflowId ?? undefined, workflowNodeId: job.workflowNodeId ?? undefined,
         requestId: job.requestId,
@@ -769,6 +769,7 @@ async function finalizeVideoJobAsset(job: GenerationJobRow, videoUrl: string, po
         generationSettings: (settings ?? undefined) as Prisma.InputJsonValue | undefined,
         width: dimensions?.width ?? undefined,
         height: dimensions?.height ?? undefined,
+        durationSeconds: dimensions?.durationSeconds ?? undefined,
         requestId: job.requestId ?? undefined,
       },
       select: { id: true },

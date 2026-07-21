@@ -238,6 +238,29 @@ export function validateVideoReferenceCombination(input: {
   return undefined;
 }
 
+// 参考视频/音频"总时长"的唯一权威校验（对话流客户端 / 工作流客户端 / 服务端共用同一份）。
+// 平台（BytePlus r2v）规定所有参考视频/音频总时长约 15 秒；这里按精确到 0.1 秒求和，
+// 四舍五入后 > 15.0 秒即拦，文案带上实际总秒数（保留 1 位小数），因为用户在界面上看不到小数。
+export const REFERENCE_TOTAL_SECONDS_LIMIT = 15;
+
+export function formatSecondsOneDecimal(seconds: number): string {
+  return (Math.round((Number.isFinite(seconds) ? seconds : 0) * 10) / 10).toFixed(1);
+}
+
+export function sumReferenceDurations(durations: Array<number | null | undefined>): number {
+  const total = durations.reduce<number>((sum, value) => sum + (typeof value === "number" && Number.isFinite(value) ? value : 0), 0);
+  return Math.round(total * 10) / 10;
+}
+
+export function validateReferenceTotalDuration(kind: "video" | "audio", durations: Array<number | null | undefined>): string | undefined {
+  const total = sumReferenceDurations(durations);
+  if (total > REFERENCE_TOTAL_SECONDS_LIMIT) {
+    const label = kind === "video" ? "视频" : "音频";
+    return `当前${label}加起来是 ${formatSecondsOneDecimal(total)} 秒，超过${label}参考总时长上限 ${REFERENCE_TOTAL_SECONDS_LIMIT} 秒，请减少数量或更换更短的${label}`;
+  }
+  return undefined;
+}
+
 // 上传/附加视频·音频被拒时的统一文案：
 // - Seedance 首帧/首尾帧模式（非融合）→「只有融合模式才支持上传视频和音频」。
 // - 其它（非视频模型/非 Seedance 等本就不支持）→「当前模型不支持上传视频或音频」。
