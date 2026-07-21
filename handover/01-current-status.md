@@ -1,6 +1,18 @@
 # Current Status
 
-## ⭐⭐ 最新（2026-07-21 later 测试服迭代 session）：B_232/B_252 + 资产库等待卡恢复 + 预览缩略图从DB读 + 道具风格/印刷品 + 道具@名脱钩根治+回填 —— ✅ 已到【测试服 v1.0.0.34】；⚠️ 正式服仍 v1.0.0.25、GitHub 仍 c19ecca、本地未 commit；**有 1 个新 Prisma 迁移**
+## ⭐⭐ 最新（2026-07-21 部署 session）：部署正式服 v1.0.0.34 + @引用资产弹窗左侧滚动条常驻 + 修@引用资产同一视频/资产显示成两个 —— ✅ 四方同步【正式服=测试服=本地=GitHub v1.0.0.36 / `dd37a78`】，四域名 200，无遗留
+
+**本对话把上一 session 的 v1.0.0.34 部署上正式服，又做了两个 @引用资产弹窗改动并再次部署到 v1.0.0.36。详见 CHANGELOG 顶条为权威。** 速记：
+
+1. **部署正式服 v1.0.0.34**：备份 → rsync staging→prod → build（entrypoint 自动 apply 迁移 `20260721000000_media_asset_duration_float`，核验 `durationSeconds`=double precision）→ 同步阿里正式镜像 → 四域名 200。正式服 DB 跑 `backfill-prompt-mentions.js`（fixed0/ok84/skip3，本就基本干净）。commit `8986fe1..5bb0fc2`。
+2. **@引用资产弹窗左侧"滚动条常驻"（v35）**：共享组件 `asset-mention-picker.tsx` 左侧分类列表加 `mention-cat-scroll` + `<style>`（`overflow-y-auto` + `scrollbar-width:thin` + `::-webkit-scrollbar` 非叠加式）。溢出时常显可下拉、无溢出不显示、不加高弹窗（378px）。对话流/资产库生成/工作流三处共用=全覆盖。
+3. **修@引用资产同一视频/资产显示成两个（v36）**：根因=`getAssetIdentityKey`(`chat-workbench.tsx:2617`) 原 `mediaId||url||id`（mediaId 优先），同一文件"消息内嵌引用(无 mediaId,key=url)"与"资产库权威记录(有 mediaId,key=mediaId)"两份 key 不同 → 懒加载合并时漏判成两条。**改成 `归一化url||mediaId||id`（url 优先）**，url 是文件唯一身份 → 两份必合并（且用带 posterUrl 的权威版覆盖）。三处 @引用资产共用同一 `assets`+此函数=一处改全覆盖所有分类。用测试号 12424740 浏览器复现+验证通过（上传视频恢复 2 条、上传图片首屏 30 无重复）。
+4. **部署正式服 v1.0.0.36**：备份 `/opt/flashmuse/app-backups/20260721-201737-presync-v36` → rsync→build→同步阿里→四域名 200、公网 v1.0.0.36。commit+push `5bb0fc2..dd37a78`（3 文件）。**无 Prisma 迁移。**
+
+**测试账号（明文，见 03）**：`12424740@qq.com`/`dragonstar`（主测试号 ID_535317，模拟真实用户优先用它）；`lookxun@163.com`/`dragonstar`（白名单）。
+**下一个 AI**：无遗留待推/待部署。非紧急历史待办见 05 顶条（对话流"最多4张"改原生 n、清理旧 mention 死常量、M018/M019、复查 GenerationEvent"服务器繁忙"）。
+
+## （上一线上态，2026-07-21 later 测试服迭代 session）：B_232/B_252 + 资产库等待卡恢复 + 预览缩略图从DB读 + 道具风格/印刷品 + 道具@名脱钩根治+回填 —— 已部署【测试服 v1.0.0.34】（现已随本对话上正式服）
 
 **承接线上 v1.0.0.25（`c19ecca`）。本对话把上一条 07-21 本地批（道具图片 prop_image + 工作流用量计数修复）连同一堆新修复一起部署到测试服，v1.0.0.25→v1.0.0.34。详见 CHANGELOG 顶条为权威。** 用户明确交代：**下一个 AI 直接部署正式服**（先测试服→整份 rsync 同步正式服，正式服不自增版本、原样带 v1.0.0.34）。速记：
 1. **道具生成风格修正**：写实/2D/3D 作用在"道具实物"上（写实=手办/摆件产品照，不出真人）；`getPropStyleRuleText`/`enforceAssetGeneratePropStylePrompt`。
