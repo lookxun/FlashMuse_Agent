@@ -2,7 +2,17 @@
 
 > 本批交接文档 2026-07-21 重建。更早的详细流水在 `historical-handover-docs-last-used-2026-07-21/`（尤其 `CHANGELOG.md` 580KB、`01-current-status.md`、`05-next-actions.md`）。遇到需要历史上下文的难题再翻归档。
 
-## 当前状态（2026-07-26 更新）
+## 当前状态（2026-07-27 更新）
+
+- ⭐ **四方同步**：正式服 = 测试服 = 本地 = GitHub = **`v1.0.0.43`**（commit `58b38eb`）。四域名 main/api/ali/static 全 200。**无待部署、无未推、无未应用迁移**（entrypoint "No pending migrations"）。
+- **本对话（2026-07-27）做的**（本地 tsc 全绿，详见 CHANGELOG 2026-07-27）：
+  1. **视频"卡下载→僵尸任务"根治**：`saveRemoteAsset` 下载加 3min 超时、ffmpeg 加 60s 超时、`media-save-queue` 锁(inFlight)改成假死可自愈(8min)+stale 阈值 30min→8min。根因=跨境下载 fetch 无超时假死、锁只在 finally 释放→回收/过期全被挡死→job 永远 running。
+  2. **恢复乐观显示**（用户最初设计）：视频出结果先用远程地址展示（角标"资产保存中..."），后台下本地后无感替换成本地("✓保存成功"2s 后渐隐)。资产库仍只写本地 url+全参数、零改动。对话流+工作流统一；OpenRouter 需密钥视频不预览；只做视频。
+  3. **工作流生成动画**：侧栏工作流历史条目 + "工作流模式"入口在有节点 `isRunning` 时显示 `HaloPulseIndicator`（对齐对话流/资产库）。
+- ⭐ 正式服有一条历史僵尸 video job（ID_686996 / requestId `d049d7ad...`）按用户交代**未清**（先改问题）。以后可手动标 failed。
+- ⭐ 用户习惯：**叫你测试才测试**，不要每次自动开 Playwright。
+
+### 此前状态（2026-07-26）
 
 - ⭐ **四方同步**：正式服 = 测试服 = 本地 = GitHub = **`v1.0.0.41`**。四域名 main/api/ali/static.venusface.com 全 200，公网正式服 = v1.0.0.41。**无待部署、无未推**（本对话结束时）。无新增 Prisma 迁移（正式服 entrypoint 报 "No pending migrations"）。
 - **本对话（2026-07-26）做的**（本地 tsc 全绿，详见 CHANGELOG 2026-07-26）：

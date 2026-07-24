@@ -2,6 +2,26 @@
 
 > 本批 CHANGELOG 从 2026-07-21 交接文档重建开始记。**此前的全部历史流水**（约 580KB，含 2026-06 起到 07-21 每一次改动/部署细节）在 `historical-handover-docs-last-used-2026-07-21/CHANGELOG.md`，遇到需要历史上下文的难题再翻。
 
+## 2026-07-27（视频卡下载僵尸根治 + 恢复乐观显示 + 工作流生成动画）—— ✅ 已整份部署正式服 `v1.0.0.43` + push GitHub。四方同步（正式=测试=本地=GitHub=v1.0.0.43），四域名 200，无 Prisma 迁移
+
+**起因**：用户报 ID_686996（`312876953@qq.com`）一条 seedance-2-0 视频生了 40 多分钟才显示失败、无错误码。查正式服 DB+诊断日志定位：火山其实 5 分钟就出片（远程 volces mp4），但**本地下载 `saveRemoteAsset` 的 fetch 没超时、跨境下载假死**（只有 `media-save-download-start attempt=1`、之后无 saved/failed/expired），`processMediaSaveJob` 的 `inFlight` 锁又只在 `finally` 释放→假死永不释放→卡死回收(30min stale)/24h 过期判失败全被这把锁挡死→job 永远 running=僵尸；前端自己超时显示"失败"但后端从没判失败（所以无错误码）。
+
+**① 可靠性层（根治僵尸）**
+- `local-assets.ts saveRemoteAsset`：加 `REMOTE_DOWNLOAD_TIMEOUT_MS=3min` AbortController，覆盖 fetch/arrayBuffer/curl 兜底（curl 加 `--max-time`）；到点 abort→抛错→上层按失败重试。
+- `video-poster.ts`：封面(×2)/尺寸探测 ffmpeg 各加 `timeout:60_000`。
+- `media-save-queue.ts`：`STALE_DOWNLOADING_MS` 30min→8min；`inFlight` 从 `Set` 改 `Map<id,上锁时刻>`，持锁超 8min 视为假死可强夺重跑；`enqueueRemoteAssetSave` 也会踢"downloading 超 8min"的假死任务（原来它只踢 pending/failed，回收逻辑等于没人调）。→ 四层防线：3min 下载超时 / 60s ffmpeg / 8min 锁自愈 / 24h 远程过期。
+
+**② 恢复乐观显示（用户最初设计，07-08/07-14 为修资产库 bug 时被改成"必须先下本地才交付"，牺牲了展示速度）**
+- `generation-jobs.ts runVideoJob`：拿到"浏览器可直接播"的远程地址（非 OpenRouter 需密钥）就写 `extraJson.preview.videoUrl`（写一次），job 保持 running；本地存好才转 succeeded、写资产库（**只本地 url、带全参数，零改动**）。
+- 对话流 `chat-workbench.tsx`：Message 加 `videoPreviewUrls`(展示专用，不进 videos/资产库)+`videoSavedFlashAt`；`applyVideoPreviewToMessage`（幂等、无变化返回原 state 防 effect 死循环）；reconcile + createAndPollVideo 见 running+preview 即展示；成功 append 本地时撤一条 preview+打 flash；`InlineVideoResult` 左上角"转圈+资产保存中..."/成功"✓保存成功"(2s 后 1s 渐隐)。
+- 工作流 `workflow-tldraw-canvas-inner.tsx`：node.data 加 `videoPreviewUrl`/`videoSavedFlashAt`；pollVideoNode/applyVideoNodeJobResult 同理；`WorkflowVideoSaveBadge` 同款角标；预览阶段 `WorkflowInlineVideo` 跳过 onGeneratedMedia（远程绝不进库）。
+- OpenRouter 需密钥视频：不做预览、保持等本地（按用户定）。只做视频、图片维持现状。
+
+**③ 工作流生成动画（对齐对话流/资产库）**
+- `chat-workbench.tsx` 侧栏：工作流历史条目（收起弹窗+展开两处）在 `node.data.isRunning` 时右侧显示 `HaloPulseIndicator`（盖住⋯菜单）；"工作流模式"入口在 `activePanel!=="workflow" && hasAnyWorkflowGenerating` 时右侧显示动画（与对话/资产入口对称）。数据经 `updateWorkflowCanvas` 实时同步进 `workflowItems`。
+
+**部署**：本地 tsc 全绿→测试服 v42→v43 验证→整份 rsync 测试服→正式服（备份 `20260725044123-presync-v43`）→重建（No pending migrations）→同步阿里正式镜像→四域名 200→PUBLISHED_APP_VERSION v41→v43 force-recreate→commit `58b38eb` push。**那条正式服僵尸 job（requestId `d049d7ad...`）按用户交代未清。**
+
 ## 2026-07-26（工作流重试秒跳失败卡根治 + gpt版安全改写 + 橡皮防双击 + 新版本提示条整套 + 提示条右侧居中 + 工作流菜单空白关闭）—— ✅ 已整份部署正式服 `v1.0.0.41` + push GitHub。四方同步（正式=测试=本地=GitHub=v1.0.0.41）
 
 **背景**：接上一批（07-22~25 编辑菜单批，仍未部署，基线 v1.0.0.36）。本对话先修 bug + 加功能，分多次部署测试服（v37→v41），最后用户拍板整份部署正式服 + push。全程 `npx tsc --noEmit` 全绿，无 Prisma 迁移。
