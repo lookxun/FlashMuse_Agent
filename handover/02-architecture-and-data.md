@@ -21,6 +21,8 @@
 - 生成由服务端 `GenerationJob` worker 唯一权威 finalize 出生；provider 临时 URL 可先给前端显示提速，但**绝不能存进 `MediaAsset.url`**。
 - 后台存盘（`.runtime/media-save-jobs.json` 跟踪）；存好后前端轮询 `/api/media-save-status` 把临时 URL 换成本地 `/generated/...`。
 - **图片存盘不丢改造**（`runImageJob`）：本地没存好就把交付快照重排队等到存好再落库（扣费幂等、只 finalize 扣一次），不再回退远程 url → 国内跨境慢也不丢库。
+- ⭐ **视频交付 = 乐观显示 + 只本地落库（2026-07-27）**：`runVideoJob` 火山出片后把**可直接播的远程地址**（非 OpenRouter 需密钥）写进 `GenerationJob.extraJson.preview.videoUrl`（写一次）、job 保持 `running`；`/api/generation-status` 透传 `extra` 给前端。前端见 running+preview 就**先用远程地址展示**（对话流 `Message.videoPreviewUrls` 展示专用/不进 videos·资产库；工作流 `node.data.videoPreviewUrl`），左上角"资产保存中..."角标；本地存好后 job 转 succeeded、前端换成本地 url、角标变"✓保存成功"(2s 后 1s 渐隐；`videoSavedFlashAt`)。**资产库永远只写本地 url + 全参数**。⚠️ 已知：存盘快的视频（seedance-mini）"保存中"窗口短，会被前端 30s 慢轮询跳过而直接显示"保存成功"（见 05-next-actions 遗留项）。
+- ⭐ **下载/存盘四层防假死（2026-07-27，`saveRemoteAsset`/`media-save-queue.ts`/`video-poster.ts`）**：① `REMOTE_DOWNLOAD_TIMEOUT_MS=3min` 单次下载超时（AbortController，含 curl 兜底 `--max-time`）；② ffmpeg 封面/探测 `timeout:60_000`；③ `inFlight` 改 `Map<id,上锁时刻>`，持锁超 `STALE_DOWNLOADING_MS`(8min) 视为假死可强夺重跑，`enqueueRemoteAssetSave` 也会踢 stale 的 downloading；④ 远程 24h 过期判失败。根治了"跨境下载 fetch 无超时假死→锁永不释放→job 永远 running=僵尸（前端超时显示失败但无错误码）"。
 - **断线重连**（`src/lib/transient-error.ts` `isTransientServerError`）：网络/超时/5xx/平台临时/限流=可恢复重试；真人/版权/参数/审核拒绝=永久不重试。图片任务退避重排队、视频创建重试、BytePlus 建素材重试。
 - 生成参数与真实媒体属性分开：`ratio`(如16:9)是生成设置；真实像素在 `imageDimensions`/`videoDimensions`/`width/height`；视频真实时长 `durationSeconds`(Float)，请求时长 `videoDuration`(如8秒)。
 
