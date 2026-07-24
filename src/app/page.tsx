@@ -663,7 +663,7 @@ export default function Home() {
       </footer>
 
       {isLoginOpen ? (
-        <div className="fixed inset-0 z-50 overscroll-contain bg-black/18" onMouseDown={closeLoginPanel}>
+        <div className="fixed inset-0 z-[11000] overscroll-contain bg-black/18" onMouseDown={closeLoginPanel}>
           <aside
             className="absolute right-0 top-0 h-full bg-white text-[#111111] shadow-[-28px_0_80px_rgba(0,0,0,0.2)]"
             style={{ width: "min(33.333vw, 560px)", minWidth: 420, animation: "home-login-slide-in 0.22s ease-out" }}

@@ -492,7 +492,7 @@ export function AdminRecordsPanel({ summaries }: { summaries: AdminRecordSummary
       {promptToolUser ? <CreditCategoryDialog title="反推/优化提示词消耗积分详细" user={promptToolUser} categories={promptToolUser.promptToolCreditDetails} onClose={() => setPromptToolUser(null)} /> : null}
       {generatedListDialog ? <CreditCategoryDialog title="生成列表" user={generatedListDialog.user} categories={generatedListDialog.categories} initialCategoryId={generatedListDialog.initialCategoryId} showPromptCopyColumn onClose={() => setGeneratedListDialog(null)} /> : null}
       {uploadDialog ? <CreditCategoryDialog title="上传记录" user={uploadDialog.user} categories={uploadDialog.categories} initialCategoryId={uploadDialog.initialCategoryId} showPromptCopyColumn onClose={() => setUploadDialog(null)} /> : null}
-      {loadingDialogTitle ? <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/42 px-8 py-8 backdrop-blur-[4px]"><div className="w-[360px] rounded-[12px] bg-white shadow-[0_24px_80px_rgba(0,0,0,0.22)]"><AdminDetailLoading label={loadingDialogTitle} /></div></div> : null}
+      {loadingDialogTitle ? <div className="fixed inset-0 z-[11000] flex items-center justify-center bg-black/42 px-8 py-8 backdrop-blur-[4px]"><div className="w-[360px] rounded-[12px] bg-white shadow-[0_24px_80px_rgba(0,0,0,0.22)]"><AdminDetailLoading label={loadingDialogTitle} /></div></div> : null}
     </>
   );
 }

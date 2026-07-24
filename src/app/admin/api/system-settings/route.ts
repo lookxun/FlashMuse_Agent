@@ -26,6 +26,7 @@ export async function POST(request: Request) {
   const bytePlusRegion = body.bytePlusRegion === "eu-west-1" ? "eu-west-1" : body.bytePlusRegion === "ap-southeast-1" ? "ap-southeast-1" : current.bytePlusRegion;
   const modelProviderPreferences = body.modelProviderPreferences && typeof body.modelProviderPreferences === "object" && !Array.isArray(body.modelProviderPreferences) ? body.modelProviderPreferences as Record<string, "openrouter" | "byteplus"> : current.modelProviderPreferences;
   const bytePlusModelSelections = body.bytePlusModelSelections && typeof body.bytePlusModelSelections === "object" && !Array.isArray(body.bytePlusModelSelections) ? body.bytePlusModelSelections as Record<string, string> : current.bytePlusModelSelections;
+  const editModelToggles = body.editModelToggles && typeof body.editModelToggles === "object" && !Array.isArray(body.editModelToggles) ? { ...current.editModelToggles, ...body.editModelToggles as Record<string, boolean> } : current.editModelToggles;
   const imageCompressionEnabled = typeof body.imageCompressionEnabled === "boolean" ? body.imageCompressionEnabled : current.imageCompressionEnabled;
   const imageCompressionQuality = isCompressionQuality(body.imageCompressionQuality) ? body.imageCompressionQuality : current.imageCompressionQuality;
   const videoCompressionEnabled = typeof body.videoCompressionEnabled === "boolean" ? body.videoCompressionEnabled : current.videoCompressionEnabled;
@@ -33,6 +34,6 @@ export async function POST(request: Request) {
   if (openRouterApiKeyEnabled && !openRouterApiKey) return NextResponse.json({ error: "请输入 OpenRouter API Key" }, { status: 400 });
   if (bytePlusApiKeyEnabled && !bytePlusApiKey) return NextResponse.json({ error: "请输入 BytePlus API Key" }, { status: 400 });
 
-  const settings = await updateAdminSystemSettings({ openRouterApiKey, openRouterApiKeyEnabled, bytePlusApiKey, bytePlusApiKeyEnabled, bytePlusUnlockLimits, bytePlusRegion, modelProviderPreferences, bytePlusModelSelections, imageCompressionEnabled, imageCompressionQuality, videoCompressionEnabled, videoCompressionQuality });
+  const settings = await updateAdminSystemSettings({ openRouterApiKey, openRouterApiKeyEnabled, bytePlusApiKey, bytePlusApiKeyEnabled, bytePlusUnlockLimits, bytePlusRegion, modelProviderPreferences, bytePlusModelSelections, editModelToggles, imageCompressionEnabled, imageCompressionQuality, videoCompressionEnabled, videoCompressionQuality });
   return NextResponse.json({ settings });
 }

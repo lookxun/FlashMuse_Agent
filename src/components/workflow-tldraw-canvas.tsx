@@ -37,6 +37,7 @@ type WorkflowCanvasProps = {
   enabledImageModelIds?: string[];
   enabledVideoModelIds?: string[];
   uploadRuleOverrides?: UploadRuleOverrides;
+  editModelToggles?: Record<string, boolean>;
   leftSidebarVisible?: boolean;
   onToggleLeftSidebar?: () => void;
   workflowAssets?: Array<{ id: string; name: string; url: string; posterUrl?: string; kind: "image" | "video"; nodeId?: string; sourcePrompt?: string; ratio?: string; resolution?: string; duration?: string; dimensions?: { width: number; height: number } }>;

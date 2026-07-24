@@ -2,9 +2,23 @@
 
 > 本批交接文档 2026-07-21 重建。更早的详细流水在 `historical-handover-docs-last-used-2026-07-21/`（尤其 `CHANGELOG.md` 580KB、`01-current-status.md`、`05-next-actions.md`）。遇到需要历史上下文的难题再翻归档。
 
-## 当前状态（2026-07-21）
+## 当前状态（2026-07-26 更新）
 
-- **四方同步**：正式服 = 测试服 = 本地 = GitHub = **`v1.0.0.36`**（源码 commit `dd37a78`，之后有 handover 文档 commit）。四域名 200，工作树干净，**无待部署、无未推**。
+- ⭐ **四方同步**：正式服 = 测试服 = 本地 = GitHub = **`v1.0.0.41`**。四域名 main/api/ali/static.venusface.com 全 200，公网正式服 = v1.0.0.41。**无待部署、无未推**（本对话结束时）。无新增 Prisma 迁移（正式服 entrypoint 报 "No pending migrations"）。
+- **本对话（2026-07-26）做的**（本地 tsc 全绿，详见 CHANGELOG 2026-07-26）：
+  1. 工作流图片/视频节点「重试成功却秒跳失败卡→多次重试多图覆盖」根治（失败分支按 requestId 忽略旧任务）。
+  2. gpt版 gpt5.4image2 版权红字也能进「AI改写重试」安全改写页（判定改用 `isGptImage2Model||isGptImage2AgentModel`）。
+  3. 橡皮工具「立即使用」防双击（点一次同步上锁+关弹窗）。
+  4. **新版本提示条整套**（`middleware.ts` 发 `x-app-version` 头 + `version-update-notifier.tsx` 搭便车检测；`PUBLISHED_APP_VERSION` env 门控保证"弹出=静态就绪=刷新不白屏"）。
+  5. 提示条只在右侧内容区居中（动态量 sidebar 宽）。
+  6. 用户信息菜单工作流里点任意空白也能关（捕获阶段监听绕过 tldraw 吞事件）。
+- ⭐ **同时首次把 07-22~25 编辑菜单整套推上正式服**（去背景/橡皮/多模型候选链/下载/后台编辑开关；新依赖 `@imgly/background-removal-node` + `scripts/remove-background-worker.mjs`，正式服 docker build 已装）。
+- ⭐ **新增部署环节记忆**：测试服 + 正式服 compose 都已加 `PUBLISHED_APP_VERSION: ""` 环境变量；每次部署最后一步（静态同步后）要 sed 改成新版 + `force-recreate`（详见 `03-deploy-and-servers.md`）。**版本号自增仍只在部署测试服跑 bump，正式服原样带号**。
+- ⭐ 用户习惯：**叫你测试才测试**，不要每次自动开 Playwright。
+
+### 此前状态（2026-07-21）
+
+- **四方同步**：正式服 = 测试服 = 本地基线 = GitHub = **`v1.0.0.36`**（源码 commit `dd37a78`）。四域名 200，**无待部署、无未推**（在本批本地开发之前）。
 - 最近一个 Prisma 迁移是 `20260721000000_media_asset_duration_float`（`MediaAsset.durationSeconds` Int→Float/double precision），已在正式服+测试服 apply。当前无未应用迁移。
 - 主服务器=腾讯云新加坡，阿里=国内入口/镜像。测试账号见 `03-deploy-and-servers.md`。
 

@@ -219,7 +219,7 @@ export function AdminHistoryDialog({ user, onClose }: { user: AdminUserRow; onCl
   const displayName = user.nickname || user.email;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center overscroll-contain bg-black/42 px-8 py-8 backdrop-blur-[4px]">
+    <div className="fixed inset-0 z-[11000] flex items-center justify-center overscroll-contain bg-black/42 px-8 py-8 backdrop-blur-[4px]">
       <div className="flex h-[min(820px,calc(100vh-64px))] w-[min(1180px,calc(100vw-64px))] flex-col overflow-hidden rounded-[10px] bg-white shadow-[0_24px_80px_rgba(0,0,0,0.22)]">
         <header className="relative flex h-[60px] shrink-0 items-center border-b border-[#eeeeee] px-6 pr-14">
           <div className="truncate text-[14px] font-semibold text-[#111111]">{displayName}历史对话</div>
@@ -334,7 +334,7 @@ export function AdminMediaDialog({ userId, userLabel, mediaType, onClose }: { us
   ];
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center overscroll-contain bg-black/42 px-8 py-8 backdrop-blur-[4px]">
+    <div className="fixed inset-0 z-[11000] flex items-center justify-center overscroll-contain bg-black/42 px-8 py-8 backdrop-blur-[4px]">
       <div className="flex h-[min(820px,calc(100vh-64px))] w-[min(1180px,calc(100vw-64px))] flex-col overflow-hidden rounded-[10px] bg-white shadow-[0_24px_80px_rgba(0,0,0,0.22)]">
         <header className="relative flex h-[60px] shrink-0 items-center border-b border-[#eeeeee] px-6 pr-14">
           <div className="truncate text-[14px] font-semibold text-[#111111]">{title}</div>
@@ -991,7 +991,7 @@ export function AdminUsersPanel({ users, stats }: { users: AdminUserRow[]; stats
 
       {historyUser ? <AdminHistoryDialog user={historyUser} onClose={() => setHistoryUser(null)} /> : null}
       {mediaDialog ? <AdminMediaDialog userId={mediaDialog.userId} userLabel={mediaDialog.userLabel} mediaType={mediaDialog.mediaType} onClose={() => setMediaDialog(null)} /> : null}
-      {loadingDialogTitle ? <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/42 px-8 py-8 backdrop-blur-[4px]"><div className="w-[360px] rounded-[12px] bg-white shadow-[0_24px_80px_rgba(0,0,0,0.22)]"><AdminDetailLoading label={loadingDialogTitle} /></div></div> : null}
+      {loadingDialogTitle ? <div className="fixed inset-0 z-[11000] flex items-center justify-center bg-black/42 px-8 py-8 backdrop-blur-[4px]"><div className="w-[360px] rounded-[12px] bg-white shadow-[0_24px_80px_rgba(0,0,0,0.22)]"><AdminDetailLoading label={loadingDialogTitle} /></div></div> : null}
     </>
   );
 }

@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import Script from "next/script";
 import { GlobalScrollbarController } from "@/components/global-scrollbar-controller";
+import { VersionUpdateNotifier } from "@/components/version-update-notifier";
 import { IS_TEST_SERVER } from "@/lib/app-version";
 import "tldraw/tldraw.css";
 import "./globals.css";
@@ -63,7 +64,7 @@ window.addEventListener('unhandledrejection', function (event) {
   } catch (_) {}
 });`}</Script>
       </head>
-      <body className="min-h-full flex flex-col"><GlobalScrollbarController />{children}</body>
+      <body className="min-h-full flex flex-col"><GlobalScrollbarController /><VersionUpdateNotifier />{children}</body>
     </html>
   );
 }

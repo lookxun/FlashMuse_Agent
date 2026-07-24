@@ -88,15 +88,15 @@ const CHINA_MODEL_PREFIXES = [
 ];
 const MODELS_PER_PROVIDER = 3;
 
-async function saveImageForDisplay(source: string, meta: { requestId?: string; model?: string; userId?: string } = {}) {
+async function saveImageForDisplay(source: string, meta: { requestId?: string; model?: string; userId?: string; transparent?: boolean } = {}) {
   if (/^https?:\/\//i.test(source)) {
     void appendGenerationDiagnosticsLog({ event: "media-save-remote-image-queued-from-provider", requestId: meta.requestId, userId: meta.userId, mode: "image", model: meta.model, references: [summarizeGeneratedReference(source, 0)] });
-    void enqueueRemoteAssetSave({ remoteUrl: source, type: "image", requestId: meta.requestId, model: meta.model, userId: meta.userId });
+    void enqueueRemoteAssetSave({ remoteUrl: source, type: "image", requestId: meta.requestId, model: meta.model, userId: meta.userId, keepTransparent: meta.transparent });
     return source;
   }
 
   const startedAt = Date.now();
-  const localUrl = await saveGeneratedAsset(source, "image", undefined, { userId: meta.userId });
+  const localUrl = await saveGeneratedAsset(source, "image", undefined, { userId: meta.userId, keepTransparent: meta.transparent });
   const thumbnailUrl = await createGeneratedImageThumbnail(localUrl).catch((error) => {
     console.warn("[media-save] inline image thumbnail create failed", { requestId: meta.requestId, model: meta.model, localUrl, error: error instanceof Error ? error.message : String(error) });
     return undefined;
@@ -1100,6 +1100,9 @@ type ImageGenerationOptions = {
   candidateMode?: "all" | "best";
   requestId?: string;
   userId?: string;
+  // 编辑类功能（去背景/编辑元素）需要真透明输出：gpt 走 background:"transparent"+output_format:"png"，
+  // 落库时不能把 png flatten 成白底 jpg（见 local-assets keepTransparent 旁路）。
+  transparent?: boolean;
 };
 
 function getImageRequestConfig(model: string, settings?: ImageGenerationOptions["settings"]) {
@@ -1258,7 +1261,7 @@ async function generateBytePlusImage(prompt: string, referenceImages: string[] =
       size: bytePlusSize,
       watermark: false,
     };
-    if (supportsBytePlusImageOutputFormat(bytePlusModel)) body.output_format = "jpeg";
+    if (supportsBytePlusImageOutputFormat(bytePlusModel)) body.output_format = options.transparent ? "png" : "jpeg";
 
     let providerDoneAt = startedAt;
     void appendGenerationDiagnosticsLog({
@@ -1370,7 +1373,7 @@ async function generateBytePlusImage(prompt: string, referenceImages: string[] =
 
     const images = getBytePlusImageUrls(data);
     const failureReasons = getBytePlusImageFailureReasons(data);
-    const displayImages = await Promise.all(images.map((image) => saveImageForDisplay(image, { requestId: options.requestId, model, userId: options.userId } )));
+    const displayImages = await Promise.all(images.map((image) => saveImageForDisplay(image, { requestId: options.requestId, model, userId: options.userId, transparent: options.transparent } )));
     const saveDoneAt = Date.now();
     if (displayImages.length === 0) {
       const reason = cleanNoImageReason(data.error?.message) || "empty image result";
@@ -1530,6 +1533,7 @@ async function generateGptImage2(prompt: string, referenceImages: string[], opti
     n: count,
     quality,
     ...(size ? { size } : {}),
+    ...(options.transparent ? { background: "transparent", output_format: "png" } : {}),
     ...(inputRefs.length > 0 ? { input_references: inputRefs } : {}),
   });
 
@@ -1658,7 +1662,7 @@ async function generateGptImage2(prompt: string, referenceImages: string[], opti
 
   let displayImages: string[] = [];
   try {
-    displayImages = await Promise.all(rawImages.map((image) => saveImageForDisplay(image, { requestId: options.requestId, model, userId: options.userId })));
+    displayImages = await Promise.all(rawImages.map((image) => saveImageForDisplay(image, { requestId: options.requestId, model, userId: options.userId, transparent: options.transparent })));
   } catch (saveError) {
     if (saveError instanceof Error) throw saveError;
     throw new Error("Image asset save failed");

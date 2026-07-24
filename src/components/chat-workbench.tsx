@@ -6564,7 +6564,7 @@ function AssetUploadDialog({
   const hasReadyUpload = filledSlots.some((item) => item.slot.dataUrl && item.slot.uploadStatus === "ready" && item.slot.tempToken);
 
   return (
-    <div className="fixed inset-0 z-50 flex flex-col items-center justify-center overscroll-contain bg-black/35 px-4">
+    <div className="fixed inset-0 z-[11000] flex flex-col items-center justify-center overscroll-contain bg-black/35 px-4">
       <div className="mb-3 h-8">
         {tip ? (
           <ReminderToast reminder={tip} />
@@ -7530,6 +7530,7 @@ export function ChatWorkbench() {
   });
   const [enabledAssetImageModelIds, setEnabledAssetImageModelIds] = useState<string[]>([DEFAULT_CHARACTER_IMAGE_MODEL, ...imageGenerationModels.map((model) => model.id)]);
   const [uploadRuleOverrides, setUploadRuleOverrides] = useState<UploadRuleOverrides>({});
+  const [editModelToggles, setEditModelToggles] = useState<Record<string, boolean>>({});
   const [sessions, setSessions] = useState<WorkSession[]>([]);
   const [nextConversationNumber, setNextConversationNumber] = useState(1);
   const sessionsRef = useRef<WorkSession[]>([]);
@@ -7554,6 +7555,8 @@ export function ChatWorkbench() {
   const [isCollapsedHistoryMenuOpen, setIsCollapsedHistoryMenuOpen] = useState(false);
   const [collapsedActionMenuPosition, setCollapsedActionMenuPosition] = useState<{ left: number; top: number } | null>(null);
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
+  const userMenuRef = useRef<HTMLDivElement | null>(null);
+  const userMenuButtonRef = useRef<HTMLButtonElement | null>(null);
   const [isThemeMenuOpen, setIsThemeMenuOpen] = useState(false);
   const [themeMode, setThemeMode] = useState<WorkspaceThemeMode>(getStoredWorkspaceThemeMode);
   const [systemPrefersDark, setSystemPrefersDark] = useState(getSystemPrefersDark);
@@ -9939,7 +9942,7 @@ export function ChatWorkbench() {
     const loadModelAvailability = async () => {
       try {
         const response = await fetch("/api/model-availability", { cache: "no-store" });
-        const data = (await response.json()) as { generalModels?: string[]; generalModelProviders?: Record<string, "openrouter" | "byteplus">; chatModels?: string[]; chatModelProviders?: Record<string, "openrouter" | "byteplus">; imageModels?: string[]; assetImageModels?: string[]; videoModels?: string[]; agentImageModels?: string[]; agentVideoModels?: string[]; uploadRuleOverrides?: UploadRuleOverrides };
+        const data = (await response.json()) as { generalModels?: string[]; generalModelProviders?: Record<string, "openrouter" | "byteplus">; chatModels?: string[]; chatModelProviders?: Record<string, "openrouter" | "byteplus">; imageModels?: string[]; assetImageModels?: string[]; videoModels?: string[]; agentImageModels?: string[]; agentVideoModels?: string[]; uploadRuleOverrides?: UploadRuleOverrides; editModelToggles?: Record<string, boolean> };
         if (cancelled) return;
         const next = {
           image: Array.isArray(data.imageModels) ? data.imageModels : [],
@@ -9966,6 +9969,7 @@ export function ChatWorkbench() {
         setEnabledAgentChatModelIds(Array.isArray(data.chatModels) ? data.chatModels : []);
         setAgentChatModelProviders(data.chatModelProviders && typeof data.chatModelProviders === "object" ? data.chatModelProviders : {});
         setUploadRuleOverrides(data.uploadRuleOverrides && typeof data.uploadRuleOverrides === "object" ? data.uploadRuleOverrides : {});
+        setEditModelToggles(data.editModelToggles && typeof data.editModelToggles === "object" ? data.editModelToggles : {});
         setCharacterGenerateModel((current) => nextAssetImageModels.includes(current) ? current : nextAssetImageModels[0] ?? current);
       } catch {
         if (!cancelled) {
@@ -10564,13 +10568,18 @@ export function ChatWorkbench() {
   useEffect(() => {
     if (!isUserMenuOpen) return;
 
-    const closeMenu = () => {
+    const closeMenu = (event: MouseEvent) => {
+      // 点菜单内部或头像按钮内部不关（内部交互）。其余任何空白/画布点击都关。
+      const target = event.target as Node | null;
+      if (target && (userMenuRef.current?.contains(target) || userMenuButtonRef.current?.contains(target))) return;
       setIsUserMenuOpen(false);
       setIsThemeMenuOpen(false);
     };
-    window.addEventListener("click", closeMenu);
+    // 用捕获阶段：工作流 tldraw 画布会在冒泡阶段 stopPropagation 吞掉 click，冒泡监听收不到 → 关不掉。
+    // 捕获阶段先于画布处理器触发，保证点画布空白也能关（且不吞事件，画布行为照常）。
+    window.addEventListener("click", closeMenu, true);
 
-    return () => window.removeEventListener("click", closeMenu);
+    return () => window.removeEventListener("click", closeMenu, true);
   }, [isUserMenuOpen]);
 
   useEffect(() => {
@@ -15444,7 +15453,7 @@ export function ChatWorkbench() {
           <div aria-hidden="true" className={isSidebarCollapsed ? "absolute bottom-0 left-0 right-0 top-[-6px] bg-[#f9f9f9]" : "absolute bottom-0 left-[-12px] right-[-12px] top-[-6px] bg-[#f9f9f9]"} />
           <div aria-hidden="true" style={{ position: "absolute", left: isSidebarCollapsed ? 0 : -12, right: isSidebarCollapsed ? 0 : -12, top: -6, height: 1, background: "#e5e5e5", zIndex: 1 }} />
           {isUserMenuOpen ? (
-            <div onClick={(event) => event.stopPropagation()} className={isSidebarCollapsed ? "absolute bottom-[60px] left-[18px] z-[9999] w-[222px] overflow-visible rounded-[12px] border border-[#e0e0e0] bg-white pt-2 shadow-[0_10px_28px_rgba(0,0,0,0.12)]" : "absolute bottom-[60px] left-[calc(50%-1px)] z-[9999] w-[222px] -translate-x-1/2 overflow-visible rounded-[12px] border border-[#e0e0e0] bg-white pt-2 shadow-[0_10px_28px_rgba(0,0,0,0.12)]"}>
+            <div ref={userMenuRef} onClick={(event) => event.stopPropagation()} className={isSidebarCollapsed ? "absolute bottom-[60px] left-[18px] z-[9999] w-[222px] overflow-visible rounded-[12px] border border-[#e0e0e0] bg-white pt-2 shadow-[0_10px_28px_rgba(0,0,0,0.12)]" : "absolute bottom-[60px] left-[calc(50%-1px)] z-[9999] w-[222px] -translate-x-1/2 overflow-visible rounded-[12px] border border-[#e0e0e0] bg-white pt-2 shadow-[0_10px_28px_rgba(0,0,0,0.12)]"}>
               <button type="button" onClick={() => openUserDialog("profile")} className="mx-2 flex h-11 w-[calc(100%-16px)] items-center gap-3 rounded-[6px] px-2 text-left text-[12px] font-medium text-[#333333] transition hover:bg-[#e9e9e9]">
                 <RiAccountCircleLine className="h-[18px] w-[18px] text-[#777777]" aria-hidden="true" />
                 <span style={{ fontSize: 13 }}>用户信息</span>
@@ -15525,7 +15534,7 @@ export function ChatWorkbench() {
               </button>
             </div>
           )}
-          <button type="button" onClick={(event) => { event.stopPropagation(); const shouldClose = isUserMenuOpen; closeAllPopupMenus(); if (!shouldClose) setIsUserMenuOpen(true); }} className={isSidebarCollapsed ? "relative z-10 mt-2 flex h-11 w-11 items-center justify-center rounded-lg transition hover:bg-[#ececec]" : "relative z-10 mx-2 mt-2 flex h-11 w-[calc(100%-16px)] items-center gap-3 rounded-lg px-2 text-left transition hover:bg-[#ececec]"}>
+          <button ref={userMenuButtonRef} type="button" onClick={(event) => { event.stopPropagation(); const shouldClose = isUserMenuOpen; closeAllPopupMenus(); if (!shouldClose) setIsUserMenuOpen(true); }} className={isSidebarCollapsed ? "relative z-10 mt-2 flex h-11 w-11 items-center justify-center rounded-lg transition hover:bg-[#ececec]" : "relative z-10 mx-2 mt-2 flex h-11 w-[calc(100%-16px)] items-center gap-3 rounded-lg px-2 text-left transition hover:bg-[#ececec]"}>
             <div className="relative h-7 w-7 shrink-0 overflow-hidden rounded-full" style={currentUserAvatarUrl ? undefined : { backgroundColor: defaultUserAvatar.backgroundColor, border: `1px solid ${defaultUserAvatar.borderColor}`, color: defaultUserAvatar.color }}>
               {currentUserAvatarUrl ? (
                 <Image src={currentUserAvatarUrl} alt="用户头像" width={32} height={32} unoptimized className="h-full w-full object-cover" style={{ width: "100%", height: "100%" }} />
@@ -15765,6 +15774,7 @@ export function ChatWorkbench() {
                   enabledImageModelIds={enabledGenerationModelIds.image}
                   enabledVideoModelIds={enabledGenerationModelIds.video}
                   uploadRuleOverrides={uploadRuleOverrides}
+                  editModelToggles={editModelToggles}
                   getImageDisplayUrl={(url) => getMediaThumbnailUrl(url)}
                   getVideoPosterDisplayUrl={(url, posterUrl) => {
                     const poster = posterUrl ?? getLocalVideoPosterUrl(url);
@@ -16700,7 +16710,7 @@ export function ChatWorkbench() {
       </section>
 
       {isCharacterGenerateOpen ? (
-        <div className="flashmuse-asset-generate-modal fixed inset-0 z-50 overscroll-contain bg-black/58" onMouseDown={() => setIsCharacterGenerateOpen(false)}>
+        <div className="flashmuse-asset-generate-modal fixed inset-0 z-[11000] overscroll-contain bg-black/58" onMouseDown={() => setIsCharacterGenerateOpen(false)}>
           <div className="flex h-full w-full flex-col">
             <div className="flex min-h-0 min-w-[920px] flex-1 overflow-hidden bg-transparent shadow-[0_20px_80px_rgba(0,0,0,0.18)] ring-1 ring-black/5" onMouseDown={(event) => event.stopPropagation()}>
               <div className="flashmuse-preview-stage relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[rgba(245,245,242,0.58)] backdrop-blur-[56px] backdrop-saturate-[190%] before:pointer-events-none before:absolute before:inset-0 before:z-0 before:bg-[linear-gradient(135deg,rgba(255,255,255,0.64)_0%,rgba(255,255,255,0.22)_42%,rgba(255,255,255,0.38)_100%)] after:pointer-events-none after:absolute after:inset-0 after:z-0 after:bg-[radial-gradient(circle_at_18%_12%,rgba(255,255,255,0.72),transparent_28%),radial-gradient(circle_at_82%_88%,rgba(255,255,255,0.36),transparent_34%)]">
@@ -16944,7 +16954,7 @@ export function ChatWorkbench() {
         <ReminderToast reminder={generationCompleteReminder} fixed />
       ) : null}
       {userDialogTab ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center overscroll-contain bg-black/46 px-5 backdrop-blur-[6px]" onMouseDown={() => setUserDialogTab("")}>
+        <div className="fixed inset-0 z-[11000] flex items-center justify-center overscroll-contain bg-black/46 px-5 backdrop-blur-[6px]" onMouseDown={() => setUserDialogTab("")}>
           {userDialogTip ? (
             <div className="pointer-events-none absolute left-1/2 top-[calc(50%-376px)] z-[70] -translate-x-1/2">
               <ReminderToast reminder={userDialogTip} />
@@ -17318,7 +17328,7 @@ export function ChatWorkbench() {
       ) : null}
 
       {renamingSessionId ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center overscroll-contain bg-black/35 px-4">
+        <div className="fixed inset-0 z-[11000] flex items-center justify-center overscroll-contain bg-black/35 px-4">
           <div className="relative w-full max-w-[500px] rounded-xl bg-white p-5 shadow-[0_24px_60px_rgba(15,23,42,0.28)]">
             <button type="button" onClick={cancelRenameSession} className="absolute right-4 top-4 text-slate-400 transition hover:text-slate-900" aria-label="关闭重命名弹窗">
               <RiCloseLine className="h-4 w-4" aria-hidden="true" />
@@ -17345,7 +17355,7 @@ export function ChatWorkbench() {
         </div>
       ) : null}
       {renamingAssetId ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center overscroll-contain bg-black/35 px-4">
+        <div className="fixed inset-0 z-[11000] flex items-center justify-center overscroll-contain bg-black/35 px-4">
           <div className="relative w-full max-w-[500px] rounded-xl bg-white p-5 shadow-[0_24px_60px_rgba(15,23,42,0.28)]">
             <button type="button" onClick={cancelRenameAsset} className="absolute right-4 top-4 text-slate-400 transition hover:text-slate-900" aria-label="关闭资产重命名弹窗">
               <RiCloseLine className="h-4 w-4" aria-hidden="true" />
@@ -17374,7 +17384,7 @@ export function ChatWorkbench() {
       <DocumentPreviewPanel file={previewDocumentFile} width={previewDocumentWidth || getDefaultDocumentPreviewWidth()} onResizeStart={startDocumentPreviewResize} onClose={() => setPreviewDocumentFile(null)} />
 
       {previewAsset ? (
-        <div className="flashmuse-preview-modal fixed inset-0 z-50 overscroll-contain bg-black/58" onClick={() => setPreviewAsset(null)}>
+        <div className="flashmuse-preview-modal fixed inset-0 z-[11000] overscroll-contain bg-black/58" onClick={() => setPreviewAsset(null)}>
           <div className="flex h-full w-full flex-col pt-8 sm:pt-10 lg:pt-12">
             <div className="flex min-h-0 min-w-[920px] flex-1 overflow-hidden rounded-t-[20px] bg-transparent shadow-[0_20px_80px_rgba(0,0,0,0.18)] ring-1 ring-black/5" onClick={(event) => event.stopPropagation()}>
               <div className="flashmuse-preview-stage relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-[rgba(245,245,242,0.58)] backdrop-blur-[56px] backdrop-saturate-[190%] before:pointer-events-none before:absolute before:inset-0 before:z-0 before:bg-[linear-gradient(135deg,rgba(255,255,255,0.64)_0%,rgba(255,255,255,0.22)_42%,rgba(255,255,255,0.38)_100%)] after:pointer-events-none after:absolute after:inset-0 after:z-0 after:bg-[radial-gradient(circle_at_18%_12%,rgba(255,255,255,0.72),transparent_28%),radial-gradient(circle_at_82%_88%,rgba(255,255,255,0.36),transparent_34%)]">

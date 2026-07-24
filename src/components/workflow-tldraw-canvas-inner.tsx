@@ -4,12 +4,12 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { createPortal } from "react-dom";
 import { BaseBoxShapeUtil, BindingUtil, CubicBezier2d, HTMLContainer, Mat, Rectangle2d, SVGContainer, SelectionForegroundOverlayUtil, ShapeUtil, T, Tldraw, Vec, createShapeId, defaultBindingUtils, defaultOverlayUtils, defaultShapeUtils, resizeBox, useActions, useEditor, useValue, vecModelValidator, type Editor, type IndexKey, type RecordProps, type TLBinding, type TLComponents, type TLHandle, type TLHandleDragInfo, type TLResizeInfo, type TLShape, type TLShapeId, type TLUiOverrides, type TldrawOptions, type VecModel } from "tldraw";
 import { type IconType } from "react-icons";
-import { RiAccountBoxLine, RiBellLine, RiAddLine, RiArrowDownSLine, RiArrowUpLine, RiBringForward, RiBringToFront, RiCheckLine, RiCheckboxBlankCircleLine, RiCheckboxMultipleLine, RiClipboardLine, RiCloseLine, RiCursorLine, RiDeleteBinLine, RiDownloadLine, RiEmotionSadLine, RiExportFill, RiExportLine, RiEyeLine, RiEyeOffLine, RiFileCodeLine, RiFileCopy2Line, RiFileCopyLine, RiFileImageLine, RiFileTextLine, RiFilmAiLine, RiFocus3Line, RiGoogleFill, RiHand, RiHistoryLine, RiImage2Line, RiImageAiLine, RiImageCircleLine, RiImageLine, RiInformation2Line, RiLandscapeLine, RiLayoutLeft2Line, RiLayoutLeftLine, RiLoader4Line, RiLockLine, RiLockUnlockLine, RiMoreLine, RiMultiImageLine, RiNodeTree, RiOpenaiFill, RiResetLeftLine, RiRoadMapLine, RiScissorsCutLine, RiSendBackward, RiSendToBack, RiShining2Line, RiStackLine, RiTBoxLine, RiTextBlock, RiTextSnippet, RiTimeLine, RiTiktokFill, RiUpload2Line, RiVideoLine, RiVideoOnLine, RiVoiceprintLine, RiZoomInLine, RiZoomOutLine } from "react-icons/ri";
+import { RiEraserLine, RiDragMove2Line, RiHdLine, RiSparkling2Line, RiAccountBoxLine, RiBellLine, RiAddLine, RiArrowDownSLine, RiArrowUpLine, RiBringForward, RiBringToFront, RiCheckLine, RiCheckboxBlankCircleLine, RiCheckboxMultipleLine, RiClipboardLine, RiCloseLine, RiCursorLine, RiDeleteBinLine, RiDownloadLine, RiEmotionSadLine, RiExportFill, RiExportLine, RiEyeLine, RiEyeOffLine, RiFileCodeLine, RiFileCopy2Line, RiFileCopyLine, RiFileImageLine, RiFileTextLine, RiFilmAiLine, RiFocus3Line, RiGoogleFill, RiHand, RiHistoryLine, RiImage2Line, RiImageAiLine, RiImageCircleLine, RiImageLine, RiInformation2Line, RiLandscapeLine, RiLayoutLeft2Line, RiLayoutLeftLine, RiLoader4Line, RiLockLine, RiLockUnlockLine, RiMoreLine, RiMultiImageLine, RiNodeTree, RiOpenaiFill, RiResetLeftLine, RiRoadMapLine, RiScissorsCutLine, RiSendBackward, RiSendToBack, RiShining2Line, RiStackLine, RiTBoxLine, RiTextBlock, RiTextSnippet, RiTimeLine, RiTiktokFill, RiUpload2Line, RiVideoLine, RiVideoOnLine, RiVoiceprintLine, RiZoomInLine, RiZoomOutLine } from "react-icons/ri";
 import { BytePlusIcon } from "@/components/byteplus-icon";
 import { AudioWaveformPlayer } from "@/components/audio-waveform-player";
 import { AssetMentionPicker, type MentionPickerCategory, type MentionPickerItem } from "@/components/asset-mention-picker";
 import { VideoUploadThumbnail } from "@/components/video-upload-thumbnail";
-import { DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, DEFAULT_IMAGE_QUALITY, IMAGE_QUALITY_OPTIONS, IMAGE_QUALITY_LABELS, isGptImage2Model, getImageModelSelectHint, bytePlusVideoGenerationModels, frontendConversationModels, frontendImageGenerationModels, getExpectedImageDimensions, getExpectedVideoDimensions, getSupportedImageResolutions, getSupportedVideoRatios, getSupportedVideoResolutions, imageGenerationModels, normalizeImageResolutionForModel, normalizeVideoRatioForModel, normalizeVideoResolutionForModel, videoGenerationModels, type ConversationModel, type GenerationModel, type ModelName } from "@/lib/models";
+import { DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, DEFAULT_IMAGE_QUALITY, GPT_IMAGE2_MODEL_ID, IMAGE_QUALITY_OPTIONS, IMAGE_QUALITY_LABELS, isGptImage2Model, isGptImage2AgentModel, getImageModelSelectHint, bytePlusVideoGenerationModels, frontendConversationModels, frontendImageGenerationModels, getExpectedImageDimensions, getExpectedVideoDimensions, getSupportedImageResolutions, getSupportedVideoRatios, getSupportedVideoResolutions, imageGenerationModels, normalizeImageResolutionForModel, normalizeVideoRatioForModel, normalizeVideoResolutionForModel, videoGenerationModels, type ConversationModel, type GenerationModel, type ModelName } from "@/lib/models";
 import { GENERIC_MEDIA_ERROR_MESSAGE, toUserErrorMessage } from "@/lib/error-message";
 import { buildReferenceHint } from "@/lib/reference-hint";
 import { getMentionNames as getSharedMentionNames, getMentionRangeForDeletion as getSharedMentionRangeForDeletion, getMentionRanges as getSharedMentionRanges, removeMentionName } from "@/lib/mention-text";
@@ -33,6 +33,8 @@ export type WorkflowNodeData = {
   duration?: string;
   videoReferenceMode?: WorkflowVideoReferenceMode;
   images?: string[];
+  // 去背景/抠图产出的透明 PNG：其显示容器不铺灰底（保持透明），其它生图仍用灰底占位。
+  transparentImage?: boolean;
   imageDimensions?: Record<string, { width: number; height: number }>;
   videoUrl?: string;
   audioUrl?: string;
@@ -165,6 +167,7 @@ type WorkflowCanvasProps = {
   enabledImageModelIds?: string[];
   enabledVideoModelIds?: string[];
   uploadRuleOverrides?: UploadRuleOverrides;
+  editModelToggles?: Record<string, boolean>;
   leftSidebarVisible?: boolean;
   onToggleLeftSidebar?: () => void;
   workflowAssets?: WorkflowAssetSummary[];
@@ -291,6 +294,17 @@ declare module "@tldraw/tlschema" {
 }
 
 const NODE_WIDTH = 320;
+// 图片编辑类（高清/橡皮）多模型候选链：按序尝试，前一个失败自动换下一个，全失败才失败卡。
+const EDIT_MODEL_CANDIDATES: ModelName[] = [
+  "google/gemini-3.1-flash-image-preview",
+  "google/gemini-3-pro-image-preview",
+  "byteplus:conversation-image.seedream-4-5",
+];
+// 按后台开关过滤候选链（保持顺序）；全被关掉则回落完整链，避免功能不可用。
+function getEditCandidates(func: "hd" | "eraser", toggles?: Record<string, boolean>): ModelName[] {
+  const enabled = EDIT_MODEL_CANDIDATES.filter((id) => (toggles?.[`${func}:${id}`] ?? true) !== false);
+  return enabled.length > 0 ? enabled : EDIT_MODEL_CANDIDATES;
+}
 const NODE_HEIGHT = 180;
 const CARD_HEIGHT = 180;
 const TEXT_NODE_WIDTH = 720;
@@ -1311,6 +1325,37 @@ function getWorkflowNodeVisualSize(node: WorkflowNode) {
   return { w: Math.round(width), h: Math.round(height) };
 }
 
+// 从实际图片尺寸挑「最接近」的比例档（无容差，一定返回一个），用于编辑上传图等需要贴合原图比例的场景。
+function closestWorkflowRatioLabel(dimensions?: { width: number; height: number }): string {
+  if (!dimensions?.width || !dimensions.height) return "16:9";
+  const ratio = dimensions.width / dimensions.height;
+  let best = "16:9";
+  let bestDiff = Number.POSITIVE_INFINITY;
+  for (const label of imageRatioOptions) {
+    const [w, h] = label.split(":").map(Number);
+    if (!w || !h) continue;
+    const diff = Math.abs(ratio - w / h);
+    if (diff < bestDiff) { bestDiff = diff; best = label; }
+  }
+  return best;
+}
+
+// 在某模型支持的分辨率档里，挑总像素最接近实际图片尺寸的一档（编辑上传图时用 seedream 找最接近尺寸）。
+function closestResolutionForImageDimensions(model: string, ratio: string, dimensions?: { width: number; height: number }): string {
+  const resolutions = getSupportedImageResolutions(model);
+  if (!resolutions.length) return "2K";
+  if (!dimensions?.width || !dimensions.height) return normalizeImageResolutionForModel(model, undefined);
+  const targetPixels = dimensions.width * dimensions.height;
+  let best = resolutions[0] as string;
+  let bestDiff = Number.POSITIVE_INFINITY;
+  for (const res of resolutions) {
+    const expected = getExpectedImageDimensions(model, res, ratio);
+    const diff = Math.abs(expected.width * expected.height - targetPixels);
+    if (diff < bestDiff) { bestDiff = diff; best = res; }
+  }
+  return best;
+}
+
 function getCommonWorkflowRatioLabel(dimensions?: { width: number; height: number }) {
   if (!dimensions?.width || !dimensions.height) return undefined;
   const ratio = dimensions.width / dimensions.height;
@@ -1559,7 +1604,8 @@ function isTransientWorkflowVideoPollStatus(status: number) {
 }
 
 function isWorkflowGptImageSafetyFailure(node: WorkflowNode) {
-  if (node.kind !== "image" || node.data.model !== "openai/gpt-5.4-image-2") return false;
+  // 两种接口的 gpt5.4image2（直连新接口 openai/gpt-5.4-image-2、GPT版老接口 ...-agent）都要能进安全改写。
+  if (node.kind !== "image" || (!isGptImage2Model(node.data.model) && !isGptImage2AgentModel(node.data.model))) return false;
   if (node.data.gptImageOptimizationOriginalPrompt || (node.data.gptImageOptimizationAttemptPrompts?.length ?? 0) > 0) return true;
   const error = node.data.error ?? "";
   return /图片平台没有返回图片|无法帮助|不能帮助|安全|隐私|未成年人|亲密|肖像|拒绝|不适合/i.test(error);
@@ -1633,6 +1679,67 @@ function getStaticMediaUrl(url: string | undefined) {
   if (!url) return undefined;
   if (/^https?:\/\//i.test(url)) return url;
   return url;
+}
+
+// 图片是否含透明像素（真实 alpha 判定）。key = 原始相对 url，每张只检测一次并缓存。
+// 只检测同源本地 /generated 图片（各入口下相对路径都同源，canvas 不会被 CDN 跨域污染）；
+// 远程 http url / blob / data 一律当作不透明（不检测），让正常生图远程加载阶段保持灰底占位。
+const imageAlphaCache = new Map<string, boolean>();
+
+function isLocalGeneratedUrl(url: string): boolean {
+  return url.startsWith("/generated/") || url.startsWith("generated/");
+}
+
+function detectImageHasAlpha(url: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    try {
+      const img = new Image();
+      img.decoding = "async";
+      img.onload = () => {
+        try {
+          const w = Math.max(1, Math.min(64, img.naturalWidth || 64));
+          const h = Math.max(1, Math.min(64, img.naturalHeight || 64));
+          const canvas = document.createElement("canvas");
+          canvas.width = w;
+          canvas.height = h;
+          const ctx = canvas.getContext("2d", { willReadFrequently: true });
+          if (!ctx) return resolve(false);
+          ctx.clearRect(0, 0, w, h);
+          ctx.drawImage(img, 0, 0, w, h);
+          const data = ctx.getImageData(0, 0, w, h).data;
+          let transparentPixels = 0;
+          for (let i = 3; i < data.length; i += 4) {
+            if (data[i] < 250) transparentPixels += 1;
+          }
+          // 至少若干个明显透明像素才判为透明图，避免边缘抗锯齿的个别半透明像素误判。
+          resolve(transparentPixels > 8);
+        } catch {
+          resolve(false);
+        }
+      };
+      img.onerror = () => resolve(false);
+      img.src = url;
+    } catch {
+      resolve(false);
+    }
+  });
+}
+
+function useImageHasAlpha(url: string | undefined): boolean {
+  const [hasAlpha, setHasAlpha] = useState<boolean>(() => (url ? imageAlphaCache.get(url) ?? false : false));
+  useEffect(() => {
+    if (!url) { setHasAlpha(false); return; }
+    const cached = imageAlphaCache.get(url);
+    if (cached !== undefined) { setHasAlpha(cached); return; }
+    if (!isLocalGeneratedUrl(url)) { setHasAlpha(false); return; }
+    let active = true;
+    void detectImageHasAlpha(url).then((result) => {
+      imageAlphaCache.set(url, result);
+      if (active) setHasAlpha(result);
+    });
+    return () => { active = false; };
+  }, [url]);
+  return hasAlpha;
 }
 
 type WorkflowHoverImagePreviewPosition = {
@@ -1909,6 +2016,8 @@ type WorkflowRuntime = {
   beginInputConnectionDrag: (nodeId: string, event: ReactPointerEvent) => void;
   beginMultiConnectionDrag: (sourceIds: string[], event: ReactPointerEvent) => void;
   runImageNode: (node: WorkflowNode) => void;
+  createImageEditNode: (sourceNode: WorkflowNode, options: { prompt: string; model?: ModelName; modelCandidates?: ModelName[]; highDef?: boolean; ratio?: string; resolution?: string; transparent?: boolean; bgRemove?: boolean; matchSourceImage?: boolean; ratioFromSourceImage?: boolean; position?: { x: number; y: number }; referenceImageOverride?: string; select?: boolean }) => WorkflowNode | undefined;
+  createImageElementSplitNodes: (sourceNode: WorkflowNode) => void;
   runGptImageOptimizationRetry: (node: WorkflowNode, maxAttempts: number) => void;
   runVideoNode: (node: WorkflowNode) => void;
   onGeneratedMedia?: WorkflowCanvasProps["onGeneratedMedia"];
@@ -1926,6 +2035,7 @@ type WorkflowRuntime = {
   referenceFilterNextOffset?: Record<string, number>;
   onLoadMoreReferenceAssets?: (groupType: string, loadedCount: number) => void;
   uploadRuleOverrides?: UploadRuleOverrides;
+  editModelToggles?: Record<string, boolean>;
   getConnectedInputUploads: (nodeId: string) => WorkflowUploadItem[];
   getInputTextLength: (nodeId: string) => number;
   uploadFilesAsConnectedNodes: (targetNodeId: string, files: File[], onDuplicateTip?: (message: string) => void) => void;
@@ -2273,6 +2383,40 @@ function WorkflowSelectedNodeOverlay() {
     };
   }, [editor]);
 
+  const [quickEditOpen, setQuickEditOpen] = useState(false);
+  const [quickEditText, setQuickEditText] = useState("");
+  const quickEditRef = useRef<HTMLTextAreaElement | null>(null);
+  const [eraserOpen, setEraserOpen] = useState(false);
+  const [eraserBrush, setEraserBrush] = useState(40);
+  const [eraserHasStrokes, setEraserHasStrokes] = useState(false);
+  const [eraserCursor, setEraserCursor] = useState<{ x: number; y: number } | null>(null);
+  const eraserCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const eraserPaintingRef = useRef(false);
+  const eraserLastPtRef = useRef<{ x: number; y: number } | null>(null);
+  // 防「立即使用」被点两次：点第一次就锁住，直到本次橡皮提交流程走完（发起编辑节点）才解锁。
+  const eraserSubmittingRef = useRef(false);
+  const selectedEditNode = selected?.shape.props.node;
+  const canQuickEdit = Boolean(selectedEditNode && selectedEditNode.kind === "image" && hasWorkflowNodeResult(selectedEditNode) && !selectedEditNode.data.isRunning);
+  useEffect(() => { setQuickEditOpen(false); setQuickEditText(""); setEraserOpen(false); setEraserHasStrokes(false); }, [selected?.shape.id]);
+  useEffect(() => {
+    if (!canQuickEdit) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "Tab" || event.metaKey || event.ctrlKey || event.altKey) return;
+      const target = event.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || target?.isContentEditable) return;
+      event.preventDefault();
+      setQuickEditOpen(true);
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [canQuickEdit]);
+  useEffect(() => {
+    if (!quickEditOpen) return;
+    const raf = window.requestAnimationFrame(() => quickEditRef.current?.focus());
+    return () => window.cancelAnimationFrame(raf);
+  }, [quickEditOpen]);
+
   if (!selected) return null;
   const { shape, point, zoom } = selected;
   const node = shape.props.node;
@@ -2302,8 +2446,201 @@ function WorkflowSelectedNodeOverlay() {
   const promptMaxHeight = Math.max(52, inputMaxHeight - 176);
   const stopCanvasPointer = (event: SyntheticEvent) => event.stopPropagation();
 
+  const showImageQuickMenu = node.kind === "image" && hasWorkflowNodeResult(node) && !node.data.isRunning;
+  const quickMenuHeight = 44;
+  const quickMenuGap = 10;
+  const quickMenuTop = Math.max(minViewportTop, point.y - 18 - quickMenuGap - quickMenuHeight);
+  const quickMenuCenter = Math.max(0, Math.min(point.x + screenNodeWidth / 2, viewportWidth));
+
   return (
     <>
+      {showImageQuickMenu ? (
+        <div
+          className="pointer-events-auto absolute z-[9998] -translate-x-1/2"
+          style={{ left: quickMenuCenter, top: quickMenuTop }}
+          onPointerDownCapture={stopCanvasPointer}
+          onMouseDownCapture={stopCanvasPointer}
+          onClick={stopCanvasPointer}
+          onWheel={stopCanvasPointer}
+        >
+          <div className="flex h-[44px] items-center gap-0.5 rounded-[10px] bg-white px-1.5 shadow-[0_6px_24px_rgba(15,23,42,0.16)] ring-1 ring-black/5" style={{ fontSize: 14 }}>
+            <button type="button" onClick={() => setQuickEditOpen((value) => !value)} className="flex h-[34px] items-center gap-1.5 whitespace-nowrap rounded-[8px] px-2 font-medium text-[#1f2937] hover:bg-gray-100">
+              <span className="flex h-5 w-5 items-center justify-center rounded-full bg-[#1f2937] text-white"><RiSparkling2Line className="h-3 w-3" /></span>
+              <span>快捷编辑</span>
+              <span className="ml-0.5 rounded-[5px] border border-gray-200 bg-gray-50 px-1.5 leading-[16px] text-gray-400" style={{ fontSize: 11 }}>Tab</span>
+            </button>
+            <span className="mx-0.5 h-5 w-px bg-gray-200" />
+            <button type="button" onClick={() => runtime.createImageEditNode(node, { prompt: "保持画面内容、主体、构图、颜色和所有细节完全不变，只把这张图提升为更清晰锐利的高清版本，不要增加、删除或改动任何元素。", modelCandidates: getEditCandidates("hd", runtime.editModelToggles), highDef: true })} className="flex h-[34px] items-center gap-1 whitespace-nowrap rounded-[8px] px-2 font-medium text-[#1f2937] hover:bg-gray-100"><RiHdLine className="h-[18px] w-[18px]" /><span>高清</span></button>
+            <button type="button" onClick={() => runtime.createImageEditNode(node, { prompt: "去背景（本地抠图）", bgRemove: true })} className="flex h-[34px] items-center gap-1 whitespace-nowrap rounded-[8px] px-2 font-medium text-[#1f2937] hover:bg-gray-100"><RiScissorsCutLine className="h-[18px] w-[18px]" /><span>去背景</span></button>
+            <button type="button" onClick={() => setEraserOpen(true)} className="flex h-[34px] items-center gap-1 whitespace-nowrap rounded-[8px] px-2 font-medium text-[#1f2937] hover:bg-gray-100"><RiEraserLine className="h-[18px] w-[18px]" /><span>橡皮工具</span></button>
+            <span className="mx-0.5 h-5 w-px bg-gray-200" />
+            <button type="button" title="下载到本地" onClick={async () => {
+              const url = node.data.images?.[0];
+              if (!url) return;
+              // 下载原图（不要走 getImageDisplayUrl，那是缩略图）。
+              const src = getStaticMediaUrl(url) ?? url;
+              const rawName = getWorkflowNodeMediaName(node) || decodeURIComponent((src.split("?")[0].split("/").pop()) || "image");
+              const filename = /\.(png|jpe?g|webp|gif)$/i.test(rawName) ? rawName : `${rawName}.png`;
+              try {
+                const blob = await fetch(src).then((response) => response.blob());
+                const objectUrl = URL.createObjectURL(blob);
+                const anchor = document.createElement("a");
+                anchor.href = objectUrl; anchor.download = filename;
+                document.body.appendChild(anchor); anchor.click(); anchor.remove();
+                URL.revokeObjectURL(objectUrl);
+              } catch {
+                window.open(src, "_blank");
+              }
+            }} className="flex h-[34px] w-8 items-center justify-center rounded-[8px] text-[#1f2937] hover:bg-gray-100"><RiDownloadLine className="h-[18px] w-[18px]" /></button>
+          </div>
+        </div>
+      ) : null}
+      {showImageQuickMenu && quickEditOpen ? (
+        <div
+          className="pointer-events-auto absolute z-[9999] -translate-x-1/2"
+          style={{ left: Math.max(inputWidth / 2 + 8, Math.min(point.x + screenNodeWidth / 2, viewportWidth - inputWidth / 2 - 8)), top: Math.min(point.y + screenNodeHeight + 12, safeViewportBottom - 60), width: inputWidth }}
+          onPointerDownCapture={stopCanvasPointer}
+          onMouseDownCapture={stopCanvasPointer}
+          onClick={stopCanvasPointer}
+          onWheel={stopCanvasPointer}
+        >
+          <div className="flex items-end gap-2 rounded-[16px] border-2 border-[#f1f2f2] bg-white/78 px-3 py-2 shadow-none backdrop-blur-[18px] transition focus-within:border-white/70 focus-within:shadow-[0_10px_32px_rgba(0,0,0,0.12)]">
+            <textarea
+              ref={quickEditRef}
+              value={quickEditText}
+              maxLength={MAX_WORKFLOW_PROMPT_LENGTH}
+              rows={1}
+              placeholder="描述你想怎么修改这张图…"
+              className="workflow-prompt-textarea max-h-[66px] min-h-[24px] flex-1 resize-none self-center bg-transparent text-[14px] leading-6 text-[#1f2937] outline-none placeholder:text-[#b3b3b3]"
+              onChange={(event) => {
+                setQuickEditText(event.target.value);
+                const element = event.target;
+                element.style.height = "auto";
+                element.style.height = `${Math.min(element.scrollHeight, 66)}px`;
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault();
+                  const text = quickEditText.trim();
+                  if (!text) return;
+                  runtime.createImageEditNode(node, { prompt: text, matchSourceImage: true });
+                  setQuickEditOpen(false);
+                  setQuickEditText("");
+                }
+              }}
+            />
+            <button
+              type="button"
+              disabled={!quickEditText.trim()}
+              onClick={() => {
+                const text = quickEditText.trim();
+                if (!text) return;
+                runtime.createImageEditNode(node, { prompt: text, matchSourceImage: true });
+                setQuickEditOpen(false);
+                setQuickEditText("");
+              }}
+              className="inline-flex h-9 w-9 shrink-0 items-center justify-center whitespace-nowrap rounded-[10px] bg-[#111111] text-white transition hover:bg-[#000000] disabled:cursor-not-allowed disabled:bg-[#d7d7d7] disabled:text-white"
+            >
+              <RiArrowUpLine className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+      ) : null}
+      {showImageQuickMenu && eraserOpen ? (
+        <>
+          <div
+            className="pointer-events-auto absolute z-[9997] overflow-hidden"
+            style={{ left: point.x, top: point.y, width: screenNodeWidth, height: screenNodeHeight, cursor: "none" }}
+            onWheel={stopCanvasPointer}
+            // 绘制逻辑放在捕获阶段：既 stopPropagation 拦住事件不让 tldraw 平移/选中，
+            // 又能正常涂抹。（此前用 onPointerDownCapture 只做 stopPropagation，会把同元素冒泡阶段的
+            // onPointerDown 绘制处理器一并跳过，导致根本涂不上——橡皮一直没生效的根因。）
+            onPointerDownCapture={(event) => {
+              event.stopPropagation();
+              (event.target as HTMLElement).setPointerCapture?.(event.pointerId);
+              const rect = event.currentTarget.getBoundingClientRect();
+              const x = event.clientX - rect.left; const y = event.clientY - rect.top;
+              const ctx = eraserCanvasRef.current?.getContext("2d");
+              if (ctx) { ctx.fillStyle = "rgb(168,85,247)"; ctx.beginPath(); ctx.arc(x, y, eraserBrush / 2, 0, Math.PI * 2); ctx.fill(); }
+              eraserPaintingRef.current = true; eraserLastPtRef.current = { x, y }; setEraserHasStrokes(true);
+            }}
+            onPointerMoveCapture={(event) => {
+              const rect = event.currentTarget.getBoundingClientRect();
+              const x = event.clientX - rect.left; const y = event.clientY - rect.top;
+              setEraserCursor({ x, y });
+              if (!eraserPaintingRef.current) return;
+              event.stopPropagation();
+              const ctx = eraserCanvasRef.current?.getContext("2d");
+              const from = eraserLastPtRef.current;
+              if (ctx && from) { ctx.strokeStyle = "rgb(168,85,247)"; ctx.lineWidth = eraserBrush; ctx.lineCap = "round"; ctx.lineJoin = "round"; ctx.beginPath(); ctx.moveTo(from.x, from.y); ctx.lineTo(x, y); ctx.stroke(); }
+              eraserLastPtRef.current = { x, y };
+            }}
+            onPointerUpCapture={(event) => { event.stopPropagation(); eraserPaintingRef.current = false; eraserLastPtRef.current = null; }}
+            onPointerLeave={() => { eraserPaintingRef.current = false; eraserLastPtRef.current = null; setEraserCursor(null); }}
+          >
+            <canvas ref={eraserCanvasRef} width={Math.max(1, Math.round(screenNodeWidth))} height={Math.max(1, Math.round(screenNodeHeight))} className="h-full w-full opacity-50" />
+            {eraserCursor ? <div className="pointer-events-none absolute rounded-full border border-white/90 bg-[#a855f7]/40" style={{ width: eraserBrush, height: eraserBrush, left: eraserCursor.x - eraserBrush / 2, top: eraserCursor.y - eraserBrush / 2 }} /> : null}
+          </div>
+          <div
+            className="pointer-events-auto absolute z-[9999] w-[280px] rounded-[12px] bg-white p-4 shadow-[0_6px_24px_rgba(15,23,42,0.16)] ring-1 ring-black/5"
+            style={{ left: Math.min(point.x + screenNodeWidth + 16, viewportWidth - 296), top: Math.max(minViewportTop, point.y) }}
+            onPointerDownCapture={stopCanvasPointer}
+            onMouseDownCapture={stopCanvasPointer}
+            onClick={stopCanvasPointer}
+            onWheel={stopCanvasPointer}
+          >
+            <div className="mb-3 flex items-center justify-between">
+              <span className="text-[15px] font-semibold text-[#1f2937]">橡皮工具</span>
+              <button type="button" title="清除涂抹" onClick={() => { const ctx = eraserCanvasRef.current?.getContext("2d"); if (ctx && eraserCanvasRef.current) ctx.clearRect(0, 0, eraserCanvasRef.current.width, eraserCanvasRef.current.height); setEraserHasStrokes(false); }} className="flex h-7 w-7 items-center justify-center rounded-full text-[#666] hover:bg-gray-100"><RiResetLeftLine className="h-4 w-4" /></button>
+            </div>
+            <input type="range" min={5} max={100} value={eraserBrush} onChange={(event) => setEraserBrush(Number(event.target.value))} className="mb-4 w-full accent-[#1f2937]" />
+            <div className="flex items-center gap-2">
+              <button type="button" onClick={() => { setEraserOpen(false); setEraserHasStrokes(false); const ctx = eraserCanvasRef.current?.getContext("2d"); if (ctx && eraserCanvasRef.current) ctx.clearRect(0, 0, eraserCanvasRef.current.width, eraserCanvasRef.current.height); }} className="h-9 flex-1 rounded-[8px] border border-[#e5e5e5] text-[14px] font-medium text-[#1f2937] hover:bg-gray-50">取消</button>
+              <button
+                type="button"
+                disabled={!eraserHasStrokes}
+                onClick={() => {
+                  const canvas = eraserCanvasRef.current; const url = node.data.images?.[0];
+                  if (!canvas || !url) return;
+                  // 防抖：加载源图是异步的，若不马上关弹窗，加载慢时用户会以为没反应再点一次 → 生成两张
+                  // （且第一次已清空涂抹层，第二张会不带紫色蒙版=出原图）。这里点第一下就立刻锁 + 关弹窗 +
+                  // 清涂抹状态，让按钮/弹窗当场消失，后续异步合成用已捕获的 canvas 引用（卸载后位图仍在）。
+                  if (eraserSubmittingRef.current) return;
+                  eraserSubmittingRef.current = true;
+                  setEraserOpen(false); setEraserHasStrokes(false); setEraserCursor(null);
+                  const displayUrl = runtime.getImageDisplayUrl?.(url) ?? getStaticMediaUrl(url) ?? url;
+                  const img = new window.Image(); img.crossOrigin = "anonymous";
+                  img.onload = () => {
+                    const off = document.createElement("canvas"); off.width = img.naturalWidth || Math.round(screenNodeWidth); off.height = img.naturalHeight || Math.round(screenNodeHeight);
+                    const octx = off.getContext("2d"); if (!octx) { eraserSubmittingRef.current = false; return; }
+                    octx.drawImage(img, 0, 0, off.width, off.height);
+                    // 关键：用户看到的是半透明紫（canvas 存纯色 + CSS opacity-50），但导出给模型的参考图里
+                    // 把涂抹区填成「完全不透明的中性灰」，彻底盖住底下的主体 —— 让模型看不见原来那里有什么，
+                    // 才能可靠地把整块（哪怕是一整个人）当成「这里没东西」去除后补背景，而不是照着底图重绘。
+                    const maskLayer = document.createElement("canvas"); maskLayer.width = off.width; maskLayer.height = off.height;
+                    const mctx = maskLayer.getContext("2d");
+                    if (mctx) {
+                      mctx.drawImage(canvas, 0, 0, off.width, off.height); // 涂抹区=不透明纯色，其余透明
+                      mctx.globalCompositeOperation = "source-in";          // 只在涂抹区内填色
+                      mctx.fillStyle = "#808080";                            // 中性灰
+                      mctx.fillRect(0, 0, off.width, off.height);
+                      octx.drawImage(maskLayer, 0, 0);                       // 实心灰覆盖到参考图上
+                    }
+                    // 橡皮走多模型候选链（优先 Gemini 3.1 Flash → Gemini 3 Pro → Seedream 4.5），
+                    // 比例+尺寸贴源图（由 createImageEditNode 内部按每个候选模型算最接近档）。
+                    runtime.createImageEditNode(node, { prompt: "图中有一块灰色遮挡区域，请把该区域内原本的物体彻底移除，用与周围环境一致、符合场景透视、光线和纹理的内容自然补全该区域，使它看起来像原本就没有任何物体，不要保留或重画被遮挡的物体，画面其余部分保持完全不变。", modelCandidates: getEditCandidates("eraser", runtime.editModelToggles), referenceImageOverride: off.toDataURL("image/png") });
+                    const ctx = canvas.getContext("2d"); if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
+                    eraserSubmittingRef.current = false;
+                  };
+                  img.onerror = () => { eraserSubmittingRef.current = false; };
+                  img.src = displayUrl;
+                }}
+                className="h-9 flex-1 rounded-[8px] bg-[#1f2937] text-[14px] font-medium text-white transition disabled:cursor-not-allowed disabled:opacity-30"
+              >立即使用</button>
+            </div>
+          </div>
+        </>
+      ) : null}
       <div className="pointer-events-none absolute z-30 h-[18px] overflow-visible text-[#367cee]" style={{ left: point.x, top: point.y - 18, width: screenNodeWidth, maxWidth: screenNodeWidth }}>
         <div className="absolute left-0 top-0 flex h-[18px] min-w-0 items-center gap-1.5 overflow-hidden" style={{ right: sizeLabel ? paramWidth + 8 : 0 }}>
           <Icon className="h-4 w-4 shrink-0" aria-hidden="true" />
@@ -2478,7 +2815,7 @@ function WorkflowCustomContextMenu({ menu, onClose, onAddNode, onUploadNode, onI
   );
 }
 
-export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onCredit, onGeneratedMedia, onPreviewMedia, onShowTip, getImageDisplayUrl, getVideoPosterDisplayUrl, enabledTextModelIds, textModelProviders = {}, enabledImageModelIds, enabledVideoModelIds, uploadRuleOverrides, leftSidebarVisible = true, onToggleLeftSidebar, workflowAssets = [], referenceAssets = [], referenceAssetsLoadStatus = "idle", referenceAssetCounts, onLoadReferenceAssets, onLoadReferenceFilter, referenceFilterLoading, referenceFilterNextOffset, onLoadMoreReferenceAssets, onExternalFilesDrop, onOpenAssetImport, assetsToImport, onAssetsImported }: WorkflowCanvasProps) {
+export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onCredit, onGeneratedMedia, onPreviewMedia, onShowTip, getImageDisplayUrl, getVideoPosterDisplayUrl, enabledTextModelIds, textModelProviders = {}, enabledImageModelIds, enabledVideoModelIds, uploadRuleOverrides, editModelToggles, leftSidebarVisible = true, onToggleLeftSidebar, workflowAssets = [], referenceAssets = [], referenceAssetsLoadStatus = "idle", referenceAssetCounts, onLoadReferenceAssets, onLoadReferenceFilter, referenceFilterLoading, referenceFilterNextOffset, onLoadMoreReferenceAssets, onExternalFilesDrop, onOpenAssetImport, assetsToImport, onAssetsImported }: WorkflowCanvasProps) {
   const editorRef = useRef<Editor | null>(null);
   const stateRef = useRef(normalizeState(value));
   const loadedWorkflowIdRef = useRef(workflowId);
@@ -2759,13 +3096,19 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     if (editor) loadStateIntoEditor(editor, next);
   }, [value, workflowId, loadStateIntoEditor]);
 
-  useEffect(() => () => {
-    pollMountedRef.current = false;
-    if (rafRef.current !== null) window.cancelAnimationFrame(rafRef.current);
-    if (geometryPollRef.current !== null) window.clearInterval(geometryPollRef.current);
-    unlistenRef.current?.();
-    unlistenRef.current = null;
-    setWorkflowHighlightedNodeIds([]);
+  useEffect(() => {
+    // setup 时必须重新置 true：React 严格模式（Next dev 默认开启）会 mount→cleanup→mount 双调用，
+    // 若只在 cleanup 置 false、无 setup 置 true，严格模式跑完后 pollMountedRef 会永久为 false，
+    // 导致 pollImageNode 等所有轮询守卫直接 return（节点一直转等待卡、成功后不刷新不显示，必须刷新页面）。
+    pollMountedRef.current = true;
+    return () => {
+      pollMountedRef.current = false;
+      if (rafRef.current !== null) window.cancelAnimationFrame(rafRef.current);
+      if (geometryPollRef.current !== null) window.clearInterval(geometryPollRef.current);
+      unlistenRef.current?.();
+      unlistenRef.current = null;
+      setWorkflowHighlightedNodeIds([]);
+    };
   }, []);
 
   useEffect(() => {
@@ -3624,7 +3967,9 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
       images,
       imageDimensions,
       prompt: input.prompt,
-      visualSize: undefined,
+      // 去背景/抠图节点：保留创建时锁定的 visualSize（=源图显示尺寸），让出图后尺寸不跳变、
+      // 与等待/失败卡一致；其它生图照旧清空 visualSize、贴合生成图自然尺寸。
+      visualSize: node.data.transparentImage ? node.data.visualSize : undefined,
       isRunning: false,
       error: undefined,
       imageRequestId: undefined,
@@ -3670,11 +4015,13 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     }
   }, [applyImageNodeResult, workflowId]);
 
-  const generateImageForNode = useCallback(async (node: WorkflowNode, input: { prompt: string; model: ModelName; settings: { ratio: string; resolution: string; quality?: string }; referenceImages: string[]; promptOptimization?: { originalPrompt: string; optimizedPrompt: string; attemptsUsed: number; optimizerModel: string } }) => {
+  const generateImageForNode = useCallback(async (node: WorkflowNode, input: { prompt: string; model: ModelName; settings: { ratio: string; resolution: string; quality?: string }; referenceImages: string[]; transparent?: boolean; bgRemove?: boolean; editFunction?: boolean; promptOptimization?: { originalPrompt: string; optimizedPrompt: string; attemptsUsed: number; optimizerModel: string } }) => {
     const modelPrompt = appendWorkflowReferenceHint(input.prompt, getReferenceImageNames(node, input.referenceImages));
     const requestId = createId("workflow_image");
-    updateNode(node.id, { isRunning: true, error: undefined, images: [], visualSize: undefined, startedAt: Date.now(), imageRequestId: requestId });
-    const submit = await fetch("/api/image", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt: modelPrompt, sourcePrompt: input.prompt, model: input.model, settings: input.settings, referenceImages: input.referenceImages, count: 1, conversationId: workflowId, conversationTitle: workflowTitle, requestId, async: true, workflowId, workflowNodeId: node.id, flow: "workflow", metadata: { creditSource: "workflow_image_generation" } }) }).then((response) => readJson<{ jobId?: string; error?: string; errorCode?: string }>(response));
+    // 去背景/抠图等透明节点：保留创建时锁定的 visualSize（=源图显示尺寸），让等待卡也=源图尺寸
+    // （否则这里清空后等待卡会回落到默认/expected 尺寸，与源图和最终结果卡不一致）。其它生图照旧清空。
+    updateNode(node.id, { isRunning: true, error: undefined, images: [], visualSize: node.data.transparentImage ? node.data.visualSize : undefined, startedAt: Date.now(), imageRequestId: requestId });
+    const submit = await fetch("/api/image", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt: modelPrompt, sourcePrompt: input.prompt, model: input.model, settings: input.settings, referenceImages: input.referenceImages, count: 1, conversationId: workflowId, conversationTitle: workflowTitle, requestId, async: true, workflowId, workflowNodeId: node.id, flow: "workflow", transparent: input.transparent, bgRemove: input.bgRemove, editFunction: input.editFunction, metadata: { creditSource: "workflow_image_generation" } }) }).then((response) => readJson<{ jobId?: string; error?: string; errorCode?: string }>(response));
     if (!submit.jobId) throw new Error(getWorkflowApiErrorMessage({ error: submit.error, errorCode: submit.errorCode }, GENERIC_MEDIA_ERROR_MESSAGE));
     return pollImageNode(node, requestId, input);
   }, [getReferenceImageNames, pollImageNode, updateNode, workflowId, workflowTitle]);
@@ -3702,6 +4049,123 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
       updateNode(node.id, { isRunning: false, error: toUserErrorMessage(error, GENERIC_MEDIA_ERROR_MESSAGE), imageRequestId: undefined });
     }
   }, [generateImageForNode, getEnabledImageModel, getInputText, getPromptReferenceUrls, getReferenceImages, onShowTip, updateNode, uploadRuleOverrides]);
+
+  // 图片编辑类功能（快捷编辑/去背景/放大/编辑元素/橡皮）统一入口：在源图片节点右侧新建一个图片节点，
+  // 把源图当参考图 + 指令走现有 img2img 链路直接跑等待卡，成功后显示图。绝不覆盖源节点。
+  const createImageEditNode = useCallback((sourceNode: WorkflowNode, options: { prompt: string; model?: ModelName; modelCandidates?: ModelName[]; highDef?: boolean; ratio?: string; resolution?: string; transparent?: boolean; bgRemove?: boolean; matchSourceImage?: boolean; ratioFromSourceImage?: boolean; position?: { x: number; y: number }; referenceImageOverride?: string; select?: boolean }) => {
+    const sourceUrl = options.referenceImageOverride ?? sourceNode.data.images?.[0];
+    if (!sourceUrl) return;
+    const prompt = options.prompt.trim();
+    if (!prompt) return;
+    const current = stateRef.current;
+    const sourceDims = sourceNode.data.imageDimensions?.[sourceUrl] ?? getWorkflowNodeNaturalSize(sourceNode);
+    const SEEDREAM_4_5 = "byteplus:conversation-image.seedream-4-5" as ModelName;
+    let model: ModelName;
+    let ratio: string;
+    let resolution: string;
+    // 多模型候选链（高清/橡皮）：按顺序优先级尝试，前一个失败自动换下一个，全失败才显示失败卡。
+    // 比例统一贴源图；分辨率：highDef=该模型的 4K 档，否则=该模型里最接近源图尺寸的一档（贴源图尺寸）。
+    const modelCandidates = (options.modelCandidates ?? []).filter((candidate) => imageModels.some((item) => item.id === candidate));
+    const computeEditSettingsForModel = (candidate: ModelName) => {
+      const candidateRatio = closestWorkflowRatioLabel(sourceDims);
+      const candidateResolution = options.highDef
+        ? normalizeImageResolutionForModel(candidate, "4K")
+        : closestResolutionForImageDimensions(candidate, candidateRatio, sourceDims);
+      return { ratio: candidateRatio, resolution: candidateResolution };
+    };
+    if (modelCandidates.length > 0) {
+      model = modelCandidates[0];
+      const first = computeEditSettingsForModel(model);
+      ratio = first.ratio;
+      resolution = first.resolution;
+    } else if (options.matchSourceImage) {
+      // 快捷编辑：尽量和原图同模型、同比例、同分辨率 → 保证输出尺寸与原图一致。
+      const srcModel = sourceNode.data.model as ModelName | undefined;
+      const srcModelValid = Boolean(srcModel && imageModels.some((item) => item.id === srcModel));
+      const srcRatio = imageRatioOptions.includes(sourceNode.data.ratio ?? "") ? sourceNode.data.ratio ?? "" : "";
+      // 校验「原模型+原参数」是否能重现原图实际尺寸：生成图天然一致；上传图(默认16:9等)则对不上。
+      const srcExpected = srcModelValid && srcRatio ? getExpectedImageDimensions(srcModel!, sourceNode.data.resolution, srcRatio) : undefined;
+      const reproducesSize = Boolean(
+        srcExpected && sourceDims && sourceDims.width > 0 && sourceDims.height > 0 &&
+        Math.abs(srcExpected.width / srcExpected.height - sourceDims.width / sourceDims.height) < 0.03 &&
+        Math.abs(srcExpected.width * srcExpected.height - sourceDims.width * sourceDims.height) / (sourceDims.width * sourceDims.height) < 0.15,
+      );
+      if (srcModelValid && srcRatio && reproducesSize) {
+        model = srcModel!;
+        ratio = srcRatio;
+        resolution = normalizeImageResolutionForModel(model, sourceNode.data.resolution);
+      } else {
+        // 上传图 / 原模型不支持该尺寸：统一用 seedream 4.5，比例+分辨率取最接近原图的档。
+        model = SEEDREAM_4_5;
+        ratio = closestWorkflowRatioLabel(sourceDims);
+        resolution = closestResolutionForImageDimensions(model, ratio, sourceDims);
+      }
+    } else {
+      model = options.model && imageModels.some((item) => item.id === options.model) ? options.model : getEnabledImageModel(sourceNode.data.model);
+      // ratioFromSourceImage（高清）：比例贴合原图实际尺寸；否则沿用源节点比例。
+      ratio = options.ratioFromSourceImage
+        ? closestWorkflowRatioLabel(sourceDims)
+        : (options.ratio ?? (imageRatioOptions.includes(sourceNode.data.ratio ?? "") ? sourceNode.data.ratio ?? "16:9" : "16:9"));
+      // 归一化分辨率到实际所用 model（非法/缺省回落到该 model 默认档），保证与正常生图链路一致。
+      resolution = normalizeImageResolutionForModel(model, options.resolution ?? sourceNode.data.resolution);
+    }
+    // 去背景走本地抠图、不调 provider：节点不显示 model/比例/分辨率（这些对抠图无意义），
+    // 尺寸就是原图尺寸（抠图保尺寸）。用源节点当前的实际显示尺寸作 visualSize，并在出图后保留它
+    // （见 applyImageNodeResult），让等待卡/生成卡/失败卡三者尺寸永远一致且=源图显示尺寸。仍算一个
+    // model 传给 API（服务端 bgRemove 分支会忽略）。
+    const isBgRemove = Boolean(options.bgRemove);
+    const bgRemoveDisplaySize = isBgRemove ? getWorkflowNodeVisualSize(sourceNode) : undefined;
+    const data: WorkflowNodeData = { ...getDefaultNodeData("image"), prompt, model: isBgRemove ? undefined : model, ratio: isBgRemove ? undefined : ratio, resolution: isBgRemove ? undefined : resolution, isRunning: true, startedAt: Date.now(), transparentImage: Boolean(options.bgRemove || options.transparent), ...(bgRemoveDisplaySize?.w && bgRemoveDisplaySize.h ? { visualSize: { width: bgRemoveDisplaySize.w, height: bgRemoveDisplaySize.h } } : {}) };
+    const draftNode: WorkflowNode = { id: createId("workflow_node"), kind: "image", title: getNodeLabel("image"), x: 0, y: 0, data };
+    const size = getWorkflowNodeVisualSize(draftNode);
+    const position = options.position ?? findNonOverlappingNodePosition(current.nodes, size, sourceNode);
+    const node: WorkflowNode = { ...draftNode, x: position.x, y: position.y };
+    recentActionNodeIdsRef.current = [node.id, ...recentActionNodeIdsRef.current].slice(0, 20);
+    updateState((state) => ({ ...state, nodes: [...state.nodes, node] }));
+    if (options.select !== false) {
+      window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+        const editor = editorRef.current;
+        if (!editor) return;
+        const shapeId = getShapeId(node.id);
+        if (!editor.getShape(shapeId)) return;
+        editor.select(shapeId);
+        focusWorkflowNodeInViewport(editor, node);
+      }));
+    }
+    void (async () => {
+      // 无候选链：单模型，失败即失败卡（原行为）。有候选链：按序尝试，全失败才失败卡。
+      const attempts: ModelName[] = modelCandidates.length > 0 ? modelCandidates : [model];
+      let lastError: unknown;
+      for (const attemptModel of attempts) {
+        const attemptSize = modelCandidates.length > 0 ? computeEditSettingsForModel(attemptModel) : { ratio, resolution };
+        const attemptSettings = { ratio: attemptSize.ratio, resolution: attemptSize.resolution, ...(isGptImage2Model(attemptModel) ? { quality: node.data.quality ?? DEFAULT_IMAGE_QUALITY } : {}) };
+        // 换模型时同步节点显示的 model/比例/分辨率（等待卡标签跟随实际尝试的模型）。
+        if (modelCandidates.length > 0) updateNode(node.id, { model: attemptModel, ratio: attemptSize.ratio, resolution: attemptSize.resolution });
+        try {
+          await generateImageForNode({ ...node, data: { ...node.data, model: attemptModel } }, { prompt, model: attemptModel, settings: attemptSettings, referenceImages: [sourceUrl], transparent: options.transparent, bgRemove: options.bgRemove, editFunction: true });
+          return;
+        } catch (error) {
+          lastError = error;
+        }
+      }
+      updateNode(node.id, { isRunning: false, error: toUserErrorMessage(lastError, GENERIC_MEDIA_ERROR_MESSAGE), imageRequestId: undefined });
+    })();
+    return node;
+  }, [generateImageForNode, getEnabledImageModel, imageModels, updateNode, updateState]);
+
+  // 编辑元素：把源图分层。当前实现为固定两层（背景层 + 透明主体层），两个新节点在源图右侧「同一位置」重叠叠放，
+  // 视觉上和原图一样，用户拖开才发现主体是单独一层。（模型多层输出 API 未确认前先固定两层，符合既定策略。）
+  const createImageElementSplitNodes = useCallback((sourceNode: WorkflowNode) => {
+    if (!sourceNode.data.images?.[0]) return;
+    const current = stateRef.current;
+    const size = getWorkflowNodeVisualSize(sourceNode);
+    const position = findNonOverlappingNodePosition(current.nodes, size, sourceNode);
+    // 先建背景层（在下），再建透明主体层（在上，最后创建=层级更高）。两者同坐标重叠。
+    // 背景层：gpt 内容感知补全（移除主体、补全被遮挡区域），不透明。
+    createImageEditNode(sourceNode, { prompt: "移除画面中的主体（人物或前景主体），只保留背景，并用符合场景、透视和光线的内容自然补全被主体遮挡的区域，其余部分保持不变。", model: GPT_IMAGE2_MODEL_ID, position, select: false });
+    // 主体层：本地抠图产真透明 PNG（provider 产不了透明底，改走本地抠图）。
+    createImageEditNode(sourceNode, { prompt: "编辑元素（本地抠图主体层）", bgRemove: true, position });
+  }, [createImageEditNode]);
 
   const runGptImageOptimizationRetry = useCallback(async (node: WorkflowNode, maxAttempts: number) => {
     if (!isWorkflowGptImageSafetyFailure(node)) return;
@@ -3996,6 +4460,9 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
         if (images.length > 0) applyImageNodeResult(node, input, images, job.resultDimensions, job.credit, job.usage, job.reservedNames);
       } else if (job.status === "failed") {
         if (node.data.error) continue;
+        // 节点正在用一个更新的 requestId 重试（点了「重试」会立即写入新 imageRequestId 并清空 error），
+        // 这里的 failed 任务来自上一次的旧请求（requestId 不同）→ 是过期结果，跳过，别把正在转的等待卡打回失败卡。
+        if (node.data.isRunning && node.data.imageRequestId && node.data.imageRequestId !== job.requestId) continue;
         updateNode(node.id, { isRunning: false, error: getWorkflowApiErrorMessage({ error: job.error, errorCode: job.errorCode }, GENERIC_MEDIA_ERROR_MESSAGE), imageRequestId: undefined });
       } else {
         const resumeKey = `${currentWorkflowId}:${node.id}:${job.requestId}`;
@@ -4047,6 +4514,9 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
       if (job.status === "succeeded") {
         applyVideoNodeJobResult(node, job, model, settings);
       } else if (job.status === "failed") {
+        // 节点正在用一个更新的 requestId 重试（点了「重试」会立即写入新 videoRequestId 并清空 error），
+        // 这里的 failed 任务来自上一次的旧请求（requestId 不同）→ 是过期结果，跳过，别把正在转的等待卡打回失败卡。
+        if (node.data.isRunning && node.data.videoRequestId && node.data.videoRequestId !== job.requestId) continue;
         if (!node.data.error) updateNode(node.id, { isRunning: false, error: getWorkflowApiErrorMessage({ error: job.error, errorCode: job.errorCode }, GENERIC_MEDIA_ERROR_MESSAGE), taskId: undefined, videoRequestId: undefined });
       } else {
         const taskId = node.data.taskId || job.providerTaskId;
@@ -4211,7 +4681,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     importingAssetsRef.current = false;
   }, [assetsToImport, restoreWorkflowAssetToCanvas, updateState, onAssetsImported]);
 
-  const runtime = useMemo<WorkflowRuntime>(() => ({ selectedNodeId, connectingFrom, connectingTo, multiConnectSources, connectionPointer, modelOptions, workflowTitle, updateNode, deleteNode, disconnectNodes, connectTo, setConnectingFrom, beginConnectionDrag, beginInputConnectionDrag, beginMultiConnectionDrag, runImageNode: (node) => void runImageNode(node), runGptImageOptimizationRetry: (node, maxAttempts) => void runGptImageOptimizationRetry(node, maxAttempts), runVideoNode: (node) => void runVideoNode(node), onGeneratedMedia, onShowTip, markNodeAction, onPreviewMedia, getImageDisplayUrl, getVideoPosterDisplayUrl, referenceAssets, referenceAssetsLoadStatus, referenceAssetCounts, onLoadReferenceAssets, onLoadReferenceFilter, referenceFilterLoading, referenceFilterNextOffset, onLoadMoreReferenceAssets, uploadRuleOverrides, getConnectedInputUploads, getInputTextLength, uploadFilesAsConnectedNodes }), [beginConnectionDrag, beginInputConnectionDrag, beginMultiConnectionDrag, connectTo, connectingFrom, connectingTo, multiConnectSources, connectionPointer, deleteNode, disconnectNodes, getConnectedInputUploads, getImageDisplayUrl, getInputTextLength, getVideoPosterDisplayUrl, markNodeAction, modelOptions, onGeneratedMedia, onLoadReferenceAssets, onLoadReferenceFilter, referenceFilterLoading, referenceFilterNextOffset, onLoadMoreReferenceAssets, onPreviewMedia, onShowTip, referenceAssets, referenceAssetsLoadStatus, referenceAssetCounts, runGptImageOptimizationRetry, runImageNode, runVideoNode, selectedNodeId, updateNode, uploadFilesAsConnectedNodes, uploadRuleOverrides, workflowTitle]);
+  const runtime = useMemo<WorkflowRuntime>(() => ({ selectedNodeId, connectingFrom, connectingTo, multiConnectSources, connectionPointer, modelOptions, workflowTitle, updateNode, deleteNode, disconnectNodes, connectTo, setConnectingFrom, beginConnectionDrag, beginInputConnectionDrag, beginMultiConnectionDrag, runImageNode: (node) => void runImageNode(node), createImageEditNode, createImageElementSplitNodes, runGptImageOptimizationRetry: (node, maxAttempts) => void runGptImageOptimizationRetry(node, maxAttempts), runVideoNode: (node) => void runVideoNode(node), onGeneratedMedia, onShowTip, markNodeAction, onPreviewMedia, getImageDisplayUrl, getVideoPosterDisplayUrl, referenceAssets, referenceAssetsLoadStatus, referenceAssetCounts, onLoadReferenceAssets, onLoadReferenceFilter, referenceFilterLoading, referenceFilterNextOffset, onLoadMoreReferenceAssets, uploadRuleOverrides, editModelToggles, getConnectedInputUploads, getInputTextLength, uploadFilesAsConnectedNodes }), [beginConnectionDrag, beginInputConnectionDrag, beginMultiConnectionDrag, connectTo, connectingFrom, connectingTo, multiConnectSources, connectionPointer, deleteNode, disconnectNodes, getConnectedInputUploads, getImageDisplayUrl, getInputTextLength, getVideoPosterDisplayUrl, markNodeAction, modelOptions, onGeneratedMedia, onLoadReferenceAssets, onLoadReferenceFilter, referenceFilterLoading, referenceFilterNextOffset, onLoadMoreReferenceAssets, onPreviewMedia, onShowTip, referenceAssets, referenceAssetsLoadStatus, referenceAssetCounts, runGptImageOptimizationRetry, runImageNode, createImageEditNode, createImageElementSplitNodes, runVideoNode, selectedNodeId, updateNode, uploadFilesAsConnectedNodes, uploadRuleOverrides, editModelToggles, workflowTitle]);
 
   return (
     <WorkflowRuntimeContext.Provider value={runtime}>
@@ -4949,7 +5419,7 @@ function UploadingNodeOverlay({ progress, width, height, previewUrl, isVideo }: 
     </div>
   );
 }
-function ImageDisplayCard({ node, selected, displayUrl, height }: { node: WorkflowNode; selected?: boolean; displayUrl?: string; height: number }) { const runtime = useWorkflowRuntime(); if (node.data.isRunning) return <WaitingCard isImage startedAt={node.data.startedAt} selected={selected} height={height} />; if (node.data.error) return <FailedCard isImage selected={selected} height={height} error={node.data.error} onRetry={() => runtime.runImageNode(node)} onOptimizationRetry={isWorkflowGptImageSafetyFailure(node) ? (count) => runtime.runGptImageOptimizationRetry(node, count) : undefined} />; const url = node.data.images?.[0]; if (url) return <div className={`relative w-full overflow-hidden border bg-[#e6e6e6] ${cardBorderClassName(selected)}`} style={{ height }}><img src={displayUrl ?? getStaticMediaUrl(url) ?? url} alt="生成图片" draggable={false} className="h-full w-full select-none object-cover" /></div>; return <EmptyMediaCard kind="image" selected={selected} height={height} />; }
+function ImageDisplayCard({ node, selected, displayUrl, height }: { node: WorkflowNode; selected?: boolean; displayUrl?: string; height: number }) { const runtime = useWorkflowRuntime(); const url = node.data.images?.[0]; const hasAlpha = useImageHasAlpha(url); if (node.data.isRunning) return <WaitingCard isImage startedAt={node.data.startedAt} selected={selected} height={height} />; if (node.data.error) return <FailedCard isImage selected={selected} height={height} error={node.data.error} onRetry={() => runtime.runImageNode(node)} onOptimizationRetry={isWorkflowGptImageSafetyFailure(node) ? (count) => runtime.runGptImageOptimizationRetry(node, count) : undefined} />; if (url) return <div className={`relative w-full overflow-hidden border ${cardBorderClassName(selected)}`} style={{ height, backgroundColor: node.data.transparentImage || hasAlpha ? "transparent" : "#e6e6e6" }}><img src={displayUrl ?? getStaticMediaUrl(url) ?? url} alt="生成图片" draggable={false} className="h-full w-full select-none object-cover" /></div>; return <EmptyMediaCard kind="image" selected={selected} height={height} />; }
 function AudioDisplayCard({ node, selected, height }: { node: WorkflowNode; selected?: boolean; height: number }) { const url = node.data.audioUrl; const displayUrl = url ? getStaticMediaUrl(url) ?? url : undefined; return <div className="relative flex w-full items-center justify-center overflow-hidden rounded-[20px] border-[5px] border-[#b8b8b8] bg-white" style={{ height }}>{displayUrl ? <AudioWaveformPlayer key={displayUrl} url={displayUrl} variant="node" stopWaveformPointer /> : <EmptyMediaCard kind="audio" selected={selected} height={height} />}{node.data.uploadProgress !== undefined ? <UploadingNodeOverlay progress={node.data.uploadProgress} width={height} height={height} /> : null}</div>; }
 function WorkflowInlineVideo({ node, url, onSelect }: { node: WorkflowNode; url: string; onSelect: () => void }) {
   const editor = useEditor();
