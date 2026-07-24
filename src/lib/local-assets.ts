@@ -16,6 +16,10 @@ type SaveAssetOptions = { userId?: string; diagnostics?: { requestId?: string; f
 const GENERATED_ROOT = join(process.cwd(), "public", "generated");
 const ASSET_UPLOAD_TEMP_ROOT = join(process.cwd(), ".runtime", "asset-upload-temp");
 const execFileAsync = promisify(execFile);
+// 单次远程下载超时（含 fetch 建连+读 body）。跨境下载偶尔会"假死"——连接挂住但既不完成也不报错，
+// Node fetch 默认永不超时，会让存盘任务永久卡在"下载中"。这里强制超时：到点 abort→抛错→上层按失败重试，
+// 直到成功或远程地址过期。正常 15s 视频原始下载远快于此（整段存盘 p99 约 3 分钟且含转码/同步）。
+const REMOTE_DOWNLOAD_TIMEOUT_MS = 3 * 60 * 1000;
 
 function isJpegMime(mimeType?: string | null) {
   return /^image\/jpe?g(?:;|$)/i.test(mimeType ?? "");
@@ -392,44 +396,52 @@ export async function saveUploadedFileBufferAsset(buffer: Buffer, originalName =
 }
 
 export async function saveRemoteAsset(url: string, type: AssetType, init?: RequestInit, options: SaveAssetOptions = {}) {
-  const response = await fetch(url, { ...init, cache: "no-store" });
-  const imageDir = join(GENERATED_ROOT, getGeneratedFolder(getAssetFolder("image"), options));
+  // 单次下载总超时：fetch 建连、读 body、以及非 ok 时的 curl 兜底全都在这个时限内；
+  // 到点 abort/kill → 抛错 → 上层（media-save 队列）按失败重试，避免"假死"永久卡住。
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), REMOTE_DOWNLOAD_TIMEOUT_MS);
+  try {
+    const response = await fetch(url, { ...init, cache: "no-store", signal: controller.signal });
+    const imageDir = join(GENERATED_ROOT, getGeneratedFolder(getAssetFolder("image"), options));
 
-  if (!response.ok) {
-    try {
-      const { stdout } = await execFileAsync(getCurlCommand(), ["-fL", "-sS", ...toCurlHeaderArgs(init?.headers), url], { encoding: "buffer", maxBuffer: 500 * 1024 * 1024 });
-      const buffer = Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout);
-      if (type === "image") {
-        const encoded = await encodeGeneratedImageBuffer(buffer, join(imageDir, `${Date.now()}-${randomUUID()}`), undefined, url, options.keepTransparent);
-        const asset = createPublicAssetPath("image", encoded.extension, options);
+    if (!response.ok) {
+      try {
+        const { stdout } = await execFileAsync(getCurlCommand(), ["-fL", "-sS", "--max-time", String(Math.ceil(REMOTE_DOWNLOAD_TIMEOUT_MS / 1000)), ...toCurlHeaderArgs(init?.headers), url], { encoding: "buffer", maxBuffer: 500 * 1024 * 1024, signal: controller.signal });
+        const buffer = Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout);
+        if (type === "image") {
+          const encoded = await encodeGeneratedImageBuffer(buffer, join(imageDir, `${Date.now()}-${randomUUID()}`), undefined, url, options.keepTransparent);
+          const asset = createPublicAssetPath("image", encoded.extension, options);
+          await mkdir(asset.directory, { recursive: true });
+          await writeFile(asset.filePath, encoded.buffer);
+          return asset.publicUrl;
+        }
+        const asset = createPublicAssetPath(type, getExtensionFromUrl(url) ?? "mp4", options);
         await mkdir(asset.directory, { recursive: true });
-        await writeFile(asset.filePath, encoded.buffer);
+        await writeFile(asset.filePath, buffer);
         return asset.publicUrl;
+      } catch {
+        throw new Error(`保存${type === "image" ? "图片" : "视频"}失败：${response.status}`);
       }
-      const asset = createPublicAssetPath(type, getExtensionFromUrl(url) ?? "mp4", options);
-      await mkdir(asset.directory, { recursive: true });
-      await writeFile(asset.filePath, buffer);
-      return asset.publicUrl;
-    } catch {
-      throw new Error(`保存${type === "image" ? "图片" : "视频"}失败：${response.status}`);
     }
-  }
 
-  const contentType = response.headers.get("content-type");
-  const buffer = Buffer.from(await response.arrayBuffer());
+    const contentType = response.headers.get("content-type");
+    const buffer = Buffer.from(await response.arrayBuffer());
 
-  if (type === "image") {
-    const encoded = await encodeGeneratedImageBuffer(buffer, join(imageDir, `${Date.now()}-${randomUUID()}`), contentType, url, options.keepTransparent);
-    const asset = createPublicAssetPath("image", encoded.extension, options);
+    if (type === "image") {
+      const encoded = await encodeGeneratedImageBuffer(buffer, join(imageDir, `${Date.now()}-${randomUUID()}`), contentType, url, options.keepTransparent);
+      const asset = createPublicAssetPath("image", encoded.extension, options);
+      await mkdir(asset.directory, { recursive: true });
+      await writeFile(asset.filePath, encoded.buffer);
+      return asset.publicUrl;
+    }
+
+    const asset = createPublicAssetPath(type, getExtensionFromMime(contentType) ?? getExtensionFromUrl(url) ?? "mp4", options);
     await mkdir(asset.directory, { recursive: true });
-    await writeFile(asset.filePath, encoded.buffer);
+    await writeFile(asset.filePath, buffer);
     return asset.publicUrl;
+  } finally {
+    clearTimeout(timeout);
   }
-
-  const asset = createPublicAssetPath(type, getExtensionFromMime(contentType) ?? getExtensionFromUrl(url) ?? "mp4", options);
-  await mkdir(asset.directory, { recursive: true });
-  await writeFile(asset.filePath, buffer);
-  return asset.publicUrl;
 }
 
 export async function saveGeneratedAsset(source: string, type: AssetType, init?: RequestInit, options: SaveAssetOptions = {}) {

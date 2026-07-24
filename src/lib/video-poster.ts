@@ -37,7 +37,7 @@ export async function createVideoPosterFromLocalVideo(publicVideoUrl: string) {
   await mkdir(poster.directory, { recursive: true });
 
   if (!existsSync(poster.filePath)) {
-    await execFileAsync(ffmpegPath, ["-y", "-ss", "0", "-i", videoPath, "-vf", "scale=640:640:force_original_aspect_ratio=decrease", "-frames:v", "1", "-q:v", "3", poster.filePath], { maxBuffer: 20 * 1024 * 1024 });
+    await execFileAsync(ffmpegPath, ["-y", "-ss", "0", "-i", videoPath, "-vf", "scale=640:640:force_original_aspect_ratio=decrease", "-frames:v", "1", "-q:v", "3", poster.filePath], { maxBuffer: 20 * 1024 * 1024, timeout: 60_000 });
   }
 
   return poster.publicUrl;
@@ -62,7 +62,7 @@ export async function createUploadedVideoPoster(publicVideoUrl: string) {
   if (!posterPath) return undefined;
 
   if (!existsSync(posterPath)) {
-    await execFileAsync(ffmpegPath, ["-y", "-ss", "0", "-i", videoPath, "-vf", "scale=640:640:force_original_aspect_ratio=decrease", "-frames:v", "1", "-q:v", "3", posterPath], { maxBuffer: 20 * 1024 * 1024 });
+    await execFileAsync(ffmpegPath, ["-y", "-ss", "0", "-i", videoPath, "-vf", "scale=640:640:force_original_aspect_ratio=decrease", "-frames:v", "1", "-q:v", "3", posterPath], { maxBuffer: 20 * 1024 * 1024, timeout: 60_000 });
   }
 
   return posterPublicUrl;
@@ -78,7 +78,7 @@ export async function getLocalVideoDimensions(publicVideoUrl: string): Promise<{
   const videoPath = getLocalGeneratedFilePath(publicVideoUrl);
   if (!videoPath || !existsSync(videoPath)) return undefined;
   // ffmpeg 未指定输出会以非 0 退出，但仍把流信息打到 stderr，这里主动捕获。
-  const stderr = await execFileAsync(ffmpegPath, ["-hide_banner", "-i", videoPath], { maxBuffer: 20 * 1024 * 1024 })
+  const stderr = await execFileAsync(ffmpegPath, ["-hide_banner", "-i", videoPath], { maxBuffer: 20 * 1024 * 1024, timeout: 60_000 })
     .then((result) => `${result.stdout}${result.stderr}`)
     .catch((error: unknown) => {
       const err = error as { stderr?: string; stdout?: string };

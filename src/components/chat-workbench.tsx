@@ -147,6 +147,11 @@ type Message = {
   videoPromptDetails?: Record<string, PromptDetail>;
   videoPosters?: Record<string, string>;
   videoDimensionsMap?: Record<string, ImageDimensions>;
+  // 乐观显示：视频在供应商那边已生成好（拿到可直接播的远程地址）、但本地还在后台下载存盘时，
+  // 先把远程地址放这里让用户立刻能看（展示专用、不进 message.videos、不进资产库）。存好后由成功
+  // 分支移除、并把本地地址加进 message.videos。videoSavedFlashAt: 本地url→时间戳，用于"保存成功"闪现。
+  videoPreviewUrls?: string[];
+  videoSavedFlashAt?: Record<string, number>;
   textModel?: ModelName;
   statusText?: string;
   bytePlusAutoReviewNoticeShown?: boolean;
@@ -6790,13 +6795,17 @@ function LazyMediaMount({ children, height, className = "" }: { children: ReactN
   return <div ref={rootRef} className={className} style={shouldRender ? undefined : { minHeight: height }}>{shouldRender ? children : null}</div>;
 }
 
-function InlineVideoResult({ url, posterUrl, onPreview, onLoadedDimensions, rounded = false, compact = false }: { url: string; posterUrl?: string; onPreview: () => void; onLoadedDimensions?: (dimensions: ImageDimensions) => void; rounded?: boolean; compact?: boolean }) {
+function InlineVideoResult({ url, posterUrl, onPreview, onLoadedDimensions, rounded = false, compact = false, saving = false, savedFlashAt, now }: { url: string; posterUrl?: string; onPreview: () => void; onLoadedDimensions?: (dimensions: ImageDimensions) => void; rounded?: boolean; compact?: boolean; saving?: boolean; savedFlashAt?: number; now?: number }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [shouldLoadVideo, setShouldLoadVideo] = useState(!posterUrl);
   const [isHovering, setIsHovering] = useState(false);
   const mediaSurfaceStyle = { backgroundColor: "var(--flashmuse-media-surface)" } as CSSProperties;
   const displayUrl = getStaticMediaUrl(url) ?? url;
   const displayPosterUrl = getStaticMediaUrl(posterUrl, videoPosterVersion) ?? posterUrl;
+  // 左上角状态角标：保存中（转圈+资产保存中...）；保存成功（勾+保存成功，2 秒后 1 秒渐隐）。
+  const savedElapsed = savedFlashAt !== undefined && now !== undefined ? now - savedFlashAt : undefined;
+  const showSavedFlash = savedElapsed !== undefined && savedElapsed >= 0 && savedElapsed < 3000;
+  const savedFlashOpacity = savedElapsed === undefined ? 0 : savedElapsed < 2000 ? 1 : Math.max(0, 1 - (savedElapsed - 2000) / 1000);
 
   useEffect(() => {
     if (!shouldLoadVideo || !isHovering) return;
@@ -6815,7 +6824,18 @@ function InlineVideoResult({ url, posterUrl, onPreview, onLoadedDimensions, roun
   };
 
   return (
-    <button type="button" onClick={onPreview} className={`flashmuse-success-media-card flex h-[360px] ${compact ? "w-full" : "w-[640px]"} max-w-full items-center justify-center overflow-hidden bg-[#f4f4f4] text-left ${rounded ? "rounded-[10px]" : ""}`} style={mediaSurfaceStyle}>
+    <button type="button" onClick={onPreview} className={`flashmuse-success-media-card relative flex h-[360px] ${compact ? "w-full" : "w-[640px]"} max-w-full items-center justify-center overflow-hidden bg-[#f4f4f4] text-left ${rounded ? "rounded-[10px]" : ""}`} style={mediaSurfaceStyle}>
+      {saving ? (
+        <span className="pointer-events-none absolute left-3 top-3 z-20 inline-flex items-center gap-1.5 rounded-md bg-black/45 px-2.5 py-1 text-xs font-medium text-white backdrop-blur-sm">
+          <span className="h-3 w-3 animate-spin rounded-full border-[1.5px] border-white/45 border-t-white" aria-hidden="true" />
+          资产保存中...
+        </span>
+      ) : showSavedFlash ? (
+        <span className="pointer-events-none absolute left-3 top-3 z-20 inline-flex items-center gap-1.5 rounded-md bg-black/45 px-2.5 py-1 text-xs font-medium text-white backdrop-blur-sm transition-opacity duration-300" style={{ opacity: savedFlashOpacity }}>
+          <RiCheckboxCircleLine className="h-3.5 w-3.5" aria-hidden="true" />
+          保存成功
+        </span>
+      ) : null}
       {displayPosterUrl && !shouldLoadVideo ? (
         <span onMouseEnter={playVideo} onFocus={playVideo} className="relative flex h-full w-full items-center justify-center">
           <Image src={displayPosterUrl} alt="视频封面" fill sizes={compact ? "50vw" : "640px"} unoptimized className="object-contain" />
@@ -8396,7 +8416,7 @@ export function ChatWorkbench() {
   // 空闲时不再每秒 setState，避免整棵大组件（含依赖 timerNow 的重 useMemo）每秒重渲染导致卡顿。
   // After a close/re-login the foreground pending request is gone but a media message can still be pending
   // (durable recovery keeps polling). Keep the 1s timer alive so the recovered waiting card's progress/elapsed advances.
-  const hasRecoveringMedia = messages.some((message) => message.role === "assistant" && ((message.pendingVideoCount ?? 0) > 0 || (message.pendingImageCount ?? 0) > 0 || (message.retryingFailedVideoIndexes?.length ?? 0) > 0 || (message.retryingFailedImageIndexes?.length ?? 0) > 0));
+  const hasRecoveringMedia = messages.some((message) => message.role === "assistant" && ((message.pendingVideoCount ?? 0) > 0 || (message.pendingImageCount ?? 0) > 0 || (message.retryingFailedVideoIndexes?.length ?? 0) > 0 || (message.retryingFailedImageIndexes?.length ?? 0) > 0 || (message.videoSavedFlashAt ? Object.values(message.videoSavedFlashAt).some((at) => Date.now() - at < 3000) : false)));
   const needsLiveTimer = activePendingRequestCount > 0 || isActiveSessionLoading || isCharacterGenerating || assetGenerateJobs.length > 0 || hasRecoveringMedia;
   const isThinking = activeIsResolving || activePendingRequests.some((request) => request.mode === "agent" || request.mode === "general") || modelInfoSessionId === activeSession?.id;
   const isMainInputDisabled = isThinking || isInputPromptOptimizing;
@@ -11838,6 +11858,9 @@ export function ChatWorkbench() {
                       videoPrompts: { ...(message.videoPrompts ?? {}), [videoUrl]: prompt },
                       videoPromptDetails: promptDetail ? { ...(message.videoPromptDetails ?? {}), [videoUrl]: promptDetail } : message.videoPromptDetails,
                       videoPosters: posterUrl ? { ...(message.videoPosters ?? {}), [videoUrl]: posterUrl } : message.videoPosters,
+                      // 本地存好、正式交付：撤掉一条"保存中"的远程预览，并给这条本地视频打"保存成功"闪现。
+                      videoPreviewUrls: message.videoPreviewUrls?.length ? message.videoPreviewUrls.slice(1) : message.videoPreviewUrls,
+                      videoSavedFlashAt: { ...(message.videoSavedFlashAt ?? {}), [videoUrl]: Date.now() },
                       mediaSystemNames: mediaSystemName ? { ...(message.mediaSystemNames ?? {}), [videoUrl]: mediaSystemName } : message.mediaSystemNames,
                       pendingVideoCount: Math.max(0, (message.pendingVideoCount ?? (message.retryingFailedVideoIndexes?.length ? 0 : 1)) - 1),
                       failedVideoCount: message.retryingFailedVideoIndexes?.length ? Math.max(0, (message.failedVideoCount ?? 1) - 1) : message.failedVideoCount,
@@ -11866,6 +11889,26 @@ export function ChatWorkbench() {
     );
   }, []);
 
+  // 乐观显示：供应商已出视频（远程地址）但本地还在存盘时，把远程地址加进 videoPreviewUrls 让用户先看。
+  // 展示专用、幂等（已在 videos 或已在 preview 里就不重复加）；本地存好后由 appendVideoToAssistantMessage 撤掉。
+  const applyVideoPreviewToMessage = useCallback((sessionId: string, requestId: string, previewUrl: string) => {
+    if (!previewUrl) return;
+    setSessions((current) => {
+      let changed = false;
+      const next = current.map((session) => {
+        if (session.id !== sessionId) return session;
+        const messages = session.messages.map((message) => {
+          if (message.role !== "assistant" || message.requestId !== requestId) return message;
+          if (message.videos?.includes(previewUrl) || message.videoPreviewUrls?.includes(previewUrl)) return message;
+          changed = true;
+          return { ...message, videoPreviewUrls: [...(message.videoPreviewUrls ?? []), previewUrl], mode: "video" as const };
+        });
+        return changed ? { ...session, messages } : session;
+      });
+      return changed ? next : current;
+    });
+  }, []);
+
   const markAssistantVideoFailure = useCallback((sessionId: string, requestId: string, errorMessage?: string) => {
     setSessions((current) =>
       current.map((session) =>
@@ -11881,6 +11924,8 @@ export function ChatWorkbench() {
                       mediaErrorReasons: [...(message.mediaErrorReasons ?? []), errorMessage ?? GENERIC_MEDIA_ERROR_MESSAGE],
                       failedVideoCount: message.retryingFailedVideoIndexes?.length ? message.failedVideoCount : (message.failedVideoCount ?? 0) + 1,
                       pendingVideoCount: Math.max(0, (message.pendingVideoCount ?? (message.retryingFailedVideoIndexes?.length ? 0 : 1)) - 1),
+                      // 失败也撤掉一条"保存中"预览（极少见：远程成功但本地一直存不下到 24h 过期）。
+                      videoPreviewUrls: message.videoPreviewUrls?.length ? message.videoPreviewUrls.slice(1) : message.videoPreviewUrls,
                       retryingFailedVideoIndexes: message.retryingFailedVideoIndexes?.slice(1),
                       retryingFailedVideoStartedAt: message.retryingFailedVideoIndexes?.slice(1).reduce<Record<number, number>>((next, index) => ({ ...next, [index]: message.retryingFailedVideoStartedAt?.[index] ?? Date.now() }), {}),
                       mode: "video",
@@ -12374,7 +12419,7 @@ export function ChatWorkbench() {
   // (pendingVideoCount > 0) but the backend job already finished, align it to the job result / failure and
   // keep polling while it runs — so a closed/refreshed browser never leaves a permanent waiting card.
   useEffect(() => {
-    type ConversationVideoJobStatus = { requestId: string; status: string; resultUrls?: string[]; reservedNames?: string[]; posterUrl?: string; usage?: UsageMeta; credit?: CreditMeta; error?: string; errorCode?: string };
+    type ConversationVideoJobStatus = { requestId: string; status: string; resultUrls?: string[]; reservedNames?: string[]; posterUrl?: string; usage?: UsageMeta; credit?: CreditMeta; error?: string; errorCode?: string; extra?: { preview?: { videoUrl?: string } } };
     const jobsToCheck = sessions.flatMap((session) => session.messages.flatMap((message) => {
       if (message.role !== "assistant" || message.mode !== "video" || !message.requestId || (message.pendingVideoCount ?? 0) <= 0) return [];
       // Skip requests that are still being polled by the foreground generator (createAndPollVideo);
@@ -12403,7 +12448,13 @@ export function ChatWorkbench() {
           const jobByRequestId = new Map((data.jobs ?? []).map((job) => [job.requestId, job]));
           for (const pending of jobsToCheck) {
             const job = jobByRequestId.get(pending.videoRequestId);
-            if (!job || job.status === "queued" || job.status === "running") { stillRunning = true; continue; }
+            if (!job || job.status === "queued" || job.status === "running") {
+              stillRunning = true;
+              // 乐观显示：还在跑但供应商已给可直接播的远程地址 → 先让用户看，本地后台继续存。
+              const previewUrl = job?.extra?.preview?.videoUrl;
+              if (previewUrl) applyVideoPreviewToMessage(pending.sessionId, pending.message.requestId ?? "", previewUrl);
+              continue;
+            }
             reconciledConversationVideoJobsRef.current.delete(pending.key);
             const status = (job.status ?? "").toLowerCase();
             if (["failed", "error", "expired"].includes(status)) {
@@ -12427,7 +12478,7 @@ export function ChatWorkbench() {
     };
     checkJobs();
     return () => { cancelled = true; if (timer) window.clearTimeout(timer); jobsToCheck.forEach((job) => reconciledConversationVideoJobsRef.current.delete(job.key)); };
-  }, [addGeneratedAssets, addSessionGeneratedMediaCount, addSessionUsage, appendVideoToAssistantMessage, applyCreditResult, markAssistantVideoFailure, reserveMediaSystemNames, sessions, recoveryTick]);
+  }, [addGeneratedAssets, addSessionGeneratedMediaCount, addSessionUsage, appendVideoToAssistantMessage, applyVideoPreviewToMessage, applyCreditResult, markAssistantVideoFailure, reserveMediaSystemNames, sessions, recoveryTick]);
 
   const runGeneration = useCallback(async (sessionId: string, pendingRequest: PendingGeneration) => {
     if (runningRequestIdsRef.current.has(pendingRequest.id)) return;
@@ -12894,7 +12945,7 @@ export function ChatWorkbench() {
             continue;
           }
 
-          const statusData = await readJson<{ jobs?: Array<{ status?: string; resultUrls?: string[]; reservedNames?: string[]; posterUrl?: string; error?: string; errorCode?: string; usage?: UsageMeta; credit?: CreditMeta }> }>(pollResponse);
+          const statusData = await readJson<{ jobs?: Array<{ status?: string; resultUrls?: string[]; reservedNames?: string[]; posterUrl?: string; error?: string; errorCode?: string; usage?: UsageMeta; credit?: CreditMeta; extra?: { preview?: { videoUrl?: string } } }> }>(pollResponse);
           const job = statusData.jobs?.[0];
           pollData = job ? { status: job.status, content: { video_url: job.resultUrls?.[0], poster_url: job.posterUrl }, error: job.error, errorCode: job.errorCode, usage: job.usage, credit: job.credit, reservedNames: job.reservedNames } : { status: "running" };
 
@@ -12902,6 +12953,11 @@ export function ChatWorkbench() {
           const statusText = videoStatusLabels[status] ?? `视频状态：${status}`;
 
           updateAssistantMessageByRequestId(sessionId, pendingRequest.id, { statusText });
+
+          // 乐观显示：还在跑但供应商已给可直接播的远程地址 → 先让用户看，本地后台继续存。
+          if (["queued", "running"].includes(status) && job?.extra?.preview?.videoUrl) {
+            applyVideoPreviewToMessage(sessionId, pendingRequest.id, job.extra.preview.videoUrl);
+          }
 
           setSessions((current) =>
             current.map((session) =>
@@ -14984,6 +15040,7 @@ export function ChatWorkbench() {
           <button type="button" disabled={!WORKFLOW_MODE_ENABLED} onClick={enterWorkflowPanel} className={!WORKFLOW_MODE_ENABLED ? isSidebarCollapsed ? "relative flex h-10 w-10 cursor-not-allowed items-center justify-center rounded-lg font-medium text-[#b0b0b0]" : "flex h-10 w-full cursor-not-allowed items-center gap-2 rounded-lg px-3 text-left font-medium text-[#b0b0b0]" : isSidebarCollapsed ? activePanel === "workflow" ? "relative flex h-10 w-10 items-center justify-center rounded-lg bg-[#ececec] font-medium text-[#111111]" : "relative flex h-10 w-10 items-center justify-center rounded-lg font-medium text-[#555555] transition hover:bg-[#ececec]" : activePanel === "workflow" ? "flex h-10 w-full items-center gap-2 rounded-lg bg-[#ececec] px-3 text-left font-medium text-[#111111]" : "flex h-10 w-full items-center gap-2 rounded-lg px-3 text-left font-medium text-[#555555] transition hover:bg-[#ececec]"} title={WORKFLOW_MODE_ENABLED ? "工作流模式" : "工作流模式暂未开放"} aria-label={WORKFLOW_MODE_ENABLED ? "工作流模式" : "工作流模式暂未开放"}>
             {activePanel === "workflow" && WORKFLOW_MODE_ENABLED ? <RiGitMergeLine className="h-5 w-5 shrink-0 text-[#111111]" aria-hidden="true" /> : <RiGitPullRequestLine className={!WORKFLOW_MODE_ENABLED ? "h-5 w-5 shrink-0 text-[#b0b0b0]" : "h-5 w-5 shrink-0 text-[#555555]"} aria-hidden="true" />}
             {!isSidebarCollapsed ? <span className="flex items-center gap-1.5 text-[13px] leading-[1.2]">工作流模式<span className="rounded-full bg-[#2fbf4f] px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white">NEW</span></span> : null}
+            {WORKFLOW_MODE_ENABLED && activePanel !== "workflow" && hasAnyWorkflowGenerating ? <span className={isSidebarCollapsed ? "absolute ml-7 mt-7 flex w-4 shrink-0 justify-end" : "ml-auto flex w-7 shrink-0 justify-end"}><HaloPulseIndicator /></span> : null}
             {!isSidebarCollapsed && !WORKFLOW_MODE_ENABLED ? <span className="ml-auto rounded-full bg-white px-2 py-0.5 text-[11px] text-[#9a9a9a] ring-1 ring-[#e3e3e3]">未开放</span> : null}
           </button>
           <button type="button" onClick={() => {
@@ -15200,16 +15257,21 @@ export function ChatWorkbench() {
                     <div className="yinzao-chat-scroll yinzao-scrollbar-hover min-h-0 flex-1 space-y-[3px] overflow-y-auto pr-1">
                       {activePanel === "workflow" ? visibleWorkflowItems.map((item) => {
                         const isMenuOpen = openWorkflowMenuId === item.id;
+                        const isWorkflowRunning = Boolean(item.canvas?.nodes?.some((node) => node.data.isRunning));
 
                         return (
                           <div key={item.id} className="relative">
                             <button type="button" onClick={() => { setActiveWorkflowId(item.id); setOpenWorkflowMenuId(""); setIsCollapsedHistoryMenuOpen(false); }} className={item.id === activeWorkflow?.id ? "flex h-9 w-full items-center rounded-lg bg-[#ececec] px-3 pr-10 text-left" : "flex h-9 w-full items-center rounded-lg px-3 pr-10 text-left transition hover:bg-[#ececec]"}>
                               <div className={item.id === activeWorkflow?.id ? "min-w-0 truncate text-[13px] font-medium leading-[1.2] text-[#111111]" : "min-w-0 truncate text-[13px] font-medium leading-[1.2] text-[#333333]"}>{item.title}</div>
                             </button>
-                            <button type="button" aria-label="打开工作流菜单" onClick={(event) => { event.stopPropagation(); toggleWorkflowMenu(item.id, event.currentTarget); }} className="absolute right-2 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md text-[#6f6f6f] transition hover:bg-[#dedede] hover:text-[#111111]">
-                              <RiMoreLine className="h-4 w-4" aria-hidden="true" />
-                            </button>
-                            {isMenuOpen && !isSidebarCollapsed ? (
+                            {isWorkflowRunning ? (
+                              <div className="absolute right-2 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center" aria-label="工作流生成中"><HaloPulseIndicator /></div>
+                            ) : (
+                              <button type="button" aria-label="打开工作流菜单" onClick={(event) => { event.stopPropagation(); toggleWorkflowMenu(item.id, event.currentTarget); }} className="absolute right-2 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-md text-[#6f6f6f] transition hover:bg-[#dedede] hover:text-[#111111]">
+                                <RiMoreLine className="h-4 w-4" aria-hidden="true" />
+                              </button>
+                            )}
+                            {isMenuOpen && !isWorkflowRunning && !isSidebarCollapsed ? (
                               <div onClick={(event) => event.stopPropagation()} className="absolute right-1 top-10 z-50 w-32 rounded-xl border border-slate-100 bg-white p-1 shadow-[0_12px_28px_rgba(15,23,42,0.12)]">
                                 <button type="button" onClick={() => pinWorkflow(item.id)} className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[13px] font-medium text-slate-900 hover:bg-slate-50"><RiPushpinLine className="h-4 w-4 shrink-0" aria-hidden="true" /><span>置顶</span></button>
                                 <button type="button" onClick={() => renameWorkflow(item.id)} className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[13px] font-medium text-slate-900 hover:bg-slate-50"><RiEditBoxLine className="h-4 w-4 shrink-0" aria-hidden="true" /><span>重命名</span></button>
@@ -15296,6 +15358,7 @@ export function ChatWorkbench() {
             ) : <div className="yinzao-chat-scroll yinzao-scrollbar-hover -mr-3 min-h-0 flex-1 space-y-[3px] overflow-y-auto pb-10 pl-px pr-3 pt-px">
               {activePanel === "workflow" ? visibleWorkflowItems.map((item) => {
                 const isMenuOpen = openWorkflowMenuId === item.id;
+                const isWorkflowRunning = Boolean(item.canvas?.nodes?.some((node) => node.data.isRunning));
 
                 return (
                   <div key={item.id} className="relative">
@@ -15307,6 +15370,11 @@ export function ChatWorkbench() {
                       <div className={item.id === activeWorkflow?.id ? "min-w-0 truncate text-[13px] font-medium leading-[1.2] text-[#111111]" : "min-w-0 truncate text-[13px] font-medium leading-[1.2] text-[#333333]"}>{item.title}</div>
                     </button>
 
+                    {isWorkflowRunning ? (
+                      <div className="absolute right-2 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center" aria-label="工作流生成中">
+                        <HaloPulseIndicator />
+                      </div>
+                    ) : (
                     <button
                       type="button"
                       aria-label="打开工作流菜单"
@@ -15318,8 +15386,9 @@ export function ChatWorkbench() {
                     >
                       <RiMoreLine className="h-4 w-4" aria-hidden="true" />
                     </button>
+                    )}
 
-                    {isMenuOpen ? (
+                    {isMenuOpen && !isWorkflowRunning ? (
                       <div
                         onClick={(event) => event.stopPropagation()}
                         className={
@@ -16023,6 +16092,8 @@ export function ChatWorkbench() {
                 // gone but the durable recovery effect keeps polling — so the waiting card must render from
                 // videoPendingCount, not from isActiveVideoPending (which requires an in-memory pending request).
                 const isVideoPendingVisible = message.mode === "video" && videoPendingCount > 0 && !message.error;
+                // 乐观显示：正在后台存盘、先用远程地址展示的视频（展示专用，不在 message.videos 里）。
+                const previewVideoUrls = message.mode === "video" ? (message.videoPreviewUrls ?? []) : [];
                 const isActiveImagePending = activeMessagePendingRequest?.mode === "image" && imagePendingCount > 0;
                 const isActiveMediaPending = isActiveVideoPending || isActiveImagePending;
                 const userImageReferences = message.role === "user" ? getDisplayImageReferences(message) : undefined;
@@ -16173,15 +16244,20 @@ export function ChatWorkbench() {
                           </LazyMediaMount>
                         ) : null}
 
-                      {message.role === "assistant" && message.mode === "video" && isAssistantMessageComplete && (displayedMessageVideos.length > 0 || videoFailedCount > 0 || isVideoPendingVisible) ? (
+                      {message.role === "assistant" && message.mode === "video" && isAssistantMessageComplete && (displayedMessageVideos.length > 0 || previewVideoUrls.length > 0 || videoFailedCount > 0 || isVideoPendingVisible) ? (
                         <LazyMediaMount height={360} className={isAgentMediaMessage ? "mt-2 grid w-full max-w-[1006px] grid-cols-2 gap-0.5" : "mt-2 flex max-w-full flex-wrap gap-0.5"}>
                            {displayedMessageVideos.map((url, videoIndex) => (
                              <div key={`${url}-${videoIndex}`} className="contents">
-                               <InlineVideoResult url={url} posterUrl={getVideoPosterForMessage(message, url)} rounded={isAgentMediaMessage} compact={isAgentMediaMessage} onLoadedDimensions={(dimensions) => updateMessageVideoDimensions(activeSession?.id ?? "", message.id, dimensions)} onPreview={() => setPreviewAsset({ id: `${message.id}-video-${videoIndex}`, type: "shot_video", name: getCanonicalMediaName(message, url, `生成视频${videoIndex + 1}`), url, posterUrl: getVideoPosterForMessage(message, url), sourcePrompt: message.videoPrompts?.[url] ?? message.generationMeta?.itemPrompts?.[videoIndex] ?? message.generationMeta?.originalPrompt ?? message.content, previewMeta: getPreviewMediaMeta(message), sessionId: activeSession?.id ?? "", messageId: message.id, createdAt: message.createdAt ?? Date.now() })} />
+                               <InlineVideoResult url={url} posterUrl={getVideoPosterForMessage(message, url)} rounded={isAgentMediaMessage} compact={isAgentMediaMessage} savedFlashAt={message.videoSavedFlashAt?.[url]} now={timerNow} onLoadedDimensions={(dimensions) => updateMessageVideoDimensions(activeSession?.id ?? "", message.id, dimensions)} onPreview={() => setPreviewAsset({ id: `${message.id}-video-${videoIndex}`, type: "shot_video", name: getCanonicalMediaName(message, url, `生成视频${videoIndex + 1}`), url, posterUrl: getVideoPosterForMessage(message, url), sourcePrompt: message.videoPrompts?.[url] ?? message.generationMeta?.itemPrompts?.[videoIndex] ?? message.generationMeta?.originalPrompt ?? message.content, previewMeta: getPreviewMediaMeta(message), sessionId: activeSession?.id ?? "", messageId: message.id, createdAt: message.createdAt ?? Date.now() })} />
                              </div>
                             ))}
-                          {Array.from({ length: isVideoPendingVisible ? videoPendingCount : 0 }).map((_, pendingIndex) => (
-                            <MediaWaitingCard key={`video-pending-${pendingIndex}`} createdAt={message.createdAt} now={timerNow} isImage={false} index={videoPendingCount > 1 ? displayedMessageVideos.length + pendingIndex + 1 : undefined} rounded={isAgentMediaMessage} compactVideo={isAgentMediaMessage} />
+                           {previewVideoUrls.map((url, previewIndex) => (
+                             <div key={`video-preview-${url}-${previewIndex}`} className="contents">
+                               <InlineVideoResult url={url} rounded={isAgentMediaMessage} compact={isAgentMediaMessage} saving onPreview={() => setPreviewAsset({ id: `${message.id}-video-preview-${previewIndex}`, type: "shot_video", name: getCanonicalMediaName(message, url, `生成视频${displayedMessageVideos.length + previewIndex + 1}`), url, sourcePrompt: message.generationMeta?.originalPrompt ?? message.content, previewMeta: getPreviewMediaMeta(message), sessionId: activeSession?.id ?? "", messageId: message.id, createdAt: message.createdAt ?? Date.now() })} />
+                             </div>
+                            ))}
+                          {Array.from({ length: Math.max(0, (isVideoPendingVisible ? videoPendingCount : 0) - previewVideoUrls.length) }).map((_, pendingIndex) => (
+                            <MediaWaitingCard key={`video-pending-${pendingIndex}`} createdAt={message.createdAt} now={timerNow} isImage={false} index={videoPendingCount > 1 ? displayedMessageVideos.length + previewVideoUrls.length + pendingIndex + 1 : undefined} rounded={isAgentMediaMessage} compactVideo={isAgentMediaMessage} />
                           ))}
                            {Array.from({ length: videoFailedCount }).map((_, failedIndex) => (
                             message.retryingFailedVideoIndexes?.includes(failedIndex) ? (
