@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { bytePlusVideoGenerationModels, frontendConversationModels, frontendImageGenerationModels, videoGenerationModels } from "@/lib/models";
-import { getUploadRuleOverrides, isAgentImageModelEnabled, isAgentVideoModelEnabled, isAssetImageModelEnabled, isConversationImageModelEnabled, isConversationVideoModelEnabled, isGeneralTextModelEnabled, isTextModelEnabled } from "@/lib/system-settings";
+import { getAdminSystemSettings, getUploadRuleOverrides, isAgentImageModelEnabled, isAgentVideoModelEnabled, isAssetImageModelEnabled, isConversationImageModelEnabled, isConversationVideoModelEnabled, isGeneralTextModelEnabled, isTextModelEnabled } from "@/lib/system-settings";
 
 export const runtime = "nodejs";
 
@@ -19,5 +19,6 @@ export async function GET() {
     agentImageModels: frontendImageGenerationModels.filter((model) => isAgentImageModelEnabled(model.id)).map((model) => model.id),
     agentVideoModels: [...videoGenerationModels, ...bytePlusVideoGenerationModels].filter((model) => isAgentVideoModelEnabled(model.id)).map((model) => model.id),
     uploadRuleOverrides: getUploadRuleOverrides(),
+    editModelToggles: getAdminSystemSettings().editModelToggles,
   });
 }

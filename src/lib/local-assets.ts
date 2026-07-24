@@ -11,7 +11,7 @@ import { appendUploadDiagnosticsLog } from "@/lib/upload-diagnostics-log";
 import { getCompressionQualityPercent, getGenerationCompressionSettings } from "@/lib/system-settings";
 
 type AssetType = "image" | "video";
-type SaveAssetOptions = { userId?: string; diagnostics?: { requestId?: string; fileName?: string; fileSize?: number } };
+type SaveAssetOptions = { userId?: string; diagnostics?: { requestId?: string; fileName?: string; fileSize?: number }; keepTransparent?: boolean };
 
 const GENERATED_ROOT = join(process.cwd(), "public", "generated");
 const ASSET_UPLOAD_TEMP_ROOT = join(process.cwd(), ".runtime", "asset-upload-temp");
@@ -179,7 +179,12 @@ function getImageExtensionFromMimeOrUrl(mimeType?: string | null, sourceUrl?: st
 // 生成图片落盘编码：按后台"图片生成压缩"设置。
 // 开启 → 用 sharp 转 JPEG，质量 = 后台三档对应的精确 JPEG 质量(95/90/80)。
 // 关闭 → 保留原始字节与原始格式(不转码不压缩)。
-async function encodeGeneratedImageBuffer(buffer: Buffer, filePathHint: string, sourceMime?: string | null, sourceUrl?: string): Promise<{ buffer: Buffer; extension: string }> {
+async function encodeGeneratedImageBuffer(buffer: Buffer, filePathHint: string, sourceMime?: string | null, sourceUrl?: string, keepTransparent?: boolean): Promise<{ buffer: Buffer; extension: string }> {
+  // 去背景/编辑元素等需要真透明输出：保留原始 png/webp，绝不 flatten 成白底、绝不转 jpg。
+  if (keepTransparent) {
+    const extension = getImageExtensionFromMimeOrUrl(sourceMime, sourceUrl);
+    return { buffer, extension: extension === "jpg" || extension === "jpeg" ? "png" : extension };
+  }
   const setting = getGenerationCompressionSettings().image;
   if (!setting.enabled) {
     return { buffer, extension: getImageExtensionFromMimeOrUrl(sourceMime, sourceUrl) };
@@ -262,7 +267,7 @@ export async function saveDataUrlAsset(dataUrl: string, type: AssetType, options
   const buffer = Buffer.from(parsed.base64, "base64");
 
   if (type === "image") {
-    const encoded = await encodeGeneratedImageBuffer(buffer, join(GENERATED_ROOT, getGeneratedFolder(getAssetFolder("image"), options), `${Date.now()}-${randomUUID()}`), parsed.mimeType);
+    const encoded = await encodeGeneratedImageBuffer(buffer, join(GENERATED_ROOT, getGeneratedFolder(getAssetFolder("image"), options), `${Date.now()}-${randomUUID()}`), parsed.mimeType, undefined, options.keepTransparent);
     const asset = createPublicAssetPath("image", encoded.extension, options);
     await mkdir(asset.directory, { recursive: true });
     await writeFile(asset.filePath, encoded.buffer);
@@ -395,7 +400,7 @@ export async function saveRemoteAsset(url: string, type: AssetType, init?: Reque
       const { stdout } = await execFileAsync(getCurlCommand(), ["-fL", "-sS", ...toCurlHeaderArgs(init?.headers), url], { encoding: "buffer", maxBuffer: 500 * 1024 * 1024 });
       const buffer = Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout);
       if (type === "image") {
-        const encoded = await encodeGeneratedImageBuffer(buffer, join(imageDir, `${Date.now()}-${randomUUID()}`), undefined, url);
+        const encoded = await encodeGeneratedImageBuffer(buffer, join(imageDir, `${Date.now()}-${randomUUID()}`), undefined, url, options.keepTransparent);
         const asset = createPublicAssetPath("image", encoded.extension, options);
         await mkdir(asset.directory, { recursive: true });
         await writeFile(asset.filePath, encoded.buffer);
@@ -414,7 +419,7 @@ export async function saveRemoteAsset(url: string, type: AssetType, init?: Reque
   const buffer = Buffer.from(await response.arrayBuffer());
 
   if (type === "image") {
-    const encoded = await encodeGeneratedImageBuffer(buffer, join(imageDir, `${Date.now()}-${randomUUID()}`), contentType, url);
+    const encoded = await encodeGeneratedImageBuffer(buffer, join(imageDir, `${Date.now()}-${randomUUID()}`), contentType, url, options.keepTransparent);
     const asset = createPublicAssetPath("image", encoded.extension, options);
     await mkdir(asset.directory, { recursive: true });
     await writeFile(asset.filePath, encoded.buffer);

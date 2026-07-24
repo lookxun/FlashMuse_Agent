@@ -41,9 +41,10 @@
 ### 测试服部署流程（"部署掉"走这个）
 1. 本地 `node scripts/bump-version.mjs`（版本号+1，改中文源码用 edit 工具）；`npx tsc --noEmit` 通过。
 2. 打**改动源码** tgz（含 `src/lib/app-version.ts`），scp 到腾讯 `/tmp` → `sudo tar -xzf -C /opt/flashmuse-staging/app`。
-3. `cd /opt/flashmuse-staging && nohup sudo docker compose up -d --build staging-app > /tmp/sb.log 2>&1 &`（**后台+轮询 `tail /tmp/sb.log` 防 120s 工具超时**，build~2.5min；entrypoint 自动 migrate deploy）。
+3. `cd /opt/flashmuse-staging && nohup sudo docker compose up -d --build staging-app > /tmp/sb.log 2>&1 &`（**后台+轮询 `tail /tmp/sb.log` 防 120s 工具超时**，build~2.5min；entrypoint 自动 migrate deploy）。此时 compose 里 `PUBLISHED_APP_VERSION` 仍是上一版（或空）→ 新版本提示条**不会**中途误弹。
 4. `sudo bash /opt/flashmuse-staging/sync-ali-test.sh`（同步 `_next/static`+`home-assets`+`generated` 到阿里测试镜像，否则 chunk 404）。
-5. 验证：`curl http://127.0.0.1:5001/`（版本号变了）+ 外网 `http://101.37.129.164:8080/` 200。
+5. ⭐ **发布版本信号（提示条门控，静态同步完成后才做）**：sed 改 `/opt/flashmuse-staging/docker-compose.yml` 的 `PUBLISHED_APP_VERSION: "vX"` 为本次新版 + `sudo docker compose up -d --force-recreate staging-app`（复用镜像、快）。这样"提示条弹出=静态已就绪"，用户点刷新必正常、不白屏。（sed 含引号→写 .sh scp + `sed -i 's/\r$//'` 再 bash。）
+6. 验证：`curl -D - http://127.0.0.1:5001/api/models | grep x-app-version`（=新版）+ `curl http://127.0.0.1:5001/`（版本号变了）+ 外网 `http://101.37.129.164:8080/` 200。
 
 ## 正式服（腾讯）部署流程（仅当用户明确说"部署正式服"）
 
@@ -63,6 +64,7 @@
    ```
    （目标是**正式**镜像 `flashmuse-static`，**不是** test 那个 `flashmuse-static-test`。曾有 `docker cp` 到已存在目录嵌套 `static/static` 的 bug → 已用 `rm -rf` 前置修掉。）
 6. **健康检查**：四域名 200。写成 `/tmp/health.sh`：循环 `curl -s -o /dev/null -w '%{http_code}' https://{main,api,ali,static}.venusface.com/`。
+6.5. ⭐ **发布版本信号（提示条门控，同测试服）**：正式 compose `/opt/flashmuse/docker-compose.yml` 也需有 `PUBLISHED_APP_VERSION: ""` 环境变量行（首次上此功能要手动加，位置同测试服 DATABASE_URL 行后）。**静态同步阿里正式镜像（第5步）完成后**，sed 改成本次新版 + `sudo docker compose up -d --force-recreate flashmuse-app`。保证正式服提示条弹出时静态已就绪、刷新不白屏。
 7. **env 数据**：`UPLOAD_RULE_OVERRIDES` 等是正式服独立 env（`/opt/flashmuse/data/.env.local`），不随代码同步；需要时手改 + `docker compose up -d --force-recreate flashmuse-app`。
 8. commit + push GitHub（保持四方同步）。
 

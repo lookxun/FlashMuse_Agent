@@ -369,7 +369,7 @@ export function CreditFlowDialog({ user, onClose, label = "对话流", details }
   const reveal = useRevealOnScroll(activeConversation?.id ?? "", activeConversation?.mediaItems.length ?? 0);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center overscroll-contain bg-black/42 px-8 py-8 backdrop-blur-[4px]">
+    <div className="fixed inset-0 z-[11000] flex items-center justify-center overscroll-contain bg-black/42 px-8 py-8 backdrop-blur-[4px]">
       <div className="flex h-[min(820px,calc(100vh-64px))] w-[min(1180px,calc(100vw-64px))] flex-col overflow-hidden rounded-[10px] bg-white shadow-[0_24px_80px_rgba(0,0,0,0.22)]">
         <header className="relative flex h-[60px] shrink-0 items-center border-b border-[#eeeeee] px-6 pr-14">
           <div className="truncate text-[14px] font-semibold text-[#111111]">{displayName}{label}消耗积分详细</div>
@@ -530,7 +530,7 @@ export function CreditCategoryDialog({ title, user, categories, initialCategoryI
   const reveal = useRevealOnScroll(activeCategory?.id ?? "", activeCategory?.items.length ?? 0);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center overscroll-contain bg-black/42 px-8 py-8 backdrop-blur-[4px]">
+    <div className="fixed inset-0 z-[11000] flex items-center justify-center overscroll-contain bg-black/42 px-8 py-8 backdrop-blur-[4px]">
       <div className="flex h-[min(820px,calc(100vh-64px))] w-[min(1180px,calc(100vw-64px))] flex-col overflow-hidden rounded-[10px] bg-white shadow-[0_24px_80px_rgba(0,0,0,0.22)]">
         <header className="relative flex h-[60px] shrink-0 items-center border-b border-[#eeeeee] px-6 pr-14">
           <div className="truncate text-[14px] font-semibold text-[#111111]">{displayName}{title}</div>
@@ -592,7 +592,7 @@ function CurrentCreditDialog({ user, onClose }: { user: AdminCreditUser; onClose
   const displayName = user.nickname || user.userEmail;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center overscroll-contain bg-black/42 px-8 py-8 backdrop-blur-[4px]">
+    <div className="fixed inset-0 z-[11000] flex items-center justify-center overscroll-contain bg-black/42 px-8 py-8 backdrop-blur-[4px]">
       <div className="flex h-[min(760px,calc(100vh-64px))] w-[min(860px,calc(100vw-64px))] flex-col overflow-hidden rounded-[10px] bg-white shadow-[0_24px_80px_rgba(0,0,0,0.22)]">
         <header className="relative flex h-[60px] shrink-0 items-center border-b border-[#eeeeee] px-6 pr-14">
           <div className="truncate text-[14px] font-semibold text-[#111111]">{displayName}当前积分变动明细</div>
@@ -1013,7 +1013,7 @@ export function AdminCreditsPanel({ settings, stats, rows }: { settings: AdminCr
       {workflowFlowDialogUser ? <CreditFlowDialog user={workflowFlowDialogUser} label="工作流" details={workflowFlowDialogUser.workflowCreditDetails} onClose={() => setWorkflowFlowDialogUser(null)} /> : null}
       {assetGenerationDialogUser ? <CreditCategoryDialog title="资产库消耗积分详细" user={assetGenerationDialogUser} categories={assetGenerationDialogUser.assetGenerationCreditDetails} onClose={() => setAssetGenerationDialogUser(null)} /> : null}
       {promptToolDialogUser ? <CreditCategoryDialog title="反推/优化提示词消耗积分详细" user={promptToolDialogUser} categories={promptToolDialogUser.promptToolCreditDetails} onClose={() => setPromptToolDialogUser(null)} /> : null}
-      {loadingDialogTitle ? <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/42 px-8 py-8 backdrop-blur-[4px]"><div className="w-[360px] rounded-[12px] bg-white shadow-[0_24px_80px_rgba(0,0,0,0.22)]"><AdminDetailLoading label={loadingDialogTitle} /></div></div> : null}
+      {loadingDialogTitle ? <div className="fixed inset-0 z-[11000] flex items-center justify-center bg-black/42 px-8 py-8 backdrop-blur-[4px]"><div className="w-[360px] rounded-[12px] bg-white shadow-[0_24px_80px_rgba(0,0,0,0.22)]"><AdminDetailLoading label={loadingDialogTitle} /></div></div> : null}
     </>
   );
 }

@@ -24,6 +24,9 @@ services:
       NODE_ENV: production
       PORT: "3000"
       DATABASE_URL: "postgresql://flashmuse:stg_5k2p9v7q3xz8@staging-db:5432/flashmuse?schema=public"
+      # 已发布版本号（前端新版本提示条据此判定）。部署最后一步（静态同步完成后）才 set 成新版 + force-recreate，
+      # 空/未设时不发版本头 → 部署中途不会误弹。见 handover/03-deploy-and-servers.md。
+      PUBLISHED_APP_VERSION: "${PUBLISHED_APP_VERSION:-}"
     volumes:
       - /opt/flashmuse-staging/data/.env.local:/app/.env.local
       - /opt/flashmuse-staging/data/generated:/app/public/generated

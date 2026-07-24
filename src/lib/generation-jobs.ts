@@ -15,6 +15,21 @@ import { buildMediaAssetRecord, buildUserAssetStateRecord, classifyAsset, type A
 import { getOpenRouterVideoTask } from "@/lib/openrouter-video";
 import { enqueueRemoteAssetSave, waitForMediaSaveJob } from "@/lib/media-save-queue";
 import { upsertVideoManifestEntry } from "@/lib/video-manifest";
+import { saveDataUrlAsset } from "@/lib/local-assets";
+
+// 编辑类功能（去背景/高清/快捷编辑/橡皮/编辑元素）失败时，尽量透出真实原因（中文优先）。
+// error-message 已把常见上游报错（如"当前模型不支持所请求的参数"）映射成中文；这里作为兜底文案，
+// 避免统一被吞成"服务器繁忙"。
+function editErrorFallback(error: unknown): string {
+  const raw = error instanceof Error ? error.message : typeof error === "string" ? error : "";
+  const reason = raw
+    .replace(/^\(B_\d+\)\s*/, "")
+    .replace(/^(?:图片|视频)?(?:平台|模型|供应商)?(?:图片|视频)?(?:生成|任务|请求)?失败[：:]\s*/i, "")
+    .replace(/\bRequest\s*id\s*:\s*[0-9a-f]+/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return reason ? `编辑失败：${reason.slice(0, 180)}` : "编辑失败，请稍后再试。";
+}
 
 /**
  * 后端持久生成任务（GenerationJob）。原则：模型申请一旦提交，后端就负责跑到底
@@ -156,6 +171,11 @@ export type CreateImageJobInput = {
   flow?: "conversation" | "workflow";
   metadata?: Prisma.InputJsonValue;
   extra?: Record<string, unknown>;
+  transparent?: boolean;
+  // 本地抠图（去背景 / 编辑元素透明主体层）：为 true 时跳过出图 provider，直接对参考图跑本地抠图模型产真透明 PNG。
+  bgRemove?: boolean;
+  // 编辑类功能（去背景/高清/快捷编辑/橡皮/编辑元素）标记：失败时透出真实原因（中文），不套用通用"服务器繁忙"文案。
+  editFunction?: boolean;
 };
 
 export type CreateVideoJobInput = {
@@ -242,7 +262,7 @@ export async function createImageJob(input: CreateImageJobInput): Promise<Genera
   const id = randomUUID();
   const provider = input.model?.startsWith("byteplus:") ? "byteplus" : "openrouter";
   const count = Math.min(4, Math.max(1, Math.floor(input.count ?? 1)));
-  const extra = { ...(input.extra ?? {}), ...(input.candidateMode ? { candidateMode: input.candidateMode } : {}), ...(input.conversationCode ? { conversationCode: input.conversationCode } : {}) };
+  const extra = { ...(input.extra ?? {}), ...(input.candidateMode ? { candidateMode: input.candidateMode } : {}), ...(input.conversationCode ? { conversationCode: input.conversationCode } : {}), ...(input.transparent ? { transparent: true } : {}), ...(input.bgRemove ? { bgRemove: true } : {}), ...(input.editFunction ? { editFunction: true } : {}) };
   const referenceImages = await resolveReferenceUrls(input.userId, input.referenceImages ?? []);
   const referenceNames = await resolveReferenceNames(input.userId, referenceImages);
   await prisma.$transaction(async (tx) => {
@@ -673,6 +693,22 @@ export async function runImageJob(job: GenerationJobRow) {
       await markJobFailed(job.id, "生成任务多次尝试仍未完成。", "JOB_MAX_ATTEMPTS");
       return;
     }
+    // 本地抠图分支（去背景 / 编辑元素透明主体层）：不走出图 provider（两家都产不了真透明），
+    // 直接对源参考图跑本地抠图模型产带 alpha 的透明 PNG，再走统一本地化+落库+扣费。
+    if (job.extraJson?.bgRemove) {
+      const source = referenceImages[0];
+      if (!source) throw new Error("去背景缺少源图片。");
+      const { removeImageBackground } = await import("@/lib/background-removal");
+      const sharpModule = (await import("sharp")).default;
+      const pngBuffer = await removeImageBackground(source);
+      const dataUrl = `data:image/png;base64,${pngBuffer.toString("base64")}`;
+      const localUrl = await saveDataUrlAsset(dataUrl, "image", { userId: job.userId, keepTransparent: true });
+      const meta = await sharpModule(pngBuffer).metadata();
+      const dims = meta.width && meta.height ? { [localUrl]: { width: meta.width, height: meta.height } } : undefined;
+      void appendGenerationDiagnosticsLog({ event: "image-job-bgremove-done", requestId: job.requestId, conversationId: job.conversationId ?? undefined, userId: job.userId, mode: "image", model: job.model ?? undefined, durationMs: Date.now() - startedAt, extra: { localUrl, width: meta.width, height: meta.height, channels: meta.channels, hasAlpha: meta.hasAlpha } });
+      await localizeAndFinalizeImages(job, [localUrl], dims, undefined, 1, referenceImages, settings, creditSource, 1, startedAt, false);
+      return;
+    }
     const result = await generateOpenRouterImage(job.prompt ?? "", referenceImages, {
       model: job.model ?? undefined,
       bytePlusProviderKey: getBytePlusProviderKey(job.model, creditSource),
@@ -681,6 +717,7 @@ export async function runImageJob(job: GenerationJobRow) {
       candidateMode: (job.extraJson?.candidateMode as "all" | "best" | undefined) ?? undefined,
       requestId: job.requestId,
       userId: job.userId,
+      transparent: (job.extraJson?.transparent as boolean | undefined) ?? undefined,
     });
     const providerReturnedImageCount = result.images.length;
     const deliveredImages = pickRequestedImages(result.images, result.imageDimensions, requestedImageCount, job.model ?? undefined, settings);
@@ -705,7 +742,7 @@ export async function runImageJob(job: GenerationJobRow) {
       void appendGenerationDiagnosticsLog({ event: "image-job-transient-retry", requestId: job.requestId, conversationId: job.conversationId ?? undefined, userId: job.userId, mode: "image", model: job.model ?? undefined, prompt: job.prompt ?? undefined, settings, durationMs: Date.now() - startedAt, error, extra: { attempts: job.attempts, delayMs } });
       return;
     }
-    const codedError = await createCodedApiError(error, GENERIC_MEDIA_ERROR_MESSAGE, "image-job failed");
+    const codedError = await createCodedApiError(error, job.extraJson?.editFunction ? editErrorFallback(error) : GENERIC_MEDIA_ERROR_MESSAGE, "image-job failed");
     await markJobFailed(job.id, codedError.error, codedError.errorCode);
     void recordGenerationEvent({ userId: job.userId, requestId: job.requestId, kind: "image", creditSource, model: job.model ?? undefined, provider: job.provider ?? undefined, status: "failed", failureReason: codedError.error, failureCode: codedError.errorCode, durationMs: Date.now() - startedAt, referenceImageCount: referenceImages.length });
     void appendGenerationDiagnosticsLog({ event: "image-job-failed", requestId: job.requestId, conversationId: job.conversationId ?? undefined, userId: job.userId, mode: "image", model: job.model ?? undefined, prompt: job.prompt ?? undefined, settings, durationMs: Date.now() - startedAt, error, extra: { errorCode: codedError.errorCode, userError: codedError.error } });

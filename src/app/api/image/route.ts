@@ -78,10 +78,10 @@ function withChargedUsage<T extends { usage?: { promptTokens?: number; completio
 }
 
 export async function POST(request: Request) {
-  let body: { prompt?: string; sourcePrompt?: string; model?: string; referenceImages?: string[]; settings?: { ratio?: string; resolution?: string }; count?: number; candidateMode?: "all" | "best"; conversationId?: string; conversationTitle?: string; conversationCode?: string; requestId?: string; metadata?: Prisma.InputJsonValue; async?: boolean; workflowId?: string; workflowNodeId?: string; flow?: "conversation" | "workflow" } | undefined;
+  let body: { prompt?: string; sourcePrompt?: string; model?: string; referenceImages?: string[]; settings?: { ratio?: string; resolution?: string }; count?: number; candidateMode?: "all" | "best"; conversationId?: string; conversationTitle?: string; conversationCode?: string; requestId?: string; metadata?: Prisma.InputJsonValue; async?: boolean; workflowId?: string; workflowNodeId?: string; flow?: "conversation" | "workflow"; transparent?: boolean; bgRemove?: boolean; editFunction?: boolean } | undefined;
   const routeStartedAt = Date.now();
   try {
-    body = (await request.json()) as { prompt?: string; sourcePrompt?: string; model?: string; referenceImages?: string[]; settings?: { ratio?: string; resolution?: string }; count?: number; candidateMode?: "all" | "best"; conversationId?: string; conversationTitle?: string; conversationCode?: string; requestId?: string; metadata?: Prisma.InputJsonValue; async?: boolean; workflowId?: string; workflowNodeId?: string; flow?: "conversation" | "workflow" };
+    body = (await request.json()) as { prompt?: string; sourcePrompt?: string; model?: string; referenceImages?: string[]; settings?: { ratio?: string; resolution?: string }; count?: number; candidateMode?: "all" | "best"; conversationId?: string; conversationTitle?: string; conversationCode?: string; requestId?: string; metadata?: Prisma.InputJsonValue; async?: boolean; workflowId?: string; workflowNodeId?: string; flow?: "conversation" | "workflow"; transparent?: boolean; bgRemove?: boolean; editFunction?: boolean };
     const prompt = body.prompt?.trim();
 
     if (!prompt) {
@@ -118,6 +118,9 @@ export async function POST(request: Request) {
         workflowNodeId: body.workflowNodeId,
         flow: body.flow ?? (creditSource?.startsWith("workflow_") ? "workflow" : "conversation"),
         metadata: body.metadata,
+        transparent: body.transparent,
+        bgRemove: body.bgRemove,
+        editFunction: body.editFunction,
         // 统一存「用户真实提示词」(不含参考图 hint)：与视频 extra.cleanPrompt 一致。
         // finalizeImageJobAsset 会优先用它写 MediaAsset.sourcePrompt；"使用提示词"也读它。
         extra: { cleanPrompt: (typeof body.sourcePrompt === "string" && body.sourcePrompt.trim()) ? body.sourcePrompt : prompt },

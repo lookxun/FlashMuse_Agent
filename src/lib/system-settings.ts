@@ -44,6 +44,9 @@ export type AdminSystemSettings = {
   bytePlusRegion: "ap-southeast-1" | "eu-west-1";
   modelProviderPreferences: Record<string, "openrouter" | "byteplus">;
   bytePlusModelSelections: Record<string, string>;
+  // 图片编辑类（高清/橡皮）模型候选链开关：key=`${func}:${modelId}`，值=是否启用。
+  // 关掉首选自动用下一个启用的模型；全关时前端回落到完整候选链（不至于无法使用）。
+  editModelToggles: Record<string, boolean>;
   imageCompressionEnabled: boolean;
   imageCompressionQuality: CompressionQuality;
   videoCompressionEnabled: boolean;
@@ -122,6 +125,19 @@ const DEFAULT_BYTEPLUS_MODEL_SELECTIONS: Record<string, string> = {
   "agent-chat.seed-2-0-pro": "ep-20260514173614-jbcb4",
 };
 
+// 图片编辑类（高清/橡皮）模型候选链：按顺序优先级，前一个失败/关闭自动用下一个。默认全部启用。
+// 新增功能/模型只改这里 + 后台表格；前端候选链按此顺序 + 开关过滤。
+export const EDIT_FUNCTION_MODEL_CHAIN: string[] = [
+  "google/gemini-3.1-flash-image-preview",
+  "google/gemini-3-pro-image-preview",
+  "byteplus:conversation-image.seedream-4-5",
+];
+export const EDIT_FUNCTION_KEYS = ["hd", "eraser"] as const;
+
+const DEFAULT_EDIT_MODEL_TOGGLES: Record<string, boolean> = Object.fromEntries(
+  EDIT_FUNCTION_KEYS.flatMap((func) => EDIT_FUNCTION_MODEL_CHAIN.map((modelId) => [`${func}:${modelId}`, true])),
+);
+
 const BYTEPLUS_ENDPOINT_MODEL_NAMES: Record<string, string> = {
   "ep-20260521133841-nn8bg": "dreamina-seedance-2-0-260128",
   "ep-20260521134040-vf2jf": "dreamina-seedance-2-0-fast-260128",
@@ -199,6 +215,7 @@ export function getAdminSystemSettings(): AdminSystemSettings {
     bytePlusRegion: getBytePlusRegion(),
     modelProviderPreferences: { ...DEFAULT_MODEL_PROVIDER_PREFERENCES, ...getJsonEnvValue<Record<string, "openrouter" | "byteplus">>("MODEL_PROVIDER_PREFERENCES", {}) },
     bytePlusModelSelections: { ...DEFAULT_BYTEPLUS_MODEL_SELECTIONS, ...getJsonEnvValue<Record<string, string>>("BYTEPLUS_MODEL_SELECTIONS", {}) },
+    editModelToggles: { ...DEFAULT_EDIT_MODEL_TOGGLES, ...getJsonEnvValue<Record<string, boolean>>("EDIT_MODEL_TOGGLES", {}) },
     imageCompressionEnabled: getBooleanEnvValue("IMAGE_COMPRESSION_ENABLED", true),
     imageCompressionQuality: getCompressionQualityEnvValue("IMAGE_COMPRESSION_QUALITY", "standard"),
     videoCompressionEnabled: getBooleanEnvValue("VIDEO_COMPRESSION_ENABLED", true),
@@ -376,6 +393,7 @@ export async function updateAdminSystemSettings(settings: AdminSystemSettings) {
     ["BYTEPLUS_REGION", settings.bytePlusRegion],
     ["MODEL_PROVIDER_PREFERENCES", formatEnvValue(JSON.stringify(settings.modelProviderPreferences))],
     ["BYTEPLUS_MODEL_SELECTIONS", formatEnvValue(JSON.stringify(settings.bytePlusModelSelections))],
+    ["EDIT_MODEL_TOGGLES", formatEnvValue(JSON.stringify(settings.editModelToggles))],
     ["IMAGE_COMPRESSION_ENABLED", settings.imageCompressionEnabled ? "true" : "false"],
     ["IMAGE_COMPRESSION_QUALITY", settings.imageCompressionQuality],
     ["VIDEO_COMPRESSION_ENABLED", settings.videoCompressionEnabled ? "true" : "false"],
@@ -406,6 +424,7 @@ export async function updateAdminSystemSettings(settings: AdminSystemSettings) {
   process.env.BYTEPLUS_REGION = settings.bytePlusRegion;
   process.env.MODEL_PROVIDER_PREFERENCES = JSON.stringify(settings.modelProviderPreferences);
   process.env.BYTEPLUS_MODEL_SELECTIONS = JSON.stringify(settings.bytePlusModelSelections);
+  process.env.EDIT_MODEL_TOGGLES = JSON.stringify(settings.editModelToggles);
   process.env.IMAGE_COMPRESSION_ENABLED = settings.imageCompressionEnabled ? "true" : "false";
   process.env.IMAGE_COMPRESSION_QUALITY = settings.imageCompressionQuality;
   process.env.VIDEO_COMPRESSION_ENABLED = settings.videoCompressionEnabled ? "true" : "false";

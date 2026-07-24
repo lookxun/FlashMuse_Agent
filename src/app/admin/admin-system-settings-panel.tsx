@@ -137,6 +137,21 @@ const modelUsageGroups: ModelUsageGroup[] = [
   },
 ];
 
+// 工作流图片「编辑功能」快捷菜单：后台规则展示 + 高清/橡皮模型候选链开关。
+// 候选链顺序（首选→次选→三选）与前端 EDIT_MODEL_CANDIDATES / system-settings 的 EDIT_FUNCTION_MODEL_CHAIN 一致。
+const EDIT_MODEL_CHAIN: Array<{ modelId: string; tier: string }> = [
+  { modelId: "google/gemini-3.1-flash-image-preview", tier: "首选" },
+  { modelId: "google/gemini-3-pro-image-preview", tier: "次选" },
+  { modelId: "byteplus:conversation-image.seedream-4-5", tier: "三选" },
+];
+
+const editFunctionRows: Array<{ key: string; name: string; rule: string; chain: boolean }> = [
+  { key: "quick", name: "快捷编辑", rule: "尽量用源图同款模型/比例/分辨率重绘；上传图等对不上尺寸时回落 Seedream 4.5，比例+分辨率取最接近源图的一档。走 img2img，模型跟随源图、无候选链开关。", chain: false },
+  { key: "hd", name: "高清", rule: "指令式提升清晰度，内容/构图/颜色不变；输出 4K、比例贴源图。走下方模型候选链：首选失败或关闭自动用下一个，全部失败才显示失败卡。", chain: true },
+  { key: "bg", name: "去背景", rule: "本地抠图（@imgly/background-removal-node），产透明 PNG，尺寸=源图。纯本地推理、不调云模型、无候选链开关。", chain: false },
+  { key: "eraser", name: "橡皮工具", rule: "半透明涂抹要消除的区域，导出时把标记区填中性灰盖住主体，模型做局部消除+补背景、其余不变；比例/尺寸贴源图。走下方模型候选链，规则同高清。", chain: true },
+];
+
 function AiGenerate3dIcon({ className = "h-4 w-4 shrink-0 text-[#555555]" }: { className?: string }) {
   return (
     <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" className={className}>
@@ -230,6 +245,7 @@ export function AdminSystemSettingsPanel({ settings, adminEmailCount }: { settin
   const [bytePlusRegion, setBytePlusRegion] = useState<"ap-southeast-1" | "eu-west-1">(settings.bytePlusRegion);
   const [modelProviderPreferences, setModelProviderPreferences] = useState(settings.modelProviderPreferences);
   const [bytePlusModelSelections, setBytePlusModelSelections] = useState(settings.bytePlusModelSelections);
+  const [editModelToggles, setEditModelToggles] = useState(settings.editModelToggles);
   const [message, setMessage] = useState("");
   const [isPending, startTransition] = useTransition();
 
@@ -242,6 +258,7 @@ export function AdminSystemSettingsPanel({ settings, adminEmailCount }: { settin
     const nextBytePlusRegion = nextSettings?.bytePlusRegion ?? bytePlusRegion;
     const nextModelProviderPreferences = nextSettings?.modelProviderPreferences ?? modelProviderPreferences;
     const nextBytePlusModelSelections = nextSettings?.bytePlusModelSelections ?? bytePlusModelSelections;
+    const nextEditModelToggles = nextSettings?.editModelToggles ?? editModelToggles;
     if (nextOpenRouterEnabled && !nextOpenRouterKey) {
       setMessage("请输入 OpenRouter API Key");
       return;
@@ -257,13 +274,14 @@ export function AdminSystemSettingsPanel({ settings, adminEmailCount }: { settin
     setBytePlusRegion(nextBytePlusRegion);
     setModelProviderPreferences(nextModelProviderPreferences);
     setBytePlusModelSelections(nextBytePlusModelSelections);
+    setEditModelToggles(nextEditModelToggles);
     setMessage("");
     startTransition(async () => {
       try {
         const response = await fetch("/admin/api/system-settings", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ openRouterApiKey: nextOpenRouterKey, openRouterApiKeyEnabled: nextOpenRouterEnabled, bytePlusApiKey: nextBytePlusKey, bytePlusApiKeyEnabled: nextBytePlusEnabled, bytePlusUnlockLimits: nextBytePlusUnlockLimits, bytePlusRegion: nextBytePlusRegion, modelProviderPreferences: nextModelProviderPreferences, bytePlusModelSelections: nextBytePlusModelSelections }),
+          body: JSON.stringify({ openRouterApiKey: nextOpenRouterKey, openRouterApiKeyEnabled: nextOpenRouterEnabled, bytePlusApiKey: nextBytePlusKey, bytePlusApiKeyEnabled: nextBytePlusEnabled, bytePlusUnlockLimits: nextBytePlusUnlockLimits, bytePlusRegion: nextBytePlusRegion, modelProviderPreferences: nextModelProviderPreferences, bytePlusModelSelections: nextBytePlusModelSelections, editModelToggles: nextEditModelToggles }),
         });
         const data = (await response.json().catch(() => ({}))) as { error?: string; settings?: AdminSystemSettings };
         if (!response.ok || !data.settings) throw new Error(data.error || "保存失败");
@@ -275,6 +293,7 @@ export function AdminSystemSettingsPanel({ settings, adminEmailCount }: { settin
         setBytePlusRegion(data.settings.bytePlusRegion);
         setModelProviderPreferences(data.settings.modelProviderPreferences);
         setBytePlusModelSelections(data.settings.bytePlusModelSelections);
+        setEditModelToggles(data.settings.editModelToggles);
         setMessage("");
       } catch (error) {
         setMessage(error instanceof Error ? error.message : "保存失败");
@@ -295,6 +314,11 @@ export function AdminSystemSettingsPanel({ settings, adminEmailCount }: { settin
   const updateBytePlusModel = (key: string, endpointId: string) => {
     const next = { ...bytePlusModelSelections, [key]: endpointId };
     saveSettings({ bytePlusModelSelections: next });
+  };
+
+  const updateEditModelToggle = (key: string, enabled: boolean) => {
+    const next = { ...editModelToggles, [key]: enabled };
+    saveSettings({ editModelToggles: next });
   };
 
   return (
@@ -409,6 +433,44 @@ export function AdminSystemSettingsPanel({ settings, adminEmailCount }: { settin
                     );
                   })}
                 </div>
+              )}
+            </div>
+          </div>
+        ))}
+      </section>
+
+      <section className="mt-8 min-w-[1180px] overflow-hidden rounded-[10px] border border-[#eeeeee] bg-white text-[13px] shadow-[0_10px_28px_rgba(0,0,0,0.04)]">
+        <div className="border-b border-[#eeeeee] bg-[#fafafa] px-5 py-3 text-[12px] text-[#777777]">
+          <span className="font-medium text-[#555555]">工作流 · 图片编辑功能</span>
+          <span className="ml-2">选中工作流图片节点后顶部快捷菜单里的编辑功能。高清 / 橡皮工具走「首选→次选→三选」模型候选链，前一个失败或关闭自动用下一个；全部关闭时回落到完整候选链以免不可用。</span>
+        </div>
+        <div className="grid grid-cols-[140px_1fr_470px] border-b border-[#eeeeee] bg-[#fafafa] text-[12px] text-[#777777]">
+          <div className="px-5 py-3 font-medium">功能</div>
+          <div className="px-5 py-3 font-medium">规则说明</div>
+          <div className="px-5 py-3 font-medium">使用模型（首选 / 次选 / 三选）</div>
+        </div>
+        {editFunctionRows.map((row) => (
+          <div key={row.key} className="grid grid-cols-[140px_1fr_470px] border-b border-[#f2f2f2] last:border-b-0">
+            <div className="px-5 py-4 font-medium text-[#222222]">{row.name}</div>
+            <div className="px-5 py-4 text-[12px] leading-5 text-[#666666]">{row.rule}</div>
+            <div className="px-5 py-4">
+              {row.chain ? (
+                <div className="flex flex-col gap-2">
+                  {EDIT_MODEL_CHAIN.map((entry) => {
+                    const toggleKey = `${row.key}:${entry.modelId}`;
+                    const checked = editModelToggles[toggleKey] !== false;
+                    return (
+                      <span key={toggleKey} className="inline-flex h-8 w-full items-center gap-2 rounded-[7px] bg-[#f4f6fb] px-2.5 text-[12px] text-[#333333]">
+                        <span className="w-8 shrink-0 text-[#999999]">{entry.tier}</span>
+                        <ModelIcon modelId={entry.modelId} />
+                        <span className="min-w-0 flex-1 truncate font-medium">{getModelLabel(entry.modelId)}</span>
+                        <SettingSwitch checked={checked} disabled={isPending} onChange={(value) => updateEditModelToggle(toggleKey, value)} ariaLabel={`${row.name} ${entry.tier} 开关`} />
+                      </span>
+                    );
+                  })}
+                </div>
+              ) : (
+                <span className="text-[12px] text-[#999999]">{row.key === "bg" ? "本地抠图，无云模型" : "跟随源图模型，无候选链开关"}</span>
               )}
             </div>
           </div>

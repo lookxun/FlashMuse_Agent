@@ -4,7 +4,7 @@ const nextConfig: NextConfig = {
   devIndicators: {
     position: "bottom-right",
   },
-  serverExternalPackages: ["ffmpeg-static", "sharp"],
+  serverExternalPackages: ["ffmpeg-static", "sharp", "@imgly/background-removal-node", "onnxruntime-node"],
   async headers() {
     return [
       {

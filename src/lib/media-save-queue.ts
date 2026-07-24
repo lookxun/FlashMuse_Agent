@@ -37,6 +37,7 @@ export type MediaSaveJob = {
   model?: string;
   prompt?: string;
   userId?: string;
+  keepTransparent?: boolean;
 };
 
 const RUNTIME_DIR = join(process.cwd(), ".runtime");
@@ -197,7 +198,7 @@ async function processMediaSaveJob(id: string) {
         ...getRemoteUrlDebugInfo(job.remoteUrl),
       });
       void appendGenerationDiagnosticsLog({ event: "media-save-download-start", requestId: job.requestId, userId: job.userId, mode: job.type, model: job.model, prompt: job.prompt, references: [summarizeGeneratedReference(job.remoteUrl, 0, "remote_asset")], extra: { id: job.id, type: job.type, attempt: job.attempts, queuedMs: downloadStartedAt - job.createdAt, ...getRemoteUrlDebugInfo(job.remoteUrl) } });
-      const localUrl = await saveRemoteAsset(job.remoteUrl, job.type, getRequestInit(job), { userId: job.userId });
+      const localUrl = await saveRemoteAsset(job.remoteUrl, job.type, getRequestInit(job), { userId: job.userId, keepTransparent: job.keepTransparent });
       if (job.type === "video") await compressGeneratedVideoInPlace(localUrl).catch((error) => {
         console.warn("[media-save] video compress failed", { id: job.id, requestId: job.requestId, localUrl, error: error instanceof Error ? error.message : String(error) });
         return localUrl;
@@ -279,6 +280,7 @@ export async function enqueueRemoteAssetSave(input: {
   model?: string;
   prompt?: string;
   userId?: string;
+  keepTransparent?: boolean;
 }) {
   if (!isRemoteUrl(input.remoteUrl)) return undefined;
   const id = getJobId(input.remoteUrl, input.userId);
@@ -293,6 +295,7 @@ export async function enqueueRemoteAssetSave(input: {
       existing.model = input.model ?? existing.model;
       existing.prompt = input.prompt ?? existing.prompt;
       existing.userId = input.userId ?? existing.userId;
+      existing.keepTransparent = input.keepTransparent ?? existing.keepTransparent;
       existing.updatedAt = now;
       return { ...existing };
     }
@@ -312,6 +315,7 @@ export async function enqueueRemoteAssetSave(input: {
       model: input.model,
       prompt: input.prompt,
       userId: input.userId,
+      keepTransparent: input.keepTransparent,
     };
     jobs.push(next);
     console.log("[media-save] queued remote asset", {
