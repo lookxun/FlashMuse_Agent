@@ -4,7 +4,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { createPortal } from "react-dom";
 import { BaseBoxShapeUtil, BindingUtil, CubicBezier2d, HTMLContainer, Mat, Rectangle2d, SVGContainer, SelectionForegroundOverlayUtil, ShapeUtil, T, Tldraw, Vec, createShapeId, defaultBindingUtils, defaultOverlayUtils, defaultShapeUtils, resizeBox, useActions, useEditor, useValue, vecModelValidator, type Editor, type IndexKey, type RecordProps, type TLBinding, type TLComponents, type TLHandle, type TLHandleDragInfo, type TLResizeInfo, type TLShape, type TLShapeId, type TLUiOverrides, type TldrawOptions, type VecModel } from "tldraw";
 import { type IconType } from "react-icons";
-import { RiEraserLine, RiDragMove2Line, RiHdLine, RiSparkling2Line, RiAccountBoxLine, RiBellLine, RiAddLine, RiArrowDownSLine, RiArrowUpLine, RiBringForward, RiBringToFront, RiCheckLine, RiCheckboxBlankCircleLine, RiCheckboxMultipleLine, RiClipboardLine, RiCloseLine, RiCursorLine, RiDeleteBinLine, RiDownloadLine, RiEmotionSadLine, RiExportFill, RiExportLine, RiEyeLine, RiEyeOffLine, RiFileCodeLine, RiFileCopy2Line, RiFileCopyLine, RiFileImageLine, RiFileTextLine, RiFilmAiLine, RiFocus3Line, RiGoogleFill, RiHand, RiHistoryLine, RiImage2Line, RiImageAiLine, RiImageCircleLine, RiImageLine, RiInformation2Line, RiLandscapeLine, RiLayoutLeft2Line, RiLayoutLeftLine, RiLoader4Line, RiLockLine, RiLockUnlockLine, RiMoreLine, RiMultiImageLine, RiNodeTree, RiOpenaiFill, RiResetLeftLine, RiRoadMapLine, RiScissorsCutLine, RiSendBackward, RiSendToBack, RiShining2Line, RiStackLine, RiTBoxLine, RiTextBlock, RiTextSnippet, RiTimeLine, RiTiktokFill, RiUpload2Line, RiVideoLine, RiVideoOnLine, RiVoiceprintLine, RiZoomInLine, RiZoomOutLine } from "react-icons/ri";
+import { RiEraserLine, RiDragMove2Line, RiHdLine, RiSparkling2Line, RiAccountBoxLine, RiBellLine, RiAddLine, RiArrowDownSLine, RiArrowUpLine, RiBringForward, RiBringToFront, RiCheckLine, RiCheckboxBlankCircleLine, RiCheckboxCircleLine, RiCheckboxMultipleLine, RiClipboardLine, RiCloseLine, RiCursorLine, RiDeleteBinLine, RiDownloadLine, RiEmotionSadLine, RiExportFill, RiExportLine, RiEyeLine, RiEyeOffLine, RiFileCodeLine, RiFileCopy2Line, RiFileCopyLine, RiFileImageLine, RiFileTextLine, RiFilmAiLine, RiFocus3Line, RiGoogleFill, RiHand, RiHistoryLine, RiImage2Line, RiImageAiLine, RiImageCircleLine, RiImageLine, RiInformation2Line, RiLandscapeLine, RiLayoutLeft2Line, RiLayoutLeftLine, RiLoader4Line, RiLockLine, RiLockUnlockLine, RiMoreLine, RiMultiImageLine, RiNodeTree, RiOpenaiFill, RiResetLeftLine, RiRoadMapLine, RiScissorsCutLine, RiSendBackward, RiSendToBack, RiShining2Line, RiStackLine, RiTBoxLine, RiTextBlock, RiTextSnippet, RiTimeLine, RiTiktokFill, RiUpload2Line, RiVideoLine, RiVideoOnLine, RiVoiceprintLine, RiZoomInLine, RiZoomOutLine } from "react-icons/ri";
 import { BytePlusIcon } from "@/components/byteplus-icon";
 import { AudioWaveformPlayer } from "@/components/audio-waveform-player";
 import { AssetMentionPicker, type MentionPickerCategory, type MentionPickerItem } from "@/components/asset-mention-picker";
@@ -53,6 +53,10 @@ export type WorkflowNodeData = {
   taskId?: string;
   videoRequestId?: string;
   imageRequestId?: string;
+  // 乐观显示：供应商已出视频（可直接播的远程地址）但本地还在后台存盘时，先用它展示（展示专用、不进资产库）。
+  // 存好后清空并把本地地址写进 videoUrl。videoSavedFlashAt：本地就绪时间戳，用于"保存成功"闪现。
+  videoPreviewUrl?: string;
+  videoSavedFlashAt?: number;
   startedAt?: number;
   uploads?: WorkflowUploadItem[];
   // Full reference set (own uploads + connected-node references) captured at generation time,
@@ -4265,7 +4269,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
         updateNode(node.id, { isRunning: true, error: undefined, taskId });
         continue;
       }
-      const statusData = await readJson<{ jobs?: Array<{ status?: string; resultUrls?: string[]; reservedNames?: string[]; posterUrl?: string; error?: string; errorCode?: string; usage?: UsageMeta; credit?: CreditResult }> }>(pollResponse);
+      const statusData = await readJson<{ jobs?: Array<{ status?: string; resultUrls?: string[]; reservedNames?: string[]; posterUrl?: string; error?: string; errorCode?: string; usage?: UsageMeta; credit?: CreditResult; extra?: { preview?: { videoUrl?: string } } }> }>(pollResponse);
       const job = statusData.jobs?.[0];
       pollData = job ? { status: job.status, content: { video_url: job.resultUrls?.[0], poster_url: job.posterUrl }, error: job.error, errorCode: job.errorCode, usage: job.usage, credit: job.credit } as VideoApiResponse : { status: "running" } as VideoApiResponse;
       usage = pollData.usage ?? usage;
@@ -4275,11 +4279,16 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
       if (isVideoDoneStatus(pollData.status) && videoUrl) {
         const posterUrl = getPosterUrlFromResponse(pollData);
         const chargedUsage = pollData.usage ?? usage;
-        updateNode(node.id, { prompt, videoUrl, posterUrl, videoCurrentTime: 0, visualSize: undefined, isRunning: false, error: undefined, taskId: undefined, videoRequestId: undefined, mediaSystemNames: job?.reservedNames?.[0] ? { ...(node.data.mediaSystemNames ?? {}), [videoUrl]: job.reservedNames[0] } : node.data.mediaSystemNames });
+        updateNode(node.id, { prompt, videoUrl, posterUrl, videoCurrentTime: 0, visualSize: undefined, isRunning: false, error: undefined, taskId: undefined, videoRequestId: undefined, videoPreviewUrl: undefined, videoSavedFlashAt: Date.now(), mediaSystemNames: job?.reservedNames?.[0] ? { ...(node.data.mediaSystemNames ?? {}), [videoUrl]: job.reservedNames[0] } : node.data.mediaSystemNames });
         updateState((state) => ({ ...state, edges: state.edges.filter((edge) => edge.target !== node.id) }));
         onGeneratedMedia?.({ nodeId: node.id, kind: "video", urls: [videoUrl], reservedNames: job?.reservedNames, posterUrl, sourcePrompt: prompt, model, ratio: settings.ratio, resolution: settings.resolution, duration: settings.duration });
         onCredit?.({ ...pollData.credit, usage: chargedUsage });
         return;
+      }
+      // 乐观显示：还在跑但供应商已给可直接播的远程地址 → 先展示，本地后台继续存。只在变化时写，避免每轮刷。
+      const previewUrl = job?.extra?.preview?.videoUrl;
+      if (previewUrl && stateRef.current.nodes.find((item) => item.id === node.id)?.data.videoPreviewUrl !== previewUrl) {
+        updateNode(node.id, { isRunning: true, videoPreviewUrl: previewUrl, taskId });
       }
       // No timeout: backend worker owns the provider polling and only explicit provider failure fails.
       if (attempt >= videoMaxPollAttempts) updateNode(node.id, { isRunning: true, error: undefined, taskId });
@@ -4303,7 +4312,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     const resolution = normalizeVideoResolutionForModel(model, node.data.resolution);
     const settings = { ratio: normalizeVideoRatioForModel(model, node.data.ratio, resolution), resolution, duration: node.data.duration ?? workflowVideoModels.find((item) => item.id === model)?.durations?.[0] ?? "5秒" };
     const requestId = createId("workflow_video");
-    updateNode(node.id, { isRunning: true, error: undefined, videoUrl: undefined, posterUrl: undefined, videoCurrentTime: undefined, visualSize: undefined, startedAt: Date.now(), videoRequestId: requestId });
+    updateNode(node.id, { isRunning: true, error: undefined, videoUrl: undefined, posterUrl: undefined, videoCurrentTime: undefined, visualSize: undefined, startedAt: Date.now(), videoRequestId: requestId, videoPreviewUrl: undefined, videoSavedFlashAt: undefined });
     try {
       const allReferenceImages = [...getReferenceImages(node.id), ...getPromptReferenceUrls(prompt, node, "image")].filter((url, index, array) => array.indexOf(url) === index);
       const referenceImages = isWorkflowBytePlusSeedanceVideoModel(model) ? getWorkflowEffectiveBytePlusVideoReferenceItems(allReferenceImages, videoReferenceMode) : allReferenceImages;
@@ -4485,7 +4494,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     const videoUrl = job.resultUrls?.find(Boolean);
     if (!videoUrl) return false;
     const prompt = node.data.prompt?.trim() ?? job.prompt ?? "";
-    updateNode(node.id, { prompt, videoUrl, posterUrl: job.posterUrl, videoCurrentTime: 0, visualSize: undefined, isRunning: false, error: undefined, taskId: undefined, videoRequestId: undefined, mediaSystemNames: job.reservedNames?.[0] ? { ...(node.data.mediaSystemNames ?? {}), [videoUrl]: job.reservedNames[0] } : node.data.mediaSystemNames });
+    updateNode(node.id, { prompt, videoUrl, posterUrl: job.posterUrl, videoCurrentTime: 0, visualSize: undefined, isRunning: false, error: undefined, taskId: undefined, videoRequestId: undefined, videoPreviewUrl: undefined, videoSavedFlashAt: Date.now(), mediaSystemNames: job.reservedNames?.[0] ? { ...(node.data.mediaSystemNames ?? {}), [videoUrl]: job.reservedNames[0] } : node.data.mediaSystemNames });
     updateState((state) => ({ ...state, edges: state.edges.filter((edge) => edge.target !== node.id) }));
     onGeneratedMedia?.({ nodeId: node.id, kind: "video", urls: [videoUrl], reservedNames: job.reservedNames, posterUrl: job.posterUrl, sourcePrompt: prompt, model, ratio: settings.ratio, resolution: settings.resolution, duration: settings.duration });
     onCredit?.({ ...job.credit, usage: job.usage });
@@ -5421,7 +5430,37 @@ function UploadingNodeOverlay({ progress, width, height, previewUrl, isVideo }: 
 }
 function ImageDisplayCard({ node, selected, displayUrl, height }: { node: WorkflowNode; selected?: boolean; displayUrl?: string; height: number }) { const runtime = useWorkflowRuntime(); const url = node.data.images?.[0]; const hasAlpha = useImageHasAlpha(url); if (node.data.isRunning) return <WaitingCard isImage startedAt={node.data.startedAt} selected={selected} height={height} />; if (node.data.error) return <FailedCard isImage selected={selected} height={height} error={node.data.error} onRetry={() => runtime.runImageNode(node)} onOptimizationRetry={isWorkflowGptImageSafetyFailure(node) ? (count) => runtime.runGptImageOptimizationRetry(node, count) : undefined} />; if (url) return <div className={`relative w-full overflow-hidden border ${cardBorderClassName(selected)}`} style={{ height, backgroundColor: node.data.transparentImage || hasAlpha ? "transparent" : "#e6e6e6" }}><img src={displayUrl ?? getStaticMediaUrl(url) ?? url} alt="生成图片" draggable={false} className="h-full w-full select-none object-cover" /></div>; return <EmptyMediaCard kind="image" selected={selected} height={height} />; }
 function AudioDisplayCard({ node, selected, height }: { node: WorkflowNode; selected?: boolean; height: number }) { const url = node.data.audioUrl; const displayUrl = url ? getStaticMediaUrl(url) ?? url : undefined; return <div className="relative flex w-full items-center justify-center overflow-hidden rounded-[20px] border-[5px] border-[#b8b8b8] bg-white" style={{ height }}>{displayUrl ? <AudioWaveformPlayer key={displayUrl} url={displayUrl} variant="node" stopWaveformPointer /> : <EmptyMediaCard kind="audio" selected={selected} height={height} />}{node.data.uploadProgress !== undefined ? <UploadingNodeOverlay progress={node.data.uploadProgress} width={height} height={height} /> : null}</div>; }
-function WorkflowInlineVideo({ node, url, onSelect }: { node: WorkflowNode; url: string; onSelect: () => void }) {
+function WorkflowVideoSaveBadge({ saving, savedFlashAt }: { saving?: boolean; savedFlashAt?: number }) {
+  const fixedScale = useWorkflowFixedScreenScale();
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (saving) return; // saving 常驻，无需计时
+    if (savedFlashAt === undefined) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 120);
+    return () => window.clearInterval(timer);
+  }, [saving, savedFlashAt]);
+  const inset = 14 * fixedScale;
+  if (saving) {
+    return <div className="pointer-events-none absolute z-20" style={{ left: inset, top: inset }}>
+      <div className="inline-flex items-center rounded-md bg-black/45 font-medium leading-none text-white backdrop-blur-sm" style={{ gap: 6 * fixedScale, fontSize: 13 * fixedScale, padding: `${4 * fixedScale}px ${10 * fixedScale}px` }}>
+        <span className="animate-spin rounded-full border-white/45 border-t-white" style={{ width: 12 * fixedScale, height: 12 * fixedScale, borderWidth: 1.5 * fixedScale }} aria-hidden="true" />
+        <span className="truncate">资产保存中...</span>
+      </div>
+    </div>;
+  }
+  if (savedFlashAt === undefined) return null;
+  const elapsed = now - savedFlashAt;
+  if (elapsed < 0 || elapsed >= 3000) return null;
+  const opacity = elapsed < 2000 ? 1 : Math.max(0, 1 - (elapsed - 2000) / 1000);
+  return <div className="pointer-events-none absolute z-20" style={{ left: inset, top: inset, opacity }}>
+    <div className="inline-flex items-center rounded-md bg-black/45 font-medium leading-none text-white backdrop-blur-sm" style={{ gap: 6 * fixedScale, fontSize: 13 * fixedScale, padding: `${4 * fixedScale}px ${10 * fixedScale}px` }}>
+      <RiCheckboxCircleLine style={{ width: 14 * fixedScale, height: 14 * fixedScale }} aria-hidden="true" />
+      <span className="truncate">保存成功</span>
+    </div>
+  </div>;
+}
+
+function WorkflowInlineVideo({ node, url, onSelect, saving = false, savedFlashAt }: { node: WorkflowNode; url: string; onSelect: () => void; saving?: boolean; savedFlashAt?: number }) {
   const editor = useEditor();
   const runtime = useWorkflowRuntime();
   const lastSavedTimeRef = useRef(node.data.videoCurrentTime ?? 0);
@@ -5432,12 +5471,14 @@ function WorkflowInlineVideo({ node, url, onSelect }: { node: WorkflowNode; url:
     editor.markEventAsHandled(event);
   };
   const saveCurrentTime = (time: number, force = false) => {
+    if (saving) return; // 预览（远程）阶段不落任何状态
     if (!Number.isFinite(time)) return;
     if (!force && Math.abs(time - lastSavedTimeRef.current) < 0.5) return;
     lastSavedTimeRef.current = time;
     runtime.updateNode(node.id, { videoCurrentTime: time });
   };
   const saveVideoMetadata = (video: HTMLVideoElement) => {
+    if (saving) return; // 预览阶段不触发 onGeneratedMedia（远程 url 绝不进资产库）
     const dimensions = video.videoWidth > 0 && video.videoHeight > 0 ? { width: video.videoWidth, height: video.videoHeight } : undefined;
     const durationSeconds = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : undefined;
     if (!dimensions && !durationSeconds) return;
@@ -5458,10 +5499,10 @@ function WorkflowInlineVideo({ node, url, onSelect }: { node: WorkflowNode; url:
     });
   };
 
-  return <div className="relative h-full w-full cursor-default bg-[#e6e6e6]" style={{ pointerEvents: "all" }}><video src={displayUrl} className="h-full w-full select-none object-cover" style={{ pointerEvents: "all", cursor: "default" }} draggable={false} controls playsInline preload="auto" onLoadedMetadata={(event) => saveVideoMetadata(event.currentTarget)} onDragStart={(event) => event.preventDefault()} onTimeUpdate={(event) => saveCurrentTime(event.currentTarget.currentTime)} onPause={(event) => saveCurrentTime(event.currentTarget.currentTime, true)} onSeeked={(event) => saveCurrentTime(event.currentTarget.currentTime, true)} onEnded={(event) => saveCurrentTime(event.currentTarget.currentTime, true)} onPointerDownCapture={markVideoEvent} onPointerUpCapture={markVideoEvent} onMouseDownCapture={markVideoEvent} onMouseUpCapture={markVideoEvent} onClickCapture={markVideoEvent} onDoubleClickCapture={markVideoEvent} /><div className="absolute left-0 right-0 top-0 z-10 cursor-default" style={{ bottom: 112, pointerEvents: "all" }} onDragStart={(event) => event.preventDefault()} onPointerDown={(event) => { if (event.button !== 2) onSelect(); }} /></div>;
+  return <div className="relative h-full w-full cursor-default bg-[#e6e6e6]" style={{ pointerEvents: "all" }}><video src={displayUrl} className="h-full w-full select-none object-cover" style={{ pointerEvents: "all", cursor: "default" }} draggable={false} controls playsInline preload="auto" onLoadedMetadata={(event) => saveVideoMetadata(event.currentTarget)} onDragStart={(event) => event.preventDefault()} onTimeUpdate={(event) => saveCurrentTime(event.currentTarget.currentTime)} onPause={(event) => saveCurrentTime(event.currentTarget.currentTime, true)} onSeeked={(event) => saveCurrentTime(event.currentTarget.currentTime, true)} onEnded={(event) => saveCurrentTime(event.currentTarget.currentTime, true)} onPointerDownCapture={markVideoEvent} onPointerUpCapture={markVideoEvent} onMouseDownCapture={markVideoEvent} onMouseUpCapture={markVideoEvent} onClickCapture={markVideoEvent} onDoubleClickCapture={markVideoEvent} /><WorkflowVideoSaveBadge saving={saving} savedFlashAt={savedFlashAt} /><div className="absolute left-0 right-0 top-0 z-10 cursor-default" style={{ bottom: 112, pointerEvents: "all" }} onDragStart={(event) => event.preventDefault()} onPointerDown={(event) => { if (event.button !== 2) onSelect(); }} /></div>;
 }
 
-function VideoDisplayCard({ node, selected, height, onSelect }: { node: WorkflowNode; selected?: boolean; height: number; onSelect: () => void }) { const runtime = useWorkflowRuntime(); if (node.data.isRunning) return <WaitingCard isImage={false} startedAt={node.data.startedAt} selected={selected} height={height} />; if (node.data.error) return <FailedCard isImage={false} selected={selected} height={height} error={node.data.error} onRetry={() => runtime.runVideoNode(node)} />; if (node.data.videoUrl) return <div className={`relative w-full overflow-hidden border bg-[#e6e6e6] ${cardBorderClassName(selected)}`} style={{ height }}><WorkflowInlineVideo node={node} url={node.data.videoUrl} onSelect={onSelect} /></div>; return <EmptyMediaCard kind="video" selected={selected} height={height} />; }
+function VideoDisplayCard({ node, selected, height, onSelect }: { node: WorkflowNode; selected?: boolean; height: number; onSelect: () => void }) { const runtime = useWorkflowRuntime(); if (node.data.isRunning && node.data.videoPreviewUrl) return <div className={`relative w-full overflow-hidden border bg-[#e6e6e6] ${cardBorderClassName(selected)}`} style={{ height }}><WorkflowInlineVideo node={node} url={node.data.videoPreviewUrl} saving onSelect={onSelect} /></div>; if (node.data.isRunning) return <WaitingCard isImage={false} startedAt={node.data.startedAt} selected={selected} height={height} />; if (node.data.error) return <FailedCard isImage={false} selected={selected} height={height} error={node.data.error} onRetry={() => runtime.runVideoNode(node)} />; if (node.data.videoUrl) return <div className={`relative w-full overflow-hidden border bg-[#e6e6e6] ${cardBorderClassName(selected)}`} style={{ height }}><WorkflowInlineVideo node={node} url={node.data.videoUrl} savedFlashAt={node.data.videoSavedFlashAt} onSelect={onSelect} /></div>; return <EmptyMediaCard kind="video" selected={selected} height={height} />; }
 
 function getWorkflowEditableText(element: HTMLElement) {
   let text = "";

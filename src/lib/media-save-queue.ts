@@ -43,9 +43,14 @@ export type MediaSaveJob = {
 const RUNTIME_DIR = join(process.cwd(), ".runtime");
 const JOBS_PATH = join(RUNTIME_DIR, "media-save-jobs.json");
 const URL_MAP_MD_PATH = join(RUNTIME_DIR, "media-url-map.md");
-const inFlight = new Set<string>();
+// 值 = 上锁时刻。防同一存盘任务被并发跑两遍；但若持锁超过 STALE_DOWNLOADING_MS 仍未释放，
+// 视为该次处理已假死（某一步挂住、finally 没跑），允许强夺重跑，避免锁永久死锁把自救通道也堵死。
+const inFlight = new Map<string, number>();
 let fileQueue = Promise.resolve();
-const STALE_DOWNLOADING_MS = 30 * 60 * 1000;
+// 保险A（第二层兜底）：下载卡在"downloading"超过此时长即视为假死，强制回收重下。
+// 主力是 saveRemoteAsset 的 3 分钟单次下载超时；这里主要兜"进程重启后遗留的孤儿下载中任务"。
+// 阈值需高于正常最慢整段存盘（历史 max 约 5.5 分钟）以免误杀慢但仍在进行的下载——取 8 分钟。
+const STALE_DOWNLOADING_MS = 8 * 60 * 1000;
 
 function isRemoteUrl(url: string) {
   return /^https?:\/\//i.test(url);
@@ -161,8 +166,9 @@ function scheduleJob(job: MediaSaveJob) {
 }
 
 async function processMediaSaveJob(id: string) {
-  if (inFlight.has(id)) return;
-  inFlight.add(id);
+  const lockedAt = inFlight.get(id);
+  if (lockedAt !== undefined && Date.now() - lockedAt < STALE_DOWNLOADING_MS) return;
+  inFlight.set(id, Date.now());
 
   try {
     const job = await updateJobs((jobs) => {
@@ -330,7 +336,10 @@ export async function enqueueRemoteAssetSave(input: {
     return { ...next };
   });
 
-  if ((job.status === "pending" || job.status === "failed") && (!job.nextRetryAt || Date.now() >= job.nextRetryAt)) scheduleJob(job);
+  // pending/failed 到期即触发；另外把"卡在 downloading 超过 STALE_DOWNLOADING_MS"的假死任务也重新踢一脚
+  // （否则 processMediaSaveJob 里那条卡死回收逻辑没人来调、永远触发不了）。
+  const staleDownloading = job.status === "downloading" && Date.now() - job.updatedAt >= STALE_DOWNLOADING_MS;
+  if ((job.status === "pending" || job.status === "failed" || staleDownloading) && (!job.nextRetryAt || Date.now() >= job.nextRetryAt)) scheduleJob(job);
   if (job.status === "saved" && job.type === "video" && job.videoTaskId && job.localUrl) {
     await upsertVideoManifestEntry({
       taskId: job.videoTaskId,

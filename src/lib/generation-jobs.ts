@@ -833,6 +833,14 @@ export async function runVideoJob(job: GenerationJobRow) {
     const videoUrl = getVideoUrl(task);
     if (["succeeded", "success", "completed", "complete"].includes(status) && videoUrl) {
       const needsOpenRouterAuth = videoUrl.startsWith("https://openrouter.ai/api/v1/videos/");
+      // 乐观显示：平台一出结果（远程 url）就让前端先看，本地下载在后台进行、好了再换本地 url。
+      // 只对"浏览器能直接播的远程地址"开放预览；OpenRouter 那种需密钥的取不到→不预览，保持等本地老行为。
+      // preview 只用于展示，绝不落库；资产库仍只在本地存好后写本地 url（不受影响）。写一次即可，避免每轮刷。
+      if (!needsOpenRouterAuth && !job.extraJson?.preview) {
+        const nextExtra = { ...(job.extraJson ?? {}), preview: { videoUrl } };
+        await prisma.$executeRaw`UPDATE "GenerationJob" SET "extraJson" = ${jsonParam(nextExtra)}::jsonb, "updatedAt" = NOW() WHERE "id" = ${job.id}`;
+        job = { ...job, extraJson: nextExtra };
+      }
       let saveJob = await enqueueRemoteAssetSave({ remoteUrl: videoUrl, type: "video", authProvider: needsOpenRouterAuth ? "openrouter" : undefined, videoTaskId: providerTaskId, requestId: job.requestId, model: job.model ?? undefined, prompt: job.prompt ?? "", userId: job.userId });
       // 不设总时限：只要平台给了远程 url 就一定是成功了，必须下载存到本地再落库（跨境慢也一直等）。
       // 本地没存好前，绝不用会过期的远程 url 落库；保持 running、稍后重试，直到本地 url 就绪。
