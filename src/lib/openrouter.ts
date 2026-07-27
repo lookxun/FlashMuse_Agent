@@ -13,6 +13,7 @@ import { toUserErrorMessage } from "@/lib/error-message";
 import { appendGenerationDiagnosticsLog, summarizeGeneratedReference } from "@/lib/generation-diagnostics-log";
 import { getBytePlusBaseUrl, getBytePlusModelForRequest, getConfiguredBytePlusApiKey, getConfiguredOpenRouterApiKey, getModelProviderPreference, isGeneralTextModelEnabled, isTextModelEnabled } from "@/lib/system-settings";
 import { sanitizeModelOutputText } from "@/lib/text-cleanup";
+import { normalizeReferenceAssetUrl } from "@/lib/reference-asset-url";
 
 export type ChatRequest = {
   model: ModelName;
@@ -548,10 +549,14 @@ function getMimeType(filePath: string) {
 }
 
 function toDataUrlIfLocalPublicAsset(url: string) {
-  if (!url.startsWith("/generated/")) return url;
+  // 自家资产（含被绝对化的历史地址、被写成 `/api/media-thumbnail?url=` 的缩略图接口地址）
+  // 一律先归一化回 `/generated/...`，再读本地文件转 base64。否则会把动态接口地址原样发给平台，
+  // 平台来拉必超时（2026-07-28 排查到的 18 条线上失败）。
+  const localUrl = normalizeReferenceAssetUrl(url);
+  if (!localUrl.startsWith("/generated/")) return url;
 
-  const filePath = join(process.cwd(), "public", url.replace(/^\//, ""));
-  if (!existsSync(filePath)) return url;
+  const filePath = join(process.cwd(), "public", localUrl.replace(/^\//, ""));
+  if (!existsSync(filePath)) return localUrl;
 
   const data = readFileSync(filePath);
   return `data:${getMimeType(filePath)};base64,${data.toString("base64")}`;
@@ -565,7 +570,7 @@ function toDataUrlIfLocalPublicAsset(url: string) {
 //       ③ data: 与其它外部 https 地址原样返回。
 const OWN_HOST_ABSOLUTE_RE = /^https?:\/\/(?:101\.47\.19\.109|101\.37\.129\.164|119\.28\.116\.16|main\.venusface\.com|api\.venusface\.com|ali\.venusface\.com|static\.venusface\.com)(?::\d+)?(\/.*)$/i;
 function toPublicGeneratedImageUrl(value: string) {
-  const url = value.trim();
+  const url = normalizeReferenceAssetUrl(value);
   if (!url) return url;
   if (url.startsWith("data:")) return url;
   const base = (process.env.NEXT_PUBLIC_PRIMARY_BASE_URL || process.env.NEXT_PUBLIC_UPLOAD_BASE_URL || "https://main.venusface.com").replace(/\/$/, "");
@@ -578,8 +583,9 @@ function toPublicGeneratedImageUrl(value: string) {
 // 把参考图转成 base64 data URL（URL 方案失败时的回退）。
 // 优先把"自家 /generated 资产"映射到本地文件直接读；本地找不到再抓取远程字节。
 function resolveOwnLocalAssetPath(url: string): string | undefined {
-  if (url.startsWith("/generated/")) return join(process.cwd(), "public", url.replace(/^\//, ""));
-  const m = url.match(OWN_HOST_ABSOLUTE_RE);
+  const localUrl = normalizeReferenceAssetUrl(url);
+  if (localUrl.startsWith("/generated/")) return join(process.cwd(), "public", localUrl.replace(/^\//, ""));
+  const m = localUrl.match(OWN_HOST_ABSOLUTE_RE);
   if (m && m[1].startsWith("/generated/")) return join(process.cwd(), "public", m[1].replace(/^\//, ""));
   return undefined;
 }

@@ -5,6 +5,7 @@ import { createOpenRouterVideoTask, getBytePlusEffectiveReferenceImages, getOpen
 import { createCodedApiError } from "@/lib/error-code";
 import { isTransientServerError } from "@/lib/transient-error";
 import { getBytePlusProviderKey } from "@/lib/byteplus-provider-key";
+import { normalizeReferenceAssetUrl, normalizeReferenceAssetUrls } from "@/lib/reference-asset-url";
 import { GENERIC_MEDIA_ERROR_MESSAGE } from "@/lib/error-message";
 import { getUploadRule, validateReferenceImageCount, validateReferenceTotalDuration, validateVideoReferenceCombination } from "@/lib/upload-rules";
 import { enqueueRemoteAssetSave } from "@/lib/media-save-queue";
@@ -223,13 +224,15 @@ async function resolveBytePlusReviewedReferences(userId: string | undefined, mod
 }
 
 function toPublicAssetUrl(value: string) {
-  const url = value.trim();
+  // 送审/建任务给平台的必须是**文件静态直链**：先过唯一权威归一化（剥自家主机前缀、把
+  // `/api/media-thumbnail?url=` 动态缩略图接口还原成原图），再按当前环境拼公网 base。
+  const url = normalizeReferenceAssetUrl(value);
   if (!url || url.startsWith("asset://")) return "";
-  if (/^https?:\/\//i.test(url)) return url;
   if (url.startsWith("/generated/")) {
     const base = (process.env.NEXT_PUBLIC_PRIMARY_BASE_URL || process.env.NEXT_PUBLIC_UPLOAD_BASE_URL || "https://main.venusface.com").replace(/\/$/, "");
     return `${base}${url}`;
   }
+  if (/^https?:\/\//i.test(url)) return url;
   return "";
 }
 
@@ -756,9 +759,11 @@ export async function POST(request: Request) {
     }
     const creditSource = body.metadata?.creditSource;
     if (body.model && !(creditSource === "agent_video_generation" ? (isAgentVideoModelEnabled(body.model) || isConversationVideoModelEnabled(body.model)) : isConversationVideoModelEnabled(body.model))) return NextResponse.json({ error: "连接不到模型，请联系管理员！" }, { status: 400 });
-    let referenceImages = Array.isArray(body.referenceImages) ? body.referenceImages : [];
-    const referenceVideos = Array.isArray(body.referenceVideos) ? body.referenceVideos.filter((url) => typeof url === "string" && url.trim()) : [];
-    const referenceAudios = Array.isArray(body.referenceAudios) ? body.referenceAudios.filter((url) => typeof url === "string" && url.trim()) : [];
+    // 参考素材统一归一化：剥自家主机绝对前缀 / 把 `/api/media-thumbnail?url=` 还原成原图静态直链
+    // （否则平台来拉我们的动态缩略图接口会超时，整个任务失败）。唯一权威见 lib/reference-asset-url.ts。
+    let referenceImages = normalizeReferenceAssetUrls(body.referenceImages);
+    const referenceVideos = normalizeReferenceAssetUrls(body.referenceVideos);
+    const referenceAudios = normalizeReferenceAssetUrls(body.referenceAudios);
     const uploadRuleOverrides = getUploadRuleOverrides();
     const uploadRuleVideoReferenceMode = getUploadRuleVideoReferenceMode(body.referenceMode);
     const uploadRule = getUploadRule({ mode: "video", modelId: body.model, transportMode: "local-base64", videoReferenceMode: uploadRuleVideoReferenceMode }, uploadRuleOverrides);

@@ -13,6 +13,7 @@ import { appendGenerationDiagnosticsLog, summarizeGeneratedReference } from "@/l
 import { recordGenerationEvent } from "@/lib/analytics-events";
 import { createImageJob } from "@/lib/generation-jobs";
 import { getBytePlusProviderKey } from "@/lib/byteplus-provider-key";
+import { normalizeReferenceAssetUrls } from "@/lib/reference-asset-url";
 
 function getRequestedImageCount(value: unknown) {
   const count = typeof value === "number" ? value : typeof value === "string" ? Number(value) : 1;
@@ -89,7 +90,9 @@ export async function POST(request: Request) {
     }
     const creditSource = getCreditSource(body.metadata);
     if (body.model && !isImageModelEnabledForSource(body.model, creditSource)) return NextResponse.json({ error: "连接不到模型，请联系管理员！" }, { status: 400 });
-    const referenceImages = Array.isArray(body.referenceImages) ? body.referenceImages : [];
+    // 参考图统一归一化：剥自家主机绝对前缀 / 把 `/api/media-thumbnail?url=` 还原成原图静态直链
+    // （否则平台来拉我们的动态缩略图接口会超时，整个任务失败）。唯一权威见 lib/reference-asset-url.ts。
+    const referenceImages = normalizeReferenceAssetUrls(body.referenceImages);
     const referenceLimitError = validateReferenceImageCount({ mode: isAssetImageCreditSource(creditSource) ? "asset-image" : "image", modelId: body.model, transportMode: "local-base64" }, referenceImages.length, getUploadRuleOverrides());
     if (referenceLimitError) return NextResponse.json({ error: referenceLimitError }, { status: 400 });
 

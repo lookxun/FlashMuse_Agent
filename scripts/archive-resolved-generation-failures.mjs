@@ -77,6 +77,11 @@ const RESOLVED_RULES = [
     note: "参考视频总时长超上限但前端没拦住（精度 Int 截断）→ B_232，v1.0.0.34（2026-07-21 19:21）durationSeconds Int→Float + 统一 validateReferenceTotalDuration 后修复（最后一次失败 07-21 05:57，此后零复发）",
   },
   {
+    key: "platform-download-our-thumbnail-endpoint",
+    match: /(?:Timeout while downloading|Error while downloading)[^"]*\/api\/media-thumbnail/i,
+    note: "我们把「给人看的动态缩略图接口」(/api/media-thumbnail) 当成参考图地址发给平台，平台来拉时要我们现场生成缩略图 → 超时；地址前缀还是已退役的马来 IP。v1.0.0.48 新增唯一权威 normalizeReferenceAssetUrl()：参考素材进模型/送审前一律还原成文件静态直链（nginx 直出、不经 Node），并剥掉自家主机绝对前缀",
+  },
+  {
     key: "session-expired-recorded-as-failure",
     // 这类原文就在 failureReason 里（不是上游返回的），靠脚本"日志原文 + failureReason 一起匹配"命中。
     match: /请先登录后再使用模型/,

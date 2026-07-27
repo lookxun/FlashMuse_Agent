@@ -1,4 +1,5 @@
 import { DEFAULT_VIDEO_MODEL } from "@/lib/models";
+import { normalizeReferenceAssetUrl } from "@/lib/reference-asset-url";
 import { existsSync, readFileSync } from "node:fs";
 import { extname, join } from "node:path";
 
@@ -96,10 +97,13 @@ function getMimeType(filePath: string) {
 }
 
 function toDataUrlIfLocalPublicAsset(url: string) {
-  if (!url.startsWith("/generated/")) return url;
+  // 自家资产（含被绝对化的历史地址、被写成 `/api/media-thumbnail?url=` 的缩略图接口地址）
+  // 一律先归一化回 `/generated/...`，再读本地文件转 base64。唯一权威见 lib/reference-asset-url.ts。
+  const localUrl = normalizeReferenceAssetUrl(url);
+  if (!localUrl.startsWith("/generated/")) return url;
 
-  const filePath = join(process.cwd(), "public", url.replace(/^\//, ""));
-  if (!existsSync(filePath)) return url;
+  const filePath = join(process.cwd(), "public", localUrl.replace(/^\//, ""));
+  if (!existsSync(filePath)) return localUrl;
 
   const data = readFileSync(filePath);
   return `data:${getMimeType(filePath)};base64,${data.toString("base64")}`;

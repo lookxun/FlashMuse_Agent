@@ -16,6 +16,7 @@ import { getOpenRouterVideoTask } from "@/lib/openrouter-video";
 import { enqueueRemoteAssetSave, waitForMediaSaveJob } from "@/lib/media-save-queue";
 import { upsertVideoManifestEntry } from "@/lib/video-manifest";
 import { saveDataUrlAsset } from "@/lib/local-assets";
+import { normalizeReferenceAssetUrl, normalizeReferenceAssetUrls } from "@/lib/reference-asset-url";
 
 // 编辑类功能（去背景/高清/快捷编辑/橡皮/编辑元素）失败时，尽量透出真实原因（中文优先）。
 // error-message 已把常见上游报错（如"当前模型不支持所请求的参数"）映射成中文；这里作为兜底文案，
@@ -207,10 +208,15 @@ export type CreateVideoJobInput = {
  * 把参考素材里的 `asset://<bytePlusAssetId>`（对话流为省流量对已上传/库内资产的引用）解析回真实可显示 url。
  * 真实 url / data: / http 原样返回；解析不到的 asset:// 也原样保留。统一在建 job 时解析，保证 referenceImages
  * 存的是可显示 url（否则后台弹窗/使用提示词只能显示成破图），并让 resolveReferenceNames 能反查到名字。
+ *
+ * ⭐ 同时做 url 归一化（`normalizeReferenceAssetUrl`）：剥掉自家主机绝对前缀、把
+ * `/api/media-thumbnail?url=` 这种**动态缩略图接口地址**还原成原图静态直链 —— 否则平台（BytePlus）
+ * 来拉这个接口会超时，整个任务失败（2026-07-28 排查到 18 条线上失败就是这个）。
  */
 async function resolveReferenceUrls(userId: string, urls: string[]): Promise<string[]> {
-  const assetIds = Array.from(new Set(urls.filter((url) => typeof url === "string" && url.startsWith("asset://")).map((url) => url.slice("asset://".length)).filter(Boolean)));
-  if (assetIds.length === 0) return urls;
+  const normalized = normalizeReferenceAssetUrls(urls);
+  const assetIds = Array.from(new Set(normalized.filter((url) => url.startsWith("asset://")).map((url) => url.slice("asset://".length)).filter(Boolean)));
+  if (assetIds.length === 0) return normalized;
   const urlByAssetId = new Map<string, string>();
   try {
     const rows = await prisma.$queryRaw<Array<{ bytePlusAssetId: string; url: string }>>`
@@ -222,7 +228,7 @@ async function resolveReferenceUrls(userId: string, urls: string[]): Promise<str
   } catch (error) {
     console.warn("[generation-jobs] resolveReferenceUrls failed", { error: error instanceof Error ? error.message : String(error) });
   }
-  return urls.map((url) => (typeof url === "string" && url.startsWith("asset://") ? (urlByAssetId.get(url.slice("asset://".length)) ?? url) : url));
+  return normalized.map((url) => (url.startsWith("asset://") ? normalizeReferenceAssetUrl(urlByAssetId.get(url.slice("asset://".length)) ?? url) : url));
 }
 
 /**

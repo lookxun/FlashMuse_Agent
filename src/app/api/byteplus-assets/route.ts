@@ -1,18 +1,20 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
 import { createBytePlusAsset, getBytePlusAsset } from "@/lib/byteplus-assets";
+import { normalizeReferenceAssetUrl } from "@/lib/reference-asset-url";
 
 export const runtime = "nodejs";
 
+// 送审给平台的必须是**文件静态直链**：先过唯一权威归一化（剥自家主机前缀、把
+// `/api/media-thumbnail?url=` 动态缩略图接口还原成原图），再按当前环境拼公网 base。
 function toPublicAssetUrl(value: unknown) {
-  if (typeof value !== "string") return "";
-  const url = value.trim();
+  const url = normalizeReferenceAssetUrl(value);
   if (!url) return "";
-  if (/^https?:\/\//i.test(url)) return url;
   if (url.startsWith("/generated/")) {
     const base = (process.env.NEXT_PUBLIC_PRIMARY_BASE_URL || process.env.NEXT_PUBLIC_UPLOAD_BASE_URL || "https://main.venusface.com").replace(/\/$/, "");
     return `${base}${url}`;
   }
+  if (/^https?:\/\//i.test(url)) return url;
   return "";
 }
 

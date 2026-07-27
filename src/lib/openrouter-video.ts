@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 import { appendGenerationDiagnosticsLog, summarizeGeneratedReference } from "@/lib/generation-diagnostics-log";
 import { DEFAULT_VIDEO_MODEL, resolveVideoSettingsForModel } from "@/lib/models";
 import { getBytePlusBaseUrl, getBytePlusModelForRequest, getConfiguredBytePlusApiKey, getConfiguredOpenRouterApiKey } from "@/lib/system-settings";
+import { normalizeReferenceAssetUrl } from "@/lib/reference-asset-url";
 
 type VideoSettings = {
   ratio?: string;
@@ -123,19 +124,22 @@ function getMimeType(filePath: string) {
 }
 
 function toDataUrlIfLocalPublicAsset(url: string) {
-  if (!url.startsWith("/generated/")) return url;
+  // 自家资产（含被绝对化/被写成缩略图接口的地址）一律先归一化回 `/generated/...`，再读本地文件转 base64。
+  const localUrl = normalizeReferenceAssetUrl(url);
+  if (!localUrl.startsWith("/generated/")) return url;
 
-  const filePath = join(process.cwd(), "public", url.replace(/^\//, ""));
-  if (!existsSync(filePath)) return url;
+  const filePath = join(process.cwd(), "public", localUrl.replace(/^\//, ""));
+  if (!existsSync(filePath)) return localUrl;
 
   const data = readFileSync(filePath);
   return `data:${getMimeType(filePath)};base64,${data.toString("base64")}`;
 }
 
 function toPublicGeneratedAssetUrl(value: string) {
-  const url = value.trim();
+  // 给平台的地址必须是**文件静态直链**：先过唯一权威归一化（剥自家主机前缀、把
+  // `/api/media-thumbnail?url=` 动态缩略图接口还原成原图），再按当前环境拼公网 base。
+  const url = normalizeReferenceAssetUrl(value);
   if (!url) return url;
-  if (/^https?:\/\//i.test(url) || url.startsWith("asset://") || url.startsWith("data:")) return url;
   if (url.startsWith("/generated/")) {
     const base = (process.env.NEXT_PUBLIC_PRIMARY_BASE_URL || process.env.NEXT_PUBLIC_UPLOAD_BASE_URL || "https://main.venusface.com").replace(/\/$/, "");
     return `${base}${url}`;
