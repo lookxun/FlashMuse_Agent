@@ -152,6 +152,19 @@ const editFunctionRows: Array<{ key: string; name: string; rule: string; chain: 
   { key: "eraser", name: "橡皮工具", rule: "半透明涂抹要消除的区域，导出时把标记区填中性灰盖住主体，模型做局部消除+补背景、其余不变；比例/尺寸贴源图。走下方模型候选链，规则同高清。", chain: true },
 ];
 
+// 工作流视频「编辑功能」快捷菜单：后台规则展示 + 快捷编辑模型候选链开关。
+// 候选链顺序与前端 WORKFLOW_VIDEO_EDIT_MODEL_CHAIN / system-settings 的 VIDEO_EDIT_FUNCTION_MODEL_CHAIN 一致。
+const VIDEO_EDIT_MODEL_CHAIN: Array<{ modelId: string; tier: string }> = [
+  { modelId: "byteplus:video.seedance-2-0-mini", tier: "首选" },
+  { modelId: "byteplus:video.seedance-2-0-fast", tier: "次选" },
+  { modelId: "byteplus:video.seedance-2-0", tier: "三选" },
+];
+
+const videoEditFunctionRows: Array<{ key: string; name: string; rule: string; chain: boolean }> = [
+  { key: "video_quick", name: "快捷编辑", rule: "用「源视频当参考视频 + 你输入的提示词」以融合模式重新生成一段视频。参数一律按源视频的真实尺寸/真实时长反推（比例取最接近的一档、分辨率取总像素最接近的一档、时长取最接近的「N秒」档），因此上传视频也能贴合原视频而不是用节点默认值。⚠️ 分辨率优先决定模型：需要 1080p 时只有 Seedance 2.0 支持，直接用它、不再依次尝试；480p/720p 三个模型都支持，才走下方候选链依次兜底。", chain: true },
+  { key: "video_download", name: "下载", rule: "下载该视频原文件（mp4），文件名用资产系统名。与右键菜单的下载共用同一份实现，纯前端、不调模型。", chain: false },
+];
+
 function AiGenerate3dIcon({ className = "h-4 w-4 shrink-0 text-[#555555]" }: { className?: string }) {
   return (
     <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" className={className}>
@@ -471,6 +484,44 @@ export function AdminSystemSettingsPanel({ settings, adminEmailCount }: { settin
                 </div>
               ) : (
                 <span className="text-[12px] text-[#999999]">{row.key === "bg" ? "本地抠图，无云模型" : "跟随源图模型，无候选链开关"}</span>
+              )}
+            </div>
+          </div>
+        ))}
+      </section>
+
+      <section className="mt-8 min-w-[1180px] overflow-hidden rounded-[10px] border border-[#eeeeee] bg-white text-[13px] shadow-[0_10px_28px_rgba(0,0,0,0.04)]">
+        <div className="border-b border-[#eeeeee] bg-[#fafafa] px-5 py-3 text-[12px] text-[#777777]">
+          <span className="font-medium text-[#555555]">工作流 · 视频编辑功能</span>
+          <span className="ml-2">选中工作流视频节点后顶部快捷菜单里的编辑功能。快捷编辑走「首选→次选→三选」模型候选链，前一个失败或关闭自动用下一个；全部关闭时回落到完整候选链以免不可用。需要 1080p 时只有 Seedance 2.0 支持，会直接用它而不走候选链。</span>
+        </div>
+        <div className="grid grid-cols-[140px_1fr_470px] border-b border-[#eeeeee] bg-[#fafafa] text-[12px] text-[#777777]">
+          <div className="px-5 py-3 font-medium">功能</div>
+          <div className="px-5 py-3 font-medium">规则说明</div>
+          <div className="px-5 py-3 font-medium">使用模型（首选 / 次选 / 三选）</div>
+        </div>
+        {videoEditFunctionRows.map((row) => (
+          <div key={row.key} className="grid grid-cols-[140px_1fr_470px] border-b border-[#f2f2f2] last:border-b-0">
+            <div className="px-5 py-4 font-medium text-[#222222]">{row.name}</div>
+            <div className="px-5 py-4 text-[12px] leading-5 text-[#666666]">{row.rule}</div>
+            <div className="px-5 py-4">
+              {row.chain ? (
+                <div className="flex flex-col gap-2">
+                  {VIDEO_EDIT_MODEL_CHAIN.map((entry) => {
+                    const toggleKey = `${row.key}:${entry.modelId}`;
+                    const checked = editModelToggles[toggleKey] !== false;
+                    return (
+                      <span key={toggleKey} className="inline-flex h-8 w-full items-center gap-2 rounded-[7px] bg-[#f4f6fb] px-2.5 text-[12px] text-[#333333]">
+                        <span className="w-8 shrink-0 text-[#999999]">{entry.tier}</span>
+                        <ModelIcon modelId={entry.modelId} />
+                        <span className="min-w-0 flex-1 truncate font-medium">{getModelLabel(entry.modelId)}</span>
+                        <SettingSwitch checked={checked} disabled={isPending} onChange={(value) => updateEditModelToggle(toggleKey, value)} ariaLabel={`${row.name} ${entry.tier} 开关`} />
+                      </span>
+                    );
+                  })}
+                </div>
+              ) : (
+                <span className="text-[12px] text-[#999999]">纯前端下载，无模型</span>
               )}
             </div>
           </div>

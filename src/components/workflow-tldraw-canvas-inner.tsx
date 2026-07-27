@@ -4,11 +4,12 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { createPortal } from "react-dom";
 import { BaseBoxShapeUtil, BindingUtil, CubicBezier2d, HTMLContainer, Mat, Rectangle2d, SVGContainer, SelectionForegroundOverlayUtil, ShapeUtil, T, Tldraw, Vec, createShapeId, defaultBindingUtils, defaultOverlayUtils, defaultShapeUtils, resizeBox, useActions, useEditor, useValue, vecModelValidator, type Editor, type IndexKey, type RecordProps, type TLBinding, type TLComponents, type TLHandle, type TLHandleDragInfo, type TLResizeInfo, type TLShape, type TLShapeId, type TLUiOverrides, type TldrawOptions, type VecModel } from "tldraw";
 import { type IconType } from "react-icons";
-import { RiEraserLine, RiDragMove2Line, RiHdLine, RiSparkling2Line, RiAccountBoxLine, RiBellLine, RiAddLine, RiArrowDownSLine, RiArrowUpLine, RiBringForward, RiBringToFront, RiCheckLine, RiCheckboxBlankCircleLine, RiCheckboxCircleLine, RiCheckboxMultipleLine, RiClipboardLine, RiCloseLine, RiCursorLine, RiDeleteBinLine, RiDownloadLine, RiEmotionSadLine, RiExportFill, RiExportLine, RiEyeLine, RiEyeOffLine, RiFileCodeLine, RiFileCopy2Line, RiFileCopyLine, RiFileImageLine, RiFileTextLine, RiFilmAiLine, RiFocus3Line, RiGoogleFill, RiHand, RiHistoryLine, RiImage2Line, RiImageAiLine, RiImageCircleLine, RiImageLine, RiInformation2Line, RiLandscapeLine, RiLayoutLeft2Line, RiLayoutLeftLine, RiLoader4Line, RiLockLine, RiLockUnlockLine, RiMoreLine, RiMultiImageLine, RiNodeTree, RiOpenaiFill, RiResetLeftLine, RiRoadMapLine, RiScissorsCutLine, RiSendBackward, RiSendToBack, RiShining2Line, RiStackLine, RiTBoxLine, RiTextBlock, RiTextSnippet, RiTimeLine, RiTiktokFill, RiUpload2Line, RiVideoLine, RiVideoOnLine, RiVoiceprintLine, RiZoomInLine, RiZoomOutLine } from "react-icons/ri";
+import { RiEraserLine, RiDragMove2Line, RiHdLine, RiSparkling2Line, RiAccountBoxLine, RiBellLine, RiAddLine, RiArrowDownSLine, RiArrowUpLine, RiBringForward, RiBringToFront, RiCameraLine, RiCheckLine, RiCheckboxBlankCircleLine, RiCheckboxCircleLine, RiCheckboxMultipleLine, RiClipboardLine, RiCloseLine, RiCursorLine, RiDeleteBinLine, RiDownloadLine, RiEmotionSadLine, RiExportFill, RiExportLine, RiEyeLine, RiEyeOffLine, RiFileCodeLine, RiFileCopy2Line, RiFileCopyLine, RiFileImageLine, RiFileTextLine, RiFilmAiLine, RiFocus3Line, RiGoogleFill, RiHand, RiHistoryLine, RiImage2Line, RiImageAiLine, RiImageCircleLine, RiImageLine, RiInformation2Line, RiLandscapeLine, RiLayoutLeft2Line, RiLayoutLeftLine, RiLoader4Line, RiLockLine, RiLockUnlockLine, RiMoreLine, RiMultiImageLine, RiNodeTree, RiOpenaiFill, RiResetLeftLine, RiRoadMapLine, RiScissorsCutLine, RiSendBackward, RiSendToBack, RiShining2Line, RiStackLine, RiTBoxLine, RiTextBlock, RiTextSnippet, RiTimeLine, RiTiktokFill, RiUpload2Line, RiVideoLine, RiVideoOnLine, RiVoiceprintLine, RiZoomInLine, RiZoomOutLine } from "react-icons/ri";
 import { BytePlusIcon } from "@/components/byteplus-icon";
 import { AudioWaveformPlayer } from "@/components/audio-waveform-player";
 import { AssetMentionPicker, type MentionPickerCategory, type MentionPickerItem } from "@/components/asset-mention-picker";
 import { VideoUploadThumbnail } from "@/components/video-upload-thumbnail";
+import { VideoPlayBadge } from "@/components/video-play-badge";
 import { DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, DEFAULT_IMAGE_QUALITY, GPT_IMAGE2_MODEL_ID, IMAGE_QUALITY_OPTIONS, IMAGE_QUALITY_LABELS, isGptImage2Model, isGptImage2AgentModel, getImageModelSelectHint, bytePlusVideoGenerationModels, frontendConversationModels, frontendImageGenerationModels, getExpectedImageDimensions, getExpectedVideoDimensions, getSupportedImageResolutions, getSupportedVideoRatios, getSupportedVideoResolutions, imageGenerationModels, normalizeImageResolutionForModel, normalizeVideoRatioForModel, normalizeVideoResolutionForModel, videoGenerationModels, type ConversationModel, type GenerationModel, type ModelName } from "@/lib/models";
 import { GENERIC_MEDIA_ERROR_MESSAGE, toUserErrorMessage } from "@/lib/error-message";
 import { buildReferenceHint } from "@/lib/reference-hint";
@@ -17,7 +18,7 @@ import { createUploadProgressTracker } from "@/lib/upload-progress";
 import { sanitizeModelOutputText } from "@/lib/text-cleanup";
 import { getUploadKindFromFileName, getUploadRule, getVideoAudioUploadDisabledMessage, validateReferenceTotalDuration, validateVideoReferenceCombination, type UploadKind, type UploadKindRule, type UploadRule, type UploadRuleOverrides } from "@/lib/upload-rules";
 import { IMAGE_UPLOAD_ACCEPT, validateImageUploadFile } from "@/lib/image-upload-validation";
-import { AUDIO_UPLOAD_ACCEPT, validateMediaUploadFile, validateMediaUploadMetadata, VIDEO_UPLOAD_ACCEPT } from "@/lib/media-upload-validation";
+import { AUDIO_UPLOAD_ACCEPT, MEDIA_DURATION_EPSILON_SECONDS, validateMediaUploadFile, validateMediaUploadMetadata, validateReferenceMediaDurationRange as validateWorkflowMediaDuration, VIDEO_UPLOAD_ACCEPT } from "@/lib/media-upload-validation";
 import { computeFileContentHashHex, precheckUploadedFileDedup } from "@/lib/upload-content-hash";
 
 export type WorkflowNodeKind = "text" | "image" | "video" | "audio";
@@ -164,6 +165,8 @@ type WorkflowCanvasProps = {
   onGeneratedMedia?: (media: { nodeId: string; kind: "image" | "video"; urls: string[]; reservedNames?: string[]; posterUrl?: string; sourcePrompt: string; model?: ModelName; ratio?: string; resolution?: string; duration?: string; dimensions?: Record<string, { width: number; height: number }>; durationSeconds?: Record<string, number>; silent?: boolean; promptOptimization?: { originalPrompt: string; optimizedPrompt: string; attemptsUsed: number; optimizerModel: string } }) => void;
   onPreviewMedia?: (media: { nodeId: string; kind: "image" | "video"; url: string; posterUrl?: string; name: string; sourcePrompt?: string; model?: ModelName; ratio?: string; resolution?: string; duration?: string; dimensions?: { width: number; height: number } }) => void;
   onShowTip?: (message: string) => void;
+  /** 工作流里上传/截图出的素材已入库：父级据此刷新资产库对应"上传"分类（免手动刷新页面）。 */
+  onUploadedAsset?: (info: { mediaType: "image" | "video" | "audio" | "document" }) => void;
   getImageDisplayUrl?: (url: string) => string;
   getVideoPosterDisplayUrl?: (url: string, posterUrl?: string) => string | undefined;
   enabledTextModelIds?: string[];
@@ -232,7 +235,6 @@ const WORKFLOW_MENTION_CATEGORIES: MentionPickerCategory[] = [
 const workflowReadableDocumentFormats = ["md", "txt", "csv"];
 const MAX_WORKFLOW_DOCUMENT_TEXT_CHARS = 50_000;
 const MAX_WORKFLOW_DOCUMENT_CONTEXT_CHARS = 30_000;
-const MEDIA_DURATION_EPSILON_SECONDS = 0.35;
 const WORKFLOW_TEXT_OUTPUT_INSTRUCTIONS = "\n\n输出要求：请只用中文回答，不要夹带英文段落或英文标题；不要输出代码、代码块、命令行、JSON、Markdown 表格或反引号内容；不要解释格式规则。第一行写一个简短中文标题，不要带 # 号；正文用清晰分段、短句和列表表达。可以适当使用少量自然表情或符号做视觉提示，但不要堆砌。重点可用 **加粗**，重要提醒可用 [blue]...[/blue] 或 [red]...[/red]。";
 const BYTEPLUS_AUTO_REVIEW_NOTICE = "系统检测到真人图片，需要审核才能生成视频，此次视频生成任务会延长时间，请稍候....";
 
@@ -309,6 +311,11 @@ function getEditCandidates(func: "hd" | "eraser", toggles?: Record<string, boole
   const enabled = EDIT_MODEL_CANDIDATES.filter((id) => (toggles?.[`${func}:${id}`] ?? true) !== false);
   return enabled.length > 0 ? enabled : EDIT_MODEL_CANDIDATES;
 }
+// 视频编辑类（快捷编辑）候选链，规则同上：按后台开关过滤、全关则回落完整链。
+function getVideoEditCandidates(func: "video_quick", toggles?: Record<string, boolean>): ModelName[] {
+  const enabled = WORKFLOW_VIDEO_EDIT_MODEL_CHAIN.filter((id) => (toggles?.[`${func}:${id}`] ?? true) !== false);
+  return enabled.length > 0 ? enabled : WORKFLOW_VIDEO_EDIT_MODEL_CHAIN;
+}
 const NODE_HEIGHT = 180;
 const CARD_HEIGHT = 180;
 const TEXT_NODE_WIDTH = 720;
@@ -344,6 +351,8 @@ type WorkflowVideoJobStatus = WorkflowImageJobStatus & { posterUrl?: string; pro
 const MAX_WORKFLOW_PROMPT_LENGTH = 2000;
 const DEFAULT_WORKFLOW_IMAGE_MODEL = "byteplus:conversation-image.seedream-4-5";
 const DEFAULT_WORKFLOW_VIDEO_MODEL = "byteplus:video.seedance-2-0";
+// 视频快捷编辑的模型候选链：依次 Mini → Fast → 2.0（前一个失败自动换下一个），与图片编辑候选链同思路。
+const WORKFLOW_VIDEO_EDIT_MODEL_CHAIN: ModelName[] = ["byteplus:video.seedance-2-0-mini", "byteplus:video.seedance-2-0-fast", "byteplus:video.seedance-2-0"] as ModelName[];
 const WORKFLOW_NODE_GAP = 160;
 const workflowVideoReferenceModeOptions: Array<{ value: WorkflowVideoReferenceMode; label: string; icon: IconType }> = [
   { value: "reference", label: "融合模式", icon: RiImageCircleLine },
@@ -560,13 +569,6 @@ function getWorkflowUploadDuration(upload: WorkflowUploadItem) {
   return Math.max(0, upload.durationSeconds ?? 0);
 }
 
-function validateWorkflowMediaDuration(kindLabel: string, durationSeconds: number | undefined, rule: { minSeconds?: number; maxSeconds?: number }) {
-  if (!Number.isFinite(durationSeconds ?? Number.NaN) || !durationSeconds) return `${kindLabel}时长读取失败`;
-  if (rule.minSeconds !== undefined && durationSeconds < rule.minSeconds - MEDIA_DURATION_EPSILON_SECONDS) return `${kindLabel}时长不能少于 ${rule.minSeconds} 秒`;
-  if (rule.maxSeconds !== undefined && durationSeconds > rule.maxSeconds + MEDIA_DURATION_EPSILON_SECONDS) return `${kindLabel}时长不能超过 ${rule.maxSeconds} 秒`;
-  return undefined;
-}
-
 function validateWorkflowReferenceVideoDimensions(dimensions?: { width: number; height: number }) {
   if (!dimensions?.width || !dimensions.height) return "视频尺寸读取失败";
   const ratio = dimensions.width / dimensions.height;
@@ -739,7 +741,7 @@ async function uploadWorkflowFile(file: File, kind: Exclude<WorkflowUploadKind, 
   const contentHash = await computeFileContentHashHex(file);
   if (contentHash) {
     const dup = await precheckUploadedFileDedup(getWorkflowUploadApiUrl("/api/upload-file"), contentHash, token);
-    if (dup) { onProgress?.(100); return { url: dup.url, duplicate: true, name: dup.name }; }
+    if (dup) { onProgress?.(100); return { url: dup.url, duplicate: true, name: dup.name, posterUrl: dup.posterUrl }; }
   }
   const formData = new FormData();
   formData.append("file", file, file.name);
@@ -750,9 +752,9 @@ async function uploadWorkflowFile(file: File, kind: Exclude<WorkflowUploadKind, 
   formData.append("workflowNodeId", workflowNodeId);
   if (media?.durationSeconds) formData.append("durationSeconds", String(media.durationSeconds));
   if (media?.dimensions) formData.append("dimensions", JSON.stringify(media.dimensions));
-  const data = await uploadWorkflowFormDataWithProgress<{ url?: string; error?: string; dedup?: boolean; name?: string }>(getWorkflowUploadApiUrl("/api/upload-file"), formData, onProgress, token);
+  const data = await uploadWorkflowFormDataWithProgress<{ url?: string; error?: string; dedup?: boolean; name?: string; posterUrl?: string }>(getWorkflowUploadApiUrl("/api/upload-file"), formData, onProgress, token);
   if (!data.url) throw new Error(data.error || "文件上传失败");
-  return { url: data.url, duplicate: Boolean(data.dedup), name: data.name };
+  return { url: data.url, duplicate: Boolean(data.dedup), name: data.name, posterUrl: data.posterUrl };
 }
 
 function getWorkflowMentionNames(text: string) {
@@ -805,6 +807,9 @@ function validateWorkflowUploadNodeFile(file: File, kind: "image" | "video" | "a
   return validateMediaUploadFile(file, "audio") ?? validateMediaUploadMetadata("audio", { durationSeconds: media?.durationSeconds });
 }
 
+// 资产库不区分对话流/工作流上传：上传类一律显示在「上传的资产」。工作流上传的图片按其真实来源写
+// workflow_upload_images（历史上这里硬写成 conversation_uploads，属分叉），读取端把 conversation_uploads /
+// workflow_upload_images / workflow_uploads 统一当「上传图片」，所以老数据不用回填也照样显示。
 function persistWorkflowUploadNodeAsset(input: { url: string; name: string; mediaType: "image" | "video" | "audio" | "document"; workflowId: string; workflowNodeId: string; sourcePrompt: string; file: File; dimensions?: { width: number; height: number }; durationSeconds?: number; settings?: { ratio?: string; resolution?: string; duration?: string }; contentHash?: string }) {
   return fetch("/api/media-assets", {
     method: "POST",
@@ -812,7 +817,7 @@ function persistWorkflowUploadNodeAsset(input: { url: string; name: string; medi
     body: JSON.stringify({
       url: input.url,
       name: input.name,
-      currentCategory: input.mediaType === "image" ? "conversation_uploads" : input.mediaType === "video" ? "workflow_upload_videos" : input.mediaType === "audio" ? "workflow_upload_audios" : "workflow_upload_documents",
+      currentCategory: input.mediaType === "image" ? "workflow_upload_images" : input.mediaType === "video" ? "workflow_upload_videos" : input.mediaType === "audio" ? "workflow_upload_audios" : "workflow_upload_documents",
       mediaType: input.mediaType,
       dimensions: input.dimensions,
       durationSeconds: input.durationSeconds,
@@ -1171,9 +1176,17 @@ function getNodeIcon(kind: WorkflowNodeKind) {
   return RiFilmAiLine;
 }
 
+// 「视频截图」产出的图片节点：走的是统一上传链路，但标题要显示「视频截图 xxx」而不是「上传图片 xxx」。
+// 它在节点头部图标/参数标签/上传态判定上与上传节点同待遇，故统一用 isWorkflowUploadLikeTitle 判断。
+const WORKFLOW_VIDEO_FRAME_NODE_TITLE = "视频截图";
+
+function isWorkflowUploadLikeTitle(title: string | undefined) {
+  return Boolean(title && (title.startsWith("上传") || title === WORKFLOW_VIDEO_FRAME_NODE_TITLE));
+}
+
 function getWorkflowNodeHeaderIcon(node: WorkflowNode) {
   if (node.kind === "text" && node.title === "上传文本") return RiTextSnippet;
-  if (node.kind === "image" && node.title === "上传图片") return RiImageLine;
+  if (node.kind === "image" && (node.title === "上传图片" || node.title === WORKFLOW_VIDEO_FRAME_NODE_TITLE)) return RiImageLine;
   if (node.kind === "video" && node.title === "上传视频") return RiVideoOnLine;
   if (node.kind === "audio") return RiVoiceprintLine;
   return getNodeIcon(node.kind);
@@ -1195,7 +1208,7 @@ function getWorkflowUploadFileName(node: WorkflowNode) {
 function getWorkflowNodeParamParts(node: WorkflowNode) {
   const currentSize = getWorkflowNodeVisualSize(node);
   const sizeText = currentSize.w && currentSize.h ? `${Math.round(currentSize.w)}x${Math.round(currentSize.h)}` : "";
-  if (node.title === "上传图片" || node.title === "上传视频" || node.title === "上传文本") return { modelLabel: "", ratio: "", resolution: "", duration: "", sizeText };
+  if (node.title === "上传图片" || node.title === "上传视频" || node.title === "上传文本" || node.title === WORKFLOW_VIDEO_FRAME_NODE_TITLE) return { modelLabel: "", ratio: "", resolution: "", duration: "", sizeText };
   if (node.kind === "audio") return { modelLabel: "", ratio: "", resolution: "", duration: "", sizeText: "" };
   const modelOptions = node.kind === "text" ? frontendConversationModels : node.kind === "image" ? frontendImageGenerationModels : workflowVideoModels;
   const modelLabel = node.data.model ? getModelLabel(modelOptions, node.data.model) : "";
@@ -1360,8 +1373,41 @@ function closestResolutionForImageDimensions(model: string, ratio: string, dimen
   return best;
 }
 
-function getCommonWorkflowRatioLabel(dimensions?: { width: number; height: number }) {
-  if (!dimensions?.width || !dimensions.height) return undefined;
+// 在某视频模型支持的分辨率档里，挑总像素最接近实际视频尺寸的一档（视频快捷编辑贴源视频尺寸时用）。
+// 与图片的 closestResolutionForImageDimensions 同思路，只是换成视频的档位与尺寸表。
+function closestResolutionForVideoDimensions(model: string, ratio: string, dimensions?: { width: number; height: number }): string {
+  const resolutions = getSupportedVideoResolutions(model);
+  if (!resolutions.length) return "720p";
+  if (!dimensions?.width || !dimensions.height) return normalizeVideoResolutionForModel(model, undefined);
+  const targetPixels = dimensions.width * dimensions.height;
+  let best = resolutions[0] as string;
+  let bestDiff = Number.POSITIVE_INFINITY;
+  for (const res of resolutions) {
+    const expected = getExpectedVideoDimensions(model, res, ratio);
+    if (!expected?.width || !expected.height) continue;
+    const diff = Math.abs(expected.width * expected.height - targetPixels);
+    if (diff < bestDiff) { bestDiff = diff; best = res; }
+  }
+  return best;
+}
+
+// 把真实秒数换成该模型支持的「N秒」档里最接近的一档（上传视频没有 duration 设置，只有真实 durationSeconds）。
+function closestWorkflowVideoDurationLabel(model: string, durationSeconds?: number): string | undefined {
+  const options = workflowVideoModels.find((item) => item.id === model)?.durations ?? [];
+  if (!options.length) return undefined;
+  if (!Number.isFinite(durationSeconds ?? Number.NaN) || !durationSeconds) return undefined;
+  let best = options[0];
+  let bestDiff = Number.POSITIVE_INFINITY;
+  for (const option of options) {
+    const seconds = Number(option.match(/(\d+(?:\.\d+)?)/)?.[1]);
+    if (!Number.isFinite(seconds)) continue;
+    const diff = Math.abs(seconds - durationSeconds);
+    if (diff < bestDiff) { bestDiff = diff; best = option; }
+  }
+  return best;
+}
+
+function getCommonWorkflowRatioLabel(dimensions?: { width: number; height: number }) {  if (!dimensions?.width || !dimensions.height) return undefined;
   const ratio = dimensions.width / dimensions.height;
   const matches = imageRatioOptions.map((label) => {
     const [width, height] = label.split(":").map(Number);
@@ -1891,15 +1937,27 @@ async function exportWorkflowImageJpg(node: WorkflowNode) {
   downloadBlob(blob, `${getWorkflowMediaBaseName(node, "workflow-image")}.jpg`);
 }
 
-async function exportWorkflowVideoFrame(node: WorkflowNode, frame: "first" | "last" | "current") {
+type WorkflowVideoFrameKind = "first" | "last" | "current";
+
+function getWorkflowVideoFrameLabel(frame: WorkflowVideoFrameKind) {
+  return frame === "first" ? "首帧" : frame === "last" ? "尾帧" : "当前帧";
+}
+
+// 视频截帧唯一实现：右键菜单「导出首/尾/当前帧」（下载）与快捷菜单「视频截图」（进画布）共用，禁止再各写一份。
+async function getWorkflowVideoFrameJpeg(node: WorkflowNode, frame: WorkflowVideoFrameKind) {
   const videoUrl = getStaticMediaUrl(node.data.videoUrl);
-  if (!videoUrl) return;
+  if (!videoUrl) return undefined;
   const time = frame === "first" ? 0 : frame === "last" ? Number.POSITIVE_INFINITY : node.data.videoCurrentTime ?? 0;
   const frameUrl = await getWorkflowVideoFrameDataUrl(videoUrl, time);
   if (!frameUrl) throw new Error("视频帧导出失败");
   const blob = await fetch(frameUrl).then((response) => response.blob());
-  const suffix = frame === "first" ? "首帧" : frame === "last" ? "尾帧" : "当前帧";
-  downloadBlob(blob, `${getWorkflowMediaBaseName(node, "workflow-video")}-${suffix}.jpg`);
+  return { blob, fileName: `${getWorkflowMediaBaseName(node, "workflow-video")}-${getWorkflowVideoFrameLabel(frame)}.jpg` };
+}
+
+async function exportWorkflowVideoFrame(node: WorkflowNode, frame: WorkflowVideoFrameKind) {
+  const result = await getWorkflowVideoFrameJpeg(node, frame);
+  if (!result) return;
+  downloadBlob(result.blob, result.fileName);
 }
 
 async function downloadWorkflowNode(node: WorkflowNode) {
@@ -2021,6 +2079,8 @@ type WorkflowRuntime = {
   beginMultiConnectionDrag: (sourceIds: string[], event: ReactPointerEvent) => void;
   runImageNode: (node: WorkflowNode) => void;
   createImageEditNode: (sourceNode: WorkflowNode, options: { prompt: string; model?: ModelName; modelCandidates?: ModelName[]; highDef?: boolean; ratio?: string; resolution?: string; transparent?: boolean; bgRemove?: boolean; matchSourceImage?: boolean; ratioFromSourceImage?: boolean; position?: { x: number; y: number }; referenceImageOverride?: string; select?: boolean }) => WorkflowNode | undefined;
+  createVideoEditNode: (sourceNode: WorkflowNode, options: { prompt: string; position?: { x: number; y: number }; select?: boolean }) => WorkflowNode | undefined;
+  createVideoFrameImageNode: (sourceNode: WorkflowNode, frame: WorkflowVideoFrameKind) => void;
   createImageElementSplitNodes: (sourceNode: WorkflowNode) => void;
   runGptImageOptimizationRetry: (node: WorkflowNode, maxAttempts: number) => void;
   runVideoNode: (node: WorkflowNode) => void;
@@ -2389,6 +2449,7 @@ function WorkflowSelectedNodeOverlay() {
 
   const [quickEditOpen, setQuickEditOpen] = useState(false);
   const [quickEditText, setQuickEditText] = useState("");
+  const [frameMenuOpen, setFrameMenuOpen] = useState(false);
   const quickEditRef = useRef<HTMLTextAreaElement | null>(null);
   const [eraserOpen, setEraserOpen] = useState(false);
   const [eraserBrush, setEraserBrush] = useState(40);
@@ -2400,8 +2461,9 @@ function WorkflowSelectedNodeOverlay() {
   // 防「立即使用」被点两次：点第一次就锁住，直到本次橡皮提交流程走完（发起编辑节点）才解锁。
   const eraserSubmittingRef = useRef(false);
   const selectedEditNode = selected?.shape.props.node;
-  const canQuickEdit = Boolean(selectedEditNode && selectedEditNode.kind === "image" && hasWorkflowNodeResult(selectedEditNode) && !selectedEditNode.data.isRunning);
-  useEffect(() => { setQuickEditOpen(false); setQuickEditText(""); setEraserOpen(false); setEraserHasStrokes(false); }, [selected?.shape.id]);
+  const selectedEditKind = selectedEditNode?.kind;
+  const canQuickEdit = Boolean(selectedEditNode && (selectedEditKind === "image" || selectedEditKind === "video") && hasWorkflowNodeResult(selectedEditNode) && !selectedEditNode.data.isRunning);
+  useEffect(() => { setQuickEditOpen(false); setQuickEditText(""); setFrameMenuOpen(false); setEraserOpen(false); setEraserHasStrokes(false); }, [selected?.shape.id]);
   useEffect(() => {
     if (!canQuickEdit) return;
     const onKey = (event: KeyboardEvent) => {
@@ -2426,7 +2488,7 @@ function WorkflowSelectedNodeOverlay() {
   const node = shape.props.node;
   const Icon = getWorkflowNodeHeaderIcon(node);
   const mediaName = getWorkflowNodeMediaName(node);
-  const title = node.kind === "text" ? (node.title === "上传文本" ? "上传文本（双击进入编辑模式）" : "文本输入（双击进入编辑模式）") : node.title.startsWith("上传") ? [node.title, getWorkflowUploadFileName(node)].filter(Boolean).join(" ") : [getNodeLabel(node.kind), mediaName].filter(Boolean).join(" ");
+  const title = node.kind === "text" ? (node.title === "上传文本" ? "上传文本（双击进入编辑模式）" : "文本输入（双击进入编辑模式）") : isWorkflowUploadLikeTitle(node.title) ? [node.title, getWorkflowUploadFileName(node)].filter(Boolean).join(" ") : [getNodeLabel(node.kind), mediaName].filter(Boolean).join(" ");
   const paramParts = getWorkflowNodeParamParts(node);
   const showEditor = (node.kind === "image" || node.kind === "video") && !hasWorkflowNodeResult(node) && !node.data.isRunning && node.data.uploadProgress === undefined;
   const screenNodeWidth = shape.props.w * zoom;
@@ -2450,7 +2512,17 @@ function WorkflowSelectedNodeOverlay() {
   const promptMaxHeight = Math.max(52, inputMaxHeight - 176);
   const stopCanvasPointer = (event: SyntheticEvent) => event.stopPropagation();
 
-  const showImageQuickMenu = node.kind === "image" && hasWorkflowNodeResult(node) && !node.data.isRunning;
+  const isVideoQuickMenuNode = node.kind === "video";
+  const showMediaQuickMenu = (node.kind === "image" || isVideoQuickMenuNode) && hasWorkflowNodeResult(node) && !node.data.isRunning;
+  // 快捷编辑派发：图片走 createImageEditNode（贴源图参数），视频走 createVideoEditNode（贴源视频参数+融合模式+模型候选链）。
+  const submitQuickEdit = (text: string) => {
+    const value = text.trim();
+    if (!value) return;
+    if (isVideoQuickMenuNode) runtime.createVideoEditNode(node, { prompt: value });
+    else runtime.createImageEditNode(node, { prompt: value, matchSourceImage: true });
+    setQuickEditOpen(false);
+    setQuickEditText("");
+  };
   const quickMenuHeight = 44;
   const quickMenuGap = 10;
   const quickMenuTop = Math.max(minViewportTop, point.y - 18 - quickMenuGap - quickMenuHeight);
@@ -2458,7 +2530,7 @@ function WorkflowSelectedNodeOverlay() {
 
   return (
     <>
-      {showImageQuickMenu ? (
+      {showMediaQuickMenu ? (
         <div
           className="pointer-events-auto absolute z-[9998] -translate-x-1/2"
           style={{ left: quickMenuCenter, top: quickMenuTop }}
@@ -2474,32 +2546,53 @@ function WorkflowSelectedNodeOverlay() {
               <span className="ml-0.5 rounded-[5px] border border-gray-200 bg-gray-50 px-1.5 leading-[16px] text-gray-400" style={{ fontSize: 11 }}>Tab</span>
             </button>
             <span className="mx-0.5 h-5 w-px bg-gray-200" />
-            <button type="button" onClick={() => runtime.createImageEditNode(node, { prompt: "保持画面内容、主体、构图、颜色和所有细节完全不变，只把这张图提升为更清晰锐利的高清版本，不要增加、删除或改动任何元素。", modelCandidates: getEditCandidates("hd", runtime.editModelToggles), highDef: true })} className="flex h-[34px] items-center gap-1 whitespace-nowrap rounded-[8px] px-2 font-medium text-[#1f2937] hover:bg-gray-100"><RiHdLine className="h-[18px] w-[18px]" /><span>高清</span></button>
-            <button type="button" onClick={() => runtime.createImageEditNode(node, { prompt: "去背景（本地抠图）", bgRemove: true })} className="flex h-[34px] items-center gap-1 whitespace-nowrap rounded-[8px] px-2 font-medium text-[#1f2937] hover:bg-gray-100"><RiScissorsCutLine className="h-[18px] w-[18px]" /><span>去背景</span></button>
-            <button type="button" onClick={() => setEraserOpen(true)} className="flex h-[34px] items-center gap-1 whitespace-nowrap rounded-[8px] px-2 font-medium text-[#1f2937] hover:bg-gray-100"><RiEraserLine className="h-[18px] w-[18px]" /><span>橡皮工具</span></button>
-            <span className="mx-0.5 h-5 w-px bg-gray-200" />
-            <button type="button" title="下载到本地" onClick={async () => {
-              const url = node.data.images?.[0];
-              if (!url) return;
-              // 下载原图（不要走 getImageDisplayUrl，那是缩略图）。
-              const src = getStaticMediaUrl(url) ?? url;
-              const rawName = getWorkflowNodeMediaName(node) || decodeURIComponent((src.split("?")[0].split("/").pop()) || "image");
-              const filename = /\.(png|jpe?g|webp|gif)$/i.test(rawName) ? rawName : `${rawName}.png`;
-              try {
-                const blob = await fetch(src).then((response) => response.blob());
-                const objectUrl = URL.createObjectURL(blob);
-                const anchor = document.createElement("a");
-                anchor.href = objectUrl; anchor.download = filename;
-                document.body.appendChild(anchor); anchor.click(); anchor.remove();
-                URL.revokeObjectURL(objectUrl);
-              } catch {
-                window.open(src, "_blank");
-              }
-            }} className="flex h-[34px] w-8 items-center justify-center rounded-[8px] text-[#1f2937] hover:bg-gray-100"><RiDownloadLine className="h-[18px] w-[18px]" /></button>
+            {!isVideoQuickMenuNode ? (
+              <>
+                <button type="button" onClick={() => runtime.createImageEditNode(node, { prompt: "保持画面内容、主体、构图、颜色和所有细节完全不变，只把这张图提升为更清晰锐利的高清版本，不要增加、删除或改动任何元素。", modelCandidates: getEditCandidates("hd", runtime.editModelToggles), highDef: true })} className="flex h-[34px] items-center gap-1 whitespace-nowrap rounded-[8px] px-2 font-medium text-[#1f2937] hover:bg-gray-100"><RiHdLine className="h-[18px] w-[18px]" /><span>高清</span></button>
+                <button type="button" onClick={() => runtime.createImageEditNode(node, { prompt: "去背景（本地抠图）", bgRemove: true })} className="flex h-[34px] items-center gap-1 whitespace-nowrap rounded-[8px] px-2 font-medium text-[#1f2937] hover:bg-gray-100"><RiScissorsCutLine className="h-[18px] w-[18px]" /><span>去背景</span></button>
+                <button type="button" onClick={() => setEraserOpen(true)} className="flex h-[34px] items-center gap-1 whitespace-nowrap rounded-[8px] px-2 font-medium text-[#1f2937] hover:bg-gray-100"><RiEraserLine className="h-[18px] w-[18px]" /><span>橡皮工具</span></button>
+                <span className="mx-0.5 h-5 w-px bg-gray-200" />
+              </>
+            ) : (
+              /* 视频截图：鼠标悬停下三角展开首帧/尾帧/当前帧，截出的图直接作为图片节点出现在源视频右侧（和右键导出用同一份截帧实现）。 */
+              <>
+                <div
+                  className="relative"
+                  onMouseEnter={() => setFrameMenuOpen(true)}
+                  onMouseLeave={() => setFrameMenuOpen(false)}
+                >
+                  <button type="button" className="flex h-[34px] items-center gap-1 whitespace-nowrap rounded-[8px] px-2 font-medium text-[#1f2937] hover:bg-gray-100">
+                    <RiCameraLine className="h-[18px] w-[18px]" />
+                    <span>视频截图</span>
+                    <RiArrowDownSLine className="h-4 w-4 text-[#9ca3af]" />
+                  </button>
+                  {frameMenuOpen ? (
+                    <div className="absolute left-1/2 top-full z-[10000] w-[150px] -translate-x-1/2 pt-1.5">
+                      <div className="rounded-[10px] bg-white p-1 shadow-[0_10px_30px_rgba(15,23,42,0.18)] ring-1 ring-black/5">
+                        {[{ frame: "first" as WorkflowVideoFrameKind, label: "截取首帧" }, { frame: "last" as WorkflowVideoFrameKind, label: "截取尾帧" }, { frame: "current" as WorkflowVideoFrameKind, label: "截取当前帧" }].map((item) => (
+                          <button
+                            key={item.frame}
+                            type="button"
+                            onClick={() => { setFrameMenuOpen(false); runtime.createVideoFrameImageNode(node, item.frame); }}
+                            className="flex h-9 w-full items-center gap-2 whitespace-nowrap rounded-[8px] px-2 text-left text-[14px] text-[#1f2937] hover:bg-gray-100"
+                          >
+                            <RiImageLine className="h-[17px] w-[17px] text-[#6b7280]" />
+                            <span>{item.label}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+                <span className="mx-0.5 h-5 w-px bg-gray-200" />
+              </>
+            )}
+            {/* 下载统一走共享的 downloadWorkflowNode（右键菜单用的同一份），图片/视频同源，禁止再各写一份。 */}
+            <button type="button" title="下载到本地" onClick={() => { void downloadWorkflowNode(node).catch((error) => console.warn("[workflow] download failed", error)); }} className="flex h-[34px] w-8 items-center justify-center rounded-[8px] text-[#1f2937] hover:bg-gray-100"><RiDownloadLine className="h-[18px] w-[18px]" /></button>
           </div>
         </div>
       ) : null}
-      {showImageQuickMenu && quickEditOpen ? (
+      {showMediaQuickMenu && quickEditOpen ? (
         <div
           className="pointer-events-auto absolute z-[9999] -translate-x-1/2"
           style={{ left: Math.max(inputWidth / 2 + 8, Math.min(point.x + screenNodeWidth / 2, viewportWidth - inputWidth / 2 - 8)), top: Math.min(point.y + screenNodeHeight + 12, safeViewportBottom - 60), width: inputWidth }}
@@ -2514,7 +2607,7 @@ function WorkflowSelectedNodeOverlay() {
               value={quickEditText}
               maxLength={MAX_WORKFLOW_PROMPT_LENGTH}
               rows={1}
-              placeholder="描述你想怎么修改这张图…"
+              placeholder={isVideoQuickMenuNode ? "描述你想怎么修改这段视频…" : "描述你想怎么修改这张图…"}
               className="workflow-prompt-textarea max-h-[66px] min-h-[24px] flex-1 resize-none self-center bg-transparent text-[14px] leading-6 text-[#1f2937] outline-none placeholder:text-[#b3b3b3]"
               onChange={(event) => {
                 setQuickEditText(event.target.value);
@@ -2525,24 +2618,14 @@ function WorkflowSelectedNodeOverlay() {
               onKeyDown={(event) => {
                 if (event.key === "Enter" && !event.shiftKey) {
                   event.preventDefault();
-                  const text = quickEditText.trim();
-                  if (!text) return;
-                  runtime.createImageEditNode(node, { prompt: text, matchSourceImage: true });
-                  setQuickEditOpen(false);
-                  setQuickEditText("");
+                  submitQuickEdit(quickEditText);
                 }
               }}
             />
             <button
               type="button"
               disabled={!quickEditText.trim()}
-              onClick={() => {
-                const text = quickEditText.trim();
-                if (!text) return;
-                runtime.createImageEditNode(node, { prompt: text, matchSourceImage: true });
-                setQuickEditOpen(false);
-                setQuickEditText("");
-              }}
+              onClick={() => submitQuickEdit(quickEditText)}
               className="inline-flex h-9 w-9 shrink-0 items-center justify-center whitespace-nowrap rounded-[10px] bg-[#111111] text-white transition hover:bg-[#000000] disabled:cursor-not-allowed disabled:bg-[#d7d7d7] disabled:text-white"
             >
               <RiArrowUpLine className="h-4 w-4" />
@@ -2550,7 +2633,7 @@ function WorkflowSelectedNodeOverlay() {
           </div>
         </div>
       ) : null}
-      {showImageQuickMenu && eraserOpen ? (
+      {showMediaQuickMenu && !isVideoQuickMenuNode && eraserOpen ? (
         <>
           <div
             className="pointer-events-auto absolute z-[9997] overflow-hidden"
@@ -2693,7 +2776,7 @@ function WorkflowCustomContextMenu({ menu, onClose, onAddNode, onUploadNode, onI
   const showImageItems = Boolean(selectedWorkflowNode?.kind === "image" && selectedWorkflowNode.data.images?.[0]);
   const showVideoItems = Boolean(selectedWorkflowNode?.kind === "video" && selectedWorkflowNode.data.videoUrl);
   const showNodeSpecificItems = showTextItems || showImageItems || showVideoItems;
-  const isUploadedMediaNode = Boolean(selectedWorkflowNode?.title?.startsWith("上传"));
+  const isUploadedMediaNode = isWorkflowUploadLikeTitle(selectedWorkflowNode?.title);
 
   const runAction = (actionId: string) => {
     const action = actions[actionId];
@@ -2819,7 +2902,7 @@ function WorkflowCustomContextMenu({ menu, onClose, onAddNode, onUploadNode, onI
   );
 }
 
-export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onCredit, onGeneratedMedia, onPreviewMedia, onShowTip, getImageDisplayUrl, getVideoPosterDisplayUrl, enabledTextModelIds, textModelProviders = {}, enabledImageModelIds, enabledVideoModelIds, uploadRuleOverrides, editModelToggles, leftSidebarVisible = true, onToggleLeftSidebar, workflowAssets = [], referenceAssets = [], referenceAssetsLoadStatus = "idle", referenceAssetCounts, onLoadReferenceAssets, onLoadReferenceFilter, referenceFilterLoading, referenceFilterNextOffset, onLoadMoreReferenceAssets, onExternalFilesDrop, onOpenAssetImport, assetsToImport, onAssetsImported }: WorkflowCanvasProps) {
+export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onCredit, onGeneratedMedia, onPreviewMedia, onShowTip, onUploadedAsset, getImageDisplayUrl, getVideoPosterDisplayUrl, enabledTextModelIds, textModelProviders = {}, enabledImageModelIds, enabledVideoModelIds, uploadRuleOverrides, editModelToggles, leftSidebarVisible = true, onToggleLeftSidebar, workflowAssets = [], referenceAssets = [], referenceAssetsLoadStatus = "idle", referenceAssetCounts, onLoadReferenceAssets, onLoadReferenceFilter, referenceFilterLoading, referenceFilterNextOffset, onLoadMoreReferenceAssets, onExternalFilesDrop, onOpenAssetImport, assetsToImport, onAssetsImported }: WorkflowCanvasProps) {
   const editorRef = useRef<Editor | null>(null);
   const stateRef = useRef(normalizeState(value));
   const loadedWorkflowIdRef = useRef(workflowId);
@@ -3258,7 +3341,9 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     })();
   }, [updateState, workflowId]);
 
-  const addUploadedNode = useCallback((draftNode: Omit<WorkflowNode, "x" | "y">, targetNodeId?: string) => {
+  // targetNodeId：上传成为某节点的输入 → 放在它左侧并自动连线。
+  // rightOfNode：上传结果作为某节点的「产物」（如视频截图）→ 放在它右侧、不连线。
+  const addUploadedNode = useCallback((draftNode: Omit<WorkflowNode, "x" | "y">, targetNodeId?: string, rightOfNode?: WorkflowNode) => {
     const editor = editorRef.current;
     const current = stateRef.current;
     const viewport = editor?.getViewportPageBounds();
@@ -3268,7 +3353,10 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     const anchorId = recentActionNodeIdsRef.current.find((nodeId) => current.nodes.some((node) => node.id === nodeId)) || selectedNodeIdRef.current;
     const anchor = current.nodes.find((node) => node.id === anchorId);
     const fallback = viewport ? { x: viewport.x + viewport.w / 2 - size.w / 2, y: viewport.y + viewport.h / 2 - size.h / 2 } : undefined;
-    const position = target ? findNonOverlappingNodePositionLeftOfTarget(current.nodes, size, target) : findNonOverlappingNodePosition(current.nodes, size, anchor, fallback);
+    const rightAnchor = rightOfNode ? current.nodes.find((node) => node.id === rightOfNode.id) ?? rightOfNode : undefined;
+    const position = rightAnchor
+      ? findNonOverlappingNodePosition(current.nodes, size, rightAnchor)
+      : target ? findNonOverlappingNodePositionLeftOfTarget(current.nodes, size, target) : findNonOverlappingNodePosition(current.nodes, size, anchor, fallback);
     const node: WorkflowNode = { ...draftWithPosition, x: position.x, y: position.y };
     recentActionNodeIdsRef.current = [node.id, ...recentActionNodeIdsRef.current].slice(0, 20);
     updateState((state) => ({ ...state, nodes: [...state.nodes, node], edges: targetNodeId ? [...state.edges, { id: createId("workflow_edge"), source: node.id, target: targetNodeId }] : state.edges }));
@@ -3287,7 +3375,8 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     }));
   }, []);
 
-  const handleUploadNodeFile = useCallback(async (file: File, targetNodeId?: string, onDuplicateTip?: (message: string) => void) => {
+  // imageTitle：图片节点的标题/提示词文案，默认「上传图片」；「视频截图」复用本上传链路时传入自己的文案。
+  const handleUploadNodeFile = useCallback(async (file: File, targetNodeId?: string, onDuplicateTip?: (message: string) => void, rightOfNode?: WorkflowNode, imageTitle = "上传图片") => {
     try {
       if (file.type.startsWith("image/")) {
         const dimensions = await getWorkflowImageFileDimensions(file);
@@ -3295,16 +3384,20 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
         if (validationError) return onShowTip?.(validationError);
         const nodeId = createId("workflow_node");
         const previewUrl = URL.createObjectURL(file);
-        addUploadedNode({ id: nodeId, kind: "image", title: "上传图片", data: { ...getDefaultNodeData("image"), prompt: "上传图片", imageDimensions: {}, ratio: normalizeWorkflowImageRatio(undefined, dimensions), uploadProgress: 1, uploadPreviewUrl: previewUrl } }, targetNodeId);
+        addUploadedNode({ id: nodeId, kind: "image", title: imageTitle, data: { ...getDefaultNodeData("image"), prompt: imageTitle, imageDimensions: {}, ratio: normalizeWorkflowImageRatio(undefined, dimensions), uploadProgress: 1, uploadPreviewUrl: previewUrl } }, targetNodeId, rightOfNode);
         const uploaded = await uploadWorkflowImage(file, (progress) => updateNode(nodeId, { uploadProgress: Math.min(99, progress) }), true);
         const url = uploaded.url;
         if (uploaded.duplicate) (onDuplicateTip ?? onShowTip)?.("图片已存在，无需重复上传！");
         // 名字一律用服务端权威名（去扩展名 + 全局唯一 + 同图复用同名），兜底才用文件名。
         const mediaName = uploaded.name || sanitizeWorkflowReferenceName(file.name);
-        const data: WorkflowNodeData = { ...getDefaultNodeData("image"), prompt: "上传图片", images: [url], imageDimensions: { [url]: dimensions }, mediaSystemNames: { [url]: mediaName }, ratio: normalizeWorkflowImageRatio(undefined, dimensions), visualSize: undefined, uploadProgress: undefined, uploadPreviewUrl: undefined };
+        const data: WorkflowNodeData = { ...getDefaultNodeData("image"), prompt: imageTitle, images: [url], imageDimensions: { [url]: dimensions }, mediaSystemNames: { [url]: mediaName }, ratio: normalizeWorkflowImageRatio(undefined, dimensions), visualSize: undefined, uploadProgress: undefined, uploadPreviewUrl: undefined };
         updateNode(nodeId, data);
         URL.revokeObjectURL(previewUrl);
-        void persistWorkflowUploadNodeAsset({ url, name: mediaName, mediaType: "image", workflowId, workflowNodeId: nodeId, sourcePrompt: "上传图片", file, dimensions, settings: { ratio: data.ratio, resolution: data.resolution }, contentHash: uploaded.contentHash }).catch((error) => console.warn("[media-assets] failed to persist workflow uploaded image", error));
+        // 视频截图和普通上传图片同待遇：都走上传归类，显示在资产库「上传的资产 · 上传图片」。
+        // 入库成功后通知父级刷新资产库对应分类，否则右侧列表要手动刷新页面才出现（左侧计数走服务端所以先变了）。
+        void persistWorkflowUploadNodeAsset({ url, name: mediaName, mediaType: "image", workflowId, workflowNodeId: nodeId, sourcePrompt: imageTitle, file, dimensions, settings: { ratio: data.ratio, resolution: data.resolution }, contentHash: uploaded.contentHash })
+          .then(() => onUploadedAsset?.({ mediaType: "image" }))
+          .catch((error) => console.warn("[media-assets] failed to persist workflow uploaded image", error));
         return nodeId;
       }
       if (file.type.startsWith("video/")) {
@@ -3319,9 +3412,10 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
         const url = uploadedVideo.url;
         if (uploadedVideo.duplicate) (onDuplicateTip ?? onShowTip)?.("视频已存在，无需重复上传！");
         const mediaName = uploadedVideo.name || sanitizeWorkflowReferenceName(file.name);
-        const data: WorkflowNodeData = { ...defaultData, prompt: "上传视频", videoUrl: url, videoDimensions: media.dimensions, durationSeconds: media.durationSeconds, videoCurrentTime: 0, mediaSystemNames: { [url]: mediaName }, ratio: media.dimensions ? getCommonWorkflowRatioLabel(media.dimensions) ?? defaultData.ratio : defaultData.ratio, visualSize: undefined, uploadProgress: undefined, uploadPreviewUrl: undefined };
+        const data: WorkflowNodeData = { ...defaultData, prompt: "上传视频", videoUrl: url, posterUrl: uploadedVideo.posterUrl, videoDimensions: media.dimensions, durationSeconds: media.durationSeconds, videoCurrentTime: 0, mediaSystemNames: { [url]: mediaName }, ratio: media.dimensions ? getCommonWorkflowRatioLabel(media.dimensions) ?? defaultData.ratio : defaultData.ratio, visualSize: undefined, uploadProgress: undefined, uploadPreviewUrl: undefined };
         updateNode(nodeId, data);
         URL.revokeObjectURL(previewUrl);
+        onUploadedAsset?.({ mediaType: "video" });
         return nodeId;
       }
       if (file.type.startsWith("audio/") || ["mp3", "wav"].includes(getWorkflowFileExtension(file))) {
@@ -3335,6 +3429,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
         if (uploadedAudio.duplicate) (onDuplicateTip ?? onShowTip)?.("音频已存在，无需重复上传！");
         const mediaName = uploadedAudio.name || sanitizeWorkflowReferenceName(file.name);
         updateNode(nodeId, { audioUrl: url, durationSeconds: media.durationSeconds, mediaSystemNames: { [url]: mediaName }, uploadProgress: undefined });
+        onUploadedAsset?.({ mediaType: "audio" });
         return nodeId;
       }
       if (file.type === "text/plain" || getWorkflowFileExtension(file) === "txt") {
@@ -3357,13 +3452,27 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     } catch (error) {
       onShowTip?.(`${file.name}：${toUserErrorMessage(error, "上传节点失败，请稍后重试。")}`);
     }
-  }, [addUploadedNode, onShowTip, updateNode, workflowId]);
+  }, [addUploadedNode, onShowTip, onUploadedAsset, updateNode, workflowId]);
 
   const handleUploadNodeFiles = useCallback(async (files: File[]) => {
     if (files.length === 0) return;
     const nodeIds = (await Promise.all(files.map((file) => handleUploadNodeFile(file)))).filter((nodeId): nodeId is string => Boolean(nodeId));
     selectAndFocusUploadedNodes(nodeIds);
   }, [handleUploadNodeFile, selectAndFocusUploadedNodes]);
+
+  // 视频截图（快捷菜单）：截首帧/尾帧/当前帧 → 当成一张上传图片走统一上传链路（去重/命名/进资产库都复用），
+  // 节点放在源视频右侧、不连线。截帧本身复用与右键导出同一份 getWorkflowVideoFrameJpeg。
+  const createVideoFrameImageNode = useCallback(async (sourceNode: WorkflowNode, frame: WorkflowVideoFrameKind) => {
+    try {
+      const result = await getWorkflowVideoFrameJpeg(sourceNode, frame);
+      if (!result) return;
+      const file = new File([result.blob], result.fileName, { type: "image/jpeg" });
+      const nodeId = await handleUploadNodeFile(file, undefined, undefined, sourceNode, WORKFLOW_VIDEO_FRAME_NODE_TITLE);
+      if (nodeId) selectAndFocusUploadedNodes([nodeId], false);
+    } catch (error) {
+      onShowTip?.(toUserErrorMessage(error, "视频截图失败，请稍后重试。"));
+    }
+  }, [handleUploadNodeFile, onShowTip, selectAndFocusUploadedNodes]);
 
   const findExistingUploadNodeForFile = useCallback((file: File) => {
     const fileName = file.name;
@@ -4295,67 +4404,151 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     }
   }, [onCredit, onGeneratedMedia, updateNode, updateState, workflowId, workflowTitle]);
 
-  const runVideoNode = useCallback(async (node: WorkflowNode) => {
+  // options 为空时行为与改造前完全一致（单模型、参考素材全部从连线/@提及推导）。
+  // options 用于「视频快捷编辑」：注入源视频当参考视频 + 强制融合模式 + 模型候选链（依次尝试，前一个失败换下一个）。
+  const runVideoNode = useCallback(async (node: WorkflowNode, options?: {
+    modelCandidates?: ModelName[];
+    referenceVideosOverride?: string[];
+    referenceVideoDurations?: Record<string, number>;
+    forceReferenceMode?: WorkflowVideoReferenceMode;
+  }) => {
     const upstreamPrompt = getInputText(node.id);
     const ownPrompt = node.data.prompt?.trim() ?? "";
     const prompt = [ownPrompt, upstreamPrompt].filter(Boolean).join("\n\n").trim();
     if (Array.from(prompt).length > MAX_WORKFLOW_PROMPT_LENGTH) return updateNode(node.id, { error: `提示词超过 ${MAX_WORKFLOW_PROMPT_LENGTH} 字，请缩短输入框或连接的文本节点内容。` });
     if (!prompt) return updateNode(node.id, { error: "请先输入视频提示词，或连接一个文本/图片节点。" });
-    const model = getEnabledVideoModel(node.data.model);
-    const videoReferenceMode = isWorkflowBytePlusSeedanceVideoModel(model) ? node.data.videoReferenceMode ?? "reference" : getWorkflowUploadRuleVideoReferenceMode(prompt);
-    const connectedUploads = getWorkflowConnectedInputUploads(stateRef.current, node.id);
-    const uploadError = validateWorkflowUploadsForSubmit({ ...node, data: { ...node.data, model, uploads: mergeWorkflowUploadItems([...(node.data.uploads ?? []), ...connectedUploads]) } }, uploadRuleOverrides, videoReferenceMode);
-    if (uploadError) {
-      onShowTip?.(uploadError);
-      return updateNode(node.id, { error: uploadError });
-    }
-    const resolution = normalizeVideoResolutionForModel(model, node.data.resolution);
-    const settings = { ratio: normalizeVideoRatioForModel(model, node.data.ratio, resolution), resolution, duration: node.data.duration ?? workflowVideoModels.find((item) => item.id === model)?.durations?.[0] ?? "5秒" };
-    const requestId = createId("workflow_video");
-    updateNode(node.id, { isRunning: true, error: undefined, videoUrl: undefined, posterUrl: undefined, videoCurrentTime: undefined, visualSize: undefined, startedAt: Date.now(), videoRequestId: requestId, videoPreviewUrl: undefined, videoSavedFlashAt: undefined });
-    try {
-      const allReferenceImages = [...getReferenceImages(node.id), ...getPromptReferenceUrls(prompt, node, "image")].filter((url, index, array) => array.indexOf(url) === index);
-      const referenceImages = isWorkflowBytePlusSeedanceVideoModel(model) ? getWorkflowEffectiveBytePlusVideoReferenceItems(allReferenceImages, videoReferenceMode) : allReferenceImages;
-      const referenceVideos = [...getReferenceMediaUrls(node.id, "video"), ...getPromptReferenceUrls(prompt, node, "video")].filter((url, index, array) => array.indexOf(url) === index);
-      const referenceAudios = [...getReferenceMediaUrls(node.id, "audio"), ...getPromptReferenceUrls(prompt, node, "audio")].filter((url, index, array) => array.indexOf(url) === index);
-      if (referenceImages.length < allReferenceImages.length) onShowTip?.(getWorkflowBytePlusVideoReferenceLimitHint(videoReferenceMode));
-      if (isWorkflowBytePlusSeedanceVideoModel(model) && videoReferenceMode === "first_frame" && referenceImages.length < 1) throw new Error("首帧生视频需要至少一张参考图");
-      if (isWorkflowBytePlusSeedanceVideoModel(model) && videoReferenceMode === "first_last_frame" && referenceImages.length < 2) throw new Error("首尾帧生视频需要至少两张参考图");
-      const referenceComboError = validateVideoReferenceCombination({ modelId: model, referenceMode: isWorkflowBytePlusSeedanceVideoModel(model) ? videoReferenceMode : undefined, imageCount: referenceImages.length, videoCount: referenceVideos.length, audioCount: referenceAudios.length });
-      if (referenceComboError) throw new Error(referenceComboError);
-      // 参考视频/音频总时长即时校验（连线的上传节点带精确时长；@引用库资产客户端无时长，交服务端权威兜底）。
-      const referenceMediaDurationByUrl = new Map<string, number>();
-      for (const source of getIncomingNodes(node.id)) {
-        if (source.data.videoUrl && typeof source.data.durationSeconds === "number") referenceMediaDurationByUrl.set(source.data.videoUrl, source.data.durationSeconds);
-        if (source.data.audioUrl && typeof source.data.durationSeconds === "number") referenceMediaDurationByUrl.set(source.data.audioUrl, source.data.durationSeconds);
+    const candidateModels = (options?.modelCandidates ?? []).filter((candidate) => videoModels.some((item) => item.id === candidate));
+    const attemptModels: ModelName[] = candidateModels.length > 0 ? candidateModels : [getEnabledVideoModel(node.data.model)];
+    let lastError: unknown;
+    for (const attemptModel of attemptModels) {
+      const model = attemptModel;
+      const videoReferenceMode = options?.forceReferenceMode ?? (isWorkflowBytePlusSeedanceVideoModel(model) ? node.data.videoReferenceMode ?? "reference" : getWorkflowUploadRuleVideoReferenceMode(prompt));
+      const connectedUploads = getWorkflowConnectedInputUploads(stateRef.current, node.id);
+      const uploadError = validateWorkflowUploadsForSubmit({ ...node, data: { ...node.data, model, uploads: mergeWorkflowUploadItems([...(node.data.uploads ?? []), ...connectedUploads]) } }, uploadRuleOverrides, videoReferenceMode);
+      if (uploadError) {
+        onShowTip?.(uploadError);
+        return updateNode(node.id, { error: uploadError });
       }
-      const videoTotalDurationError = validateReferenceTotalDuration("video", referenceVideos.map((url) => referenceMediaDurationByUrl.get(url)));
-      if (videoTotalDurationError) throw new Error(videoTotalDurationError);
-      const audioTotalDurationError = validateReferenceTotalDuration("audio", referenceAudios.map((url) => referenceMediaDurationByUrl.get(url)));
-      if (audioTotalDurationError) throw new Error(audioTotalDurationError);
-      const modelPrompt = appendWorkflowReferenceHint(prompt, getReferenceImageNames(node, referenceImages));
-      const referenceImageNameByUrl = new Map<string, string>();
-      for (const source of getIncomingNodes(node.id)) for (const url of source.data.images ?? []) if (url && source.data.mediaSystemNames?.[url]) referenceImageNameByUrl.set(url, source.data.mediaSystemNames[url]);
-      for (const asset of referenceAssets) if (asset.url && asset.name) referenceImageNameByUrl.set(asset.url, asset.name);
-      const referenceImageNames = referenceImages.map((url) => referenceImageNameByUrl.get(url) ?? "");
-      const createVideoTask = (autoBytePlusAssetReview = false) => fetch("/api/video", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt: modelPrompt, sourcePrompt: prompt, model, settings, referenceImages, referenceImageNames, referenceVideos, referenceAudios, referenceMode: videoReferenceMode, conversationId: workflowId, conversationTitle: workflowTitle, requestId, flow: "workflow", workflowId, workflowNodeId: node.id, metadata: { creditSource: "workflow_video_generation" }, autoBytePlusAssetReview }) }).then((response) => readJson<VideoApiResponse>(response));
-      let createData = await createVideoTask();
-      if (createData.status === "reviewing" && createData.autoBytePlusAssetReview?.triggered) {
-        onShowTip?.(BYTEPLUS_AUTO_REVIEW_NOTICE);
-        updateNode(node.id, { error: undefined });
-        createData = await createVideoTask(true);
+      const resolution = normalizeVideoResolutionForModel(model, node.data.resolution);
+      const settings = { ratio: normalizeVideoRatioForModel(model, node.data.ratio, resolution), resolution, duration: node.data.duration ?? workflowVideoModels.find((item) => item.id === model)?.durations?.[0] ?? "5秒" };
+      const requestId = createId("workflow_video");
+      // 候选链换模型时同步节点显示的 model/比例/分辨率（等待卡标签跟随实际尝试的模型），与图片编辑候选链一致。
+      updateNode(node.id, { isRunning: true, error: undefined, videoUrl: undefined, posterUrl: undefined, videoCurrentTime: undefined, visualSize: undefined, startedAt: Date.now(), videoRequestId: requestId, videoPreviewUrl: undefined, videoSavedFlashAt: undefined, ...(candidateModels.length > 0 ? { model, ratio: settings.ratio, resolution } : {}) });
+      try {
+        const allReferenceImages = [...getReferenceImages(node.id), ...getPromptReferenceUrls(prompt, node, "image")].filter((url, index, array) => array.indexOf(url) === index);
+        const referenceImages = isWorkflowBytePlusSeedanceVideoModel(model) ? getWorkflowEffectiveBytePlusVideoReferenceItems(allReferenceImages, videoReferenceMode) : allReferenceImages;
+        const referenceVideos = options?.referenceVideosOverride
+          ? options.referenceVideosOverride.filter(Boolean)
+          : [...getReferenceMediaUrls(node.id, "video"), ...getPromptReferenceUrls(prompt, node, "video")].filter((url, index, array) => array.indexOf(url) === index);
+        const referenceAudios = options?.referenceVideosOverride
+          ? []
+          : [...getReferenceMediaUrls(node.id, "audio"), ...getPromptReferenceUrls(prompt, node, "audio")].filter((url, index, array) => array.indexOf(url) === index);
+        if (referenceImages.length < allReferenceImages.length) onShowTip?.(getWorkflowBytePlusVideoReferenceLimitHint(videoReferenceMode));
+        if (isWorkflowBytePlusSeedanceVideoModel(model) && videoReferenceMode === "first_frame" && referenceImages.length < 1) throw new Error("首帧生视频需要至少一张参考图");
+        if (isWorkflowBytePlusSeedanceVideoModel(model) && videoReferenceMode === "first_last_frame" && referenceImages.length < 2) throw new Error("首尾帧生视频需要至少两张参考图");
+        const referenceComboError = validateVideoReferenceCombination({ modelId: model, referenceMode: isWorkflowBytePlusSeedanceVideoModel(model) ? videoReferenceMode : undefined, imageCount: referenceImages.length, videoCount: referenceVideos.length, audioCount: referenceAudios.length });
+        if (referenceComboError) throw new Error(referenceComboError);
+        // 参考视频/音频总时长即时校验（连线的上传节点带精确时长；@引用库资产客户端无时长，交服务端权威兜底）。
+        const referenceMediaDurationByUrl = new Map<string, number>();
+        for (const source of getIncomingNodes(node.id)) {
+          if (source.data.videoUrl && typeof source.data.durationSeconds === "number") referenceMediaDurationByUrl.set(source.data.videoUrl, source.data.durationSeconds);
+          if (source.data.audioUrl && typeof source.data.durationSeconds === "number") referenceMediaDurationByUrl.set(source.data.audioUrl, source.data.durationSeconds);
+        }
+        for (const [url, seconds] of Object.entries(options?.referenceVideoDurations ?? {})) if (typeof seconds === "number") referenceMediaDurationByUrl.set(url, seconds);
+        const videoTotalDurationError = validateReferenceTotalDuration("video", referenceVideos.map((url) => referenceMediaDurationByUrl.get(url)));
+        if (videoTotalDurationError) throw new Error(videoTotalDurationError);
+        const audioTotalDurationError = validateReferenceTotalDuration("audio", referenceAudios.map((url) => referenceMediaDurationByUrl.get(url)));
+        if (audioTotalDurationError) throw new Error(audioTotalDurationError);
+        const modelPrompt = appendWorkflowReferenceHint(prompt, getReferenceImageNames(node, referenceImages));
+        const referenceImageNameByUrl = new Map<string, string>();
+        for (const source of getIncomingNodes(node.id)) for (const url of source.data.images ?? []) if (url && source.data.mediaSystemNames?.[url]) referenceImageNameByUrl.set(url, source.data.mediaSystemNames[url]);
+        for (const asset of referenceAssets) if (asset.url && asset.name) referenceImageNameByUrl.set(asset.url, asset.name);
+        const referenceImageNames = referenceImages.map((url) => referenceImageNameByUrl.get(url) ?? "");
+        const createVideoTask = (autoBytePlusAssetReview = false) => fetch("/api/video", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt: modelPrompt, sourcePrompt: prompt, model, settings, referenceImages, referenceImageNames, referenceVideos, referenceAudios, referenceMode: videoReferenceMode, conversationId: workflowId, conversationTitle: workflowTitle, requestId, flow: "workflow", workflowId, workflowNodeId: node.id, metadata: { creditSource: "workflow_video_generation" }, autoBytePlusAssetReview }) }).then((response) => readJson<VideoApiResponse>(response));
+        let createData = await createVideoTask();
+        if (createData.status === "reviewing" && createData.autoBytePlusAssetReview?.triggered) {
+          onShowTip?.(BYTEPLUS_AUTO_REVIEW_NOTICE);
+          updateNode(node.id, { error: undefined });
+          createData = await createVideoTask(true);
+        }
+        const taskId = getVideoTaskId(createData);
+        if (!taskId) throw new Error(getWorkflowApiErrorMessage({ error: createData.error ?? "视频平台没有返回任务编号", errorCode: createData.errorCode }, GENERIC_MEDIA_ERROR_MESSAGE));
+        updateNode(node.id, { taskId });
+        // Store the clean user prompt (without the appended reference-order hint) back to the node on success,
+        // so "使用提示词" and the asset library sourcePrompt do not carry the long reference-order instruction.
+        // Task creation above already used modelPrompt; polling only needs the taskId, so the poll-body prompt is harmless.
+        await pollVideoNode({ ...node, data: { ...node.data, model } }, taskId, prompt, model, settings, requestId, createData.usage);
+        return;
+      } catch (error) {
+        lastError = error;
       }
-      const taskId = getVideoTaskId(createData);
-      if (!taskId) throw new Error(getWorkflowApiErrorMessage({ error: createData.error ?? "视频平台没有返回任务编号", errorCode: createData.errorCode }, GENERIC_MEDIA_ERROR_MESSAGE));
-      updateNode(node.id, { taskId });
-      // Store the clean user prompt (without the appended reference-order hint) back to the node on success,
-      // so "使用提示词" and the asset library sourcePrompt do not carry the long reference-order instruction.
-      // Task creation above already used modelPrompt; polling only needs the taskId, so the poll-body prompt is harmless.
-      await pollVideoNode(node, taskId, prompt, model, settings, requestId, createData.usage);
-    } catch (error) {
-      updateNode(node.id, { isRunning: false, error: toUserErrorMessage(error, GENERIC_MEDIA_ERROR_MESSAGE), taskId: undefined, videoRequestId: undefined });
     }
-  }, [getEnabledVideoModel, getInputText, getPromptReferenceUrls, getReferenceImages, getReferenceImageNames, getReferenceMediaUrls, getIncomingNodes, referenceAssets, onShowTip, pollVideoNode, updateNode, uploadRuleOverrides, workflowId, workflowTitle]);
+    updateNode(node.id, { isRunning: false, error: toUserErrorMessage(lastError, GENERIC_MEDIA_ERROR_MESSAGE), taskId: undefined, videoRequestId: undefined });
+  }, [getEnabledVideoModel, getInputText, getPromptReferenceUrls, getReferenceImages, getReferenceImageNames, getReferenceMediaUrls, getIncomingNodes, referenceAssets, onShowTip, pollVideoNode, updateNode, uploadRuleOverrides, videoModels, workflowId, workflowTitle]);
+
+  // 视频快捷编辑：新建一个视频节点，用「源视频当参考视频 + 用户提示词」以融合模式重新生成。
+  // 参数完全沿用源视频（比例/分辨率/时长）；模型候选链依次 Mini → Fast → 2.0（前一个失败自动换下一个）。
+  // 为严格保住「和源视频相同参数」，候选链只保留原生支持该分辨率的模型（1080p 只有 2.0 支持，
+  // 否则 normalizeVideoResolutionForModel 会把 Mini/Fast 悄悄降到 720p，就不是"相同参数"了）。
+  // 计费：每次尝试都是一次独立的 workflow_video_generation 任务（自带新 requestId），失败不计费，
+  // 与图片编辑候选链一致，不会重复扣分。
+  const createVideoEditNode = useCallback((sourceNode: WorkflowNode, options: { prompt: string; position?: { x: number; y: number }; select?: boolean }) => {
+    const sourceUrl = sourceNode.data.videoUrl;
+    if (!sourceUrl) return;
+    const prompt = options.prompt.trim();
+    if (!prompt) return;
+    const current = stateRef.current;
+    // 参数一律以「源视频的真实尺寸/真实时长」为准（有 videoDimensions/durationSeconds 就用它推），
+    // 推不出来才退回节点上的设置。这样生成视频与上传视频都对：
+    // - 生成视频：真实尺寸/时长本来就等于它的设置，推出来结果一致。
+    // - 上传视频：节点上的 resolution/duration 是建节点时的默认值（720p / 8秒），不是真实值，必须靠真实尺寸推，
+    //   否则上传一个 1920×1080 / 12 秒的视频会被错当成 720p / 8 秒。
+    const sourceDims = sourceNode.data.videoDimensions ?? getWorkflowNodeNaturalSize(sourceNode);
+    const sourceDurationSeconds = typeof sourceNode.data.durationSeconds === "number" ? sourceNode.data.durationSeconds : undefined;
+    // 比例：模型没有完全一致的档时取最接近的一档（closestWorkflowRatioLabel 一定返回一个）。
+    const ratio = sourceDims?.width && sourceDims.height ? closestWorkflowRatioLabel(sourceDims) : sourceNode.data.ratio;
+    const chain = getVideoEditCandidates("video_quick", editModelToggles).filter((candidate) => videoModels.some((item) => item.id === candidate));
+    if (chain.length === 0) {
+      onShowTip?.("当前没有可用的视频模型");
+      return;
+    }
+    // 分辨率优先：先按真实尺寸算出「该用哪一档」（以支持档位最全的 2.0 为基准算，避免被 Mini/Fast 的 720p 上限带偏），
+    // 再据此过滤候选链——需要 1080p 时只有 2.0 支持，链条自然只剩 2.0（直接用 2.0，不再依次尝试）；
+    // 480p/720p 时三个模型都支持，才依次 Mini → Fast → 2.0。
+    const resolutionBaselineModel = chain.includes(DEFAULT_WORKFLOW_VIDEO_MODEL as ModelName) ? (DEFAULT_WORKFLOW_VIDEO_MODEL as ModelName) : chain[chain.length - 1];
+    const resolution = sourceDims?.width && sourceDims.height
+      ? closestResolutionForVideoDimensions(resolutionBaselineModel, ratio ?? "16:9", sourceDims)
+      : sourceNode.data.resolution;
+    const nativeChain = resolution ? chain.filter((candidate) => (getSupportedVideoResolutions(candidate) as readonly string[]).includes(resolution)) : chain;
+    const modelCandidates = nativeChain.length > 0 ? nativeChain : chain;
+    // 时长：上传视频节点上的 duration 是默认值，真实秒数才准 → 用真实秒数取最接近的档。
+    const duration = closestWorkflowVideoDurationLabel(modelCandidates[0], sourceDurationSeconds) ?? sourceNode.data.duration;
+    const data: WorkflowNodeData = { ...getDefaultNodeData("video"), prompt, model: modelCandidates[0], ratio, resolution, duration, videoReferenceMode: "reference", isRunning: true, startedAt: Date.now() };
+    const draftNode: WorkflowNode = { id: createId("workflow_node"), kind: "video", title: getNodeLabel("video"), x: 0, y: 0, data };
+    const size = getWorkflowNodeVisualSize(draftNode);
+    const position = options.position ?? findNonOverlappingNodePosition(current.nodes, size, sourceNode);
+    const node: WorkflowNode = { ...draftNode, x: position.x, y: position.y };
+    recentActionNodeIdsRef.current = [node.id, ...recentActionNodeIdsRef.current].slice(0, 20);
+    updateState((state) => ({ ...state, nodes: [...state.nodes, node] }));
+    if (options.select !== false) {
+      window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+        const editor = editorRef.current;
+        if (!editor) return;
+        const shapeId = getShapeId(node.id);
+        if (!editor.getShape(shapeId)) return;
+        editor.select(shapeId);
+        focusWorkflowNodeInViewport(editor, node);
+      }));
+    }
+    // 源视频精确时长传下去，让「参考总时长」校验拿到真实值（生成的 15 秒视频实际 15.1 秒）。
+    void runVideoNode(node, {
+      modelCandidates,
+      referenceVideosOverride: [sourceUrl],
+      referenceVideoDurations: sourceDurationSeconds !== undefined ? { [sourceUrl]: sourceDurationSeconds } : undefined,
+      forceReferenceMode: "reference",
+    });
+    return node;
+  }, [editModelToggles, onShowTip, runVideoNode, updateState, videoModels]);
 
   // Signature of the currently-loaded nodes that still look "in progress" (running, no result yet, no error).
   // The recovery effects below depend on this INSTEAD of a fixed timer, so they re-run the moment the async
@@ -4690,7 +4883,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     importingAssetsRef.current = false;
   }, [assetsToImport, restoreWorkflowAssetToCanvas, updateState, onAssetsImported]);
 
-  const runtime = useMemo<WorkflowRuntime>(() => ({ selectedNodeId, connectingFrom, connectingTo, multiConnectSources, connectionPointer, modelOptions, workflowTitle, updateNode, deleteNode, disconnectNodes, connectTo, setConnectingFrom, beginConnectionDrag, beginInputConnectionDrag, beginMultiConnectionDrag, runImageNode: (node) => void runImageNode(node), createImageEditNode, createImageElementSplitNodes, runGptImageOptimizationRetry: (node, maxAttempts) => void runGptImageOptimizationRetry(node, maxAttempts), runVideoNode: (node) => void runVideoNode(node), onGeneratedMedia, onShowTip, markNodeAction, onPreviewMedia, getImageDisplayUrl, getVideoPosterDisplayUrl, referenceAssets, referenceAssetsLoadStatus, referenceAssetCounts, onLoadReferenceAssets, onLoadReferenceFilter, referenceFilterLoading, referenceFilterNextOffset, onLoadMoreReferenceAssets, uploadRuleOverrides, editModelToggles, getConnectedInputUploads, getInputTextLength, uploadFilesAsConnectedNodes }), [beginConnectionDrag, beginInputConnectionDrag, beginMultiConnectionDrag, connectTo, connectingFrom, connectingTo, multiConnectSources, connectionPointer, deleteNode, disconnectNodes, getConnectedInputUploads, getImageDisplayUrl, getInputTextLength, getVideoPosterDisplayUrl, markNodeAction, modelOptions, onGeneratedMedia, onLoadReferenceAssets, onLoadReferenceFilter, referenceFilterLoading, referenceFilterNextOffset, onLoadMoreReferenceAssets, onPreviewMedia, onShowTip, referenceAssets, referenceAssetsLoadStatus, referenceAssetCounts, runGptImageOptimizationRetry, runImageNode, createImageEditNode, createImageElementSplitNodes, runVideoNode, selectedNodeId, updateNode, uploadFilesAsConnectedNodes, uploadRuleOverrides, editModelToggles, workflowTitle]);
+  const runtime = useMemo<WorkflowRuntime>(() => ({ selectedNodeId, connectingFrom, connectingTo, multiConnectSources, connectionPointer, modelOptions, workflowTitle, updateNode, deleteNode, disconnectNodes, connectTo, setConnectingFrom, beginConnectionDrag, beginInputConnectionDrag, beginMultiConnectionDrag, runImageNode: (node) => void runImageNode(node), createImageEditNode, createVideoEditNode, createVideoFrameImageNode: (node, frame) => void createVideoFrameImageNode(node, frame), createImageElementSplitNodes, runGptImageOptimizationRetry: (node, maxAttempts) => void runGptImageOptimizationRetry(node, maxAttempts), runVideoNode: (node) => void runVideoNode(node), onGeneratedMedia, onShowTip, markNodeAction, onPreviewMedia, getImageDisplayUrl, getVideoPosterDisplayUrl, referenceAssets, referenceAssetsLoadStatus, referenceAssetCounts, onLoadReferenceAssets, onLoadReferenceFilter, referenceFilterLoading, referenceFilterNextOffset, onLoadMoreReferenceAssets, uploadRuleOverrides, editModelToggles, getConnectedInputUploads, getInputTextLength, uploadFilesAsConnectedNodes }), [beginConnectionDrag, beginInputConnectionDrag, beginMultiConnectionDrag, connectTo, connectingFrom, connectingTo, multiConnectSources, connectionPointer, deleteNode, disconnectNodes, getConnectedInputUploads, getImageDisplayUrl, getInputTextLength, getVideoPosterDisplayUrl, markNodeAction, modelOptions, onGeneratedMedia, onLoadReferenceAssets, onLoadReferenceFilter, referenceFilterLoading, referenceFilterNextOffset, onLoadMoreReferenceAssets, onPreviewMedia, onShowTip, referenceAssets, referenceAssetsLoadStatus, referenceAssetCounts, runGptImageOptimizationRetry, runImageNode, createImageEditNode, createVideoEditNode, createVideoFrameImageNode, createImageElementSplitNodes, runVideoNode, selectedNodeId, updateNode, uploadFilesAsConnectedNodes, uploadRuleOverrides, editModelToggles, workflowTitle]);
 
   return (
     <WorkflowRuntimeContext.Provider value={runtime}>
@@ -5112,11 +5305,14 @@ function WorkflowHistoricalTextLayerRow({ node, onRestore, onDelete }: { node: W
 
 function WorkflowAssetLayerRow({ asset, getImageDisplayUrl, getVideoPosterDisplayUrl, compact, onRestore, onDelete, onSelect, onFocus, selected, isLocked, isHidden, onToggleLock, onToggleHidden, dragType }: { asset: WorkflowAssetSummary; getImageDisplayUrl?: (url: string) => string; getVideoPosterDisplayUrl?: (url: string, posterUrl?: string) => string | undefined; compact?: boolean; onRestore?: () => void; onDelete?: () => void; onSelect?: () => void; onFocus?: () => void; selected?: boolean; isLocked?: boolean; isHidden?: boolean; onToggleLock?: () => void; onToggleHidden?: () => void; dragType?: string }) {
   const { open, toggle, close, containerRef } = useWorkflowRowMenu();
-  const previewUrl = asset.kind === "video" ? getVideoPosterDisplayUrl?.(asset.url, asset.posterUrl) : getImageDisplayUrl?.(asset.url);
+  const [previewFailed, setPreviewFailed] = useState(false);
+  const rawPreviewUrl = asset.kind === "video" ? getVideoPosterDisplayUrl?.(asset.url, asset.posterUrl) : getImageDisplayUrl?.(asset.url);
+  const previewUrl = previewFailed ? undefined : rawPreviewUrl;
   return (
     <div draggable={Boolean(onRestore)} onClick={onSelect} onDoubleClick={onFocus} onDragStart={(event) => { if (!onRestore) return; const key = dragType ?? "application/x-flashmuse-workflow-asset"; event.dataTransfer.setData(key, asset.id); if (key === "application/x-flashmuse-workflow-asset") event.dataTransfer.setData("text/plain", asset.id); event.dataTransfer.effectAllowed = "copy"; }} className={`group relative flex items-center gap-2 rounded-lg px-2 text-[12px] text-[#6b7280] ${compact ? "h-9" : "h-10"} ${onRestore ? "cursor-grab hover:bg-[#f3f4f6] active:cursor-grabbing" : onSelect ? "cursor-pointer hover:bg-[#f3f4f6]" : ""} ${selected ? "bg-[#eef1f4]" : ""}`}>
-      <span className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-md border border-[#dfe3e8] bg-[#f8fafc] text-[#5c626b]">
-        {previewUrl ? <WorkflowHoverImagePreview src={asset.kind === "image" ? asset.url : previewUrl} alt={asset.name} wrapperClassName="block h-full w-full"><img src={previewUrl} alt="" className="h-full w-full object-cover" draggable={false} /></WorkflowHoverImagePreview> : asset.kind === "video" ? <RiVideoLine className="h-4 w-4" /> : <RiImageAiLine className="h-4 w-4" />}
+      <span className="relative flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-md border border-[#dfe3e8] bg-[#f8fafc] text-[#5c626b]">
+        {previewUrl ? <WorkflowHoverImagePreview src={asset.kind === "image" ? asset.url : previewUrl} alt={asset.name} wrapperClassName="block h-full w-full"><img src={previewUrl} alt="" className="h-full w-full object-cover" draggable={false} onError={() => setPreviewFailed(true)} /></WorkflowHoverImagePreview> : asset.kind === "video" ? <RiVideoLine className="h-4 w-4" /> : <RiImageAiLine className="h-4 w-4" />}
+        {asset.kind === "video" && previewUrl ? <VideoPlayBadge size="xs" /> : null}
       </span>
       <span className={`min-w-0 flex-1 truncate ${asset.url ? "text-[#111111]" : ""}`}>{asset.name}</span>
       {onToggleLock && onToggleHidden ? <WorkflowLayerRowControls isLocked={Boolean(isLocked)} isHidden={Boolean(isHidden)} onToggleLock={onToggleLock} onToggleHidden={onToggleHidden} /> : null}

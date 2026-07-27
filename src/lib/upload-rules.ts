@@ -1,4 +1,5 @@
 import { IMAGE_UPLOAD_ACCEPT } from "@/lib/image-upload-validation";
+import { MEDIA_DURATION_EPSILON_SECONDS } from "@/lib/media-upload-validation";
 
 export type UploadRuleMode = "agent" | "general" | "image" | "video" | "asset-image";
 export type UploadTransportMode = "local-base64" | "server-url";
@@ -254,7 +255,9 @@ export function sumReferenceDurations(durations: Array<number | null | undefined
 
 export function validateReferenceTotalDuration(kind: "video" | "audio", durations: Array<number | null | undefined>): string | undefined {
   const total = sumReferenceDurations(durations);
-  if (total > REFERENCE_TOTAL_SECONDS_LIMIT) {
+  // 容差走统一的 MEDIA_DURATION_EPSILON_SECONDS(0.2) → 有效上限 15.2，正好等于实测 BytePlus r2v 的真实硬上限。
+  // 必须带容差：我们自己生成的「15秒」视频实际是 15.1 秒，严格 >15 会把它当参考视频时被自己拦死（历史 bug）。
+  if (total > REFERENCE_TOTAL_SECONDS_LIMIT + MEDIA_DURATION_EPSILON_SECONDS) {
     const label = kind === "video" ? "视频" : "音频";
     return `当前${label}加起来是 ${formatSecondsOneDecimal(total)} 秒，超过${label}参考总时长上限 ${REFERENCE_TOTAL_SECONDS_LIMIT} 秒，请减少数量或更换更短的${label}`;
   }

@@ -2,6 +2,190 @@
 
 > 本批 CHANGELOG 从 2026-07-21 交接文档重建开始记。**此前的全部历史流水**（约 580KB，含 2026-06 起到 07-21 每一次改动/部署细节）在 `historical-handover-docs-last-used-2026-07-21/CHANGELOG.md`，遇到需要历史上下文的难题再翻。
 
+## 2026-07-27（第五次会话）资产库视频卡时长角标 + 缩略图 hover 放大 + 时长/封面全量回填 —— ✅ **已部署测试服与正式服 `v1.0.0.46`**（四方同步）；`npx tsc --noEmit` 全绿；**无 Prisma 迁移**
+
+### ① 资产库右侧视频卡左上角显示时长
+- 新增 `src/lib/media-duration-format.ts` = **时长文案唯一权威实现**（`formatMediaClockTime` mm:ss / `formatMediaPaddedSeconds` / `parseChineseDurationSeconds`）。`audio-waveform-player.tsx` 原来的本地 `formatAudioTime`/`padSeconds` 收敛到它（音频显示零变化）。
+- 新增 `src/components/media-duration-badge.tsx`（`MediaDurationBadge`）：位置/大小/字号/圆角与音频卡左上角时间显示完全一致；因为要叠在任意封面上，**用户拍板改成深底白字**（`bg-black/45` + white，而不是音频那套 `bg-black/12` + `#333`，浅底深字在深色封面上看不清）。以后别处要时长角标一律复用它。
+- `chat-workbench.tsx` 视频卡挂上它；取值口径统一走新 helper `getAssetDurationSeconds()`：优先服务端 `durationSeconds`，老数据兜底解析参数卡「N秒」。
+- ⭐ **顺手收敛的分叉**：`workspace-state/route.ts` 和 `media-assets/route.ts` 两处调用 `resolveAssetPreviewMeta` 时都硬写 `durationSeconds: null`（明显是漏的，`toAssetPreviewMeta` 本来就设计成由这列算时长）。现两处都 `select` 了 `MediaAsset.durationSeconds`，既传进 previewMeta 也在资产 payload 里直出 `durationSeconds`（`AssetItem` 新增该字段）。**副作用（已告知用户）：以前预览页参数卡没时长文案的上传视频，现在会显示「XX秒」。**
+
+### ② 图片/视频缩略图 hover 放大反馈
+- `globals.css` 新增统一工具类 **`.media-thumb-zoom`**：容器内 `img`/`video` 悬停 `scale(1.06)`、`transition .26s ease-out`；带 `@media (hover:hover)`（触屏不放大）和 `prefers-reduced-motion` 保护。容器必须自带 `overflow-hidden`。
+- 按用户选择**只套在资产库右侧网格**（图片 + 视频卡的缩略图按钮）。对话流/工作流/@引用弹窗**没动**。以后别处要同样反馈直接加这个类，禁止再各写一套。
+
+### ③ ⭐⭐ 踩坑记录：Turbopack 的 globals.css 改动不重编（"hover 没反应"的真凶）
+- 现象：改完 `globals.css` 本地怎么试都没效果，但同批 JS 改动（时长角标）**是生效的** → 误判成代码写错。
+- 真因：dev 的 CSS 产物 `.next/dev/static/chunks/src_app_globals_css_*.css` **停在几小时前的旧版本**，改 css 不触发重编、`touch layout.tsx` 也没用；JS 的 HMR 正常，所以只有 CSS 部分"看起来没实现"。
+- 解法：**删掉整个 `.next` 再重启 dev**（只重启进程不够）。验证手段：`document.styleSheets` 里搜类名 / 直接 `page.request.get` 那个 css chunk 看有没有新规则。**以后改 globals.css 没反应先怀疑这个，别怀疑代码。**
+
+### ④ 视频时长/封面全量回填（本地 + 测试服 + 正式服都跑了）
+- 新增 `scripts/backfill-media-asset-durations.mjs`（默认 dry-run，`--apply` 才写）：给 `MediaAsset.durationSeconds` 为空的视频/音频补真实时长。项目只装了 `ffmpeg-static` 没有 ffprobe → **用 `ffmpeg -i` 解析 stderr 里的 `Duration: HH:MM:SS.xx`**（`-i` 无输出文件必然非 0 退出，从 `error.stderr` 里取）。只处理 `/generated/` 下的本机文件，远程签名过期的历史脏数据跳过。
+- 为什么要它：`durationSeconds` 这列是后来才开始写的，早期生成/上传的视频全为空 → 时长角标显示不出来（用户反馈"有些视频左上角没有时间"）。
+- 结果：**本地 28 条全补齐**（剩 8 条无时长的都是 `archivedAt` 归档记录，资产库不显示）；**测试服 5 条**；**正式服 2059 条**（候选 2060，1 条远程 URL 跳过），0 失败。
+- 同时按用户交代把封面也补了：`scripts/backfill-uploaded-video-posters.mjs` 在**正式服新建 29 个 `.poster.jpg`**（测试服 0 条，本来就全有）。⭐ **新记忆**：脚本在服务器上现生成的媒体文件**不会自动同步阿里**（app 只在上传/生成时同步），要补一次 rsync：只传 `*.poster.jpg`、增量不删除，`/opt/flashmuse/data/generated/` → `root@101.37.129.164:/var/www/flashmuse-static/generated/`。已跑完。
+- 复跑 dry-run 确认收敛：durations 只剩 1 条远程 URL、posters 只剩 2 条生成视频（不在上传封面范围），均为预期。
+
+### 部署记录（测试服 + 正式服 v1.0.0.46）
+- 测试服：`bump-version.mjs` v45→v46 → 26 个改动文件 tgz scp → `tar -xzf -C /opt/flashmuse-staging/app` → `up -d --build staging-app` → `sync-ali-test.sh` → sed `PUBLISHED_APP_VERSION: "v1.0.0.46"` + `force-recreate` → `x-app-version: v1.0.0.46`、`101.37.129.164:8080` 200、`staging-static` 200。
+- 正式服（用户明确要求同步）：备份 `/opt/flashmuse/app-backups/20260727-210717-presync-v1.0.0.46` → 整份 rsync staging→prod（**不再 bump**，原样带 v46）→ `up -d --build flashmuse-app`（"No pending migrations"）→ `/tmp/syncali.sh` 同步阿里正式镜像 → sed `PUBLISHED_APP_VERSION: "v1.0.0.46"` + `force-recreate` → 四域名 main/api/ali/static 全 **200**、`x-app-version: v1.0.0.46`、公网首页版本号 v1.0.0.46。
+- ⚠️ 中间验证提醒：`up --build` 之后 `x-app-version` 仍是**上一版**是**正常的**（该头发的是运行时 env `PUBLISHED_APP_VERSION`，第 5 步才改），此时看 HTML 里的版本号判断新代码是否上去。
+
+## 2026-07-27（第四次会话·调研，未写任何代码）视频「高清/超分」方案调查 → 记为备忘 M020，等有免费方案再做
+
+用浏览器实读官网/官方文档（不是凭记忆、不是本地旧文档）。结论与全部数据已整理进 `06-memo-tasks.md` 的 **M020**，此处只记要点：
+
+- **BytePlus 没有视频超分/放大/画质增强接口**：模型目录只有 Seed / Seedream / Seedance / Seed Speech / Omnihuman / DreamActor；ModelArk API 参考也没有独立 upscale 端点。
+- ⭐ **新情报：Seedance 2.0 已支持 `resolution: "4k"`**（仅 `seedance-2-0`；Fast/Mini 连 1080p 都不支持）。4K = 10-bit **H.265(HEVC)**，官方明示部分播放器/浏览器不能直接播；**$0.78/秒**（1080p $0.37 / 720p $0.15 / 480p $0.07）。**用户交代 4K 档先不接。** 我们 `models.ts` 目前也只到 1080p。
+- 「用 Seedance 重生成 4K」**不是超分**（内容会变、贵约 10 倍），不该叫"高清"。
+- **真·超分只能走第三方**，最好的是 **Topaz Video AI**（Replicate 与 fal 是同一引擎 Proteus v4 + Apollo v8）：Replicate →4K/30fps **$0.373/5s**、fal >1080p **$0.08/s**（约为 Seedance 4K 重生成的 1/10）。备选 Runway upscale-v1 / Bria（8K、全授权数据）/ Crystal（人脸向）。
+- **开源最强 = ByteDance 自家 `SeedVR2`（Apache-2.0，ICLR2026）**，但官方要求 1×H100-80G 才 720p、**1080p/2K 需 4×H100-80G** → 我们无 GPU，自建不可行。
+- **用户决定：先不做，记为备忘 M020，"如果没有免费版以后再做"。** 选型倾向与接入要点都写在 M020 里。
+
+## 2026-07-27（第四次会话·追加）工作流上传/截图后资产库右侧列表不刷新根治 —— ✅ **已部署测试服 `v1.0.0.45`**（正式服仍 v43）
+
+- **现象（测试服实测）**：工作流里视频截图后，回资产库「上传图片」，**左侧数量 +1 但右侧列表不出现**，必须刷新页面。
+- **根因**：左侧计数来自服务端 `assetCounts`（某次拉取就更新了）；右侧列表是分页缓存，`loadWorkspaceAssets` 里 `loadedAssetFilters[filter] && hasFilterAssets` 命中就直接 return 不重拉。而工作流的上传/截图是画布组件**自己直接 POST `/api/media-assets`**、**从不通知父级** → 父级 `assets` state 里根本没有这条。对照：工作流**生成**的图/视频有 `onGeneratedMedia` 回调（本地插入 + force 刷新），所以一直是即时出现的。
+- **修法**：画布新增 prop `onUploadedAsset?: ({ mediaType })`（`workflow-tldraw-canvas.tsx` + `-inner.tsx`），`handleUploadNodeFile` 的**图片（含视频截图，在入库 POST 的 `.then` 里调，保证已提交）/视频/音频**三个分支成功后都调它（文档不调，文档永不显示）；`chat-workbench` 侧按 mediaType 映射筛选（image→`conversation_uploads`、video→`upload_videos`、audio→`upload_audios`）并 `loadWorkspaceAssets(true, filter, 0, "auto")` 强制刷新列表+计数。
+- **顺带修好**：工作流里拖拽/粘贴上传的图片、视频、音频以前同样有"要刷新才出现"的问题，现一并解决。
+
+## 2026-07-27（第四次会话）工作流视频截图（首/尾/当前帧进画布）+ 上传视频缺封面根治 + 上传类归类全站统一 + 用户中心生成数量现算 + 积分页工作流图标 —— ✅ **已部署测试服 `v1.0.0.44`**（正式服仍 v43）；`npx tsc --noEmit` 全绿；**无 Prisma 迁移**
+
+> 部署内容 = 本次 4 项 + 前两批（07-27 第二、三次会话）积压的所有改动，一并上了测试服。正式服未动。
+
+### ① 工作流视频节点快捷菜单新增「视频截图 ▾」（悬停展开：截取首帧 / 尾帧 / 当前帧）
+- 截出的 jpg **直接作为图片节点出现在源视频右侧**（不连线），走统一上传链路落盘。
+- 截帧收敛为唯一实现 `getWorkflowVideoFrameJpeg()` + `getWorkflowVideoFrameLabel()`（`workflow-tldraw-canvas-inner.tsx:1927`），**右键菜单「导出首/尾/当前帧」（下载）与它共用**；`exportWorkflowVideoFrame` 变成薄壳。
+- `addUploadedNode` 新增第三参 `rightOfNode`（放右侧、不连线；原 `targetNodeId` 是放左侧+自动连线，语义不同保持不变）；`handleUploadNodeFile` 新增可选第 5 参 `imageTitle`（默认「上传图片」）。
+- 节点标题显示「视频截图 + 名字」：新增常量 `WORKFLOW_VIDEO_FRAME_NODE_TITLE` + `isWorkflowUploadLikeTitle()`，把原来散在 4 处的 `title.startsWith("上传")` / `=== "上传图片"` 判断统一走它（头图标 / 参数标签只显尺寸 / 标题拼法 / 右键菜单非生成节点判定）。
+- 命名：同一帧重复截 = 内容哈希命中去重 → 复用同一文件同一名；不同帧 → `xxx-当前帧`、`xxx-当前帧_2`…（`upload-name.ts` 的 `allocateUniqueName`）。
+- 归类：**按上传处理**（无模型无提示词，本质就是上传图片），进「上传的资产 · 上传图片」。曾一度试过归到 `workflow_images/generated`，因 `isUploadedMediaAsset` 还会按 url 在 `/upload_image/` 判上传而显示不出来，且属性上确实更像上传 → 用户拍板算上传，已回退。
+
+### ② ⭐ 上传视频"没有封面"根治（去重继承了历史无封面记录）
+- 根因：`createUploadedVideoPoster`（上传即时生成封面）是后加的功能，早于它上传的视频库里 `posterUrl` 为空；重新上传同一文件时命中内容哈希去重、早返回，把空 posterUrl 一起继承回来。
+- 修法：`upload-file/route.ts` 新增 `ensureDedupPosterUrl()`（:73），命中去重 + 是视频 + 无 posterUrl → 现场生成封面 + 写回 `MediaAsset.posterUrl` + 同步阿里；两个去重早返回点（multipart / JSON base64）共用它。已有封面直接返回、零开销。
+- 新增一次性脚本 `scripts/backfill-uploaded-video-posters.mjs`（默认 dry-run，`--apply` 才写）：给历史上传视频补 `.poster.jpg` + 回填 posterUrl，规则与 `createUploadedVideoPoster` 一致（同目录同名 `.poster.jpg`），跳过 `/videos/` 下的生成视频。
+  - **本地已 `--apply`**：6 条历史上传视频全部补齐、0 失败。
+  - **测试服跑过 dry-run = 0 条**（staging 18 个 video 资产 posterUrl 全非空，无需回填）。正式服部署时同样先 dry-run 再决定。
+
+### ③ ⭐ 资产库「上传类」不再分对话流/工作流（读取侧统一）
+- `workspace-state/route.ts` 新增 `UPLOAD_IMAGE_CATEGORIES = ["conversation_uploads", "workflow_upload_images", "workflow_uploads"]`（与早已存在的 `UPLOAD_VIDEO_CATEGORIES`/`UPLOAD_AUDIO_CATEGORIES` 同一套写法——**图片是唯一漏做不分流的那个**）。筛选页 + 计数都走它 → 三处上传（对话流/资产库/工作流）+ 工作流视频截图，全部显示在 **上传的资产 · 上传图片**；上传类不再计入"工作流/对话流"分组计数。
+- 写入侧顺手修掉既有分叉：`persistWorkflowUploadNodeAsset` 里工作流上传的**图片**原来硬写成 `conversation_uploads`（对话流上传），现按真实来源写 `workflow_upload_images`。因读取已统一，**老数据不用 backfill 也照样显示**。
+- 前端 `isAssetInFilter` 的 `conversation_uploads` 判定本来就只看"是不是上传"、不看流，无需改。
+- ⚠️ 由此上一批（第二次会话）原计划的"`currentCategory` 从 `conversation_upload_*` 纠正为 `workflow_upload_*`"**backfill 不再是必须**（显示已统一），留着不做也无影响。
+
+### ④ 用户中心「生成图片 X 张 / 生成视频 Y 段」显示 0 修复
+- 根因：`User.generatedImageCount/generatedVideoCount` 两个列**从来没有任何代码给它们 +1**（历史遗留），真实用户恒为 0；后台早就用"现算 + Math.max"绕过，只有用户中心还在直接读列。
+- 修法：`src/lib/user-profile.ts` 新增唯一权威 `getUserGeneratedMediaCounts(userId)`（MediaAsset 按 mediaType groupBy，**只数生成的**：`sourceKind` 不含 `upload`；用户删掉的仍计入，归档不计）+ `getUserProfileWithGeneratedCounts()`（与老列取 `Math.max`，口径与后台一致）。
+- `/api/auth/me`、`/api/user-profile` 的 **GET 和 PUT** 都改走它。PUT 也必须带数量——否则保存资料后前端 `applyCurrentUserProfile` 整份覆盖，数字被刷回 0（隐藏坑，已堵）。
+- 本地实测：`12424740@qq.com` = 632 张 / 25 段；`lookxun@163.com` = 6 张 / 0 段（老列都是 0）。
+
+### ⑤ 「我的积分」页积分来源列：工作流用工作流图标
+- `/api/credits/me` 新增来源 `"workflow"` + `isWorkflowLedger()`（优先 `workspaceKind === "workflow"`，老数据兜底 `metadata.creditSource` 以 `workflow_` 开头）。分组 key `workflow:${workspaceId}` → **每个工作流一行**（与每个对话一行对称），标题仍是工作流名。提示词工具/资产库生成等特殊来源分组不变。
+- 前端 `UserCreditSource` 加 `"workflow"`，图标用 **`RiGitPullRequestLine`**（= 侧栏「工作流模式」同一个图标）；不加 label，所以那列仍显示工作流名称。
+
+### 部署记录（测试服 v1.0.0.44）
+- `node scripts/bump-version.mjs` → v43→v44；tgz 19 个改动文件 scp → `sudo tar -xzf -C /opt/flashmuse-staging/app` → `docker compose up -d --build staging-app`（"No pending migrations"）→ `sync-ali-test.sh` → sed `PUBLISHED_APP_VERSION: "v1.0.0.44"` + `force-recreate`。
+- 验证：`x-app-version: v1.0.0.44`、首页 HTML 里版本号 v1.0.0.44、`127.0.0.1:5001` 200、`http://101.37.129.164:8080/` 200、`https://staging-static.venusface.com/` 200。
+- ⚠️ 本批功能**均未实机点测**（用户习惯：叫测才测）。建议至少验：工作流视频截图三项、资产库上传图片里能看到截图、用户中心数量、积分页工作流图标、上传视频封面。
+
+
+## 2026-07-27（第三次会话）提示词视频缩略图悬停封面 + 参考视频时长真实上限实测(15.2s)与三处统一 + 工作流视频快捷菜单（快捷编辑/下载）—— ⚠️ 仅本地，未 commit 未部署；`npx tsc --noEmit` 全绿。基线仍 `v1.0.0.43`
+
+> 本批**未加 Prisma 迁移**、**无需数据 backfill**。承接上一批（第二次会话）那批未部署改动，一起部署即可。
+
+### ① 对话流提示词里的视频小缩略图：鼠标悬停显示封面（对齐图片的"悬停看原图"）
+- 新增 `HoverVideoPreview`（`chat-workbench.tsx:1284`）：与图片的 `HoverImagePreview` 同款悬停放大交互，放大处显示视频封面（有 `posterUrl` 用它，否则 `<video>` 首帧 `#t=0.1` 兜底），用 `onLoadedMetadata` 拿真实宽高做自适应定位。
+- `MediaFileReference` 加 `posterUrl?`，`getUploadedMediaReferences` 从上传文件带出 posterUrl。
+- `ReferencedTextContent` 里视频内联缩略图改为用 `HoverVideoPreview` 包裹（播放按钮角标保留）。
+
+### ② ⭐ 实测 BytePlus Seedance 2.0 参考视频真实时长上限 = **15.2 秒**
+- 在**测试服**用容器内 `ffmpeg-static` 造 15.00~15.92s 精确样片 → 同步到阿里测试镜像取得公网 URL → 直接 POST `/contents/generations/tasks` 打三个模型端点，从长到短试（被拒不计费）。
+- API 报错原文写死：`video duration (seconds) ... must be less than or equal to 15.2 for model dreamina-seedance-2-0 / -fast / -mini in r2v`。**三个模型完全一致 = 15.2 秒（含）**。15.21s 起被拒；15.10/15.00 通过。
+- 附带发现另一条约束：`video pixel count ≥ 409600`（与时长无关，我的 640×360 样片触发过它）。测试临时文件已全部清理。
+- 另查正式服库：`videoDuration='15秒'` 且有探测时长的记录，**三个模型全部是 15.1 秒**（min=max=avg=15.1、distinct=1）。→ **自家生成的 15 秒视频（15.1s）拿去当参考视频是安全的（15.1 < 15.2）**。
+- ⭐ **可复用的探测方法（以后要测任何 BytePlus 上限，照这个来，别再摸索）**：
+  1. 容器内没有系统 ffmpeg，但有 `ffmpeg-static`：`/app/node_modules/ffmpeg-static/ffmpeg`（**没有 ffprobe**，量时长用 `ffmpeg -i 文件 2>&1 | grep "Duration:"`）。
+  2. 造样片写成 `.sh` scp 到腾讯 `/tmp` → `sed -i 's/\r$//'` → `docker cp` 进容器 → `docker exec bash`。样片放 `/app/public/generated/_durtest`（= 宿主 `/opt/flashmuse-staging/data/generated/_durtest`）。
+  3. 要公网 URL 给 BytePlus 下载：`rsync` 到阿里测试镜像 `/var/www/flashmuse-static-test/generated/`，再用 `https://staging-static.venusface.com/generated/...` 访问（用 `/opt/flashmuse/data/runtime/flashmuse_to_ali_ed25519` 这把 key，**必须 sudo**）。
+  4. 探测脚本写成 `.js` 进容器 `node` 跑，API key 从 `/app/.env.local` 读 `BYTEPLUS_API_KEY`/`ARK_API_KEY`；端点 `https://ark.ap-southeast.bytepluses.com/api/v3/contents/generations/tasks`；模型名用 `dreamina-seedance-2-0-260128` / `-fast-260128` / `-mini-260615`（`system-settings.ts` 的 `BYTEPLUS_ENDPOINT_MODEL_NAMES` 有映射）。
+  5. **省钱要点**：**从超限往下试**——被拒（400 InvalidParameter）不产生任何费用，第一个被接受的才会真生成，接受了立刻 `DELETE /contents/generations/tasks/{id}` 取消。本次全程都是 400，**一分钱没花**。
+  6. PowerShell 内联嵌套引号会被吃掉 → 所有脚本一律写文件 scp，别拼内联命令（本次反复踩到）。
+
+### ③ 时长限制三处分叉收敛（原来 client 15.35 / server 16.01，全错）
+- `media-upload-validation.ts` 成为唯一权威：新增 `export const MEDIA_DURATION_EPSILON_SECONDS = 0.2`（唯一定义）+ `export function validateReferenceMediaDurationRange()`（单条时长校验唯一实现）。对外仍宣传 `maxSeconds=15`，容差 0.2 → **有效上限正好 15.2 = 实测硬上限**。
+- 服务端 `validateMediaUploadMetadata` 的 `< 1.9 || > 16.01` → 改成 `< 2 - EPS || > 15 + EPS`。
+- `chat-workbench.tsx` / `workflow-tldraw-canvas-inner.tsx`：**各自删掉本地 `MEDIA_DURATION_EPSILON_SECONDS = 0.35` 和重复的 `validateMediaDuration`/`validateWorkflowMediaDuration`**，改为 import 共享实现（用别名保持调用点零改动）。
+- ⭐ **顺带修掉一个历史 bug**：`upload-rules.ts` 的 `validateReferenceTotalDuration` 原来严格 `> 15` 就拦 → 我们自己生成的 15 秒视频（15.1s）**当参考视频会被自己拦死**。现在同样带 `+ MEDIA_DURATION_EPSILON_SECONDS`（=15.2）。这也是视频快捷编辑能对 15 秒视频生效的前提。
+
+### ④ 工作流画布：视频节点加快捷菜单（本批只做「快捷编辑」+「下载」，高清按用户交代先等）
+- 快捷菜单开放给视频：`showImageQuickMenu` 改名 `showMediaQuickMenu`，条件加 `node.kind === "video"`；`canQuickEdit` 同步放开（Tab 快捷键对视频也生效）。图片专属的**高清/去背景/橡皮**在视频上隐藏，橡皮浮层额外用 `!isVideoQuickMenuNode` 二次兜住。
+- **视频快捷编辑** `createVideoEditNode`：新建视频节点，**参数以源视频的真实尺寸/真实时长为准**，**源视频当参考视频**（`referenceVideosOverride`）+ 用户提示词，**强制融合模式**（`videoReferenceMode: "reference"`，只有融合模式支持参考视频）。
+  - ⭐ **参数一律从真实 `videoDimensions` / `durationSeconds` 反推，而不是照抄节点上的设置**。原因：**上传视频节点的 `resolution`/`duration` 是建节点时的默认值（720p / 8秒），不是真实值**——照抄会把一个上传的 1920×1080 / 12 秒视频错当成 720p / 8 秒。新增两个助手（对齐图片侧同名思路）：`closestResolutionForVideoDimensions()`（在模型支持的档里挑总像素最接近的一档）、`closestWorkflowVideoDurationLabel()`（真实秒数 → 最接近的「N秒」档）。比例用 `closestWorkflowRatioLabel()`，**模型没有完全一致的比例时取最接近的一档**。对生成视频结果不变（它的真实尺寸/时长本就等于其设置）。
+  - ⭐ **分辨率优先决定模型，不是无脑依次**：先以档位最全的 `seedance-2-0` 为基准按真实尺寸算出该用哪一档，再据此过滤候选链 → **需要 1080p 时只有 2.0 支持，链条只剩 2.0，直接用 2.0、不再依次尝试**；480p/720p 时三个都支持，才依次 **Mini → Fast → 2.0**。
+  - 把源视频**精确时长**（`durationSeconds`，如 15.1）传进 `referenceVideoDurations`，让总时长校验拿到真实值。
+- **统一链路（铁律#3）**：没有另写一套生视频逻辑，而是给唯一的 `runVideoNode` 加可选第二参数 `{ modelCandidates, referenceVideosOverride, referenceVideoDurations, forceReferenceMode }`，把原来的单次执行体包进候选链循环。**不传 options 时行为与改造前完全一致**（attempts=[单模型]、同样的 requestId 生成、同样的校验与轮询）。候选链换模型时会 `updateNode` 同步节点显示的 model/比例/分辨率（等待卡标签跟随实际尝试的模型，与图片候选链一致）。
+- **计费正确性**：每次尝试都生成**新的 `requestId`**、`creditSource` 仍是 `workflow_video_generation`，失败的尝试不计费、成功只计一次，不会重复扣分（与图片编辑候选链同机制）。
+- **下载收敛**：图片快捷菜单原来**自己内联写了一份下载**（用 `getStaticMediaUrl` + 自己拼文件名），与右键菜单用的共享 `downloadWorkflowNode()`（`:1898`，本就同时支持 image/video、文件名走 `getWorkflowDownloadFileName`）是两份分叉。现在**快捷菜单图片/视频统一走共享那份**，删掉内联实现。
+
+### ⑤ 后台：新增「工作流 · 视频编辑功能」表格 + 开关联通
+- `system-settings.ts` 新增 `VIDEO_EDIT_FUNCTION_MODEL_CHAIN`（Mini → Fast → 2.0）+ `VIDEO_EDIT_FUNCTION_KEYS = ["video_quick"]`，并并入 `DEFAULT_EDIT_MODEL_TOGGLES`（默认全开）。**新增视频编辑模型只改这张表 + 前端那张，别再复制第三份。**
+- `admin-system-settings-panel.tsx` 新增 `VIDEO_EDIT_MODEL_CHAIN` + `videoEditFunctionRows`，渲染「工作流 · 视频编辑功能」表（快捷编辑=候选链三个开关；下载=纯前端无模型）。
+- 前端新增 `getVideoEditCandidates("video_quick", toggles)`（与图片的 `getEditCandidates` 同规则：按开关过滤、保持顺序、全关回落完整链），`createVideoEditNode` 改用它 → **后台开关真正生效**。
+- 存取链路无需额外改动：后台 API 是 `{...current.editModelToggles, ...body}` 合并（新键自动落地）；`/api/model-availability` 已返回 `editModelToggles`，`chat-workbench` 已透传给 `WorkflowCanvas`。
+- **样式（⚠️ 走过一次弯路，已回退）**：我一度把两张编辑功能表的**列头行**（功能/规则说明/使用模型）底色从 `bg-[#fafafa]` 改成 `bg-white`，**这是理解错了、已全部改回灰色**。用户要的是：**标题栏灰 + 列头行灰 + 内容行白**（= 和大表一致）。列头行本来就该是灰的，别再动它。
+
+### ⑥ ⚠️ 本批唯一未完成项：编辑功能表「内容行看起来不是白色」
+- 用户反馈：图片编辑功能表的**内容行看起来不是白的**，而大表的内容行是白的，要求统一成白色。
+- **但从代码看内容行本来就是白的**，我没找到那个灰：三个 `<section>` class 完全一样（都 `bg-white`，`:390` 大表 / `:455` 图片编辑 / `:493` 视频编辑），内容行本身也都**没设任何背景**、直接继承白色（大表 `:388` 与图片编辑 `:467` 的 class 结构一模一样，都只有 `border-b border-[#f2f2f2]`）。
+- **我的判断（未经用户确认）**：用户看到的灰其实是「使用模型」列里那三个模型标签的**药丸底色 `bg-[#f4f6fb]`**（很浅的蓝灰）。它在编辑表里是 `w-full`，会把整个 470px 列铺满 → 看着像一整条灰带；大表里药丸是 `360px + 中间 70px 空隙`，周围留白多，所以看着"白底上放几个小标签"。
+- ⚠️ **关键坑**：**大表也用同一个 `#f4f6fb`**（`OpenRouterModelTag:202`、`BytePlusModelTag:216/:228`，空位占位 `:200/:213`）。所以**只改编辑表的药丸会让两边更不一致**，要改就得三张表一起改。
+- **已向用户提出二选一、等回复**：(A) 药丸底改白+加浅边框，**三张表一起改**；(B) 只改编辑表、大表保持。**下一个 AI 请先拿到用户选择再动手，不要自己猜。**
+- **另一个卡点**：本地后台我进不去，所以没法自己截图核对。`.env` 里 `ADMIN_EMAILS=lookxun@163.com` 确实是管理员白名单，但**这个账号在本地库里的密码不是 `dragonstar`**（试过，进不去；测试服那套账号密码只对测试服有效）。要么找用户要本地后台密码，要么让用户贴截图。
+
+### 注意
+- 本批**只做了本地改动 + 测试服的一次性 API 探测**，没有部署、没有改任何服务器状态（测试服产生的样片与脚本已清理）。
+- `runVideoNode` 是生视频主路径（对话流不走它，但工作流所有视频生成都走），已保证无 options 时行为不变；部署后建议顺手验一次「工作流普通生视频」仍正常。
+- **本批全部功能都还没实机验证过**（用户交代"叫你测试才测试"，且视频快捷编辑一点就真花钱生视频）。只有 `npx tsc --noEmit` 全绿。
+
+---
+
+## 2026-07-27（第二次会话）视频封面/播放按钮全平台统一 + 上传视频归类分叉根治（图层无封面 & 资产库重复）—— ⚠️ 仅本地，未 commit 未部署；本地 dev 已验证通过，`npx tsc --noEmit` 全绿。基线仍 `v1.0.0.43`
+
+> 用户新交代不变：**叫你测试才测试**；本批默认只本地不部署。下一个 AI 若要部署走 03 的 测试服→正式服 流程（会自增版本号）。本批**未加 Prisma 迁移**，但**改了一条线上数据的分类需要 backfill**（见文末"部署注意"）。
+
+**开场小插曲（本地 dev 登录失败）**：现象=所有 `/api/*` 返回 404、页面 `/` 正常 200，登录接口 404。根因=`next dev` 的 turbopack 路由清单/缓存坏了（把 `route.ts` 当页面路由匹配到 `/_not-found`）。**解法=杀掉 `next dev` 进程树 + 删 `.next` + 重启 `npm run dev`**。（记住：以后"所有接口 404/登录失败"多半是这个，重启即好。dev 由 `start-project.bat`→`scripts/start-project.ps1` 起，端口 3000。）
+
+### 需求
+用户要：① 工作流"图层"面板里上传视频的小缩略图要显示**封面**（上传视频也要有封面）；② **所有视频小缩略图中间要有播放按钮**表示是视频；③ **全平台统一**。随后发现两个连带 bug：**图层里上传视频只显示图标没封面**、**资产库里同一个上传视频显示成两条相同的**。
+
+### 真正根因（一个分叉引发两 bug）
+`/api/upload-file/route.ts` 把资产分类**算了两遍且分叉**（违反"能统一一律统一"）：`buildMediaAssetRecord` 内部用权威 `classifyAsset` → 正确得 `workflow_upload_videos` 写进 `MediaAsset`；但同一路由又用**本地 `getFileCategory` 忽略 `flow`**，把 `UserAssetState.currentCategory` 误写成 `conversation_upload_videos`。而**客户端资产库/图层实际只读 `/api/workspace-state`（走 `UserAssetState.currentCategory`）**，于是这条工作流上传视频被当成 conversation：
+- 图层：被排除出 `workflowAssets`（`chat-workbench.tsx:15822` 过滤 `isWorkflowAsset`）→ 图层 `WorkflowAssetLayerRow` 拿不到 DB 的 `posterUrl` → 显示 `RiVideoLine` 图标。
+- 资产库重复：工作流侧"查重"用 `normalizeMediaUrlForMatch(url)===X && isWorkflowAsset`，因它被标 conversation 查不到权威记录 A → 又插一条 `createClientId()` 的客户端副本 B（**DB 其实只有一条**，B 仅内存、刷新即消，但用户当会话看到两条）。
+
+### 已做（本对话，全部本地）
+1. **统一播放按钮组件**：新增 `src/components/video-play-badge.tsx` `VideoPlayBadge`（5 档 size：xs/sm/md/lg/xl，`bg-black/42`+`RiPlayLargeFill`+`backdrop-blur`）。把散在 6 处的重复 overlay 收敛到它：对话流资产卡(`chat-workbench.tsx:6358` lg)、内联视频(`6842` xl)、资产导入弹窗(`15944` md)、@引用弹窗(`asset-mention-picker.tsx:119` sm)、上传缩略图(`video-upload-thumbnail.tsx` 原 CSS 三角形→sm 徽标)、后台媒体缩略图(`admin-credits-panel.tsx` 新增 xs)。删掉各处重复 markup 及 chat-workbench 里不再用的 `RiPlayLargeFill` import。**全平台视频小图现在同一个播放按钮。**
+2. **图层面板视频缩略图加封面+播放按钮**：`WorkflowAssetLayerRow`（`workflow-tldraw-canvas-inner.tsx:5113`）缩略图 `<span>` 加 `relative`，视频且有 previewUrl 时叠 `<VideoPlayBadge size="xs">`；`<img>` 加 `onError`→`setPreviewFailed` 回退图标（防老的无封面上传视频显示破图）。
+3. **根因修复：上传归类不再分叉**：`upload-file/route.ts` 的 `getFileCategory(mediaType, flow)` 改为走权威 `classifyAsset({origin:"upload",flow,mediaType}).initialCategory`（import `classifyAsset`/`AssetMediaType`）。→ 新上传的工作流视频 `currentCategory=workflow_upload_videos`，不再误入 conversation，也就不再产生资产库重复副本。
+4. **`workspace-state/route.ts` 对齐 `media-assets`**：`isWorkflowCategory` 补 `|| item.currentCategory.startsWith("workflow_upload_")`（media-assets:148 早就这么写，workspace-state 漏了）。→ 工作流上传资产 `librarySource="workflow"` → 进 `workflowAssets` → 图层直接拿到 DB 真实 `posterUrl` 显示封面。（注：上传视频仍留在"上传视频"tab，因该 tab 过滤 `uploaded && isVideoAsset` 不看 librarySource；不会跑去"工作流视频"tab，那 tab 要 `!uploaded`。）
+5. **上传视频 posterUrl 前端链路补全（新上传的防御）**：`uploadWorkflowFile`（`workflow-tldraw-canvas-inner.tsx:734`）接收/返回服务端 `posterUrl`；`precheckUploadedFileDedup`（`upload-content-hash.ts`）+ 服务端 dedup（GET+两处 POST，`upload-file/route.ts`）都补带 `posterUrl`；视频上传节点 `data` 写 `posterUrl: uploadedVideo.posterUrl`（`:3322`）→ 新上传即便资产还没加载进 `assets`，图层也能从 node.data 拿到封面。
+6. **数据修复（本地 DB）**：写一次性脚本把历史误分类的 `UserAssetState.currentCategory` 从 `conversation_upload_*` 纠正为 `workflow_upload_*`（依据 `mediaAsset.sourceKind` 以 `workflow_upload_` 开头判定）。本地只命中 1 条（就是用户那条"7110"）。脚本已删。
+
+### 走过的弯路（重要教训，别重犯）
+- 我一度给客户端 `getLocalVideoPosterUrl`（`chat-workbench.tsx:2170` + `admin-credits-panel.tsx` 那份重复实现）加"支持 `/files/` 上传视频→硬拼同目录 `.poster.jpg`"。**这是错的、已回退**：老上传视频没有 poster 文件，硬拼的 URL 404 → 资产库里**其它上传视频封面全变破图**（它们本来靠 `<video>` 首帧兜底显示）。真正让图层出封面的是上面第 4 条（归类修复让资产进 `workflowAssets`、直接用 DB 的 `posterUrl`），**不需要任何 URL 推算**。→ 教训：poster 是否存在无法客户端同步判断，别凭 URL 规则臆造 poster 地址。
+- `getLocalVideoPosterUrl` 只认 `/generated/.../videos/`（生成视频），上传视频在 `/files/`——保持不认（回退后现状），靠 DB `posterUrl` 或 `<video>` 首帧兜底。
+
+### 验证（Playwright 本地，测试号 `12424740@qq.com`/`dragonstar` = 本地 ID_779117）
+- 资产库"上传视频"tab：7110 只剩**一条**，7 个视频全显示封面+播放按钮。
+- 工作流_01 图层面板：7110 缩略图显示**封面+播放按钮**（poster thumbnail 已加载 256px、badge 存在）。
+
+### ⭐ 部署注意（下一个 AI 若要部署这批）
+- **代码**：走 03 测试服→正式服流程（会 bump 版本）。改动集中在 `upload-file`/`workspace-state`/`chat-workbench`/`workflow-tldraw-canvas-inner`/`asset-mention-picker`/`video-upload-thumbnail`/`admin-credits-panel` + 新增 `video-play-badge.tsx`；**无 Prisma 迁移**。
+- **线上数据 backfill（必须做，否则正式服/测试服历史"工作流上传视频"仍无封面/仍可能重复）**：部署后在对应库跑一次"把 `UserAssetState.currentCategory` 里 `mediaAsset.sourceKind` 以 `workflow_upload_` 开头、但 currentCategory 为 `conversation_upload_*`/`conversation_uploads` 的记录，按 sourceKind 纠正成对应 `workflow_upload_*`"。写成 `.js` 放进容器 `/app` 跑（遵守 00-README：一次性 node 脚本进容器跑、别用 PowerShell 内联）。**只影响历史工作流上传媒体**，新上传因代码已修不再产生错分类。
+
+---
+
 ## 2026-07-27（视频卡下载僵尸根治 + 恢复乐观显示 + 工作流生成动画）—— ✅ 已整份部署正式服 `v1.0.0.43` + push GitHub。四方同步（正式=测试=本地=GitHub=v1.0.0.43），四域名 200，无 Prisma 迁移
 
 **起因**：用户报 ID_686996（`312876953@qq.com`）一条 seedance-2-0 视频生了 40 多分钟才显示失败、无错误码。查正式服 DB+诊断日志定位：火山其实 5 分钟就出片（远程 volces mp4），但**本地下载 `saveRemoteAsset` 的 fetch 没超时、跨境下载假死**（只有 `media-save-download-start attempt=1`、之后无 saved/failed/expired），`processMediaSaveJob` 的 `inFlight` 锁又只在 `finally` 释放→假死永不释放→卡死回收(30min stale)/24h 过期判失败全被这把锁挡死→job 永远 running=僵尸；前端自己超时显示"失败"但后端从没判失败（所以无错误码）。

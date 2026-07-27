@@ -9,6 +9,20 @@
 
 ## 活跃备忘
 
+### [ ] M020 视频「高清」（真·超分/放大）—— 押后，**等有免费方案再做**（2026-07-27 用户交代）
+- **押后原因**：现有所有可行方案都要花钱（第三方托管 API 按秒计费），用户说"如果没有免费版以后再做这个功能"。自建开源方案没 GPU（我们腾讯那台是共享 CPU 机器）。
+- **调查结论（2026-07-27 用浏览器实读官网/文档，别再重复查）**：
+  - **BytePlus 没有任何视频超分/放大/画质增强接口**。模型目录只有 Seed(LLM)/Seedream(图)/Seedance(视频生成)/Seed Speech/Omnihuman/DreamActor；ModelArk API 参考里也只有 chat/文件/视频生成任务/图片生成/向量化/缓存/Bot/Batch/Token 这些，**无独立 upscale 端点**。
+  - ⭐ **Seedance 2.0 现已支持 `resolution: "4k"`**（仅 `seedance-2-0`，Fast/Mini 连 1080p 都不支持）。4K 尺寸：16:9 `3840×2160`、4:3 `3326×2494`、1:1 `2880×2880`、3:4 `2494×3326`、9:16 `2160×3840`、21:9 `4398×1886`。⚠️ **4K 是 10-bit H.265(HEVC)**，官方明示部分播放器/浏览器无法直接播放。**价格 $0.78/秒**（1080p $0.37、720p $0.15、480p $0.07）。**用户交代：4K 档先不接。**
+  - 但"用 Seedance 重生成 4K"**不是超分**——内容会变，且贵约 10 倍，语义上不该叫"高清"。
+  - **真·超分只能走第三方**（效果最好的是 Topaz Video AI，两家托管同一引擎 Proteus v4 + Apollo v8 插帧）：
+    - `replicate.com/topazlabs/video-upscale`：参数 `target_resolution`(720p/1080p/4k) + `target_fps`(15–60)。价：→1080p/30fps **$0.093/5s**、→4K/30fps **$0.373/5s**，60fps 翻倍。信用点折算、**价格是估算区间**。可 pin 版本号（行为稳定）。
+    - `fal.ai/models/fal-ai/topaz/upscale/video`：说明写**最高 8x、120fps**，另有 Gaia 2 半价档。价：≤720p **$0.01/s**、→1080p **$0.02/s**、>1080p **$0.08/s**，60fps 翻倍。**按秒线性计价 → 好精确预扣积分**。
+    - 备选：`runwayml/upscale-v1`（4x 到 4K，限 ≤40s/≤16MB）、`bria/video-increase-resolution`（2x/4x 最高 8K、全授权数据、保留音轨、限 60s/条）、`philz1337x/crystal-video-upscaler`（人脸/产品向、不丢身份）。便宜老一代：Real-ESRGAN Video / AnimeSR / RealBasicVSR / STAR / VEnhancer（Replicate 都有，真人脸易糊或过锐）。
+  - **开源最强 = `github.com/ByteDance-Seed/SeedVR`（SeedVR2，ICLR2026 / SeedVR CVPR2025 Highlight，Apache-2.0，3B/7B 权重在 HF，有社区 ComfyUI 插件）**，但官方 readme 写 **1×H100-80G 只够 720p，1080p/2K 要 4×H100-80G** → 我们无 GPU，自建不可行。
+- **以后做的话（当时的技术选型倾向）**：优先 **fal 的 Topaz**（线性计价好对齐 `chargeCredits` 先估后核；能力上限更高），若更看重"线上行为永不变"则选 Replicate（可 pin 版本、略便宜 5–10%）。工程上要：新增第三方 env/密钥 + 预充值；输入用已有的公网 URL 路子（同喂 BytePlus 参考视频，走阿里静态镜像）；异步走 queue + 轮询/webhook，产物下载复用现成的 `saveRemoteAsset` + `media-save-queue`（跨境下载已有 3min 超时保护）；入库走 `media-asset-record.ts`；开关进后台「工作流 · 视频编辑功能」表；**语义要改成"提升清晰度/分辨率（内容不变）"**，不要沿用"重生成"。
+- 相关：工作流视频节点快捷菜单（`workflow-tldraw-canvas-inner.tsx` 的 `createVideoEditNode` 旁边就是「高清」该放的位置）、`models.ts` 视频分辨率档、`system-settings.ts` 的 `VIDEO_EDIT_FUNCTION_KEYS`。
+
 ### [ ] M018 刚上传媒体不刷新自动切阿里镜像（用户说保持现状）
 - 背景：视频/音频上传"方案 A"——同步阿里后台异步；本会话刚上传的 `/generated` 由 `src/lib/recent-upload-origin.ts` 记录、前端 `getStaticMediaUrl` 读腾讯主源。
 - 现状问题：无轮询，阿里同步完后本会话这几个媒体不会自动切阿里镜像（除非刷新）。功能无碍（腾讯兜底能读），只是稍慢，用户决定保持。

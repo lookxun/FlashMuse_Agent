@@ -134,9 +134,19 @@ export const EDIT_FUNCTION_MODEL_CHAIN: string[] = [
 ];
 export const EDIT_FUNCTION_KEYS = ["hd", "eraser"] as const;
 
-const DEFAULT_EDIT_MODEL_TOGGLES: Record<string, boolean> = Object.fromEntries(
-  EDIT_FUNCTION_KEYS.flatMap((func) => EDIT_FUNCTION_MODEL_CHAIN.map((modelId) => [`${func}:${modelId}`, true])),
-);
+// 工作流「视频编辑功能」的模型候选链：依次 Mini → Fast → 2.0（前一个失败/关闭自动用下一个）。
+// 与前端 workflow-tldraw-canvas-inner 的 WORKFLOW_VIDEO_EDIT_MODEL_CHAIN 保持一致，新增模型只改这两处配置表。
+export const VIDEO_EDIT_FUNCTION_MODEL_CHAIN: string[] = [
+  "byteplus:video.seedance-2-0-mini",
+  "byteplus:video.seedance-2-0-fast",
+  "byteplus:video.seedance-2-0",
+];
+export const VIDEO_EDIT_FUNCTION_KEYS = ["video_quick"] as const;
+
+const DEFAULT_EDIT_MODEL_TOGGLES: Record<string, boolean> = Object.fromEntries([
+  ...EDIT_FUNCTION_KEYS.flatMap((func) => EDIT_FUNCTION_MODEL_CHAIN.map((modelId) => [`${func}:${modelId}`, true])),
+  ...VIDEO_EDIT_FUNCTION_KEYS.flatMap((func) => VIDEO_EDIT_FUNCTION_MODEL_CHAIN.map((modelId) => [`${func}:${modelId}`, true])),
+]);
 
 const BYTEPLUS_ENDPOINT_MODEL_NAMES: Record<string, string> = {
   "ep-20260521133841-nn8bg": "dreamina-seedance-2-0-260128",

@@ -2,19 +2,11 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { RiPauseLargeFill, RiPlayLargeFill } from "react-icons/ri";
+import { formatMediaClockTime, formatMediaPaddedSeconds } from "@/lib/media-duration-format";
 
-function formatAudioTime(seconds: number) {
-  if (!Number.isFinite(seconds) || seconds < 0) seconds = 0;
-  const total = Math.floor(seconds);
-  const mm = Math.floor(total / 60);
-  const ss = total % 60;
-  return `${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}`;
-}
-
-function padSeconds(seconds: number) {
-  if (!Number.isFinite(seconds) || seconds < 0) seconds = 0;
-  return String(Math.round(seconds)).padStart(2, "0");
-}
+// 时长文案统一走 @/lib/media-duration-format（与资产库视频时长角标同一份实现）。
+const formatAudioTime = formatMediaClockTime;
+const padSeconds = formatMediaPaddedSeconds;
 
 export interface AudioWaveformPlayerProps {
   url: string;

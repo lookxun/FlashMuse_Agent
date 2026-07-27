@@ -1053,3 +1053,33 @@ html[data-flashmuse-theme="dark"] .flashmuse-preview-modal .flashmuse-preview-th
 html[data-flashmuse-theme="dark"] .flashmuse-preview-modal .flashmuse-preview-thumb-selected {
   border-color: #367cee !important;
 }
+
+/*
+ * 媒体缩略图 hover 放大反馈（全平台统一）：给"裁切容器"加 .media-thumb-zoom，
+ * 里面的 <img>/<video> 就会在鼠标悬停时轻微放大。容器必须自带 overflow-hidden。
+ * 目前用在资产库右侧图片/视频卡；其它地方要同样反馈直接加这个类，禁止再各写一套。
+ */
+.media-thumb-zoom img,
+.media-thumb-zoom video {
+  transition: transform 0.26s ease-out;
+  will-change: transform;
+}
+
+@media (hover: hover) {
+  .media-thumb-zoom:hover img,
+  .media-thumb-zoom:hover video {
+    transform: scale(1.06);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .media-thumb-zoom img,
+  .media-thumb-zoom video {
+    transition: none;
+  }
+
+  .media-thumb-zoom:hover img,
+  .media-thumb-zoom:hover video {
+    transform: none;
+  }
+}

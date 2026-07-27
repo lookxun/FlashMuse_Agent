@@ -4,7 +4,7 @@ import { toUserErrorMessage } from "@/lib/error-message";
 import { saveUploadedFileAsset, saveUploadedFileBufferAsset } from "@/lib/local-assets";
 import { prisma } from "@/lib/prisma";
 import { normalizeMediaAssetUrl } from "@/lib/media-assets";
-import { buildMediaAssetRecord, buildUserAssetStateRecord } from "@/lib/media-asset-record";
+import { buildMediaAssetRecord, buildUserAssetStateRecord, classifyAsset, type AssetMediaType } from "@/lib/media-asset-record";
 import { createHash, randomUUID } from "node:crypto";
 import { syncGeneratedFilesToAli } from "@/lib/ali-sync";
 import { createUploadedVideoPoster } from "@/lib/video-poster";
@@ -38,16 +38,15 @@ export async function GET(request: Request) {
     const contentHash = new URL(request.url).searchParams.get("contentHash")?.trim();
     if (!contentHash) return NextResponse.json({}, { status: 200, headers });
     const dup = await findDedupUpload(userId, contentHash);
-    return NextResponse.json(dup ? { url: dup.url, name: dup.name } : {}, { headers });
+    return NextResponse.json(dup ? { url: dup.url, name: dup.name, posterUrl: dup.posterUrl } : {}, { headers });
   } catch {
     return NextResponse.json({}, { status: 200, headers });
   }
 }
 
-function getFileCategory(mediaType: string) {
-  if (mediaType === "video") return "conversation_upload_videos";
-  if (mediaType === "audio") return "conversation_upload_audios";
-  return "conversation_upload_documents";
+function getFileCategory(mediaType: string, flow: "conversation" | "workflow") {
+  // 唯一权威归类走 classifyAsset（区分 conversation / workflow），别再在这里各写一套（曾漏判 flow=workflow→误入 conversation_upload_*）。
+  return classifyAsset({ origin: "upload", flow, mediaType: mediaType as AssetMediaType }).initialCategory;
 }
 
 function getUploadPrompt(mediaType: string) {
@@ -63,12 +62,26 @@ function getUploadPrompt(mediaType: string) {
 async function findDedupUpload(userId: string, contentHash: string) {
   const existing = await prisma.mediaAsset.findFirst({
     where: { userId, contentHash, archivedAt: null, userStates: { some: { deletedAt: null, hiddenAt: null } } },
-    select: { url: true, systemName: true, initialName: true, userStates: { where: { userId }, select: { currentName: true }, take: 1 } },
+    select: { url: true, posterUrl: true, systemName: true, initialName: true, userStates: { where: { userId }, select: { currentName: true }, take: 1 } },
     orderBy: { firstSeenAt: "asc" },
   });
   if (!existing) return undefined;
   const name = existing.userStates[0]?.currentName?.trim() || existing.systemName?.trim() || existing.initialName?.trim() || undefined;
-  return { url: existing.url, name };
+  return { url: existing.url, name, posterUrl: existing.posterUrl ?? undefined };
+}
+
+/**
+ * 历史上传视频（早于"上传即时生成封面"这个功能）库里没有 posterUrl。命中去重复用旧记录时在这里现补一次封面
+ * 并写回库（之后有 posterUrl 就直接跳过）。只作用于去重分支，新上传主路径行为完全不变。
+ */
+async function ensureDedupPosterUrl(userId: string, dup: { url: string; posterUrl?: string }, mediaKindRaw: string | undefined, name: string) {
+  if (dup.posterUrl) return dup.posterUrl;
+  if (getFileMediaType(mediaKindRaw, name, dup.url) !== "video") return undefined;
+  const posterUrl = await createUploadedVideoPoster(dup.url).catch(() => undefined);
+  if (!posterUrl) return undefined;
+  await prisma.mediaAsset.updateMany({ where: { userId, normalizedUrl: normalizeMediaAssetUrl(dup.url) }, data: { posterUrl } }).catch(() => undefined);
+  void syncGeneratedFilesToAli([posterUrl]).catch(() => undefined);
+  return posterUrl;
 }
 
 export async function POST(request: Request) {
@@ -127,7 +140,7 @@ export async function POST(request: Request) {
       contentHash = createHash("sha256").update(buffer).digest("hex");
       if (userId) {
         const dup = await findDedupUpload(userId, contentHash);
-        if (dup) return NextResponse.json({ url: dup.url, dedup: true, name: dup.name });
+        if (dup) return NextResponse.json({ url: dup.url, dedup: true, name: dup.name, posterUrl: await ensureDedupPosterUrl(userId, dup, mediaKindRaw, name) });
       }
       url = await saveUploadedFileBufferAsset(buffer, name, file.type || undefined, { userId });
     } else {
@@ -143,7 +156,7 @@ export async function POST(request: Request) {
       contentHash = createHash("sha256").update(Buffer.from(base64, "base64")).digest("hex");
       if (userId) {
         const dup = await findDedupUpload(userId, contentHash);
-        if (dup) return NextResponse.json({ url: dup.url, dedup: true, name: dup.name });
+        if (dup) return NextResponse.json({ url: dup.url, dedup: true, name: dup.name, posterUrl: await ensureDedupPosterUrl(userId, dup, mediaKindRaw, name) });
       }
       url = await saveUploadedFileAsset(file, name, { userId });
     }
@@ -158,7 +171,7 @@ export async function POST(request: Request) {
     let resolvedName = name;
     if (userId) {
       const mediaType = getFileMediaType(mediaKindRaw, name, url);
-      const currentCategory = getFileCategory(mediaType);
+      const currentCategory = getFileCategory(mediaType, flow);
       const width = typeof dimensions?.width === "number" ? Math.floor(dimensions.width) : undefined;
       const height = typeof dimensions?.height === "number" ? Math.floor(dimensions.height) : undefined;
       const normalizedUrl = normalizeMediaAssetUrl(url);

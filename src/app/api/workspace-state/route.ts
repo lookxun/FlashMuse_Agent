@@ -194,6 +194,7 @@ function mediaStateToLegacyAsset(item: {
     resolution: string | null;
     imageSize: string | null;
     videoDuration: string | null;
+    durationSeconds: number | null;
     width: number | null;
     height: number | null;
     conversationId: string | null;
@@ -212,7 +213,7 @@ function mediaStateToLegacyAsset(item: {
   const isUploadCategory = item.currentCategory === "conversation_uploads" || item.currentCategory === "workflow_uploads";
   const sourcePrompt = media.reversePrompt || media.sourcePrompt || (isUploadCategory || media.sourceKind.includes("upload") ? UPLOAD_IMAGE_PROMPT_PLACEHOLDER : "");
   const isAssetCategory = ["character_image", "scene_image", "prop_image", "shot_image"].includes(type);
-  const isWorkflowCategory = item.currentCategory === "workflow_images" || item.currentCategory === "workflow_uploads" || item.currentCategory === "workflow_videos";
+  const isWorkflowCategory = item.currentCategory === "workflow_images" || item.currentCategory === "workflow_uploads" || item.currentCategory === "workflow_videos" || item.currentCategory.startsWith("workflow_upload_");
   const librarySource = isAssetCategory ? "asset_generation" : isWorkflowCategory ? "workflow" : "conversation";
   const isWorkflowTemporaryName = isWorkflowCategory && (item.currentName === "图片生成" || item.currentName === "视频生成");
   const previewMeta = resolveAssetPreviewMeta(media.previewMeta, {
@@ -224,7 +225,7 @@ function mediaStateToLegacyAsset(item: {
     videoDuration: media.videoDuration,
     width: media.width,
     height: media.height,
-    durationSeconds: null,
+    durationSeconds: media.durationSeconds,
   });
   return {
     id: item.id,
@@ -236,6 +237,8 @@ function mediaStateToLegacyAsset(item: {
     url: media.url,
     thumbnailUrl: media.thumbnailUrl || undefined,
     posterUrl: media.posterUrl || undefined,
+    // 视频/音频真实时长（秒）。资产库视频卡左上角时长角标等显示端直接用它。
+    durationSeconds: typeof media.durationSeconds === "number" && media.durationSeconds > 0 ? media.durationSeconds : undefined,
     librarySource,
     model: media.model || undefined,
     sourcePrompt,
@@ -265,6 +268,9 @@ function isAssetFilterKey(value: unknown): value is AssetFilterKey {
 }
 
 // 上传媒体的分类名（对话流 + 工作流）。文档分类刻意不放进任何可见过滤，永不显示。
+// ⭐ 资产库不区分"对话流上传/工作流上传"：**只要是上传的就统一显示在「上传的资产 · 上传图片/上传视频/上传音频」**。
+// 所以这三个数组是"上传类"的唯一权威名单，筛选与计数都必须走它们（工作流视频截图也算上传图片）。
+const UPLOAD_IMAGE_CATEGORIES = ["conversation_uploads", "workflow_upload_images", "workflow_uploads"];
 const UPLOAD_VIDEO_CATEGORIES = ["conversation_upload_videos", "workflow_upload_videos"];
 const UPLOAD_AUDIO_CATEGORIES = ["conversation_upload_audios", "workflow_upload_audios"];
 const UPLOAD_DOCUMENT_CATEGORIES = ["conversation_upload_documents", "workflow_upload_documents"];
@@ -278,7 +284,8 @@ function getAssetPageWhere(userId: string, filter: AssetFilterKey): Prisma.UserA
   if (filter === "workflow_uploads") return { ...visible, deletedAt: null, currentCategory: "workflow_uploads" };
   if (filter === "workflow_videos") return { ...visible, deletedAt: null, currentCategory: "workflow_videos" };
   if (filter === "workflow_images") return { ...visible, deletedAt: null, currentCategory: "workflow_images" };
-  if (filter === "conversation_uploads") return { ...visible, deletedAt: null, OR: [{ currentCategory: "conversation_uploads" }, { currentCategory: "conversation_images", mediaAsset: { archivedAt: null, url: { contains: "/upload_image/" } } }] };
+  // 上传图片 = 对话流上传 + 工作流上传 + 工作流视频截图 + 老数据里落在 conversation_images 但地址在 /upload_image/ 的。
+  if (filter === "conversation_uploads") return { ...visible, deletedAt: null, OR: [{ currentCategory: { in: UPLOAD_IMAGE_CATEGORIES } }, { currentCategory: "conversation_images", mediaAsset: { archivedAt: null, url: { contains: "/upload_image/" } } }] };
   if (filter === "conversation_videos") return { ...visible, deletedAt: null, currentCategory: "conversation_videos" };
   if (filter === "conversation_images") return { ...visible, deletedAt: null, currentCategory: "conversation_images", NOT: { mediaAsset: { url: { contains: "/upload_image/" } } } };
   return { ...visible, deletedAt: null, currentCategory: "conversation_images", NOT: { mediaAsset: { url: { contains: "/upload_image/" } } } };
@@ -338,7 +345,11 @@ async function getAssetCounts(userId: string) {
       counts.trash += 1;
       continue;
     }
-    // 上传视频/音频（对话流+工作流）单独归类；上传文档永不显示、不计数。
+    // 上传图片/视频/音频（对话流+工作流，含工作流视频截图）统一算「上传的资产」，不再计入工作流/对话流分组；上传文档永不显示、不计数。
+    if (UPLOAD_IMAGE_CATEGORIES.includes(row.currentCategory)) {
+      counts.conversation_uploads += 1;
+      continue;
+    }
     if (UPLOAD_VIDEO_CATEGORIES.includes(row.currentCategory)) {
       counts.upload_videos += 1;
       continue;
@@ -398,6 +409,7 @@ const assetRowSelect = {
       resolution: true,
       imageSize: true,
       videoDuration: true,
+      durationSeconds: true,
       width: true,
       height: true,
       conversationId: true,

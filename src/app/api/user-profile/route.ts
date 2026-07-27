@@ -1,6 +1,6 @@
 import { getCurrentUser, jsonError } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
-import { getUserProfileFromUser, normalizeUserProfileInput, type UserProfilePayload } from "@/lib/user-profile";
+import { getUserProfileWithGeneratedCounts, normalizeUserProfileInput, type UserProfilePayload } from "@/lib/user-profile";
 
 export const runtime = "nodejs";
 
@@ -8,7 +8,7 @@ export async function GET() {
   const user = await getCurrentUser();
   if (!user) return jsonError("请先登录", 401);
 
-  return Response.json({ user: getUserProfileFromUser(user) });
+  return Response.json({ user: await getUserProfileWithGeneratedCounts(user) });
 }
 
 export async function PUT(request: Request) {
@@ -23,5 +23,7 @@ export async function PUT(request: Request) {
     data: normalizeUserProfileInput(body),
   });
 
-  return Response.json({ user: getUserProfileFromUser(updatedUser) });
+  // 保存后也带上现算的生成数量：前端 applyCurrentUserProfile 会整份覆盖本地状态，
+  // 不带就会把「生成图片/生成视频」刷回 0。
+  return Response.json({ user: await getUserProfileWithGeneratedCounts(updatedUser) });
 }

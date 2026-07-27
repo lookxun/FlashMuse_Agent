@@ -58,6 +58,38 @@ export function getUserProfileFromUser(user: {
   };
 }
 
+/**
+ * 生成媒体总数（用户中心「生成图片 X 张 / 生成视频 Y 段」的唯一权威）。
+ *
+ * 规则：只数模型生成的（= 扣过积分的）图片和视频，上传的素材不算。判定用 sourceKind
+ * （非空列，`*_upload_*` 就是上传，生成的是 `*_generation*`），比 promptSource 可空更稳。
+ * 用户删掉的仍然计入——它当时确实生成过、也扣过费；归档(archivedAt)的数据清理行不计。
+ *
+ * 注意：User.generatedImageCount / generatedVideoCount 这两个老列历史上从未被累加过（一直是 0，
+ * 这就是用户中心显示 0 张 0 段的原因），所以一律现算，不再读那两列。
+ */
+export async function getUserGeneratedMediaCounts(userId: string) {
+  const rows = await prisma.mediaAsset.groupBy({
+    by: ["mediaType"],
+    where: { userId, archivedAt: null, mediaType: { in: ["image", "video"] }, sourceKind: { not: { contains: "upload" } } },
+    _count: { _all: true },
+  });
+  const countOf = (mediaType: string) => rows.find((row) => row.mediaType === mediaType)?._count._all ?? 0;
+  return { generatedImageCount: countOf("image"), generatedVideoCount: countOf("video") };
+}
+
+/** 用户资料 + 现算的生成数量。/api/auth/me 与 /api/user-profile 统一走这里，别再各自拼一套。 */
+export async function getUserProfileWithGeneratedCounts(user: Parameters<typeof getUserProfileFromUser>[0]) {
+  const counts = await getUserGeneratedMediaCounts(user.id);
+  // 与后台一致：取「老列」与「现算值」的较大者（老列历史上从未累加，真实用户恒为 0；
+  // 只有造数据的测试账号有值，这样不会把它们的数字抹成 0）。
+  return {
+    ...getUserProfileFromUser(user),
+    generatedImageCount: Math.max(user.generatedImageCount ?? 0, counts.generatedImageCount),
+    generatedVideoCount: Math.max(user.generatedVideoCount ?? 0, counts.generatedVideoCount),
+  };
+}
+
 export function normalizeUserProfileInput(input: UserProfilePayload) {
   const nickname = Array.from(cleanText(input.nickname)).slice(0, 8).join("");
   const phone = cleanText(input.phone).slice(0, 40);

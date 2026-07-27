@@ -4,10 +4,10 @@ import { prisma } from "@/lib/prisma";
 
 export const runtime = "nodejs";
 
-type CreditSource = "conversation" | "character_image_generation" | "scene_image_generation" | "prop_image_generation" | "shot_image_generation" | "image_prompt_reverse" | "prompt_optimization";
+type CreditSource = "conversation" | "workflow" | "character_image_generation" | "scene_image_generation" | "prop_image_generation" | "shot_image_generation" | "image_prompt_reverse" | "prompt_optimization";
 type CreditRowSource = CreditSource | "signup" | "admin_adjust" | "recharge" | "activity";
 
-const generationSourceLabels: Record<Exclude<CreditSource, "conversation">, string> = {
+const generationSourceLabels: Record<Exclude<CreditSource, "conversation" | "workflow">, string> = {
   character_image_generation: "角色图片生成",
   scene_image_generation: "场景图片生成",
   prop_image_generation: "道具图片生成",
@@ -28,6 +28,15 @@ function getCreditSource(metadata: unknown): CreditSource {
   const source = (metadata as { creditSource?: unknown }).creditSource;
   if (source === "character_image_generation" || source === "scene_image_generation" || source === "prop_image_generation" || source === "shot_image_generation" || source === "image_prompt_reverse" || source === "prompt_optimization") return source;
   return "conversation";
+}
+
+/** 这条流水是不是工作流产生的：优先看 workspaceKind，老数据兜底看 metadata.creditSource 前缀。 */
+function isWorkflowLedger(item: { workspaceKind: string | null; metadata: unknown }) {
+  if (item.workspaceKind === "workflow") return true;
+  const metadata = item.metadata;
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return false;
+  const source = (metadata as { creditSource?: unknown }).creditSource;
+  return typeof source === "string" && source.startsWith("workflow_");
 }
 
 function getWorkspaceSessionUsageMap(state: unknown) {
@@ -192,13 +201,17 @@ export async function GET() {
       continue;
     }
 
-    const source = getCreditSource(item.metadata);
-    const key = source === "conversation" ? item.conversationId || "unknown" : `source:${source}`;
+    // 工作流消耗单独成一类（每个工作流一行），前端好用工作流图标显示；提示词工具等特殊来源仍按原分组。
+    const baseSource = getCreditSource(item.metadata);
+    const source: CreditRowSource = baseSource === "conversation" && isWorkflowLedger(item) ? "workflow" : baseSource;
+    const key = source === "workflow"
+      ? `workflow:${item.workspaceId || item.conversationId || "unknown"}`
+      : source === "conversation" ? item.conversationId || "unknown" : `source:${source}`;
     const current = map.get(key) ?? {
       conversationId: key,
       source,
       direction: "consume",
-      title: source === "conversation" ? item.conversationTitle || "未命名对话" : generationSourceLabels[source],
+      title: source === "workflow" ? item.conversationTitle || "未命名工作流" : source === "conversation" ? item.conversationTitle || "未命名对话" : generationSourceLabels[source],
       credits: 0,
       totalTokens: 0,
       imageCount: 0,

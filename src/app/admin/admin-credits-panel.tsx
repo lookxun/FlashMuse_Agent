@@ -3,6 +3,7 @@
 import { Fragment, useMemo, useRef, useState, useTransition, type ReactNode } from "react";
 import { RiArrowDownSLine, RiArrowRightSLine, RiCloseLine, RiInformation2Line, RiQuillPenAiLine, RiSearchLine } from "react-icons/ri";
 import { useBodyScrollLock } from "@/components/use-body-scroll-lock";
+import { VideoPlayBadge } from "@/components/video-play-badge";
 import { AdminHoverImagePreview } from "./admin-hover-image-preview";
 import { getCachedAdminDetail, setCachedAdminDetail } from "./admin-detail-cache";
 import { fallbackAdminImageToOriginal, getAdminMediaSourceUrl, getAdminMediaThumbnailUrl } from "./admin-media-url";
@@ -463,6 +464,7 @@ function CreditFlowRow({ label, mediaName, credits, expectedCredits, usd, cny, m
                 // eslint-disable-next-line @next/next/no-img-element
                 <img src={getAdminMediaThumbnailUrl(getLocalVideoPosterUrl(mediaUrl) ?? mediaUrl)} onError={(event) => fallbackAdminImageToOriginal(event.currentTarget, mediaUrl)} alt={label} loading="lazy" className="h-full w-full object-cover" />
               ) : <video src={getAdminMediaSourceUrl(mediaUrl)} className="h-full w-full object-cover" muted preload="metadata" />}
+              <VideoPlayBadge size="xs" />
             </div>
           ) : (
             <AdminHoverImagePreview src={mediaUrl} alt={label} wrapperClassName="relative flex h-12 w-16 shrink-0 items-center justify-center overflow-hidden rounded-[6px] bg-[#e8e8e8]">

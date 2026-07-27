@@ -5,7 +5,7 @@ import Image from "next/image";
 import { createPortal } from "react-dom";
 import { IMAGE_UPLOAD_ACCEPT, validateImageUploadFile } from "@/lib/image-upload-validation";
 import { IS_TEST_SERVER, versionLabel } from "@/lib/app-version";
-import { validateMediaUploadFile, validateMediaUploadMetadata } from "@/lib/media-upload-validation";
+import { MEDIA_DURATION_EPSILON_SECONDS, validateMediaUploadFile, validateMediaUploadMetadata, validateReferenceMediaDurationRange as validateMediaDuration } from "@/lib/media-upload-validation";
 import { computeFileContentHashHex, precheckUploadedFileDedup } from "@/lib/upload-content-hash";
 import { isRecentUploadOrigin, markRecentUploadOrigin } from "@/lib/recent-upload-origin";
 import {
@@ -54,7 +54,6 @@ import {
   RiMultiImageLine,
   RiMailLine,
   RiPhoneLine,
-  RiPlayLargeFill,
   RiOpenaiFill,
   RiEditBoxLine,
   RiPushpinLine,
@@ -112,6 +111,9 @@ import { BytePlusIcon } from "@/components/byteplus-icon";
 import { AudioWaveformPlayer } from "@/components/audio-waveform-player";
 import { AssetMentionPicker, type MentionPickerItem } from "@/components/asset-mention-picker";
 import { VideoUploadThumbnail } from "@/components/video-upload-thumbnail";
+import { VideoPlayBadge } from "@/components/video-play-badge";
+import { MediaDurationBadge } from "@/components/media-duration-badge";
+import { parseChineseDurationSeconds } from "@/lib/media-duration-format";
 import { WorkflowCanvas, type WorkflowCanvasState, type WorkflowNode } from "@/components/workflow-tldraw-canvas";
 import { getSupportedUploadTypeLabel, getUploadAcceptValue, getUploadKindFromFileName, getUploadRule, getVideoAudioUploadDisabledMessage, validateReferenceTotalDuration, validateVideoReferenceCombination, type UploadRuleOverrides } from "@/lib/upload-rules";
 import { sanitizeModelOutputText } from "@/lib/text-cleanup";
@@ -120,7 +122,6 @@ const HISTORY_INITIAL_SESSION_COUNT = 10;
 const HISTORY_LOAD_MORE_COUNT = 5;
 const WORKFLOW_INITIAL_ITEM_COUNT = HISTORY_INITIAL_SESSION_COUNT;
 const WORKFLOW_LOAD_MORE_COUNT = HISTORY_LOAD_MORE_COUNT;
-const MEDIA_DURATION_EPSILON_SECONDS = 0.35;
 const WORKFLOW_MODE_ENABLED = process.env.NEXT_PUBLIC_WORKFLOW_MODE_ENABLED
   ? process.env.NEXT_PUBLIC_WORKFLOW_MODE_ENABLED === "true"
   : process.env.NODE_ENV !== "production";
@@ -229,6 +230,8 @@ type AssetItem = {
   url: string;
   thumbnailUrl?: string;
   posterUrl?: string;
+  /** 视频/音频真实时长（秒），服务端 MediaAsset.durationSeconds 直出。 */
+  durationSeconds?: number;
   librarySource?: "asset_generation" | "conversation" | "workflow";
   model?: string;
   sourcePrompt: string;
@@ -334,6 +337,7 @@ type MediaFileReference = {
   name: string;
   url: string;
   mediaKind: "video" | "audio";
+  posterUrl?: string;
   file: UploadedFileEntry;
 };
 
@@ -527,7 +531,7 @@ type UsageSummary = {
 
 type UsageMeta = Partial<UsageSummary>;
 type CreditMeta = { chargedCredits?: number; balance?: number; skipped?: boolean };
-type UserCreditSource = "conversation" | "character_image_generation" | "scene_image_generation" | "prop_image_generation" | "shot_image_generation" | "image_prompt_reverse" | "prompt_optimization" | "signup" | "admin_adjust" | "recharge" | "activity";
+type UserCreditSource = "conversation" | "workflow" | "character_image_generation" | "scene_image_generation" | "prop_image_generation" | "shot_image_generation" | "image_prompt_reverse" | "prompt_optimization" | "signup" | "admin_adjust" | "recharge" | "activity";
 type UserCreditConversation = {
   conversationId: string;
   source?: UserCreditSource;
@@ -542,6 +546,8 @@ type UserCreditConversation = {
 
 const userCreditSourceIcons: Record<UserCreditSource, typeof RiImageLine> = {
   conversation: RiChat3Line,
+  // 工作流用侧栏「工作流模式」同一个图标，保持全站一致。
+  workflow: RiGitPullRequestLine,
   character_image_generation: RiFolderLine,
   scene_image_generation: RiFolderLine,
   prop_image_generation: RiFolderLine,
@@ -1283,6 +1289,48 @@ function HoverImagePreview({ src, alt, wrapperClassName = "inline-block", childr
   );
 }
 
+// 视频缩略图鼠标悬停放大预览：与 HoverImagePreview 同款交互，展示视频封面（有 posterUrl 用它，否则用视频首帧兜底）。
+function HoverVideoPreview({ src, posterUrl, alt, wrapperClassName = "inline-block", children }: { src: string; posterUrl?: string; alt: string; wrapperClassName?: string; children: ReactNode }) {
+  const [position, setPosition] = useState<HoverImagePreviewPosition | null>(null);
+  const [naturalSize, setNaturalSize] = useState<ImageDimensions | undefined>(undefined);
+  const pointerRef = useRef<{ x: number; y: number } | null>(null);
+  const updatePosition = (clientX: number, clientY: number, size = naturalSize) => {
+    pointerRef.current = { x: clientX, y: clientY };
+    setPosition(getHoverImagePreviewPosition(clientX, clientY, size));
+  };
+  const displaySrc = getStaticMediaUrl(src) ?? src;
+  const displayPoster = posterUrl ? getStaticMediaUrl(posterUrl) ?? posterUrl : undefined;
+  const preview = position && typeof document !== "undefined" ? createPortal(
+    <span className="pointer-events-none fixed z-[9999] flex items-center justify-center rounded-[10px] border border-white/70 bg-white p-1 shadow-[0_18px_60px_rgba(0,0,0,0.32)]" style={{ left: position.left, top: position.top, width: position.width + 8, height: position.height + 8 }}>
+      {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
+      <video src={`${displaySrc}#t=0.1`} poster={displayPoster} muted playsInline preload="metadata" className="block object-contain" style={{ width: position.width, height: position.height }} onLoadedMetadata={(event) => {
+        const video = event.currentTarget;
+        if (!video.videoWidth || !video.videoHeight) return;
+        const nextSize = { width: video.videoWidth, height: video.videoHeight };
+        setNaturalSize(nextSize);
+        const pointer = pointerRef.current;
+        if (pointer) setPosition(getHoverImagePreviewPosition(pointer.x, pointer.y, nextSize));
+      }} />
+    </span>,
+    document.body,
+  ) : null;
+
+  return (
+    <span
+      className={wrapperClassName}
+      onMouseEnter={(event) => updatePosition(event.clientX, event.clientY)}
+      onMouseMove={(event) => updatePosition(event.clientX, event.clientY)}
+      onMouseLeave={() => {
+        pointerRef.current = null;
+        setPosition(null);
+      }}
+    >
+      {children}
+      {preview}
+    </span>
+  );
+}
+
 function getAssetCardImageUrl(asset: Pick<AssetItem, "url" | "thumbnailUrl" | "posterUrl">) {
   if (asset.thumbnailUrl) return getStaticMediaUrl(asset.thumbnailUrl, mediaThumbnailVersion) ?? asset.thumbnailUrl;
   if (isUploadedAssetUrl(asset.url)) {
@@ -1295,6 +1343,15 @@ function getAssetCardImageUrl(asset: Pick<AssetItem, "url" | "thumbnailUrl" | "p
 
 function getAssetCardPosterUrl(asset: Pick<AssetItem, "url" | "posterUrl">) {
   return asset.posterUrl ?? getLocalVideoPosterUrl(asset.url);
+}
+
+/**
+ * 资产真实时长（秒）的唯一取值口径：优先服务端直出的 durationSeconds，
+ * 老数据兜底解析参数卡里的「N秒」文案。取不到就返回 undefined（不显示时长）。
+ */
+function getAssetDurationSeconds(asset: Pick<AssetItem, "durationSeconds" | "previewMeta">) {
+  if (typeof asset.durationSeconds === "number" && asset.durationSeconds > 0) return asset.durationSeconds;
+  return parseChineseDurationSeconds(asset.previewMeta?.duration);
 }
 
 // AssetItem → 「@引用资产」选择器条目（统一投影，三处 mention 弹窗复用）。
@@ -5923,13 +5980,13 @@ function ReferencedTextContent({ content, references, mediaReferences, onPreview
           if (reference.mediaKind === "video") {
             return (
               <span key={`${part.text}-${index}`} className="mx-0.5 inline-flex items-center gap-1 align-[-4px] leading-none text-[#367cee]">
-                <span className="relative inline-flex h-[18px] w-[18px] shrink-0 items-center justify-center overflow-hidden rounded bg-black/5 ring-1 ring-[#e5e5e5]">
+                <HoverVideoPreview src={mediaSrc} posterUrl={reference.posterUrl} alt={reference.name} wrapperClassName="relative inline-flex h-[18px] w-[18px] shrink-0 items-center justify-center overflow-hidden rounded bg-black/5 ring-1 ring-[#e5e5e5] align-middle">
                   {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
-                  <video src={`${mediaSrc}#t=0.1`} muted playsInline preload="metadata" className="pointer-events-none h-full w-full object-cover" />
+                  <video src={`${mediaSrc}#t=0.1`} poster={reference.posterUrl ? getStaticMediaUrl(reference.posterUrl) ?? reference.posterUrl : undefined} muted playsInline preload="metadata" className="pointer-events-none h-full w-full object-cover" />
                   <span className="pointer-events-none absolute inset-0 flex items-center justify-center">
                     <span className="flex h-2.5 w-2.5 items-center justify-center rounded-full bg-black/45"><span className="ml-[1px] h-0 w-0 border-y-[3px] border-l-[4px] border-y-transparent border-l-white" /></span>
                   </span>
-                </span>
+                </HoverVideoPreview>
                 <span className="max-w-[180px] truncate leading-[18px]">{part.text}</span>
               </span>
             );
@@ -6348,7 +6405,7 @@ function AssetManagementPanel({
 
         return (
         <div key={asset.id} className={variant === "video-row" ? "group relative aspect-video overflow-visible bg-[#f4f4f4]" : "group relative aspect-square overflow-visible bg-[#f4f4f4]"}>
-          <button type="button" onClick={() => onPreview(asset)} className="block h-full w-full overflow-hidden bg-[#f4f4f4] text-left">
+          <button type="button" onClick={() => onPreview(asset)} className="media-thumb-zoom block h-full w-full overflow-hidden bg-[#f4f4f4] text-left">
             {isVideoAsset(asset) ? (
               assetCardPosterUrl ? <AssetThumbnailImage thumbnailSrc={getMediaThumbnailUrl(assetCardPosterUrl)} fallbackSrc={getStaticMediaUrl(assetCardPosterUrl)} alt={asset.name} className="h-full w-full object-cover" style={{ width: "100%", height: "100%" }} /> : <video src={`${getStaticMediaUrl(asset.url) ?? asset.url}#t=0.1`} muted playsInline preload="metadata" className="h-full w-full object-cover" />
             ) : (
@@ -6356,9 +6413,10 @@ function AssetManagementPanel({
             )}
           </button>
           {isVideoAsset(asset) ? (
-            <span className="pointer-events-none absolute left-1/2 top-1/2 flex h-12 w-12 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-black/42 text-white shadow-[0_8px_24px_rgba(0,0,0,0.22)] backdrop-blur-[4px]">
-              <RiPlayLargeFill className="ml-0.5 h-6 w-6" aria-hidden="true" />
-            </span>
+            <>
+              <MediaDurationBadge seconds={getAssetDurationSeconds(asset)} />
+              <VideoPlayBadge size="lg" />
+            </>
           ) : null}
           <div className="absolute inset-x-0 bottom-0 h-10 bg-gradient-to-t from-black/75 to-transparent" />
           {isVideoAsset(asset) ? (
@@ -6839,9 +6897,7 @@ function InlineVideoResult({ url, posterUrl, onPreview, onLoadedDimensions, roun
       {displayPosterUrl && !shouldLoadVideo ? (
         <span onMouseEnter={playVideo} onFocus={playVideo} className="relative flex h-full w-full items-center justify-center">
           <Image src={displayPosterUrl} alt="视频封面" fill sizes={compact ? "50vw" : "640px"} unoptimized className="object-contain" />
-          <span className="pointer-events-none absolute left-1/2 top-1/2 flex h-14 w-14 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-black/42 text-white shadow-[0_8px_24px_rgba(0,0,0,0.22)] backdrop-blur-[4px]">
-            <RiPlayLargeFill className="ml-0.5 h-7 w-7" aria-hidden="true" />
-          </span>
+          <VideoPlayBadge size="xl" />
         </span>
       ) : (
         <video
@@ -7237,13 +7293,6 @@ function getUploadedMediaDuration(file: UploadedFileEntry) {
   return typeof file === "string" ? 0 : Math.max(0, file.durationSeconds ?? 0);
 }
 
-function validateMediaDuration(kindLabel: string, durationSeconds: number | undefined, rule: { minSeconds?: number; maxSeconds?: number }) {
-  if (!Number.isFinite(durationSeconds ?? Number.NaN) || !durationSeconds) return `${kindLabel}时长读取失败`;
-  if (rule.minSeconds !== undefined && durationSeconds < rule.minSeconds - MEDIA_DURATION_EPSILON_SECONDS) return `${kindLabel}时长不能少于 ${rule.minSeconds} 秒`;
-  if (rule.maxSeconds !== undefined && durationSeconds > rule.maxSeconds + MEDIA_DURATION_EPSILON_SECONDS) return `${kindLabel}时长不能超过 ${rule.maxSeconds} 秒`;
-  return undefined;
-}
-
 function validateReferenceVideoDimensions(dimensions?: ImageDimensions) {
   if (!dimensions?.width || !dimensions.height) return "视频尺寸读取失败";
   const ratio = dimensions.width / dimensions.height;
@@ -7282,7 +7331,8 @@ function getUploadedMediaReferences(files?: UploadedFileEntry[]): MediaFileRefer
     if (mediaKind !== "video" && mediaKind !== "audio") return [];
     const url = getUploadedMediaFileUrl(file);
     if (!url) return [];
-    return [{ name: getUploadedFileDisplayName(file), url, mediaKind, file }];
+    const posterUrl = typeof file === "string" ? undefined : file.posterUrl;
+    return [{ name: getUploadedFileDisplayName(file), url, mediaKind, posterUrl, file }];
   });
 }
 
@@ -15851,6 +15901,12 @@ export function ChatWorkbench() {
                   }}
                   onGeneratedMedia={(media) => addWorkflowGeneratedAssets(activeWorkflow.id, media.nodeId, { kind: media.kind, urls: media.urls, reservedNames: media.reservedNames, posterUrl: media.posterUrl, sourcePrompt: media.sourcePrompt, model: media.model, ratio: media.ratio, resolution: media.resolution, duration: media.duration, dimensions: media.dimensions, silent: media.silent, promptOptimization: media.promptOptimization })}
                   onShowTip={showInputTip}
+                  // 工作流里上传/视频截图入库后，立刻刷新资产库对应的「上传」分类（列表+计数），
+                  // 免得右侧图片要手动刷新页面才出现。文档类永不显示、不刷。
+                  onUploadedAsset={({ mediaType }) => {
+                    const filter: AssetFilter | undefined = mediaType === "image" ? "conversation_uploads" : mediaType === "video" ? "upload_videos" : mediaType === "audio" ? "upload_audios" : undefined;
+                    if (filter) void loadWorkspaceAssets(true, filter, 0, "auto");
+                  }}
                   onPreviewMedia={(media) => {
                     const existingAsset = assets.find((asset) => isWorkflowAsset(asset) && normalizeMediaUrlForMatch(asset.url) === normalizeMediaUrlForMatch(media.url));
                     const workflowNode = activeWorkflow.canvas?.nodes?.find((node) => node.id === media.nodeId);
@@ -15941,7 +15997,7 @@ export function ChatWorkbench() {
                                       ) : isVideo ? (
                                         poster ? <img src={poster} alt={asset.systemName || asset.name} draggable={false} className="h-full w-full object-cover" /> : <video src={`${getStaticMediaUrl(asset.url) ?? asset.url}#t=0.1`} muted playsInline preload="metadata" className="h-full w-full object-cover" />
                                       ) : poster ? <img src={poster} alt={asset.systemName || asset.name} draggable={false} className="h-full w-full object-cover" /> : <div className="flex h-full w-full items-center justify-center text-[12px] text-[#aaa]">无预览</div>}
-                                      {isVideo ? <span className="pointer-events-none absolute left-1/2 top-1/2 flex h-11 w-11 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-black/42 text-white shadow-[0_8px_24px_rgba(0,0,0,0.22)] backdrop-blur-[4px]"><RiPlayLargeFill className="ml-0.5 h-5 w-5" aria-hidden="true" /></span> : null}
+                                      {isVideo ? <VideoPlayBadge size="md" /> : null}
                                       <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 h-10 bg-gradient-to-t from-black/75 to-transparent" />
                                       <span className="pointer-events-none absolute bottom-2 left-2 z-20 max-w-[calc(100%-16px)] truncate text-[13px] font-medium leading-none text-white">@{asset.systemName || asset.name}</span>
                                       <span className={`absolute right-2 top-2 z-50 flex h-5 w-5 items-center justify-center rounded-full border ${selected ? "border-[#2f80ed] bg-[#2f80ed] text-white" : "border-white bg-black/25 text-transparent"}`}><RiCheckLine className="h-3.5 w-3.5" /></span>

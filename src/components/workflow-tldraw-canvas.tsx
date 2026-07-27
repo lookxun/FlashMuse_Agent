@@ -30,6 +30,8 @@ type WorkflowCanvasProps = {
   onGeneratedMedia?: (media: { nodeId: string; kind: "image" | "video"; urls: string[]; reservedNames?: string[]; posterUrl?: string; sourcePrompt: string; model?: ModelName; ratio?: string; resolution?: string; duration?: string; dimensions?: Record<string, { width: number; height: number }>; durationSeconds?: Record<string, number>; silent?: boolean; promptOptimization?: { originalPrompt: string; optimizedPrompt: string; attemptsUsed: number; optimizerModel: string } }) => void;
   onPreviewMedia?: (media: { nodeId: string; kind: "image" | "video"; url: string; posterUrl?: string; name: string; sourcePrompt?: string; model?: ModelName; ratio?: string; resolution?: string; duration?: string; dimensions?: { width: number; height: number } }) => void;
   onShowTip?: (message: string) => void;
+  /** 工作流里上传/截图出的素材已入库：父级据此刷新资产库对应"上传"分类（免手动刷新页面）。 */
+  onUploadedAsset?: (info: { mediaType: "image" | "video" | "audio" | "document" }) => void;
   getImageDisplayUrl?: (url: string) => string;
   getVideoPosterDisplayUrl?: (url: string, posterUrl?: string) => string | undefined;
   enabledTextModelIds?: string[];

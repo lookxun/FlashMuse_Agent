@@ -13,7 +13,7 @@ export async function computeFileContentHashHex(file: File): Promise<string | un
 }
 
 /** 按内容哈希向上传接口预检是否已存在同一文件；命中返回旧地址+权威名，否则 undefined。失败静默降级为正常上传。 */
-export async function precheckUploadedFileDedup(uploadUrl: string, contentHash: string, token?: string): Promise<{ url: string; name?: string } | undefined> {
+export async function precheckUploadedFileDedup(uploadUrl: string, contentHash: string, token?: string): Promise<{ url: string; name?: string; posterUrl?: string } | undefined> {
   try {
     const response = await fetch(`${uploadUrl}?contentHash=${encodeURIComponent(contentHash)}`, {
       method: "GET",
@@ -21,8 +21,8 @@ export async function precheckUploadedFileDedup(uploadUrl: string, contentHash: 
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     });
     if (!response.ok) return undefined;
-    const data = (await response.json()) as { url?: string; name?: string };
-    return data?.url ? { url: data.url, name: data.name } : undefined;
+    const data = (await response.json()) as { url?: string; name?: string; posterUrl?: string };
+    return data?.url ? { url: data.url, name: data.name, posterUrl: data.posterUrl } : undefined;
   } catch {
     return undefined;
   }

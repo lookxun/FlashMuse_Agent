@@ -34,6 +34,19 @@
 - **内容去重**：按原始字节 SHA-256（`src/lib/upload-content-hash.ts`）+ `MediaAsset.contentHash`，命中直接复用不重传。
 - **读取要快必须回传阿里**：`syncGeneratedFilesToAli`（`src/lib/ali-sync.ts`，rsync 到阿里镜像）。"上传走哪≠存哪"，文件始终在腾讯生成，读取快靠阿里本地镜像。`src/lib/recent-upload-origin.ts`：本会话刚上传的读腾讯主源，刷新后走阿里（见 M018）。
 
+## ⭐ 视频/音频时长限制（2026-07-27 实测 + 收敛，唯一权威）
+
+- **平台真实硬上限（实测，别再猜）**：BytePlus Seedance 2.0 / Fast / Mini 三个模型的 **r2v 参考视频时长上限 = 15.2 秒（含）**，API 报错原文 `video duration (seconds) ... must be less than or equal to 15.2 ... in r2v`。另有 `video pixel count ≥ 409600`、宽高 300–6000px、宽高比 0.4–2.5、帧率 24–60、编码 H.264/H.265。
+- **自家生成的「15秒」视频实际是 15.1 秒**（正式服库三个模型 min=max=avg=15.1）。所以 **15 秒生成视频可以当参考视频**（15.1 < 15.2）——但前提是校验带容差，否则会被自己拦死（曾经就是这个 bug）。
+- **唯一权威实现**（`src/lib/media-upload-validation.ts`，三处共用、禁止再复制）：
+  - `MEDIA_DURATION_EPSILON_SECONDS = 0.2` —— 唯一容差常量。对外宣传 `maxSeconds=15`，`15 + 0.2 = 15.2` 正好等于平台硬上限。
+  - `validateReferenceMediaDurationRange(kindLabel, seconds, rule)` —— **单条**时长范围校验唯一实现。对话流（`chat-workbench.tsx`）与工作流（`workflow-tldraw-canvas-inner.tsx`）都是 import 它（用别名 `validateMediaDuration`/`validateWorkflowMediaDuration` 保持调用点不变），**不要再在组件里写本地副本**（历史上就是各写一份、数值分别是 15.35 / 15.35 / 16.01 三个都错）。
+  - 服务端 `validateMediaUploadMetadata` 也用同一容差（`< 2 - EPS || > 15 + EPS`）。
+- **总时长**（多个参考视频/音频相加）：`src/lib/upload-rules.ts` 的 `REFERENCE_TOTAL_SECONDS_LIMIT = 15` + `validateReferenceTotalDuration()`，**同样带 `+ MEDIA_DURATION_EPSILON_SECONDS`**（=15.2）。这条本来就只有一份实现（服务端+两客户端共用），只是数值以前没带容差。
+- 客户端增量校验用的 `maxTotalSeconds`（`upload-rules.ts` kindRule，值 15）也是 `+ EPSILON` → 同为 15.2。**改一个 epsilon 三类判断一起变，不会再出现各处不一致。**
+- ⚠️ 文案仍写死"2-15秒"（`chat-workbench.tsx` 的 `workflowUploadNodeTypeLabel`/`assetsUploadTypeLabel`、后台 `admin-upload-rules-panel.tsx`），改规则数值时记得手动同步。
+
+
 ## 资产分类（AssetFilter）
 
 - 第 1 组（资产库生成，同组同款）：`character_image` / `scene_image` / `prop_image`（道具，2026-07-21 新增）/ `shot_image`。图标/比例/propify 见 04 + 代码。

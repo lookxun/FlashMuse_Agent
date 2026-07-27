@@ -11,6 +11,20 @@ export const AUDIO_UPLOAD_ACCEPT = ".mp3,.wav,audio/mpeg,audio/wav";
 
 function extensionOf(name: string | undefined | null) { return (name ?? "").split(/[\\/]/).pop()?.split(".").pop()?.toLowerCase() ?? ""; }
 
+// 参考视频/音频「单条时长」允许的读取抖动容差（秒）。唯一权威，禁止再各处复制。
+// 实测 BytePlus Seedance 2.0 三个模型 r2v 的参考视频真实上限 = 15.2 秒（API 直接报 "must be less than or equal to 15.2"）。
+// 我们对外仍按 maxSeconds=15 宣传，容差取 0.2 → 有效上限 15 + 0.2 = 15.2，正好等于真实硬上限；
+// 对话流 / 工作流 / 服务端三处必须共用这一个常量与下面的 validateReferenceMediaDurationRange，保持完全一致。
+export const MEDIA_DURATION_EPSILON_SECONDS = 0.2;
+
+// 单条时长范围校验（对话流客户端、工作流客户端共用；服务端 validateMediaUploadMetadata 也按同一容差判定）。
+export function validateReferenceMediaDurationRange(kindLabel: string, durationSeconds: number | undefined, rule: { minSeconds?: number; maxSeconds?: number }) {
+  if (!Number.isFinite(durationSeconds ?? Number.NaN) || !durationSeconds) return `${kindLabel}时长读取失败`;
+  if (rule.minSeconds !== undefined && durationSeconds < rule.minSeconds - MEDIA_DURATION_EPSILON_SECONDS) return `${kindLabel}时长不能少于 ${rule.minSeconds} 秒`;
+  if (rule.maxSeconds !== undefined && durationSeconds > rule.maxSeconds + MEDIA_DURATION_EPSILON_SECONDS) return `${kindLabel}时长不能超过 ${rule.maxSeconds} 秒`;
+  return undefined;
+}
+
 /** Browser-safe first pass. The server repeats this with probed media metadata. */
 export function validateMediaUploadFile(file: Pick<File, "name" | "type" | "size">, kind: UploadMediaKind) {
   const rule = rules[kind];
@@ -25,7 +39,8 @@ export function validateMediaUploadFile(file: Pick<File, "name" | "type" | "size
 export function validateMediaUploadMetadata(kind: UploadMediaKind, metadata: MediaUploadMetadata) {
   const label = kind === "video" ? "视频" : "音频";
   if (!Number.isFinite(metadata.durationSeconds) || !metadata.durationSeconds) return `${label}时长读取失败`;
-  if (metadata.durationSeconds < 1.9 || metadata.durationSeconds > 16.01) return `${label}时长需在 2 到 15 秒之间`;
+  // 实测真实上限 15.2 秒（=15 + MEDIA_DURATION_EPSILON_SECONDS）；下限 2 秒同容差。三处统一走这个容差。
+  if (metadata.durationSeconds < 2 - MEDIA_DURATION_EPSILON_SECONDS || metadata.durationSeconds > 15 + MEDIA_DURATION_EPSILON_SECONDS) return `${label}时长需在 2 到 15 秒之间`;
   if (kind === "audio") return undefined;
   const { width, height, fps } = metadata;
   if (!width || !height) return "视频尺寸读取失败";

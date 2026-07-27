@@ -1,8 +1,9 @@
 "use client";
 
 import type { IconType } from "react-icons";
-import { RiLoader4Line, RiPlayLargeFill } from "react-icons/ri";
+import { RiLoader4Line } from "react-icons/ri";
 import { AudioWaveformPlayer } from "@/components/audio-waveform-player";
+import { VideoPlayBadge } from "@/components/video-play-badge";
 
 export type MentionPickerCategory = { label: string; value: string; icon: IconType };
 export type MentionPickerItem = {
@@ -116,7 +117,7 @@ export function AssetMentionPicker({
                       /* eslint-disable-next-line @next/next/no-img-element */ <img src={item.thumbnailUrl ?? getMediaSrc(item.url)} alt={item.name} draggable={false} className="h-full w-full object-cover" />
                     )}
                     {item.kind === "video" ? (
-                      <span className="pointer-events-none absolute left-1/2 top-1/2 flex h-9 w-9 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-black/42 text-white shadow-[0_8px_24px_rgba(0,0,0,0.22)] backdrop-blur-[4px]"><RiPlayLargeFill className="ml-0.5 h-4 w-4" aria-hidden="true" /></span>
+                      <VideoPlayBadge size="sm" />
                     ) : null}
                       <div className="pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t from-black/75 to-transparent" />
                       <span className="pointer-events-none absolute bottom-1.5 left-1.5 right-1.5 truncate text-[12px] font-medium leading-none text-white">@{item.name}</span>
