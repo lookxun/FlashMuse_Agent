@@ -4,15 +4,28 @@
 
 ## 当前状态
 
-⚠️⭐ **本地积压第六 + 第七两次会话的改动，全部未部署**（部署后 = `v1.0.0.47`，含 1 个新 Prisma 迁移）；线上仍是 `v1.0.0.46`（正式服 = 测试服 = GitHub）。本地 `npx tsc --noEmit` 全绿、归档脚本 dry-run 跑通，版本号还没 bump（bump 只在部署测试服那一步做）。
+✅ **四方同步：正式服 = 测试服 = 本地 = GitHub = `v1.0.0.47`（commit `9268dab`，2026-07-28 第八次会话部署完成）。无待部署、无未推。**
+
+- 迁移 `20260727154203_generation_event_resolved` 两服均已 applied；两服 `PUBLISHED_APP_VERSION` = `v1.0.0.47`；正式服四域名全 200。
+- 归档脚本两服都已 `--apply`：测试服 10 条（剩 36）、**正式服 367 条（剩 308 待排查）**。
+- 正式服备份：`/opt/flashmuse/app-backups/20260728-021857-presync-v47`。
+
+## ⚠️ 部署后仍待做：实机回归（v47 动了共用错误路径）
+
+改的都是**错误分支 + `readJson` 开头**，成功路径没动，但 6 个 route + 两个前端咽喉共用，**必须逐一确认正常生成照旧**：
+- 对话流生图 / 生视频、工作流生图 / 生视频、Agent 模式、资产库生成 —— 各跑一次成功用例。
+- 401 场景：A 浏览器登录后停在工作台，B 浏览器用同账号登录（单会话会顶掉 A），回 A 点生成 → **应直接跳首页、不弹提示、不出红字卡**。
+- 后台「运营概览 → 失败原因」：上方待排查数量下降到 308，下方出现**划掉的**「已排查并修复」区块。
+
+## 历史记录：v47 部署内容清单（已完成，仅备查）
 
 **本次会话改动的文件清单**（`git status` 里未提交的那些）：
 - 新增：`src/lib/session-expired-redirect.ts`、`src/lib/video-reference-image-rules.ts`、`scripts/archive-resolved-generation-failures.mjs`、`handover/07-red-error-triage-and-archive.md`、`prisma/migrations/20260727154203_generation_event_resolved/`
 - 修改：`src/lib/error-message.ts`、`src/lib/transient-error.ts`、`src/lib/credits.ts`、`src/lib/openrouter-video.ts`、`src/lib/admin-overview.ts`、`src/app/admin/admin-overview-2.tsx`、`src/app/api/{image,video,chat,agent-plan,conversation-memory}/route.ts`、`src/app/api/workflow-prompt-optimization/rewrite/route.ts`、`src/components/chat-workbench.tsx`、`src/components/workflow-tldraw-canvas-inner.tsx`、`prisma/schema.prisma`、`AGENTS.md` + handover 文档
 
-## ⭐⭐ 接手第一件事：**直接部署，不用再问**（用户 2026-07-28 明确交代）
+## ✅ 已完成：v47 部署（2026-07-28 第八次会话）
 
-积压了**第六 + 第七两次会话**的改动，全部未部署。**用户已经明确说"下一个 AI 直接部署"**，所以接手后不必再确认，按下面顺序做完即可。
+按下面顺序已全部做完（步骤保留，作为以后部署的标准流程参考）：
 
 ### 部署步骤（细节照 `03-deploy-and-servers.md`）
 1. `node scripts/bump-version.mjs`（v46 → **v47**，只在部署测试服这一步 bump）
@@ -39,18 +52,14 @@
 10. ⭐ **「请先登录后再使用模型」17 条**：`credits.ts` 新增 `isUnauthenticatedError()`；**6 个 route**（image/video/chat/agent-plan/conversation-memory/workflow-rewrite）catch 第一句回 **401 且不记 GenerationEvent**；新增 `src/lib/session-expired-redirect.ts` 并插在**两处 `readJson`** 开头 → 401 直接跳首页、不给提示。
 11. ⭐ **「请求失败，请稍后再试。」33 条**（无代码改动）：归档脚本加 `pre-diagnostics-log-unknowable` 规则（三条件：早于 `DIAGNOSTICS_LOG_START`=2026-07-10 + 日志零记录 + 落在兜底文案桶；正式服 dry-run 实测命中 **24 条**，07-10 之后 221 条一条不碰），`findMany` select 补 `createdAt`。
 
-### ⚠️ 部署后必须回归的（第七次会话动了共用错误路径）
-改的都是**错误分支 + `readJson` 开头**，成功路径没动，但因为是 6 个 route + 两个前端咽喉共用，**必须逐一确认正常生成照旧**：
-- 对话流生图 / 生视频、工作流生图 / 生视频、Agent 模式、资产库生成 —— 各跑一次成功用例。
-- 顺手验一个 401 场景：A 浏览器登录后停在工作台，B 浏览器用同账号登录（单会话会顶掉 A），回 A 点生成 → **应该直接跳首页、不弹任何提示、不出红字卡**。
+### ⚠️ 部署后必须回归的（第七次会话动了共用错误路径）→ **仍未做，见文档顶部**
 
-
-**部署完必须做**：在**测试服和正式服各自**容器 `/app` 跑
+**归档已执行完毕（2026-07-28）**：两服容器 `/app` 各跑
 ```bash
 node scripts/archive-resolved-generation-failures.mjs          # 先 dry-run 看条数
 node scripts/archive-resolved-generation-failures.mjs --apply  # 再归档
 ```
-正式服预计归档 **~360 条**（部署后 dry-run 会给准数）：191 参考图尺寸/比例 + 53+13 余额不足 + 51「当前模型不支持这组参数」+ 24 永久不可追溯 + 17 登录失效 + 11 凭证失效 + 若干"没复用旧证"。效果：「服务器繁忙」212 → **~62**、「expected the height/width…」109 → 0、「当前模型不支持这组参数」54 → **3**、「请先登录后再使用模型」17 → **0**、「请求失败，请稍后再试。」33 → **0**。跑完刷新后台确认：上面数量下降 + 下面出现**划掉的**「已排查并修复」区块。
+实际结果：测试服 10 条（剩 36）；**正式服 367 条**（reference-image-size 191 / provider-insufficient-credits 66 / reference-slot-not-an-image 26 / pre-diagnostics-log-unknowable 24 / session-expired 17 / seedream-pro-sequential-param 13 / reference-video-total-duration 12 / stale-asset-card 10 / approved-card-not-reused 8），**剩余未归档 308 条**。
 ⛔ 查正式服记忆：app 容器 = `flashmuse-flashmuse-app-1`；db 容器不能 `psql -U postgres`（role 不存在），查库走 `docker exec <app容器> node -e` + Prisma `$queryRawUnsafe`。
 
 ## ⭐⭐ 接手主线任务：继续排查红字失败原因并修复

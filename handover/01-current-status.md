@@ -2,16 +2,21 @@
 
 > 本批交接文档 2026-07-21 重建。更早的详细流水在 `historical-handover-docs-last-used-2026-07-21/`（尤其 `CHANGELOG.md` 580KB、`01-current-status.md`、`05-next-actions.md`）。遇到需要历史上下文的难题再翻归档。
 
-## 当前状态（2026-07-28 第七次会话更新）
+## 当前状态（2026-07-28 第八次会话更新：v1.0.0.47 已部署两服）
 
-### ⭐⭐ 给下一个 AI：**接手第一件事就是直接部署**（用户 2026-07-28 明确交代）
+### ✅ 四方同步：正式服 = 测试服 = 本地 = GitHub = **`v1.0.0.47`**（commit `9268dab`）
 
-- 本地积压**两次会话**的改动，全部未部署。部署后 = **`v1.0.0.47`**，含 **1 个新 Prisma 迁移** `20260727154203_generation_event_resolved`。线上仍是 `v1.0.0.46`（正式服 = 测试服 = GitHub）。
-- `npx tsc --noEmit` **全绿**；归档脚本本地 dry-run 跑通；版本号**还没 bump**（bump 只在部署测试服那一步做）。
-- **不用再问要不要部署，直接按 `05-next-actions.md` 顶部的步骤走**：先测试服（bump v46→v47）→ 验证 → 再同步正式服 → **两服各自跑归档脚本**。
-- 部署完两服都要跑：`node scripts/archive-resolved-generation-failures.mjs`（先 dry-run 看数）→ `--apply`。正式服预计归档 **~360 条**。
+- 第八次会话只做了一件事：**把积压的第六 + 第七次会话改动完整部署到测试服和正式服**（用户明确要求两服都部署）。
+- 迁移 `20260727154203_generation_event_resolved` **两服 entrypoint 均已 applied**（日志确认 31 migrations found / applied）。
+- 验证：测试服 `x-app-version: v1.0.0.47` + `http://101.37.129.164:8080/` 200；正式服 `x-app-version: v1.0.0.47` + 四域名 main/api/ali/static 全 **200**；两服 `PUBLISHED_APP_VERSION` 已 sed 成 `v1.0.0.47` 并 force-recreate。
+- 正式服备份：`/opt/flashmuse/app-backups/20260728-021857-presync-v47`。
+- **归档脚本两服都已 `--apply` 跑完**：测试服归档 10 条（剩 36 待排查）；**正式服归档 367 条**（`reference-image-size` 191 / `provider-insufficient-credits` 66 / `reference-slot-not-an-image` 26 / `pre-diagnostics-log-unknowable` 24 / `session-expired-recorded-as-failure` 17 / `seedream-pro-sequential-param` 13 / `reference-video-total-duration` 12 / `stale-asset-card` 10 / `approved-card-not-reused` 8），**剩余未归档 308 条**。
+- ⚠️ **仍未做实机点测**：v46/v47 两批功能都没点过（清单见 `05-next-actions.md`），尤其 v47 动了 6 个 route 的错误分支 + 两处 `readJson` 咽喉，**需要各模式各跑一次成功生成 + 验一次 401 跳首页**。
+- ⭐ 下一步主线仍是**继续排查红字**，下一个优先项：**平台拉我们缩略图超时 18 条**（动态 `/api/media-thumbnail` 改静态直链），详见 `07-red-error-triage-and-archive.md`。
 
-### 本次会话（第七次）做完的事：红字排查第 2~5 批，四类红字全部查清
+## 此前状态（2026-07-28 第七次会话）：红字排查第 2~5 批，四类红字全部查清
+
+### 第七次会话做完的事
 
 主线是**继续排查后台「运营概览 → 失败原因」的红字**（方法论全在 `07-red-error-triage-and-archive.md`）。本次查掉四类、共可归档约 200 条：
 

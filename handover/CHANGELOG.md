@@ -2,11 +2,25 @@
 
 > 本批 CHANGELOG 从 2026-07-21 交接文档重建开始记。**此前的全部历史流水**（约 580KB，含 2026-06 起到 07-21 每一次改动/部署细节）在 `historical-handover-docs-last-used-2026-07-21/CHANGELOG.md`，遇到需要历史上下文的难题再翻。
 
-## 2026-07-28（第七次会话）红字排查第 2~5 批：四类红字全部查清（余额不足 / 参考图尺寸第二种措辞 / 参数不支持 54 条 / 登录失效 17 条 / 第二个兜底桶 33 条）—— ⚠️ **全部本地完成、未部署**（与第六次会话那批一起走 v1.0.0.47）；`npx tsc --noEmit` 全绿
+## 2026-07-28（第八次会话）**部署 v1.0.0.47 到测试服 + 正式服**（用户要求两服都部署），并执行归档
 
-> ⭐⭐ **用户交代：下一个 AI 接手第一件事就是直接部署，不用再问。** 部署步骤 + 待部署清单 + 部署后回归项全在 `05-next-actions.md` 顶部。
->
-> 本次会话共查掉 4 类红字、可归档约 **200 条**（累计 ~360 条），沉淀了三条重要认知（两个兜底桶 / 一根因多措辞 / 用 `git log -S` 验证修复时间），详见 `07-red-error-triage-and-archive.md`。
+本次会话零代码改动，只做部署与归档。
+
+1. `node scripts/bump-version.mjs`：v1.0.0.46 → **v1.0.0.47**（只在部署测试服这一步 bump）；`npx tsc --noEmit` 全绿。
+2. **测试服**：tgz 21 个文件（含 `prisma/schema.prisma` + `prisma/migrations/20260727154203_generation_event_resolved/`）→ `/opt/flashmuse-staging/app` → `docker compose up -d --build staging-app`。entrypoint 日志确认 **31 migrations found / `20260727154203_generation_event_resolved` applied**。→ `sync-ali-test.sh` → compose `PUBLISHED_APP_VERSION` sed 成 `v1.0.0.47` + `force-recreate`。验证：`x-app-version: v1.0.0.47`、`127.0.0.1:5001/` 200、`http://101.37.129.164:8080/` 200。
+3. **正式服**：备份 `/opt/flashmuse/app-backups/20260728-021857-presync-v47` → 服务器到服务器 rsync（staging→prod，排除 node_modules/.next/.env.local/.runtime 等）→ `docker compose up -d --build flashmuse-app`（entrypoint 日志确认同一迁移 applied）→ `/tmp/syncali.sh` 同步 `.next/static` 到阿里**正式**镜像 → `PUBLISHED_APP_VERSION` = `v1.0.0.47` + `force-recreate` → 四域名 main/api/ali/static **全 200**、`x-app-version: v1.0.0.47`。**正式服未 bump，原样带号 → 版本号一样 = 代码一样。**
+4. **归档脚本两服各跑一次 dry-run → `--apply`**：
+   - 测试服：待排查 46 → 归档 10（`reference-slot-not-an-image`）→ 剩 **36**。
+   - 正式服：待排查 675 → **归档 367** → 剩 **308**。分布：`reference-image-size` 191、`provider-insufficient-credits` 66、`reference-slot-not-an-image` 26、`pre-diagnostics-log-unknowable` 24、`session-expired-recorded-as-failure` 17、`seedream-pro-sequential-param` 13、`reference-video-total-duration` 12、`stale-asset-card` 10、`approved-card-not-reused` 8。（预估 ~360，实测 367，吻合。）
+5. commit `9268dab` + push GitHub → **四方同步 = v1.0.0.47**。
+6. ⚠️ **遗留：实机回归仍未做**（v46/v47 两批功能都没点测过；v47 动了 6 个 route 错误分支 + 两处 `readJson`，需各模式跑一次成功生成 + 验一次 401 跳首页）。
+
+---
+
+## 2026-07-28（第七次会话）红字排查第 2~5 批：四类红字全部查清（余额不足 / 参考图尺寸第二种措辞 / 参数不支持 54 条 / 登录失效 17 条 / 第二个兜底桶 33 条）—— ✅ **已随 v1.0.0.47 部署两服（第八次会话）**；`npx tsc --noEmit` 全绿
+
+> 本次会话共查掉 4 类红字、可归档约 **200 条**（累计实测 367 条），沉淀了三条重要认知（两个兜底桶 / 一根因多措辞 / 用 `git log -S` 验证修复时间），详见 `07-red-error-triage-and-archive.md`。
+
 
 
 ### 【第 2 批】⭐ 参考图尺寸这一类漏了 109 条：**同一根因、上游第二种措辞**（用户发现）
