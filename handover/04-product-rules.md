@@ -11,7 +11,7 @@
 
 1. **动代码前先评估对既有功能的影响**，有影响先说清、等确认再改（各模式常共用同一份代码）。
 2. **默认只本地不部署**；"部署掉"=只测试服；"部署正式服"才走测试服→整份同步正式服。版本号自增只在部署测试服时跑。
-3. **能统一一律统一**，禁止同一逻辑复制多份各走各的。已有统一入口举例：入库 `media-asset-record.ts`、生成任务/读取 `generation-jobs.ts`、扣费 `credits.ts`(`chargeCredits`)、模型→端点键 `byteplus-provider-key.ts`、参考图 hint `reference-hint.ts`、错误文案 `error-message.ts`、@提及匹配/删除 `mention-text.ts`、上传命名 `upload-name.ts`、图片上传校验 `image-upload-validation.ts`、视频音频上传校验 `media-upload-validation.ts`+`media-upload-probe.ts`、参考组合校验 `upload-rules.ts`、断线判定 `transient-error.ts`、音频波形播放器 `audio-waveform-player.tsx`、@引用资产选择器 `asset-mention-picker.tsx`。新增模型/模式只改统一函数 + `system-settings.ts` 配置表（对称补齐所有前缀 conversation-image/asset-image/agent-image/video/agent-video）。
+3. **能统一一律统一**，禁止同一逻辑复制多份各走各的。已有统一入口举例：入库 `media-asset-record.ts`、生成任务/读取 `generation-jobs.ts`、扣费 `credits.ts`(`chargeCredits`)、模型→端点键 `byteplus-provider-key.ts`、**参考素材 url 归一化 `reference-asset-url.ts`(`normalizeReferenceAssetUrl`：进模型/送审前把动态缩略图接口地址 `/api/media-thumbnail?url=` 和自家主机绝对前缀还原成文件静态直链)**、参考图 hint `reference-hint.ts`、错误文案 `error-message.ts`、登录失效跳转 `session-expired-redirect.ts`、@提及匹配/删除 `mention-text.ts`、上传命名 `upload-name.ts`、图片上传校验 `image-upload-validation.ts`、视频音频上传校验 `media-upload-validation.ts`+`media-upload-probe.ts`、参考组合校验 `upload-rules.ts`、视频参考图尺寸 `video-reference-image-rules.ts`、断线判定 `transient-error.ts`、时长文案 `media-duration-format.ts`、音频波形播放器 `audio-waveform-player.tsx`、视频播放角标 `video-play-badge.tsx`、@引用资产选择器 `asset-mention-picker.tsx`。新增模型/模式只改统一函数 + `system-settings.ts` 配置表（对称补齐所有前缀 conversation-image/asset-image/agent-image/video/agent-video）。
 
 ## 删除/资产规则
 

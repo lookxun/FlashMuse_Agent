@@ -4,15 +4,22 @@
 
 ## 当前状态（2026-07-28 第九次会话更新：v1.0.0.48 已部署两服）
 
-### ✅ 四方同步：正式服 = 测试服 = 本地 = GitHub = **`v1.0.0.48`**（commit `389ad87`）
+### ⭐⭐ 给下一个 AI：**接手第一件事 = 继续排查红字**（用户 2026-07-28 明确交代）
 
-- 第九次会话做的：⭐ **参考素材 url 归一化根治**（详见 CHANGELOG 顶条）。新增唯一权威 `src/lib/reference-asset-url.ts`（`normalizeReferenceAssetUrl`，幂等）：把「给人看的动态缩略图接口地址 `/api/media-thumbnail?url=`」和「自家主机绝对前缀（含已退役马来 IP）」一律还原成**文件静态直链**，8 处咽喉全部接入（image/video/byteplus-assets 三个 route 入口 + `generation-jobs.resolveReferenceUrls` + openrouter/openrouter-video/seedance/video-route 的底层拼址）。无 Prisma 迁移。
+- **不用部署、不用问要不要部署**：本地工作树干净、四方同步 `v1.0.0.48`、无待推、`npx tsc --noEmit` 全绿。
+- 直接按 **`05-next-actions.md` 顶部**的接手指引开始（方法论全在 **`07-red-error-triage-and-archive.md`，必读**）。**正式服剩 308 条待排查。**
+- 下一批最值得查的两个（缩略图那条已确认不占位）：① **40 条「轮询 failed」**（日志已在第六次会话修好会记原文，现在有新数据可捞了）② **gpt-5.4-image-2 中文明文拒绝 ~20 条**（应识别成"模型拒绝"接上已有的 AI 改写重试）。
+
+### ✅ 四方同步：正式服 = 测试服 = 本地 = GitHub = **`v1.0.0.48`**（commit `93252e8`，代码 commit `389ad87`）
+
+- 第九次会话做的：⭐ **参考素材 url 归一化根治**（详见 CHANGELOG 顶条）。新增唯一权威 `src/lib/reference-asset-url.ts`（`normalizeReferenceAssetUrl`，幂等）：把「给人看的动态缩略图接口地址 `/api/media-thumbnail?url=`」和「自家主机绝对前缀（含已退役马来 IP `101.47.19.109`）」一律还原成**文件静态直链**，8 处咽喉全部接入（`api/image`、`api/video`、`api/byteplus-assets` 三个 route 入口 + `generation-jobs.resolveReferenceUrls` + `openrouter.ts`(3)/`openrouter-video.ts`(2)/`seedance.ts`(1)/`video/route.ts` 的底层拼址）。无 Prisma 迁移。
 - 部署：测试服 v48 → **实机回归全过** → 正式服 v48（备份 `20260728-030655-presync-v48`）→ 四域名全 200 → push。
-- **测试服实机回归全过**（用户要求"测过再上正式服"）：对话流生图（带参考图 4/4）、对话流生视频（带参考图 Mini 5秒）、工作流快捷编辑（async job 路径）、**v47 的 401 跳首页 + 不记事件**、两个日志 `media-thumbnail` 计数 0。
-- ⭐⭐ **重要认知修正：「平台拉缩略图超时 18 条」不是 18 个失败事件，而是日志出现次数**。那 18 行全属同一个 requestId，最终 `image-route-success`、GenerationEvent 的 `status = success` → **后台「失败原因」里根本不占位**，所以归档脚本命中 0 属正确结果。**教训：以后从日志 `grep -c` 得到的数字必须回 DB 按 requestId 核对 `status`**，否则会把"中间失败/已重试成功"当成待排查红字。（Bug 本身仍是真的：每次超时白等 10 秒 + 触发 curl 兜底重试链，用户端表现为"转很久"。）
+- **测试服实机回归全过**（用户要求"测过再上正式服"）：对话流生图（带参考图 Seedream 4.5，4/4 成功，日志参考图=`kind:"data"`）、对话流生视频（带参考图 Mini 5秒，参考图=`kind:"generated"` 原图路径）、工作流快捷编辑（async job 路径 `image-job-success`）、**v47 的 401 跳首页 + 不记事件**（清 cookie 后点生成 → 直接跳 `/`、零提示、DB 里「请先登录」失败事件 0 条）、两个日志 `media-thumbnail` 计数 0。
+- ⭐⭐ **重要认知修正：「平台拉缩略图超时 18 条」不是 18 个失败事件，而是日志出现次数**。那 18 行全属同一个 requestId（`id_mq4osh4b_j0yyiyq5:image:0`），最终 `image-route-success`、GenerationEvent 的 `status = success` → **后台「失败原因」里根本不占位**，所以归档脚本命中 0 属正确结果（规则 `platform-download-our-thumbnail-endpoint` 保留备用）。**教训：以后从日志 `grep -c` 得到的数字必须回 DB 按 requestId 核对 `status`**，否则会把"中间失败/已重试成功"当成待排查红字。（Bug 本身仍是真的：每次超时白等 10 秒 + 触发 curl 兜底重试链，用户端表现为"转很久"。）
 - 归档现状（v47 那批已跑完，本次无新增）：测试服剩 **36** 待排查，正式服剩 **308** 待排查。
-- ⚠️ 观察到一次 `PUT /api/workspace-state` 瞬时 **502**（前后同接口都 200，与本次改动无关）。反复出现再查阿里 nginx 超时/腾讯回源。
-- ⭐ 下一步主线仍是**继续排查红字**（正式服 308 条），清单见 `07-red-error-triage-and-archive.md` 第七节；因为缩略图这条已确认不占位，**下一个真正值得查的是「那 40 条轮询 failed」和「gpt 中文明文拒绝 ~20 条」**。
+- ⚠️ 观察到一次 `PUT /api/workspace-state` 瞬时 **502**（前后同接口都 200，`workspace-state` 本次没被碰过）。反复出现再查阿里 nginx 超时/腾讯回源。
+- ⚠️ **v46 那批功能仍未实机点测**（资产库时长角标 / hover 放大 / 工作流视频截图 / 用户中心计数 / 我的积分工作流图标），清单见 `05-next-actions.md`。
+- ⭐ 用户习惯：**叫你测试才测试**，不要每次自动开 Playwright。
 
 ## 此前状态（2026-07-28 第八次会话：部署 v1.0.0.47）
 

@@ -14,11 +14,36 @@
 
 **从日志 `grep -c` 数出来的条数 ≠ 待排查的失败事件数。** 「平台拉缩略图超时 18 条」实际是**同一个 requestId 的 18 行日志**，该请求最终 `image-route-success`、GenerationEvent 的 `status = success` → 后台「失败原因」里根本不占位。**以后拿到日志计数必须回 DB 按 requestId 核对 `status`。**
 
-## ⚠️ 仍待做：v46 那批的实机点测（v47 已验完）
+## ⭐⭐ 下一个 AI 接手第一件事：**继续排查红字**（用户 2026-07-28 明确交代）
 
-**本次会话改动的文件清单**（`git status` 里未提交的那些）：
-- 新增：`src/lib/session-expired-redirect.ts`、`src/lib/video-reference-image-rules.ts`、`scripts/archive-resolved-generation-failures.mjs`、`handover/07-red-error-triage-and-archive.md`、`prisma/migrations/20260727154203_generation_event_resolved/`
-- 修改：`src/lib/error-message.ts`、`src/lib/transient-error.ts`、`src/lib/credits.ts`、`src/lib/openrouter-video.ts`、`src/lib/admin-overview.ts`、`src/app/admin/admin-overview-2.tsx`、`src/app/api/{image,video,chat,agent-plan,conversation-memory}/route.ts`、`src/app/api/workflow-prompt-optimization/rewrite/route.ts`、`src/components/chat-workbench.tsx`、`src/components/workflow-tldraw-canvas-inner.tsx`、`prisma/schema.prisma`、`AGENTS.md` + handover 文档
+**不用部署、不用问要不要部署** —— 本地干净、四方同步、无待推。直接开始排查后台红字。
+
+### 怎么开始（完整方法论在 `07-red-error-triage-and-archive.md`，必读）
+
+一句话流程：**后台看红字 → 拿 requestId 去 `.runtime/*-diagnostics-log.jsonl` 捞真实原文（别信 `failureReason`，它是给用户看的兜底文案）→ 修/堵 → 往 `scripts/archive-resolved-generation-failures.mjs` 的 `RESOLVED_RULES` 加一条规则 → 跑 `--apply` 归档（后台那条文字保留但划掉）。**
+
+**正式服现在剩 308 条待排查。** 按性价比排的下一批（详见 07 文档第六、七节）：
+1. ⭐ **那 40 条「轮询 failed」** —— 第六次会话已把上游原文落盘了（以前只记 `hasError` 布尔），**现在攒了一天新数据，可以去捞了**，大概率是输出侧内容审核（`OutputVideoSensitiveContentDetected` 之类）。
+2. ⭐ **gpt-5.4-image-2 中文明文拒绝（~20 条）** —— 现在走 `image-provider-empty-result` 分支落到「服务器繁忙」兜底桶，应识别成"模型拒绝生成"并**接上已有的「AI 改写重试」入口**。
+3. `empty image result` 7 条（OpenRouter 说成功但没图，看是不是特定 model/参数组合）。
+4. `InvalidParameter.UnsupportedImageFormat` 4 条、DB 事务超时 2 条、`API Key 无效` 4 条（查是哪个渠道）。
+5. 后台列表里其它未归档条目，同一套方法逐条查。
+
+**不要归档的**（平台审核/用户提示词内容，我们修不了，就该一直亮着）：成品被平台拒绝交付 56、模型拒绝 sexu/viol 28+12、版权限制 16、真人隐私敏感 13+6+1、以及新映射出来的「提供商余额不足！请联系管理员充值。」。
+
+### ⛔ 排查前必读的两条硬教训
+
+1. **兜底桶有两个，同一根因会同时污染两个**：`toUserErrorMessage` 的 fallback 是**默认参数** —— 显式传 `GENERIC_MEDIA_ERROR_MESSAGE` 落进「服务器繁忙，请稍候再试.....」，不传落进「**请求失败，请稍后再试。**」。查任何一类**两个桶都要查**。
+2. ⭐ **日志 `grep -c` 出来的条数 ≠ 待排查的失败事件数**（第九次会话踩坑）：「平台拉缩略图超时 18 条」实际是**同一个 requestId 的 18 行日志**，该请求最终 `image-route-success`、GenerationEvent 的 `status = 'success'` → **后台里根本不占位**，归档必然 0 条。**拿到日志计数必须回 DB 按 requestId 核对 `status`**（具体命令在 07 文档第五·B 节）。
+3. **同一根因常有多种上游措辞**：写正则前先把该根因的全部措辞捞全（归一化去重命令在 07 文档第五节）。参考图尺寸就因为只写一种措辞漏了 109 条。
+
+## ⚠️ 另一件仍待做：v46 那批的实机点测（v47/v48 已验完）
+
+v46 里的功能至今没实机点过（v47 那批已在第九次会话验完、v48 本次验完）。建议验：
+1. 资产库视频卡左上角时长（深底白字 mm:ss）、图片/视频缩略图 hover 轻微放大。
+2. 工作流视频节点「视频截图 ▾」三项（图片出现在源视频右侧、标题「视频截图 xxx」、命名递增、同帧重复截提示"图片已存在"）。
+3. 截图后**不刷新**进资产库「上传的资产 · 上传图片」应立刻有。
+4. 用户中心「生成图片/生成视频」计数不再是 0；「我的积分」工作流行显示工作流图标。
 
 ## ✅ 已完成：v47 部署（2026-07-28 第八次会话）
 
