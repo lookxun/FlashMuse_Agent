@@ -12,6 +12,7 @@ import { VideoUploadThumbnail } from "@/components/video-upload-thumbnail";
 import { VideoPlayBadge } from "@/components/video-play-badge";
 import { DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, DEFAULT_IMAGE_QUALITY, GPT_IMAGE2_MODEL_ID, IMAGE_QUALITY_OPTIONS, IMAGE_QUALITY_LABELS, isGptImage2Model, isGptImage2AgentModel, getImageModelSelectHint, bytePlusVideoGenerationModels, frontendConversationModels, frontendImageGenerationModels, getExpectedImageDimensions, getExpectedVideoDimensions, getSupportedImageResolutions, getSupportedVideoRatios, getSupportedVideoResolutions, imageGenerationModels, normalizeImageResolutionForModel, normalizeVideoRatioForModel, normalizeVideoResolutionForModel, videoGenerationModels, type ConversationModel, type GenerationModel, type ModelName } from "@/lib/models";
 import { GENERIC_MEDIA_ERROR_MESSAGE, toUserErrorMessage } from "@/lib/error-message";
+import { handleSessionExpiredResponse, SESSION_EXPIRED_SILENT_ERROR } from "@/lib/session-expired-redirect";
 import { buildReferenceHint } from "@/lib/reference-hint";
 import { getMentionNames as getSharedMentionNames, getMentionRangeForDeletion as getSharedMentionRangeForDeletion, getMentionRanges as getSharedMentionRanges, removeMentionName } from "@/lib/mention-text";
 import { createUploadProgressTracker } from "@/lib/upload-progress";
@@ -19,6 +20,7 @@ import { sanitizeModelOutputText } from "@/lib/text-cleanup";
 import { getUploadKindFromFileName, getUploadRule, getVideoAudioUploadDisabledMessage, validateReferenceTotalDuration, validateVideoReferenceCombination, type UploadKind, type UploadKindRule, type UploadRule, type UploadRuleOverrides } from "@/lib/upload-rules";
 import { IMAGE_UPLOAD_ACCEPT, validateImageUploadFile } from "@/lib/image-upload-validation";
 import { AUDIO_UPLOAD_ACCEPT, MEDIA_DURATION_EPSILON_SECONDS, validateMediaUploadFile, validateMediaUploadMetadata, validateReferenceMediaDurationRange as validateWorkflowMediaDuration, VIDEO_UPLOAD_ACCEPT } from "@/lib/media-upload-validation";
+import { validateVideoReferenceImagesBeforeSend } from "@/lib/video-reference-image-rules";
 import { computeFileContentHashHex, precheckUploadedFileDedup } from "@/lib/upload-content-hash";
 
 export type WorkflowNodeKind = "text" | "image" | "video" | "audio";
@@ -1636,6 +1638,8 @@ function stateKey(value: WorkflowCanvasState) {
 }
 
 async function readJson<T>(response: Response): Promise<T> {
+  // ⭐ 登录状态已失效 → 直接跳首页、不给提示（与对话流同一套，唯一实现在 session-expired-redirect.ts）。
+  if (handleSessionExpiredResponse(response)) throw new Error(SESSION_EXPIRED_SILENT_ERROR);
   const data = await response.json().catch(() => ({})) as { error?: string | { message?: string }; errorCode?: string };
   if (!response.ok) {
     throw new Error(getWorkflowApiErrorMessage(data, GENERIC_MEDIA_ERROR_MESSAGE));
@@ -4464,6 +4468,20 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
         for (const source of getIncomingNodes(node.id)) for (const url of source.data.images ?? []) if (url && source.data.mediaSystemNames?.[url]) referenceImageNameByUrl.set(url, source.data.mediaSystemNames[url]);
         for (const asset of referenceAssets) if (asset.url && asset.name) referenceImageNameByUrl.set(asset.url, asset.name);
         const referenceImageNames = referenceImages.map((url) => referenceImageNameByUrl.get(url) ?? "");
+        // 参考图尺寸/比例发送前拦截（与对话流、服务端共用 video-reference-image-rules 的唯一规则）：
+        // 不合规的图会在平台"素材送审"阶段被拒，以前只会显示成"服务器繁忙"。
+        // 只对 BytePlus 视频模型生效（300–6000px、宽高比 0.4–2.5 是 BytePlus 的硬规则）。
+        const referenceImageSizeError = isWorkflowBytePlusSeedanceVideoModel(model)
+          ? await validateVideoReferenceImagesBeforeSend(
+            referenceImages.map((url) => {
+              const sourceNode = getIncomingNodes(node.id).find((candidate) => (candidate.data.images ?? []).includes(url));
+              const dimensions = sourceNode?.data.imageDimensions?.[url];
+              return { name: referenceImageNameByUrl.get(url), url, width: dimensions?.width, height: dimensions?.height };
+            }),
+            (url) => getStaticMediaUrl(url) ?? url,
+          )
+          : undefined;
+        if (referenceImageSizeError) throw new Error(referenceImageSizeError);
         const createVideoTask = (autoBytePlusAssetReview = false) => fetch("/api/video", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt: modelPrompt, sourcePrompt: prompt, model, settings, referenceImages, referenceImageNames, referenceVideos, referenceAudios, referenceMode: videoReferenceMode, conversationId: workflowId, conversationTitle: workflowTitle, requestId, flow: "workflow", workflowId, workflowNodeId: node.id, metadata: { creditSource: "workflow_video_generation" }, autoBytePlusAssetReview }) }).then((response) => readJson<VideoApiResponse>(response));
         let createData = await createVideoTask();
         if (createData.status === "reviewing" && createData.autoBytePlusAssetReview?.triggered) {

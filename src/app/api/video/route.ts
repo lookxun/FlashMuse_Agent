@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
-import { assertUserCanUseCredits, chargeCredits } from "@/lib/credits";
+import { assertUserCanUseCredits, chargeCredits, isUnauthenticatedError, UNAUTHENTICATED_ERROR_MESSAGE } from "@/lib/credits";
 import { createOpenRouterVideoTask, getBytePlusEffectiveReferenceImages, getOpenRouterVideoTask, type VideoReferenceMode } from "@/lib/openrouter-video";
 import { createCodedApiError } from "@/lib/error-code";
 import { isTransientServerError } from "@/lib/transient-error";
@@ -21,6 +21,7 @@ import { createVideoJob } from "@/lib/generation-jobs";
 import { getBytePlusVideoPricePerMillionUsd } from "@/lib/models";
 import { Prisma } from "@prisma/client";
 import { validateMediaUploadMetadata } from "@/lib/media-upload-validation";
+import { validateVideoReferenceImages } from "@/lib/video-reference-image-rules";
 
 type UsageMeta = {
   promptTokens?: number;
@@ -92,11 +93,39 @@ function isBytePlusHumanReferenceError(value: unknown) {
   return /input(?:image|video|audio)?sensitivecontentdetected|privacyinformation|input (?:image|video|audio).*real person|real person|privacy information|真人|隐私/i.test(message) && !/output|copyright|版权/i.test(message);
 }
 
+/**
+ * 我们库里记着的「审核通行证」（bytePlusAssetId）在平台侧已经不存在了。
+ * 平台原文形如：`The specified asset asset-20260716010752-xmgm6 is not found.`
+ * 这类必须把库里的失效凭证清掉、重新送审，否则同一张图会一直用死凭证、永远失败。
+ */
+function isBytePlusAssetNotFoundError(value: unknown) {
+  const message = value instanceof Error ? value.message : typeof value === "string" ? value : JSON.stringify(value ?? "");
+  return /specified asset\s+\S+\s+is not found|asset\s+asset-[\w-]+\s+is not found/i.test(message);
+}
+
+/** 从平台报错原文里取出所有失效的 assetId（可能一次报多个）。 */
+function getBytePlusMissingAssetIds(value: unknown) {
+  const message = value instanceof Error ? value.message : typeof value === "string" ? value : JSON.stringify(value ?? "");
+  return Array.from(new Set((message.match(/asset-[A-Za-z0-9-]+/g) ?? [])));
+}
+
+/** 清掉失效的审核凭证（下次会自动重新送审并重新记住新的凭证）。 */
+async function clearStaleBytePlusAssetCards(userId: string | undefined, assetIds: string[]) {
+  if (!userId || assetIds.length === 0) return 0;
+  const result = await prisma.userAssetState.updateMany({
+    where: { userId, bytePlusAssetId: { in: assetIds } },
+    data: { bytePlusAssetId: null, bytePlusAssetGroupId: null, bytePlusAssetStatus: null, bytePlusAssetError: null, bytePlusAssetUpdatedAt: new Date() },
+  }).catch(() => ({ count: 0 }));
+  return result.count;
+}
+
 // 输入参考素材（图/视频/音频）被平台真人/隐私/敏感/版权检测拦截时，可通过
 // "先把素材上传为 Skip 审核素材、再以 asset:// 引用" 绕过（与图片走同一套自动审核机制）。
 // 仅输出侧（生成结果本身）的版权/敏感问题无法靠重传输入素材解决，视为不可恢复。
 function isBytePlusRecoverableReferenceError(value: unknown) {
   if (isBytePlusHumanReferenceError(value)) return true;
+  // 审核凭证在平台侧失效 = 重新送审就能救回来（清凭证 + 重新建素材）。
+  if (isBytePlusAssetNotFoundError(value)) return true;
   const message = value instanceof Error ? value.message : typeof value === "string" ? value : JSON.stringify(value ?? "");
   if (/\boutput\b/i.test(message)) return false;
   return /input(?:image|video|audio)?sensitivecontentdetected|copyright|版权/i.test(message);
@@ -273,8 +302,8 @@ function summarizeReviewReferences(references: BytePlusReviewReference[]) {
   return references.map((reference, index) => summarizeVideoReference(reference.url, index, reference.role));
 }
 
-async function autoReviewBytePlusVideoReferences(input: { userId: string | undefined; model: string | undefined; referenceImages: string[]; referenceVideos: string[]; referenceAudios: string[]; requestId?: string; referenceMode?: VideoReferenceMode; settings?: unknown; conversationId?: string; conversationTitle?: string }) {
-  const { userId, model, referenceImages, referenceVideos, referenceAudios, requestId, referenceMode, settings, conversationId, conversationTitle } = input;
+async function autoReviewBytePlusVideoReferences(input: { userId: string | undefined; model: string | undefined; referenceImages: string[]; referenceVideos: string[]; referenceAudios: string[]; requestId?: string; referenceMode?: VideoReferenceMode; settings?: unknown; conversationId?: string; conversationTitle?: string; reuseOnly?: boolean }) {
+  const { userId, model, referenceImages, referenceVideos, referenceAudios, requestId, referenceMode, settings, conversationId, conversationTitle, reuseOnly } = input;
   const reviewReferences: BytePlusReviewReference[] = [
     ...referenceImages.map((url, index) => ({ url, kind: "image" as const, role: getBytePlusReferenceRole(index, referenceMode) })),
     ...referenceVideos.map((url) => ({ url, kind: "video" as const, role: "reference_video" })),
@@ -283,7 +312,7 @@ async function autoReviewBytePlusVideoReferences(input: { userId: string | undef
   if (!userId || !isBytePlusVideoModel(model) || reviewReferences.length === 0) return undefined;
 
   void appendVideoDiagnosticsLog({
-    event: "byteplus-auto-review-start",
+    event: reuseOnly ? "byteplus-auto-review-reuse-check-start" : "byteplus-auto-review-start",
     requestId,
     conversationId,
     conversationTitle,
@@ -304,6 +333,9 @@ async function autoReviewBytePlusVideoReferences(input: { userId: string | undef
   const updates: AutoBytePlusAssetReviewItem[] = [];
   const references: BytePlusReviewReference[] = [];
   let triggered = false;
+  // ⭐ 本次把多少条原始 url 换成了「已过审的 asset:// 通行证」（复用旧证 或 新送审拿到的证）。
+  // 这个计数决定了"值不值得再创建一次任务"：只要换到了证，就必须拿去重试，绝不能白白放弃。
+  let convertedCount = 0;
 
   for (const referenceItem of reviewReferences) {
     const reference = referenceItem.url;
@@ -323,6 +355,7 @@ async function autoReviewBytePlusVideoReferences(input: { userId: string | undef
     if (assetId && status === "Active") {
       void appendVideoDiagnosticsLog({ event: "byteplus-auto-review-reuse-active-asset", requestId, model, provider: "byteplus", referenceMode, references: [{ ...summarizeVideoReference(reference, references.length, referenceItem.role), status, assetId }] });
       references.push({ ...referenceItem, url: `asset://${assetId}` });
+      convertedCount += 1;
       continue;
     }
 
@@ -333,6 +366,12 @@ async function autoReviewBytePlusVideoReferences(input: { userId: string | undef
     }
 
     triggered = true;
+    // ⭐ reuseOnly = 只用"以前已经过审、库里记着的通行证"，不做任何上传/等待。
+    // 一旦发现有素材必须重新送审，就整体放弃（交给后面的完整送审流程去做，那条路才需要给用户弹审核提示）。
+    if (reuseOnly) {
+      void appendVideoDiagnosticsLog({ event: "byteplus-auto-review-reuse-check-needs-review", requestId, model, provider: "byteplus", referenceMode, references: [summarizeVideoReference(reference, references.length, referenceItem.role)] });
+      return undefined;
+    }
     if (!assetId) {
       let publicUrl = "";
       try {
@@ -363,10 +402,14 @@ async function autoReviewBytePlusVideoReferences(input: { userId: string | undef
     const update: AutoBytePlusAssetReviewItem = { url: reference, assetId, groupId: groupId || activeAsset.GroupId, status: "Active" };
     updates.push(update);
     references.push({ ...referenceItem, url: `asset://${assetId}` });
+    convertedCount += 1;
     void appendVideoDiagnosticsLog({ event: "byteplus-auto-review-asset-active", requestId, model, provider: "byteplus", referenceMode, references: [{ ...summarizeVideoReference(reference, references.length - 1, referenceItem.role), status: "Active", assetId }] });
   }
 
-  if (!triggered) return undefined;
+  // ⭐ 只有"一条通行证都没换到"才算送审没做成事（原来这里写的是 `if (!triggered)`：
+  // 当所有参考图早就过审、只走了"复用旧证"分支时 triggered 一直是 false →
+  // 已经拼好的 asset:// 引用被整份丢掉、直接放弃重试 → 用户白白看到"服务器繁忙"。这是个真 bug，已修）。
+  if (convertedCount === 0) return undefined;
   await patchWorkspaceBytePlusAssets(userId, updates).catch((error) => logVideoTiming("BytePlus asset workspace patch failed", { error: error instanceof Error ? error.message : String(error) }));
   void appendVideoDiagnosticsLog({
     event: "byteplus-auto-review-complete",
@@ -380,7 +423,7 @@ async function autoReviewBytePlusVideoReferences(input: { userId: string | undef
     assetReferenceCount: references.filter((reference) => reference.url.startsWith("asset://")).length,
     settings,
     references: summarizeReviewReferences(references),
-    autoReview: { updateCount: updates.length },
+    autoReview: { updateCount: updates.length, convertedCount, reusedOnly: !triggered },
   });
   return {
     referenceImages: references.filter((reference) => reference.kind === "image").map((reference) => reference.url),
@@ -774,6 +817,26 @@ export async function POST(request: Request) {
     const ownedAudioError = await validateOwnedReferences(referenceAudios, "audio");
     if (ownedAudioError) return NextResponse.json({ error: ownedAudioError }, { status: 400 });
     const referenceMode = body.referenceMode;
+    // 服务端兜底：参考图尺寸/比例不合规的直接 400 拦掉（对话流/工作流已在发送前拦，
+    // 这里保证 Agent、资产库、任何入口都拦得住）。规则唯一来源 video-reference-image-rules。
+    if (isBytePlusVideoModel(body.model) && referenceImages.length > 0) {
+      const localReferenceImages = referenceImages.filter((url) => !url.startsWith("asset://"));
+      if (localReferenceImages.length > 0) {
+        const dimensionRows = await prisma.mediaAsset.findMany({
+          where: { normalizedUrl: { in: localReferenceImages.map((url) => normalizeMediaUrlForMatch(url)) } },
+          select: { normalizedUrl: true, width: true, height: true, systemName: true },
+        }).catch(() => []);
+        const dimensionByUrl = new Map(dimensionRows.map((row) => [row.normalizedUrl, row]));
+        const sizeError = validateVideoReferenceImages(localReferenceImages.map((url) => {
+          const row = dimensionByUrl.get(normalizeMediaUrlForMatch(url));
+          return { name: row?.systemName ?? undefined, url, width: row?.width ?? undefined, height: row?.height ?? undefined };
+        }));
+        if (sizeError) {
+          void appendGenerationDiagnosticsLog({ event: "video-route-reference-image-size-rejected", requestId: body.requestId, conversationId: body.conversationId, userId: user?.id, mode: "video", model: body.model, error: sizeError, extra: { referenceImageCount: referenceImages.length } });
+          return NextResponse.json({ error: sizeError }, { status: 400 });
+        }
+      }
+    }
     void appendGenerationDiagnosticsLog({
       event: "video-route-create-start",
       requestId: body.requestId,
@@ -829,6 +892,12 @@ export async function POST(request: Request) {
     try {
       task = await createVideoTaskWithTransientRetry(prompt, modelReferenceImages, body.settings, body.model, { bytePlusProviderKey: getBytePlusProviderKey(body.model, creditSource), referenceMode: body.referenceMode, referenceVideos: modelReferenceVideos, referenceAudios: modelReferenceAudios, requestId: body.requestId });
     } catch (error) {
+      // 我们记的审核通行证在平台侧已失效 → 先把死凭证从库里清掉，后面的送审会重新拿一张新的。
+      if (isBytePlusAssetNotFoundError(error)) {
+        const staleAssetIds = getBytePlusMissingAssetIds(error);
+        const clearedCount = await clearStaleBytePlusAssetCards(user?.id, staleAssetIds);
+        void appendVideoDiagnosticsLog({ event: "byteplus-stale-asset-card-cleared", requestId: body.requestId, model: body.model, provider: "byteplus", referenceMode: body.referenceMode, extra: { staleAssetIds, clearedCount } });
+      }
       if (!isBytePlusRecoverableReferenceError(error) || (effectiveReferenceImages.length === 0 && referenceVideos.length === 0 && referenceAudios.length === 0)) throw error;
       void appendVideoDiagnosticsLog({
         event: "byteplus-create-human-reference-error",
@@ -848,12 +917,22 @@ export async function POST(request: Request) {
         error,
         extra: { autoReviewRequested: Boolean(body.autoBytePlusAssetReview) },
       });
-      if (!body.autoBytePlusAssetReview) return NextResponse.json({ status: "reviewing", autoBytePlusAssetReview: { triggered: true } });
-      logVideoTiming("BytePlus human reference auto review started", { model: body.model, requestId: body.requestId, referenceCount: effectiveReferenceImages.length + referenceVideos.length + referenceAudios.length });
-      autoBytePlusAssetReview = await autoReviewBytePlusVideoReferences({ userId: user?.id, model: body.model, referenceImages: effectiveReferenceImages, referenceVideos, referenceAudios, requestId: body.requestId, referenceMode: body.referenceMode, settings: body.settings, conversationId: body.conversationId, conversationTitle: body.conversationTitle });
-      if (!autoBytePlusAssetReview) throw error;
-      task = await createVideoTaskWithTransientRetry(prompt, autoBytePlusAssetReview.referenceImages, body.settings, body.model, { bytePlusProviderKey: getBytePlusProviderKey(body.model, creditSource), referenceMode: body.referenceMode, referenceVideos: autoBytePlusAssetReview.referenceVideos, referenceAudios: autoBytePlusAssetReview.referenceAudios, requestId: body.requestId });
-      logVideoTiming("BytePlus human reference auto review completed", { model: body.model, requestId: body.requestId, reviewedCount: autoBytePlusAssetReview.updates.length });
+      // ⭐ 第一步：如果这些参考素材**以前就已经过审**（库里有 Active 通行证），直接拿旧证当场重试，
+      // 不上传、不等待、也不给用户弹"检测到真人图片，需要审核"的提示——用户完全无感。
+      // 只有确实存在"必须重新送审"的素材，才走下面的完整送审流程（那条路才需要弹提示）。
+      const reusedReview = await autoReviewBytePlusVideoReferences({ userId: user?.id, model: body.model, referenceImages: effectiveReferenceImages, referenceVideos, referenceAudios, requestId: body.requestId, referenceMode: body.referenceMode, settings: body.settings, conversationId: body.conversationId, conversationTitle: body.conversationTitle, reuseOnly: true });
+      if (reusedReview) {
+        logVideoTiming("BytePlus reusing approved asset cards", { model: body.model, requestId: body.requestId, referenceCount: effectiveReferenceImages.length + referenceVideos.length + referenceAudios.length });
+        autoBytePlusAssetReview = reusedReview;
+        task = await createVideoTaskWithTransientRetry(prompt, reusedReview.referenceImages, body.settings, body.model, { bytePlusProviderKey: getBytePlusProviderKey(body.model, creditSource), referenceMode: body.referenceMode, referenceVideos: reusedReview.referenceVideos, referenceAudios: reusedReview.referenceAudios, requestId: body.requestId });
+      } else {
+        if (!body.autoBytePlusAssetReview) return NextResponse.json({ status: "reviewing", autoBytePlusAssetReview: { triggered: true } });
+        logVideoTiming("BytePlus human reference auto review started", { model: body.model, requestId: body.requestId, referenceCount: effectiveReferenceImages.length + referenceVideos.length + referenceAudios.length });
+        autoBytePlusAssetReview = await autoReviewBytePlusVideoReferences({ userId: user?.id, model: body.model, referenceImages: effectiveReferenceImages, referenceVideos, referenceAudios, requestId: body.requestId, referenceMode: body.referenceMode, settings: body.settings, conversationId: body.conversationId, conversationTitle: body.conversationTitle });
+        if (!autoBytePlusAssetReview) throw error;
+        task = await createVideoTaskWithTransientRetry(prompt, autoBytePlusAssetReview.referenceImages, body.settings, body.model, { bytePlusProviderKey: getBytePlusProviderKey(body.model, creditSource), referenceMode: body.referenceMode, referenceVideos: autoBytePlusAssetReview.referenceVideos, referenceAudios: autoBytePlusAssetReview.referenceAudios, requestId: body.requestId });
+        logVideoTiming("BytePlus human reference auto review completed", { model: body.model, requestId: body.requestId, reviewedCount: autoBytePlusAssetReview.updates.length });
+      }
     }
     const createDoneAt = Date.now();
     const videoError = getVideoErrorMessage(task);
@@ -878,13 +957,26 @@ export async function POST(request: Request) {
           error: videoError,
         });
       }
+      if (isBytePlusAssetNotFoundError(videoError)) {
+        const staleAssetIds = getBytePlusMissingAssetIds(videoError);
+        const clearedCount = await clearStaleBytePlusAssetCards(user?.id, staleAssetIds);
+        void appendVideoDiagnosticsLog({ event: "byteplus-stale-asset-card-cleared", requestId: body.requestId, model: body.model, provider: "byteplus", referenceMode: body.referenceMode, extra: { staleAssetIds, clearedCount, phase: "create-returned-error" } });
+      }
       if (isBytePlusRecoverableReferenceError(videoError) && (effectiveReferenceImages.length > 0 || referenceVideos.length > 0 || referenceAudios.length > 0)) {
-        if (!body.autoBytePlusAssetReview) return NextResponse.json({ status: "reviewing", autoBytePlusAssetReview: { triggered: true } });
-        logVideoTiming("BytePlus human reference auto review started", { model: body.model, requestId: body.requestId, referenceCount: effectiveReferenceImages.length + referenceVideos.length + referenceAudios.length });
-        autoBytePlusAssetReview = await autoReviewBytePlusVideoReferences({ userId: user?.id, model: body.model, referenceImages: effectiveReferenceImages, referenceVideos, referenceAudios, requestId: body.requestId, referenceMode: body.referenceMode, settings: body.settings, conversationId: body.conversationId, conversationTitle: body.conversationTitle });
-        if (autoBytePlusAssetReview) {
-          task = await createVideoTaskWithTransientRetry(prompt, autoBytePlusAssetReview.referenceImages, body.settings, body.model, { bytePlusProviderKey: getBytePlusProviderKey(body.model, creditSource), referenceMode: body.referenceMode, referenceVideos: autoBytePlusAssetReview.referenceVideos, referenceAudios: autoBytePlusAssetReview.referenceAudios, requestId: body.requestId });
-          logVideoTiming("BytePlus human reference auto review completed", { model: body.model, requestId: body.requestId, reviewedCount: autoBytePlusAssetReview.updates.length });
+        // 同上：先试"复用已过审通行证"当场重试（用户无感、不弹审核提示）。
+        const reusedReview = await autoReviewBytePlusVideoReferences({ userId: user?.id, model: body.model, referenceImages: effectiveReferenceImages, referenceVideos, referenceAudios, requestId: body.requestId, referenceMode: body.referenceMode, settings: body.settings, conversationId: body.conversationId, conversationTitle: body.conversationTitle, reuseOnly: true });
+        if (reusedReview) {
+          logVideoTiming("BytePlus reusing approved asset cards", { model: body.model, requestId: body.requestId, referenceCount: effectiveReferenceImages.length + referenceVideos.length + referenceAudios.length });
+          autoBytePlusAssetReview = reusedReview;
+          task = await createVideoTaskWithTransientRetry(prompt, reusedReview.referenceImages, body.settings, body.model, { bytePlusProviderKey: getBytePlusProviderKey(body.model, creditSource), referenceMode: body.referenceMode, referenceVideos: reusedReview.referenceVideos, referenceAudios: reusedReview.referenceAudios, requestId: body.requestId });
+        } else {
+          if (!body.autoBytePlusAssetReview) return NextResponse.json({ status: "reviewing", autoBytePlusAssetReview: { triggered: true } });
+          logVideoTiming("BytePlus human reference auto review started", { model: body.model, requestId: body.requestId, referenceCount: effectiveReferenceImages.length + referenceVideos.length + referenceAudios.length });
+          autoBytePlusAssetReview = await autoReviewBytePlusVideoReferences({ userId: user?.id, model: body.model, referenceImages: effectiveReferenceImages, referenceVideos, referenceAudios, requestId: body.requestId, referenceMode: body.referenceMode, settings: body.settings, conversationId: body.conversationId, conversationTitle: body.conversationTitle });
+          if (autoBytePlusAssetReview) {
+            task = await createVideoTaskWithTransientRetry(prompt, autoBytePlusAssetReview.referenceImages, body.settings, body.model, { bytePlusProviderKey: getBytePlusProviderKey(body.model, creditSource), referenceMode: body.referenceMode, referenceVideos: autoBytePlusAssetReview.referenceVideos, referenceAudios: autoBytePlusAssetReview.referenceAudios, requestId: body.requestId });
+            logVideoTiming("BytePlus human reference auto review completed", { model: body.model, requestId: body.requestId, reviewedCount: autoBytePlusAssetReview.updates.length });
+          }
         }
       }
 
@@ -1050,6 +1142,8 @@ export async function POST(request: Request) {
     void appendGenerationDiagnosticsLog({ event: "video-route-create-success", requestId: body.requestId, conversationId: body.conversationId, conversationTitle: body.conversationTitle, userId: user?.id, mode: "video", provider: isBytePlusVideoModel(body.model) ? "byteplus" : "openrouter", model: body.model, taskId: id, prompt, settings: body.settings, durationMs: Date.now() - routeStartedAt, upstream: task, extra: { autoReviewTriggered: Boolean(autoBytePlusAssetReview), usage: getUsageMeta(task) } });
     return NextResponse.json({ ...task, id, job_id: getCreateTaskId(task), usage: getUsageMeta(task), reservedNames: job.reservedNames ?? undefined, autoBytePlusAssetReview: autoBytePlusAssetReview ? { triggered: true, assets: autoBytePlusAssetReview.updates } : undefined });
   } catch (error) {
+    // ⭐ 登录状态已失效：回 401，前端会直接跳首页；且**不记 GenerationEvent**（这不是生成失败）。详见 credits.ts 注释。
+    if (isUnauthenticatedError(error)) return NextResponse.json({ error: UNAUTHENTICATED_ERROR_MESSAGE }, { status: 401 });
     const referenceImageCount = Array.isArray(body?.referenceImages) ? body.referenceImages.length : 0;
     if (referenceImageCount > 0) {
       void appendUploadRuleFeedbackLog({

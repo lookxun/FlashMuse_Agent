@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
-import { assertUserCanUseCredits, chargeCredits } from "@/lib/credits";
+import { assertUserCanUseCredits, chargeCredits, isUnauthenticatedError, UNAUTHENTICATED_ERROR_MESSAGE } from "@/lib/credits";
 import { generateOpenRouterImage } from "@/lib/openrouter";
 import { createCodedApiError } from "@/lib/error-code";
 import { GENERIC_MEDIA_ERROR_MESSAGE } from "@/lib/error-message";
@@ -98,7 +98,8 @@ export async function POST(request: Request) {
 
     // 后端持久任务模式：建 job 立即返回 jobId，由常驻 worker 跑到底（断开/刷新/重启不影响）。
     if (body.async) {
-      if (!user) return NextResponse.json({ error: "请先登录后再使用模型。" }, { status: 401 });
+      // 兜底防御（正常走不到：上面 assertUserCanUseCredits 已经先抛 401 了）
+      if (!user) return NextResponse.json({ error: UNAUTHENTICATED_ERROR_MESSAGE }, { status: 401 });
       const requestId = body.requestId?.trim();
       if (!requestId) return NextResponse.json({ error: "缺少 requestId" }, { status: 400 });
       const job = await createImageJob({
@@ -216,6 +217,8 @@ export async function POST(request: Request) {
     void recordGenerationEvent({ userId: user?.id, requestId: body.requestId, kind: "image", creditSource, model: body.model, provider: body.model?.startsWith("byteplus:") ? "byteplus" : "openrouter", status: "success", durationMs: Date.now() - routeStartedAt, referenceImageCount: referenceImages.length });
     return NextResponse.json({ ...withChargedUsage(result, credit), images: deliveredImages, imageDimensions: deliveredImageDimensions, requestedImageCount, returnedImageCount: deliveredImages.length, providerReturnedImageCount, billableImageCount, credit });
   } catch (error) {
+    // ⭐ 登录状态已失效：回 401，前端会直接跳首页；且**不记 GenerationEvent**（这不是生成失败）。详见 credits.ts 注释。
+    if (isUnauthenticatedError(error)) return NextResponse.json({ error: UNAUTHENTICATED_ERROR_MESSAGE }, { status: 401 });
     const referenceImageCount = Array.isArray(body?.referenceImages) ? body.referenceImages.length : 0;
     if (referenceImageCount > 0) {
       void appendUploadRuleFeedbackLog({

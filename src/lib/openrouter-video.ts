@@ -39,7 +39,7 @@ export type OpenRouterVideoTask = {
   status?: string;
   unsigned_urls?: string[];
   content?: { video_url?: string; remote_video_url?: string };
-  error?: { message?: string } | string;
+  error?: { message?: string; code?: string | number } | string;
 };
 
 type CreateVideoOptions = {
@@ -71,6 +71,24 @@ async function curlGetJson(url: string, headers: Record<string, string>) {
 
 function getOpenRouterApiKey() {
   return getConfiguredOpenRouterApiKey();
+}
+
+/**
+ * 视频任务返回体里的失败原文摘要（唯一实现，创建/轮询两处日志共用）。
+ *
+ * ⭐ 为什么必须有：以前这两处日志只记 `hasError: true` 这个布尔，
+ * 上游（BytePlus/OpenRouter）真正的失败 code/message 一个字都没落盘 →
+ * 后台概览里那些「服务器繁忙」事后完全查不出真实原因（踩过坑：40 条视频失败查不到根因）。
+ * 所以只要返回体带 error，就把 code + message 原文（截断）一起记进日志。
+ */
+function summarizeVideoTaskError(task: OpenRouterVideoTask) {
+  const raw = task.error;
+  if (!raw) return undefined;
+  if (typeof raw === "string") return { errorMessage: raw.slice(0, 600) };
+  const code = raw.code === undefined || raw.code === null ? undefined : String(raw.code);
+  const message = typeof raw.message === "string" ? raw.message.slice(0, 600) : undefined;
+  if (!code && !message) return { errorRaw: JSON.stringify(raw).slice(0, 600) };
+  return { ...(code ? { errorCode: code } : {}), ...(message ? { errorMessage: message } : {}) };
 }
 
 export function getOpenRouterHeaders(apiKey: string) {
@@ -209,7 +227,7 @@ async function postOpenRouterVideoTask(prompt: string, referenceImages: string[]
   }
 
   const data = (await response.json()) as OpenRouterVideoTask;
-  void appendGenerationDiagnosticsLog({ event: "video-provider-create-success", requestId: options.requestId, mode: "video", provider: "openrouter", model, taskId: data.polling_url ?? data.pollingUrl ?? data.id ?? data.generation_id, status: response.status, prompt, settings, references: referenceImages.map((url, index) => summarizeGeneratedReference(url, index)), durationMs: Date.now() - startedAt, upstream: { status: data.status, hasError: Boolean(data.error), hasUnsignedUrls: Boolean(data.unsigned_urls?.length) } });
+  void appendGenerationDiagnosticsLog({ event: "video-provider-create-success", requestId: options.requestId, mode: "video", provider: "openrouter", model, taskId: data.polling_url ?? data.pollingUrl ?? data.id ?? data.generation_id, status: response.status, prompt, settings, references: referenceImages.map((url, index) => summarizeGeneratedReference(url, index)), durationMs: Date.now() - startedAt, upstream: { status: data.status, hasError: Boolean(data.error), ...summarizeVideoTaskError(data), hasUnsignedUrls: Boolean(data.unsigned_urls?.length) } });
   return data;
 }
 
@@ -288,7 +306,7 @@ async function createBytePlusVideoTask(prompt: string, referenceImages: string[]
   }
 
   const data = (await response.json()) as OpenRouterVideoTask;
-  void appendGenerationDiagnosticsLog({ event: "video-provider-create-success", requestId, mode: "video", provider: "byteplus", model, responseModel: bytePlusModel, taskId: data.id ?? data.generation_id ?? data.polling_url ?? data.pollingUrl, status: response.status, prompt, settings, durationMs: Date.now() - startedAt, upstream: { status: data.status, hasError: Boolean(data.error), hasUnsignedUrls: Boolean(data.unsigned_urls?.length) } });
+  void appendGenerationDiagnosticsLog({ event: "video-provider-create-success", requestId, mode: "video", provider: "byteplus", model, responseModel: bytePlusModel, taskId: data.id ?? data.generation_id ?? data.polling_url ?? data.pollingUrl, status: response.status, prompt, settings, durationMs: Date.now() - startedAt, upstream: { status: data.status, hasError: Boolean(data.error), ...summarizeVideoTaskError(data), hasUnsignedUrls: Boolean(data.unsigned_urls?.length) } });
   return data;
 }
 
@@ -331,7 +349,7 @@ export async function getOpenRouterVideoTask(taskId: string) {
   }
 
   const data = (await response.json()) as OpenRouterVideoTask;
-  void appendGenerationDiagnosticsLog({ event: "video-provider-poll-success", mode: "video", provider: "openrouter", taskId, status: response.status, durationMs: Date.now() - startedAt, upstream: { status: data.status, hasVideoUrl: Boolean(data.content?.video_url || data.unsigned_urls?.length), hasError: Boolean(data.error) } });
+  void appendGenerationDiagnosticsLog({ event: "video-provider-poll-success", mode: "video", provider: "openrouter", taskId, status: response.status, durationMs: Date.now() - startedAt, upstream: { status: data.status, hasVideoUrl: Boolean(data.content?.video_url || data.unsigned_urls?.length), hasError: Boolean(data.error), ...summarizeVideoTaskError(data) } });
   return data;
 }
 
@@ -353,6 +371,6 @@ async function getBytePlusVideoTask(taskId: string) {
   }
 
   const data = (await response.json()) as OpenRouterVideoTask;
-  void appendGenerationDiagnosticsLog({ event: "video-provider-poll-success", mode: "video", provider: "byteplus", taskId, status: response.status, durationMs: Date.now() - startedAt, upstream: { status: data.status, hasVideoUrl: Boolean(data.content?.video_url || data.unsigned_urls?.length), hasError: Boolean(data.error) } });
+  void appendGenerationDiagnosticsLog({ event: "video-provider-poll-success", mode: "video", provider: "byteplus", taskId, status: response.status, durationMs: Date.now() - startedAt, upstream: { status: data.status, hasVideoUrl: Boolean(data.content?.video_url || data.unsigned_urls?.length), hasError: Boolean(data.error), ...summarizeVideoTaskError(data) } });
   return data;
 }

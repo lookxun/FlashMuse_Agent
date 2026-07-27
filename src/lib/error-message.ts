@@ -20,6 +20,16 @@ export function toUserErrorMessage(value: unknown, fallback = "请求失败，�
 
   if (!text) return withErrorCode(fallback);
   if (/system-reminder|operational mode|plan to build|read-only mode|file changes|shell commands/i.test(lower)) return withErrorCode(fallback);
+  // ⭐ BytePlus「素材送审」阶段最常见的三类真实失败（以前全落到"服务器繁忙"，用户完全看不懂）：
+  // 参考图尺寸不合规 / 平台抓不到我们的素材 / 我们记的审核凭证在平台侧已不存在。
+  // 放在最前面判定，避免被后面的 timeout/network 等通用规则抢走。
+  if (/(?:height|width) must be between \d+px and \d+px|expected the (?:height|width) to be (?:at least|at most|between)\s*\d+px/.test(lower)) return withErrorCode("参考图尺寸不符合平台要求（宽和高都需在 300–6000 像素之间），请换一张尺寸更合规的参考图后重试。");
+  if (/failed to download media from the provided url|fetch-object/.test(lower)) return withErrorCode("平台读取参考图失败（素材地址临时不可用），请稍后重试。");
+  if (/specified asset .*is not found|asset .* is not found/.test(lower)) return withErrorCode("参考图在平台上的审核凭证已失效，系统已自动清理并重新送审，请再点一次生成。");
+  // ⭐ 供应商账户余额不足（OpenRouter 402 `Insufficient credits`、OpenAI `insufficient_quota` 等）：
+  // 以前落到"服务器繁忙"，用户以为是我们抖动、会一直重试白花时间。必须说真话让用户来催管理员充值。
+  // 放在限流/额度规则之前，避免被 `quota` 那条抢走。
+  if (/\b402\b|insufficient credits|insufficient_quota|insufficient balance|requires more credits|more credits, or fewer max_tokens|add more using|billing hard limit|exceeded your current quota|account balance|余额不足/.test(lower)) return withErrorCode("提供商余额不足！请联系管理员充值。");
   if (/tokens per min|\btpm\b|request too large for|rate limit|rate_limit|too many requests|请求太频繁/.test(lower)) return withErrorCode("图片服务当前繁忙（限流），请稍后重试。");
   if (/\b413\b|request entity too large|content too large|payload too large|too large/.test(lower)) return withErrorCode("请求内容太大，请减少参考图数量或换用更小的图片后重试。");
   if (/\b401\b|unauthorized|user not found|invalid api key|api key/.test(lower)) return withErrorCode("API Key 无效或已过期，请更新密钥后重试。");
@@ -46,7 +56,12 @@ export function toUserErrorMessage(value: unknown, fallback = "请求失败，�
   if (/copyright|copyright restrictions|related to copyright|版权/.test(lower)) return withErrorCode("生成结果可能涉及版权限制，平台拒绝输出。你可以调整提示词、换参考图或重新生成。");
   if (/sensitive|privacyinformation|real person|privacy|真人|隐私|敏感/.test(lower)) return withErrorCode("参考图可能包含真人或隐私敏感信息，平台拒绝生成。请换一张参考图后重试。");
   if (/aspect ratio must be between/.test(lower)) return withErrorCode("参考图太窄或太长了，当前视频模型无法使用。请换一张比例更接近常规尺寸（如 16:9、9:16、1:1、4:3）的参考图后重试。");
+  // ⭐ 平台返回的不是 JSON 而是 HTML 错误页/网关页（`Unexpected token '<' … is not valid JSON`）：
+  // 这是网关/CDN 抖动，不是参数问题。必须放在下面 `not valid` 规则之前，否则会被误报成
+  // "当前模型不支持这组参数，请换比例、分辨率"，用户按提示去改参数完全没用（2026-07-28 实测 2 条）。
+  if (/unexpected token '<'|is not valid json|unexpected end of json input|<!doctype html|<html/.test(lower)) return withErrorCode("平台服务临时异常（返回了非预期内容），请稍后重试。");
   if (/unsupported size|invalid option|invalid parameter|not valid/.test(lower)) return withErrorCode("当前模型不支持这组参数，请换比例、分辨率或模型后重试。");
+
   // 上游因某个参数不被支持而拒绝（如 gpt background:"transparent" 被拒、参考图数量/分辨率超限等）。
   if (/no provider for|not supported\. accepted|unsupported parameter|requested parameter|does not support the requested/.test(lower)) return withErrorCode("当前模型不支持所请求的参数（如透明背景、该分辨率或参考图数量），请更换模型或调整参数后重试。");
   if (/internal server error|server error|\b500\b/.test(lower)) return withErrorCode("平台服务临时异常，请稍后重试。");

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
-import { assertUserCanUseCredits, chargeCredits } from "@/lib/credits";
+import { assertUserCanUseCredits, chargeCredits, isUnauthenticatedError, UNAUTHENTICATED_ERROR_MESSAGE } from "@/lib/credits";
 import { planAgentTask } from "@/lib/openrouter";
 import { DEFAULT_CHAT_MODEL, isModelName } from "@/lib/models";
 import { createCodedApiError } from "@/lib/error-code";
@@ -62,8 +62,11 @@ export async function POST(request: Request) {
     const credit = user ? await chargeCredits(user.id, "text", result.usage, { conversationId: body.conversationId, conversationTitle: body.conversationTitle, requestId: body.requestId ? `${body.requestId}:plan` : undefined, label: "Agent 规划", model }) : undefined;
 
     return NextResponse.json({ ...withChargedUsage(result, credit), credit });
-  } catch (error) {
-    const uploadSummary = summarizeMessageUploads(body?.messages);
+    } catch (error) {
+      // ⭐ 登录状态已失效：回 401，前端会直接跳首页（不弹提示、不记失败）。详见 credits.ts 注释。
+      if (isUnauthenticatedError(error)) return NextResponse.json({ error: UNAUTHENTICATED_ERROR_MESSAGE }, { status: 401 });
+      const uploadSummary = summarizeMessageUploads(body?.messages);
+
     if (uploadSummary.imageCount > 0 || uploadSummary.documentCount > 0) {
       void appendUploadRuleFeedbackLog({
         source: "agent-plan",

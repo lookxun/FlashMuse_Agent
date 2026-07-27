@@ -2,6 +2,165 @@
 
 > 本批 CHANGELOG 从 2026-07-21 交接文档重建开始记。**此前的全部历史流水**（约 580KB，含 2026-06 起到 07-21 每一次改动/部署细节）在 `historical-handover-docs-last-used-2026-07-21/CHANGELOG.md`，遇到需要历史上下文的难题再翻。
 
+## 2026-07-28（第七次会话）红字排查第 2~5 批：四类红字全部查清（余额不足 / 参考图尺寸第二种措辞 / 参数不支持 54 条 / 登录失效 17 条 / 第二个兜底桶 33 条）—— ⚠️ **全部本地完成、未部署**（与第六次会话那批一起走 v1.0.0.47）；`npx tsc --noEmit` 全绿
+
+> ⭐⭐ **用户交代：下一个 AI 接手第一件事就是直接部署，不用再问。** 部署步骤 + 待部署清单 + 部署后回归项全在 `05-next-actions.md` 顶部。
+>
+> 本次会话共查掉 4 类红字、可归档约 **200 条**（累计 ~360 条），沉淀了三条重要认知（两个兜底桶 / 一根因多措辞 / 用 `git log -S` 验证修复时间），详见 `07-red-error-triage-and-archive.md`。
+
+
+### 【第 2 批】⭐ 参考图尺寸这一类漏了 109 条：**同一根因、上游第二种措辞**（用户发现）
+
+用户在后台看到还有「视频任务创建失败：expected the height to b...」，问是不是也算修复了。查正式服（`flashmuse-flashmuse-app-1` + `/opt/flashmuse/data/runtime/*.jsonl`）结论：
+
+- **是同一个根因**（参考图宽/高 < 300px），只是上游在**不同阶段用了不同措辞**：
+  - 素材**送审**阶段：`Height must be between 300px and 6000px.`（第六次会话查到的 82 条）
+  - **建任务**阶段：`expected the height to be at least 300px, but received a 338x194px image instead`（**109 条**）
+- 这 109 条明细：height 措辞 103（338×194 = 71、338×144 = 24、338×190 = 4、338×191 = 4）+ width 措辞 6（256×144）；**全部 `kind=video / byteplus:video.seedance-2-0-mini / provider=byteplus / 集中在 2026-07-27 一天`**；日志 `video-provider-create-non-ok` 里原文 `{"code":"InvalidParameter","message":"expected the height…","param":"image_url"}`。
+- v47 的发送前拦截（`video-reference-image-rules.ts`）**两种措辞都能挡住**（它判的是真实宽高，不是文案），所以根因已修 → **该归档**。
+- ⛔ **但两条正则都只写了第一种措辞**，直接跑归档抓不到这 109 条。已补：
+  - `src/lib/error-message.ts`：加 `expected the (height|width) to be (at least|at most|between) \d+px` → 同一句中文文案。
+  - 归档脚本 `reference-image-size` 规则的 `match` 同步加上（并把两种措辞写进注释）。
+- ⭐ **归档脚本两处增强**（否则这类永远漏）：
+  1. 匹配文本从"只有日志原文"改成 **日志原文 + `failureReason` 一起匹配** —— 这类错误没被"服务器繁忙"兜底覆盖，英文原文直接进了 `failureReason`；日志文件会轮转/被清，那时只有 DB 这份能认出来。
+  2. 去掉 `requestId IS NOT NULL` 过滤 —— 没有 requestId 的事件现在也能靠 `failureReason` 归档（按自己单独成组）。
+- 归档量预期再涨：**~146 → ~255 条**（191 尺寸/比例 + 53 余额不足 + 11 凭证失效 + 若干没复用旧证）。注意这 109 条**不在"服务器繁忙"212 里**（它有自己的红字），所以归档后是"服务器繁忙 212→~66"**加上**"expected the height 那两条整条消失"。
+
+### 【顺带】⭐ 正式服未归档红字全貌 + 下一批目标（无代码，已写进 07 文档第五/六/七节）
+
+顺手把正式服所有未归档红字和 BytePlus `InvalidParameter` 全部措辞捞了一遍（命令写进 07 文档，以后照抄）。新发现的高价值线索：
+
+- **「当前模型不支持这组参数」54 条** —— 量太高不正常，疑似我们自己传了模型不支持的参数（很可能就是日志里 `sequential_image_generation` 那 39 条）。**下一个优先查。**
+- **「请先登录后再使用模型」17 条** —— 正常用户不该看到，疑似会话/token 过期没自动续。
+- **「请求失败，请稍后再试。」33 条** —— **第二个兜底桶**（`toUserErrorMessage` 默认 fallback），同样查不出原因，要同一套手法深挖。
+- **平台拉我们缩略图超时 18 条** —— `Timeout/Error while downloading url: http://<ip>/api/media-thumbnail?...`，送审给的是动态接口，应改静态直链。
+- 另外未查：`the specified asset is not an image` 26、`UnsupportedImageFormat` 4。
+- ⛔ **踩坑记录（省下一个人的时间）**：正式服 app 容器叫 **`flashmuse-flashmuse-app-1`**（不是 `flashmuse-app`）；db 容器不能用 `psql -U postgres`（role 不存在），查库一律 `docker exec <app容器> node -e` 走 Prisma `$queryRawUnsafe`；**正式服现在还没有 `resolvedAt` 列**（迁移随 v47 才上），所以查询别带那个过滤。
+
+### 【第 3 批】⭐ 排查「当前模型不支持这组参数」54 条 → 51 条可归档 + 修掉一个误映射
+
+用户指定查这 54 条。查法：`docker exec flashmuse-flashmuse-app-1 node` 跑一次性脚本，按 requestId 关联 `.runtime/*.jsonl` 的失败类事件，把上游 message 归一化聚合。结论 —— **全是我们自己的 bug，而且三类都早已修掉**（后台看到的是历史存量）：
+
+| 根因 | 条数 | 最后一次发生 | 修复 commit / 时间 | 归档 |
+|---|---|---|---|---|
+| A) `` `sequential_image_generation` … is not supported by the current model``（`seedream-5-0-pro`，端点 `ep-20260713101732-q5zvf`，image/asset） | 13 | 07-16 **06:21** | `08aa548`（07-16 **18:03**）：给 `"disabled"` 分支补 `supportsSequentialBatch &&` 守卫。根因是 **Seedream 5.0 Pro 连 `sequential_image_generation:"disabled"` 都不接受**，旧代码只要参考图 >1 张就发 | ✅ |
+| B) `` content[N].image_url.url … the specified asset is not an image``（`seedance-2-0`，video/conversation） | 26 | 07-21 **07:45** | **B_252** / v1.0.0.34（07-21 **19:21**）按 `asset.kind` 路由 | ✅ |
+| C) `` video total duration (seconds) … must be ≤ 15.2``（`seedance-2-0`/`-fast`） | 12 | 07-21 **05:57** | **B_232** / v1.0.0.34（同上）Int→Float + 统一 `validateReferenceTotalDuration` | ✅ |
+| D) `gpt-5.4-image-2` 平台返回 HTML → `Unexpected token '<' … is not valid JSON` | 2（07-24、07-27） | 仍在发生 | ⚠️ 见下，**本次修** | ❌ |
+| E) 无日志（07-09，已轮转） | 1 | 07-09 | 查不出 | ❌ |
+
+⭐ **D 类是本次真正修掉的新 bug（两个）**：
+1. `is not valid JSON` 被 `error-message.ts` 里 `/unsupported size|invalid option|invalid parameter|not valid/` 抢走 → 报「当前模型不支持这组参数，请换比例、分辨率或模型」，**用户按提示去改参数完全没用**（真因是平台返回 HTML 错误页）。已在该规则**之前**插入 `unexpected token '<'|is not valid json|unexpected end of json input|<!doctype html|<html` → 「平台服务临时异常（返回了非预期内容），请稍后重试。」
+2. 同样的 `not valid` 让 `transient-error.ts` 的 `isPermanentError` 把它判成**永久失败** → 网关抖动本该服务端自动重连的却直接放弃。已在 `isPermanentError` **开头做例外先行 return false**，并在 `isTransientServerError` 里加同一批关键词 → 判为可重试。实测：`(B_401) …Unexpected token '<'…` → 「平台服务临时异常…」+ `transient=true`。
+
+归档脚本新增 3 条规则 `seedream-pro-sequential-param` / `reference-slot-not-an-image` / `reference-video-total-duration`，实测 A/B/C 精准命中，D 与中文文案不误伤。**归档量预期 ~255 → ~306 条**，「当前模型不支持这组参数」54 → **3**。
+
+⭐ **方法论沉淀（已写进 07 文档第三·B 节末）**：判断"是否真的修好了"不能只看"代码里现在有守卫"（守卫可能是后来加的），必须 `git log -S "<关键代码片段>" --date=iso` 拿到**修复 commit 的精确时间**，再和该根因**最后一次发生时间**对比。A/B/C 三类最后一次都在修复上线前、此后 7~12 天零复发 → 才敢归档。
+
+### 【第 4 批】⭐ 排查并修复「请先登录后再使用模型。」17 条 —— 状态码错了，导致前端所有"未登录跳首页"保护失效
+
+**数据**：17 条全部 `userId=NULL`、`image/conversation`、model 恒为默认 `seedream-4-5`、参考图 0 张，requestId 是我们前端生成的 `id_<base36时间>_<随机>`（**真实浏览器，不是爬虫**），时间是 **3~5 次连击**（07-17 07:26 五连、07-21 06:50 三连、07-25 三连…），北京时间都在白天。
+
+**为什么"明明登录了"却说没登录**：登录 = 房卡（cookie）+ 前台记录（DB `Session` 行），服务器只认前台记录。本项目是**单会话策略** —— `createSession` 里 `session.deleteMany({ where: { userId } })`，**新设备登录会删掉该用户所有旧会话**。电脑上开着的工作台房卡还在、页面看着一切正常（头像/积分是加载时取的），但前台记录没了 → 点生成被拒。另两种：24h 未活动过期、账号停用。⭐ **单会话是有意设计（用户确认：多会话会导致两端同时生成等更多错误），不改。**
+
+**真正的 bug（链条）**：
+1. `assertUserCanUseCredits` 里 `if (!user) throw new Error("请先登录后再使用模型。")` —— 普通 Error
+2. 掉进各 route 通用 catch → 编号 B_xxx → **返回 500** + `recordGenerationEvent(status:"failed")` 记红字
+3. ⛔ 前端 5 处"未登录自动跳首页"的保护**只认 401** → 全部不触发
+4. 用户只看到红字失败卡、没有任何登录引导 → 连点 3~5 次；后台被污染 17 条
+5. `/api/image` 那句 `if (!user) return ...401` 写在 assert **后面**，永远执行不到
+
+同样写法 **6 个 route**：`image`/`video`/`chat`/`agent-plan`/`conversation-memory`/`workflow-prompt-optimization/rewrite` → 所有模式都会中。
+
+**修法（产品约定：不给任何提示，一操作就跳首页 —— 用户 2026-07-28 拍板）**：
+- `src/lib/credits.ts` 新增唯一权威 `UNAUTHENTICATED_ERROR_MESSAGE`（"登录状态已失效，请重新登录后再试。"）/ `createUnauthenticatedError()` / **`isUnauthenticatedError()`**；assert 改抛带 `code:"UNAUTHENTICATED"` 的错误。
+- 6 个 route 的 catch **第一句**统一判它 → 回 **401** 且**不记 GenerationEvent**（不是生成失败，不该进失败统计）。
+- 新增唯一权威 `src/lib/session-expired-redirect.ts`：`handleSessionExpiredResponse()`（401 → `replace("/")`）+ 哨兵 `SESSION_EXPIRED_SILENT_ERROR`。
+- **插在两处 `readJson` 开头**（`chat-workbench.tsx` / `workflow-tldraw-canvas-inner.tsx`，是 **43 处调用的咽喉**）→ 对话流/工作流任何请求拿到 401 都直接跳首页，不用改 12 个 fetch 站点。
+- `isAbortLikeError` 认哨兵 → 跳转瞬间不闪红字卡；chat-workbench 原有 4 处手写 401 跳转收敛成调共享函数。
+- 归档规则 `session-expired-recorded-as-failure`（match `请先登录后再使用模型`；实测不误伤「积分不足…」和新文案）。
+- ⚠️ **遗留分叉未处理**：`readJson` 两份的**错误文案构建方式不同**（`toUserErrorMessage` vs `getWorkflowApiErrorMessage` 会补 `errorCode` 前缀），本次只统一了 401 守卫，没合并整个函数（合并会改错误文案行为，风险高）。
+
+归档量预期 **~306 → ~323 条**。`npx tsc --noEmit` 全绿。
+
+### 【第 5 批】⭐ 排查「请求失败，请稍后再试。」33 条 —— 发现"第二个兜底桶"，全部归档（无代码改动）
+
+**数据**：33 条全是 `image` + `provider=openrouter` + `openai/gpt-5.4-image-2`(20) / `-agent`(13)，日期只有 **07-24（13）、07-06（12）、07-09（8）**。
+
+- **07-24 的 13 条**：日志里全是 `Insufficient credits` = OpenRouter 余额不足 → **现有 `provider-insufficient-credits` 规则已覆盖，不用加新规则**。
+- **07-06 / 07-09 的 20 条**：日志里**一行都没有** —— 诊断日志文件最早一行是 `2026-07-10T19:56`（正式服 07-11 才从马来迁到腾讯云，旧日志没带过来）→ **永久不可追溯**。且确认**不是余额不足**：那两天 OpenRouter 图片成功 188 / 111 条（账户有钱），日志里 `Insufficient credits` 只出现在 07-21 与 07-24。
+
+⭐⭐ **最重要的发现：有两个兜底桶，同一个根因会同时污染两个。**
+`toUserErrorMessage(value, fallback = "请求失败，请稍后再试。")` 的 fallback 是**默认参数** —— 调用处显式传 `GENERIC_MEDIA_ERROR_MESSAGE` 就落进「服务器繁忙」，不传就落进「请求失败」（gpt-image 走的 `getOpenRouterError`（`openrouter.ts:772`）属于后者）。所以**余额不足这一个根因：53 条进了"服务器繁忙"、13 条进了"请求失败"**。⛔ 以后排查任何一类，**两个桶都要查**。已写进 07 文档第一节和第三·D 节。
+
+⭐ **另一个结构性事实**：`toUserErrorMessage` 在这条链上**被套了两层** —— 内层 `getOpenRouterError` 先把上游原文压成兜底文案（`图片生成失败：请求失败，请稍后再试。`），外层再处理时**原文已被吃掉**，任何规则都不可能再匹配。所以这个桶天生"从 DB 里绝对查不出根因"，只能靠诊断日志。**不用改代码**：诊断日志已经记了上游 body（这次 13 条就是靠它查出来的），缺的只是 07-10 之前那段历史；而新加的 402 规则在**内层**就命中，余额不足以后两个桶都不会再进。
+
+**新增归档规则 `pre-diagnostics-log-unknowable`（用户 2026-07-28 拍板 B 方案）**：留着查不动的只会让人反复来查同一批，归档后「待排查」才真正代表**还有希望查的**。判定**三个条件必须同时成立**（别放宽）：① `createdAt < 2026-07-10`（`DIAGNOSTICS_LOG_START`）② 两个日志文件里一行都搜不到该 requestId ③ `failureReason` 命中 `GENERIC_FALLBACK_PATTERN`（服务器繁忙 / 请求失败）。
+配套改动：`findMany` 的 select 补上 `createdAt`。
+
+**正式服 dry-run 验证**（专门写脚本核对，未写库）：命中 **24 条** = 20 条「请求失败」+ 4 条「服务器繁忙」（07-05 2 / 07-06 13 / 07-09 9；模型 `gpt-5.4-image-2` 21 + `seedance-2-0` 3）；**07-10 之后的 221 条兜底桶事件一条都没碰**。归档后：「请求失败」33 → **0**，「服务器繁忙」再少 4 条。
+
+### 【教训】同一根因常有多种上游措辞
+
+以后每查一类，**必须先把该根因在正式服的全部措辞捞全再写正则**，别只按看到的那一条写。归一化去重命令已写进 07 文档第五节。
+
+### 【第 1 批】供应商余额不足（OpenRouter 402）不再兜底成"服务器繁忙"
+
+背景：正式服「服务器繁忙，请稍候再试.....」212 条里第二大类 = **OpenRouter 402 `Insufficient credits`（53 条）**，账户真没钱，但用户看到的是"服务器繁忙"→ 以为是我们抖动、反复重试白花时间，管理员也不知道要充值。
+
+- **`src/lib/error-message.ts`（唯一入口，全模式生效）** 新增一条判定，**位置在限流/`quota` 规则之前**（否则会被 `429|quota` 那条抢走）：
+  `402 | insufficient credits | insufficient_quota | insufficient balance | requires more credits | more credits, or fewer max_tokens | add more using | billing hard limit | exceeded your current quota | account balance | 余额不足`
+  → **「提供商余额不足！请联系管理员充值。」**（`(B_xxx)` 前缀由既有 `withErrorCode` 自动带上，所以用户看到的是「(B_xxx) 提供商余额不足！请联系管理员充值。」）
+- **`src/lib/transient-error.ts`** 的 `isPermanentError` 加同一批关键词 → 这类**不再被 `isTransientServerError` 判为可恢复**，服务端不再自动退避重试（以前会白烧几次）。
+- **`scripts/archive-resolved-generation-failures.mjs`** 新增规则 `provider-insufficient-credits`（match 用文本特征 + `"status|statusCode|code": 402`，**故意不用裸 `\b402\b`**，因为它匹配的是整段日志 JSON，裸 402 会被 `"width":402` 之类误伤）。
+- ⭐ **归档标准澄清（2026-07-28 用户口述，已写进 AGENTS.md 铁律 + 07 文档开头）**：**归档的对象本质是「服务器繁忙」这个兜底桶**（没被明确识别的错误全落进它，它是一堆无关根因的混合体）。判定只问"**这个根因还落在兜底桶里吗**"：①修好了→归档；②没修但**已映射成明确文案**→归档；③没查清/修不了、仍在桶里→留着亮；④**映射出去后新形成的那条明确原因本身→不归档**（修不了就该一直亮着，且已不污染兜底桶）。所以本次归档的理由不是"我们修了余额问题"，而是"**它已经从兜底桶里被拆出去了**"；而新出现的「提供商余额不足！请联系管理员充值。」以后不归档。
+- 归档量预期：~93 → **~146 条**（82 尺寸不合规 + 53 余额不足 + 11 凭证失效 + 若干"没复用旧证"）；「服务器繁忙」212 → **~66**。
+- 本地验证（tsx 直跑三种真实原文）：`(B_312) …Insufficient credits…` / `402 …requires more credits…` / `…exceeded your current quota…` 三条全部输出「提供商余额不足！请联系管理员充值。」且 `isTransientServerError=false`。
+
+## 2026-07-27（第六次会话）线上资产远程 url 排查 + 红字失败原因深挖并修 4 处 + 参考图尺寸发送前拦截 + 失败原因归档机制 —— ⚠️ **全部本地完成、未部署**（部署后是 v1.0.0.47）；`npx tsc --noEmit` 全绿；**有 1 个新 Prisma 迁移**
+
+> 详细的排查方法论、已修/待修清单、归档规则全部整理进新文档 **`07-red-error-triage-and-archive.md`**（排查线上报错必读，别重复踩坑）。
+
+### ① 正式服「资产是否都下载到本地」排查 —— 用户拍板 C（先不管）
+- 8181 条 MediaAsset：本地化 7560（92.4%）、**远程 url 621**（其中已归档 524、**未归档仍显示在资产库 97**：96 图 + 1 视频）。`posterUrl`/`thumbnailUrl` 远程的 0 条。
+- 远程记录时间全部落在 **2026-06-05 ~ 06-21**，之后一条没有；本地化最新到 07-27 → **现在的落盘链路是好的，不会再产生**。
+- 抽样 HEAD 全部失效：火山 tos 签名 **403**、OpenRouter **401** → **救不回来**（无法重新下载）。
+- 受影响用户：`lixxix50@gmail.com` 64 条、`3676478@qq.com` 24 条、`312876953@qq.com` 1 条，其余 8 条零散。
+- 给了 A（归档隐藏）/B（加失效角标）/C（不管）三个方案，**用户选 C：先不管了**。
+
+### ② ⭐⭐ 红字「服务器繁忙，请稍候再试.....」212 条深挖 → 找到真实根因并修 4 处
+**关键认知（写进 07 文档）**：`failureReason` 存的是给用户看的文案，"服务器繁忙"是 `toUserErrorMessage` 没匹配上时的兜底 → **从它本身查不出任何东西**，真实原因只能去 `.runtime/*-diagnostics-log.jsonl` 按 requestId/taskId 捞原文，而且**要看最终抛出的那条**（早期的 `create-non-ok` body 会把"送审阶段被拒"误判成"风控拦截"，本次踩过）。
+
+查出的真实构成：参考图**尺寸/比例不合规 82**（Height 56 / Aspect 23 / Width 3）、**OpenRouter 余额不足 53**、轮询到 failed 但原因没落盘 40、审核**凭证失效 11**、`empty image result` 7、gpt 中文明文拒绝 4、DB 事务超时 2。
+
+修了 4 处：
+1. **补日志（根子）**：`video-provider-poll-success` / `create-success` 两处以前**只记 `hasError: true` 布尔**，上游 code/message 全丢 → 那 40 条永远查不出。新增唯一实现 `summarizeVideoTaskError()`（`openrouter-video.ts`），4 个日志点都带上 code + message（截断 600），并给 `OpenRouterVideoTask.error` 类型补 `code` 字段。
+2. **⭐ `!triggered` 真 bug**：`autoReviewBytePlusVideoReferences` 原来用 `triggered`（只有"新办卡"才算干活）判断送审是否有效。**当所有参考图早就过审、只走"复用旧证"分支时 triggered 恒为 false → 已经拼好的 `asset://` 引用被整份丢掉、直接放弃重试 → 用户白白看到"服务器繁忙"**。改成看 `convertedCount`（换到证就必须拿去重试）。
+3. **已过审的图第二次不再弹蓝字**（用户当初的设计）：给送审函数加 `reuseOnly` 模式（纯查库、不上传不等待）。被拦后先只用现成通行证**当场无感重试**；只有确实有素材要新送审才返回 `{status:"reviewing"}`（那才该弹「检测到真人图片，需要审核」）。创建抛错、创建返回 error 两条路径都加了。
+4. **死卡自愈**：平台报 `The specified asset asset-xxx is not found` 时，以前会拿着死凭证一直失败。新增 `isBytePlusAssetNotFoundError` / `getBytePlusMissingAssetIds` / `clearStaleBytePlusAssetCards`，**自动清空库里失效的 bytePlusAssetId/GroupId/Status** 并纳入"可恢复错误"→ 重新送审拿新证记住。
+5. **错误文案不再骗人**（`error-message.ts` 唯一入口，放最前面避免被 timeout/network 抢走）：尺寸不合规 / 平台读取参考图失败 / 凭证失效 三类各给真话。
+
+### ③ 参考图尺寸/比例**发送前**拦截 + 黑底提示（用户明确要求）
+- 新增唯一权威 `src/lib/video-reference-image-rules.ts`：常量（宽高 **300–6000px**、宽高比 **0.4–2.5**）+ `validateVideoReferenceImageDimensions/…Images/…BeforeSend` + 浏览器端 `measureImageDimensions`。**量不到宽高时不拦**（宁可让平台判，也不能因为读不到就把用户挡死）。
+- 文案带上是哪张图、当前多大、要求多少，例：`参考图「xxx」太窄或太长了（1200×200，宽高比 6.00）。生视频要求宽高比在 0.4–2.5 之间（如 16:9、9:16、1:1、4:3），请换一张比例更常规的图。`
+- 三处接上同一规则：**对话流** `sendMessage`（→ `showInputTip()` 黑底提示 + 中止发送，不扣积分不发请求）、**工作流** `runVideoNode`（抛同样文案）、**服务端** `api/video/route`（从 `MediaAsset.width/height` 读尺寸，不合规直接 400 + 同文案 + 记 `video-route-reference-image-size-rejected` 日志，兜住 Agent/资产库/任何入口）。
+- **只对 BytePlus 视频模型生效**（这是 BytePlus 的硬规则，不能拿它拦 kling/veo）；`asset://` 引用跳过。
+
+### ④ ⭐ 后台「失败原因」归档机制（用户要求：排查掉一批就自动归档、划掉但保留文字）
+- **新迁移 `20260727154203_generation_event_resolved`**：`GenerationEvent` 加 `resolvedAt` / `resolvedNote` + 索引 `(status, resolvedAt)`。
+- `admin-overview.ts`：`failureTop` 只统计 `resolvedAt IS NULL`；新增 `failureResolvedTop`（按「原因 + resolvedNote」分组）；`moderationBreakdown` 同样只统计未归档。
+- `admin-overview-2.tsx`：`RankTable` 加 `strikethrough` 参数；「失败原因」卡片下方新增「已排查并修复（已归档，不计入上面数量）」区块 → **灰色 `line-through` 划掉、文字保留**，小字显示归档说明。
+- **`B_xxx` 编号计数器与归档完全无关，继续自增。**
+- 新增 `scripts/archive-resolved-generation-failures.mjs`（dry-run 默认 / `--apply` / `--undo`）：**按诊断日志里的真实原文**（不是 failureReason）判定归档，规则表 `RESOLVED_RULES` 是唯一入口，目前 3 条（参考图尺寸、凭证失效、`!triggered` bug；后者用事件序列特征判定）。本地 dry-run：39 条待归档、命中 0（本地无线上日志，正常）。
+- **不归档的**：OpenRouter 余额不足这种运营问题（真没钱）必须一直亮着提醒充值。
+
+### 本次会话踩的坑（记住）
+- 别拿早期 provider 报错 body 当最终根因（会把 82 次"尺寸不合规"误判成"真人风控"）。
+- 视频轮询失败事件**没有 requestId**，要先拿 `taskId` 再捞日志。
+- 一次性脚本必须 `docker cp` 进容器 `/app` 跑（容器里才有 `@prisma/client`）；跑完删掉。
+- `prisma generate` 在本地会因 dev server 占着 `query_engine-windows.dll` 报 EPERM → 先停 dev server 再 generate 再重启。
+- ⚠️ 我曾用 `Remove-Item tmp\audit-*.js` 误删了 4 个**已被 git 跟踪**的历史排查脚本，已 `git checkout` 还原。清理临时文件前先看 `git status`。
+
 ## 2026-07-27（第五次会话）资产库视频卡时长角标 + 缩略图 hover 放大 + 时长/封面全量回填 —— ✅ **已部署测试服与正式服 `v1.0.0.46`**（四方同步）；`npx tsc --noEmit` 全绿；**无 Prisma 迁移**
 
 ### ① 资产库右侧视频卡左上角显示时长

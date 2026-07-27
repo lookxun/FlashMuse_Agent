@@ -110,8 +110,37 @@ export function getChargeEnabled(settings: Awaited<ReturnType<typeof getCreditSe
   return settings.chargeText;
 }
 
+/**
+ * ⭐「登录状态已失效」唯一权威（2026-07-28 加）
+ *
+ * 为什么要单独立一类：本项目是**单会话策略**（`createSession` 每次登录会删掉该用户所有旧会话），
+ * 所以用户在另一台设备登录后，旧页面手里的 cookie 就作废了，但页面自己不知道（头像/积分都还在）。
+ * 这时点生成，服务端查不到会话 → 抛这个错。
+ *
+ * ⛔ 历史 bug（正式服 17 条红字）：这个错以前是普通 Error，掉进各 route 的**通用 catch** →
+ * 被当成"生成失败"记进 GenerationEvent 且**返回 500**。而前端所有"未登录自动跳首页"的保护
+ * （chat-workbench 里 5 处）都只认 **401** → 全部不触发 → 用户看到红字、连点 3~5 次。
+ *
+ * 所以：**必须返回 401，且不记 GenerationEvent**（这不是生成失败）。前端收到 401 会直接
+ * `window.location.replace("/")` 跳首页，不弹任何提示 —— 这是既有设计，无需额外文案。
+ */
+export const UNAUTHENTICATED_ERROR_MESSAGE = "登录状态已失效，请重新登录后再试。";
+const UNAUTHENTICATED_ERROR_CODE = "UNAUTHENTICATED";
+
+export function createUnauthenticatedError() {
+  const error = new Error(UNAUTHENTICATED_ERROR_MESSAGE);
+  (error as Error & { code?: string }).code = UNAUTHENTICATED_ERROR_CODE;
+  return error;
+}
+
+/** 各 route 的 catch 里第一句就判它：命中 → 回 401 + 不记失败事件。 */
+export function isUnauthenticatedError(value: unknown): boolean {
+  return value instanceof Error && (value as Error & { code?: string }).code === UNAUTHENTICATED_ERROR_CODE;
+}
+
 export async function assertUserCanUseCredits(user: { credits?: number | null } | null, kind: CreditKind, metadata?: Prisma.InputJsonValue) {
-  if (!user) throw new Error("请先登录后再使用模型。");
+  if (!user) throw createUnauthenticatedError();
+
   const settings = await getCreditSettings();
   if (getChargeEnabled(settings, kind, metadata) && (user.credits ?? 0) <= 0) throw new Error("积分不足，请充值后再使用模型。");
 }

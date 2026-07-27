@@ -103,6 +103,7 @@ import {
 } from "react-icons/ri";
 import { ADVANCED_CHAT_MODEL, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, DEFAULT_IMAGE_QUALITY, IMAGE_QUALITY_OPTIONS, IMAGE_QUALITY_LABELS, isGptImage2Model, getImageModelSelectHint, classifyImageResolutionByModel, bytePlusVideoGenerationModels, frontendConversationModels, frontendImageGenerationModels, getExpectedImageDimensions, getExpectedVideoDimensions, getImageQualityBadgeLabel, getImageResolutionLabel, getSupportedImageResolutions, getSupportedVideoRatios, getSupportedVideoResolutions, imageGenerationModels, isNonStandardVideoSize, normalizeImageResolutionForModel, normalizeVideoRatioForModel, normalizeVideoResolutionForModel, videoGenerationModels, type ConversationModel, type GenerationModel, type ModelName } from "@/lib/models";
 import { toUserErrorMessage } from "@/lib/error-message";
+import { handleSessionExpiredResponse, SESSION_EXPIRED_SILENT_ERROR } from "@/lib/session-expired-redirect";
 import { buildReferenceHint } from "@/lib/reference-hint";
 import { getMentionRangeForDeletion as getSharedMentionRangeForDeletion, getMentionRanges as getSharedMentionRanges, removeMentionName, replaceMentionName } from "@/lib/mention-text";
 import { createUploadProgressTracker } from "@/lib/upload-progress";
@@ -114,6 +115,7 @@ import { VideoUploadThumbnail } from "@/components/video-upload-thumbnail";
 import { VideoPlayBadge } from "@/components/video-play-badge";
 import { MediaDurationBadge } from "@/components/media-duration-badge";
 import { parseChineseDurationSeconds } from "@/lib/media-duration-format";
+import { validateVideoReferenceImagesBeforeSend } from "@/lib/video-reference-image-rules";
 import { WorkflowCanvas, type WorkflowCanvasState, type WorkflowNode } from "@/components/workflow-tldraw-canvas";
 import { getSupportedUploadTypeLabel, getUploadAcceptValue, getUploadKindFromFileName, getUploadRule, getVideoAudioUploadDisabledMessage, validateReferenceTotalDuration, validateVideoReferenceCombination, type UploadRuleOverrides } from "@/lib/upload-rules";
 import { sanitizeModelOutputText } from "@/lib/text-cleanup";
@@ -6720,6 +6722,9 @@ function AssetUploadDialog({
 }
 
 async function readJson<T>(response: Response): Promise<T & { error?: ApiError }> {
+  // ⭐ 登录状态已失效（单会话被新登录顶掉/过期）→ 直接跳首页，不给任何提示（用户 2026-07-28 拍板）。
+  // 唯一实现在 session-expired-redirect.ts；跳转期间抛一个错终止后续流程，用户看不到它。
+  if (handleSessionExpiredResponse(response)) throw new Error(SESSION_EXPIRED_SILENT_ERROR);
   let data: T & { error?: ApiError };
 
   try {
@@ -6744,6 +6749,8 @@ async function readJson<T>(response: Response): Promise<T & { error?: ApiError }
 }
 
 function isAbortLikeError(error: unknown) {
+  // 会话失效正在跳首页时抛的哨兵错误，等同"已中止"——不要渲染成红字失败卡（页面马上就走了）。
+  if (error instanceof Error && error.message === SESSION_EXPIRED_SILENT_ERROR) return true;
   return error instanceof DOMException && error.name === "AbortError";
 }
 
@@ -9634,10 +9641,7 @@ export function ChatWorkbench() {
     setAssetsLoadStatus("loading");
     try {
       const { response, data } = await fetchJsonWithRetry<{ state?: WorkspaceStatePayload | null }>(`/api/workspace-state?assetsOnly=1&assetFilter=${encodeURIComponent(filter)}&assetOffset=${offset}&assetLimit=30`, { cache: "no-store" }, 2, 45_000);
-      if (response.status === 401) {
-        window.location.replace("/");
-        return;
-      }
+      if (handleSessionExpiredResponse(response)) return;
       const state = data.state ?? {};
       const nextAssets = Array.isArray(state.assets)
         ? applyAssetGenerationSystemNames(applySessionMediaSystemNamesToAssets(normalizeStoredAssets(state.assets).map((asset) => replaceAssetMediaUrls(asset, legacyMediaUrlReplacements)), sessionsRef.current))
@@ -9830,10 +9834,7 @@ export function ChatWorkbench() {
     if (!workflowId) return;
     try {
       const { response, data } = await fetchJsonWithRetry<{ assets?: AssetItem[] }>(`/api/media-assets?workflowId=${encodeURIComponent(workflowId)}`, { cache: "no-store" }, 2, 30_000);
-      if (response.status === 401) {
-        window.location.replace("/");
-        return;
-      }
+      if (handleSessionExpiredResponse(response)) return;
       const nextAssets = Array.isArray(data.assets)
         ? applyAssetGenerationSystemNames(applySessionMediaSystemNamesToAssets(normalizeStoredAssets(data.assets).map((asset) => replaceAssetMediaUrls(asset, legacyMediaUrlReplacements)), sessionsRef.current))
         : [];
@@ -10122,7 +10123,7 @@ export function ChatWorkbench() {
       if (now - authActivityPingRef.current < 60_000) return;
       authActivityPingRef.current = now;
       void fetch("/api/auth/activity", { method: "POST", cache: "no-store", keepalive: true }).then((response) => {
-        if (!cancelled && response.status === 401) window.location.replace("/");
+        if (!cancelled) handleSessionExpiredResponse(response);
       }).catch(() => undefined);
     };
     activityEvents.forEach((eventName) => window.addEventListener(eventName, recordActivity, { passive: true, capture: true }));
@@ -10138,7 +10139,7 @@ export function ChatWorkbench() {
     const keepGenerationAlive = () => {
       authActivityPingRef.current = Date.now();
       void fetch("/api/auth/activity", { method: "POST", cache: "no-store", keepalive: true }).then((response) => {
-        if (!cancelled && response.status === 401) window.location.replace("/");
+        if (!cancelled) handleSessionExpiredResponse(response);
       }).catch(() => undefined);
     };
     keepGenerationAlive();
@@ -13322,6 +13323,24 @@ export function ChatWorkbench() {
       const referenceComboError = validateVideoReferenceCombination({ modelId: generationModelsForSubmit.video, referenceMode: directVideoReferenceMode, imageCount: referenceImages.length, videoCount: referenceVideos.length, audioCount: referenceAudios.length });
       if (referenceComboError) {
         showInputTip(referenceComboError);
+        setSessionSending(sessionId, false);
+        return;
+      }
+      // 参考图尺寸/比例不合规的，发送前就拦住并说清原因（否则会在平台"素材送审"阶段被拒，
+      // 用户只能看到一句没用的"服务器繁忙"）。只对 BytePlus 视频模型生效——300–6000px、
+      // 宽高比 0.4–2.5 是 BytePlus 的硬规则，别的模型不能拿它拦人。规则与工作流、服务端共用。
+      const referenceImageSizeError = isBytePlusSeedanceVideoModel(generationModelsForSubmit.video)
+        ? await validateVideoReferenceImagesBeforeSend(
+          namedImageReferences.map((reference) => {
+            const matchedAsset = assets.find((asset) => normalizeMediaUrlForMatch(asset.url) === normalizeMediaUrlForMatch(reference.url));
+            const dimensions = getPreviewMetaDimensions(matchedAsset?.previewMeta);
+            return { name: reference.name, url: reference.url, width: dimensions?.width, height: dimensions?.height };
+          }),
+          (url) => getStaticMediaUrl(url) ?? url,
+        )
+        : undefined;
+      if (referenceImageSizeError) {
+        showInputTip(referenceImageSizeError);
         setSessionSending(sessionId, false);
         return;
       }

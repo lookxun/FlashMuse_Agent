@@ -31,6 +31,8 @@ export type AdminOverviewData = {
   funnel: Array<{ label: string; value: number }>;
   modelCalls: Array<{ label: string; calls: number; failed: number; note: string }>;
   failureTop: Array<{ label: string; value: number }>;
+  /** 已归档（根因已修复/已堵漏）的失败原因，后台划掉展示、不计入待处理数量 */
+  failureResolvedTop: Array<{ label: string; value: number; note?: string }>;
   moderationBreakdown: Array<{ label: string; value: number }>;
   perUser: Split[];
   newVsOld: ShareItem[];
@@ -253,12 +255,19 @@ export async function getAdminOverviewData(): Promise<AdminOverviewData> {
     FROM "GenerationEvent" GROUP BY 1 ORDER BY calls DESC`);
   const modelCalls = genModelRows.filter((row) => row.model).map((row) => ({ label: guessModelLabel(row.model as string), calls: num(row.calls), failed: num(row.failed), note: /video|seedance|kling|hailuo|wan|veo/i.test(row.model as string) ? "视频" : "图片" }));
 
+  // 「失败原因」只统计**未归档**的（resolvedAt IS NULL）。根因查清并修掉后由归档脚本打上
+  // resolvedAt，那部分改到下面 failureResolvedTop 里划掉展示（文字保留，便于追溯）。
   const genFailureRows = await safeRows(() => prisma.$queryRaw<Array<{ reason: string | null; count: bigint }>>`
-    SELECT regexp_replace(regexp_replace("failureReason", '^\\(B_[0-9]+\\)\\s*', ''), '^(图片平台没有返回图片)：.*$', '\\1（模型未产出或拒绝生成）') AS reason, COUNT(*)::bigint AS count FROM "GenerationEvent" WHERE "status" = 'failed' AND "failureReason" IS NOT NULL GROUP BY 1 ORDER BY count DESC`);
+    SELECT regexp_replace(regexp_replace("failureReason", '^\\(B_[0-9]+\\)\\s*', ''), '^(图片平台没有返回图片)：.*$', '\\1（模型未产出或拒绝生成）') AS reason, COUNT(*)::bigint AS count FROM "GenerationEvent" WHERE "status" = 'failed' AND "failureReason" IS NOT NULL AND "resolvedAt" IS NULL GROUP BY 1 ORDER BY count DESC`);
   const failureTop = genFailureRows.map((row) => ({ label: (row.reason as string).slice(0, 80), value: num(row.count) }));
 
+  // 已归档（根因已修）的失败原因：按「原因 + 归档说明」分组，后台划掉展示。
+  const genResolvedFailureRows = await safeRows(() => prisma.$queryRaw<Array<{ reason: string | null; note: string | null; count: bigint }>>`
+    SELECT regexp_replace(regexp_replace("failureReason", '^\\(B_[0-9]+\\)\\s*', ''), '^(图片平台没有返回图片)：.*$', '\\1（模型未产出或拒绝生成）') AS reason, "resolvedNote" AS note, COUNT(*)::bigint AS count FROM "GenerationEvent" WHERE "status" = 'failed' AND "failureReason" IS NOT NULL AND "resolvedAt" IS NOT NULL GROUP BY 1,2 ORDER BY count DESC`);
+  const failureResolvedTop = genResolvedFailureRows.map((row) => ({ label: (row.reason as string).slice(0, 80), value: num(row.count), note: row.note ?? undefined }));
+
   const genModerationRows = await safeRows(() => prisma.$queryRaw<Array<{ reason: string | null; count: bigint }>>`
-    SELECT regexp_replace(regexp_replace("failureReason", '^\\(B_[0-9]+\\)\\s*', ''), '^(图片平台没有返回图片)：.*$', '\\1（模型未产出或拒绝生成）') AS reason, COUNT(*)::bigint AS count FROM "GenerationEvent" WHERE "status" = 'failed' AND "moderation" = true AND "failureReason" IS NOT NULL GROUP BY 1 ORDER BY count DESC LIMIT 8`);
+    SELECT regexp_replace(regexp_replace("failureReason", '^\\(B_[0-9]+\\)\\s*', ''), '^(图片平台没有返回图片)：.*$', '\\1（模型未产出或拒绝生成）') AS reason, COUNT(*)::bigint AS count FROM "GenerationEvent" WHERE "status" = 'failed' AND "moderation" = true AND "failureReason" IS NOT NULL AND "resolvedAt" IS NULL GROUP BY 1 ORDER BY count DESC LIMIT 8`);
   const moderationBreakdown = genModerationRows.map((row) => ({ label: (row.reason as string).slice(0, 80), value: num(row.count) }));
 
   const genLatencyRows = await safeRows(() => prisma.$queryRaw<Array<{ model: string | null; avg: number | null }>>`
@@ -448,6 +457,7 @@ export async function getAdminOverviewData(): Promise<AdminOverviewData> {
     funnel,
     modelCalls,
     failureTop,
+    failureResolvedTop,
     moderationBreakdown,
     perUser,
     newVsOld,

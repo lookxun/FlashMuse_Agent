@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
-import { assertUserCanUseCredits, chargeCredits } from "@/lib/credits";
+import { assertUserCanUseCredits, chargeCredits, isUnauthenticatedError, UNAUTHENTICATED_ERROR_MESSAGE } from "@/lib/credits";
 import { createCodedApiError } from "@/lib/error-code";
 import { DEFAULT_CHAT_MODEL, isModelName } from "@/lib/models";
 import { sendToOpenRouter } from "@/lib/openrouter";
@@ -52,6 +52,8 @@ export async function POST(request: Request) {
 
     return NextResponse.json({ summary: result.content.trim(), usage: result.usage, credit });
   } catch (error) {
+    // ⭐ 登录状态已失效：回 401，前端会直接跳首页（不弹提示）。详见 credits.ts 注释。
+    if (isUnauthenticatedError(error)) return NextResponse.json({ error: UNAUTHENTICATED_ERROR_MESSAGE }, { status: 401 });
     const codedError = await createCodedApiError(error, "长期记忆摘要失败，请稍后再试。", `conversation-memory failed model=${body?.model ?? DEFAULT_CHAT_MODEL} requestId=${body?.requestId ?? ""}`);
     return NextResponse.json(codedError, { status: 500 });
   }

@@ -157,16 +157,17 @@ function DistributionBars({ items }: { items: ShareItem[] }) {
   );
 }
 
-function RankTable({ items }: { items: RankItem[] }) {
+function RankTable({ items, strikethrough = false }: { items: RankItem[]; strikethrough?: boolean }) {
   return (
     <div className="space-y-2">
       {items.length > 0 ? items.map((item, index) => (
         <div key={`${item.label}-${index}`} className="flex items-center justify-between gap-3 rounded-[10px] bg-[#f8f8f8] px-3 py-2 text-[13px]">
           <div className="min-w-0">
-            <div className="truncate font-medium text-[#333333]">{index + 1}. {item.label}</div>
+            {/* 已归档的原因：文字保留但划掉（line-through），方便对照历史、追溯根因 */}
+            <div className={`truncate font-medium ${strikethrough ? "text-[#9a9a9a] line-through decoration-[#c0c0c0]" : "text-[#333333]"}`}>{index + 1}. {item.label}</div>
             {item.note ? <div className="mt-0.5 truncate text-[11px] text-[#999999]">{item.note}</div> : null}
           </div>
-          <div className="shrink-0 font-semibold text-[#111111]">{item.value}</div>
+          <div className={`shrink-0 font-semibold ${strikethrough ? "text-[#9a9a9a] line-through decoration-[#c0c0c0]" : "text-[#111111]"}`}>{item.value}</div>
         </div>
       )) : <EmptyHint />}
     </div>
@@ -502,6 +503,12 @@ export function AdminOverview2({ data }: { data: AdminOverviewData }) {
         </CardShell>
         <CardShell title="失败原因" subtitle="全部原因 · 从多到少">
           <RankTable items={data.failureTop.map((item) => ({ label: item.label, value: n(item.value) }))} />
+          {data.failureResolvedTop.length > 0 ? (
+            <div className="mt-4 border-t border-[#eeeeee] pt-3">
+              <div className="mb-2 text-[12px] font-medium text-[#999999]">已排查并修复（已归档，不计入上面数量）</div>
+              <RankTable items={data.failureResolvedTop.map((item) => ({ label: item.label, value: n(item.value), note: item.note }))} strikethrough />
+            </div>
+          ) : null}
         </CardShell>
         <div className="space-y-4">
           <CardShell title="最近活跃用户 Top 5">

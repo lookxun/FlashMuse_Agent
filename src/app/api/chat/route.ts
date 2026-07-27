@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
-import { assertUserCanUseCredits, chargeCredits, recordCreditFailure } from "@/lib/credits";
+import { assertUserCanUseCredits, chargeCredits, isUnauthenticatedError, recordCreditFailure, UNAUTHENTICATED_ERROR_MESSAGE } from "@/lib/credits";
 import { toUserErrorMessage } from "@/lib/error-message";
 import { sendToOpenRouter } from "@/lib/openrouter";
 import { DEFAULT_CHAT_MODEL, isModelName } from "@/lib/models";
@@ -102,8 +102,11 @@ export async function POST(request: Request) {
     const credit = user ? await chargeCredits(user.id, "text", result.usage, { conversationId: body.conversationId, conversationTitle: body.conversationTitle, requestId: body.requestId ? `${body.requestId}:chat` : undefined, label: body.mode === "agent" ? "Agent 回复" : body.mode === "general" ? "通用回复" : "提示词整理", model, metadata: mergeChatCreditMetadata(body.metadata, { outputPrompt: result.content ?? "" }) }) : undefined;
 
     return NextResponse.json({ ...withChargedUsage(result, credit), credit });
-  } catch (error) {
-    const uploadSummary = summarizeMessageUploads(body?.messages);
+    } catch (error) {
+      // ⭐ 登录状态已失效：回 401，前端会直接跳首页（不弹提示、不记失败）。详见 credits.ts 注释。
+      if (isUnauthenticatedError(error)) return NextResponse.json({ error: UNAUTHENTICATED_ERROR_MESSAGE }, { status: 401 });
+      const uploadSummary = summarizeMessageUploads(body?.messages);
+
     if (uploadSummary.imageCount > 0 || uploadSummary.documentCount > 0) {
       void appendUploadRuleFeedbackLog({
         source: "chat",

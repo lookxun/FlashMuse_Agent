@@ -20,12 +20,17 @@ function toMessage(value: unknown): string {
 /** 永久失败（重试无意义）：审核拒绝、参数错误、鉴权、地区、模型拒绝/无输出等。 */
 function isPermanentError(message: string): boolean {
   const lower = message.toLowerCase();
+  // ⚠️ 例外先行：平台返回 HTML 错误页导致的 JSON 解析失败（`Unexpected token '<' … is not valid JSON`）
+  // 是网关抖动、**可重试**。它含 "not valid" 会被下面参数规则误判成永久失败 → 必须先放行。
+  if (/unexpected token '<'|is not valid json|unexpected end of json input|<!doctype html/.test(lower)) return false;
   // 审核 / moderation（真人·隐私·敏感·版权）——走送审机制，不属于断线重连
   if (/real person|privacy|privacyinformation|sensitive|copyright|真人|隐私|敏感|版权/.test(lower)) return true;
   // 参数 / 尺寸 / 比例 / 模型无效
   if (/invalid parameter|invalid option|unsupported size|not a valid model|aspect ratio must be between|not valid/.test(lower)) return true;
   // 鉴权 / 地区
   if (/\b401\b|unauthorized|invalid api key|\bapi key\b|\b403\b|not available in your region/.test(lower)) return true;
+  // 供应商账户余额不足（OpenRouter 402 / OpenAI insufficient_quota）——重试只是白烧时间，必须报给用户去催充值
+  if (/\b402\b|insufficient credits|insufficient_quota|insufficient balance|requires more credits|exceeded your current quota|billing hard limit|余额不足/.test(lower)) return true;
   // 模型拒绝生成 / 内容被过滤 / 无输出（GPT 拒绝类）
   if (/content.*filtered|filtered|no output|completed with no output|抱歉，我不能|没有返回图片|没有返回视频/.test(lower)) return true;
   // 内容 / 安全审核拒绝（OpenAI safety system 等）——base64/重试都没用，永久失败
@@ -56,6 +61,8 @@ export function isTransientServerError(value: unknown): boolean {
   if (/failed to download media|please check if the link is accessible|write to client error|transaction api error|unable to start a transaction|asset .*is not found|not found/.test(lower)) return true;
   // 限流（退避后重试）
   if (/\b429\b|rate limit|rate_limit|too many requests|请求太频繁|限流/.test(lower)) return true;
+  // 平台返回 HTML/非 JSON（网关、CDN 错误页）——重排队重试大概率就好了
+  if (/unexpected token '<'|is not valid json|unexpected end of json input|<!doctype html/.test(lower)) return true;
   // curl 传输层抖动（但 curl 未安装 ENOENT 属配置问题，不算瞬时）
   if (/schannel|command failed/.test(lower) && !/enoent|spawn\s+curl/.test(lower)) return true;
 

@@ -2,7 +2,76 @@
 
 > 本批交接文档 2026-07-21 重建。更早的详细流水在 `historical-handover-docs-last-used-2026-07-21/`（尤其 `CHANGELOG.md` 580KB、`01-current-status.md`、`05-next-actions.md`）。遇到需要历史上下文的难题再翻归档。
 
-## 当前状态（2026-07-27 第五次会话更新）
+## 当前状态（2026-07-28 第七次会话更新）
+
+### ⭐⭐ 给下一个 AI：**接手第一件事就是直接部署**（用户 2026-07-28 明确交代）
+
+- 本地积压**两次会话**的改动，全部未部署。部署后 = **`v1.0.0.47`**，含 **1 个新 Prisma 迁移** `20260727154203_generation_event_resolved`。线上仍是 `v1.0.0.46`（正式服 = 测试服 = GitHub）。
+- `npx tsc --noEmit` **全绿**；归档脚本本地 dry-run 跑通；版本号**还没 bump**（bump 只在部署测试服那一步做）。
+- **不用再问要不要部署，直接按 `05-next-actions.md` 顶部的步骤走**：先测试服（bump v46→v47）→ 验证 → 再同步正式服 → **两服各自跑归档脚本**。
+- 部署完两服都要跑：`node scripts/archive-resolved-generation-failures.mjs`（先 dry-run 看数）→ `--apply`。正式服预计归档 **~360 条**。
+
+### 本次会话（第七次）做完的事：红字排查第 2~5 批，四类红字全部查清
+
+主线是**继续排查后台「运营概览 → 失败原因」的红字**（方法论全在 `07-red-error-triage-and-archive.md`）。本次查掉四类、共可归档约 200 条：
+
+| 红字 | 条数 | 结论 | 归档后 |
+|---|---|---|---|
+| OpenRouter 余额不足（混在两个兜底桶里） | 53 + 13 | 映射成「提供商余额不足！请联系管理员充值。」+ 不再自动重试 | 拆出兜底桶 |
+| 视频任务创建失败：`expected the height/width…` | 109 | **同一根因的第二种上游措辞**，v47 发送前拦截本来就挡得住，只是正则漏了 | 109 → **0** |
+| 当前模型不支持这组参数 | 54 | 51 条是我们自己的 bug 且都早已修掉；另修一个误映射 | 54 → **3** |
+| 请先登录后再使用模型 | 17 | **状态码错了**（500 该是 401），前端所有跳登录保护全失效 | 17 → **0** |
+| 请求失败，请稍后再试。 | 33 | 13 余额不足 + 20 条 07-10 前永久不可追溯 | 33 → **0** |
+
+### 本次改动的代码（全部只动错误分支，成功路径零改动）
+
+1. **`src/lib/error-message.ts`**（唯一入口，全模式生效）新增 3 类判定：
+   - 供应商余额不足（`402` / `insufficient credits` / `insufficient_quota` / `exceeded your current quota` …）→ 「提供商余额不足！请联系管理员充值。」**位置必须在限流/`quota` 规则之前**，否则被抢走。
+   - 参考图尺寸的**第二种措辞** `expected the (height|width) to be at least \d+px`（原来只认 `must be between \d+px and \d+px`）。
+   - 平台返回 HTML 错误页 `Unexpected token '<' | is not valid JSON | <!doctype html` → 「平台服务临时异常（返回了非预期内容），请稍后重试。」**必须放在 `not valid` 规则之前**。
+2. **`src/lib/transient-error.ts`**：余额不足列入 `isPermanentError`（不再白烧重试）；HTML/非 JSON 响应做**例外先行 return false** + 列入可重试（以前被 `not valid` 误判成永久失败，网关抖动直接放弃）。
+3. **`src/lib/credits.ts`**：新增唯一权威 `UNAUTHENTICATED_ERROR_MESSAGE` / `createUnauthenticatedError()` / **`isUnauthenticatedError()`**；`assertUserCanUseCredits` 改抛带 `code:"UNAUTHENTICATED"` 的错误。
+4. **6 个 route 的 catch 第一句**统一判 `isUnauthenticatedError` → 回 **401 且不记 GenerationEvent**：`image` / `video` / `chat` / `agent-plan` / `conversation-memory` / `workflow-prompt-optimization/rewrite`。
+5. **新增 `src/lib/session-expired-redirect.ts`**（唯一权威）：`handleSessionExpiredResponse()`（401 → `window.location.replace("/")`）+ 哨兵 `SESSION_EXPIRED_SILENT_ERROR`。插在**两处 `readJson`**（`chat-workbench.tsx` / `workflow-tldraw-canvas-inner.tsx`，**43 处调用的咽喉**）开头 → 一行覆盖全部生成请求，不用改 12 个 fetch 站点；`isAbortLikeError` 认哨兵 → 跳转瞬间不闪红字；chat-workbench 原有 4 处手写 401 跳转收敛成调共享函数。
+6. **`scripts/archive-resolved-generation-failures.mjs`** 新增 5 条规则（`provider-insufficient-credits` / `seedream-pro-sequential-param` / `reference-slot-not-an-image` / `reference-video-total-duration` / `session-expired-recorded-as-failure` / `pre-diagnostics-log-unknowable`）+ 两处结构性增强：**匹配文本 = 日志原文 + `failureReason`**（有些错误原文直接进了 failureReason，日志会轮转）、去掉 `requestId IS NOT NULL` 过滤；select 补 `createdAt`。
+
+### ⭐⭐ 本次沉淀的三条重要认知（下一个 AI 必须知道）
+
+1. **兜底桶有两个，同一个根因会同时污染两个**：`toUserErrorMessage` 的 fallback 是**默认参数** —— 显式传 `GENERIC_MEDIA_ERROR_MESSAGE` 落进「服务器繁忙，请稍候再试.....」，不传落进「**请求失败，请稍后再试。**」。余额不足就是 53 + 13 同时污染。**排查任何一类，两个桶都要查。**
+2. **同一根因常有多种上游措辞**：写正则前必须先把该根因在正式服的**全部措辞捞全**（归一化去重命令在 07 文档第五节）。参考图尺寸就因为只写了一种措辞，漏了 109 条。
+3. **判断"是否真的修好了"不能只看代码里现在有守卫**（守卫可能是后来才加的）：必须 `git log -S "<关键代码片段>" --date=iso` 拿到**修复 commit 的精确时间**，再对比该根因**最后一次发生的时间**。
+
+### ⚠️ 遗留 / 未做
+
+- **`readJson` 两份分叉**（chat-workbench / workflow）**错误文案构建方式不同**（`toUserErrorMessage` vs `getWorkflowApiErrorMessage` 会补 `errorCode` 前缀）。本次只统一了 401 守卫，**没合并整个函数**（合并会改错误文案的实际显示，风险高，要先做影响评估）。
+- **单会话策略一行没动** —— 用户 2026-07-28 明确：**是有意设计**（多会话会导致两端同时生成等更多错误），不要改。
+- 下一批还有查的价值的：⭐**平台拉我们缩略图超时 18 条**（`Timeout while downloading url: http://<ip>/api/media-thumbnail?...`，送审给的是动态接口，应改静态直链）、`UnsupportedImageFormat` 4 条、gpt 中文明文拒绝约 20 条（应识别成"模型拒绝"接上已有的 AI 改写重试）。
+
+### ⛔ 查正式服的踩坑记忆（省下一个人的时间）
+
+- app 容器叫 **`flashmuse-flashmuse-app-1`**（不是 `flashmuse-app`）；测试服是 `flashmuse-staging-staging-app-1`。
+- db 容器**不能** `psql -U postgres`（role 不存在）→ 查库一律 `sudo docker exec <app容器> node -e "..."` 走 Prisma `$queryRawUnsafe`。
+- **正式服现在还没有 `resolvedAt` 列**（随 v47 才上），部署前查询别带 `resolvedAt` 过滤，否则报 `42703`。
+- **诊断日志最早一行是 `2026-07-10T19:56`**（正式服 07-11 才从马来迁腾讯云）→ 更早的失败永久查不出。
+- 一次性脚本：`scp` 到 `/tmp` → `docker cp` 进容器 `/app` → `node` 跑 → 删掉。PowerShell 里内联双引号/`$()`/中文会坏，写 `.sh` 再 `sed -i 's/\r$//'`。
+
+## 此前状态（2026-07-27 第六次会话）
+
+- ⚠️⭐ **本地有一批未部署的改动**（部署后是 `v1.0.0.47`，含 **1 个新 Prisma 迁移** `20260727154203_generation_event_resolved`）。**线上仍是 `v1.0.0.46`（正式服 = 测试服 = GitHub）**，本地版本号还没 bump（部署测试服那一步才 bump）。`npx tsc --noEmit` 全绿。
+- **第六次会话做的**（详见 CHANGELOG 顶部 + ⭐ 新文档 `07-red-error-triage-and-archive.md`）：
+  1. **正式服"资产是否都本地化"排查**：8181 条里远程 url 621（未归档仍显示的 97 条，签名全失效救不回来），全部是 2026-06 的历史遗留、现在链路正常。**用户拍板 C：先不管。**
+  2. ⭐⭐ **红字「服务器繁忙」212 条深挖**：查出真实构成（参考图尺寸/比例不合规 82、OpenRouter 余额不足 53、轮询 failed 原因没落盘 40、审核凭证失效 11、empty image 7、gpt 中文拒绝 4、DB 事务超时 2），并修 4 处：**补上轮询/创建失败的上游原文日志**（原来只记 `hasError` 布尔）、**`!triggered` 真 bug**（已过审素材没被复用就放弃重试）、**已过审图第二次不再弹蓝字**（`reuseOnly` 预检 + 无感重试）、**死卡自愈**（凭证失效自动清理重送审）；错误文案新增 3 类真话。
+  3. **参考图尺寸/比例发送前拦截 + 黑底提示**：新增唯一规则 `src/lib/video-reference-image-rules.ts`（300–6000px、0.4–2.5），对话流 / 工作流 / 服务端三处共用，只对 BytePlus 视频模型生效。
+  4. ⭐ **后台失败原因「归档」机制**（用户要求：排查掉一批就归档、划掉但保留文字）：DB 加 `resolvedAt`/`resolvedNote`；后台上面只算未归档、下面新增划掉的「已排查并修复」区；新增 `scripts/archive-resolved-generation-failures.mjs`（规则表 `RESOLVED_RULES` 是唯一入口）。**`B_xxx` 编号继续自增，与归档无关。**
+- ⭐ **下一个 AI 的主线任务 = 继续排查红字并修复**，方法论 / 已修清单 / 待查清单 / 归档流程全在 **`handover/07-red-error-triage-and-archive.md`**，照着做即可无缝衔接。
+- ⚠️ v46 里第二~五次会话的功能**多数仍没实机点测过**（清单见 `05-next-actions.md`）。
+- ⭐ 正式服有一条历史僵尸 video job（ID_686996 / requestId `d049d7ad...`）按用户交代**未清**。
+- ⭐ 用户习惯：**叫你测试才测试**，不要每次自动开 Playwright。
+- ⛔ **改中文文档/源码只能用 edit/write 工具**（PowerShell `Set-Content` 会把 UTF-8 中文按 GBK 写回、文件报废）。
+- ⛔ **Turbopack 不重编 `globals.css`**：本地改样式没反应时删掉整个 `.next` 再重启 dev（重启进程不够）。
+- ⛔ 本地 `prisma generate` 会被 dev server 占用 dll 报 EPERM → 先停 dev server。
+
+### 此前状态（2026-07-27 第五次会话，已部署两服 v1.0.0.46）
 
 - ⭐ **四方同步：正式服 = 测试服 = 本地 = GitHub = `v1.0.0.46`**。测试服入口全 200、正式服四域名 main/api/ali/static 全 200、两服 `x-app-version: v1.0.0.46`、无未应用迁移、`npx tsc --noEmit` 全绿。**无待部署。**
 - **第五次会话做的**（详见 CHANGELOG 顶部）：

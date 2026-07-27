@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import type { Prisma } from "@prisma/client";
 import { getCurrentUser } from "@/lib/auth";
-import { assertUserCanUseCredits, chargeCredits, recordCreditFailure } from "@/lib/credits";
+import { assertUserCanUseCredits, chargeCredits, isUnauthenticatedError, recordCreditFailure, UNAUTHENTICATED_ERROR_MESSAGE } from "@/lib/credits";
 import { createCodedApiError } from "@/lib/error-code";
 import { toUserErrorMessage } from "@/lib/error-message";
 import { rewriteGptImagePromptForSafety } from "@/lib/openrouter";
@@ -44,8 +44,11 @@ export async function POST(request: Request) {
     }) : undefined;
 
     return NextResponse.json({ ...result, credit });
-  } catch (error) {
-    if (user?.id) {
+    } catch (error) {
+      // ⭐ 登录状态已失效：回 401，前端会直接跳首页（不弹提示、不记扣费失败）。详见 credits.ts 注释。
+      if (isUnauthenticatedError(error)) return NextResponse.json({ error: UNAUTHENTICATED_ERROR_MESSAGE }, { status: 401 });
+      if (user?.id) {
+
       await recordCreditFailure(user.id, "text", {
         conversationId: body?.workflowId,
         conversationTitle: body?.workflowTitle,

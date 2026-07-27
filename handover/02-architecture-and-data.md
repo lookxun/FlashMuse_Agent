@@ -13,6 +13,8 @@
 - `GenerationJob`：生成任务（worker 驱动真正生成/挑图/扣费/落库），存 `referenceImages`/`referenceNames`/`extraJson.cleanPrompt` 等。
 - `UserWorkspaceState`：仅存 shell 字段（`activeWorkflowId`/`nextWorkflowNumber` 等），**`state.assets` 不再是权威来源**。
 - `GptImagePromptOptimizationCase`：GPT 生图安全改写成功案例（见归档 08）。
+- `GenerationEvent`：**每次生成的埋点事件**（kind/source/model/provider/status/`failureReason`/`failureCode`/moderation/durationMs/参考素材数量）= 后台运营概览的数据源。⭐ 2026-07-27 新增 `resolvedAt` + `resolvedNote`：**失败原因「已归档」标记**（根因查清并修掉后打上，后台把那条原因划掉且不再计入待排查数量）。归档流程见 `07-red-error-triage-and-archive.md`。⚠️ **`failureReason` 存的是给用户看的文案，不是根因**（"服务器繁忙"是兜底），真实原因只在 `.runtime/*-diagnostics-log.jsonl`。
+- `UploadEvent`：上传埋点（status/reason/bytes）。
 
 **数据权威**：媒体固定事实→`MediaAsset`；用户可变状态→`UserAssetState`；对话→`WorkspaceSession+Message`；计费→`CreditLedger`。新生成/上传媒体统一走 `src/lib/media-asset-record.ts`（`buildMediaAssetRecord`/`classifyAsset`）入库；出生即冻结，之后只有改名/移动/删除（只写 `UserAssetState`）。
 
@@ -46,6 +48,23 @@
 - 客户端增量校验用的 `maxTotalSeconds`（`upload-rules.ts` kindRule，值 15）也是 `+ EPSILON` → 同为 15.2。**改一个 epsilon 三类判断一起变，不会再出现各处不一致。**
 - ⚠️ 文案仍写死"2-15秒"（`chat-workbench.tsx` 的 `workflowUploadNodeTypeLabel`/`assetsUploadTypeLabel`、后台 `admin-upload-rules-panel.tsx`），改规则数值时记得手动同步。
 
+## ⭐ 视频「参考图」尺寸/比例限制（2026-07-27 新增，唯一权威）
+
+- 平台硬规则（BytePlus）：参考图**宽和高都必须 300–6000px、宽高比 0.4–2.5**。不合规时**不是生成阶段报错，而是"素材送审"阶段就被拒**（原文 `Height must be between 300px and 6000px.` / `Aspect ratio must be between 0.4 and 2.5.`），历史上这类失败全被降级成"服务器繁忙"（正式服 7 月 82 次）。
+- **唯一权威实现 `src/lib/video-reference-image-rules.ts`**：常量 + `validateVideoReferenceImageDimensions` / `validateVideoReferenceImages` / `validateVideoReferenceImagesBeforeSend`（会现场量图）+ `measureImageDimensions`。
+- 三处共用、禁止再写一套：**对话流** `sendMessage`（黑底 `showInputTip` + 中止发送）、**工作流** `runVideoNode`（抛同文案）、**服务端** `api/video/route`（从 `MediaAsset.width/height` 读，400 + 同文案，兜住 Agent/资产库/任何入口）。
+- 只对 **BytePlus 视频模型**生效（别拿它拦 kling/veo）；`asset://` 引用跳过；**量不到宽高时不拦**（宁可让平台判，不能把用户挡死）。
+
+## ⭐ BytePlus 真人/敏感参考素材「送审通行证」机制（2026-07-27 修 + 补齐）
+
+- 记忆载体：`UserAssetState.bytePlusAssetId` / `bytePlusAssetGroupId` / `bytePlusAssetStatus`（Active/Processing/Failed）/ `bytePlusAssetError`。**同一张图过审一次，以后一直用这张"通行证"**。
+- 第一道：`resolveBytePlusReviewedReferences()` 在**创建任务前**就把已 Active 的 url 换成 `asset://<id>` → 已过审的图第二次根本不会被拦。
+- 第二道：被拦后 `autoReviewBytePlusVideoReferences()`
+  - `reuseOnly: true` 预检（**只查库、不上传不等待**）→ 有现成通行证就**当场无感重试，不弹「检测到真人图片，需要审核」蓝字**（用户当初的设计）。
+  - 否则完整送审（`createBytePlusAsset` moderationStrategy=Skip → 等 Active → 写回库）→ 重试。
+  - ⛔ 历史 bug（已修）：原来用 `triggered` 判断"送审有没有干活"，**全是复用旧证时 triggered 恒 false → 把拼好的 `asset://` 全丢掉、直接放弃重试**。现在看 `convertedCount`。
+- 死卡自愈：平台报 `The specified asset asset-xxx is not found` → `clearStaleBytePlusAssetCards()` 清空库里失效凭证 + 纳入"可恢复错误" → 重新送审拿新证。
+
 
 ## 资产分类（AssetFilter）
 
@@ -72,3 +91,8 @@
 ## 迁移脚本 / 一次性脚本
 
 - `scripts/` 下有 media 迁移/审计脚本（见 `scripts/README-media-assets.md`）。`scripts/backfill-prompt-mentions.js`=资产库生成图 sourcePrompt @名与参考图对齐回填（仅 1:1 才改）。**不跑广泛破坏性迁移**；先 dry-run + 备份 + 保留日志。
+- 现有常用脚本（都默认 dry-run，`--apply` 才写）：
+  - `scripts/backfill-media-asset-durations.mjs`：补 `MediaAsset.durationSeconds`（ffmpeg 解析 `Duration:`，项目没装 ffprobe）。**已在本地/测试服/正式服跑完。**
+  - `scripts/backfill-uploaded-video-posters.mjs`：补上传视频封面 `.poster.jpg` + `posterUrl`。**已跑完**（正式服新建 29 个）。⚠️ 脚本现生成的媒体**不会自动同步阿里**，要补一次 `*.poster.jpg` 的 rsync。
+  - ⭐ `scripts/archive-resolved-generation-failures.mjs`：**后台失败原因归档**（打 `GenerationEvent.resolvedAt/resolvedNote`）。规则表 `RESOLVED_RULES` 是唯一入口，按诊断日志真实原文匹配。支持 `--undo`。详见 `07-red-error-triage-and-archive.md`。
+- ⚠️ 一次性脚本在服务器上必须 `docker cp` 进容器 `/app` 用 `node` 跑（容器里才有 `@prisma/client`），跑完删掉。

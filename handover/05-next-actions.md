@@ -4,27 +4,92 @@
 
 ## 当前状态
 
-⭐ **四方同步：正式服 = 测试服 = 本地 = GitHub = `v1.0.0.46`**（2026-07-27 第五次会话已部署两服）。测试服入口 200、正式服四域名全 200、`x-app-version` 两服都是 v46、无未应用迁移、`npx tsc --noEmit` 全绿。**无待部署。**
+⚠️⭐ **本地积压第六 + 第七两次会话的改动，全部未部署**（部署后 = `v1.0.0.47`，含 1 个新 Prisma 迁移）；线上仍是 `v1.0.0.46`（正式服 = 测试服 = GitHub）。本地 `npx tsc --noEmit` 全绿、归档脚本 dry-run 跑通，版本号还没 bump（bump 只在部署测试服那一步做）。
 
-## ⭐⭐ 接手就要处理的
+**本次会话改动的文件清单**（`git status` 里未提交的那些）：
+- 新增：`src/lib/session-expired-redirect.ts`、`src/lib/video-reference-image-rules.ts`、`scripts/archive-resolved-generation-failures.mjs`、`handover/07-red-error-triage-and-archive.md`、`prisma/migrations/20260727154203_generation_event_resolved/`
+- 修改：`src/lib/error-message.ts`、`src/lib/transient-error.ts`、`src/lib/credits.ts`、`src/lib/openrouter-video.ts`、`src/lib/admin-overview.ts`、`src/app/admin/admin-overview-2.tsx`、`src/app/api/{image,video,chat,agent-plan,conversation-memory}/route.ts`、`src/app/api/workflow-prompt-optimization/rewrite/route.ts`、`src/components/chat-workbench.tsx`、`src/components/workflow-tldraw-canvas-inner.tsx`、`prisma/schema.prisma`、`AGENTS.md` + handover 文档
 
-### 1. 线上实机验收（v46，第二~五次会话的功能基本都没点测过）
-测试服 `http://101.37.129.164:8080/`，正式服 `https://main.venusface.com/`，测试号 `12424740@qq.com` / `dragonstar`（该号在测试服和本地库都能登）。建议验：
-1. **本会话的**（本地已验过，线上抽验即可）：资产库视频卡左上角时长（深底白字、mm:ss）、图片/视频缩略图鼠标悬停轻微放大。
-2. 工作流视频节点「视频截图 ▾」三项：图片出现在源视频右侧、标题「视频截图 xxx」、命名 `xxx-当前帧`/`_2` 递增、同帧重复截提示"图片已存在"。
-3. 截图后**不刷新页面**直接进资产库「上传的资产 · 上传图片」，右侧列表应立刻有。
-4. 用户中心「生成图片/生成视频」不再是 0 张 0 段。
-5. 「我的积分」积分来源列：工作流行是工作流图标、每个工作流一行。
-6. 上传视频（尤其重复上传老视频）有封面；**正式服历史上传视频封面已回填 29 个**，随便点几个老视频看有没有封面。
-7. **工作流普通生视频仍正常**（第三次会话改过 `runVideoNode` 主路径）。
-8. 工作流视频「快捷编辑」（会真花钱生视频）+ 候选链降级都还没实机验证过。
+## ⭐⭐ 接手第一件事：**直接部署，不用再问**（用户 2026-07-28 明确交代）
 
-### 2. 回填脚本已全部跑完，不用再跑
-- `scripts/backfill-media-asset-durations.mjs`：本地 28 / 测试服 5 / **正式服 2059** 条已 apply，复跑 dry-run 只剩 1 条远程 URL 脏数据（取不到文件，正常）。
-- `scripts/backfill-uploaded-video-posters.mjs`：正式服新建 29 个封面并已 rsync 到阿里正式镜像；测试服本来就 0 条。
-- ⭐ **记忆**：以后再用脚本在服务器上现生成媒体文件，**记得补一次 rsync 到阿里**（app 只在上传/生成时同步），命令见 CHANGELOG 第五次会话那条。
+积压了**第六 + 第七两次会话**的改动，全部未部署。**用户已经明确说"下一个 AI 直接部署"**，所以接手后不必再确认，按下面顺序做完即可。
 
-### 3. 上传规则涉及 200MB 视频时
+### 部署步骤（细节照 `03-deploy-and-servers.md`）
+1. `node scripts/bump-version.mjs`（v46 → **v47**，只在部署测试服这一步 bump）
+2. tgz 打包改动文件（**必须含 `prisma/schema.prisma` + `prisma/migrations/20260727154203_generation_event_resolved/`**）→ 传测试服
+3. 测试服 `docker compose up -d --build` → ⭐ **看 entrypoint 日志里那个迁移有没有 applied**
+4. `sync-ali-test.sh`（阿里测试镜像）→ 改 `PUBLISHED_APP_VERSION` 发布版本信号 + `force-recreate` → 验证入口 200 / `x-app-version: v1.0.0.47`
+5. 正式服：备份 → rsync staging→prod → build（entrypoint 自动 migrate）→ `/tmp/syncali.sh` → `/tmp/health.sh` 四域名 200 → commit + push。**正式服不再 bump 版本号。**
+6. ⭐ **两服各自跑归档脚本**（见下）
+
+### 待部署内容清单
+
+**第六次会话那批**：
+1. 视频轮询/创建失败**落上游原文日志**（原来只记 `hasError` 布尔）。
+2. **`!triggered` 真 bug 修复** + **已过审图第二次不弹蓝字**（`reuseOnly` 预检 + 无感重试）。
+3. **死卡自愈**（平台报 `asset ... is not found` 时清库里失效凭证并重新送审）。
+4. **错误文案 3 类真话**（尺寸不合规 / 平台读不到参考图 / 凭证失效）。
+5. **参考图尺寸/比例发送前拦截 + 黑底提示**（对话流 / 工作流 / 服务端三处，只对 BytePlus 视频模型）。
+6. **后台失败原因归档机制**：⭐ **新 Prisma 迁移 `20260727154203_generation_event_resolved`** —— 两服 entrypoint 会自动 `migrate deploy`，但部署后要确认日志里有 applied。
+
+**第七次会话那批（2026-07-28，红字排查第 2~5 批）**：
+7. ⭐ **供应商余额不足映射**：`error-message.ts` 新增 402/`insufficient credits` 类 → 「提供商余额不足！请联系管理员充值。」（位置在限流/`quota` 规则**之前**）；`transient-error.ts` 列为永久错误不再自动重试；归档规则 `provider-insufficient-credits`。
+8. ⭐ **参考图尺寸第二种措辞**：`expected the (height|width) to be at least \d+px` 补进 `error-message.ts` 与归档规则（正式服 109 条）；归档脚本改成**日志原文 + `failureReason` 一起匹配**、去掉 `requestId IS NOT NULL` 过滤。
+9. ⭐ **「当前模型不支持这组参数」54 条**：归档脚本加 3 条规则（`seedream-pro-sequential-param` / `reference-slot-not-an-image` / `reference-video-total-duration`，共 51 条）；另修**误映射** —— 平台返回 HTML 的 `Unexpected token '<' … is not valid JSON` 以前被 `not valid` 抢走报成"换比例/分辨率"，且被 `isPermanentError` 判成永久失败不再重连 → 现改成「平台服务临时异常（返回了非预期内容），请稍后重试。」并列为**可自动重试**。
+10. ⭐ **「请先登录后再使用模型」17 条**：`credits.ts` 新增 `isUnauthenticatedError()`；**6 个 route**（image/video/chat/agent-plan/conversation-memory/workflow-rewrite）catch 第一句回 **401 且不记 GenerationEvent**；新增 `src/lib/session-expired-redirect.ts` 并插在**两处 `readJson`** 开头 → 401 直接跳首页、不给提示。
+11. ⭐ **「请求失败，请稍后再试。」33 条**（无代码改动）：归档脚本加 `pre-diagnostics-log-unknowable` 规则（三条件：早于 `DIAGNOSTICS_LOG_START`=2026-07-10 + 日志零记录 + 落在兜底文案桶；正式服 dry-run 实测命中 **24 条**，07-10 之后 221 条一条不碰），`findMany` select 补 `createdAt`。
+
+### ⚠️ 部署后必须回归的（第七次会话动了共用错误路径）
+改的都是**错误分支 + `readJson` 开头**，成功路径没动，但因为是 6 个 route + 两个前端咽喉共用，**必须逐一确认正常生成照旧**：
+- 对话流生图 / 生视频、工作流生图 / 生视频、Agent 模式、资产库生成 —— 各跑一次成功用例。
+- 顺手验一个 401 场景：A 浏览器登录后停在工作台，B 浏览器用同账号登录（单会话会顶掉 A），回 A 点生成 → **应该直接跳首页、不弹任何提示、不出红字卡**。
+
+
+**部署完必须做**：在**测试服和正式服各自**容器 `/app` 跑
+```bash
+node scripts/archive-resolved-generation-failures.mjs          # 先 dry-run 看条数
+node scripts/archive-resolved-generation-failures.mjs --apply  # 再归档
+```
+正式服预计归档 **~360 条**（部署后 dry-run 会给准数）：191 参考图尺寸/比例 + 53+13 余额不足 + 51「当前模型不支持这组参数」+ 24 永久不可追溯 + 17 登录失效 + 11 凭证失效 + 若干"没复用旧证"。效果：「服务器繁忙」212 → **~62**、「expected the height/width…」109 → 0、「当前模型不支持这组参数」54 → **3**、「请先登录后再使用模型」17 → **0**、「请求失败，请稍后再试。」33 → **0**。跑完刷新后台确认：上面数量下降 + 下面出现**划掉的**「已排查并修复」区块。
+⛔ 查正式服记忆：app 容器 = `flashmuse-flashmuse-app-1`；db 容器不能 `psql -U postgres`（role 不存在），查库走 `docker exec <app容器> node -e` + Prisma `$queryRawUnsafe`。
+
+## ⭐⭐ 接手主线任务：继续排查红字失败原因并修复
+
+**完整方法论、已修清单、待查清单、归档规则 → `handover/07-red-error-triage-and-archive.md`（必读）。**
+一句话流程：**后台看红字 → 拿 requestId 去 `.runtime/*-diagnostics-log.jsonl` 捞真实原文（别信 failureReason）→ 修/堵 → 往 `scripts/archive-resolved-generation-failures.mjs` 的 `RESOLVED_RULES` 加一条规则 → 跑 `--apply` 归档（划掉）。**
+
+下一批按性价比排（详见 07 文档第六、七节）：
+1. ✅ **OpenRouter 余额不足 53 条已做（2026-07-28）**：映射成「(B_xxx) 提供商余额不足！请联系管理员充值。」+ 列入 `isPermanentError` 不再自动重试 + 归档规则已加（用户拍板归档历史那批）。可选增强：后台单列一栏 + 运营告警。
+1b. ✅ **「当前模型不支持这组参数」54 条已查完（2026-07-28）**：51 条归档 + 修掉一个误映射（详见 07 文档第三·B 节）。
+1c. ✅ **「请先登录后再使用模型」17 条已查完并修复（2026-07-28）**：500→401 + 不记事件 + 前端统一跳首页，17 条归档。
+1d. ✅ **「请求失败，请稍后再试。」33 条已查完（2026-07-28）**：13 余额不足 + 20 永久不可追溯，全部归档。
+1e. ⭐ **平台拉我们缩略图超时 18 条 —— 下一个优先查这个**（`Timeout/Error while downloading url: http://<ip>/api/media-thumbnail?...`）：送审/建任务给平台的是**动态接口**地址，平台拉超时，应改成静态直链。
+2. **那 40 条轮询 failed** —— 日志已修好，攒几天新数据再查（大概率输出侧审核）。
+3. **gpt-5.4-image-2 中文明文拒绝** —— 现在走"空结果"分支落到"服务器繁忙"，应识别成"模型拒绝生成"并接上已有的 AI 改写重试。
+4. `empty image result` 7 条、DB 事务超时 2 条、`the specified asset is not an image` 之外的其它 InvalidParameter（`UnsupportedImageFormat` 4 条）。
+
+## ⭐ 已知但还没做（用户已知，等拍板）
+- **参考图尺寸自动修正**：那 82 次现在只是"拦住 + 说清"，可用 sharp 自动缩放/补边到合规再送审（服务器已有 sharp）。
+- **`getVideoErrorMessage` 有两份复制**（`api/video/route.ts` + `lib/generation-jobs.ts`）且都丢掉 `error.code` —— 这是"真人/敏感错误被降级成服务器繁忙"的第二个原因，收敛成一份并保留 code。影响面：所有模式的视频错误文案。
+- **正式服 97 条远程 url 资产**（签名已失效、救不回来）：用户拍板 **C = 先不管**。
+
+## 线上实机验收（v46/v47 的功能基本都没点测过）
+测试服 `http://101.37.129.164:8080/`，正式服 `https://main.venusface.com/`，测试号 `12424740@qq.com` / `dragonstar`（本地库也能登）。建议验：
+1. 资产库视频卡左上角时长（深底白字 mm:ss）、图片/视频缩略图 hover 轻微放大。
+2. 工作流视频节点「视频截图 ▾」三项（图片出现在源视频右侧、标题「视频截图 xxx」、命名递增、同帧重复截提示"图片已存在"）。
+3. 截图后**不刷新**进资产库「上传的资产 · 上传图片」应立刻有。
+4. 用户中心「生成图片/生成视频」不再是 0；「我的积分」工作流行是工作流图标、每个工作流一行。
+5. 上传视频（含重复上传老视频）有封面；正式服历史封面已回填 29 个。
+6. **工作流普通生视频仍正常**（第三次会话改过 `runVideoNode` 主路径，第六次又在里面加了参考图尺寸校验）。
+7. 工作流视频「快捷编辑」（会真花钱）+ 候选链降级仍未实机验证。
+8. **本批新增**：拿一张 240×180 或极窄的图当参考去生视频 → 应在**点发送的瞬间**弹黑底提示并中止（不扣积分）；换合规图应正常生成。
+
+## 回填脚本（都已跑完，不用再跑）
+- `scripts/backfill-media-asset-durations.mjs`：本地 28 / 测试服 5 / 正式服 2059 条已 apply。
+- `scripts/backfill-uploaded-video-posters.mjs`：正式服新建 29 个封面并已 rsync 到阿里正式镜像。
+- ⭐ 记忆：脚本在服务器上现生成的媒体文件**不会自动同步阿里**（app 只在上传/生成时同步），要补一次 rsync（命令见 CHANGELOG 第五次会话）。
+
+## 上传规则涉及 200MB 视频时
 - 正式 nginx `client_max_body_size`（历史 20m）需先评估调整（用户交代，未批准前不改服务器）。
 
 ## ⭐ 用户明确押后的

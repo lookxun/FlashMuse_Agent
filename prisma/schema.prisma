@@ -305,12 +305,18 @@ model GenerationEvent {
   referenceVideoCount Int      @default(0)
   referenceAudioCount Int      @default(0)
   createdAt           DateTime @default(now())
+  // 失败原因「已归档」标记：根因已经查清并修掉/堵上后，把对应事件归档。
+  // 后台「失败原因」里归档的那部分不再计入待处理数量，而是划掉展示（文字保留、可追溯）。
+  // 错误编号 B_xxx 计数器与此无关，继续自增。
+  resolvedAt          DateTime?
+  resolvedNote        String?
 
   @@unique([requestId, kind])
   @@index([createdAt])
   @@index([kind, status, createdAt])
   @@index([model, createdAt])
   @@index([source, createdAt])
+  @@index([status, resolvedAt])
 }
 
 model UploadEvent {
