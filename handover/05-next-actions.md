@@ -4,20 +4,17 @@
 
 ## 当前状态
 
-✅ **四方同步：正式服 = 测试服 = 本地 = GitHub = `v1.0.0.47`（commit `9268dab`，2026-07-28 第八次会话部署完成）。无待部署、无未推。**
+✅ **四方同步：正式服 = 测试服 = 本地 = GitHub = `v1.0.0.48`（commit `389ad87`，2026-07-28 第九次会话）。无待部署、无未推。**
 
-- 迁移 `20260727154203_generation_event_resolved` 两服均已 applied；两服 `PUBLISHED_APP_VERSION` = `v1.0.0.47`；正式服四域名全 200。
-- 归档脚本两服都已 `--apply`：测试服 10 条（剩 36）、**正式服 367 条（剩 308 待排查）**。
-- 正式服备份：`/opt/flashmuse/app-backups/20260728-021857-presync-v47`。
+- 第九次会话：参考素材 url 归一化根治（新增 `src/lib/reference-asset-url.ts`，8 处接入）。无 Prisma 迁移。正式服备份 `20260728-030655-presync-v48`。
+- **v47 那批的实机回归已补做完并全过**（对话流生图/生视频带参考图、工作流快捷编辑、401 跳首页 + 不记事件）。
+- 归档现状：测试服剩 **36** 待排查、正式服剩 **308** 待排查（缩略图那条规则命中 0，原因见下）。
 
-## ⚠️ 部署后仍待做：实机回归（v47 动了共用错误路径）
+### ⭐⭐ 一条必须记住的教训（第九次会话踩到）
 
-改的都是**错误分支 + `readJson` 开头**，成功路径没动，但 6 个 route + 两个前端咽喉共用，**必须逐一确认正常生成照旧**：
-- 对话流生图 / 生视频、工作流生图 / 生视频、Agent 模式、资产库生成 —— 各跑一次成功用例。
-- 401 场景：A 浏览器登录后停在工作台，B 浏览器用同账号登录（单会话会顶掉 A），回 A 点生成 → **应直接跳首页、不弹提示、不出红字卡**。
-- 后台「运营概览 → 失败原因」：上方待排查数量下降到 308，下方出现**划掉的**「已排查并修复」区块。
+**从日志 `grep -c` 数出来的条数 ≠ 待排查的失败事件数。** 「平台拉缩略图超时 18 条」实际是**同一个 requestId 的 18 行日志**，该请求最终 `image-route-success`、GenerationEvent 的 `status = success` → 后台「失败原因」里根本不占位。**以后拿到日志计数必须回 DB 按 requestId 核对 `status`。**
 
-## 历史记录：v47 部署内容清单（已完成，仅备查）
+## ⚠️ 仍待做：v46 那批的实机点测（v47 已验完）
 
 **本次会话改动的文件清单**（`git status` 里未提交的那些）：
 - 新增：`src/lib/session-expired-redirect.ts`、`src/lib/video-reference-image-rules.ts`、`scripts/archive-resolved-generation-failures.mjs`、`handover/07-red-error-triage-and-archive.md`、`prisma/migrations/20260727154203_generation_event_resolved/`
@@ -72,7 +69,7 @@ node scripts/archive-resolved-generation-failures.mjs --apply  # 再归档
 1b. ✅ **「当前模型不支持这组参数」54 条已查完（2026-07-28）**：51 条归档 + 修掉一个误映射（详见 07 文档第三·B 节）。
 1c. ✅ **「请先登录后再使用模型」17 条已查完并修复（2026-07-28）**：500→401 + 不记事件 + 前端统一跳首页，17 条归档。
 1d. ✅ **「请求失败，请稍后再试。」33 条已查完（2026-07-28）**：13 余额不足 + 20 永久不可追溯，全部归档。
-1e. ⭐ **平台拉我们缩略图超时 18 条 —— 下一个优先查这个**（`Timeout/Error while downloading url: http://<ip>/api/media-thumbnail?...`）：送审/建任务给平台的是**动态接口**地址，平台拉超时，应改成静态直链。
+1e. ✅ **平台拉我们缩略图超时 —— 2026-07-28 第九次会话已查完并修掉**（`Timeout/Error while downloading url: http://<ip>/api/media-thumbnail?...`）：真因=把动态缩略图接口地址 + 已退役马来 IP 当参考图发给平台；修法=唯一权威 `normalizeReferenceAssetUrl()` 还原成静态直链，8 处接入。⚠️ 但那"18 条"是**同一 requestId 的日志行数**、该请求最终成功，**后台待排查里不占位**，所以归档 0 条属正常。
 2. **那 40 条轮询 failed** —— 日志已修好，攒几天新数据再查（大概率输出侧审核）。
 3. **gpt-5.4-image-2 中文明文拒绝** —— 现在走"空结果"分支落到"服务器繁忙"，应识别成"模型拒绝生成"并接上已有的 AI 改写重试。
 4. `empty image result` 7 条、DB 事务超时 2 条、`the specified asset is not an image` 之外的其它 InvalidParameter（`UnsupportedImageFormat` 4 条）。

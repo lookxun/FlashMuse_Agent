@@ -204,6 +204,9 @@ node scripts/archive-resolved-generation-failures.mjs --undo --apply   # 撤销�
 | `reference-video-total-duration` | 参考视频总时长超限（B_232） | 12 |
 | `session-expired-recorded-as-failure` | 登录失效被当成生成失败（回 500 而非 401） | 17 |
 | `pre-diagnostics-log-unknowable` | 07-10 前 + 日志零记录 + 落兜底桶 = 永久不可追溯 | 24 |
+| `platform-download-our-thumbnail-endpoint` | 平台拉我们的动态缩略图接口超时（v48 已修） | **0**（该请求最终成功、不占后台位，见第五·B 节） |
+
+> **实际归档结果（2026-07-28 v47 部署后已 `--apply`）**：正式服 675 → 归档 **367** → 剩 **308** 待排查；测试服 46 → 归档 **10** → 剩 **36**。
 
 ## 五、⭐ 同一根因常有多种上游措辞（2026-07-28 踩坑，必看）
 
@@ -223,11 +226,34 @@ grep -ho 'InvalidParameter[^}]*' /opt/flashmuse/data/runtime/*.jsonl \
 | `expected the height to be at least Npx, but received a NxNpx image instead` | 103 | ✅ v47 发送前拦截，已加归档规则 |
 | `The parameter \`sequential_image_generation\` … not valid` | 39 | ✅ 已查（= 第三·B 节 A 类 13 个事件），已修已归档 |
 | `The parameter \`content[N].image_url.url\` … the specified asset is not an image` | 26 | ✅ 已查（= B 类 26 条 = B_252），已修已归档 |
-| `Timeout while downloading url: http://<ip>/api/media-thumbnail?...` | 17 | ❓ 未查（平台拉我们的缩略图超时，应改用直链而非 media-thumbnail） |
+| `Timeout while downloading url: http://<ip>/api/media-thumbnail?...` | 17（**日志行数，非事件数**） | ✅ **已修（v48）**：动态缩略图接口 + 退役马来 IP 被当参考图发给平台。⚠️ 全属同一 requestId 且**最终成功**，后台不占位 → 归档命中 0 属正常，详见第五·B 节 |
 | `the parameter video total duration (seconds) …` | 12 | ✅ 已查（= C 类 = B_232），已修已归档 |
 | `expected the width to be at least Npx …` | 6 | ✅ 同第一条 |
 | `InvalidParameter.UnsupportedImageFormat` | 4 | ❓ 未查（图片格式不支持） |
-| `Error while downloading: http://<ip>/api/media-thumbnail?...` | 1 | ❓ 同 Timeout 那条 |
+| `Error while downloading: http://<ip>/api/media-thumbnail?...` | 1 | ✅ 同上一条，已修（v48） |
+
+## 五·B ⭐⭐ 日志里 grep 出来的条数 ≠ 待排查的失败事件数（2026-07-28 第九次会话踩坑，必看）
+
+**教训**：待查清单里写着「平台拉我们缩略图超时 **18 条**」，实际去查发现那 18 行日志**全属同一个 requestId**，而且该请求**最终重试成功了**（`image-route-success`，GenerationEvent 的 `status='success'`）—— 后台「失败原因」只统计 `status='failed'`，所以它**从来没在待排查列表里占过位**。上一任把 `grep -c` 数出来的**日志行数**当成了失败事件数。
+
+**所以每次从日志起手排查，必须做这两步核对**：
+
+```bash
+# 1) 先看这批日志涉及几个 distinct requestId（不是几行）
+sudo grep '<特征>' /opt/flashmuse/data/runtime/*.jsonl | grep -o '"requestId":"[^"]*"' | sort -u | wc -l
+
+# 2) 再看这些 requestId 的最终事件构成（有没有 *-success 收尾）
+for rid in $(sudo grep '<特征>' <日志> | grep -o '"requestId":"[^"]*"' | sed 's/.*:"//;s/"//' | sort -u); do
+  echo "--- $rid"; sudo grep -F "\"requestId\":\"$rid\"" <日志> | grep -o '"event":"[^"]*"' | sort | uniq -c
+done
+```
+然后回 DB 用 requestId 核对 `status`（`docker exec <app容器> node -e` + `$queryRawUnsafe`）：
+
+```sql
+SELECT "requestId","status","failureReason","resolvedAt" FROM "GenerationEvent" WHERE "requestId" = ANY($1::text[])
+```
+
+**判定**：`status='success'` = 中间失败/已重试成功 → **不占后台位、不用归档**（但如果它让用户白等很久，仍然值得修）。只有 `status='failed'` 且 `resolvedAt IS NULL` 的才是真正的"待排查红字"。
 
 ## 六、⭐ 正式服未归档红字全貌（2026-07-28 实测，212 之外的都在这）
 
@@ -251,8 +277,9 @@ grep -ho 'InvalidParameter[^}]*' /opt/flashmuse/data/runtime/*.jsonl \
 1b. ~~**「当前模型不支持这组参数」54 条**~~ ✅ **2026-07-28 已查完**（第三·B 节）：51 条归档，另修掉一个误映射。
 1c. ~~**「请先登录后再使用模型」17 条**~~ ✅ **2026-07-28 已查完并修复**（第三·C 节）：状态码 500→401 + 不再记事件 + 前端统一跳首页，17 条归档。
 1d. ~~**「请求失败，请稍后再试。」33 条**~~ ✅ **2026-07-28 已查完**（第三·D 节）：13 余额不足 + 20 永久不可追溯，全部归档。
-1e. ⭐ **平台拉我们缩略图超时 18 条 —— 下一个优先查这个**（`Timeout/Error while downloading url: http://<ip>/api/media-thumbnail?...`）：送审/建任务时给平台的是**动态接口**地址，平台拉超时。应改成给静态直链。
-1e. **平台拉我们缩略图超时 18 条**（`Timeout/Error while downloading url: http://<ip>/api/media-thumbnail?...`）—— 送审/建任务时给的是 `media-thumbnail` 动态接口，平台拉超时。应改成给静态直链。
+1e. ✅ **平台拉我们缩略图超时 —— 2026-07-28 第九次会话已查完并修掉（v1.0.0.48）**：真因=把「给人看的动态缩略图接口」`/api/media-thumbnail?url=` + 已退役马来 IP `101.47.19.109` 当参考图地址发给平台，平台来拉要我们现场生成缩略图 → 超时。修法=新增唯一权威 `src/lib/reference-asset-url.ts` 的 `normalizeReferenceAssetUrl()`（幂等：剥自家主机前缀 + 还原缩略图接口为原图 + 去缓存版本号），8 处咽喉接入（image/video/byteplus-assets 三入口 + `generation-jobs.resolveReferenceUrls` + openrouter/openrouter-video/seedance/video-route 底层拼址）。
+    ⚠️⚠️ **但"18 条"是数错的**：那 18 行日志全属**同一个 requestId**（`id_mq4osh4b_j0yyiyq5:image:0`），事件构成 `image-provider-non-ok ×6` + `provider-curl-non-ok ×6` + `curl-fallback-failed ×6` + `image-route-failed ×7`，**最终 `image-route-success ×3`**，GenerationEvent 的 `status = success` → **后台「失败原因」里根本不占位**，所以归档规则 `platform-download-our-thumbnail-endpoint` 命中 0 条是**正确结果**（规则保留，以后真造成失败会自动认出来）。Bug 本身仍值得修：每次超时白等 10 秒 + 触发 curl 兜底重试链，用户端表现为"转很久"。
+1f. ~~平台拉缩略图超时~~（重复条目，已并入 1e）
 2. **那 40 条轮询 failed**：现在日志已经会记原文了，**等新数据攒几天再查一次**，大概率是输出侧内容审核（`OutputVideoSensitiveContentDetected` 之类）。
 3. **gpt-5.4-image-2 中文明文拒绝（4 条 + 未来会更多）**：现在走 `image-provider-empty-result` 分支 → 落到"服务器繁忙"。应识别成"模型拒绝生成"并接上已有的「AI 改写重试」入口。
 4. **`empty image result` 7 条**：OpenRouter 说成功但没图，需要看是不是特定 model/参数组合。

@@ -2,6 +2,67 @@
 
 > 本批 CHANGELOG 从 2026-07-21 交接文档重建开始记。**此前的全部历史流水**（约 580KB，含 2026-06 起到 07-21 每一次改动/部署细节）在 `historical-handover-docs-last-used-2026-07-21/CHANGELOG.md`，遇到需要历史上下文的难题再翻。
 
+## 2026-07-28（第九次会话）⭐ 参考素材 url 归一化根治「平台拉我们动态缩略图接口超时」—— ✅ **已部署测试服 + 正式服 `v1.0.0.48`**（四方同步）；测试服实机回归全过；无 Prisma 迁移
+
+### ① 根因（正式服日志原文）
+
+后台待查清单里的「平台拉我们缩略图超时 18 条」，实测**全部集中在一个 requestId**（`id_mq4osh4b_j0yyiyq5:image:0`，用户 ID_953031，2026-07-15，对话流生图 seedream-4-5）。上游原文：
+
+```
+Timeout while downloading url:
+http://101.47.19.109/api/media-thumbnail?url=%2Fgenerated%2Fusers%2FID_953031%2Fimages%2F...jpg&v=thumb256-20260606
+```
+
+两个毛病叠一起：
+1. **给平台的是动态缩略图接口** `/api/media-thumbnail` —— 平台每来拉一次，我们的 Node 都要现场解析参数 + 用 sharp 现生成缩略图再返回。参考图本来就该给**文件静态直链**（nginx 直出、不经 Node）。
+2. **前缀是 `101.47.19.109`（已退役的马来服务器）** —— 那台早就不在链路里，平台拉它注定失败。
+
+**为什么会漏出去**：BytePlus 生图走 `openrouter.ts` 的 `toDataUrlIfLocalPublicAsset`，它**只认相对路径 `/generated/...`**，其它一律原样透传 → 这个「绝对地址 + 动态接口」的 URL 就被当参考图发给了平台。
+
+### ② 修法：一个唯一权威函数，8 处接入（贯彻"能统一一律统一"）
+
+新增 **`src/lib/reference-asset-url.ts`** → `normalizeReferenceAssetUrl()` / `normalizeReferenceAssetUrls()`，**幂等**：
+- 剥掉自家主机绝对前缀（马来/腾讯/阿里/四域名/测试服，允许带端口）→ 相对路径
+- `/api/media-thumbnail?url=X` → 还原成 **X（原图静态直链）**，最多解 3 层防嵌套
+- `/generated/...` 去掉缓存版本号 query（`?v=thumb256-xxx`）与 `#` 片段
+- `data:` / `asset://` / 第三方 https **原样不动**
+
+接入位置（进模型/送审前的全部咽喉）：
+- **入口 3 处**：`api/image/route.ts:95`、`api/video/route.ts:762-764`（图/视频/音频三类）、`api/byteplus-assets/route.ts`（送审 `toPublicAssetUrl`）
+- **异步 job 唯一入口**：`generation-jobs.ts` 的 `resolveReferenceUrls`
+- **底层拼地址/转 base64**：`openrouter.ts`（`toDataUrlIfLocalPublicAsset` / `toPublicGeneratedImageUrl` / `resolveOwnLocalAssetPath`）、`openrouter-video.ts`（2 处）、`seedance.ts`（1 处）、`video/route.ts` 的 `toPublicAssetUrl`
+
+**顺手修掉同源潜伏 bug**：以前参考图若是 `http://<自家域名>/generated/...` 绝对地址，`toDataUrlIfLocalPublicAsset` 同样不认，会把地址原样发给平台（马来那批必挂）。现在一律归一化成本地路径直接读文件。
+
+### ③ ⭐⭐ 重要认知修正：「18 条」不是 18 个失败事件，是**日志出现次数**
+
+部署后跑归档脚本 **命中 0 条**，查清原因（**不是脚本坏了**）：
+- 那 18 行日志全属**同一个 requestId**，事件构成是 `image-provider-non-ok ×6` + `provider-curl-non-ok ×6` + `image-provider-curl-fallback-failed ×6` + `image-route-failed ×7`，但**最终 `image-route-success ×3`**，该 GenerationEvent 的 **`status` = `success`**。
+- 也就是说：**它是"重试过程中的中间失败"，最终成功了 → 后台「失败原因」列表里根本不占位**（那里只算 `status='failed'`）。
+- 上一任 AI 的「18 条」是用 `grep -c` 数**日志行数**得出的，误当成了 18 个待排查事件。
+- ⚠️ **教训（写进 07 文档）**：以后从日志 `grep -c` 得到的数字**必须回 DB 用 requestId 核对 `status`**，否则会把"中间失败/已重试成功"当成"待排查的红字"。
+- 归档规则 `platform-download-our-thumbnail-endpoint` **保留**（以后真造成失败会自动认出来），当前命中 0 属正确结果。
+- **Bug 本身是真的、值得修**：每次超时白等 10 秒 + 触发 curl 兜底重试链，用户端就是"转很久"；而且只要哪次重试都不中就会变成真失败。
+
+### ④ 测试服实机回归（用户要求"测过没问题再上正式服"，全部通过）
+
+测试号 `12424740@qq.com`，测试服 v48：
+1. **对话流生图（带参考图，Seedream 4.5 / 2K / 4张）**：`image-provider-success ×4`，4 张图出图且风格跟参考图一致；日志里参考图 = `kind:"data"`（本地文件转 base64，说明归一化生效）。
+2. **对话流生视频（带参考图，Seedance 2.0 Mini / 5秒）**：`byteplus-create-success` → 轮询 → `media-save-download-saved`，零错误；参考图 = `kind:"generated", pathTail:"users/ID_535317/images/...jpg"`（**原图路径，不是缩略图接口**）；前端封面就是参考图那只狐狸。
+3. **工作流快捷编辑生图（走 async job = `resolveReferenceUrls`）**：`image-job-success`，人物保留、画改成向日葵花田，新节点 `image_5_w2`（Seedream 4.5 / 16:9 / 2K / 2848×1600）。
+4. **v47 的 401 跳首页**：清掉 `flashmuse-session` cookie 后点生成 → URL 从 `/workspace` **直接跳 `/`**，零红字零提示；DB 查最近 20 分钟 GenerationEvent 全是 `success`，**含「请先登录」的失败事件 0 条**（确认 401 不再记事件）。
+5. **两个日志文件 `media-thumbnail` 计数 = 0**（本次所有生成都没再把缩略图接口发出去）。
+6. 单元自测：`normalizeReferenceAssetUrl` 10 条用例（含线上那条真实 URL）全过 + 幂等性 OK。
+
+### ⑤ 部署记录
+
+- 测试服：v47 → **v48**，`x-app-version: v1.0.0.48`，阿里测试镜像已同步，`PUBLISHED_APP_VERSION` = v48，入口 200。
+- 正式服：备份 `/opt/flashmuse/app-backups/20260728-030655-presync-v48` → staging→prod rsync（不 bump）→ build → `.next/static` 同步阿里正式镜像 → `PUBLISHED_APP_VERSION` = v48 → **四域名 main/api/ali/static 全 200**、`x-app-version: v1.0.0.48`。
+- commit `389ad87` + push → **四方同步 = v1.0.0.48**。
+- ⚠️ 观察到一次 `PUT /api/workspace-state` 瞬时 **502**（前后同接口都 200，与本次改动无关，`workspace-state` 没被碰过）。如果反复出现再查阿里 nginx 超时/腾讯回源。
+
+---
+
 ## 2026-07-28（第八次会话）**部署 v1.0.0.47 到测试服 + 正式服**（用户要求两服都部署），并执行归档
 
 本次会话零代码改动，只做部署与归档。

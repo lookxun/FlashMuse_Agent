@@ -2,7 +2,19 @@
 
 > 本批交接文档 2026-07-21 重建。更早的详细流水在 `historical-handover-docs-last-used-2026-07-21/`（尤其 `CHANGELOG.md` 580KB、`01-current-status.md`、`05-next-actions.md`）。遇到需要历史上下文的难题再翻归档。
 
-## 当前状态（2026-07-28 第八次会话更新：v1.0.0.47 已部署两服）
+## 当前状态（2026-07-28 第九次会话更新：v1.0.0.48 已部署两服）
+
+### ✅ 四方同步：正式服 = 测试服 = 本地 = GitHub = **`v1.0.0.48`**（commit `389ad87`）
+
+- 第九次会话做的：⭐ **参考素材 url 归一化根治**（详见 CHANGELOG 顶条）。新增唯一权威 `src/lib/reference-asset-url.ts`（`normalizeReferenceAssetUrl`，幂等）：把「给人看的动态缩略图接口地址 `/api/media-thumbnail?url=`」和「自家主机绝对前缀（含已退役马来 IP）」一律还原成**文件静态直链**，8 处咽喉全部接入（image/video/byteplus-assets 三个 route 入口 + `generation-jobs.resolveReferenceUrls` + openrouter/openrouter-video/seedance/video-route 的底层拼址）。无 Prisma 迁移。
+- 部署：测试服 v48 → **实机回归全过** → 正式服 v48（备份 `20260728-030655-presync-v48`）→ 四域名全 200 → push。
+- **测试服实机回归全过**（用户要求"测过再上正式服"）：对话流生图（带参考图 4/4）、对话流生视频（带参考图 Mini 5秒）、工作流快捷编辑（async job 路径）、**v47 的 401 跳首页 + 不记事件**、两个日志 `media-thumbnail` 计数 0。
+- ⭐⭐ **重要认知修正：「平台拉缩略图超时 18 条」不是 18 个失败事件，而是日志出现次数**。那 18 行全属同一个 requestId，最终 `image-route-success`、GenerationEvent 的 `status = success` → **后台「失败原因」里根本不占位**，所以归档脚本命中 0 属正确结果。**教训：以后从日志 `grep -c` 得到的数字必须回 DB 按 requestId 核对 `status`**，否则会把"中间失败/已重试成功"当成待排查红字。（Bug 本身仍是真的：每次超时白等 10 秒 + 触发 curl 兜底重试链，用户端表现为"转很久"。）
+- 归档现状（v47 那批已跑完，本次无新增）：测试服剩 **36** 待排查，正式服剩 **308** 待排查。
+- ⚠️ 观察到一次 `PUT /api/workspace-state` 瞬时 **502**（前后同接口都 200，与本次改动无关）。反复出现再查阿里 nginx 超时/腾讯回源。
+- ⭐ 下一步主线仍是**继续排查红字**（正式服 308 条），清单见 `07-red-error-triage-and-archive.md` 第七节；因为缩略图这条已确认不占位，**下一个真正值得查的是「那 40 条轮询 failed」和「gpt 中文明文拒绝 ~20 条」**。
+
+## 此前状态（2026-07-28 第八次会话：部署 v1.0.0.47）
 
 ### ✅ 四方同步：正式服 = 测试服 = 本地 = GitHub = **`v1.0.0.47`**（commit `9268dab`）
 
@@ -11,8 +23,8 @@
 - 验证：测试服 `x-app-version: v1.0.0.47` + `http://101.37.129.164:8080/` 200；正式服 `x-app-version: v1.0.0.47` + 四域名 main/api/ali/static 全 **200**；两服 `PUBLISHED_APP_VERSION` 已 sed 成 `v1.0.0.47` 并 force-recreate。
 - 正式服备份：`/opt/flashmuse/app-backups/20260728-021857-presync-v47`。
 - **归档脚本两服都已 `--apply` 跑完**：测试服归档 10 条（剩 36 待排查）；**正式服归档 367 条**（`reference-image-size` 191 / `provider-insufficient-credits` 66 / `reference-slot-not-an-image` 26 / `pre-diagnostics-log-unknowable` 24 / `session-expired-recorded-as-failure` 17 / `seedream-pro-sequential-param` 13 / `reference-video-total-duration` 12 / `stale-asset-card` 10 / `approved-card-not-reused` 8），**剩余未归档 308 条**。
-- ⚠️ **仍未做实机点测**：v46/v47 两批功能都没点过（清单见 `05-next-actions.md`），尤其 v47 动了 6 个 route 的错误分支 + 两处 `readJson` 咽喉，**需要各模式各跑一次成功生成 + 验一次 401 跳首页**。
-- ⭐ 下一步主线仍是**继续排查红字**，下一个优先项：**平台拉我们缩略图超时 18 条**（动态 `/api/media-thumbnail` 改静态直链），详见 `07-red-error-triage-and-archive.md`。
+- ✅ **v47 的实机回归已在第九次会话补做**（对话流生图/生视频、工作流、401 跳首页全过）。v46 那批（资产库时长角标 / hover 放大 / 工作流视频截图等）**仍未点测**，清单见 `05-next-actions.md`。
+- ⭐ 下一步主线仍是**继续排查红字**（缩略图那条已查清=不占位，见本文件顶部）。
 
 ## 此前状态（2026-07-28 第七次会话）：红字排查第 2~5 批，四类红字全部查清
 
