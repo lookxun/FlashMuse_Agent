@@ -4,7 +4,7 @@
 
 ## 当前状态（2026-07-28 第十一次会话更新：✅ 四方同步 v1.0.0.50，已部署两服）
 
-### ✅ 四方同步：正式服 = 测试服 = 本地 = GitHub = **`v1.0.0.50`**
+### ✅ 四方同步：正式服 = 测试服 = 本地 = GitHub = **`v1.0.0.50`**（commit `1fd1ef3`）
 
 - 本次一次性把**积压的两批**（第十次 + 第十一次会话）全部部署上线。**无 Prisma 迁移**（两服 entrypoint 均 `No pending migrations`）。
 - 正式服备份：`/opt/flashmuse/app-backups/20260728-140839-presync-v50`。四域名 main/api/ali/static 全 **200**，两服 `x-app-version: v1.0.0.50`。
@@ -67,6 +67,39 @@
 5. ⭐ 顺手消掉一处「抄三遍」：失败原因归一化 SQL 抽成 `FAILURE_REASON_SQL`，概览页与新页共用。
 6. ⛔ 新认知：`api/video/route.ts` 那道服务端尺寸兜底靠 `MediaAsset.width/height` 查库，**历史资产这两列常是 null**
    → 服务端拦不住，真正拦得住的是前端「现场量图」那道。两道都得在，别以为有服务端就够了。
+
+### ⛔⭐ 第十一次会话的操作记忆与踩坑（省下一个人的时间，全都实际踩过）
+
+**排查侧**
+
+1. ⭐⭐ **OpenRouter 的视频任务事后可回查原文** —— `taskId` 就是 `https://openrouter.ai/api/v1/videos/<id>`，
+   带 key `curl` 就能拿到当时的 `error`。**别再说"等新数据攒几天"**。命令见 `07` 文档第九节。BytePlus 的 `cgt-xxx` 不行。
+2. ⛔ **`find <文件名> | head -1` 会先命中缩略图副本**：本次查那两张参考图尺寸时，
+   `find` 先返回了 `image-thumbnails/upload_image/xxx.jpg`（**256×145**），差点把它当成原图下结论；
+   原图在 `upload_image/xxx.jpg`（**338×191**）。**查资产真实尺寸必须把所有匹配路径都列出来看清楚**。
+3. 量 jpg 宽高不需要装依赖：服务器上直接 `python3` 读 SOF 段（脚本见本次会话，几行就够），
+   容器里**没有 ffmpeg/ffprobe**（`sh: ffmpeg: not found`）。
+4. ⛔ **PowerShell 里 `node -e "...$..."` 的 `$` 会被本地 shell 吃掉** → `p.$disconnect()` 变成 `p.()` 直接语法错。
+   一次性脚本**一律写成 `.js`/`.sh` 文件再传**，别内联。
+5. 归档脚本先 `dry-run` 再 `--apply`：本次 dry-run 报 `toArchive: 33`（Kling 32 + veo 1），与排查结论完全一致才敢 apply。
+
+**验收侧（下次实机测同类功能直接照抄）**
+
+6. ⭐ **本地进不了后台的解法**：`.env` 的 `ADMIN_EMAILS=lookxun@163.com` 但该账号在**本地库**没有可用密码。
+   本次做法 = **临时把主测试号 `12424740@qq.com` 加进 `.env` 的 ADMIN_EMAILS**（逗号分隔）→ 验完**已还原**。
+   （测试服/正式服后台用 `lookxun@163.com` / `dragonstar` 正常登录。）
+7. ⛔ **发送前拦截的黑底提示是"瞬时"的**，`browser_snapshot` 之后再看就没了 →
+   必须**点发送后立刻轮询** `body.innerText`（本次用 15×120ms 循环抓到）。
+   另一个判据：**被拦时输入框里的提示词和参考图不会被清空**。
+8. ⛔ **Playwright MCP 的文件选择器不能在 `run_code` 里自己 `waitForEvent('filechooser')`** ——
+   会和 MCP 的 modal 跟踪打架、卡住。正确姿势：用 `browser_click` 点上传按钮 → 用 `browser_file_upload` 传文件 →
+   再用 `run_code` 做后续（填提示词、点发送、抓提示）。
+9. 造测试图不用找素材：项目已装 `sharp`，几行就能生成 200×120（触发拦截）和 1280×720（合规反例）两张 jpg。
+10. ⚠️ **观察到一个小问题（未修，已记进 `05-next-actions.md`）**：被拦截后**再点一次发送**会报
+    `POST /api/asset-upload-temp 500`，容器日志是 `上传文件不存在或已过期` —— 临时上传凭证像是被第一次尝试消耗掉了。
+    重新上传即可，不影响首次拦截行为，但**用户连点两次会看到一个没用的报错**。
+11. ⛔ 工作流画布（tldraw）**连线不适合自动化**：8% 缩放下节点分散，本次没能自动完成"图片节点连到视频节点再点生成"。
+    工作流侧那一项验收因此留给人工。
 
 ### 次要待办（历史，已随 v50 全部上线）
 
