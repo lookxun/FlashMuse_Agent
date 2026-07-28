@@ -9,7 +9,7 @@ import { ADVANCED_CHAT_MODEL, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, getExpect
 import { createGeneratedImageThumbnail, getLocalImageDimensions, saveGeneratedAsset, type ImageDimensions } from "@/lib/local-assets";
 import { enqueueRemoteAssetSave } from "@/lib/media-save-queue";
 import { syncGeneratedFilesToAli } from "@/lib/ali-sync";
-import { toUserErrorMessage } from "@/lib/error-message";
+import { isModelRefusalText, toUserErrorMessage } from "@/lib/error-message";
 import { appendGenerationDiagnosticsLog, summarizeGeneratedReference } from "@/lib/generation-diagnostics-log";
 import { getBytePlusBaseUrl, getBytePlusModelForRequest, getConfiguredBytePlusApiKey, getConfiguredOpenRouterApiKey, getModelProviderPreference, isGeneralTextModelEnabled, isTextModelEnabled } from "@/lib/system-settings";
 import { sanitizeModelOutputText } from "@/lib/text-cleanup";
@@ -1194,16 +1194,22 @@ function redactBase64ForLog(value: string) {
   return value.replace(/[A-Za-z0-9+/]{200,}={0,2}/g, "[base64]");
 }
 
+// ⭐ 老 /chat/completions 接口"没出图"时，上游可能给三种完全不同的东西，必须分开，不能糊成一句：
+// ① data.error.message = **平台报的错**（如 `error code: 520`、`Provider returned an empty response`）
+//    —— 这是网关抖动，不是模型不肯画。以前被包成"图片平台没有返回图片：error code: 520"，
+//    用户以为要改提示词，其实换一次就好了（2026-07-28 在正式服实测到 2 条）。
+// ② message.refusal / message.content 且是拒绝语 = **模型不肯画**（GPT版最常见，中文小作文）。
+// ③ message.content 但不是拒绝语 = **模型只回了一段文字**（常见是把提示词原样复读回来，
+//    或说"你的要求前后矛盾"）。以前把这段直接当报错贴出去 → 用户看到的红字是自己的提示词。
 function getOpenRouterNoImageReason(data: OpenRouterChatCompletionResponse) {
   const choice = data.choices?.[0];
   const message = choice?.message;
-  const parts = [
-    cleanNoImageReason(data.error?.message),
+  const providerError = cleanNoImageReason(data.error?.message) ?? "";
+  const modelText = Array.from(new Set([
     cleanNoImageReason(message?.refusal),
     cleanNoImageReason(message?.content),
-  ].filter((item): item is string => Boolean(item));
-
-  return Array.from(new Set(parts)).join("；");
+  ].filter((item): item is string => Boolean(item)))).join("；");
+  return { providerError, modelText, combined: [providerError, modelText].filter(Boolean).join("；") };
 }
 
 function getImageDimensionScore(dimensions: ImageDimensions | undefined, target: ImageDimensions) {
@@ -1691,11 +1697,9 @@ async function generateGptImage2(prompt: string, referenceImages: string[], opti
       prompt,
       settings: options.settings,
       durationMs: Date.now() - startedAt,
-      // ⭐ 待跟踪（2026-07-28）：新图片接口返回 200 但没图时，模型的「明文拒绝原文」到底放在响应的哪个
-      // 字段还不知道（老 /chat/completions 接口在 choices[0].message.content|refusal，新 /images 接口不是这个
-      // 形状）。所以这里先把响应体原文落盘（去掉 base64 以免刷爆日志），攒到真实样本后再写读取逻辑，
-      // 别凭猜测写字段名。捞到之后要做的：读出原文 → 抛 `图片平台没有返回图片：${原文}` →
-      // error-message.ts 的 isModelRefusalText 会自动把它映射成 MODEL_REFUSED_MESSAGE → 前端亮「AI 改写重试」。
+      // ⭐ 2026-07-29 结论：这条打点**在正式服一次都没触发过**（日志里零条 body）。直连版（新 /images 接口）
+      // 的拒绝走的是上面 `image-provider-non-ok` 那条 400 分支（`rejected by the safety system`），
+      // 不会走到"200 但没图"。所以这里的"待跟踪捞字段名"基本可以不用等了；body 继续留着做保险。
       upstream: { reason: "empty image result", body: redactBase64ForLog(responseText).slice(0, 1200) },
     });
     throw new Error("图片平台没有返回图片，且没有返回可用原因。");
@@ -1909,12 +1913,12 @@ export async function generateOpenRouterImage(prompt: string, referenceImages: s
     }
 
     if (displayImages.length === 0) {
-      const noImageReason = getOpenRouterNoImageReason(data);
+      const noImage = getOpenRouterNoImageReason(data);
       console.error("[image-generation] no image returned", {
         model,
         responseModel: data.model,
         responseId: data.id,
-        reason: noImageReason || "empty image result",
+        reason: noImage.combined || "empty image result",
         finishReason: data.choices?.[0]?.finish_reason,
         nativeFinishReason: data.choices?.[0]?.native_finish_reason,
       });
@@ -1931,9 +1935,15 @@ export async function generateOpenRouterImage(prompt: string, referenceImages: s
         settings: options.settings,
         references: safeReferenceImages.map((image, index) => summarizeGeneratedReference(image, index)),
         durationMs: Date.now() - startedAt,
-        upstream: { responseId: data.id, reason: noImageReason || "empty image result", finishReason: data.choices?.[0]?.finish_reason, nativeFinishReason: data.choices?.[0]?.native_finish_reason, choiceCount: data.choices?.length },
+        upstream: { responseId: data.id, reason: noImage.combined || "empty image result", providerError: noImage.providerError || undefined, finishReason: data.choices?.[0]?.finish_reason, nativeFinishReason: data.choices?.[0]?.native_finish_reason, choiceCount: data.choices?.length },
       });
-      throw new Error(noImageReason ? `图片平台没有返回图片：${noImageReason}` : "图片平台没有返回图片，且没有返回可用原因。");
+      // ① 平台自己报的错：按普通生成失败抛，让 error-message 映射成"平台服务临时异常"并保持可自动重试。
+      if (noImage.providerError) throw new Error(`图片生成失败：${noImage.providerError}`);
+      // ② 模型明确拒绝：原样带上拒绝原文，error-message 会拼成统一的"模型因…拒绝出图 + 原文"。
+      if (noImage.modelText && isModelRefusalText(noImage.modelText)) throw new Error(`图片平台没有返回图片：${noImage.modelText}`);
+      // ③ 模型没报错也没拒绝，只回了一段文字（常见是把提示词复读回来）：不能把这段当报错贴给用户。
+      if (noImage.modelText) throw new Error(`图片平台没有返回图片，模型只回了一段文字：${noImage.modelText}`);
+      throw new Error("图片平台没有返回图片，且没有返回可用原因。");
     }
 
     const allImageDimensions = Object.fromEntries(

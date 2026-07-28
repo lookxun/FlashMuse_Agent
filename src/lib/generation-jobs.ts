@@ -748,7 +748,7 @@ export async function runImageJob(job: GenerationJobRow) {
       void appendGenerationDiagnosticsLog({ event: "image-job-transient-retry", requestId: job.requestId, conversationId: job.conversationId ?? undefined, userId: job.userId, mode: "image", model: job.model ?? undefined, prompt: job.prompt ?? undefined, settings, durationMs: Date.now() - startedAt, error, extra: { attempts: job.attempts, delayMs } });
       return;
     }
-    const codedError = await createCodedApiError(error, job.extraJson?.editFunction ? editErrorFallback(error) : GENERIC_MEDIA_ERROR_MESSAGE, "image-job failed");
+    const codedError = await createCodedApiError(error, job.extraJson?.editFunction ? editErrorFallback(error) : GENERIC_MEDIA_ERROR_MESSAGE, "image-job failed", { model: job.model ?? undefined });
     await markJobFailed(job.id, codedError.error, codedError.errorCode);
     void recordGenerationEvent({ userId: job.userId, requestId: job.requestId, kind: "image", creditSource, model: job.model ?? undefined, provider: job.provider ?? undefined, status: "failed", failureReason: codedError.error, failureCode: codedError.errorCode, durationMs: Date.now() - startedAt, referenceImageCount: referenceImages.length });
     void appendGenerationDiagnosticsLog({ event: "image-job-failed", requestId: job.requestId, conversationId: job.conversationId ?? undefined, userId: job.userId, mode: "image", model: job.model ?? undefined, prompt: job.prompt ?? undefined, settings, durationMs: Date.now() - startedAt, error, extra: { errorCode: codedError.errorCode, userError: codedError.error } });

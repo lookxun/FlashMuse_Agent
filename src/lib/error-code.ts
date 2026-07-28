@@ -26,8 +26,10 @@ function nextErrorCode() {
   return task;
 }
 
-export async function createCodedApiError(error: unknown, fallback: string, scope: string) {
-  const message = toUserErrorMessage(error, fallback);
+// options.model：⭐ 只用于决定错误文案里能不能写"可由AI安全改写后重试"（只有 gpt-5.4-image-2 两款
+// 有这个入口，见 models.ts 的 modelSupportsPromptSafetyRewrite）。图片链路必须传，视频链路不传即可。
+export async function createCodedApiError(error: unknown, fallback: string, scope: string, options?: { model?: string }) {
+  const message = toUserErrorMessage(error, fallback, options);
   const errorCode = await nextErrorCode();
   console.error(`[${errorCode}] ${scope}`, sanitizeErrorForLog(error));
   return { error: `(${errorCode}) ${message}`, errorCode };

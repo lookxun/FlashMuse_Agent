@@ -10,7 +10,7 @@ import { AudioWaveformPlayer } from "@/components/audio-waveform-player";
 import { AssetMentionPicker, type MentionPickerCategory, type MentionPickerItem } from "@/components/asset-mention-picker";
 import { VideoUploadThumbnail } from "@/components/video-upload-thumbnail";
 import { VideoPlayBadge } from "@/components/video-play-badge";
-import { DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, DEFAULT_IMAGE_QUALITY, GPT_IMAGE2_MODEL_ID, IMAGE_QUALITY_OPTIONS, IMAGE_QUALITY_LABELS, isGptImage2Model, isGptImage2AgentModel, getImageModelSelectHint, bytePlusVideoGenerationModels, frontendConversationModels, frontendImageGenerationModels, getExpectedImageDimensions, getExpectedVideoDimensions, getSupportedImageResolutions, getSupportedVideoRatios, getSupportedVideoResolutions, imageGenerationModels, normalizeImageResolutionForModel, normalizeVideoRatioForModel, normalizeVideoResolutionForModel, validateVideoDurationWithReferences, videoGenerationModels, type ConversationModel, type GenerationModel, type ModelName } from "@/lib/models";
+import { DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, DEFAULT_IMAGE_QUALITY, GPT_IMAGE2_MODEL_ID, IMAGE_QUALITY_OPTIONS, IMAGE_QUALITY_LABELS, isGptImage2Model, isGptImage2AgentModel, getImageModelSelectHint, bytePlusVideoGenerationModels, frontendConversationModels, frontendImageGenerationModels, getExpectedImageDimensions, getExpectedVideoDimensions, getSupportedImageResolutions, getSupportedVideoRatios, getSupportedVideoResolutions, imageGenerationModels, normalizeImageResolutionForModel, normalizeVideoRatioForModel, normalizeVideoResolutionForModel, validateVideoDurationWithReferences, videoGenerationModels, type ConversationModel, type GenerationModel, type ImageResolution, type ModelName } from "@/lib/models";
 import { GENERIC_MEDIA_ERROR_MESSAGE, toUserErrorMessage } from "@/lib/error-message";
 import { isGptImageSafetyFailure, normalizeAttemptPrompt, runPromptSafetyRetry } from "@/lib/gpt-image-safety-retry";
 import { handleSessionExpiredResponse, SESSION_EXPIRED_SILENT_ERROR } from "@/lib/session-expired-redirect";
@@ -303,16 +303,35 @@ declare module "@tldraw/tlschema" {
 }
 
 const NODE_WIDTH = 320;
-// 图片编辑类（高清/橡皮）多模型候选链：按序尝试，前一个失败自动换下一个，全失败才失败卡。
+// 图片编辑类（橡皮）多模型候选链：按序尝试，前一个失败自动换下一个，全失败才失败卡。
+// ⚠️ 高清不在这条链里（它改成了用户自己选模型 + K 数，见 HD_MODEL_OPTIONS），别再把两者混用。
 const EDIT_MODEL_CANDIDATES: ModelName[] = [
   "google/gemini-3.1-flash-image-preview",
   "google/gemini-3-pro-image-preview",
   "byteplus:conversation-image.seedream-4-5",
 ];
 // 按后台开关过滤候选链（保持顺序）；全被关掉则回落完整链，避免功能不可用。
-function getEditCandidates(func: "hd" | "eraser", toggles?: Record<string, boolean>): ModelName[] {
+function getEditCandidates(func: "eraser", toggles?: Record<string, boolean>): ModelName[] {
   const enabled = EDIT_MODEL_CANDIDATES.filter((id) => (toggles?.[`${func}:${id}`] ?? true) !== false);
   return enabled.length > 0 ? enabled : EDIT_MODEL_CANDIDATES;
+}
+// 「高清」的提示词（唯一权威，本次改动前后一字未变）。
+const HD_PROMPT = "保持画面内容、主体、构图、颜色和所有细节完全不变，只把这张图提升为更清晰锐利的高清版本，不要增加、删除或改动任何元素。";
+// 「高清」下拉的固定选项（与 system-settings 的 HD_FUNCTION_MODEL_CHAIN 一一对应，新增模型两处一起改）。
+// 功能与提示词完全不变，只是把「固定候选链 + 固定 4K」换成用户自己选模型和 K 数。
+// ⚠️ 开关粒度是**按模型**（`hd:<modelId>`）：关掉一个模型，它的 2K/4K 两个选项一起隐藏。
+const HD_MODEL_OPTIONS: Array<{ label: string; model: ModelName; resolution: ImageResolution }> = [
+  { label: "GPT 2K", model: "openai/gpt-5.4-image-2" as ModelName, resolution: "2K" },
+  { label: "GPT 4K", model: "openai/gpt-5.4-image-2" as ModelName, resolution: "4K" },
+  { label: "Gemini 2K", model: "google/gemini-3.1-flash-image-preview" as ModelName, resolution: "2K" },
+  { label: "Gemini 4K", model: "google/gemini-3.1-flash-image-preview" as ModelName, resolution: "4K" },
+];
+// 高清可用选项 = 后台「高清模型开关」没关 且 该模型在后台启用的图片模型清单里（两道开关都要过）。
+// ⚠️ 这里**故意不做「全关就回落全部」**：用户明确要求「关掉模型开关，前端相应选项就隐藏」，
+//    全关就应该整个高清按钮都不显示（由调用处判断 length === 0）。
+function getHdOptions(toggles: Record<string, boolean> | undefined, enabledImageModelIds: Set<string> | undefined) {
+  return HD_MODEL_OPTIONS.filter((option) => (toggles?.[`hd:${option.model}`] ?? true) !== false
+    && (!enabledImageModelIds || enabledImageModelIds.has(option.model)));
 }
 // 视频编辑类（快捷编辑）候选链，规则同上：按后台开关过滤、全关则回落完整链。
 function getVideoEditCandidates(func: "video_quick", toggles?: Record<string, boolean>): ModelName[] {
@@ -2437,6 +2456,7 @@ function WorkflowSelectedNodeOverlay() {
   const [quickEditOpen, setQuickEditOpen] = useState(false);
   const [quickEditText, setQuickEditText] = useState("");
   const [frameMenuOpen, setFrameMenuOpen] = useState(false);
+  const [hdMenuOpen, setHdMenuOpen] = useState(false);
   const quickEditRef = useRef<HTMLTextAreaElement | null>(null);
   const [eraserOpen, setEraserOpen] = useState(false);
   const [eraserBrush, setEraserBrush] = useState(40);
@@ -2450,7 +2470,7 @@ function WorkflowSelectedNodeOverlay() {
   const selectedEditNode = selected?.shape.props.node;
   const selectedEditKind = selectedEditNode?.kind;
   const canQuickEdit = Boolean(selectedEditNode && (selectedEditKind === "image" || selectedEditKind === "video") && hasWorkflowNodeResult(selectedEditNode) && !selectedEditNode.data.isRunning);
-  useEffect(() => { setQuickEditOpen(false); setQuickEditText(""); setFrameMenuOpen(false); setEraserOpen(false); setEraserHasStrokes(false); }, [selected?.shape.id]);
+  useEffect(() => { setQuickEditOpen(false); setQuickEditText(""); setFrameMenuOpen(false); setHdMenuOpen(false); setEraserOpen(false); setEraserHasStrokes(false); }, [selected?.shape.id]);
   useEffect(() => {
     if (!canQuickEdit) return;
     const onKey = (event: KeyboardEvent) => {
@@ -2500,6 +2520,11 @@ function WorkflowSelectedNodeOverlay() {
   const stopCanvasPointer = (event: SyntheticEvent) => event.stopPropagation();
 
   const isVideoQuickMenuNode = node.kind === "video";
+  // 高清可选项：过后台两道开关（高清模型开关 + 启用的图片模型清单）。全被关掉 → 高清按钮整个不显示。
+  // ⛔ 这里**故意不用 useMemo** —— 本组件在这一行之前已经有条件分支/提前 return，
+  //    在此处加 Hook 会触发 React #310「Rendered more hooks than during the previous render」，
+  //    整个 tldraw 画布直接崩成「Something went wrong」（2026-07-29 实际踩过）。只有 4 个元素，直接算最省事。
+  const hdOptions = getHdOptions(runtime.editModelToggles, new Set(runtime.modelOptions.imageModels.map((item) => item.id)));
   const showMediaQuickMenu = (node.kind === "image" || isVideoQuickMenuNode) && hasWorkflowNodeResult(node) && !node.data.isRunning;
   // 快捷编辑派发：图片走 createImageEditNode（贴源图参数），视频走 createVideoEditNode（贴源视频参数+融合模式+模型候选链）。
   const submitQuickEdit = (text: string) => {
@@ -2535,7 +2560,36 @@ function WorkflowSelectedNodeOverlay() {
             <span className="mx-0.5 h-5 w-px bg-gray-200" />
             {!isVideoQuickMenuNode ? (
               <>
-                <button type="button" onClick={() => runtime.createImageEditNode(node, { prompt: "保持画面内容、主体、构图、颜色和所有细节完全不变，只把这张图提升为更清晰锐利的高清版本，不要增加、删除或改动任何元素。", modelCandidates: getEditCandidates("hd", runtime.editModelToggles), highDef: true })} className="flex h-[34px] items-center gap-1 whitespace-nowrap rounded-[8px] px-2 font-medium text-[#1f2937] hover:bg-gray-100"><RiHdLine className="h-[18px] w-[18px]" /><span>高清</span></button>
+                {/* 高清：鼠标悬停下三角展开「GPT 2K / GPT 4K / Gemini 2K / Gemini 4K」。
+                    功能与提示词与以前完全一致（指令式提升清晰度、比例贴源图），只是模型与 K 数改由用户选，
+                    不再是"失败自动换下一个模型"的候选链（用户明确选了模型就不该被悄悄换掉）。
+                    选项被后台两道开关过滤（高清模型开关 + 启用的图片模型清单），全被关掉时整个按钮隐藏。 */}
+                {hdOptions.length > 0 ? (
+                  <div className="relative" onMouseEnter={() => setHdMenuOpen(true)} onMouseLeave={() => setHdMenuOpen(false)}>
+                    <button type="button" className="flex h-[34px] items-center gap-1 whitespace-nowrap rounded-[8px] px-2 font-medium text-[#1f2937] hover:bg-gray-100">
+                      <RiHdLine className="h-[18px] w-[18px]" />
+                      <span>高清</span>
+                      <RiArrowDownSLine className="h-4 w-4 text-[#9ca3af]" />
+                    </button>
+                    {hdMenuOpen ? (
+                      <div className="absolute left-1/2 top-full z-[10000] w-[150px] -translate-x-1/2 pt-1.5">
+                        <div className="rounded-[10px] bg-white p-1 shadow-[0_10px_30px_rgba(15,23,42,0.18)] ring-1 ring-black/5">
+                          {hdOptions.map((option) => (
+                            <button
+                              key={option.label}
+                              type="button"
+                              onClick={() => { setHdMenuOpen(false); runtime.createImageEditNode(node, { prompt: HD_PROMPT, model: option.model, resolution: option.resolution, ratioFromSourceImage: true }); }}
+                              className="flex h-9 w-full items-center gap-2 whitespace-nowrap rounded-[8px] px-2 text-left text-[14px] text-[#1f2937] hover:bg-gray-100"
+                            >
+                              <RiHdLine className="h-[17px] w-[17px] text-[#6b7280]" />
+                              <span>{option.label}</span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
                 <button type="button" onClick={() => runtime.createImageEditNode(node, { prompt: "去背景（本地抠图）", bgRemove: true })} className="flex h-[34px] items-center gap-1 whitespace-nowrap rounded-[8px] px-2 font-medium text-[#1f2937] hover:bg-gray-100"><RiScissorsCutLine className="h-[18px] w-[18px]" /><span>去背景</span></button>
                 <button type="button" onClick={() => setEraserOpen(true)} className="flex h-[34px] items-center gap-1 whitespace-nowrap rounded-[8px] px-2 font-medium text-[#1f2937] hover:bg-gray-100"><RiEraserLine className="h-[18px] w-[18px]" /><span>橡皮工具</span></button>
                 <span className="mx-0.5 h-5 w-px bg-gray-200" />

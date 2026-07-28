@@ -35,6 +35,17 @@ const LOG_FILES = [".runtime/generation-diagnostics-log.jsonl", ".runtime/video-
  *   ③ 还没查清 / 修不了、仍落在桶里 → 不归档，留着亮
  *   ④ 映射出去后新形成的那条明确原因本身 → 不归档（修不了就该一直亮着）
  */
+/**
+ * ⭐ 部分规则要带日期下限（`before`）。见铁律 ④：
+ * 「某个根因被从兜底桶里映射成明确文案」之后**新发生**的那条明确原因本身**不归档**（修不了就该一直亮着）。
+ * 所以这类规则只归档"映射上线之前"的历史事件，上线之后新长出来的必须留着亮。
+ * ⚠️ 没有 before 的规则 = 根因真的被修掉了、此后零复发，不需要日期下限。
+ */
+function ruleAllowsEvents(rule, events) {
+  if (!rule.before) return true;
+  return events.every((event) => event.createdAt < rule.before);
+}
+
 const RESOLVED_RULES = [
   {
     key: "reference-image-size",
@@ -57,6 +68,11 @@ const RESOLVED_RULES = [
   {
     key: "provider-insufficient-credits",
     match: /insufficient credits|insufficient_quota|insufficient balance|requires more credits|exceeded your current quota|"(?:status|statusCode|code)":\s*402\b/i,
+    // ⭐ 日期下限 = v1.0.0.47 上正式服的时刻（备份目录 20260728-021857，UTC+8）。
+    //   在那之前的落在兜底桶里 → 归档；之后新发生的已经是明确文案「提供商余额不足！请联系管理员充值。」，
+    //   属于"运营真没钱"、我们修不了 → 按铁律 ④ **必须继续亮着**，绝不能被这条规则吃掉。
+    //   （2026-07-29 踩到：不加下限时它又命中了 11 条上次归档之后的新事件。）
+    before: new Date("2026-07-27T18:19:00Z"),
     note: "供应商账户余额不足（OpenRouter 402）→ v1.0.0.47 起已从「服务器繁忙」兜底桶拆出，单独提示「提供商余额不足！请联系管理员充值。」；根因属运营（真没钱），以后新发生的会以那条明确文案单独亮着、不再归档",
   },
   // ↓ 以下三条来自「当前模型不支持这组参数」54 条的排查（2026-07-28）：都是我们自己的 bug，且都已在
@@ -96,6 +112,17 @@ const RESOLVED_RULES = [
     key: "veo-r2v-duration",
     match: /unsupported output video duration/i,
     note: "google/veo-3.1 纯文生视频支持 4/6/8 秒，但**带参考图**（reference_to_video）只允许 8 秒，我们的时长表没有这个维度 → 任务被收下后异步失败、落进「服务器繁忙」。v1.0.0.49 新增唯一权威 models.ts 的 VIDEO_REFERENCE_DURATION_LIMITS + validateVideoDurationWithReferences()，对话流/工作流/服务端三处发送前拦截并明确提示（故意不静默改成 8 秒——时长直接决定计费）",
+  },
+  {
+    key: "gpt-image-empty-result-legacy-form",
+    // ⚠️ 只认**全角冒号**那一种：`图片平台没有返回图片：<可变尾巴>`。
+    //   这正是后台归一化成「图片平台没有返回图片（模型未产出或拒绝生成）」那 101 条的形态特征
+    //   （见 admin-failure-triage.ts 的 FAILURE_REASON_SQL）。
+    //   ⛔ 绝不能放宽成 `图片平台没有返回图片` 裸串 —— 那会连带吃掉
+    //   `图片平台没有返回图片，且没有返回可用原因。`（落兜底桶、根因另说）和
+    //   `图片平台没有返回图片，模型只回了一段文字：`（v51 新形态），两者都不该在这里归档。
+    match: /图片平台没有返回图片：/,
+    note: "「图片平台没有返回图片：<可变尾巴>」的三种旧形态（92 条模型明文拒绝的 500 字小作文原样当红字 / 7 条模型把提示词复读回来导致红字变成用户自己的提示词 / 2 条 error code: 520 与空响应被伪装成「模型不肯画」）→ v1.0.0.51 起 openrouter.ts 把「没出图」彻底拆成三路分别抛出：平台报错→「图片生成失败：<原文>」（可自动重试）、模型拒绝→统一「模型因色情/暴力/隐私安全等原因拒绝出图 + 附模型原话」并给出 AI 改写重试入口（对话流/工作流/资产库三处共用 modelSupportsPromptSafetyRewrite 判定）、只回文字→「模型这次没有出图，只回了一段文字」。归档理由 = 这个旧形态本身已不复存在（新形成的「模型拒绝」按铁律不归档，会单独亮着）",
   },
   {
     key: "pre-diagnostics-log-unknowable",
@@ -193,7 +220,7 @@ async function main() {
     //    日志文件会轮转/被清，这时只有 DB 里这份原文能认出来。规则都是很具体的上游英文特征，不会误伤中文文案。
     const reasonText = events.map((event) => event.failureReason ?? "").join(" ");
     const haystack = `${text} ${reasonText}`;
-    let rule = RESOLVED_RULES.find((candidate) => candidate.match.test(haystack));
+    let rule = RESOLVED_RULES.find((candidate) => candidate.match.test(haystack) && ruleAllowsEvents(candidate, events));
     // 「已过审素材没被复用就放弃重试」的特征：走了自动送审、只复用了旧凭证、没有新建过素材，最后仍失败。
     if (!rule && names.includes("byteplus-auto-review-reuse-active-asset") && !names.some((name) => /auto-review-asset-created|auto-review-asset-active/.test(name))) {
       rule = RESOLVED_RULES.find((candidate) => candidate.key === "approved-card-not-reused");

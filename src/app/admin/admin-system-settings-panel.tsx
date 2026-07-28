@@ -137,19 +137,27 @@ const modelUsageGroups: ModelUsageGroup[] = [
   },
 ];
 
-// 工作流图片「编辑功能」快捷菜单：后台规则展示 + 高清/橡皮模型候选链开关。
-// 候选链顺序（首选→次选→三选）与前端 EDIT_MODEL_CANDIDATES / system-settings 的 EDIT_FUNCTION_MODEL_CHAIN 一致。
+// 工作流图片「编辑功能」快捷菜单：后台规则展示 + 高清/橡皮模型开关。
+// 橡皮的候选链顺序（首选→次选→三选）与前端 EDIT_MODEL_CANDIDATES / system-settings 的 EDIT_FUNCTION_MODEL_CHAIN 一致。
 const EDIT_MODEL_CHAIN: Array<{ modelId: string; tier: string }> = [
   { modelId: "google/gemini-3.1-flash-image-preview", tier: "首选" },
   { modelId: "google/gemini-3-pro-image-preview", tier: "次选" },
   { modelId: "byteplus:conversation-image.seedream-4-5", tier: "三选" },
 ];
 
-const editFunctionRows: Array<{ key: string; name: string; rule: string; chain: boolean }> = [
-  { key: "quick", name: "快捷编辑", rule: "尽量用源图同款模型/比例/分辨率重绘；上传图等对不上尺寸时回落 Seedream 4.5，比例+分辨率取最接近源图的一档。走 img2img，模型跟随源图、无候选链开关。", chain: false },
-  { key: "hd", name: "高清", rule: "指令式提升清晰度，内容/构图/颜色不变；输出 4K、比例贴源图。走下方模型候选链：首选失败或关闭自动用下一个，全部失败才显示失败卡。", chain: true },
-  { key: "bg", name: "去背景", rule: "本地抠图（@imgly/background-removal-node），产透明 PNG，尺寸=源图。纯本地推理、不调云模型、无候选链开关。", chain: false },
-  { key: "eraser", name: "橡皮工具", rule: "半透明涂抹要消除的区域，导出时把标记区填中性灰盖住主体，模型做局部消除+补背景、其余不变；比例/尺寸贴源图。走下方模型候选链，规则同高清。", chain: true },
+// 「高清」不是候选链，而是用户在下拉里自己选模型 + K 数（每个模型 2K/4K 两个选项）。
+// 开关粒度 = 按模型：关掉一个模型，它的 2K/4K 两个选项在前端一起隐藏；两个都关则整个高清按钮隐藏。
+// 与前端 HD_MODEL_OPTIONS / system-settings 的 HD_FUNCTION_MODEL_CHAIN 一致，新增模型三处一起改。
+const HD_MODEL_CHAIN: Array<{ modelId: string; tier: string }> = [
+  { modelId: "openai/gpt-5.4-image-2", tier: "GPT" },
+  { modelId: "google/gemini-3.1-flash-image-preview", tier: "Gemini" },
+];
+
+const editFunctionRows: Array<{ key: string; name: string; rule: string; chain: Array<{ modelId: string; tier: string }> | null }> = [
+  { key: "quick", name: "快捷编辑", rule: "尽量用源图同款模型/比例/分辨率重绘；上传图等对不上尺寸时回落 Seedream 4.5，比例+分辨率取最接近源图的一档。走 img2img，模型跟随源图、无候选链开关。", chain: null },
+  { key: "hd", name: "高清", rule: "指令式提升清晰度，内容/构图/颜色不变；比例贴源图。快捷菜单里是下拉，用户自己选「GPT 2K / GPT 4K / Gemini 2K / Gemini 4K」四个选项之一（模型 + 分辨率档）。⚠️ 用户既然明确选了模型，失败就不再自动换成别的模型，直接显示失败卡。下方开关按模型生效：关掉某个模型，它的 2K/4K 两个选项一起隐藏；两个都关，高清按钮整个不显示。", chain: HD_MODEL_CHAIN },
+  { key: "bg", name: "去背景", rule: "本地抠图（@imgly/background-removal-node），产透明 PNG，尺寸=源图。纯本地推理、不调云模型、无候选链开关。", chain: null },
+  { key: "eraser", name: "橡皮工具", rule: "半透明涂抹要消除的区域，导出时把标记区填中性灰盖住主体，模型做局部消除+补背景、其余不变；比例/尺寸贴源图。走下方「首选→次选→三选」模型候选链：前一个失败或关闭自动用下一个，全部关闭时回落完整候选链以免不可用。", chain: EDIT_MODEL_CHAIN },
 ];
 
 // 工作流视频「编辑功能」快捷菜单：后台规则展示 + 快捷编辑模型候选链开关。
@@ -455,12 +463,12 @@ export function AdminSystemSettingsPanel({ settings, adminEmailCount }: { settin
       <section className="mt-8 min-w-[1180px] overflow-hidden rounded-[10px] border border-[#eeeeee] bg-white text-[13px] shadow-[0_10px_28px_rgba(0,0,0,0.04)]">
         <div className="border-b border-[#eeeeee] bg-[#fafafa] px-5 py-3 text-[12px] text-[#777777]">
           <span className="font-medium text-[#555555]">工作流 · 图片编辑功能</span>
-          <span className="ml-2">选中工作流图片节点后顶部快捷菜单里的编辑功能。高清 / 橡皮工具走「首选→次选→三选」模型候选链，前一个失败或关闭自动用下一个；全部关闭时回落到完整候选链以免不可用。</span>
+          <span className="ml-2">选中工作流图片节点后顶部快捷菜单里的编辑功能。高清 = 用户在下拉里自己选「GPT / Gemini × 2K / 4K」，关掉某个模型它的两个选项就隐藏；橡皮工具走「首选→次选→三选」模型候选链，前一个失败或关闭自动用下一个，全部关闭时回落到完整候选链以免不可用。</span>
         </div>
         <div className="grid grid-cols-[140px_1fr_470px] border-b border-[#eeeeee] bg-[#fafafa] text-[12px] text-[#777777]">
           <div className="px-5 py-3 font-medium">功能</div>
           <div className="px-5 py-3 font-medium">规则说明</div>
-          <div className="px-5 py-3 font-medium">使用模型（首选 / 次选 / 三选）</div>
+          <div className="px-5 py-3 font-medium">使用模型（高清=按模型开关 / 橡皮=首选→次选→三选）</div>
         </div>
         {editFunctionRows.map((row) => (
           <div key={row.key} className="grid grid-cols-[140px_1fr_470px] border-b border-[#f2f2f2] last:border-b-0">
@@ -469,12 +477,12 @@ export function AdminSystemSettingsPanel({ settings, adminEmailCount }: { settin
             <div className="px-5 py-4">
               {row.chain ? (
                 <div className="flex flex-col gap-2">
-                  {EDIT_MODEL_CHAIN.map((entry) => {
+                  {row.chain.map((entry) => {
                     const toggleKey = `${row.key}:${entry.modelId}`;
                     const checked = editModelToggles[toggleKey] !== false;
                     return (
                       <span key={toggleKey} className="inline-flex h-8 w-full items-center gap-2 rounded-[7px] bg-[#f4f6fb] px-2.5 text-[12px] text-[#333333]">
-                        <span className="w-8 shrink-0 text-[#999999]">{entry.tier}</span>
+                        <span className="w-12 shrink-0 text-[#999999]">{entry.tier}</span>
                         <ModelIcon modelId={entry.modelId} />
                         <span className="min-w-0 flex-1 truncate font-medium">{getModelLabel(entry.modelId)}</span>
                         <SettingSwitch checked={checked} disabled={isPending} onChange={(value) => updateEditModelToggle(toggleKey, value)} ariaLabel={`${row.name} ${entry.tier} 开关`} />

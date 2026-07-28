@@ -125,14 +125,25 @@ const DEFAULT_BYTEPLUS_MODEL_SELECTIONS: Record<string, string> = {
   "agent-chat.seed-2-0-pro": "ep-20260514173614-jbcb4",
 };
 
-// 图片编辑类（高清/橡皮）模型候选链：按顺序优先级，前一个失败/关闭自动用下一个。默认全部启用。
+// 图片编辑类（橡皮）模型候选链：按顺序优先级，前一个失败/关闭自动用下一个。默认全部启用。
 // 新增功能/模型只改这里 + 后台表格；前端候选链按此顺序 + 开关过滤。
+// ⚠️ 高清已从这条链里拆出去（见下面 HD_FUNCTION_MODEL_CHAIN）：它改成了「用户自己选模型和K数」，
+//    不再是失败自动换下一个的候选链，所以两者的开关必须分开，否则关一个会连带影响另一个。
 export const EDIT_FUNCTION_MODEL_CHAIN: string[] = [
   "google/gemini-3.1-flash-image-preview",
   "google/gemini-3-pro-image-preview",
   "byteplus:conversation-image.seedream-4-5",
 ];
-export const EDIT_FUNCTION_KEYS = ["hd", "eraser"] as const;
+export const EDIT_FUNCTION_KEYS = ["eraser"] as const;
+
+// 工作流「高清」可选模型（唯一权威）：快捷菜单里高清是个下拉，每个模型 × 2K/4K 共 4 个选项。
+// 开关粒度 = **按模型**（key 仍是 `hd:<modelId>`）：关掉某个模型，它的 2K 和 4K 两个选项一起隐藏。
+// 新增高清模型只改这里 + 后台表格 + 前端 HD_MODEL_OPTIONS 三处配置表。
+export const HD_FUNCTION_MODEL_CHAIN: string[] = [
+  "openai/gpt-5.4-image-2",
+  "google/gemini-3.1-flash-image-preview",
+];
+export const HD_FUNCTION_KEYS = ["hd"] as const;
 
 // 工作流「视频编辑功能」的模型候选链：依次 Mini → Fast → 2.0（前一个失败/关闭自动用下一个）。
 // 与前端 workflow-tldraw-canvas-inner 的 WORKFLOW_VIDEO_EDIT_MODEL_CHAIN 保持一致，新增模型只改这两处配置表。
@@ -145,6 +156,7 @@ export const VIDEO_EDIT_FUNCTION_KEYS = ["video_quick"] as const;
 
 const DEFAULT_EDIT_MODEL_TOGGLES: Record<string, boolean> = Object.fromEntries([
   ...EDIT_FUNCTION_KEYS.flatMap((func) => EDIT_FUNCTION_MODEL_CHAIN.map((modelId) => [`${func}:${modelId}`, true])),
+  ...HD_FUNCTION_KEYS.flatMap((func) => HD_FUNCTION_MODEL_CHAIN.map((modelId) => [`${func}:${modelId}`, true])),
   ...VIDEO_EDIT_FUNCTION_KEYS.flatMap((func) => VIDEO_EDIT_FUNCTION_MODEL_CHAIN.map((modelId) => [`${func}:${modelId}`, true])),
 ]);
 

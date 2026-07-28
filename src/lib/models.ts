@@ -23,6 +23,14 @@ export const GPT_IMAGE2_AGENT_MODEL_ID = "openai/gpt-5.4-image-2-agent";
 export function isGptImage2AgentModel(modelId?: string) {
   return modelId === GPT_IMAGE2_AGENT_MODEL_ID;
 }
+// ⭐ 唯一权威：这个模型的失败卡上会不会出现「AI改写重试」入口。
+// 只有 gpt-5.4-image-2 两款（直连版 + GPT版）接了安全改写编排，其它图片模型和**所有视频模型**都没有。
+// 用途有两个，必须保持一致：①失败卡按钮显示判定（gpt-image-safety-retry.ts）
+// ②红字文案里要不要写"可由AI安全改写后重试"（error-message.ts）——
+// 以前文案不看模型，导致视频碰到模型拒绝时也写"可点AI改写重试"，而视频根本没这个按钮。
+export function modelSupportsPromptSafetyRewrite(modelId?: string) {
+  return isGptImage2Model(modelId) || isGptImage2AgentModel(modelId);
+}
 // 把 GPT版 内部 id 解析成发往 OpenRouter 的真实模型名。
 export function resolveOpenRouterImageModelName(modelId?: string) {
   return isGptImage2AgentModel(modelId) ? GPT_IMAGE2_MODEL_ID : modelId;

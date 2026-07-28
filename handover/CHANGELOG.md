@@ -2,6 +2,232 @@
 
 > 本批 CHANGELOG 从 2026-07-21 交接文档重建开始记。**此前的全部历史流水**（约 580KB，含 2026-06 起到 07-21 每一次改动/部署细节）在 `historical-handover-docs-last-used-2026-07-21/CHANGELOG.md`，遇到需要历史上下文的难题再翻。
 
+## 2026-07-29（第十三次会话）⭐⭐ 归档 120 条「图片平台没有返回图片」 + 工作流「高清」改成四选项下拉 —— ✅ **四方同步 v1.0.0.52（正式服 = 测试服 = 本地 = GitHub）**
+
+### 1. 归档：正式服 120 条、测试服 3 条（用户拍板归档）
+
+- 新增归档规则 **`gpt-image-empty-result-legacy-form`**，`match: /图片平台没有返回图片：/`（**只认全角冒号**）。
+  这正是后台归一化成「图片平台没有返回图片（模型未产出或拒绝生成）」那一桶的形态特征（见 `admin-failure-triage.ts` 的 `FAILURE_REASON_SQL`），
+  一条正则同时覆盖第十二次会话查出的三种旧形态（92 条 500 字小作文 / 7 条模型复读提示词 / 2 条 520 与空响应伪装）。
+  ⛔ **绝不能放宽成 `图片平台没有返回图片` 裸串** —— 那会连带吃掉 `…，且没有返回可用原因。`（另一个根因、仍落兜底桶）
+  和 `…，模型只回了一段文字：`（v51 新形态），两者都不该归档。
+- ⭐ **正式服实际命中 120 条，不是文档里记的 101 条** —— 07-29 之后同类又新长了约 19 条，pending 总数也从 286 涨到 319。
+  **教训：文档里的条数是快照，跑归档前一定重新 dry-run 看真实数字。**
+- 结果：**正式服 319 → 199 待排查**；测试服 47 → 44。
+- ⛔⭐ **顺手修掉一个会误伤的归档 bug**（差点污染生产数据）：dry-run 发现旧规则 `provider-insufficient-credits`
+  **又命中了 11 条 07-28 上次归档之后新发生的事件**。按铁律 ④「映射出去后新形成的那条明确原因本身不归档（修不了就该一直亮着）」，
+  这 11 条属于「提供商余额不足！请联系管理员充值。」这条明确文案，**必须继续亮着**。
+  修法 = 给规则支持可选的 **`before` 日期下限** + 新增 `ruleAllowsEvents()`，该规则设 `before = 2026-07-27T18:19:00Z`
+  （v1.0.0.47 上正式服的时刻，备份目录 `20260728-021857`）。加了下限后 dry-run 从 131 变成干净的 120。
+  ⭐ **以后凡是 note 里写着「以后新发生的不再归档」的规则，都必须配 `before`，否则它会年复一年地吃新数据。**
+
+### 2. 工作流「高清」：单按钮 → 四选项下拉（用户需求，功能与提示词一字未改）
+
+| | 改动前 | 改动后 |
+|---|---|---|
+| 交互 | 一个按钮，点了就跑 | 下拉（悬停展开）：**GPT 2K / GPT 4K / Gemini 2K / Gemini 4K** |
+| 模型 | 固定候选链 Gemini 3.1 Flash → Gemini 3 Pro → Seedream 4.5，前一个失败自动换下一个 | 用户选：GPT = **直连版 `openai/gpt-5.4-image-2`**；Gemini = `google/gemini-3.1-flash-image-preview` |
+| 分辨率 | 固定该模型的 4K 档 | 用户选 2K / 4K |
+| 失败行为 | 全链尝试完才失败卡 | **用户明确选了模型就不再悄悄换成别的模型**，直接失败卡 |
+| 提示词 / 比例 | 指令式提升清晰度，比例贴源图 | **完全不变** |
+
+- ⭐ **拆开了「高清」和「橡皮」共用的那条链**：以前 `EDIT_FUNCTION_KEYS = ["hd","eraser"]` 共用 `EDIT_FUNCTION_MODEL_CHAIN`，
+  高清一改就会连带改掉橡皮 → 现在 `EDIT_FUNCTION_KEYS = ["eraser"]` + 新增 `HD_FUNCTION_MODEL_CHAIN` / `HD_FUNCTION_KEYS`。
+  **橡皮的三级候选链行为一字未变**（实机验过面板照常打开）。
+- ⭐ **复用了现成的一切、没有新起炉灶**：下拉 UI 抄「视频截图」那套 hover 下拉；生成链路直接走
+  `createImageEditNode({ model, resolution, ratioFromSourceImage: true })` 的**既有 else 分支** —— `createImageEditNode` 本体**零改动**。
+- **后台开关（`/admin?tab=settings` → 工作流 · 图片编辑功能）**：高清那行从「首选/次选/三选」变成 **GPT / Gemini 两个按模型的开关**。
+  关掉一个 → 它的 2K/4K **两个选项一起隐藏**；两个都关 → **整个高清按钮不显示**。
+  ⚠️ 高清**故意不做「全关就回落完整链」**（橡皮仍保留该回落）—— 用户要的就是"关了就没有"。
+- 选项还要过第二道闸：该模型必须在后台启用的图片模型清单里（`enabledImageModelIds`），与画布其它地方一致。
+- 三处配置表必须同步改（新增高清模型时）：`system-settings.ts` 的 `HD_FUNCTION_MODEL_CHAIN`、
+  `workflow-tldraw-canvas-inner.tsx` 的 `HD_MODEL_OPTIONS`、`admin-system-settings-panel.tsx` 的 `HD_MODEL_CHAIN`。
+
+### ⛔⛔ 本次踩的坑：React #310 把整个 tldraw 画布搞崩（v52 第一次上测试服就白屏）
+
+- 症状：点任意节点 → 画布整个变成 **「Something went wrong / Please refresh your browser」**，
+  控制台 `Minified React error #310`（**Rendered more hooks than during the previous render**）。
+- 真因：我把算 `hdOptions` 的 **`useMemo` 放在了 `WorkflowSelectedNodeOverlay` 的 `if (!selected) return null;`（`:2493`）之后**。
+  没选中节点时提前 return，那次渲染的 Hook 数就比选中时少一个 → 直接崩。
+- 修法：**这里不用 Hook**，直接算（只有 4 个元素）。已在代码里写死注释警告。
+- ⭐ **通用教训：往 `WorkflowSelectedNodeOverlay` 这种"中途 return null"的组件里加东西，一律加在提前 return 之前，
+  或者干脆别用 Hook。** 新增的 `useState`（`hdMenuOpen`）放在了 2459 行、提前 return 之前，所以没事。
+
+### 测试服实机验收（全过，0 控制台错误）
+
+| 项 | 结果 |
+|---|---|
+| 高清下拉展开 | ✅ 四个选项齐全，样式与「视频截图」下拉一致 |
+| **Gemini 2K** 实跑 | ✅ 成功出图，节点标签 `Gemini 3.1 Flash Image Preview / 16:9 / 2K / 2752x1536`（比例贴源图），扣 7 积分 |
+| **GPT 2K** 实跑 | ✅ 成功出图，`GPT-5.4 Image 2 / 16:9 / 2K / 2560x1440` |
+| **GPT 4K** 实跑 | ✅ 参数正确 `/ 4K / 3840x2160`、请求正常到达模型；本次源图是沙滩排球比基尼 → **模型自己拒绝**（非 bug，见下） |
+| 后台关掉 GPT 开关 → 刷新前台 | ✅ 只剩 Gemini 2K / Gemini 4K |
+| 后台两个都关 → 刷新前台 | ✅ **整个高清按钮消失**（快捷菜单只剩 快捷编辑/去背景/橡皮工具） |
+| 开关恢复 ON 并刷新后台 | ✅ 持久化正确，橡皮三级链未受影响（`橡皮工具 首选` 仍 ON） |
+| 橡皮工具（共用 `createImageEditNode`） | ✅ 面板正常打开（取消 / 立即使用） |
+| 对话流 | ✅ 正常加载历史会话 |
+| 后台「失败排查」页 | ✅ 数据正确（待排查 45 / 兜底桶 15 / 已归档 13），0 控制台错误 |
+
+⚠️ **Gemini 4K 没单独实跑**（与 Gemini 2K 同一条代码路径、只差 `resolution` 字符串）。
+⚠️ 开关改完**要刷新前台页面才生效**（`editModelToggles` 随 `/api/model-availability` 在页面加载时取一次），与其它模型开关行为一致，不是 bug。
+
+### ⭐ 白捡一个：v51 遗留的"没实机测到"补上了一项
+
+第十二次会话留了两项没测到，其中「**直连版 `openai/gpt-5.4-image-2` 的安全拒绝红字**」（当时四次全撞 1015 限流）
+本次被 GPT 4K 那次意外触发、**完整跑通**，与预测文案逐字一致：
+
+```
+(B_58) 模型因色情/暴力/隐私安全等原因拒绝出图，你可以调整提示词或由AI安全改写后重试，
+AI改写会尽量保留原意和参考图，但不保证一定成功。以下是模型返回的拒绝原因："sexu…"
+```
+
+失败卡上「AI改写重试 3 次 / 5 次 / 10 次」**三颗按钮全部正常出现**，说明
+`modelSupportsPromptSafetyRewrite()` + `isModelRefusedMessage()` 前缀判定这条链路是通的。
+⭐ **另外白得一条测试技巧：想触发直连版的安全拒绝，不用改提示词硬碰 —— 拿一张"擦边的源图"走高清（img2img）即可，一次就中。**
+（对比：第十二次会话在资产库靠改提示词试了 5 次全部照样出图、烧了约 96 积分。）
+**仍未实机测到的只剩「资产库拒绝类失败卡的三颗按钮」一项。**
+
+### 部署（严格按铁律：先测试服 → 验证 → 原样同步正式服）
+
+1. `node scripts/bump-version.mjs`：v1.0.0.51 → **v1.0.0.52**（只在部署测试服这一步 bump）。
+2. 测试服：tgz 14 个文件 → `/opt/flashmuse-staging/app` → `up -d --build staging-app` → `sync-ali-test.sh` → `PUBLISHED_APP_VERSION` 置 v52。
+   （⚠️ 中途因 React #310 修了一次 `workflow-tldraw-canvas-inner.tsx` 并重新 build + 重新同步阿里静态。）
+3. 归档脚本：测试服 `--apply` 3 条；正式服 `--apply` **120 条**（先 dry-run 两轮确认数字才 apply）。
+4. 正式服：备份 `/opt/flashmuse/app-backups/20260728-214222-presync-v52` → 服务器到服务器 rsync（**不再 bump**）
+   → `up -d --build flashmuse-app`（`No pending migrations to apply.`）→ `.next/static` 同步阿里正式镜像
+   → `PUBLISHED_APP_VERSION` 置 v52 + force-recreate。
+5. 健康检查：**main / api / ali / static 四域名全 200**，两服 `x-app-version: v1.0.0.52`，正式服首页 0 控制台错误。
+6. commit + push → **四方同步 v1.0.0.52**。
+
+**改了 4 个文件**（在 v51 那批 10 个文件之上）：`src/lib/system-settings.ts`、
+`src/components/workflow-tldraw-canvas-inner.tsx`、`src/app/admin/admin-system-settings-panel.tsx`、
+`scripts/archive-resolved-generation-failures.mjs`。**只动高清这一条路径 + 归档脚本，其它生成链路零改动。**
+
+
+## 2026-07-29（第十二次会话）⭐⭐ 「图片平台没有返回图片」101 条查清 + 模型拒绝红字改成「统一文案 + 附模型原话」+ 资产库补 AI 改写 —— ⚠️ **只部署了测试服 v1.0.0.51，正式服仍 v1.0.0.50**
+
+### 本次主线：接着排查红字，目标 = 「图片平台没有返回图片（模型未产出或拒绝生成）」101 条
+
+#### ⭐ 结论一：这 101 条几乎全是「模型自己不肯画」，而我们把模型那段话当报错原样贴出去了
+
+正式服实测构成（**全部 `openai/gpt-5.4-image-2`(61) + `-agent`(40)，OpenRouter 图片，全部来自同一个打点** `openrouter.ts` 老 `/chat/completions` 的 `image-provider-empty-result`）：
+
+| 实际根因 | 条数 | 改动前用户看到什么 |
+|---|---|---|
+| **模型明文拒绝**（"抱歉，我不能帮助生成这类带有明显性化聚焦的人物图像…"） | **92** | 模型那段 **500 字小作文原样当红字**吐出来 |
+| **模型把提示词/改写建议原样复读回来**（没出图、也没拒绝语） | **7** | 红字 = 用户自己的提示词（"白底纯净背景，北宋官制腰刀…"），完全看不懂 |
+| **真实上游错误被这条文案掩盖**：`error code: 520`（Cloudflare）、`Provider returned an empty response` | **2** | "图片平台没有返回图片：error code: 520" |
+
+#### ⛔⛔ 结论二：后台那条「高度集中在一个入口 = 该统一却分叉了」的信号，**这次是假信号**
+
+新页显示「工作流 88 / 对话流 11 / 资产库 1 / Agent 1」，看着像分叉。实查：**101 条里 76 条来自同一个用户 ID_868181**（07-22~24 三天、一个会话、反复试同一批擦边提示词，07-23 一天 41 条），另 17 条来自 ID_686996。入口集中只是**这个人爱用工作流**。
+⭐ **教训：看到"集中在一个入口"，先去「失败最多的用户」那张卡对一下是不是一个人刷出来的，再判断是不是分叉。**
+
+#### ⭐⭐ 结论三：两个 gpt image2 的**红字形态不同**，是因为**走两条完全不同的接口**（用户当场质疑我没分清，核实后用户是对的）
+
+| 后台名字 | model id | 走哪个接口 | 上游给回来什么 |
+|---|---|---|---|
+| GPT-5.4 Image 2（**GPT版**） | `openai/gpt-5.4-image-2-agent` | **老** `/chat/completions` | 中间那层语言模型把图片模型的拒绝**翻成中文人话**还回来（小作文）⭐ **信息量最大，常直接给出可用的安全改法** |
+| GPT-5.4 Image 2（**直连版**） | `openai/gpt-5.4-image-2` | **新** `/api/v1/images`（2026-07-19 commit `d85fa92` 迁的） | OpenAI 直接 **400** `rejected by the safety system`（**有时**附 `safety_violations=[sexu…]`，有时连这个都没有） |
+
+- 为什么 61 条挂在"直连版"名下却也是小作文：**它们全部发生在 07-17 及之前**（最后一条 07-17 16:24），那时 `gpt-5.4-image-2` 还没迁走、也还在走老接口。07-19 迁走后这个 id 再没出过一条小作文。
+- ⛔ **修正上一任/我自己一开始的误判**：不是"换新接口就好了"。**GPT版还在走老接口、机制一点没变，随时会再犯**；07-24 之后没再发生只是因为那位重灾用户不试了。
+- 用户线上实测的两批错误码（本次亲自去正式服 DB + 日志核实）：
+  - **B_622~625**（07-28 07:26:54，GPT版，4 张图）→ 200 但没图，日志里小作文原文完整：`抱歉，我不能帮助生成这个人物"没穿衣服"的图像。如果你愿意，我可以改为生成同一人物在泳池里的安全版本，例如：- 穿连体泳衣或比基尼…`。**v50 的 `isModelRefusalText` 把它整段替换成统一文案 → 原文被扔掉，用户一个字看不到。**
+  - **B_626~629**（07:27:01，直连版，同一段提示词）→ HTTP 400，原文 `Your request was rejected by the safety system. If you believe this is an error, contact us at help.openai.com and include the request ID d561e015-...`。**这次 OpenAI 没给 `safety_violations`** → 抠不到类别 → 落到"可能是提示词内容不符合平台安全策略"那句（所以用户说"也没有【sexu…】"）。
+
+#### ⭐ 结论四：第十次会话留的「新接口 upstream.body 待跟踪」口子 —— **可以撤了**
+
+正式服日志里 `image-provider-empty-result` **带 body 的一条都没有**（该 event 最后一次发生 = 2026-07-23，且全部来自老接口）。原因很明确：**直连版的拒绝走的是 400 `image-provider-non-ok` 分支，不会走到"200 但没图"**。已把 `openrouter.ts:1700` 那段"待跟踪"注释改成这个结论，body 继续留着做保险。
+
+### 本次改动（9 个文件，全部只动失败分支，成功路径零改动）
+
+用户拍板的最终产品要求：
+> 「两种接口都尽量显示原文；小作文和【sexu…】**都要启动 AI 改写**；红字与 AI 改写**成套出现**；资产库也覆盖；对话流和资产库的失败卡上**只要显示了 AI 改写就不显示「重新生成」**；三颗 AI 改写按钮**上下居中**、字号与「重新生成」一样；需要兜底就统一用「模型拒绝了本次生成请求，可能是提示词内容不符合平台安全策略！…」这一句。工作流不用改，保持现状。」
+
+1. **`src/lib/models.ts`** 新增唯一权威 **`modelSupportsPromptSafetyRewrite(modelId)`**（= gpt image2 两款）。
+   ⭐ 它同时被"红字文案要不要写可AI改写"和"失败卡按钮要不要显示"两处使用 → **保证"红字承诺"与"按钮存在"永远一致**。
+   （起因：用户问「视频怎么会误显示？能不能加模型判断？」—— 能，而且很干净。以前 `toUserErrorMessage` 只收到错误字符串、不知道模型，所以视频碰到拒绝语也会被写上"可点AI改写"，而视频没这个按钮。）
+2. **`src/lib/error-message.ts`**（唯一入口，全模式生效）：
+   - 删掉旧的 `MODEL_REFUSED_MESSAGE`，改成 **前缀常量 `MODEL_REFUSED_PREFIX = "模型因色情/暴力/隐私安全等原因拒绝出图"`** + `MODEL_REFUSED_REWRITE_HINT` / `MODEL_REFUSED_PLAIN_HINT` + `MODEL_REFUSED_FALLBACK_MESSAGE`（用户指定那句）+ `buildModelRefusedMessage(detail, canRewrite)`（原文截 260 字、剥掉我们自己包的"图片平台没有返回图片："外壳）。
+   - **把两条拒绝规则合并成一条**：A) 直连版 `rejected by the safety system` → 优先取 `safety_violations=[...]`，没有就取那句英文并**削掉 `If you believe this is an error, contact us at …` 客服尾巴**；B) GPT版 `isModelRefusalText` → 原文即 detail。
+   - 新增 C) **「模型只回了一段文字」**分支（提示词复读那 7 条）→ 「模型这次没有出图，只回了一段文字（不是报错），直接重试有可能会成功。以下是模型返回的内容：…」。
+   - 新增 `isModelRefusedMessage(value)`（认前缀，供 `gpt-image-safety-retry` 判定）。
+   - `toUserErrorMessage(value, fallback, options?: { model })` 新增第三参。
+   - ⭐ **幂等保护**：如果传进来的已经是我们映射好的成品文案 → 原样返回。**为什么必须有**：这个函数在"服务端映射 → 前端再映射"链路上可能被调两次，而末尾兜底透传会把文案截到 180 字 → 会把刚附上的模型原文砍掉。
+   - 修 **供应商名脱敏削域名**的 bug：`\bOpenAI\b` 把 `help.openai.com` 削成 `help..com` → 改成 `(?<![.\w])…(?![.\w])`。
+   - 新增网关规则 `error code: 5\d\d|provider returned an empty response` → 「平台服务临时异常，请稍后重试。」
+   - ⭐ **限流文案按用户要求改成「当前模型繁忙或被限流，请稍候再重试！」**（原「图片服务当前繁忙（限流），请稍后重试。」会让用户以为是我们的服务忙或自己点太快）。
+3. **`src/lib/error-code.ts`**：`createCodedApiError(error, fallback, scope, options?: { model })` 透传。
+4. **`src/app/api/image/route.ts:240`** + **`src/lib/generation-jobs.ts:751`** + 资产库前端三处传 model（视频那 6 处**故意不传** → 自动走不含"AI改写"的文案）。
+5. **`src/lib/gpt-image-safety-retry.ts`**：判定改用 `isModelRefusedMessage`（**认前缀，⛔ 绝不能改回整句比对**）+ 改用 `modelSupportsPromptSafetyRewrite`；新增唯一权威 **`ensureMentionNamesPreserved()`**（保证改写后 @引用名一个不丢，见下）。
+6. **`src/lib/openrouter.ts`**：`getOpenRouterNoImageReason` 改成返回 `{ providerError, modelText, combined }`，把三种情况彻底分开抛：① 平台报错 → `图片生成失败：${原文}`（让它正常映射成"平台临时异常"并保持可自动重试）② 模型拒绝 → `图片平台没有返回图片：${原文}` ③ 只回文字 → `图片平台没有返回图片，模型只回了一段文字：${原文}`。日志 upstream 多带 `providerError`。
+7. **`src/components/chat-workbench.tsx`**：
+   - `MediaOptimizationRetryActions` 从"右下角 12px 横排"改成**上下居中、`flex-col`、14px**（与「重新生成」同字号）。
+   - `ImageResultStrip` / `ImageResultSlotStrip` 两处都加 `showOptimizationRetry` → **有 AI 改写就不渲染「重新生成」**（对话流 + Agent 模式共用这两个组件，一起生效）。
+   - ⭐ **资产库补齐整套 AI 改写**（此前唯一漏做的入口）：`CharacterGenerationResult` 加 3 个字段（`gptImageOptimizationOriginalPrompt` / `AttemptPrompts` / `gptImageOptimizing`，老数据缺就当空、向后兼容）；`generateCharacterImage(options?: { promptOverride, carryOptimization, rethrowError })`；新增 `canAssetOptimizationRetry()` + `runAssetGptImageOptimizationRetry()`（编排走共享 `runPromptSafetyRetry`）；`isAssetOptimizingRef` 防连点；改写中显示等待卡（`status==='generating' || gptImageOptimizing`）；失败卡按同一规则显示三颗按钮/隐藏「重新生成」。
+   - ⭐ **@名保护**（用户拍板）：改写后的提示词若丢了 @名，参考图会全丢 → 资产库在 `generate` 回调里过 `ensureMentionNamesPreserved()` 把缺失的 @名补回提示词最前面。
+8. **`src/lib/admin-failure-triage.ts`**：⚠️ **自己引入的新问题，自己堵上** —— 新文案带可变原文，后台「失败原因」会炸成几十条各 1 条 → `FAILURE_REASON_SQL` 再套两层 `regexp_replace`，把「模型因色情/暴力/隐私安全等原因拒绝出图…」和「模型这次没有出图，只回了一段文字…」按前缀收敛。⛔ **以后改这两句文案要同步这里的前缀。**
+
+### 上线前的确定性验证（用真实上游原文过纯函数，13 个用例）
+
+写了一次性 `scripts/check-model-refusal-messages.mts`（跑完已删）把正式服真实原文喂进 `toUserErrorMessage` + `isGptImageSafetyFailure`，断言「红字里承诺了 AI 改写 ⇔ 按钮真的显示」：
+**结果 13/13 通过，不一致用例 = 0。** 覆盖：B_622 小作文 / B_626 英文原文 / 带 safety_violations / 同一拒绝语落在视频模型（应不提 AI 改写且不显示按钮）/ 不传 model / 520 / empty response / 提示词复读 / 兜底桶不变 / 余额不足 / 参考图尺寸 / 成品被拒交付 / Kling `Image pixel is invalid` 全部回归正常。
+
+### 部署与实机验收（测试服 v1.0.0.51，⚠️ 正式服未动）
+
+- `node scripts/bump-version.mjs` → v50→**v51**；tgz 10 个文件 → `/opt/flashmuse-staging/app` → `up -d --build staging-app`（**No pending migrations**）→ `sync-ali-test.sh` → `PUBLISHED_APP_VERSION: "v1.0.0.51"` + force-recreate → `x-app-version: v1.0.0.51`、HTML v1.0.0.51、`http://101.37.129.164:8080/` 200。
+- 用主测试号 `12424740@qq.com` 实测：
+
+| 项 | 结果 |
+|---|---|
+| **GPT版红字带小作文原文** | ✅ `(B_47) 模型因色情/暴力/隐私安全等原因拒绝出图，你可以调整提示词或由AI安全改写后重试…以下是模型返回的拒绝原因："抱歉，我不能帮助生成露骨裸体或强调性化身体部位的写实图像。如果你愿意，我可以改为帮你生成这些安全版本之一：- 年轻成年女性穿泳装躺在泳池里的写实俯拍照片…例如可用提示词：…"` |
+| **三颗按钮上下居中 + 14px** | ✅ 实测 `fontSize=14px`、水平偏移 `0/0/0`、垂直 `−22/0/+22`（卡 250×250） |
+| **有 AI 改写就不显示「重新生成」** | ✅ 新卡 innerText = `图片生成失败\|AI改写重试3次\|AI改写重试5次\|AI改写重试10次` |
+| **点 AI 改写 → 等待卡不闪回** | ✅ 全程只显示等待卡（约 2 分钟），失败卡没回来 |
+| **改写后成功出图** | ✅ 一次就过。原词`…没穿衣服躺在泳池里…强调身体曲线` → 改写`…穿保守泳衣躺在泳池里…强调姿态线条` |
+| **反例：限流失败卡不亮 AI 改写** | ✅ B_48/49/50/51/54 都只有「重新生成」 |
+| **反例：资产库限流失败卡** | ✅ 同上，只有「重新生成」（说明资产库失败卡本身渲染正常） |
+| **刷新后 AI 改写按钮是否还在** | ✅ **在**（详见下面那条误报纠正） |
+| 控制台 | ✅ 0 个真实报错（只有我们自己的 `[asset-generation] image request failed` 日志） |
+
+### ⛔⛔ 一次误报及其纠正（**下一个 AI 千万别再踩**）
+
+我一度报告「刷新后历史消息的失败卡不再渲染，只剩红字，用户刷新一下 AI 改写按钮就没了」。**这是错的，根本没这个 bug。**
+
+- 逐层排查证明数据完好：测试服 DB 的 `messagesJson`、`GET /api/workspace-state` 返回，`mode:"image"` / `failedImageCount:1` / `imageResultSlots:[{type:"failed",reason:"(B_47)…"}]` / `generationMeta.model` / `settings.imageCount:"1张"` **一个字段都没丢**；`sanitizeWorkspaceMessage` 也不删这些字段。
+- ⭐ **真正原因：失败卡被包在 `<LazyMediaMount height={250}>` 里**（`chat-workbench.tsx:16531`）—— **滚动到视口附近才挂载**，没进视口时只是 250px 占位。而红字**不在**这个组件里，所以红字一直显示。于是"红字在、卡不在"就被我误判成数据丢了。
+- 验证方式：把那条消息 `scrollIntoView({block:'center'})` + 等 2.5s → 卡立刻出现，innerText = `图片生成失败|AI改写重试3次|AI改写重试5次|AI改写重试10次`。
+- ⛔ **教训：用 `document.querySelectorAll('.flashmuse-failed-media-card')` 统计对话流失败卡是不可靠的**（懒挂载）。要先把目标消息滚进视口再断言。**别看到"红字在、卡不在"就下结论说数据丢了。**
+
+### ⭐ 顺带查清：「图片服务当前繁忙（限流）」到底是什么（用户提问）
+
+测试服日志原文：
+
+```
+HTTP 429 Too Many Requests
+{"error":{"message":"OpenAI was rate limited by Cloudflare (error code: 1015)","code":429,
+          "metadata":{"provider_name":"OpenAI"}}}
+```
+
+- `error code: 1015` 是 **Cloudflare 的限速码**。整句意思是 **OpenRouter 去调 OpenAI 时被 OpenAI 的 Cloudflare 挡了** —— 限速发生在 **OpenRouter → OpenAI** 那一跳，**跟我们的账号配额、用户点太快都没关系**（OpenRouter 出口 IP 被限，我们改不了）。
+- 我们的行为是对的：同一 requestId 09:36:14 / 09:36:32 / 09:36:54 / 09:37:22 **自动重试 4 次、扛了约 70 秒**才 `image-job-failed`。
+- 正式服 07-28 也有 **7 条**同类失败（都在资产库入口、都是直连版）。
+- **用户拍板：只改文案**（改成「当前模型繁忙或被限流，请稍候再重试！」），**不动重试退避、不做限流自动降级**。
+  （我提过的可选项：对 1015 用更长退避 30/60/120s；或限流时降级到 GPT版老接口 —— 后者会改变计费/画质预期，未采纳。）
+
+### ⚠️ 两项没能实机测到（如实记录，别当成已验证）
+
+1. **直连版的安全拒绝红字** —— 试了 4 次，**每次都撞 OpenRouter 限流**（B_48/49/50/51），拿不到 `rejected by the safety system`。已用真实原文做过纯函数验证，但**没有实机跑通**。
+2. **资产库的"拒绝类"失败卡（三颗按钮）** —— 试了 5 次角色生成（约 96 积分），**每次都成功出图**：⭐ **角色生成的 `ruleText` 会把提示词包装成"角色设定图"，中间那层语言模型就不拒绝了**（试过"全裸/露骨""极度血腥断肢""1:1 复刻明星脸"全部照样出图）。资产库失败卡本体渲染正常（限流那次验证过、且正确地只显示「重新生成」），判定用的也是**与对话流同一个共享函数**，但"拒绝类文案 → 出现三颗按钮"这一步资产库侧没实际触发过。
+
+### 本次会话结束时的状态
+
+- 测试服 = **v1.0.0.51**（含上面全部改动，但**限流文案那一行是在部署之后才改的、还没上测试服**）。
+- 正式服 = **v1.0.0.50**（一行没动）。GitHub = v1.0.0.50（**本次改动未 commit、未 push**）。
+- 本地 `npx tsc --noEmit` 全绿（`src/` 无错）。无 Prisma 迁移。
+- **归档脚本本次没跑**（这 101 条归不归档还没定，见 `05-next-actions.md`）。
+
 ## 2026-07-28（第十一次会话）⭐⭐ 「40 条轮询 failed」全部查清并修 + 后台新增「失败排查」页 —— ✅ **已部署两服 v1.0.0.50**
 
 ### 部署结果（一次性把积压的第十次 + 第十一次两批全部上线）

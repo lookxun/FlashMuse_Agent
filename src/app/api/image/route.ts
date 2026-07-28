@@ -237,7 +237,7 @@ export async function POST(request: Request) {
         settings: body?.settings,
       });
     }
-    const codedError = await createCodedApiError(error, GENERIC_MEDIA_ERROR_MESSAGE, "image-generation request failed");
+    const codedError = await createCodedApiError(error, GENERIC_MEDIA_ERROR_MESSAGE, "image-generation request failed", { model: body?.model });
     void appendGenerationDiagnosticsLog({
       event: "image-route-failed",
       requestId: body?.requestId,
