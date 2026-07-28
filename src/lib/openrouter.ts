@@ -1189,6 +1189,11 @@ function cleanNoImageReason(value: string | undefined) {
   return text;
 }
 
+// 把响应体里的 base64 长串换成占位符，避免整段图片数据被写进诊断日志。
+function redactBase64ForLog(value: string) {
+  return value.replace(/[A-Za-z0-9+/]{200,}={0,2}/g, "[base64]");
+}
+
 function getOpenRouterNoImageReason(data: OpenRouterChatCompletionResponse) {
   const choice = data.choices?.[0];
   const message = choice?.message;
@@ -1686,7 +1691,12 @@ async function generateGptImage2(prompt: string, referenceImages: string[], opti
       prompt,
       settings: options.settings,
       durationMs: Date.now() - startedAt,
-      upstream: { reason: "empty image result" },
+      // ⭐ 待跟踪（2026-07-28）：新图片接口返回 200 但没图时，模型的「明文拒绝原文」到底放在响应的哪个
+      // 字段还不知道（老 /chat/completions 接口在 choices[0].message.content|refusal，新 /images 接口不是这个
+      // 形状）。所以这里先把响应体原文落盘（去掉 base64 以免刷爆日志），攒到真实样本后再写读取逻辑，
+      // 别凭猜测写字段名。捞到之后要做的：读出原文 → 抛 `图片平台没有返回图片：${原文}` →
+      // error-message.ts 的 isModelRefusalText 会自动把它映射成 MODEL_REFUSED_MESSAGE → 前端亮「AI 改写重试」。
+      upstream: { reason: "empty image result", body: redactBase64ForLog(responseText).slice(0, 1200) },
     });
     throw new Error("图片平台没有返回图片，且没有返回可用原因。");
   }

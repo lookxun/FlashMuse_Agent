@@ -14,23 +14,26 @@ import { AdminSystemSettingsPanel } from "./admin-system-settings-panel";
 import { AdminGenerationSettingsPanel } from "./admin-generation-settings-panel";
 import { AdminUploadRulesPanel } from "./admin-upload-rules-panel";
 import { AdminOverview2 } from "./admin-overview-2";
+import { AdminFailureTriagePanel } from "./admin-failure-triage-panel";
 import { getAdminOverviewData } from "@/lib/admin-overview";
+import { getAdminFailureTriageData } from "@/lib/admin-failure-triage";
 import { AdminUsersPanel, type AdminUserRow } from "./admin-users-panel";
 import { AdminGptImageThumbnail } from "./admin-gpt-image-thumbnail";
 import { getCreditSettings } from "@/lib/credits";
 import { getAdminSystemSettings, getUploadRuleOverrides, isAssetImageModelEnabled, isConversationImageModelEnabled, isConversationVideoModelEnabled } from "@/lib/system-settings";
 import type { IconType } from "react-icons";
-import { RiDashboardLine, RiFileList3Line, RiListSettingsLine, RiServerLine, RiSettingsLine, RiToggleLine, RiUser3Line, RiVipDiamondLine } from "react-icons/ri";
+import { RiAlarmWarningLine, RiDashboardLine, RiFileList3Line, RiListSettingsLine, RiServerLine, RiSettingsLine, RiToggleLine, RiUser3Line, RiVipDiamondLine } from "react-icons/ri";
 
 export const dynamic = "force-dynamic";
 
-type AdminTab = "overview" | "users" | "credits" | "records" | "settings" | "generation" | "upload-rules" | "gpt-image-optimization" | "server";
+type AdminTab = "overview" | "users" | "credits" | "records" | "failures" | "settings" | "generation" | "upload-rules" | "gpt-image-optimization" | "server";
 
 const adminNavItems: Array<{ key: AdminTab; label: string; icon: IconType }> = [
   { key: "overview", label: "概览", icon: RiDashboardLine },
   { key: "users", label: "用户管理", icon: RiUser3Line },
   { key: "credits", label: "积分管理", icon: RiVipDiamondLine },
   { key: "records", label: "生成记录", icon: RiFileList3Line },
+  { key: "failures", label: "失败排查", icon: RiAlarmWarningLine },
   { key: "settings", label: "模型开关", icon: RiToggleLine },
   { key: "generation", label: "系统设置", icon: RiSettingsLine },
   { key: "upload-rules", label: "上传规则", icon: RiListSettingsLine },
@@ -40,7 +43,7 @@ const adminNavItems: Array<{ key: AdminTab; label: string; icon: IconType }> = [
 
 function getAdminTab(value: string | string[] | undefined): AdminTab {
   const tab = Array.isArray(value) ? value[0] : value;
-  if (tab === "users" || tab === "credits" || tab === "records" || tab === "settings" || tab === "generation" || tab === "upload-rules" || tab === "gpt-image-optimization" || tab === "server") return tab;
+  if (tab === "users" || tab === "credits" || tab === "records" || tab === "failures" || tab === "settings" || tab === "generation" || tab === "upload-rules" || tab === "gpt-image-optimization" || tab === "server") return tab;
   return "overview";
 }
 
@@ -413,6 +416,15 @@ export default async function AdminPage({ searchParams }: { searchParams?: Promi
           createdAt: item.createdAt,
           user: { email: item.email, userId: item.userId },
         }))} />
+      </AdminShell>
+    );
+  }
+
+  if (activeTab === "failures") {
+    const failureData = await getAdminFailureTriageData();
+    return (
+      <AdminShell adminEmail={currentAdminEmail} activeTab={activeTab}>
+        <AdminFailureTriagePanel data={failureData} />
       </AdminShell>
     );
   }

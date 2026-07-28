@@ -27,6 +27,8 @@ function isPermanentError(message: string): boolean {
   if (/real person|privacy|privacyinformation|sensitive|copyright|真人|隐私|敏感|版权/.test(lower)) return true;
   // 参数 / 尺寸 / 比例 / 模型无效
   if (/invalid parameter|invalid option|unsupported size|not a valid model|aspect ratio must be between|not valid/.test(lower)) return true;
+  // Kling 参考图尺寸不合规（`Image pixel is invalid`）/ 模型带参考图时不支持该时长 —— 换图换参数才行，重试没用
+  if (/image pixel is invalid|unsupported output video duration/.test(lower)) return true;
   // 鉴权 / 地区
   if (/\b401\b|unauthorized|invalid api key|\bapi key\b|\b403\b|not available in your region/.test(lower)) return true;
   // 供应商账户余额不足（OpenRouter 402 / OpenAI insufficient_quota）——重试只是白烧时间，必须报给用户去催充值

@@ -101,8 +101,9 @@ import {
   RiShieldUserLine,
   RiSaveLine,
 } from "react-icons/ri";
-import { ADVANCED_CHAT_MODEL, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, DEFAULT_IMAGE_QUALITY, IMAGE_QUALITY_OPTIONS, IMAGE_QUALITY_LABELS, isGptImage2Model, getImageModelSelectHint, classifyImageResolutionByModel, bytePlusVideoGenerationModels, frontendConversationModels, frontendImageGenerationModels, getExpectedImageDimensions, getExpectedVideoDimensions, getImageQualityBadgeLabel, getImageResolutionLabel, getSupportedImageResolutions, getSupportedVideoRatios, getSupportedVideoResolutions, imageGenerationModels, isNonStandardVideoSize, normalizeImageResolutionForModel, normalizeVideoRatioForModel, normalizeVideoResolutionForModel, videoGenerationModels, type ConversationModel, type GenerationModel, type ModelName } from "@/lib/models";
+import { ADVANCED_CHAT_MODEL, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, DEFAULT_IMAGE_QUALITY, IMAGE_QUALITY_OPTIONS, IMAGE_QUALITY_LABELS, isGptImage2Model, getImageModelSelectHint, classifyImageResolutionByModel, bytePlusVideoGenerationModels, frontendConversationModels, frontendImageGenerationModels, getExpectedImageDimensions, getExpectedVideoDimensions, getImageQualityBadgeLabel, getImageResolutionLabel, getSupportedImageResolutions, getSupportedVideoRatios, getSupportedVideoResolutions, imageGenerationModels, isNonStandardVideoSize, normalizeImageResolutionForModel, normalizeVideoRatioForModel, normalizeVideoResolutionForModel, validateVideoDurationWithReferences, videoGenerationModels, type ConversationModel, type GenerationModel, type ModelName } from "@/lib/models";
 import { toUserErrorMessage } from "@/lib/error-message";
+import { isGptImageSafetyFailure, runPromptSafetyRetry } from "@/lib/gpt-image-safety-retry";
 import { handleSessionExpiredResponse, SESSION_EXPIRED_SILENT_ERROR } from "@/lib/session-expired-redirect";
 import { buildReferenceHint } from "@/lib/reference-hint";
 import { getMentionRangeForDeletion as getSharedMentionRangeForDeletion, getMentionRanges as getSharedMentionRanges, removeMentionName, replaceMentionName } from "@/lib/mention-text";
@@ -115,7 +116,7 @@ import { VideoUploadThumbnail } from "@/components/video-upload-thumbnail";
 import { VideoPlayBadge } from "@/components/video-play-badge";
 import { MediaDurationBadge } from "@/components/media-duration-badge";
 import { parseChineseDurationSeconds } from "@/lib/media-duration-format";
-import { validateVideoReferenceImagesBeforeSend } from "@/lib/video-reference-image-rules";
+import { validateVideoReferenceImagesBeforeSend, videoModelEnforcesReferenceImageSizeRules } from "@/lib/video-reference-image-rules";
 import { WorkflowCanvas, type WorkflowCanvasState, type WorkflowNode } from "@/components/workflow-tldraw-canvas";
 import { getSupportedUploadTypeLabel, getUploadAcceptValue, getUploadKindFromFileName, getUploadRule, getVideoAudioUploadDisabledMessage, validateReferenceTotalDuration, validateVideoReferenceCombination, type UploadRuleOverrides } from "@/lib/upload-rules";
 import { sanitizeModelOutputText } from "@/lib/text-cleanup";
@@ -168,6 +169,12 @@ type Message = {
   retryingFailedVideoStartedAt?: Record<number, number>;
   error?: string;
   mediaErrorReasons?: string[];
+  // ⭐ gpt-5.4-image-2「模型拒绝生成 → AI 安全改写重试」状态（与工作流 node.data 上的同名字段对齐，
+  // 判定/编排共用 src/lib/gpt-image-safety-retry.ts）。retryingIndexes 用于改写期间持续显示等待卡，
+  // 避免两次尝试之间闪回失败卡。
+  gptImageOptimizationOriginalPrompt?: string;
+  gptImageOptimizationAttemptPrompts?: string[];
+  gptImageOptimizationRetryingIndexes?: number[];
   mode?: WorkMode;
   generationMeta?: MessageGenerationMeta;
 };
@@ -7012,7 +7019,22 @@ function ImageResultThumb({ url, imageIndex, name, onPreview, onMention, onLoade
   );
 }
 
-function ImageResultStrip({ images, imageIndexes, pendingCount, failedCount, retryingFailedIndexes = [], retryingFailedStartedAt = {}, createdAt, now, onPreview, onMention, getImageName, onLoadedDimensions, rounded = false, onRetryFailed }: { images: string[]; imageIndexes?: number[]; pendingCount: number; failedCount: number; retryingFailedIndexes?: number[]; retryingFailedStartedAt?: Record<number, number>; createdAt?: number; now: number; onPreview: (url: string, index: number) => void; onMention?: (url: string, name: string) => void; getImageName?: (url: string, index: number) => string; onLoadedDimensions?: (url: string, dimensions: ImageDimensions) => void; rounded?: boolean; onRetryFailed?: (failedIndex: number) => void }) {
+// 失败媒体卡右下角的「AI改写重试 3/5/10 次」入口（只在模型拒绝生成这类失败时才由调用方传入）。
+// 与工作流 FailedCard 的三颗按钮语义一致，编排共用 src/lib/gpt-image-safety-retry.ts。
+function MediaOptimizationRetryActions({ onOptimizationRetry }: { onOptimizationRetry: (maxAttempts: number) => void }) {
+  return (
+    <div className="absolute inset-x-3 bottom-3 flex flex-wrap items-center justify-center gap-x-3 gap-y-1">
+      {[3, 5, 10].map((count) => (
+        <button key={count} type="button" onClick={() => onOptimizationRetry(count)} className="inline-flex items-center gap-1 bg-transparent text-[12px] font-medium leading-none text-[#367cee] transition hover:text-[#2568d8]">
+          <RiResetLeftLine className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+          <span>AI改写重试{count}次</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function ImageResultStrip({ images, imageIndexes, pendingCount, failedCount, retryingFailedIndexes = [], retryingFailedStartedAt = {}, createdAt, now, onPreview, onMention, getImageName, onLoadedDimensions, rounded = false, onRetryFailed, canOptimizationRetry, onOptimizationRetry }: { images: string[]; imageIndexes?: number[]; pendingCount: number; failedCount: number; retryingFailedIndexes?: number[]; retryingFailedStartedAt?: Record<number, number>; createdAt?: number; now: number; onPreview: (url: string, index: number) => void; onMention?: (url: string, name: string) => void; getImageName?: (url: string, index: number) => string; onLoadedDimensions?: (url: string, dimensions: ImageDimensions) => void; rounded?: boolean; onRetryFailed?: (failedIndex: number) => void; canOptimizationRetry?: (failedIndex: number) => boolean; onOptimizationRetry?: (failedIndex: number, maxAttempts: number) => void }) {
   if (images.length + pendingCount + failedCount === 0) return null;
   const items = [
     ...images.map((url, imageIndex) => ({ type: "image" as const, url, imageIndex: imageIndexes?.[imageIndex] ?? imageIndex })),
@@ -7048,6 +7070,7 @@ function ImageResultStrip({ images, imageIndexes, pendingCount, failedCount, ret
                   <span className="text-[14px] leading-none">重新生成</span>
                 </button>
               ) : null}
+              {onOptimizationRetry && canOptimizationRetry?.(item.failedIndex) ? <MediaOptimizationRetryActions onOptimizationRetry={(maxAttempts) => onOptimizationRetry(item.failedIndex, maxAttempts)} /> : null}
             </div>
           );
         })}
@@ -7056,7 +7079,7 @@ function ImageResultStrip({ images, imageIndexes, pendingCount, failedCount, ret
   );
 }
 
-function ImageResultSlotStrip({ slots, imageIndexes, pendingCount, createdAt, now, onPreview, onMention, getImageName, onLoadedDimensions, rounded = false, onRetryFailed, isRetrying = false }: { slots: ImageResultSlot[]; imageIndexes?: number[]; pendingCount: number; createdAt?: number; now: number; onPreview: (url: string, index: number) => void; onMention?: (url: string, name: string) => void; getImageName?: (url: string, index: number) => string; onLoadedDimensions?: (url: string, dimensions: ImageDimensions) => void; rounded?: boolean; onRetryFailed?: (failedIndex: number) => void; isRetrying?: boolean }) {
+function ImageResultSlotStrip({ slots, imageIndexes, pendingCount, createdAt, now, onPreview, onMention, getImageName, onLoadedDimensions, rounded = false, onRetryFailed, isRetrying = false, optimizingFailedIndexes = [], canOptimizationRetry, onOptimizationRetry }: { slots: ImageResultSlot[]; imageIndexes?: number[]; pendingCount: number; createdAt?: number; now: number; onPreview: (url: string, index: number) => void; onMention?: (url: string, name: string) => void; getImageName?: (url: string, index: number) => string; onLoadedDimensions?: (url: string, dimensions: ImageDimensions) => void; rounded?: boolean; onRetryFailed?: (failedIndex: number) => void; isRetrying?: boolean; optimizingFailedIndexes?: number[]; canOptimizationRetry?: (failedIndex: number) => boolean; onOptimizationRetry?: (failedIndex: number, maxAttempts: number) => void }) {
   if (slots.length + pendingCount === 0) return null;
   const items = [
     ...slots.map((slot, slotIndex) => ({ type: "slot" as const, slot, slotIndex })),
@@ -7081,8 +7104,9 @@ function ImageResultSlotStrip({ slots, imageIndexes, pendingCount, createdAt, no
           }
 
           const failedIndex = slots.slice(0, item.slotIndex + 1).filter((slot) => slot.type === "failed").length - 1;
-          if (isRetrying && item.slot.retryingStartedAt) {
-            return <MediaWaitingCard key={`retrying-failed-${item.slotIndex}`} createdAt={item.slot.retryingStartedAt} now={now} isImage index={item.slotIndex + 1} rounded={rounded} />;
+          // AI 改写重试期间（含两次尝试之间的改写间隙）持续显示等待卡，避免闪回失败卡。
+          if (optimizingFailedIndexes.includes(failedIndex) || (isRetrying && item.slot.retryingStartedAt)) {
+            return <MediaWaitingCard key={`retrying-failed-${item.slotIndex}`} createdAt={item.slot.retryingStartedAt ?? createdAt} now={now} isImage index={item.slotIndex + 1} rounded={rounded} />;
           }
 
           return (
@@ -7097,6 +7121,7 @@ function ImageResultSlotStrip({ slots, imageIndexes, pendingCount, createdAt, no
                   <span className="text-[14px] leading-none">重新生成</span>
                 </button>
               ) : null}
+              {onOptimizationRetry && canOptimizationRetry?.(failedIndex) ? <MediaOptimizationRetryActions onOptimizationRetry={(maxAttempts) => onOptimizationRetry(failedIndex, maxAttempts)} /> : null}
             </div>
           );
         })}
@@ -7611,6 +7636,8 @@ export function ChatWorkbench() {
   const [sessions, setSessions] = useState<WorkSession[]>([]);
   const [nextConversationNumber, setNextConversationNumber] = useState(1);
   const sessionsRef = useRef<WorkSession[]>([]);
+  // 正在跑「AI 改写重试」的失败槽位（`${messageId}:${failedIndex}`），防止连点重复开多条改写链白烧积分。
+  const optimizingImageMessagesRef = useRef<Set<string>>(new Set());
   const [historyVisibleSessionCount, setHistoryVisibleSessionCount] = useState(HISTORY_INITIAL_SESSION_COUNT);
   const [historyHasMoreSessions, setHistoryHasMoreSessions] = useState(false);
   const [historyNextOffset, setHistoryNextOffset] = useState(HISTORY_INITIAL_SESSION_COUNT);
@@ -12022,6 +12049,21 @@ export function ChatWorkbench() {
     );
   }, []);
 
+  // 按消息 id 打补丁（AI 改写重试要跨多次生成改同一条消息，而 requestId 每次重试都会变）。
+  const patchMessageById = useCallback((sessionId: string, messageId: string, payload: Partial<Message>) => {
+    setSessions((current) =>
+      current.map((session) =>
+        session.id === sessionId
+          ? {
+              ...session,
+              updatedAt: Date.now(),
+              messages: session.messages.map((message) => (message.id === messageId ? { ...message, ...payload } : message)),
+            }
+          : session,
+      ),
+    );
+  }, []);
+
   const updatePendingRequest = useCallback((sessionId: string, requestId: string, payload: Partial<PendingGeneration>) => {
     setSessions((current) =>
       current.map((session) =>
@@ -13326,10 +13368,11 @@ export function ChatWorkbench() {
         setSessionSending(sessionId, false);
         return;
       }
-      // 参考图尺寸/比例不合规的，发送前就拦住并说清原因（否则会在平台"素材送审"阶段被拒，
-      // 用户只能看到一句没用的"服务器繁忙"）。只对 BytePlus 视频模型生效——300–6000px、
-      // 宽高比 0.4–2.5 是 BytePlus 的硬规则，别的模型不能拿它拦人。规则与工作流、服务端共用。
-      const referenceImageSizeError = isBytePlusSeedanceVideoModel(generationModelsForSubmit.video)
+      // 参考图尺寸/比例不合规的，发送前就拦住并说清原因（否则会在平台"素材送审"/异步生成阶段被拒，
+      // 用户只能看到一句没用的"服务器繁忙"）。受约束的模型集合由 videoModelEnforcesReferenceImageSizeRules
+      // 唯一判定（BytePlus Seedance + Kling，两家的 300–6000px / 0.4–2.5 规则完全一致），
+      // 没验证过的模型不在集合里、不会被误拦。规则与工作流、服务端共用。
+      const referenceImageSizeError = videoModelEnforcesReferenceImageSizeRules(generationModelsForSubmit.video)
         ? await validateVideoReferenceImagesBeforeSend(
           namedImageReferences.map((reference) => {
             const matchedAsset = assets.find((asset) => normalizeMediaUrlForMatch(asset.url) === normalizeMediaUrlForMatch(reference.url));
@@ -13341,6 +13384,18 @@ export function ChatWorkbench() {
         : undefined;
       if (referenceImageSizeError) {
         showInputTip(referenceImageSizeError);
+        setSessionSending(sessionId, false);
+        return;
+      }
+      // ⭐ 某些模型「带参考图」时可用时长被上游收窄（如 Veo 3.1 的 reference_to_video 只允许 8 秒）。
+      // 不拦的话任务会被收下、一两分钟后才异步失败，用户只看到"服务器繁忙"。规则唯一来源 models.ts。
+      const referenceDurationError = validateVideoDurationWithReferences(
+        generationModelsForSubmit.video,
+        selectedVideoDuration,
+        referenceImages.length,
+      );
+      if (referenceDurationError) {
+        showInputTip(referenceDurationError);
         setSessionSending(sessionId, false);
         return;
       }
@@ -13877,13 +13932,15 @@ export function ChatWorkbench() {
     void runGeneration(sessionId, pendingRequest);
   };
 
-  const retryFailedMedia = (message: Message, failedIndex = 0) => {
+  // promptOverride：AI 安全改写重试用改写后的提示词重跑同一个失败槽位（其余参数、参考图完全不变）。
+  // 返回的 Promise 在这次生成彻底跑完（成功或失败）后 resolve，供改写编排判断要不要再试下一轮。
+  const retryFailedMedia = async (message: Message, failedIndex = 0, promptOverride?: string) => {
     if (!activeSession || message.role !== "assistant") return;
     const meta = message.generationMeta;
     if (!meta || (meta.mode !== "image" && meta.mode !== "video")) return;
     const existingMediaCount = meta.mode === "video" ? getMessageVideos(message).length : message.images?.length ?? 0;
     const targetItemIndex = existingMediaCount + Math.max(0, failedIndex);
-    const prompt = ((meta.mode === "video" || meta.agentGenerated ? meta.itemPrompts?.[targetItemIndex] ?? meta.originalPrompt : meta.originalPrompt) ?? "").trim();
+    const prompt = (promptOverride ?? ((meta.mode === "video" || meta.agentGenerated ? meta.itemPrompts?.[targetItemIndex] ?? meta.originalPrompt : meta.originalPrompt) ?? "")).trim();
     if (!prompt) return;
 
     const sessionId = activeSession.id;
@@ -13970,7 +14027,82 @@ export function ChatWorkbench() {
       ),
     );
 
-    void runGeneration(sessionId, pendingRequest);
+    await runGeneration(sessionId, pendingRequest);
+  };
+
+  // 这个失败槽位能不能走「AI 改写重试」：判定统一走 src/lib/gpt-image-safety-retry.ts（与工作流同一份）。
+  // 只对图片模式 + gpt5.4image2 两种接口 + 模型拒绝类失败亮入口，视频/其它模型一律不亮。
+  const canConversationOptimizationRetry = (message: Message, failedIndex: number) => {
+    const meta = message.generationMeta;
+    if (!meta || meta.mode !== "image") return false;
+    const slots = message.imageResultSlots ?? [];
+    const failedSlot = slots.filter((slot) => slot.type === "failed")[failedIndex];
+    const errorText = (failedSlot?.type === "failed" ? failedSlot.reason : undefined) ?? message.mediaErrorReasons?.[failedIndex] ?? message.error;
+    return isGptImageSafetyFailure({
+      model: meta.model,
+      errorText,
+      hasPriorAttempts: Boolean(message.gptImageOptimizationOriginalPrompt) || (message.gptImageOptimizationAttemptPrompts?.length ?? 0) > 0,
+    });
+  };
+
+  // ⭐ 对话流「AI 改写重试」编排：与工作流共用 src/lib/gpt-image-safety-retry.ts 的 runPromptSafetyRetry。
+  // 对话流的生成是"发起 + 轮询"且失败被 Promise.allSettled 吞掉，不会 reject，所以这里在每轮结束后
+  // 回 sessionsRef 核对"这条消息的图片数有没有变多"来判定成功，没变多就 throw 让编排继续下一轮。
+  const runConversationGptImageOptimizationRetry = async (message: Message, failedIndex: number, maxAttempts: number) => {
+    const session = activeSession;
+    const meta = message.generationMeta;
+    if (!session || !meta || meta.mode !== "image") return;
+    const lockKey = `${message.id}:${failedIndex}`;
+    if (optimizingImageMessagesRef.current.has(lockKey)) return;
+    const slots = message.imageResultSlots ?? [];
+    const failedSlot = slots.filter((slot) => slot.type === "failed")[failedIndex];
+    const initialError = (failedSlot?.type === "failed" ? failedSlot.reason : undefined) ?? message.mediaErrorReasons?.[failedIndex] ?? message.error ?? "";
+    const originalPrompt = (message.gptImageOptimizationOriginalPrompt ?? meta.originalPrompt ?? "").trim();
+    if (!originalPrompt) {
+      patchMessageById(session.id, message.id, { error: "缺少原提示词，无法进行安全改写。" });
+      return;
+    }
+
+    optimizingImageMessagesRef.current.add(lockKey);
+    patchMessageById(session.id, message.id, { gptImageOptimizationOriginalPrompt: originalPrompt, gptImageOptimizationRetryingIndexes: Array.from(new Set([...(message.gptImageOptimizationRetryingIndexes ?? []), failedIndex])) });
+
+    try {
+      const getMessageImageCount = () => sessionsRef.current.find((item) => item.id === session.id)?.messages.find((item) => item.id === message.id)?.images?.length ?? 0;
+      const result = await runPromptSafetyRetry({
+        originalPrompt,
+        maxAttempts,
+        initialError,
+        attemptedPrompts: message.gptImageOptimizationAttemptPrompts ?? [],
+        toErrorText: (error) => toUserErrorMessage(error, GENERIC_MEDIA_ERROR_MESSAGE),
+        onAttemptedPromptsChange: (attemptedPrompts) => patchMessageById(session.id, message.id, { gptImageOptimizationAttemptPrompts: attemptedPrompts }),
+        rewrite: (input) => fetch("/api/workflow-prompt-optimization/rewrite", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...input, workflowId: session.id, workflowTitle: session.title, workflowNodeId: message.id, requestId: createClientId() }),
+        }).then((response) => readJson<{ optimizedPrompt?: string; optimizerModel?: string; credit?: CreditMeta }>(response)).then((rewriteData) => {
+          applyCreditResult(session.id, rewriteData.credit);
+          return rewriteData;
+        }),
+        generate: async ({ optimizedPrompt }) => {
+          const beforeImageCount = getMessageImageCount();
+          const latestMessage = sessionsRef.current.find((item) => item.id === session.id)?.messages.find((item) => item.id === message.id) ?? message;
+          await retryFailedMedia(latestMessage, failedIndex, optimizedPrompt);
+          if (getMessageImageCount() <= beforeImageCount) {
+            const nextMessage = sessionsRef.current.find((item) => item.id === session.id)?.messages.find((item) => item.id === message.id);
+            const nextSlot = (nextMessage?.imageResultSlots ?? []).filter((slot) => slot.type === "failed")[failedIndex];
+            throw new Error((nextSlot?.type === "failed" ? nextSlot.reason : undefined) ?? nextMessage?.mediaErrorReasons?.[failedIndex] ?? nextMessage?.error ?? GENERIC_MEDIA_ERROR_MESSAGE);
+          }
+        },
+      });
+
+      const latestMessage = sessionsRef.current.find((item) => item.id === session.id)?.messages.find((item) => item.id === message.id);
+      patchMessageById(session.id, message.id, {
+        gptImageOptimizationRetryingIndexes: (latestMessage?.gptImageOptimizationRetryingIndexes ?? []).filter((index) => index !== failedIndex),
+        ...(result.ok ? {} : { error: result.lastError }),
+      });
+    } finally {
+      optimizingImageMessagesRef.current.delete(lockKey);
+    }
   };
 
   const submitFeedback = useCallback((kind: FeedbackKind, message: Message) => {
@@ -16312,9 +16444,9 @@ export function ChatWorkbench() {
                       {message.role === "assistant" && message.mode === "image" && isAssistantMessageComplete && ((message.images?.length ?? 0) > 0 || hasDisplayedImageResultSlots || imagePendingCount > 0 || imageFailedCount > 0) ? (
                          <LazyMediaMount height={250} className="mt-2">
                              {displayedImageResultSlots ? (
-                               <ImageResultSlotStrip slots={displayedImageResultSlots} imageIndexes={selectedImageVariant?.imageIndexes} pendingCount={displayedPendingImageCount} createdAt={message.createdAt} now={timerNow} rounded={isAgentMediaMessage} isRetrying={activeMessagePendingRequest?.mode === "image"} onRetryFailed={(failedIndex) => retryFailedMedia(message, failedIndex)} onLoadedDimensions={(url, dimensions) => updateMessageImageDimensions(activeSession?.id ?? "", message.id, url, dimensions)} onMention={mentionMediaIntoInput} getImageName={(url, imageIndex) => getCanonicalMediaName(message, url, `生成图片${imageIndex + 1}`)} onPreview={(url, imageIndex) => setPreviewAsset({ id: `${message.id}-${imageIndex}`, type: "other", name: getCanonicalMediaName(message, url, `生成图片${imageIndex + 1}`), url, sourcePrompt: getImageSourcePrompt(message, url), previewMeta: getPreviewMediaMeta(message, url), sessionId: activeSession?.id ?? "", messageId: message.id, createdAt: message.createdAt ?? Date.now() })} />
+                               <ImageResultSlotStrip slots={displayedImageResultSlots} imageIndexes={selectedImageVariant?.imageIndexes} pendingCount={displayedPendingImageCount} createdAt={message.createdAt} now={timerNow} rounded={isAgentMediaMessage} isRetrying={activeMessagePendingRequest?.mode === "image"} optimizingFailedIndexes={message.gptImageOptimizationRetryingIndexes} canOptimizationRetry={(failedIndex) => canConversationOptimizationRetry(message, failedIndex)} onOptimizationRetry={(failedIndex, maxAttempts) => void runConversationGptImageOptimizationRetry(message, failedIndex, maxAttempts)} onRetryFailed={(failedIndex) => void retryFailedMedia(message, failedIndex)} onLoadedDimensions={(url, dimensions) => updateMessageImageDimensions(activeSession?.id ?? "", message.id, url, dimensions)} onMention={mentionMediaIntoInput} getImageName={(url, imageIndex) => getCanonicalMediaName(message, url, `生成图片${imageIndex + 1}`)} onPreview={(url, imageIndex) => setPreviewAsset({ id: `${message.id}-${imageIndex}`, type: "other", name: getCanonicalMediaName(message, url, `生成图片${imageIndex + 1}`), url, sourcePrompt: getImageSourcePrompt(message, url), previewMeta: getPreviewMediaMeta(message, url), sessionId: activeSession?.id ?? "", messageId: message.id, createdAt: message.createdAt ?? Date.now() })} />
                              ) : (
-                               <ImageResultStrip images={displayedMessageImages} imageIndexes={selectedImageVariant?.imageIndexes} pendingCount={displayedPendingImageCount} failedCount={displayedFailedImageCount} retryingFailedIndexes={message.retryingFailedImageIndexes} retryingFailedStartedAt={message.retryingFailedImageStartedAt} createdAt={message.createdAt} now={timerNow} rounded={isAgentMediaMessage} onRetryFailed={(failedIndex) => retryFailedMedia(message, failedIndex)} onLoadedDimensions={(url, dimensions) => updateMessageImageDimensions(activeSession?.id ?? "", message.id, url, dimensions)} onMention={mentionMediaIntoInput} getImageName={(url, imageIndex) => getCanonicalMediaName(message, url, `生成图片${imageIndex + 1}`)} onPreview={(url, imageIndex) => setPreviewAsset({ id: `${message.id}-${imageIndex}`, type: "other", name: getCanonicalMediaName(message, url, `生成图片${imageIndex + 1}`), url, sourcePrompt: getImageSourcePrompt(message, url), previewMeta: getPreviewMediaMeta(message, url), sessionId: activeSession?.id ?? "", messageId: message.id, createdAt: message.createdAt ?? Date.now() })} />
+                               <ImageResultStrip images={displayedMessageImages} imageIndexes={selectedImageVariant?.imageIndexes} pendingCount={displayedPendingImageCount} failedCount={displayedFailedImageCount} retryingFailedIndexes={[...(message.retryingFailedImageIndexes ?? []), ...(message.gptImageOptimizationRetryingIndexes ?? [])]} retryingFailedStartedAt={message.retryingFailedImageStartedAt} createdAt={message.createdAt} now={timerNow} rounded={isAgentMediaMessage} canOptimizationRetry={(failedIndex) => canConversationOptimizationRetry(message, failedIndex)} onOptimizationRetry={(failedIndex, maxAttempts) => void runConversationGptImageOptimizationRetry(message, failedIndex, maxAttempts)} onRetryFailed={(failedIndex) => void retryFailedMedia(message, failedIndex)} onLoadedDimensions={(url, dimensions) => updateMessageImageDimensions(activeSession?.id ?? "", message.id, url, dimensions)} onMention={mentionMediaIntoInput} getImageName={(url, imageIndex) => getCanonicalMediaName(message, url, `生成图片${imageIndex + 1}`)} onPreview={(url, imageIndex) => setPreviewAsset({ id: `${message.id}-${imageIndex}`, type: "other", name: getCanonicalMediaName(message, url, `生成图片${imageIndex + 1}`), url, sourcePrompt: getImageSourcePrompt(message, url), previewMeta: getPreviewMediaMeta(message, url), sessionId: activeSession?.id ?? "", messageId: message.id, createdAt: message.createdAt ?? Date.now() })} />
                              )}
                           </LazyMediaMount>
                         ) : null}

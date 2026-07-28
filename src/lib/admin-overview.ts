@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { bytePlusImageGenerationModels, bytePlusVideoGenerationModels, imageGenerationModels, videoGenerationModels } from "@/lib/models";
+import { FAILURE_REASON_SQL } from "@/lib/admin-failure-triage";
 
 /**
  * 运营概览（概览页）真实数据聚合。
@@ -257,17 +258,19 @@ export async function getAdminOverviewData(): Promise<AdminOverviewData> {
 
   // 「失败原因」只统计**未归档**的（resolvedAt IS NULL）。根因查清并修掉后由归档脚本打上
   // resolvedAt，那部分改到下面 failureResolvedTop 里划掉展示（文字保留，便于追溯）。
-  const genFailureRows = await safeRows(() => prisma.$queryRaw<Array<{ reason: string | null; count: bigint }>>`
-    SELECT regexp_replace(regexp_replace("failureReason", '^\\(B_[0-9]+\\)\\s*', ''), '^(图片平台没有返回图片)：.*$', '\\1（模型未产出或拒绝生成）') AS reason, COUNT(*)::bigint AS count FROM "GenerationEvent" WHERE "status" = 'failed' AND "failureReason" IS NOT NULL AND "resolvedAt" IS NULL GROUP BY 1 ORDER BY count DESC`);
+  // ⭐ 原因归一化表达式来自唯一权威 FAILURE_REASON_SQL（与「失败排查」页共用，禁止再抄一份）。
+  // 更全的排查视图见后台「失败排查」页（src/lib/admin-failure-triage.ts）。
+  const genFailureRows = await safeRows(() => prisma.$queryRawUnsafe<Array<{ reason: string | null; count: bigint }>>(
+    `SELECT ${FAILURE_REASON_SQL} AS reason, COUNT(*)::bigint AS count FROM "GenerationEvent" WHERE "status" = 'failed' AND "failureReason" IS NOT NULL AND "resolvedAt" IS NULL GROUP BY 1 ORDER BY count DESC`));
   const failureTop = genFailureRows.map((row) => ({ label: (row.reason as string).slice(0, 80), value: num(row.count) }));
 
   // 已归档（根因已修）的失败原因：按「原因 + 归档说明」分组，后台划掉展示。
-  const genResolvedFailureRows = await safeRows(() => prisma.$queryRaw<Array<{ reason: string | null; note: string | null; count: bigint }>>`
-    SELECT regexp_replace(regexp_replace("failureReason", '^\\(B_[0-9]+\\)\\s*', ''), '^(图片平台没有返回图片)：.*$', '\\1（模型未产出或拒绝生成）') AS reason, "resolvedNote" AS note, COUNT(*)::bigint AS count FROM "GenerationEvent" WHERE "status" = 'failed' AND "failureReason" IS NOT NULL AND "resolvedAt" IS NOT NULL GROUP BY 1,2 ORDER BY count DESC`);
+  const genResolvedFailureRows = await safeRows(() => prisma.$queryRawUnsafe<Array<{ reason: string | null; note: string | null; count: bigint }>>(
+    `SELECT ${FAILURE_REASON_SQL} AS reason, "resolvedNote" AS note, COUNT(*)::bigint AS count FROM "GenerationEvent" WHERE "status" = 'failed' AND "failureReason" IS NOT NULL AND "resolvedAt" IS NOT NULL GROUP BY 1,2 ORDER BY count DESC`));
   const failureResolvedTop = genResolvedFailureRows.map((row) => ({ label: (row.reason as string).slice(0, 80), value: num(row.count), note: row.note ?? undefined }));
 
-  const genModerationRows = await safeRows(() => prisma.$queryRaw<Array<{ reason: string | null; count: bigint }>>`
-    SELECT regexp_replace(regexp_replace("failureReason", '^\\(B_[0-9]+\\)\\s*', ''), '^(图片平台没有返回图片)：.*$', '\\1（模型未产出或拒绝生成）') AS reason, COUNT(*)::bigint AS count FROM "GenerationEvent" WHERE "status" = 'failed' AND "moderation" = true AND "failureReason" IS NOT NULL AND "resolvedAt" IS NULL GROUP BY 1 ORDER BY count DESC LIMIT 8`);
+  const genModerationRows = await safeRows(() => prisma.$queryRawUnsafe<Array<{ reason: string | null; count: bigint }>>(
+    `SELECT ${FAILURE_REASON_SQL} AS reason, COUNT(*)::bigint AS count FROM "GenerationEvent" WHERE "status" = 'failed' AND "moderation" = true AND "failureReason" IS NOT NULL AND "resolvedAt" IS NULL GROUP BY 1 ORDER BY count DESC LIMIT 8`));
   const moderationBreakdown = genModerationRows.map((row) => ({ label: (row.reason as string).slice(0, 80), value: num(row.count) }));
 
   const genLatencyRows = await safeRows(() => prisma.$queryRaw<Array<{ model: string | null; avg: number | null }>>`

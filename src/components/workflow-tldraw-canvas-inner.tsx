@@ -10,8 +10,9 @@ import { AudioWaveformPlayer } from "@/components/audio-waveform-player";
 import { AssetMentionPicker, type MentionPickerCategory, type MentionPickerItem } from "@/components/asset-mention-picker";
 import { VideoUploadThumbnail } from "@/components/video-upload-thumbnail";
 import { VideoPlayBadge } from "@/components/video-play-badge";
-import { DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, DEFAULT_IMAGE_QUALITY, GPT_IMAGE2_MODEL_ID, IMAGE_QUALITY_OPTIONS, IMAGE_QUALITY_LABELS, isGptImage2Model, isGptImage2AgentModel, getImageModelSelectHint, bytePlusVideoGenerationModels, frontendConversationModels, frontendImageGenerationModels, getExpectedImageDimensions, getExpectedVideoDimensions, getSupportedImageResolutions, getSupportedVideoRatios, getSupportedVideoResolutions, imageGenerationModels, normalizeImageResolutionForModel, normalizeVideoRatioForModel, normalizeVideoResolutionForModel, videoGenerationModels, type ConversationModel, type GenerationModel, type ModelName } from "@/lib/models";
+import { DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, DEFAULT_IMAGE_QUALITY, GPT_IMAGE2_MODEL_ID, IMAGE_QUALITY_OPTIONS, IMAGE_QUALITY_LABELS, isGptImage2Model, isGptImage2AgentModel, getImageModelSelectHint, bytePlusVideoGenerationModels, frontendConversationModels, frontendImageGenerationModels, getExpectedImageDimensions, getExpectedVideoDimensions, getSupportedImageResolutions, getSupportedVideoRatios, getSupportedVideoResolutions, imageGenerationModels, normalizeImageResolutionForModel, normalizeVideoRatioForModel, normalizeVideoResolutionForModel, validateVideoDurationWithReferences, videoGenerationModels, type ConversationModel, type GenerationModel, type ModelName } from "@/lib/models";
 import { GENERIC_MEDIA_ERROR_MESSAGE, toUserErrorMessage } from "@/lib/error-message";
+import { isGptImageSafetyFailure, normalizeAttemptPrompt, runPromptSafetyRetry } from "@/lib/gpt-image-safety-retry";
 import { handleSessionExpiredResponse, SESSION_EXPIRED_SILENT_ERROR } from "@/lib/session-expired-redirect";
 import { buildReferenceHint } from "@/lib/reference-hint";
 import { getMentionNames as getSharedMentionNames, getMentionRangeForDeletion as getSharedMentionRangeForDeletion, getMentionRanges as getSharedMentionRanges, removeMentionName } from "@/lib/mention-text";
@@ -20,7 +21,7 @@ import { sanitizeModelOutputText } from "@/lib/text-cleanup";
 import { getUploadKindFromFileName, getUploadRule, getVideoAudioUploadDisabledMessage, validateReferenceTotalDuration, validateVideoReferenceCombination, type UploadKind, type UploadKindRule, type UploadRule, type UploadRuleOverrides } from "@/lib/upload-rules";
 import { IMAGE_UPLOAD_ACCEPT, validateImageUploadFile } from "@/lib/image-upload-validation";
 import { AUDIO_UPLOAD_ACCEPT, MEDIA_DURATION_EPSILON_SECONDS, validateMediaUploadFile, validateMediaUploadMetadata, validateReferenceMediaDurationRange as validateWorkflowMediaDuration, VIDEO_UPLOAD_ACCEPT } from "@/lib/media-upload-validation";
-import { validateVideoReferenceImagesBeforeSend } from "@/lib/video-reference-image-rules";
+import { validateVideoReferenceImagesBeforeSend, videoModelEnforcesReferenceImageSizeRules } from "@/lib/video-reference-image-rules";
 import { computeFileContentHashHex, precheckUploadedFileDedup } from "@/lib/upload-content-hash";
 
 export type WorkflowNodeKind = "text" | "image" | "video" | "audio";
@@ -1658,31 +1659,13 @@ function isTransientWorkflowVideoPollStatus(status: number) {
 }
 
 function isWorkflowGptImageSafetyFailure(node: WorkflowNode) {
-  // 两种接口的 gpt5.4image2（直连新接口 openai/gpt-5.4-image-2、GPT版老接口 ...-agent）都要能进安全改写。
-  if (node.kind !== "image" || (!isGptImage2Model(node.data.model) && !isGptImage2AgentModel(node.data.model))) return false;
-  if (node.data.gptImageOptimizationOriginalPrompt || (node.data.gptImageOptimizationAttemptPrompts?.length ?? 0) > 0) return true;
-  const error = node.data.error ?? "";
-  return /图片平台没有返回图片|无法帮助|不能帮助|安全|隐私|未成年人|亲密|肖像|拒绝|不适合/i.test(error);
-}
-
-function normalizeWorkflowAttemptPrompt(value: string) {
-  return value.replace(/\s+/g, " ").trim().toLowerCase();
-}
-
-function getWorkflowFallbackSafetyPrompt(originalPrompt: string, attempt: number, seenPrompts: Set<string>) {
-  const mentionPrefix = originalPrompt.match(/^((?:@[^@\s，。！？；;、]+\s*)+)/)?.[0]?.trim() ?? "";
-  const body = mentionPrefix ? originalPrompt.slice(mentionPrefix.length).trim() : originalPrompt.trim();
-  const withPrefix = (nextBody: string) => [mentionPrefix, nextBody].filter(Boolean).join(" ").trim();
-  const candidates = [
-    withPrefix(body.replace(/(坐在|站在|躺在|走在|坐 到|坐到|在)/, "穿日常连衣裙$1")),
-    withPrefix(body.replace(/(坐在|站在|躺在|走在|坐 到|坐到|在)/, "穿着得体$1")),
-    withPrefix(body.replace(/(坐在|站在|躺在|走在|坐 到|坐到|在)/, "日常穿着$1")),
-    withPrefix(`${body}，穿着得体`),
-    withPrefix(`${body}，自然生活照风格`),
-    withPrefix(`${body}，非性感、自然姿态`),
-  ].map((item) => item.replace(/\s+/g, " ").trim()).filter(Boolean);
-  const ordered = [...candidates.slice(Math.max(0, attempt - 1)), ...candidates.slice(0, Math.max(0, attempt - 1))];
-  return ordered.find((item) => !seenPrompts.has(normalizeWorkflowAttemptPrompt(item))) ?? "";
+  if (node.kind !== "image") return false;
+  // 判定收敛到唯一权威 src/lib/gpt-image-safety-retry.ts（对话流共用同一份）。
+  return isGptImageSafetyFailure({
+    model: node.data.model,
+    errorText: node.data.error,
+    hasPriorAttempts: Boolean(node.data.gptImageOptimizationOriginalPrompt) || (node.data.gptImageOptimizationAttemptPrompts?.length ?? 0) > 0,
+  });
 }
 
 function getVideoUrlFromResponse(data: VideoApiResponse) {
@@ -4299,65 +4282,41 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     const uploadError = validateWorkflowUploadsForSubmit({ ...node, data: { ...node.data, model, prompt: originalOwnPrompt, uploads: mergeWorkflowUploadItems([...(node.data.uploads ?? []), ...connectedUploads]) } }, uploadRuleOverrides);
     if (uploadError) return updateNode(node.id, { error: uploadError });
 
-    let attemptedPrompts = [...(node.data.gptImageOptimizationAttemptPrompts ?? []), originalOwnPrompt].filter(Boolean);
-    const seenPrompts = new Set(attemptedPrompts.map(normalizeWorkflowAttemptPrompt));
-    const originalPromptKey = normalizeWorkflowAttemptPrompt(originalOwnPrompt);
-    const previousImageAttempts = new Set(attemptedPrompts.map(normalizeWorkflowAttemptPrompt).filter((prompt) => prompt && prompt !== originalPromptKey)).size;
-    let lastError = node.data.error ?? "";
+    const priorAttemptPrompts = [...(node.data.gptImageOptimizationAttemptPrompts ?? []), originalOwnPrompt].filter(Boolean);
+    const originalPromptKey = normalizeAttemptPrompt(originalOwnPrompt);
+    const previousImageAttempts = new Set(priorAttemptPrompts.map(normalizeAttemptPrompt).filter((prompt) => prompt && prompt !== originalPromptKey)).size;
     optimizingImageNodesRef.current.add(node.id);
     updateNode(node.id, { isRunning: true, error: undefined, images: [], visualSize: undefined, startedAt: Date.now(), gptImageOptimizationOriginalPrompt: originalOwnPrompt });
 
     try {
-      try {
-        for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-        let optimizedPrompt = "";
-        let optimizerModel = "local-fallback";
-        try {
-          const rewriteData = await fetch("/api/workflow-prompt-optimization/rewrite", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ originalPrompt: originalOwnPrompt, failureReason: lastError, previousPrompts: attemptedPrompts, attemptIndex: attempt, maxAttempts, workflowId, workflowTitle, workflowNodeId: node.id, requestId: createId("workflow_prompt_opt") }),
-          }).then((response) => readJson<{ optimizedPrompt?: string; optimizerModel?: string; credit?: CreditResult }>(response));
+      // 编排（循环 / 去重 / 兜底改写词 / 最终文案）统一走 src/lib/gpt-image-safety-retry.ts，对话流共用同一份。
+      const result = await runPromptSafetyRetry({
+        originalPrompt: originalOwnPrompt,
+        maxAttempts,
+        initialError: node.data.error ?? "",
+        attemptedPrompts: node.data.gptImageOptimizationAttemptPrompts ?? [],
+        previousAttemptsUsed: previousImageAttempts,
+        toErrorText: (error) => toUserErrorMessage(error, GENERIC_MEDIA_ERROR_MESSAGE),
+        onAttemptedPromptsChange: (nextAttemptedPrompts) => {
+          updateNode(node.id, { gptImageOptimizationAttemptPrompts: nextAttemptedPrompts });
+        },
+        rewrite: (input) => fetch("/api/workflow-prompt-optimization/rewrite", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...input, workflowId, workflowTitle, workflowNodeId: node.id, requestId: createId("workflow_prompt_opt") }),
+        }).then((response) => readJson<{ optimizedPrompt?: string; optimizerModel?: string; credit?: CreditResult }>(response)).then((rewriteData) => {
           onCredit?.(rewriteData.credit);
-          const aiPrompt = rewriteData.optimizedPrompt?.trim() ?? "";
-          if (aiPrompt && !seenPrompts.has(normalizeWorkflowAttemptPrompt(aiPrompt))) {
-            optimizedPrompt = aiPrompt;
-            optimizerModel = rewriteData.optimizerModel ?? "unknown";
-          }
-        } catch (error) {
-          lastError = toUserErrorMessage(error, GENERIC_MEDIA_ERROR_MESSAGE);
-        }
-
-        if (!optimizedPrompt) {
-          optimizedPrompt = getWorkflowFallbackSafetyPrompt(originalOwnPrompt, attempt, seenPrompts);
-          optimizerModel = "local-fallback";
-        }
-
-        if (!optimizedPrompt) {
-          lastError = "没有找到不重复的安全改写提示词，请手动调整提示词后再试。";
-          updateNode(node.id, { gptImageOptimizationAttemptPrompts: attemptedPrompts });
-          continue;
-        }
-
-        const normalized = normalizeWorkflowAttemptPrompt(optimizedPrompt);
-        seenPrompts.add(normalized);
-        attemptedPrompts = [...attemptedPrompts, optimizedPrompt];
-        updateNode(node.id, { gptImageOptimizationAttemptPrompts: attemptedPrompts });
-
-        try {
+          return rewriteData;
+        }),
+        generate: async ({ optimizedPrompt, optimizerModel, attemptsUsed }) => {
           const prompt = [optimizedPrompt, upstreamPrompt].filter(Boolean).join("\n\n").trim();
           const referenceImages = [...getReferenceImages(node.id), ...getPromptReferenceUrls(prompt, { ...node, data: { ...node.data, prompt: optimizedPrompt } }, "image")].filter((url, index, array) => array.indexOf(url) === index);
-          await generateImageForNode(node, { prompt, model, settings, referenceImages, promptOptimization: { originalPrompt: originalOwnPrompt, optimizedPrompt, attemptsUsed: previousImageAttempts + attempt, optimizerModel } });
-          return;
-        } catch (error) {
-          lastError = toUserErrorMessage(error, GENERIC_MEDIA_ERROR_MESSAGE);
-          updateNode(node.id, { gptImageOptimizationAttemptPrompts: attemptedPrompts });
-        }
-      }
-      } catch (error) {
-        lastError = toUserErrorMessage(error, GENERIC_MEDIA_ERROR_MESSAGE);
-      }
-      updateNode(node.id, { isRunning: false, error: lastError || "AI 改写重试仍未成功，请调整提示词后再试。", gptImageOptimizationAttemptPrompts: attemptedPrompts, gptImageOptimizationOriginalPrompt: originalOwnPrompt, imageRequestId: undefined });
+          await generateImageForNode(node, { prompt, model, settings, referenceImages, promptOptimization: { originalPrompt: originalOwnPrompt, optimizedPrompt, attemptsUsed, optimizerModel } });
+        },
+      });
+
+      if (result.ok) return;
+      updateNode(node.id, { isRunning: false, error: result.lastError, gptImageOptimizationAttemptPrompts: result.attemptedPrompts, gptImageOptimizationOriginalPrompt: originalOwnPrompt, imageRequestId: undefined });
     } finally {
       optimizingImageNodesRef.current.delete(node.id);
     }
@@ -4469,9 +4428,9 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
         for (const asset of referenceAssets) if (asset.url && asset.name) referenceImageNameByUrl.set(asset.url, asset.name);
         const referenceImageNames = referenceImages.map((url) => referenceImageNameByUrl.get(url) ?? "");
         // 参考图尺寸/比例发送前拦截（与对话流、服务端共用 video-reference-image-rules 的唯一规则）：
-        // 不合规的图会在平台"素材送审"阶段被拒，以前只会显示成"服务器繁忙"。
-        // 只对 BytePlus 视频模型生效（300–6000px、宽高比 0.4–2.5 是 BytePlus 的硬规则）。
-        const referenceImageSizeError = isWorkflowBytePlusSeedanceVideoModel(model)
+        // 不合规的图会在平台"素材送审"/异步生成阶段被拒，以前只会显示成"服务器繁忙"。
+        // 受约束的模型集合由 videoModelEnforcesReferenceImageSizeRules 唯一判定（BytePlus Seedance + Kling）。
+        const referenceImageSizeError = videoModelEnforcesReferenceImageSizeRules(model)
           ? await validateVideoReferenceImagesBeforeSend(
             referenceImages.map((url) => {
               const sourceNode = getIncomingNodes(node.id).find((candidate) => (candidate.data.images ?? []).includes(url));
@@ -4482,6 +4441,10 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
           )
           : undefined;
         if (referenceImageSizeError) throw new Error(referenceImageSizeError);
+        // ⭐ 某些模型「带参考图」时可用时长被上游收窄（如 Veo 3.1 的 reference_to_video 只允许 8 秒）。
+        // 不拦的话任务会被收下、一两分钟后才异步失败，只能看到"服务器繁忙"。规则唯一来源 models.ts。
+        const referenceDurationError = validateVideoDurationWithReferences(model, settings.duration, referenceImages.length);
+        if (referenceDurationError) throw new Error(referenceDurationError);
         const createVideoTask = (autoBytePlusAssetReview = false) => fetch("/api/video", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ prompt: modelPrompt, sourcePrompt: prompt, model, settings, referenceImages, referenceImageNames, referenceVideos, referenceAudios, referenceMode: videoReferenceMode, conversationId: workflowId, conversationTitle: workflowTitle, requestId, flow: "workflow", workflowId, workflowNodeId: node.id, metadata: { creditSource: "workflow_video_generation" }, autoBytePlusAssetReview }) }).then((response) => readJson<VideoApiResponse>(response));
         let createData = await createVideoTask();
         if (createData.status === "reviewing" && createData.autoBytePlusAssetReview?.triggered) {

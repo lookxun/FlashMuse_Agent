@@ -88,6 +88,16 @@ const RESOLVED_RULES = [
     note: "登录状态已失效（单会话被新登录顶掉 / 24h 过期）以前被当成生成失败记红字并返回 500 → 前端所有「未登录自动跳首页」的保护都只认 401、全部不触发 → 用户连点数次。v1.0.0.47 改为返回 401 且不再记 GenerationEvent，前端直接跳首页（按用户要求不给任何提示）",
   },
   {
+    key: "kling-reference-image-pixel-invalid",
+    match: /image pixel is invalid/i,
+    note: "Kling（kwaivgi）参考图尺寸不合规，上游只回一句 `Image pixel is invalid` 且是**异步**失败（任务先被收下、一两分钟后才 failed）→ 全落进「服务器繁忙」兜底桶。真因与 BytePlus 那 191 条完全相同（正式服实测某用户拿 338×191 的截图连续失败 32 次），而 v47 的发送前尺寸拦截被写死「只对 BytePlus 生效」→ Kling 路径裸奔。v1.0.0.49 起改由 videoModelEnforcesReferenceImageSizeRules() 统一判定（BytePlus Seedance + Kling 共用 300–6000px / 0.4–2.5），三处咽喉全部接入，并给 `Image pixel is invalid` 加了明确文案 + 列为永久错误不再白重试",
+  },
+  {
+    key: "veo-r2v-duration",
+    match: /unsupported output video duration/i,
+    note: "google/veo-3.1 纯文生视频支持 4/6/8 秒，但**带参考图**（reference_to_video）只允许 8 秒，我们的时长表没有这个维度 → 任务被收下后异步失败、落进「服务器繁忙」。v1.0.0.49 新增唯一权威 models.ts 的 VIDEO_REFERENCE_DURATION_LIMITS + validateVideoDurationWithReferences()，对话流/工作流/服务端三处发送前拦截并明确提示（故意不静默改成 8 秒——时长直接决定计费）",
+  },
+  {
     key: "pre-diagnostics-log-unknowable",
     match: /__NEVER_MATCH__/, // 占位：靠下面的"日志启用前 + 无任何日志 + 落在兜底桶"特征判定
     note: "发生在诊断日志启用（2026-07-10，正式服迁腾讯云）之前、且落在兜底文案桶里：上游原文既不在 failureReason 里（被兜底文案覆盖）、也没有日志可查 → **永久不可追溯**，留着也无法排查。用户 2026-07-28 拍板归档，让「待排查」数字只代表还有希望查的",
@@ -129,7 +139,7 @@ async function main() {
   const failures = await prisma.generationEvent.findMany({
     // ⚠️ 不再要求 requestId 非空：failureReason 里就带原文的那类（如参考图尺寸）没有日志也能归档。
     where: { status: "failed", failureReason: { not: null }, resolvedAt: null },
-    select: { id: true, requestId: true, kind: true, failureReason: true, createdAt: true },
+    select: { id: true, requestId: true, kind: true, model: true, failureReason: true, createdAt: true },
   });
   const byRequestId = new Map();
   for (const event of failures) {
@@ -147,14 +157,24 @@ async function main() {
   // 扫日志，按 requestId 收集失败原文
   const textByRequestId = new Map();
   const eventNamesByRequestId = new Map();
+  // ⭐ 视频「异步轮询失败」专用索引：轮询日志行**没有 requestId**（只有 taskId），
+  //   而且 v47 之前上游 error 一个字都没落盘（只记 `hasError: true` 布尔）→ 靠原文永远匹配不上。
+  //   所以这里额外建 taskId → requestId 的桥（来自 create-success，它两个都有），
+  //   再把"轮询到 failed 的 taskId"收进集合，交给下面按模型判定。
+  const taskIdByRequestId = new Map();
+  const pollFailedTaskIds = new Set();
   for (const file of LOG_FILES) {
     if (!existsSync(file)) { console.warn(`[skip] 找不到日志 ${file}`); continue; }
     const reader = createInterface({ input: createReadStream(file), crlfDelay: Infinity });
     for await (const line of reader) {
-      if (!line.includes('"requestId"')) continue;
+      if (!line.includes('"requestId"') && !line.includes('"taskId"')) continue;
       let entry;
       try { entry = JSON.parse(line); } catch { continue; }
+      if (entry.event === "video-provider-poll-success" && entry.taskId && entry.upstream?.hasError === true) {
+        pollFailedTaskIds.add(String(entry.taskId));
+      }
       if (!entry.requestId || !byRequestId.has(entry.requestId)) continue;
+      if (entry.event === "video-provider-create-success" && entry.taskId) taskIdByRequestId.set(entry.requestId, String(entry.taskId));
       const text = textOf(entry);
       if (text) textByRequestId.set(entry.requestId, `${textByRequestId.get(entry.requestId) ?? ""} ${entry.event}: ${text}`);
       const names = eventNamesByRequestId.get(entry.requestId) ?? [];
@@ -183,6 +203,15 @@ async function main() {
     //   ⚠️ 三个条件必须同时满足，别放宽：只要日志里有原文、或 failureReason 里带原文，就还有希望，不能归到这里。
     if (!rule && text === "" && events.every((event) => event.createdAt < DIAGNOSTICS_LOG_START && GENERIC_FALLBACK_PATTERN.test(event.failureReason ?? ""))) {
       rule = RESOLVED_RULES.find((candidate) => candidate.key === "pre-diagnostics-log-unknowable");
+    }
+    // ⭐ 视频异步轮询失败（v47 前上游原文没落盘，匹配不上任何 match）：靠 taskId 认出来，再按模型定根因。
+    //   依据不是猜的 —— 2026-07-28 拿这批 taskId 回查 OpenRouter（`GET /api/v1/videos/{id}` 事后仍可查），
+    //   Kling 三个模型 32/32 全是 `Image pixel is invalid`，veo-3.1 那 1 条是 `Unsupported output video duration`。
+    //   ⚠️ 只认这 4 个模型；BytePlus 那几条轮询失败上游任务无法事后回查 → 根因仍不明，不归档。
+    if (!rule && pollFailedTaskIds.has(taskIdByRequestId.get(requestId) ?? "\u0000")) {
+      const model = events.find((event) => event.model)?.model ?? "";
+      if (/^kwaivgi\/kling-/.test(model)) rule = RESOLVED_RULES.find((candidate) => candidate.key === "kling-reference-image-pixel-invalid");
+      else if (model === "google/veo-3.1") rule = RESOLVED_RULES.find((candidate) => candidate.key === "veo-r2v-duration");
     }
     if (!rule) continue;
     perRule[rule.key] = (perRule[rule.key] ?? 0) + events.length;

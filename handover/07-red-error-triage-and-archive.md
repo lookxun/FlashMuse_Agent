@@ -6,6 +6,10 @@
 > **速查目录**：铁律（归档判什么）→ 一（后台看的是什么，⭐**两个兜底桶**）→ 二（怎么查真根因）→ 三/三·B/三·C/三·D（已查清的四批，含完整数据与修法）→ 四（归档操作）→ 五（⭐一根因多措辞的坑）→ 六（正式服红字全貌）→ 七（下一批查什么）→ 八（等拍板的改进）。
 >
 > **已查清并归档的五批（累计约 360 条）**：①参考图尺寸/比例 191（两种措辞）②审核凭证失效 11 ③OpenRouter 余额不足 53+13 ④「当前模型不支持这组参数」51 ⑤登录失效 17 ⑥07-10 前永久不可追溯 24。
+>
+> **⭐ 第十次会话（2026-07-28）新增的第四条方法论 —— 同一个 event 可能有多个打点、各自读取程度不同**：
+> 查「gpt-5.4-image-2 明文拒绝」时发现 `image-provider-empty-result` 在 `src/lib/openrouter.ts` 里有 **3 个打点**（BytePlus `/images` `:1388` / OpenRouter 新 `/api/v1/images` `:1679` / OpenRouter 老 `/chat/completions` `:1911`），**三份对"上游失败原因"的读取程度完全不同**：老接口读了 `choices[0].message.content|refusal`，新接口**一个字都没读、连 `responseText` 都没进日志**。
+> 结论：**查一类红字前，先 `grep` 清楚这个 event 名一共有几处打点、每处分别服务哪些模型**，否则会像这次一样把"两个完全不同的问题"当成一条来判断（一个是"原文被扔了查不到"，另一个是"原文有但前端没入口"）。
 
 ## ⭐ 铁律：修完就归档
 
@@ -34,7 +38,7 @@
 
 ## 一、后台看到的是什么
 
-- 位置：后台 `/admin` → 运营概览 → 卡片「**失败原因**」。
+- 位置：后台 `/admin` → 运营概览 → 卡片「**失败原因**」。⭐ **2026-07-28 新增专用页 `/admin?tab=failures`「失败排查」（左侧导航"生成记录"下面），信息比概览那个小卡全得多，排查请优先用它 —— 详见第十节。**
 - ⭐ **有两个兜底桶，都要查**：「服务器繁忙，请稍候再试.....」（调用处显式传 `GENERIC_MEDIA_ERROR_MESSAGE`）和「请求失败，请稍后再试。」（`toUserErrorMessage` 的**默认** fallback）。同一个根因会因为调用处传不传 fallback 而分别落进两个桶（余额不足就同时污染了两个）。详见第三·D 节。
 - 数据来源：`GenerationEvent` 表（`status='failed'`，按 `failureReason` 分组，去掉 `(B_xxx)` 前缀后聚合）。
 - 代码：`src/lib/admin-overview.ts`
@@ -268,7 +272,7 @@ SELECT "requestId","status","failureReason","resolvedAt" FROM "GenerationEvent" 
 | **请先登录后再使用模型。** | **17** | ✅ **2026-07-28 查完并修复**（见第三·C 节）→ 归档 |
 | 生成结果可能涉及版权限制 | 16 | ❌ 不归档 |
 | 参考图可能包含真人或隐私敏感信息 | 13 + 6 + 1 | ❌ 不归档 |
-| 图片平台没有返回图片：抱歉，我不能…（中文明文拒绝，多条各 1~5） | ~20 | ❓ 就是第三节那类 gpt-5.4-image-2 拒绝，应识别成"模型拒绝"并接 AI 改写重试 |
+| 图片平台没有返回图片：抱歉，我不能…（中文明文拒绝，多条各 1~5） | ~20 | ✅ **2026-07-28 已查清**（第七节第 3 条）：这批走的是老 `-agent` 接口、原文已透出、**没落兜底桶**；缺口是"对话流没有 AI 改写重试入口"，已补。**红字本身不归档**（模型拒绝＝提示词内容/平台策略，修不了） |
 | 网络连接异常 5 / API Key 无效 4 / 图片格式不支持 4 | 13 | ❓ API Key 那 4 条要查是哪个渠道 |
 
 ## 七、下一批要排查什么（按性价比排序）
@@ -280,8 +284,12 @@ SELECT "requestId","status","failureReason","resolvedAt" FROM "GenerationEvent" 
 1e. ✅ **平台拉我们缩略图超时 —— 2026-07-28 第九次会话已查完并修掉（v1.0.0.48）**：真因=把「给人看的动态缩略图接口」`/api/media-thumbnail?url=` + 已退役马来 IP `101.47.19.109` 当参考图地址发给平台，平台来拉要我们现场生成缩略图 → 超时。修法=新增唯一权威 `src/lib/reference-asset-url.ts` 的 `normalizeReferenceAssetUrl()`（幂等：剥自家主机前缀 + 还原缩略图接口为原图 + 去缓存版本号），8 处咽喉接入（image/video/byteplus-assets 三入口 + `generation-jobs.resolveReferenceUrls` + openrouter/openrouter-video/seedance/video-route 底层拼址）。
     ⚠️⚠️ **但"18 条"是数错的**：那 18 行日志全属**同一个 requestId**（`id_mq4osh4b_j0yyiyq5:image:0`），事件构成 `image-provider-non-ok ×6` + `provider-curl-non-ok ×6` + `curl-fallback-failed ×6` + `image-route-failed ×7`，**最终 `image-route-success ×3`**，GenerationEvent 的 `status = success` → **后台「失败原因」里根本不占位**，所以归档规则 `platform-download-our-thumbnail-endpoint` 命中 0 条是**正确结果**（规则保留，以后真造成失败会自动认出来）。Bug 本身仍值得修：每次超时白等 10 秒 + 触发 curl 兜底重试链，用户端表现为"转很久"。
 1f. ~~平台拉缩略图超时~~（重复条目，已并入 1e）
-2. **那 40 条轮询 failed**：现在日志已经会记原文了，**等新数据攒几天再查一次**，大概率是输出侧内容审核（`OutputVideoSensitiveContentDetected` 之类）。
-3. **gpt-5.4-image-2 中文明文拒绝（4 条 + 未来会更多）**：现在走 `image-provider-empty-result` 分支 → 落到"服务器繁忙"。应识别成"模型拒绝生成"并接上已有的「AI 改写重试」入口。
+2. ~~**那 40 条轮询 failed**~~ ⭐⭐ **2026-07-28 第十一次会话已全部查清并修（本地未部署，随 v1.0.0.49 上）**，详见第九节。
+3. ~~**gpt-5.4-image-2 中文明文拒绝（4 条 + 未来会更多）**~~ ⭐ **2026-07-28 第十次会话已查清并修（本地未部署）**：其实是**两个问题混成一条**。
+   - **问题 A**：`openrouter.ts` 有 3 个 `image-provider-empty-result` 打点，**新接口 `/api/v1/images`（gpt-5.4-image-2 走这条，`:1679`）把上游拒绝文字整个扔了**（响应类型 `:1483` 只声明 `data[].b64_json`；日志 `upstream` 写死 `reason:"empty image result"`，连 `responseText` 都没带）→ 抛「没有返回可用原因」→ 被 `error-message.ts:69` **精准打回兜底桶**。**连它说了什么都查不到**，所以先只加日志落盘原文（⭐ 待跟踪：过几天回正式服捞 `upstream.body` 看拒绝文字在哪个字段，**别猜字段名**，详见 `05-next-actions.md` 顶部「待跟踪」）。
+   - **问题 B**：后台那 ~20 条「图片平台没有返回图片：抱歉，我不能…」是**老 `-agent` 接口**路径，原文本来就读到了、红字也透出了（`error-message.ts:73-74` 中文原文透出），**根本没落兜底桶**。真正缺口是 **UI：「AI 改写重试」只存在于工作流**，对话流/资产库/Agent 没有这个入口。
+   - 已修：`error-message.ts` 新增 `MODEL_REFUSED_MESSAGE` + `isModelRefusalText()`（补上以前**完全没有**的英文拒绝语规则，位置在版权/隐私规则**之前**，否则拒绝原文里的"版权/隐私"字样会被抢走误报成"参考图有问题"）；新增唯一权威 `src/lib/gpt-image-safety-retry.ts` 收敛判定+编排，**对话流补上「AI改写重试 3/5/10 次」**。
+   - ⭐ 归档判断：**"模型拒绝"本身不归档**（提示词内容/平台策略，我们修不了，该一直亮着）；但**因为问题 A 而落进兜底桶的那批，等修完读取逻辑后可以归档**（理由="已从兜底桶拆出、现在有明确文案"）。
 4. **`empty image result` 7 条**：OpenRouter 说成功但没图，需要看是不是特定 model/参数组合。
 5. **其它未归档的红字**（后台上面那份列表里除"服务器繁忙"之外的条目）：同一套方法逐条查。
 6. **DB 事务超时 2 条**：并发上来后如果变多，要查 Prisma 连接池配置。
@@ -290,3 +298,97 @@ SELECT "requestId","status","failureReason","resolvedAt" FROM "GenerationEvent" 
 
 - **参考图尺寸自动修正**：那 82 次不合规，现在只是"拦住 + 说清"。要真正救回来得在送审前用 sharp **自动缩放/补边**到 300–6000px、0.4–2.5 比例再上传。服务器已有 sharp，可做。
 - **`getVideoErrorMessage` 有两份复制**（`src/app/api/video/route.ts` 与 `src/lib/generation-jobs.ts`），而且都**只取 `error.message`、把 `error.code` 丢了** —— 这是"真人/敏感类错误被降级成服务器繁忙"的第二个原因（关键字往往只在 code 里）。收敛成一份并保留 code 是下一步该做的（影响面：所有模式的视频错误文案）。
+
+## 九、⭐⭐「40 条轮询 failed」排查全过程（2026-07-28 第十一次会话，已修）
+
+### ⭐⭐⭐ 方法论上的重大突破：**OpenRouter 的视频任务事后仍可回查**
+
+以前的结论是"上游原文没落盘 → 只能等新数据攒几天"。**错了 —— 不用等。**
+`video-provider-poll-success` 日志里的 `taskId` 对 OpenRouter 来说就是完整的轮询 URL
+（`https://openrouter.ai/api/v1/videos/<id>`），**带 API Key 直接 GET 就能把当时的 `error` 原文取回来**，
+本次把 07-27 的任务全都捞到了（一个多月前的也在）。
+
+```bash
+# 在腾讯正式服上（key 从 .env.local 读，别打印出来）
+KEY=$(sudo grep -m1 '^OPENROUTER_API_KEY=' /opt/flashmuse/data/.env.local | sed 's/^OPENROUTER_API_KEY=//' | tr -d '"'"'"'\r')
+curl -s -H "Authorization: Bearer $KEY" https://openrouter.ai/api/v1/videos/<taskId>
+# → {"id":"...","status":"failed","error":"task failed with status: FAIL, message: Image pixel is invalid"}
+```
+
+**以后遇到任何"OpenRouter 侧原因不明"的失败，第一件事就是拿 taskId 去回查，别再等。**
+（⚠️ BytePlus 的 `cgt-xxx` 任务**没有**这个待遇，事后查不到 → BytePlus 那几条仍不可考。）
+
+### 轮询失败 75 条的真实构成（不是 40，40 只是落在兜底桶里的那部分）
+
+先用 `taskId → requestId`（桥来自 `video-provider-create-success`，它两个字段都有）把日志和
+`GenerationEvent` 对上，75 条 distinct taskId 全部映射成功：
+
+| 构成 | 条数 | 结论 |
+|---|---|---|
+| 已是明确文案「成品被平台拒绝交付」（BytePlus） | 26 | ❌ 不归档（平台审核） |
+| 「API Key 无效或已过期」 | 4 | 已有明确文案，另案 |
+| ⭐ **落在兜底桶「服务器繁忙」的 OpenRouter 任务** | **33** | ✅ 本次全部查清并修 |
+| BytePlus 落在兜底桶（B_195/237/246-249/256，07-20~21） | 6 | ❓ **仍不可考**（原文当时没落盘 + BytePlus 任务无法事后回查）→ 留着亮 |
+
+### 那 33 条的两个根因（回查 OpenRouter 拿到的原文）
+
+**根因 A：`Image pixel is invalid` —— 32 条（Kling 全系）**
+
+- 全部来自**同一个用户 ID_664169、同一个会话、同两张参考图**，07-27 连续失败 32 次
+  （01:53–02:42 + 07:31–07:35），模型 `kwaivgi/kling-v3.0-std/pro`、`kling-video-o1`。
+- 参考图实测 **338×191**（高 191 < 300）。⭐ **和第七次会话归档的那 191 条 BytePlus「参考图尺寸不合规」是同一个根因**
+  （文档里那句原文正是 `received a 338x194px image`）—— 同一批用户习惯：拿小截图当参考图。
+- **为什么漏出来**：v47 的发送前尺寸拦截被写死「只对 BytePlus 生效」，三处都是
+  （`chat-workbench.tsx` / `workflow-tldraw-canvas-inner.tsx` / `api/video/route.ts`），
+  注释里还明写"别的模型不能拿它拦人" → **Kling 路径完全裸奔**。
+  而 Kling 官方规则和 BytePlus **一模一样**（≥300×300px、宽高比 1:2.5~2.5:1）。
+  典型的「该统一却分叉了」。
+- 而且它是**异步**失败：任务先被平台收下（`202`），一两分钟后才 `failed` → 用户白等一两分钟只换来"服务器繁忙"。
+
+**根因 B：`Unsupported output video duration 4 seconds, supported durations are [8] for feature reference_to_video.` —— 1 条**
+
+- `google/veo-3.1`：纯文生视频支持 4/6/8 秒，但**带参考图（r2v）只允许 8 秒**，
+  我们的时长表（`models.ts` / `openrouter-video.ts` 都是 `[4,6,8]`）没有"带参考图时收窄"这个维度。
+
+### 本次的修法（用户拍板 1+2+3 一起做）
+
+1. **`video-reference-image-rules.ts` 新增唯一权威 `videoModelEnforcesReferenceImageSizeRules(modelId)`**
+   （模型集合 = BytePlus Seedance 3 个 + Kling 3 个），三处咽喉全部改用它，
+   不再各自写 `isBytePlusXxxVideoModel`。⚠️ 往集合里加模型必须有依据（官方文档或线上原文）。
+2. **`error-message.ts`** 新增两条映射（放在最前面的那个块里）：
+   `image pixel is invalid` → 参考图尺寸不符合平台要求（≥300px、比例 0.4–2.5）；
+   `unsupported output video duration` → 读出上游给的 `supported durations are [...]` 原样告诉用户。
+   同时 **`transient-error.ts` 把这两类列入 `isPermanentError`**（换图换参数才行，重试白烧时间）。
+3. **`models.ts` 新增唯一权威 `VIDEO_REFERENCE_DURATION_LIMITS` + `validateVideoDurationWithReferences()`**
+   （目前只有 `google/veo-3.1: [8]`），三处咽喉发送前拦截。
+   ⭐ **故意不做静默改写**（不悄悄把 4 秒改成 8 秒）—— 时长直接决定计费，悄悄改会让用户多花钱且莫名其妙。
+4. **归档脚本新增两条规则** `kling-reference-image-pixel-invalid` / `veo-r2v-duration`，
+   并做了一处**结构性增强**：因为这批的日志里根本没有原文（v47 前只记 `hasError` 布尔），
+   靠 `match` 永远匹配不上 → 新增 `taskId → requestId` 桥 + `pollFailedTaskIds` 集合，
+   命中后**按模型**分派根因（Kling → A，veo-3.1 → B；依据是上面那次回查，不是猜）。
+   ⚠️ BytePlus 的轮询失败不在这个分派里，仍不归档。
+
+### 预期归档效果（部署后在正式服跑 `--apply`）
+
+33 条从兜底桶拆出 → 归档；「服务器繁忙」桶应再降 32 左右。那 6 条 BytePlus 仍留着亮。
+
+## 十、⭐ 后台新页面「失败排查」（2026-07-28 第十一次会话新增）
+
+位置：`/admin?tab=failures`，左侧导航「生成记录」下面一条。以后排查红字**先来这页**，不用再手写 SQL。
+
+- 数据层：**唯一权威 `src/lib/admin-failure-triage.ts`**（`getAdminFailureTriageData()`，只读、不写库）。
+  原因归一化的 SQL 表达式抽成 `FAILURE_REASON_SQL` 并**被概览页复用**（`admin-overview.ts` 已改为 import 它，
+  以前那三段一样的 `regexp_replace` 是抄三遍的，现在只有一份）。
+- UI：`src/app/admin/admin-failure-triage-panel.tsx`。
+- 这页比概览那个小卡多给的东西（都是实际排查时反复要手查的）：
+  1. ⭐ 每条原因标 **「近 7 天仍在发生」/「已停止发生」** —— 还在流血=没修好；已停止=大概率修好了、**可以去归档**。
+     列表排序刻意**先按"还在流血"、再按条数**。
+  2. ⭐ 每条原因标 **「兜底桶 · 需回日志捞原文」**，并单独做了「两个兜底桶」卡片（含"grep -c 行数 ≠ 事件数"的警告）。
+  3. 展开任意一行 → **最近 6 条样本 requestId（可一键复制）** + 涉及的类型/模型/入口明细。
+  4. 「按入口」卡片：⭐ 只在某一个入口出 = 大概率"该统一却分叉了"。
+  5. 「按模型」带**失败率**（有分母，避免把"用得多"当成"有问题"）。
+  6. 「失败最多的用户」：同一个人连续踩同一个坑 = 可复现场景，最容易查清（本次那 32 条就是这么定位到的）。
+  7. 近 30 天失败趋势（图片/视频堆叠）+ 今日/昨日/近 7 天与上一个 7 天的对比。
+  8. 已归档区：原因划掉 + 归档说明 + 归档时间。
+- ⚠️ **归档动作仍然只由 `scripts/archive-resolved-generation-failures.mjs` 执行**（唯一入口），这页纯只读。
+

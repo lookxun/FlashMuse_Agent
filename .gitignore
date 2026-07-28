@@ -40,6 +40,7 @@ yarn-error.log*
 /.runtime/
 /FlashMuse_Agent_Project Planning/
 /tmp/*.tgz
+/tmp/*.log
 
 # playwright mcp session artifacts
 /.playwright-mcp/

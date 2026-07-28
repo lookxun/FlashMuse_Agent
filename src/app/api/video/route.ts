@@ -19,10 +19,10 @@ import { appendGenerationDiagnosticsLog, summarizeGeneratedReference } from "@/l
 import { createBytePlusAsset, getBytePlusAsset } from "@/lib/byteplus-assets";
 import { recordGenerationEvent } from "@/lib/analytics-events";
 import { createVideoJob } from "@/lib/generation-jobs";
-import { getBytePlusVideoPricePerMillionUsd } from "@/lib/models";
+import { getBytePlusVideoPricePerMillionUsd, validateVideoDurationWithReferences } from "@/lib/models";
 import { Prisma } from "@prisma/client";
 import { validateMediaUploadMetadata } from "@/lib/media-upload-validation";
-import { validateVideoReferenceImages } from "@/lib/video-reference-image-rules";
+import { validateVideoReferenceImages, videoModelEnforcesReferenceImageSizeRules } from "@/lib/video-reference-image-rules";
 
 type UsageMeta = {
   promptTokens?: number;
@@ -823,8 +823,11 @@ export async function POST(request: Request) {
     if (ownedAudioError) return NextResponse.json({ error: ownedAudioError }, { status: 400 });
     const referenceMode = body.referenceMode;
     // 服务端兜底：参考图尺寸/比例不合规的直接 400 拦掉（对话流/工作流已在发送前拦，
-    // 这里保证 Agent、资产库、任何入口都拦得住）。规则唯一来源 video-reference-image-rules。
-    if (isBytePlusVideoModel(body.model) && referenceImages.length > 0) {
+    // 这里保证 Agent、资产库、任何入口都拦得住）。规则唯一来源 video-reference-image-rules，
+    // 受约束的模型集合也由它唯一判定（BytePlus Seedance + Kling）。
+    // ⚠️ 这道兜底靠 MediaAsset.width/height 查库，历史资产这两列常常是 null（查不到就不拦），
+    // 真正拦得住的是前端那道"现场量图"——所以两道都要在，别以为有服务端就够了。
+    if (videoModelEnforcesReferenceImageSizeRules(body.model) && referenceImages.length > 0) {
       const localReferenceImages = referenceImages.filter((url) => !url.startsWith("asset://"));
       if (localReferenceImages.length > 0) {
         const dimensionRows = await prisma.mediaAsset.findMany({
@@ -841,6 +844,13 @@ export async function POST(request: Request) {
           return NextResponse.json({ error: sizeError }, { status: 400 });
         }
       }
+    }
+    // ⭐ 服务端兜底：某些模型「带参考图」时可用时长被上游收窄（如 Veo 3.1 只允许 8 秒）。
+    // 规则唯一来源 models.ts；这里保证 Agent、资产库、任何入口都拦得住。
+    const referenceDurationError = validateVideoDurationWithReferences(body.model, body.settings?.duration, referenceImages.length);
+    if (referenceDurationError) {
+      void appendGenerationDiagnosticsLog({ event: "video-route-reference-duration-rejected", requestId: body.requestId, conversationId: body.conversationId, userId: user?.id, mode: "video", model: body.model, error: referenceDurationError, settings: body.settings, extra: { referenceImageCount: referenceImages.length } });
+      return NextResponse.json({ error: referenceDurationError }, { status: 400 });
     }
     void appendGenerationDiagnosticsLog({
       event: "video-route-create-start",

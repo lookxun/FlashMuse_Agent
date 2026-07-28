@@ -2,6 +2,190 @@
 
 > 本批 CHANGELOG 从 2026-07-21 交接文档重建开始记。**此前的全部历史流水**（约 580KB，含 2026-06 起到 07-21 每一次改动/部署细节）在 `historical-handover-docs-last-used-2026-07-21/CHANGELOG.md`，遇到需要历史上下文的难题再翻。
 
+## 2026-07-28（第十一次会话）⭐⭐ 「40 条轮询 failed」全部查清并修 + 后台新增「失败排查」页 —— ✅ **已部署两服 v1.0.0.50**
+
+### 部署结果（一次性把积压的第十次 + 第十一次两批全部上线）
+
+- ✅ **四方同步：正式服 = 测试服 = 本地 = GitHub = `v1.0.0.50`**。**无 Prisma 迁移**（两服 entrypoint 均 `No pending migrations`）。
+- 正式服备份 `/opt/flashmuse/app-backups/20260728-140839-presync-v50`；四域名 main/api/ali/static 全 **200**；两服 `x-app-version: v1.0.0.50`。
+- 归档：**正式服 33 条**（`kling-reference-image-pixel-invalid` 32 + `veo-r2v-duration` 1）→ 待排查 **308 → 286**；
+  测试服命中 0（正常，无这批数据）、仍 36。⭐ 兜底桶「服务器繁忙」**从 60 降到 28**（占待排查 9.8%）。
+- ⚠️⛔ **为什么版本号是 v50 而不是 v49**：v49 上测试服后新页立刻报 **hydration mismatch（React #418）** ——
+  日期在**客户端** `Intl.DateTimeFormat` 格式化，服务器容器与浏览器时区不同 → SSR 与 CSR 文本不一致。
+  修法：**所有日期改由服务端预格式化成 `firstAtLabel/lastAtLabel/lastAtAgoLabel/createdAtLabel/resolvedAtLabel` 字符串再传给客户端组件**，
+  客户端一行日期逻辑都不留。修完按铁律重新 bump 才上正式服（v49 只在测试服活了几分钟）。
+  **以后后台新页（客户端组件）绝对不要在浏览器端格式化日期。**
+- 测试服实机验收全过：Kling+200×120 拦下 ✅ / Veo+参考图+4秒 拦下 ✅ /
+  **反例** Veo 4秒无参考图 正常出片 ✅ / **反例** Kling+1280×720 正常出片 ✅ / 新页 0 控制台错误 ✅ / 概览页失败原因卡片未坏 ✅。
+  ⚠️ 唯一没点到：**工作流侧**的 Kling 拦截没做到"点生成看提示"（tldraw 连线不好自动化）——同一个共享函数 + 服务端 400 兜底，风险低，下次人工点一次。
+
+### ⭐⭐⭐ 排查方法论突破：**OpenRouter 的视频任务事后仍可回查，别再"等新数据攒几天"**
+
+上一轮的结论是"上游原文当时没落盘（只记 `hasError` 布尔）→ 只能等新数据"。**这个结论是错的。**
+`video-provider-poll-success` 里的 `taskId` 对 OpenRouter 就是完整轮询 URL
+（`https://openrouter.ai/api/v1/videos/<id>`），带 API Key 直接 GET 就能把**当时的 `error` 原文**取回来。
+本次一次性把 07-27 那批 33 个任务的原文全捞到了。
+（⚠️ BytePlus 的 `cgt-xxx` 没有这个待遇 → 那 6 条仍不可考。）
+
+### 轮询失败的真实构成：75 条 distinct taskId（"40"只是落在兜底桶的那部分）
+
+先建 `taskId → requestId` 桥（来自 `video-provider-create-success`，它两个字段都有），75/75 全部映射上 DB：
+26 条已是明确文案「成品被平台拒绝交付」（不归档）/ 4 条「API Key 无效」/ **33 条 OpenRouter 落在兜底桶** /
+**6 条 BytePlus 落在兜底桶且仍不可考**（B_195/237/246-249/256）。
+
+### 那 33 条的两个根因
+
+**A. `Image pixel is invalid` —— 32 条（Kling 全系）**
+同一个用户 ID_664169、同一会话、同两张参考图，07-27 连续失败 32 次。参考图实测 **338×191**（高 < 300）。
+⭐ **和第七次会话归档的 191 条 BytePlus「参考图尺寸不合规」是同一个根因**（那批原文正是 `received a 338x194px image`）。
+漏出来的原因：v47 的发送前尺寸拦截被写死「只对 BytePlus 生效」（三处都是，注释还明写"别的模型不能拿它拦人"）→
+**Kling 路径完全裸奔**；而 Kling 官方规则和 BytePlus 一模一样（≥300×300px、比例 1:2.5~2.5:1）。
+典型的「该统一却分叉了」。而且它是**异步**失败（先 202 收下、一两分钟后才 failed）→ 用户白等再看到"服务器繁忙"。
+
+**B. `Unsupported output video duration 4 seconds, supported durations are [8] for feature reference_to_video.` —— 1 条**
+`google/veo-3.1` 纯文生视频支持 4/6/8 秒，但**带参考图（r2v）只允许 8 秒**，我们的时长表没有这个维度。
+
+### 改动（用户拍板 1+2+3 一起做；全部只动错误/校验分支，成功路径零改动）
+
+1. **`src/lib/video-reference-image-rules.ts`** 新增唯一权威 `videoModelEnforcesReferenceImageSizeRules(modelId)`
+   （集合 = BytePlus Seedance ×3 + Kling ×3），**三处咽喉全部改用它**：
+   `chat-workbench.tsx:13374` / `workflow-tldraw-canvas-inner.tsx:4433` / `api/video/route.ts:827`。
+   ⚠️ 往集合里加模型必须有依据（官方文档或线上失败原文），别拿 BytePlus 的数去拦没验证过的模型。
+   ⭐ 顺带记下一条认知：`api/video/route.ts` 那道服务端兜底靠 `MediaAsset.width/height` 查库，
+   而这两条资产的 width/height **就是 null** → 服务端根本拦不住，**真正拦得住的是前端那道"现场量图"**。两道都得在。
+2. **`src/lib/error-message.ts`** 新增两条映射（放在最前面那个块里、`specified asset` 之后）：
+   `image pixel is invalid` → 「参考图尺寸不符合平台要求（宽高都需不小于 300 像素，宽高比 0.4–2.5）…」；
+   `unsupported output video duration` → 读出上游 `supported durations are [...]` 原样告诉用户。
+   **`src/lib/transient-error.ts`** 把这两类列入 `isPermanentError`（换图换参数才行，重试白烧时间）。
+3. **`src/lib/models.ts`** 新增唯一权威 `VIDEO_REFERENCE_DURATION_LIMITS`（现只有 `google/veo-3.1: [8]`）
+   + `validateVideoDurationWithReferences(modelId, duration, referenceCount)`，同样三处咽喉发送前拦截
+   （服务端那道另加 `video-route-reference-duration-rejected` 日志点）。
+   ⭐ **故意不做静默改写**（不悄悄把 4 秒改成 8 秒）—— 时长直接决定计费，悄悄改会让用户多花钱且莫名其妙。
+   ⭐ 也**没有改 UI 时长下拉**（9 处调用点都要穿参数，风险高收益低）；拦截 + 明确提示已经 100% 堵住失败。
+4. **`scripts/archive-resolved-generation-failures.mjs`** 新增 `kling-reference-image-pixel-invalid` / `veo-r2v-duration`
+   两条规则，另做一处**结构性增强**：这批日志里根本没有原文 → 靠 `match` 永远匹配不上，
+   所以新增 `taskId → requestId` 桥 + `pollFailedTaskIds` 集合（扫日志时顺手建），
+   命中后**按模型**分派根因（`^kwaivgi/kling-` → A，`google/veo-3.1` → B；依据是那次回查，不是猜）。
+   BytePlus 的轮询失败**不在**分派里、仍不归档。`select` 补了 `model`。
+
+### ⭐ 后台新增独立页面「失败排查」`/admin?tab=failures`（左侧"生成记录"下面）
+
+- 新文件：**`src/lib/admin-failure-triage.ts`**（唯一权威数据层，只读不写）+ `src/app/admin/admin-failure-triage-panel.tsx`。
+- ⭐ 顺手**消掉一处抄三遍**：原因归一化的 `regexp_replace` SQL 在 `admin-overview.ts` 里抄了 3 遍，
+  现抽成 `FAILURE_REASON_SQL` 导出，概览页改为 import 复用（那三处从 `$queryRaw` 模板改成 `$queryRawUnsafe`，
+  SQL 字符串完全一致、无外部输入）。
+- 这页比概览小卡多给的（都是实际排查时反复手查的）：
+  ① 每条原因标 **「近 7 天仍在发生」/「已停止发生」**（还在流血=没修好；已停止=可考虑归档），
+  **列表排序刻意先按"还在流血"再按条数**；② 标 **「兜底桶 · 需回日志捞原文」** + 单独的「两个兜底桶」卡片
+  （含"`grep -c` 行数 ≠ 事件数"的警告）；③ 点开任意一行给**最近 6 条样本 requestId（一键复制）**；
+  ④「按入口」卡片（只在一个入口出 = 大概率分叉）；⑤「按模型」带**失败率**（有分母）；
+  ⑥「失败最多的用户」（本次那 32 条就是这么定位到的）；⑦ 近 30 天趋势 + 今日/昨日/7天环比；⑧ 已归档区（划掉+说明+时间）。
+- ⚠️ 归档动作仍**只由脚本执行**，这页纯只读。
+- 实测：本地库 39 条失败事件下整页渲染正常、7 种原因、筛选/搜索/展开样本/复制都通（临时把测试号加进 `.env` 的
+  `ADMIN_EMAILS` 登录验证，**验完已还原**）。
+
+### 自查
+
+`npx tsc --noEmit`（过滤 `.next`）全绿；新增/改动文件 `eslint` 无 error。**无 Prisma 迁移**。
+
+## 2026-07-28（第十次会话·补）⭐⭐ 「本地登录报请求失败」根治：`start-project.bat` 加 `.next` 损坏自愈 —— ⚠️ **仅本地脚本，不影响线上**
+
+用户反馈"本地又登录不了、报请求失败，昨天也这样，是不是修不好了"。**跟业务代码无关**，查出三层问题，第三层才是"为什么昨天修好今天又坏、双击启动也救不回来"的真答案。
+
+### ① 表象与第一层原因：`.next` 缓存损坏 → **所有 `/api/*` 全 404/500**
+
+- 实测 `POST /api/auth/login-password` 返回 **404**，返回体里 Next 自己写着 `"c":["","api","auth","login-password"]` 却渲染成 `/_not-found`；路由文件本身好好在那。
+- `.next/dev/types/routes.d.ts` **被写截断**（58 行、从字符串中间断掉 `e" | "/api/upload-image"...`）；`npx tsc --noEmit` 报的一堆 `TS1434/TS1109` 就是它。
+- ⚠️ **我一开始把因果讲错了**：`routes.d.ts` 是纯类型文件、运行时会被剥掉，**不可能**导致 404。它只是"同一次写坏"的症状，真正 404 的是 `.next` 里的**路由清单**（`dev/server/app-paths-manifest.json` 这类）。教训：**下次先把坏掉的 `.next` 备份再删**，我这次直接删了导致证据丢失。
+- 临时处置：停 dev → 删整个 `.next` → 重启 → 接口恢复 200、tsc 全绿。
+
+### ② 第二层：为什么反复复发（**嫌疑锁定，尚无铁证**）
+
+排除项（都实测过）：磁盘满（E: 剩 381GB）❌、多开 dev server ❌、异常关机（近 3 天无 Kernel-Power 41/6008）❌、OneDrive 同步（在 C:、项目在 E: 不在范围内）❌。
+**头号嫌疑：腾讯电脑管家实时防护 `QQPCRTP.exe`**（Windows Defender 已被它顶掉关闭）。时间点吻合：`routes.d.ts` 写坏时间 `9:47:21`，dev server `9:46:38` 启动 —— **启动后 45 秒、正在生成路由清单时被打断**，不是关机时坏的。已让用户把 `E:\project\FlashMuse_Agent` 与 `node.exe` 加进管家信任区。**是否真断根要观察次日是否复发。**
+
+### ③ 第三层（真答案）：`start-project.bat` 双击**根本没机会自愈**，脚本每次都当场死掉
+
+用户只会双击 `start-project.bat`。加了自愈逻辑后实测**连续三次都没生效**，靠新加的独立追踪日志 `.runtime/start-project-trace.log` 才拿到铁证：
+
+```
+[11:46:25] launcher started (Worker=True)
+[11:46:27] mutex owned=True port3000busy=True
+Set-Content : 文件"start-project.log"正由另一进程使用，因此该进程无法访问此文件
+```
+
+⭐⭐ **`start-project.log` 被 `cmd /c npm run dev >> start-project.log` 的重定向独占着文件句柄**，脚本一进来就 `Set-Content` 写它 → **IOException → 整个脚本当场终止**。**结论：只要 dev server 还活着（哪怕是坏的僵尸），双击 bat 就必然毫无反应** —— 这就是"救不回来"的真因。
+
+一路还查出另外两个真 bug：
+- **`Test-TcpPort "127.0.0.1" 3000` 判定失效**：Next 绑在 IPv6 通配 `::` 上、且该探测只有 500ms 超时 → 报"端口空闲" → 脚本走冷启动 → 新 dev server 被挤到 **3001**，僵尸继续占 3000 → 然后死等 3000 变好、**5 分钟超时弹记事本**（就是用户看到的"没反应"）。改用 `Get-NetTCPConnection -State Listen -LocalPort` 精确判定。
+- **互斥锁静默退出**：`Mutex(createdNew)` 一旦被卡死的旧实例持有，新的双击直接 `exit`、什么都不做。改成先等它 6 轮（每轮 20s 探活 + 10s），仍不健康就**无视锁继续自己修**。
+
+### ④ `scripts/start-project.ps1` 的最终改动
+
+1. **健康判定从"首页 200"改成"`/api/auth/me` 必须 200"** —— `.next` 坏时首页也 500/首页正常时 API 却可能 404，只有打 API 才测得准。连续 3 次（可配 `-Attempts`/`-TimeoutSec`）非 200 才判定损坏，避免首次冷编译慢被误杀。
+2. **新增 `Write-Trace` + 独立追踪日志 `.runtime/start-project-trace.log`**（`.runtime` 已 gitignore）：npm 的 stdout 不会污染它，以后排查一看就知道走了哪条分支。
+3. **`Write-Log` / 新增 `Reset-Log` 全部 try/catch 兜住**，日志写失败绝不再中断流程（第三层病根）。原来 8 处裸 `Add-Content/Set-Content $log` 全部收敛到这两个函数。
+4. **新增 `Stop-NodeOnPort`**（按端口占用者 PID 杀，且**只杀 `node.exe`**，无关进程不动）+ `Stop-DevServer` 同时清 3000/3001 与命令行含项目根路径的 node、含 `npm run dev` 的 cmd。
+5. **新增 `Repair-NextCache`**：停 dev → **先把坏掉的清单备份到 `.runtime/next-broken/<时间戳>/`**（types 目录 + 所有 `*manifest*.json`，都很小）→ 删 `.next` → 重启。这样以后真复发能拿到铁证定位到具体哪个文件。
+6. **新增 `Test-DevPortBusy`**（`Get-NetTCPConnection` 精确判定）替代不可靠的 `Test-TcpPort` 探 3000。
+7. 冷启动路径也加了自愈：起来后 API 不健康 → 自动修一次再起。
+
+### ⑤ 实测结果（都跑过真机验证）
+
+| 场景 | 结果 |
+|---|---|
+| 正常冷启动（`.next` 已删空） | 接口 200、无多余 3001、**没有误删 `.next`** |
+| **故障态**（3000 被僵尸占 + 接口 500，等价用户今天的状态）→ 双击 bat | ⭐ **15 秒自愈成功**：探活 2 次 500 → 杀僵尸(PID 34324) → 备份清单 → 删 `.next` → 重启 → 接口 200 |
+| 健康态下再双击 | 只开浏览器，`.next` 保留、备份数不变（不误伤） |
+| PowerShell 语法检查 | PASS |
+
+### ⑥ 遗留
+
+- **第二层根因仍未结案**：观察次日是否复发。若还犯，就去 `.runtime/next-broken/` 拿备份的清单文件比对，定位到具体哪个文件、残在什么位置。
+- 我在排查中两次把自己的 shell 杀掉（清理命令用 `CommandLine -like "*start-project*"` 匹配，而我自己的命令行里也含这个串）→ 表现为命令"无输出"。以后写这类清理命令**必须排除 `$PID`**。
+
+## 2026-07-28（第十次会话）⭐ 模型「明文拒绝」识别 + AI 改写重试收敛成唯一权威并补给对话流 —— ⚠️ **仅本地，未部署**（tsc 全绿，无 Prisma 迁移）
+
+排查对象＝`07-red-error-triage-and-archive.md` 第七节第 3 条「gpt-5.4-image-2 中文明文拒绝」。查清后发现是**两个不同的问题被混成一条**。
+
+### ① 根因（`src/lib/openrouter.ts`，三个 `image-provider-empty-result` 打点各不相同）
+
+| 打点 | 走哪个模型 | 有没有读上游拒绝文字 |
+|---|---|---|
+| `:1388` | BytePlus `/images` | 只读 `data.error.message` |
+| **`:1679`** | **OpenRouter 新接口 `/api/v1/images`（`openai/gpt-5.4-image-2` 走这条）** | ❌ **完全没读** |
+| `:1911` | OpenRouter 老 `/chat/completions`（`...-agent` GPT 版） | ✅ `getOpenRouterNoImageReason` 读 `choices[0].message.content/refusal` |
+
+- **问题 A（落兜底桶的那批）**：新接口响应类型 `:1483` 只声明了 `data[].b64_json`，拒绝文字压根没被读；`:1689` 的日志 `upstream` 写死 `reason:"empty image result"`、**连 `responseText` 都没带**（对比 `:1658` 的 non-ok 分支是带 `body` 的）→ 抛「图片平台没有返回图片，且没有返回可用原因。」→ 被 `error-message.ts:69` 精准打回 fallback＝**「服务器繁忙」**。**所以连"它到底拒绝说了什么"都查不到。**
+- **问题 B（那 ~20 条）**：老接口路径原文是读到的（红字就是「图片平台没有返回图片：抱歉，我不能…」，`error-message.ts` 走中文原文透出，**没落兜底桶**）。真正的缺口是 **UI：「AI 改写重试」只存在于工作流**（`onOptimizationRetry` 全库只出现在 `workflow-tldraw-canvas-inner.tsx`），对话流 / 资产库 / Agent 完全没有这个入口。
+- 附带发现：工作流的判定 `isWorkflowGptImageSafetyFailure` 正则里本来就含 `图片平台没有返回图片`，但因为问题 A 把文案换成了"服务器繁忙"，**这条正则在新接口上永远不命中** —— 改写页进不去的直接原因。
+
+### ② 本次改动
+
+1. **步骤 1 —— 只加日志，不猜字段**（用户明确要求）：`openrouter.ts` 新接口空结果分支的 `upstream` 补 `body: redactBase64ForLog(responseText).slice(0,1200)`，新增 `redactBase64ForLog()`（200+ 长 base64 串换成 `[base64]`，防刷爆日志）。**⭐ 待跟踪：等线上攒到真实样本，看拒绝原文落在响应哪个字段，再写读取逻辑**（详见 `05-next-actions.md` 待跟踪项）。
+2. **步骤 2 —— `src/lib/error-message.ts` 新增「模型明文拒绝」判定**：新增唯一权威常量 `MODEL_REFUSED_MESSAGE` + `isModelRefusalText()`（9 条高辨识度正则，中文只认"抱歉+我不能/无法"这类第一人称拒绝，英文补上以前**完全没有**的 `I can't help with` / `I'm unable to` / `I must decline` / `violates our policy`）。规则插在 `safety_violations` 那组之后、**版权/隐私/敏感那几条之前** —— 否则拒绝原文里的"版权/隐私"字样会被抢走误报成"参考图有问题"（其实和参考图无关）。同时补掉了「纯英文一律进兜底桶」（原 `:72`）对英文拒绝语的吞没。
+3. **步骤 3 —— 新增唯一权威 `src/lib/gpt-image-safety-retry.ts`**（对话流 + 工作流共用，按 AGENTS.md「能统一一律统一」）：
+   - `isGptImageSafetyFailure({model, errorText, hasPriorAttempts})`：判定收敛，工作流 `isWorkflowGptImageSafetyFailure` 改成薄壳调它。
+   - `normalizeAttemptPrompt` / `getFallbackSafetyPrompt`（从工作流文件原样移出）/ `NO_NEW_SAFETY_PROMPT_MESSAGE` / `SAFETY_RETRY_EXHAUSTED_MESSAGE`。
+   - `runPromptSafetyRetry()`：把"循环 / 去重 / 兜底改写词 / 最终文案"整套编排抽出来，**`rewrite` 和 `generate` 由调用方以回调传入** —— 故意不收敛 fetch，因为两处的 `readJson`（401 跳首页）和错误文案构建方式不同，硬合会改现有行为。`generate` **resolve 视为成功、throw 视为本轮仍失败**。
+   - 工作流 `runGptImageOptimizationRetry`（`:4287`）重写成调用它，删掉本地那份 60 行循环，行为等价（`attemptsUsed` 累计口径保持不变）。
+4. **对话流补上「AI 改写重试」入口**：
+   - `Message` 加 `gptImageOptimizationOriginalPrompt` / `gptImageOptimizationAttemptPrompts` / `gptImageOptimizationRetryingIndexes`（与工作流 `node.data` 同名字段对齐）。
+   - 新增 `patchMessageById()`（按消息 id 打补丁 —— 改写重试要跨多次生成改同一条消息，而 `requestId` 每次重试都变，`updateAssistantMessageByRequestId` 用不了）。
+   - `retryFailedMedia` 加第三参 `promptOverride` 并改成 `async` + `return await runGeneration(...)`，让编排能 await 一轮跑完。
+   - 新增 `canConversationOptimizationRetry()`（调共享判定）+ `runConversationGptImageOptimizationRetry()`。⭐ **对话流的失败被 `Promise.allSettled` 吞掉、不会 reject**，所以每轮结束后回 `sessionsRef` 核对"这条消息的图片数有没有变多"来判定成功，没变多就 throw 让编排继续下一轮。
+   - 新增共享小组件 `MediaOptimizationRetryActions`（「AI改写重试 3/5/10 次」三颗按钮），两套条带 `ImageResultStrip` / `ImageResultSlotStrip` 的失败卡都接上，**按 `canOptimizationRetry` 收窄**（只图片模式 + gpt5.4image2 两种接口 + 拒绝类失败才亮，视频 / 其它模型一律不亮）。
+   - 改写期间用 `gptImageOptimizationRetryingIndexes` 持续显示等待卡，避免两次尝试之间闪回失败卡；`optimizingImageMessagesRef` 按 `${messageId}:${failedIndex}` 上锁，防连点开多条改写链白烧积分。
+   - 后端接口 `POST /api/workflow-prompt-optimization/rewrite` **零改动**（实测它与"工作流"无强绑定，`workflowId/Title/NodeId` 全可选且只用于记账，对话流直接传 sessionId / 会话标题 / messageId）。
+
+### ③ 影响评估 / 已知点
+
+- 动的都是**失败分支**，成功路径零改动。视频、Agent 模式共用同两套条带，已用 `canOptimizationRetry` 收窄，不会误出现按钮。
+- ⚠️ **文案变化（预期内）**：以前落进「服务器繁忙」或被误报成"参考图有问题"的模型拒绝，现在统一显示 `MODEL_REFUSED_MESSAGE`。
+- ⚠️ **一个待实机确认的观感问题**：对话流失败收尾 `finalizeAssistantImageFailures` 的 payload 带 `content: prompt` → 改写重试全败后，消息内容会被替换成**最后一次的改写提示词**（原本就是这套逻辑，只是原来传的是原提示词所以看不出来）。要在实机测试时看一眼是否需要处理。
+- 步骤 3 我最初提的"给 API 加结构化 `code:"MODEL_REFUSED"`"**没做**：那要动 `createCodedApiError` + 6 个 route + `GenerationJob` 表 + `/api/generation-status`，风险和收益不成比例。改成"步骤 2 产出稳定文案 → 共享判定函数认这个稳定文案"，效果等价且零 DB 改动。真要结构化留作后续。
+- ⚠️ 本地 `npx tsc --noEmit` 中 `src/` **全绿**；但 `.next/dev/types/routes.d.ts` / `validator.ts` 报一堆 TS1434/TS1109 语法错 —— 那是 **Next 生成的陈旧/损坏产物**（非本次改动引入），删掉 `.next` 重启 dev 即消失。
+
 ## 2026-07-28（第九次会话）⭐ 参考素材 url 归一化根治「平台拉我们动态缩略图接口超时」—— ✅ **已部署测试服 + 正式服 `v1.0.0.48`**（四方同步）；测试服实机回归全过；无 Prisma 迁移
 
 ### ① 根因（正式服日志原文）

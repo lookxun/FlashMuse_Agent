@@ -10,6 +10,33 @@
  * 对话流 / 工作流 / 服务端三处必须共用这里的常量与函数，禁止各写一套。
  */
 
+/**
+ * ⭐ 哪些视频模型受这套尺寸规则约束 —— 唯一权威判定，三处调用点（对话流 / 工作流 / 服务端）必须用它。
+ *
+ * 历史教训（2026-07-28 第十一次会话查出）：这道拦截一开始被写死"只对 BytePlus 生效"，
+ * 结果 Kling 路径完全裸奔 —— 正式服有一个用户拿 338×191 的截图当参考图，
+ * 连续 32 次被 Kling 异步拒绝（上游原文 `Image pixel is invalid`），
+ * 因为是**异步**失败，用户等一两分钟才看到一句没用的"服务器繁忙"。
+ * 而 Kling 官方规则和 BytePlus 完全一致（≥300×300px、宽高比 1:2.5~2.5:1），
+ * 本就该共用同一套数，所以把判定收进这里、按模型集合统一管。
+ *
+ * ⚠️ 往里加模型前必须有依据（官方文档或线上失败原文），别拿 BytePlus 的数去拦没验证过的模型。
+ */
+const VIDEO_REFERENCE_IMAGE_RULE_MODELS = new Set([
+  // BytePlus Seedance：原文 `Height must be between 300px and 6000px.` / `Aspect ratio must be between 0.4 and 2.5.`
+  "byteplus:video.seedance-2-0",
+  "byteplus:video.seedance-2-0-fast",
+  "byteplus:video.seedance-2-0-mini",
+  // 快手 Kling：官方要求图片分辨率不小于 300×300px、宽高比 1:2.5~2.5:1；不合规时原文 `Image pixel is invalid`
+  "kwaivgi/kling-v3.0-std",
+  "kwaivgi/kling-v3.0-pro",
+  "kwaivgi/kling-video-o1",
+]);
+
+export function videoModelEnforcesReferenceImageSizeRules(modelId?: string) {
+  return Boolean(modelId) && VIDEO_REFERENCE_IMAGE_RULE_MODELS.has(modelId as string);
+}
+
 export const VIDEO_REFERENCE_IMAGE_MIN_SIDE = 300;
 export const VIDEO_REFERENCE_IMAGE_MAX_SIDE = 6000;
 export const VIDEO_REFERENCE_IMAGE_MIN_ASPECT = 0.4;

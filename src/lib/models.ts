@@ -113,6 +113,42 @@ export const videoGenerationModels: GenerationModel[] = [
 
 const bytePlusSeedanceDurations = ["4秒", "5秒", "6秒", "7秒", "8秒", "9秒", "10秒", "11秒", "12秒", "13秒", "14秒", "15秒"];
 
+/**
+ * ⭐ 「带参考图时」被上游收窄的可用时长 —— 唯一权威表。
+ *
+ * 背景（2026-07-28 查出）：`google/veo-3.1` 纯文生视频支持 4/6/8 秒，但一旦带参考图
+ * （上游叫 `reference_to_video`）就**只允许 8 秒**，原文：
+ * `Unsupported output video duration 4 seconds, supported durations are [8] for feature reference_to_video.`
+ * 而且它是**异步**失败（任务先被收下、一两分钟后才 failed），用户只能看到"服务器繁忙"。
+ *
+ * 这里只收窄"带参考图"这一种情况，不影响纯文生视频的选项。
+ * ⚠️ 往里加模型前必须有依据（官方文档或线上失败原文），不许凭猜。
+ */
+const VIDEO_REFERENCE_DURATION_LIMITS: Record<string, number[]> = {
+  "google/veo-3.1": [8],
+};
+
+/** 该模型带参考图时允许的时长（秒）；没有限制返回 undefined。 */
+export function getVideoReferenceDurationLimit(modelId?: string) {
+  if (!modelId) return undefined;
+  return VIDEO_REFERENCE_DURATION_LIMITS[modelId];
+}
+
+/**
+ * 发送前校验「带参考图 + 当前时长」是否被上游允许。不合规返回给用户看的原因，合规返回 undefined。
+ * 对话流 / 工作流 / 服务端三处共用，禁止各写一套。
+ * ⚠️ 故意**不做静默改写**：时长直接决定计费，悄悄从 4 秒改成 8 秒会让用户多花钱且莫名其妙。
+ */
+export function validateVideoDurationWithReferences(modelId: string | undefined, duration: string | undefined, referenceCount: number) {
+  if (referenceCount <= 0) return undefined;
+  const allowed = getVideoReferenceDurationLimit(modelId);
+  if (!allowed || allowed.length === 0) return undefined;
+  const seconds = Number(String(duration ?? "").match(/\d+/)?.[0]);
+  if (!Number.isFinite(seconds) || seconds <= 0) return undefined;
+  if (allowed.includes(seconds)) return undefined;
+  return `当前模型在使用参考图时只支持 ${allowed.join(" / ")} 秒的视频时长（你选的是 ${seconds} 秒），请把时长改成 ${allowed.join(" 或 ")} 秒后重试。`;
+}
+
 export const bytePlusVideoGenerationModels: GenerationModel[] = [
   { label: "Seedance 2.0 Mini", id: "byteplus:video.seedance-2-0-mini", durations: bytePlusSeedanceDurations },
   { label: "Seedance 2.0 Fast", id: "byteplus:video.seedance-2-0-fast", durations: bytePlusSeedanceDurations },
