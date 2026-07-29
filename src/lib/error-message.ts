@@ -1,5 +1,3 @@
-import { modelSupportsPromptSafetyRewrite } from "@/lib/models";
-
 export const GENERIC_MEDIA_ERROR_MESSAGE = "服务器繁忙，请稍候再试.....";
 
 // ⭐ 模型「拒绝出图」的唯一权威文案与判定（2026-07-28 新增，07-29 改成"必带上游原文"）。
@@ -13,21 +11,29 @@ export const GENERIC_MEDIA_ERROR_MESSAGE = "服务器繁忙，请稍候再试...
 //
 // ⛔ 以前的做法是把上游原话**整段丢掉**换成一句我们自己的统一文案 → 用户看不到模型到底嫌弃哪一点，
 // 也拿不到模型给的改法。现在一律：统一文案 + **原样附上模型的拒绝原因**。
+// ⛔⭐ 2026-07-29 用户拍板：这一类（模型拒绝 / 平台安全策略 / 版权限制）**全部统一成这一句**，
+// 不再分"能不能 AI 改写"两种说法 —— 因为对话流和资产库的 AI 改写已经整体撤掉了（只剩工作流有），
+// 而文案是全平台共用的，提"AI改写"会在没有这个入口的地方骗用户。
 const MODEL_REFUSED_PREFIX = "模型因色情/暴力/隐私安全等原因拒绝出图";
-const MODEL_REFUSED_REWRITE_HINT = "，你可以调整提示词或由AI安全改写后重试，AI改写会尽量保留原意和参考图，但不保证一定成功。";
-const MODEL_REFUSED_PLAIN_HINT = "，你可以调整提示词后重试。";
-// 拿不到任何上游原文时的兜底（用户 2026-07-28 指定的唯一一句）。
-export const MODEL_REFUSED_FALLBACK_MESSAGE = "模型拒绝了本次生成请求，可能是提示词内容不符合平台安全策略！直接重试有可能会成功，修改提示词后成功率更高。";
+const MODEL_REFUSED_HINT = "，你可以调整提示词或更换参考图后重试。";
+// 拿不到任何上游原文时的兜底 = 统一那句去掉尾巴的原文部分。
+export const MODEL_REFUSED_FALLBACK_MESSAGE = `${MODEL_REFUSED_PREFIX}${MODEL_REFUSED_HINT}`;
+// ⚠️ 历史文案（v1.0.0.52 及以前产生的数据里还有），**只用于判定与后台归一化，禁止再拿它生成新文案**。
+const LEGACY_MODEL_REFUSED_MESSAGES = [
+  "模型拒绝了本次生成请求，可能是提示词内容不符合平台安全策略！直接重试有可能会成功，修改提示词后成功率更高。",
+  "生成结果可能涉及版权限制，平台拒绝输出。你可以调整提示词、换参考图或重新生成。",
+];
 // 上游原文最多带这么长（红字要能看完，别糊满整屏）。
 const MODEL_REFUSED_DETAIL_MAX_LENGTH = 260;
 
 // ⭐ 判定「这条失败文案是不是模型拒绝出图」只认这个前缀（文案后半段是可变的上游原文，不能拿整句去比）。
-// gpt-image-safety-retry.ts 靠它决定要不要亮「AI改写重试」，改文案时**必须保持前缀不变**。
+// 工作流的 gpt-image-safety-retry.ts 靠它决定要不要亮「AI改写重试」，改文案时**必须保持前缀不变**。
+// 历史文案也要认，否则老数据在后台会被拆成一堆各 1 条。
 export function isModelRefusedMessage(value: string) {
-  return value.includes(MODEL_REFUSED_PREFIX) || value.includes(MODEL_REFUSED_FALLBACK_MESSAGE);
+  return value.includes(MODEL_REFUSED_PREFIX) || LEGACY_MODEL_REFUSED_MESSAGES.some((legacy) => value.includes(legacy));
 }
 
-function buildModelRefusedMessage(detail: string, canRewrite: boolean) {
+function buildModelRefusedMessage(detail: string) {
   const trimmed = detail
     // 削掉我们自己包在外面的那层壳，只留模型真正说的话。
     .replace(/^(?:图片|视频)?平台没有返回(?:图片|视频)[：:]\s*/, "")
@@ -36,7 +42,7 @@ function buildModelRefusedMessage(detail: string, canRewrite: boolean) {
     .trim();
   if (!trimmed) return MODEL_REFUSED_FALLBACK_MESSAGE;
   const shown = trimmed.length > MODEL_REFUSED_DETAIL_MAX_LENGTH ? `${trimmed.slice(0, MODEL_REFUSED_DETAIL_MAX_LENGTH)}...` : trimmed;
-  return `${MODEL_REFUSED_PREFIX}${canRewrite ? MODEL_REFUSED_REWRITE_HINT : MODEL_REFUSED_PLAIN_HINT}以下是模型返回的拒绝原因：“${shown}”`;
+  return `${MODEL_REFUSED_PREFIX}${MODEL_REFUSED_HINT}以下是模型返回的拒绝原因：“${shown}”`;
 }
 
 // 只认"第一人称明确拒绝"这类高辨识度措辞，避免误吞普通报错里的"无法/失败"字样。
@@ -56,12 +62,13 @@ export function isModelRefusalText(value: string) {
   return MODEL_REFUSAL_PATTERNS.some((pattern) => pattern.test(value));
 }
 
+// options.model：保留入参（很多调用点在传，且以后可能按模型分文案），但**当前不再影响文案** ——
+// 2026-07-29 起模型拒绝类统一一句话，不再区分"能不能 AI 改写"。
 export function toUserErrorMessage(value: unknown, fallback = "请求失败，请稍后再试。", options?: { model?: string }) {
+  void options;
   const raw = typeof value === "string" ? value : value instanceof Error ? value.message : fallback;
   const errorCodePrefix = raw.match(/^\(B_\d+\)\s*/)?.[0] ?? "";
   const withErrorCode = (message: string) => `${errorCodePrefix}${message}`;
-  // ⭐ 只有 gpt-5.4-image-2 两款接了「AI改写重试」，其它模型（含全部视频模型）不能在文案里承诺这个入口。
-  const canRewrite = modelSupportsPromptSafetyRewrite(options?.model);
   const text = raw
     .replace(/^\(B_\d+\)\s*/, "")
     .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gi, " ")
@@ -129,12 +136,12 @@ export function toUserErrorMessage(value: unknown, fallback = "请求失败，�
       .replace(/if you believe this is an error[\s\S]*$/i, "")
       .replace(/\bcontact us at[\s\S]*$/i, "")
       .trim();
-    return withErrorCode(buildModelRefusedMessage(violation || englishReason, canRewrite));
+    return withErrorCode(buildModelRefusedMessage(violation || englishReason));
   }
   // B) GPT版（老 /chat/completions 接口）：中间那层语言模型回了一段中文人话拒绝。
   //    必须放在下面的版权/隐私/敏感规则之前 —— 那几条会把拒绝原文里的"版权/隐私"字样误判成
-  //    "参考图有问题"，而这类拒绝其实是提示词内容被模型自己挡下来了，正确出路是「AI 改写重试」。
-  if (isModelRefusalText(text)) return withErrorCode(buildModelRefusedMessage(text, canRewrite));
+  //    "参考图有问题"，而这类拒绝其实是提示词内容被模型自己挡下来了。
+  if (isModelRefusalText(text)) return withErrorCode(buildModelRefusedMessage(text));
   // C) 模型既没报错、也没拒绝，只回了一段文字就是不给图（常见是把提示词原样复读回来，
   //    或说"你的要求前后矛盾"）。⛔ 以前把这段直接当报错贴出去 → 用户看到的红字是自己的提示词。
   if (/没有返回(?:图片|视频)，模型只回了一段文字/.test(text)) {
@@ -149,7 +156,9 @@ export function toUserErrorMessage(value: unknown, fallback = "请求失败，�
   // 输入/参考图审核未过（送审被拒或创建阶段直接被拒）
   if (/reference-review-failed/.test(lower) || /input\s+(?:image|video).*(real person|copyright|copyright restrictions|related to copyright|sensitive|privacy|privacyinformation)/.test(lower) || /(input image|reference|asset|素材|参考图|审核).*(copyright|copyright restrictions|related to copyright|版权|真人|隐私|sensitive|privacy)/.test(lower) || /审核图片可能涉及版权限制|参考图.*(版权|真人|隐私)|素材.*(版权|真人|隐私)/.test(text)) return withErrorCode("参考图未能通过平台审核（可能涉及真人、隐私或版权），可以重试，但建议更换参考图后再重试成功率更高。");
   if (/completed with no output|no output|content may have been filtered|content.*filtered|filtered/.test(lower) || /已完成.*没有返回视频|没有返回视频地址/.test(text)) return withErrorCode("输出视频被平台过滤，未返回视频。重新生成有可能会成功。");
-  if (/copyright|copyright restrictions|related to copyright|版权/.test(lower)) return withErrorCode("生成结果可能涉及版权限制，平台拒绝输出。你可以调整提示词、换参考图或重新生成。");
+  // ⭐ 2026-07-29：原来这里是「生成结果可能涉及版权限制，平台拒绝输出。…」，与"模型拒绝"是一个意思，
+  // 按用户要求**合并进统一那句**（并附上上游原文），不再单独存在。
+  if (/copyright|copyright restrictions|related to copyright|版权/.test(lower)) return withErrorCode(buildModelRefusedMessage(text));
   if (/sensitive|privacyinformation|real person|privacy|真人|隐私|敏感/.test(lower)) return withErrorCode("参考图可能包含真人或隐私敏感信息，平台拒绝生成。请换一张参考图后重试。");
   if (/aspect ratio must be between/.test(lower)) return withErrorCode("参考图太窄或太长了，当前视频模型无法使用。请换一张比例更接近常规尺寸（如 16:9、9:16、1:1、4:3）的参考图后重试。");
   // ⭐ 平台返回的不是 JSON 而是 HTML 错误页/网关页（`Unexpected token '<' … is not valid JSON`）：
