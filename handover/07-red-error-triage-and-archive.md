@@ -574,4 +574,98 @@ HTTP 429 { "error": { "message": "OpenAI was rate limited by Cloudflare (error c
 `empty image result` 7 条 / `InvalidParameter.UnsupportedImageFormat` 4 条 / `API Key 无效` 4 条（查是哪个渠道）/ DB 事务超时 2 条。
 ⚠️ **这些条数是快照，去 `/admin?tab=failures` 看实时值。**
 
+## 十三、⭐⭐ 从「某个对话出了问题」反查到根因的完整姿势（2026-07-29 第十四次会话，d37 事件）
 
+前面十二节都是**从后台红字往下查**。这一节是另一个方向：**用户报"某个对话/某个功能出问题了"，怎么把它查穿。**
+本次靠这套姿势，在没有任何日志线索的情况下，从一句「d37 这个对话用了 ai 改写出了非常多的问题」查出
+**17 张成功图只剩 2 张进对话、白烧 197 积分**，并定位到两行代码。
+
+### A. 第一步：把"用户说的编号"翻译成数据库主键
+
+⭐ **对话编号 `d37` 不是 id、不是 hash，是前端自增的序号**：
+
+| 东西 | 位置 |
+|---|---|
+| 生成 | `chat-workbench.tsx` `createSession()`，`d${n}`（工作流是 `w${n}`），删除后号码不复用 |
+| 存哪 | **`WorkspaceSession.summaryJson->>'conversationCode'`**（⛔ 没有独立列，schema 里也没有 `Conversation` 表，对话表叫 `WorkspaceSession`） |
+| 解析 | `getConversationNumber()`，正则 `^d(\d+)$` |
+| 衍生 | 媒体系统名 `image_36_d37` / `video_1_d37`（`buildConversationMediaSystemName`）——⭐ **看到 `_d37` 后缀就能反推是哪个对话** |
+
+查法（**同一个编号会有多个用户各自的对话，必须按 updatedAt 挑最近那条**）：
+
+```sql
+select ws.id, ws."sessionId", ws."userId", ws.title, ws."updatedAt",
+       ws."summaryJson"->>'conversationCode' as code,
+       length(ws."messagesJson"::text) as msglen
+from "WorkspaceSession" ws
+where ws."summaryJson"->>'conversationCode' = 'd37'
+order by ws."updatedAt" desc;
+```
+
+本次三条命中（`ID_636611` / `ID_955937` / `ID_294338`），只有第一条的 `updatedAt` 是事发时间。
+
+### B. 第二步：把消息 JSON 摊开，先只看"有哪些字段"
+
+⭐ **别一上来 dump 全文**（`messagesJson` 45KB）。先每条只打 `role/mode/content 前 160 字/failedImageCount/Object.keys`，
+**从 keys 里找出带可疑字段的那几条**（本次是 `gptImageOptimizationAttemptPrompts` 等），再对这几条 dump 全文。
+一眼就能看到 `attemptPrompts` 有 9 条、`retryingIndexes: [0,1]` 残留、`content` 与 `imagePrompts` 不一致。
+
+### C. 第三步（⭐⭐ 本次最关键）：拿 GenerationEvent / CreditLedger / MediaAsset **三方交叉核对**
+
+只看消息 JSON 只能看到"3 个失败卡 + 1 张图"，**看不出丢了 15 张**。真相是这样出来的：
+
+| 表 | 查什么 | 本次结果 |
+|---|---|---|
+| `GenerationEvent` | 按 `userId` + 事发时间窗列出 status/failureCode/model/requestId | **23 条，16 条 success** |
+| `MediaAsset` | 同一时间窗，看 `systemName`/`url` | **17 张全部入库**（`image_19_d37`~`image_36_d37`） |
+| `CreditLedger` | 同一时间窗，按 requestId 里的 `:image:` / `:rewrite:` 分组求 `credits` | 生图 173 + 改写 24 = **197** |
+| 消息 JSON | `images` 数组长度 | **1**（每条消息） |
+
+**「事件成功 16 / 资产入库 17 / 消息里只有 2」= 前端把成功图丢了。** 这个结论只能靠交叉核对得出。
+⭐ 反过来说：**只要"资产库有、对话里没有"，就一定是前端 append 环节丢的，不用去查上游。**
+
+再看 requestId 时间线就能锤死机制：`02:08:48 success (cee7aea9)` → `02:08:51 failed (45a4eec6)`，
+后者抢走了 `message.requestId`，前者的图无处可归 → 静默丢弃。
+
+### D. 本次查到的两条前端硬 bug（以后写"多轮自动重试"一律先想这两点）
+
+1. ⛔⛔ **`message.requestId` 是单值，不能承载并发**：`appendImagesToAssistantMessage` 靠
+   `message.requestId === requestId` 找消息。任何"同一条消息上并发跑多条重试链"的设计都会互相覆盖 →
+   先完成的结果被丢弃。**要么串行化（锁到 message 粒度），要么把 requestId 改成集合。**
+2. ⛔⛔ **`sessionsRef.current` 在 `useEffect` 里赋值（`chat-workbench.tsx:9574`）**，
+   所以 **`await` 之后立刻读它拿到的是旧值**。本次编排就是用
+   `getMessageImageCount()`（读 sessionsRef）判断"图片数有没有变多"来判定成功 → **成功被判成失败、继续下一轮**。
+   **别用 ref 快照做"刚刚那次异步操作成功了吗"的判定**，让被调用方直接返回结果。
+
+### E. 操作层面的坑（都实际踩过）
+
+1. ⭐⭐ **查线上 DB 不用往服务器写文件**：node 脚本本地 base64 后
+   `sudo docker exec <容器> sh -c 'echo <b64> | base64 -d | node'` ——
+   一次绕开 PowerShell 吃 `$`（`p.$queryRawUnsafe` 变 `p.()`）、吃中文、吃嵌套引号的**全部**坑。
+   （PowerShell 侧：`[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($js))`，`$js` 用 `@'...'@` 单引号 here-string。）
+2. ⛔ **列名坑，先查 `information_schema.columns` 再写 SQL**（本次连撞三次 `42703`）：
+   - `GenerationEvent` **没有 `surface`**（入口字段叫 `source`）
+   - `MediaAsset` **没有 `name`**（是 `displayName` / `systemName`）
+   - 积分表叫 **`CreditLedger`**（不是 CreditTransaction），金额字段是 **`credits`**（不是 `amount`）
+   - 全表清单：`CreditLedger, CreditSetting, EmailVerificationCode, GenerationEvent, GenerationJob,
+     GptImagePromptOptimizationCase, MediaAsset, Session, UploadEvent, User, UserAssetState,
+     UserWorkspaceState, WorkspaceMessage, WorkspaceSession, WorkspaceWorkflow`
+3. ⛔ **`CreditLedger.requestId` 自带后缀**：`<clientId>:image:0` / `<clientId>:rewrite:2`。
+   ⭐ 拿它分组就能算出"这次到底调了几次生图、几次改写"，比翻日志快得多。
+   `:rewrite:1` 出现 N 次 = **起了 N 条改写链**（attemptIndex 从 1 开始）→ 一眼看出用户点了几下、有没有并发。
+4. ⛔ **老数据的红字不会随代码改动而变**（`failureReason` / `imageResultSlots[].reason` 是**持久化的字符串**）。
+   改完文案去线上验证，**必须看新发起的那一次**，别对着历史卡说"没生效"。
+
+### F. 验收「撤掉一个前端功能」的最小实测套路（本次照此跑完，全过）
+
+| 类型 | 做法 |
+|---|---|
+| 正例 | 真触发一次拒绝：图片模式 + `openai/gpt-5.4-image-2` + 1 张 + 露骨提示词 → **秒回 400**，比 img2img 更快更省 |
+| 断言 | `page.locator('.flashmuse-failed-media-card').last().innerText()` 应只有「图片生成失败\n重新生成」；`getByText('AI改写重试').count()` 应为 **0** |
+| 反例 1 | 正常提示词生图必须仍然成功（确认没搞坏成功路径）。⭐ 判据：消息底部反馈项是「要图给视频或要视频给图」= 成功卡；「回答不对」= 失败卡 |
+| 反例 2 | **没被撤掉的那一处必须还在**：工作流失败卡三颗「AI改写重试 3/5/10 次」+ 说明文字，且画布无 `Something went wrong` |
+| 反例 3 | 资产库失败卡（`查看失败` 展开）也只有「重新生成」 |
+| 纯函数 | 把上游 4 类原文喂给 `toUserErrorMessage` + `isGptImageSafetyFailure`，验"文案统一 / 工作流按钮仍 true / 视频模型 false / 兜底桶不误判"。⭐ 临时脚本放 `.runtime/*.ts` 用 `npx tsx` 跑完就删 |
+
+⛔ **`page.waitForTimeout` 循环轮询超过 ~2 分钟会撞 MCP 工具 30s/请求超时** → 拆成多次短轮询调用，
+每次只等 30~60s，靠 `document.body.innerText` 里有没有「生成中」判断要不要再等一轮。

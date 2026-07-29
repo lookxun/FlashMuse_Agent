@@ -9,6 +9,34 @@
 
 ## 活跃备忘
 
+### [ ] M021 对话流的 AI 改写重做 —— 押后：**先想清楚"一条提示词出多图"怎么展示**（2026-07-29 用户交代）
+
+- **背景**：v1.0.0.53 把 AI 改写从**对话流和资产库整体撤掉**了（工作流那套保留不动）。
+  起因是正式服 d37 对话实测：11 分钟发起 23 次生图、成功 17 张、**对话里只剩 2 张**、扣 197 积分。
+- **押后原因（用户原话）**：「这个对话流的设计不太适合 ai 改写。因为他是一条提词出多图，虽然是四张图，
+  但提示词是相同的，但是如果每张独立改提示词那上面显示的提示词就不对了。**这也是一个问题，以后想好再做。**」
+- ⛔ **以后重做的硬前提（三条，缺一条就别开工）**：
+  1. **先解决展示模型**：一条 assistant 消息现在只有一个 `content`/`originalPrompt`，
+     4 张图共用它。要支持"每张图各自的提示词"，得先让消息能表达 per-slot prompt（`imagePrompts` 已经是 per-url 的，
+     但消息头部显示的仍是单个 `content`），否则界面上的提示词必然对不上图。
+  2. **并发模型**：`message.requestId` 是**单值**，`appendImagesToAssistantMessage` 靠它匹配消息 →
+     任何"同一条消息并发多条重试链"的写法都会互相覆盖、把成功图静默丢掉。
+     要么串行化（锁到 message 粒度），要么把 requestId 改成集合。
+  3. **成功判定不能读 ref 快照**：`sessionsRef.current` 在 `useEffect` 里赋值，`await` 之后读到的是旧值 →
+     成功会被判成失败、继续下一轮白烧积分。让 `retryFailedMedia` 直接返回本次结果。
+- **相关代码（当时删掉的东西，git 里查 commit `ab6e223` 的 revert 即可看到原样）**：
+  `chat-workbench.tsx` 的 `MediaOptimizationRetryActions` / `canConversationOptimizationRetry` /
+  `runConversationGptImageOptimizationRetry` / `canAssetOptimizationRetry` /
+  `runAssetGptImageOptimizationRetry` / `patchMessageById` / `retryFailedMedia(promptOverride)`。
+  **工作流那份 `src/lib/gpt-image-safety-retry.ts` 还在、还在用**，重做时复用它，别再写第二套。
+
+### [ ] M022 是否给 `ID_636611` 补积分（d37 丢图事件）—— 等用户拍板
+
+- **事实**：2026-07-29 01:58–02:08，该用户因对话流 AI 改写的 bug，**扣 197 积分、成功出图 17 张、对话里只看到 2 张**。
+- **丢掉的 15 张图并没有消失**，全在他资产库里（`image_19_d37` ~ `image_36_d37`，`MediaAsset` 有记录、文件在盘）。
+  所以严格说是"出了但没在对话里显示"，不是白扣。
+- **我没动任何积分**。用户要补的话：直接改 `User` 的积分 + 写一条 `CreditLedger`（direction 走赠送/补偿），别只改余额。
+
 ### [ ] M020 视频「高清」（真·超分/放大）—— 押后，**等有免费方案再做**（2026-07-27 用户交代）
 - **押后原因**：现有所有可行方案都要花钱（第三方托管 API 按秒计费），用户说"如果没有免费版以后再做这个功能"。自建开源方案没 GPU（我们腾讯那台是共享 CPU 机器）。
 - **调查结论（2026-07-27 用浏览器实读官网/文档，别再重复查）**：

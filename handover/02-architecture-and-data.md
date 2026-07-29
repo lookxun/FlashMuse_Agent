@@ -6,13 +6,23 @@
 
 - `User`：账号、积分、登录审计。`Session`：登录会话 + 活动 workspace 实例。
 - `CreditLedger`：计费记录（text/image/video/prompt 工具 + 媒体成本 metadata）=**计费唯一来源**。
+  ⚠️ 表名就叫 `CreditLedger`（**不是** CreditTransaction），金额字段是 **`credits`**（**不是** `amount`）。
+  ⭐ `requestId` 自带后缀 `<clientId>:image:0` / `<clientId>:rewrite:2` ——
+  按它分组即可算出"某次操作实际调了几次生图 / 几次改写"，比翻日志快得多。
+- ⚠️ **两个高频列名坑**（写 SQL 前先查 `information_schema.columns`，历史上连撞三次 `42703`）：
+  `GenerationEvent` **没有 `surface`**（入口字段叫 `source`）；`MediaAsset` **没有 `name`**（是 `displayName` / `systemName`）。
 - `WorkspaceSession`（一行=一个对话）+ `WorkspaceMessage`（一行=一条消息，分页/媒体提取用）=对话结构来源。
+  ⭐ **对话编号（用户嘴里的「d37」）存在 `summaryJson->>'conversationCode'`**，**没有独立列、也没有 `Conversation` 表**。
+  它是前端自增的 `d{n}`（工作流是 `w{n}`，见 `chat-workbench.tsx` 的 `createSession()` / `normalizeSessionCodesAndMediaNames()`），
+  删除后号码不复用；衍生出媒体系统名 `image_36_d37`（⭐ 看到 `_d37` 后缀即可反推所属对话）。
+  按编号反查对话的 SQL 与完整排查姿势见 `07-red-error-triage-and-archive.md` 第十三节。
 - `WorkspaceWorkflow`（一行=一个工作流，`canvasJson` 大字段存整张画布 + `workflowCode`/`nextImageNumber`/`nextVideoNumber`）=工作流历史来源。
 - `MediaAsset`：**媒体固定事实**（url、归一化 url、类型、来源、prompt、model、尺寸、poster、成本、conversation/message/workflow id、`contentHash`、`durationSeconds`(Float)、archive 状态）。
 - `UserAssetState`：**每用户可变状态**（当前名、分类、排序、软删、hidden、BytePlus 审核态）。
 - `GenerationJob`：生成任务（worker 驱动真正生成/挑图/扣费/落库），存 `referenceImages`/`referenceNames`/`extraJson.cleanPrompt` 等。
 - `UserWorkspaceState`：仅存 shell 字段（`activeWorkflowId`/`nextWorkflowNumber` 等），**`state.assets` 不再是权威来源**。
 - `GptImagePromptOptimizationCase`：GPT 生图安全改写成功案例（见归档 08）。
+  ⚠️ **2026-07-29 起只有工作流会往里写**（对话流/资产库的 AI 改写已整体撤掉，原因见 `01-current-status.md` 第十四次会话）。
 - `GenerationEvent`：**每次生成的埋点事件**（kind/source/model/provider/status/`failureReason`/`failureCode`/moderation/durationMs/参考素材数量）= 后台运营概览的数据源。⭐ 2026-07-27 新增 `resolvedAt` + `resolvedNote`：**失败原因「已归档」标记**（根因查清并修掉后打上，后台把那条原因划掉且不再计入待排查数量）。归档流程见 `07-red-error-triage-and-archive.md`。⚠️ **`failureReason` 存的是给用户看的文案，不是根因**（"服务器繁忙"是兜底），真实原因只在 `.runtime/*-diagnostics-log.jsonl`。
 - `UploadEvent`：上传埋点（status/reason/bytes）。
 
