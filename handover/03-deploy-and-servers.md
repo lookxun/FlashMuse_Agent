@@ -25,6 +25,15 @@
 
 - 用户说 **"部署掉/部署一下"= 只部署测试服**，绝不动正式服。
 - 只有用户明确说 **"部署正式服/更新正式服/上线正式服"** 才走：**先部署测试服（含 `node scripts/bump-version.mjs` 版本号+1）→ 验证 → 再把测试服那份代码原样同步正式服（不再自增、原样带版本号）**。不跳过测试服、不直接改正式服代码。目标：版本号一样=代码一样。
+- ⭐⭐ **每部署完一台，必须真上号点一遍看有没有崩（2026-07-29 用户加的硬性要求）**：
+  **curl 200 / 版本号头对了 ≠ 没崩**。测试服部署完要上号，正式服部署完**也要上号**，**发现崩了立刻修**（能回滚就先回滚，保证用户还能用）。
+  最小巡检 6 项（每台都做，用 Playwright 或手点都行）：
+  1. 登录能进（测试服 `12424740@qq.com`/`dragonstar`；正式服用自己号）
+  2. **对话模式**列表 + 历史消息渲染正常
+  3. **工作流模式** tldraw 画布能打开、**点一下任意节点不变「Something went wrong」**（React #310 老坑）
+  4. **资产库**能开、缩略图出得来
+  5. **真跑一次生图**（成功出图 + 积分扣掉）；改过视频链路时**再真跑一次生视频**
+  6. **后台 `/admin`** 能进、`browser_console_messages` 里 **0 error**（hydration mismatch #418 老坑）
 
 ---
 
@@ -45,6 +54,7 @@
 4. `sudo bash /opt/flashmuse-staging/sync-ali-test.sh`（同步 `_next/static`+`home-assets`+`generated` 到阿里测试镜像，否则 chunk 404）。
 5. ⭐ **发布版本信号（提示条门控，静态同步完成后才做）**：sed 改 `/opt/flashmuse-staging/docker-compose.yml` 的 `PUBLISHED_APP_VERSION: "vX"` 为本次新版 + `sudo docker compose up -d --force-recreate staging-app`（复用镜像、快）。这样"提示条弹出=静态已就绪"，用户点刷新必正常、不白屏。（sed 含引号→写 .sh scp + `sed -i 's/\r$//'` 再 bash。）
 6. 验证：`curl -D - http://127.0.0.1:5001/api/models | grep x-app-version`（=新版）+ `curl http://127.0.0.1:5001/`（版本号变了）+ 外网 `http://101.37.129.164:8080/` 200。
+7. ⭐⭐ **必做：上号跑一遍上面「部署铁律」里的最小巡检 6 项**。崩了立刻修，别往正式服推。
 
 ## 正式服（腾讯）部署流程（仅当用户明确说"部署正式服"）
 
@@ -67,6 +77,9 @@
 6.5. ⭐ **发布版本信号（提示条门控，同测试服）**：正式 compose `/opt/flashmuse/docker-compose.yml` 也需有 `PUBLISHED_APP_VERSION: ""` 环境变量行（首次上此功能要手动加，位置同测试服 DATABASE_URL 行后）。**静态同步阿里正式镜像（第5步）完成后**，sed 改成本次新版 + `sudo docker compose up -d --force-recreate flashmuse-app`。保证正式服提示条弹出时静态已就绪、刷新不白屏。
 7. **env 数据**：`UPLOAD_RULE_OVERRIDES` 等是正式服独立 env（`/opt/flashmuse/data/.env.local`），不随代码同步；需要时手改 + `docker compose up -d --force-recreate flashmuse-app`。
 8. commit + push GitHub（保持四方同步）。
+9. ⭐⭐ **必做：正式服也要上号跑一遍最小巡检 6 项**（正式服崩了直接影响真实用户）。
+   **崩了立刻修**：能马上改就改（走"先测试服再正式服"顺序），修不了就用 `/opt/flashmuse/app-backups/<ts>-presync-vXX`
+   回滚 `/opt/flashmuse/app` → `up -d --build flashmuse-app` → 重新同步 `.next/static` 到阿里正式镜像 → `PUBLISHED_APP_VERSION` 改回旧版。
 
 ## 关键踩坑与记忆
 

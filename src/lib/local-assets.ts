@@ -9,6 +9,7 @@ import ffmpegPath from "ffmpeg-static";
 import sharp from "sharp";
 import { appendUploadDiagnosticsLog } from "@/lib/upload-diagnostics-log";
 import { getCompressionQualityPercent, getGenerationCompressionSettings } from "@/lib/system-settings";
+import { IMAGE_UPLOAD_RECOMPRESS_OVER_BYTES, IMAGE_UPLOAD_RECOMPRESS_QUALITY } from "@/lib/image-upload-validation";
 
 type AssetType = "image" | "video";
 type SaveAssetOptions = { userId?: string; diagnostics?: { requestId?: string; fileName?: string; fileSize?: number }; keepTransparent?: boolean };
@@ -310,6 +311,42 @@ export async function saveUploadedImageBufferAsset(buffer: Buffer, mimeType = "i
   return `/generated/${publicFolder}/${hash}.${extension}`;
 }
 
+/**
+ * ⭐⭐ 上传的 JPEG 体积超阈值就**原地压一遍**（2026-07-29 加，修红字 A1）。
+ *
+ * ⛔ 修的是什么：`jpegNeedsReencode()` 只判**格式兼容性**（分量数 + 4:2:0 采样因子），**不看体积** ——
+ * 格式本来就兼容的手机原图会走"原样写盘"分支，**一个字节都没压**。线上因此存下一张 4.24MB 的
+ * 3072×4096 原图，发给 OpenAI 直接 400 `Invalid image file or mode` → 用户连点 6 次全灭（红字 A1）。
+ *
+ * ⚠️ **只降质量、绝不动像素尺寸**（用户明确要求"图片过大不要动，质量保证在 90%"）。
+ * 实测那张图 4444000 → 约 985KB，尺寸一点没变，已落回历史成功区间（成功过的最大 2.71MB）。
+ *
+ * ⭐ `.rotate()` 是必须的：sharp 默认会**丢掉 EXIF**，手机照片带 `Orientation` 时不先按 EXIF 转正，
+ * 压完就会显示成横躺/倒置。`.rotate()` 把方向**烧进像素**，之后不再需要 EXIF。
+ *
+ * ⚠️ 压不动就原样返回，**绝不让上传失败**（压缩是优化，不是必要条件）。
+ */
+async function compressOversizedUploadJpeg(buffer: Buffer, diagnostics?: SaveAssetOptions["diagnostics"] & { userId?: string; mimeType?: string }) {
+  if (buffer.length <= IMAGE_UPLOAD_RECOMPRESS_OVER_BYTES) return buffer;
+  const startedAt = Date.now();
+  const baseLog = { requestId: diagnostics?.requestId, userId: diagnostics?.userId, fileName: diagnostics?.fileName, mimeType: diagnostics?.mimeType, fileSize: buffer.length };
+  try {
+    const out = await sharp(buffer, { failOn: "none" })
+      .rotate()
+      .jpeg({ quality: IMAGE_UPLOAD_RECOMPRESS_QUALITY, mozjpeg: true, chromaSubsampling: "4:2:0" })
+      .toBuffer();
+    if (out.length >= buffer.length) {
+      void appendUploadDiagnosticsLog({ event: "upload-image-oversized-recompress-skipped", ...baseLog, durationMs: Date.now() - startedAt, extra: { reason: "压完反而更大，保留原文件", originalBytes: buffer.length, compressedBytes: out.length, quality: IMAGE_UPLOAD_RECOMPRESS_QUALITY } });
+      return buffer;
+    }
+    void appendUploadDiagnosticsLog({ event: "upload-image-oversized-recompressed", ...baseLog, durationMs: Date.now() - startedAt, extra: { originalBytes: buffer.length, compressedBytes: out.length, quality: IMAGE_UPLOAD_RECOMPRESS_QUALITY, thresholdBytes: IMAGE_UPLOAD_RECOMPRESS_OVER_BYTES } });
+    return out;
+  } catch (error) {
+    void appendUploadDiagnosticsLog({ event: "upload-image-oversized-recompress-failed", ...baseLog, durationMs: Date.now() - startedAt, error, extra: { originalBytes: buffer.length, quality: IMAGE_UPLOAD_RECOMPRESS_QUALITY } });
+    return buffer;
+  }
+}
+
 export async function saveTemporaryUploadedImageBuffer(buffer: Buffer, mimeType = "image/jpeg", options: SaveAssetOptions & { forceReencode?: boolean } = {}) {
   const startedAt = Date.now();
   const userSegment = getSafeUserSegment(options.userId) || "anonymous";
@@ -326,7 +363,10 @@ export async function saveTemporaryUploadedImageBuffer(buffer: Buffer, mimeType 
       void appendUploadDiagnosticsLog({ event: "temporary-upload-jpeg-inline-reencode", requestId: options.diagnostics?.requestId, userId: options.userId, fileName: options.diagnostics?.fileName, mimeType, fileSize: options.diagnostics?.fileSize ?? buffer.length, forceReencode: options.forceReencode, durationMs: Date.now() - startedAt, extra: { token } });
       await writeGeneratedImageAsJpeg(buffer, filePath, { ...options.diagnostics, userId: options.userId, mimeType, fileSize: buffer.length, forceReencode: true, stage: "temporary-upload-inline" });
     } else {
-      await writeFile(filePath, buffer);
+      // ⭐ 走到这里说明"格式本来就兼容、不需要转码"。⛔ 但 `jpegNeedsReencode` **不看体积** ——
+      // 以前直接原样写盘，手机原图（4MB+）就这样被存下来、再原样发给模型 → 红字 A1。
+      // 现在按体积阈值补一道"只降质量、不动尺寸"的压缩（见 compressOversizedUploadJpeg）。
+      await writeFile(filePath, await compressOversizedUploadJpeg(buffer, { ...options.diagnostics, userId: options.userId, mimeType }));
     }
   }
   void appendUploadDiagnosticsLog({ event: "temporary-upload-buffer-saved", requestId: options.diagnostics?.requestId, userId: options.userId, fileName: options.diagnostics?.fileName, mimeType, fileSize: options.diagnostics?.fileSize ?? buffer.length, forceReencode: options.forceReencode, token, durationMs: Date.now() - startedAt, extra: { directory } });

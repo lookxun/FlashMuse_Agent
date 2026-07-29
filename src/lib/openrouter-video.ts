@@ -92,6 +92,20 @@ function summarizeVideoTaskError(task: OpenRouterVideoTask) {
   return { ...(code ? { errorCode: code } : {}), ...(message ? { errorMessage: message } : {}) };
 }
 
+/**
+ * ⭐ 轮询日志的事件名（2026-07-29 加）。
+ *
+ * ⛔ 以前不管任务成功失败，只要 HTTP 200 就一律记 `video-provider-poll-success` ——
+ * "success" 指的是**这次查询通了**，可是任务 `status:"failed"` 的失败也叫 success。
+ * 排 A3 时被这个名字带偏过：以为"轮询阶段零日志"，实际线上有近 4 万条，只是全叫 success。
+ * 现在任务真失败时单独叫 `video-provider-poll-failed`，一眼能 grep 出来。
+ */
+function getVideoPollEvent(task: OpenRouterVideoTask) {
+  const status = typeof task.status === "string" ? task.status.toLowerCase() : "";
+  const failed = status.includes("fail") || status === "error" || status === "canceled" || status === "cancelled";
+  return failed || task.error ? "video-provider-poll-failed" : "video-provider-poll-success";
+}
+
 export function getOpenRouterHeaders(apiKey: string) {
   return {
     Authorization: `Bearer ${apiKey}`,
@@ -353,7 +367,7 @@ export async function getOpenRouterVideoTask(taskId: string) {
   }
 
   const data = (await response.json()) as OpenRouterVideoTask;
-  void appendGenerationDiagnosticsLog({ event: "video-provider-poll-success", mode: "video", provider: "openrouter", taskId, status: response.status, durationMs: Date.now() - startedAt, upstream: { status: data.status, hasVideoUrl: Boolean(data.content?.video_url || data.unsigned_urls?.length), hasError: Boolean(data.error), ...summarizeVideoTaskError(data) } });
+  void appendGenerationDiagnosticsLog({ event: getVideoPollEvent(data), mode: "video", provider: "openrouter", taskId, status: response.status, durationMs: Date.now() - startedAt, upstream: { status: data.status, hasVideoUrl: Boolean(data.content?.video_url || data.unsigned_urls?.length), hasError: Boolean(data.error), ...summarizeVideoTaskError(data) } });
   return data;
 }
 
@@ -375,6 +389,6 @@ async function getBytePlusVideoTask(taskId: string) {
   }
 
   const data = (await response.json()) as OpenRouterVideoTask;
-  void appendGenerationDiagnosticsLog({ event: "video-provider-poll-success", mode: "video", provider: "byteplus", taskId, status: response.status, durationMs: Date.now() - startedAt, upstream: { status: data.status, hasVideoUrl: Boolean(data.content?.video_url || data.unsigned_urls?.length), hasError: Boolean(data.error), ...summarizeVideoTaskError(data) } });
+  void appendGenerationDiagnosticsLog({ event: getVideoPollEvent(data), mode: "video", provider: "byteplus", taskId, status: response.status, durationMs: Date.now() - startedAt, upstream: { status: data.status, hasVideoUrl: Boolean(data.content?.video_url || data.unsigned_urls?.length), hasError: Boolean(data.error), ...summarizeVideoTaskError(data) } });
   return data;
 }

@@ -1,4 +1,4 @@
-import { IMAGE_UPLOAD_ACCEPT } from "@/lib/image-upload-validation";
+import { IMAGE_UPLOAD_ACCEPT, IMAGE_UPLOAD_FORMATS } from "@/lib/image-upload-validation";
 import { MEDIA_DURATION_EPSILON_SECONDS } from "@/lib/media-upload-validation";
 
 export type UploadRuleMode = "agent" | "general" | "image" | "video" | "asset-image";
@@ -44,9 +44,13 @@ export const BYTEPLUS_SEEDANCE_UPLOAD_RULE_KEYS = {
   firstLastFrame: "byteplus:video.seedance:first_last_frame",
 } as const;
 
-const commonImageFormats = ["jpg", "jpeg", "png", "webp"];
-const bytePlusImageFormats = ["jpg", "jpeg", "png", "webp", "bmp", "tiff", "tif", "gif", "heic", "heif"];
+// ⭐ 图片格式白名单只有一个来源：image-upload-validation.ts 的 IMAGE_UPLOAD_FORMATS
+// （为什么不用 BytePlus 官网那份更宽的列表、以后想放开 heic 要先做什么，见那个文件顶部注释）。
+// ⛔ 禁止在这里另写一份图片格式数组 —— 历史上就是因为这里多了一份 bytePlusImageFormats
+//    （含 bmp/tiff/gif/heic/heif），导致"对话流传不上去、工作流拖进来能过"的分叉。
+const commonImageFormats = [...IMAGE_UPLOAD_FORMATS];
 const documentFormats = ["pdf", "txt", "csv", "docx", "doc", "xlsx", "xls", "pptx", "ppt", "md"];
+
 
 const disabledRule: UploadKindRule = { enabled: false, maxCount: 0, maxSizeMb: 0, formats: [] };
 
@@ -118,7 +122,7 @@ function getBaseUploadRule(context: UploadRuleContext): UploadRule {
   if (context.mode === "asset-image" || context.mode === "image") {
     if (isBytePlusImageModel(context.modelId)) {
       return makeRule({
-        image: kindRule({ enabled: true, maxCount: bytePlusLocalImageMax, maxSizeMb: 30, formats: bytePlusImageFormats }),
+        image: kindRule({ enabled: true, maxCount: bytePlusLocalImageMax, maxSizeMb: 30, formats: commonImageFormats }),
       });
     }
 
@@ -142,7 +146,7 @@ function getBaseUploadRule(context: UploadRuleContext): UploadRule {
         audio: kindRule({ enabled: true, maxCount: 3, maxSizeMb: 15, formats: ["mp3", "wav"], minSeconds: 2, maxSeconds: 15, maxTotalSeconds: 15, requiresServerUrl: true }),
       };
       return makeRule({
-        image: kindRule({ enabled: true, maxCount: imageMaxCount, maxSizeMb: 30, formats: bytePlusImageFormats }),
+        image: kindRule({ enabled: true, maxCount: imageMaxCount, maxSizeMb: 30, formats: commonImageFormats }),
         ...referenceMediaRule,
       });
     }

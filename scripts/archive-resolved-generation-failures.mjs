@@ -9,17 +9,61 @@
 // 去 .runtime 的诊断日志里找**真实失败原文**，命中已修复的根因才归档。
 //
 // 用法（服务器进容器 /app 跑，本地在项目根目录跑）：
-//   node scripts/archive-resolved-generation-failures.mjs          # 试跑，只统计不写
-//   node scripts/archive-resolved-generation-failures.mjs --apply  # 真正写库
-//   node scripts/archive-resolved-generation-failures.mjs --undo   # 取消归档（清空 resolvedAt/Note）
+//   node scripts/archive-resolved-generation-failures.mjs              # 试跑，只统计不写
+//   node scripts/archive-resolved-generation-failures.mjs --apply      # 真正写库
+//   node scripts/archive-resolved-generation-failures.mjs --undo       # 取消归档（清空 resolvedAt/Note）
+//   node scripts/archive-resolved-generation-failures.mjs --reset-all  # ⭐ 整轮清零（见下）
+//
+// ⭐⭐ `--reset-all`（2026-07-29 用户拍板新增）＝「整轮清零、开新一轮」：
+//   把**当前所有**待排查失败事件一次性归档掉（不看 RESOLVED_RULES、不看全局护栏），
+//   让后台「待排查」归 0，从此刻起只看**新长出来**的红字。
+//   配套动作：把 `.runtime/error-code-counter.txt` 写回 0，让 B_xxx 重新从 B_1 开始数。
+//   ⛔ 与常规按规则归档是**两回事**，别混用：日常排查仍走 RESOLVED_RULES（逐个根因查清才归档）。
+//   ⛔ 只在用户明确说"全部归档 / 清零 / 重新开始一轮"时才跑。
 
 import { existsSync, createReadStream } from "node:fs";
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { PrismaClient } from "@prisma/client";
 
 const prisma = new PrismaClient();
 const apply = process.argv.includes("--apply");
 const undo = process.argv.includes("--undo");
+const resetAll = process.argv.includes("--reset-all");
+
+/** B_xxx 错误编号计数器文件（与 src/lib/error-code.ts 的 ERROR_COUNTER_PATH 必须一致）。 */
+const ERROR_COUNTER_PATH = join(process.cwd(), ".runtime", "error-code-counter.txt");
+
+/**
+ * ⭐⭐ 整轮清零：把当前所有待排查失败事件一次性归档 + B_xxx 计数器归 0。
+ * 说明写进 resolvedNote，后台里这些原因文字仍保留（划掉），随时可追溯。
+ */
+async function runResetAll(note) {
+  const pending = await prisma.generationEvent.count({ where: { status: "failed", failureReason: { not: null }, resolvedAt: null } });
+  const counterBefore = await import("node:fs/promises")
+    .then((fs) => fs.readFile(ERROR_COUNTER_PATH, "utf8"))
+    .then((text) => text.trim())
+    .catch(() => "(计数器文件不存在)");
+  if (!apply) {
+    console.log(JSON.stringify({ mode: "reset-all-dry-run", willArchive: pending, errorCodeCounterNow: counterBefore, willResetCounterTo: 0, note }, null, 2));
+    console.log("\n（试跑，未写库、未动计数器。加 --apply 才真正执行。）");
+    return;
+  }
+  const now = new Date();
+  const result = await prisma.generationEvent.updateMany({
+    where: { status: "failed", failureReason: { not: null }, resolvedAt: null },
+    data: { resolvedAt: now, resolvedNote: note },
+  });
+  await mkdir(dirname(ERROR_COUNTER_PATH), { recursive: true });
+  await writeFile(ERROR_COUNTER_PATH, "0");
+  const remaining = await prisma.generationEvent.count({ where: { status: "failed", failureReason: { not: null }, resolvedAt: null } });
+  console.log(JSON.stringify({ mode: "reset-all-apply", archived: result.count, errorCodeCounterBefore: counterBefore, errorCodeCounterAfter: "0", remainingPending: remaining, note }, null, 2));
+}
+
+/** 整轮清零写进 resolvedNote 的说明（改这句等于改历史记录里的追溯文字，慎改）。 */
+const RESET_ALL_NOTE =
+  "2026-07-29 v1.0.0.54 部署后按用户要求【整轮清零】：此前累积的全部历史失败事件一次性归档，红字排查从 v1.0.0.54 上线时刻起重新开始一轮（B_xxx 错误编号同时重置为从 B_1 开始）。归档不代表每条根因都已修好，只代表「这批历史数据不再计入待排查」；文字全部保留可追溯。";
 
 const LOG_FILES = [".runtime/generation-diagnostics-log.jsonl", ".runtime/video-diagnostics-log.jsonl"];
 
@@ -45,6 +89,35 @@ function ruleAllowsEvents(rule, events) {
   if (!rule.before) return true;
   return events.every((event) => event.createdAt < rule.before);
 }
+
+/**
+ * ⭐⭐ 全局护栏：failureReason 命中这里任意一条的事件，**任何规则都不许归档**（2026-07-29 新增）。
+ *
+ * 为什么需要（当天差点误吃 6 条）：规则匹配的 haystack 是「诊断日志原文 + failureReason」拼起来的，
+ * 于是一条按**日志特征**写的规则会连带吃掉 failureReason 已经是「新文案 / 另一个未修根因」的事件：
+ *   · `gpt-image-empty-result-legacy-form`（match `图片平台没有返回图片：`）差点吃掉 4 条
+ *     failureReason 已是 v53 统一文案「模型因色情/暴力/隐私安全等原因拒绝出图」的事件
+ *     —— 那层 `图片平台没有返回图片：` 只是我们内部的包壳，还留在日志里。按铁律④这类该一直亮着。
+ *   · `approved-card-not-reused`（靠"走了送审复用、没新建素材"的事件序列特征）差点吃掉 2 条
+ *     failureReason 是「参考素材不是可审核的公网地址。」的事件 —— 那是**还没修**的另一个根因。
+ *
+ * ⭐ 用 failureReason 语义判定比给每条规则配 before 日期更准（不受部署时刻/时区影响）。
+ * ⛔ 某条根因**真的修好之后**，才可以把它从这里删掉、并写一条带说明的归档规则。
+ */
+const NEVER_ARCHIVE_REASON_PATTERNS = [
+  // 铁律④：模型拒绝出图（含 v52 及以前的历史措辞）—— 我们修不了，就该一直亮着。
+  /模型因色情\/暴力\/隐私安全等原因拒绝出图/,
+  /模型拒绝了本次生成请求/,
+  /生成结果可能涉及版权限制/,
+  // 我们自己的 bug，2026-07-29 仍在发生、尚未修（某个参考素材解析不出公网直链就放弃送审）。
+  /参考素材不是可审核的公网地址/,
+];
+
+function isNeverArchiveEvent(event) {
+  const reason = event.failureReason ?? "";
+  return NEVER_ARCHIVE_REASON_PATTERNS.some((pattern) => pattern.test(reason));
+}
+
 
 const RESOLVED_RULES = [
   {
@@ -86,6 +159,19 @@ const RESOLVED_RULES = [
     key: "reference-slot-not-an-image",
     match: /the specified asset is not an image/i,
     note: "非图片素材（音频/视频）被塞进参考图槽 → B_252，v1.0.0.34（2026-07-21 19:21）按 asset.kind 正确路由后修复（最后一次失败 07-21 07:45，此后零复发）",
+  },
+  {
+    // ⭐ 与上面 reference-slot-not-an-image 是**同一个根因**，只是上游换了个说法：
+    //   同样是音频 .bin 被当参考图发过去（正式服 4 条全是同一用户的「武松音色1.bin」，
+    //   日志里 references 同时有 role:"reference_image" 和 role:"reference_audio" 两条同文件），
+    //   BytePlus 这次回的是 InvalidParameter.UnsupportedImageFormat 而不是 asset is not an image。
+    //   当时的归档规则只认后者，所以这 4 条被漏下了（2026-07-29 查清）。
+    // ⛔⛔ **必须配 before**：这句上游原文以后还可能被**真正的格式问题**触发（例如有人把 gif 改名成
+    //   .jpg 混过上传白名单）。没有 before 的话，以后每次跑归档都会把本该亮着的新事件偷偷抹掉。
+    key: "audio-in-image-slot-unsupported-format",
+    match: /the request failed because the image format is not supported by the api|InvalidParameter\.UnsupportedImageFormat/i,
+    before: new Date("2026-07-21T11:21:00Z"),
+    note: "同 reference-slot-not-an-image 的根因（音频 .bin 被塞进参考图槽），只是上游回的是 InvalidParameter.UnsupportedImageFormat：正式服 4 条日志里同一个「武松音色1.bin」同时以 reference_image 和 reference_audio 两种 role 发出去了。v1.0.0.34（2026-07-21 19:21）按库里真实 mediaType 剔除非图片素材后修复，4 条全部发生在修复之前（07-17～07-20）。另：v1.0.0.54 起图片上传白名单统一收敛成 jpg/jpeg/png/webp（唯一来源 IMAGE_UPLOAD_FORMATS，工作流拖拽也拦），且正式服库里活跃图片资产只有 jpg 5302 + png 57、零个 bmp/tiff/gif/heic 存量 → 三重保证不会再发生。⛔ 本规则带 before 日期下限，以后真正的格式问题不会被误归档",
   },
   {
     key: "reference-video-total-duration",
@@ -155,6 +241,10 @@ function textOf(entry) {
 }
 
 async function main() {
+  if (resetAll) {
+    await runResetAll(RESET_ALL_NOTE);
+    return;
+  }
   if (undo) {
     const result = apply
       ? await prisma.generationEvent.updateMany({ where: { resolvedAt: { not: null } }, data: { resolvedAt: null, resolvedNote: null } })
@@ -212,7 +302,16 @@ async function main() {
 
   const perRule = {};
   const idsByNote = new Map();
+  // ⭐ dry-run 明细（2026-07-29 新增）：只给数字看不出"到底要吃掉哪些"。
+  // 踩过的坑：haystack = 日志原文 + failureReason，所以一条按**日志**特征写的规则
+  // 有可能吃掉 failureReason 已经是「新文案」的事件（按铁律④这类不该归档）。
+  // 必须能在 --apply 之前逐条看一眼 failureReason 到底是什么。
+  const samplesByRule = new Map();
   for (const [requestId, events] of byRequestId) {
+    // ⭐⭐ 全局护栏最先判（见 NEVER_ARCHIVE_REASON_PATTERNS 上面的注释）：
+    // 这些 failureReason 不管命中哪条规则都不许归档。
+    if (events.some(isNeverArchiveEvent)) continue;
+
     const text = textByRequestId.get(requestId) ?? "";
     const names = eventNamesByRequestId.get(requestId) ?? [];
     // ⭐ 除了日志原文，failureReason 本身也参与匹配：有些错误没被"服务器繁忙"兜底覆盖，
@@ -242,6 +341,11 @@ async function main() {
     }
     if (!rule) continue;
     perRule[rule.key] = (perRule[rule.key] ?? 0) + events.length;
+    const samples = samplesByRule.get(rule.key) ?? [];
+    for (const event of events) {
+      samples.push(`${event.createdAt.toISOString().slice(0, 16).replace("T", " ")} | ${event.model ?? "-"} | ${requestId.slice(0, 40)} | ${(event.failureReason ?? "").replace(/\s+/g, " ").slice(0, 90)}`);
+    }
+    samplesByRule.set(rule.key, samples);
     const ids = idsByNote.get(rule.note) ?? [];
     ids.push(...events.map((event) => event.id));
     idsByNote.set(rule.note, ids);
@@ -257,6 +361,11 @@ async function main() {
   }, null, 2));
 
   if (!apply) {
+    // ⭐ 逐条列出要吃掉什么（含 failureReason 原文）—— apply 之前必须扫一眼，见上面注释。
+    for (const [key, samples] of samplesByRule) {
+      console.log(`\n### ${key}（${samples.length} 条）`);
+      for (const sample of samples) console.log(`  ${sample}`);
+    }
     console.log("\n（试跑，未写库。加 --apply 才真正归档。）");
     return;
   }

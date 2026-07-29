@@ -564,6 +564,34 @@ async function markJobFailed(id: string, error: string, errorCode?: string) {
 
 const MAX_IMAGE_JOB_ATTEMPTS = 6;
 
+/**
+ * ⭐ 视频轮询的**连续**异常上限（2026-07-29 加，排 A3 时发现）。
+ *
+ * ⛔ 为什么不能用 `attempts`（图片那套 MAX_IMAGE_JOB_ATTEMPTS）：视频是轮询式的，
+ * 正常成功的任务本来就要轮几十次（线上实测最大 attempts=208 且是成功的长视频）。
+ * 拿 attempts 设上限会把正常的长视频任务直接掐死。
+ *
+ * 所以这里数的是「**连续**失败次数」`extraJson.pollErrorStreak`：只在 catch 分支 +1，
+ * 任何一次查询成功就归零。30 次 × 10 秒退避 ≈ 连续 5 分钟查不动才判失败，
+ * 足够扛住跨境网络抖动，又不会像以前那样**每 10 秒无限重试、永不放弃、且只写 console.warn**
+ * （docker logs 会滚掉 → 事后完全查不到，这正是 A3「查不动」的一部分原因）。
+ *
+ * ⚠️ 注意：等本地存盘那条路（`saveJob` 还没好）走的是正常 return + scheduleJobRetry，
+ * **不经过 catch**，所以不会被这个上限影响 —— "只要平台给了 url 就一直等到存好"的老行为没变。
+ */
+const MAX_VIDEO_POLL_ERROR_STREAK = 30;
+
+function getPollErrorStreak(job: GenerationJobRow) {
+  const value = job.extraJson?.pollErrorStreak;
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+async function setPollErrorStreak(job: GenerationJobRow, streak: number) {
+  const nextExtra = { ...(job.extraJson ?? {}), pollErrorStreak: streak };
+  await prisma.$executeRaw`UPDATE "GenerationJob" SET "extraJson" = ${jsonParam(nextExtra)}::jsonb, "updatedAt" = NOW() WHERE "id" = ${job.id}`;
+  return { ...job, extraJson: nextExtra };
+}
+
 function deriveWorkflowCode(workflowCode: string | null, title: string | null): string {
   if (workflowCode && workflowCode.trim()) return workflowCode.trim();
   const match = (title ?? "").match(/(\d+)/);
@@ -828,9 +856,14 @@ export async function runVideoJob(job: GenerationJobRow) {
   try {
     job = { ...job, reservedNames: await ensureJobReservedNames(job) };
     const task = await getOpenRouterVideoTask(providerTaskId);
+    // 查询通了 → 连续失败计数归零（只在非 0 时写库，避免每轮都刷一次 DB）。
+    if (getPollErrorStreak(job) > 0) job = await setPollErrorStreak(job, 0);
     const videoError = getVideoErrorMessage(task);
     if (videoError) {
       const codedError = await createCodedApiError(new Error(videoError), GENERIC_MEDIA_ERROR_MESSAGE, "video job polling failed");
+      // ⭐ 必须把**上游原文**落盘：以前这里一条诊断日志都没有，红字又只是映射后的用户文案
+      // （大量落进兜底桶「服务器繁忙」），导致事后完全查不出根因（= A3）。
+      void appendGenerationDiagnosticsLog({ event: "video-job-poll-failed", requestId: job.requestId, conversationId: job.conversationId ?? undefined, userId: job.userId, mode: "video", model: job.model ?? undefined, provider: job.provider ?? undefined, taskId: providerTaskId, prompt: job.prompt ?? undefined, settings: job.settingsJson ?? undefined, error: new Error(videoError), extra: { attempts: job.attempts, userError: codedError.error, errorCode: codedError.errorCode, upstreamRaw: JSON.stringify(task ?? {}).slice(0, 1500) } });
       void recordGenerationEvent({ userId: job.userId, requestId: job.requestId, kind: "video", creditSource: job.creditSource ?? undefined, model: job.model ?? undefined, provider: job.provider ?? undefined, status: "failed", failureReason: codedError.error, failureCode: codedError.errorCode });
       await markJobFailed(job.id, codedError.error, codedError.errorCode);
       return;
@@ -876,12 +909,27 @@ export async function runVideoJob(job: GenerationJobRow) {
     }
     if (["succeeded", "success", "completed", "complete"].includes(status)) {
       const codedError = await createCodedApiError(new Error("视频平台返回已完成，但没有返回视频地址。"), GENERIC_MEDIA_ERROR_MESSAGE, "video job completed without url");
+      // 同上：这条分支以前也是零日志。原始 task 结构必须留痕，否则"说完成了却没给地址"永远查不出是哪个字段没读到。
+      void appendGenerationDiagnosticsLog({ event: "video-job-completed-without-url", requestId: job.requestId, conversationId: job.conversationId ?? undefined, userId: job.userId, mode: "video", model: job.model ?? undefined, provider: job.provider ?? undefined, taskId: providerTaskId, settings: job.settingsJson ?? undefined, extra: { attempts: job.attempts, status, userError: codedError.error, errorCode: codedError.errorCode, upstreamRaw: JSON.stringify(task ?? {}).slice(0, 1500) } });
+      void recordGenerationEvent({ userId: job.userId, requestId: job.requestId, kind: "video", creditSource: job.creditSource ?? undefined, model: job.model ?? undefined, provider: job.provider ?? undefined, status: "failed", failureReason: codedError.error, failureCode: codedError.errorCode });
       await markJobFailed(job.id, codedError.error, codedError.errorCode);
       return;
     }
     await scheduleJobRetry(job.id, 8000);
   } catch (error) {
-    console.warn("[generation-jobs] video poll transient", { requestId: job.requestId, error: error instanceof Error ? error.message : String(error) });
+    // ⛔ 以前这里**只有 console.warn**（docker logs 会滚掉 → 事后查不到）+ 每 10 秒无限重试、永不放弃。
+    // 现在：原文落盘 + 数「连续」失败次数，连续太多次才判失败（详见 MAX_VIDEO_POLL_ERROR_STREAK 注释）。
+    const streak = getPollErrorStreak(job) + 1;
+    console.warn("[generation-jobs] video poll transient", { requestId: job.requestId, streak, error: error instanceof Error ? error.message : String(error) });
+    void appendGenerationDiagnosticsLog({ event: "video-job-poll-error", requestId: job.requestId, conversationId: job.conversationId ?? undefined, userId: job.userId, mode: "video", model: job.model ?? undefined, provider: job.provider ?? undefined, taskId: providerTaskId, error, extra: { attempts: job.attempts, pollErrorStreak: streak, maxStreak: MAX_VIDEO_POLL_ERROR_STREAK } });
+    if (streak >= MAX_VIDEO_POLL_ERROR_STREAK) {
+      const codedError = await createCodedApiError(error, GENERIC_MEDIA_ERROR_MESSAGE, "video job poll error streak exceeded");
+      void appendGenerationDiagnosticsLog({ event: "video-job-poll-error-streak-exceeded", requestId: job.requestId, userId: job.userId, mode: "video", model: job.model ?? undefined, provider: job.provider ?? undefined, taskId: providerTaskId, error, extra: { attempts: job.attempts, pollErrorStreak: streak, userError: codedError.error, errorCode: codedError.errorCode } });
+      void recordGenerationEvent({ userId: job.userId, requestId: job.requestId, kind: "video", creditSource: job.creditSource ?? undefined, model: job.model ?? undefined, provider: job.provider ?? undefined, status: "failed", failureReason: codedError.error, failureCode: codedError.errorCode });
+      await markJobFailed(job.id, codedError.error, codedError.errorCode);
+      return;
+    }
+    await setPollErrorStreak(job, streak).catch(() => undefined);
     await scheduleJobRetry(job.id, 10000);
   }
 }

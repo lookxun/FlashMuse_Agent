@@ -23,6 +23,7 @@ import { getBytePlusVideoPricePerMillionUsd, validateVideoDurationWithReferences
 import { Prisma } from "@prisma/client";
 import { validateMediaUploadMetadata } from "@/lib/media-upload-validation";
 import { validateVideoReferenceImages, videoModelEnforcesReferenceImageSizeRules } from "@/lib/video-reference-image-rules";
+import { saveUploadedImageAsset } from "@/lib/local-assets";
 
 type UsageMeta = {
   promptTokens?: number;
@@ -236,8 +237,28 @@ function toPublicAssetUrl(value: string) {
   return "";
 }
 
-async function toReviewablePublicAssetUrl(value: string, userId?: string) {
+async function toReviewablePublicAssetUrl(value: string, userId?: string, requestId?: string) {
   const url = value.trim();
+  // ⭐ base64（dataURL）参考图：BytePlus 送审是"平台上门自取"，只认公网文件直链，dataURL 天生给不了。
+  // 以前这里会直接抛「参考素材不是可审核的公网地址。」，把**整单**打死（A5，正式服 2026-07-28/29 各一起）：
+  // 同一次请求里 /generated 的参考图都成功复用到 Active 凭证了，只因为混进一张 dataURL 就全废。
+  // dataURL 的来源是对话流上传的临时资源在"发送那一刻 commit 失败"时退回原始 dataURL 直发
+  // （`chat-workbench.tsx` 的兜底 catch），所以这里必须能兜住。
+  // 修法 = 先落盘成一张正常的上传图（复用统一函数 `saveUploadedImageAsset`，与真实上传同一个
+  // `users/<uid>/upload_image/` 目录、文件名按内容 hash → 同图幂等，用户连点重试也不会堆文件），
+  // 再按当前环境拼公网 base 去送审。
+  if (url.startsWith("data:")) {
+    try {
+      const savedUrl = await saveUploadedImageAsset(url, "upload_image", { userId });
+      return toPublicAssetUrl(savedUrl);
+    } catch (error) {
+      // ⛔ 落盘失败（base64 损坏、ffmpeg 转码失败、磁盘满…）绝不能把原始错误透给用户：
+      // 那是一整行 ffmpeg 命令 + 路径，既看不懂又泄露服务器路径。
+      // 原始错误照旧进外层的 `byteplus-auto-review-public-url-failed` 诊断日志，不丢排查线索。
+      void appendVideoDiagnosticsLog({ event: "byteplus-auto-review-data-url-save-failed", requestId, provider: "byteplus", error });
+      throw new Error("参考图数据已损坏，无法送审。请删除该参考图后重新上传再试。");
+    }
+  }
   if (/^https?:\/\//i.test(url)) {
     const saved = (await getMediaSaveStatuses([url], userId)).find((job) => job.status === "saved" && job.localUrl);
     if (saved?.localUrl) return toPublicAssetUrl(saved.localUrl);
@@ -378,7 +399,7 @@ async function autoReviewBytePlusVideoReferences(input: { userId: string | undef
     if (!assetId) {
       let publicUrl = "";
       try {
-        publicUrl = await toReviewablePublicAssetUrl(reference, userId);
+        publicUrl = await toReviewablePublicAssetUrl(reference, userId, requestId);
         if (!publicUrl) throw new Error("参考素材不是可审核的公网地址。");
         void appendVideoDiagnosticsLog({ event: "byteplus-auto-review-public-url-resolved", requestId, model, provider: "byteplus", referenceMode, references: [summarizeVideoReference(publicUrl, references.length, referenceItem.role)] });
       } catch (error) {
@@ -904,6 +925,18 @@ export async function POST(request: Request) {
     const createStartedAt = Date.now();
     let autoBytePlusAssetReview: Awaited<ReturnType<typeof autoReviewBytePlusVideoReferences>> | undefined;
     let task: Awaited<ReturnType<typeof createOpenRouterVideoTask>>;
+    // ⭐ 本次请求里刚清掉过"平台侧已不存在的死凭证"（2026-07-29 新增）。
+    //
+    // 为什么需要这个标记：清掉死凭证之后，下面的 reuseOnly 预检**必然**找不到 Active 凭证
+    // （那张凭证刚被我们置 null），只能走完整送审；而完整送审原本要求前端带
+    // `autoBytePlusAssetReview` 标记，否则会 `return { status: "reviewing" }` 让前端再来一轮，
+    // 用户会白看一次"检测到真人图片，正在送审"的提示 —— 可这跟真人一点关系都没有，
+    // 纯粹是我们记的凭证过期了，属于我们自己该悄悄修好的事。
+    //
+    // ⭐ 所以：凭证失效这一类**不问用户、当场重新送审**（原因 100% 确定，不需要征求同意），
+    // 拿到新凭证写回库 → 下次这张图直接用新凭证。用户既看不到红字、也看不到那句误导的提示。
+    let staleAssetCardCleared = false;
+
     try {
       task = await createVideoTaskWithTransientRetry(prompt, modelReferenceImages, body.settings, body.model, { bytePlusProviderKey: getBytePlusProviderKey(body.model, creditSource), referenceMode: body.referenceMode, referenceVideos: modelReferenceVideos, referenceAudios: modelReferenceAudios, requestId: body.requestId });
     } catch (error) {
@@ -911,6 +944,7 @@ export async function POST(request: Request) {
       if (isBytePlusAssetNotFoundError(error)) {
         const staleAssetIds = getBytePlusMissingAssetIds(error);
         const clearedCount = await clearStaleBytePlusAssetCards(user?.id, staleAssetIds);
+        staleAssetCardCleared = true;
         void appendVideoDiagnosticsLog({ event: "byteplus-stale-asset-card-cleared", requestId: body.requestId, model: body.model, provider: "byteplus", referenceMode: body.referenceMode, extra: { staleAssetIds, clearedCount } });
       }
       if (!isBytePlusRecoverableReferenceError(error) || (effectiveReferenceImages.length === 0 && referenceVideos.length === 0 && referenceAudios.length === 0)) throw error;
@@ -941,7 +975,9 @@ export async function POST(request: Request) {
         autoBytePlusAssetReview = reusedReview;
         task = await createVideoTaskWithTransientRetry(prompt, reusedReview.referenceImages, body.settings, body.model, { bytePlusProviderKey: getBytePlusProviderKey(body.model, creditSource), referenceMode: body.referenceMode, referenceVideos: reusedReview.referenceVideos, referenceAudios: reusedReview.referenceAudios, requestId: body.requestId });
       } else {
-        if (!body.autoBytePlusAssetReview) return NextResponse.json({ status: "reviewing", autoBytePlusAssetReview: { triggered: true } });
+        // ⭐ staleAssetCardCleared = 凭证过期这一类：不问用户、当场重新送审（见上面标记处的注释）。
+        if (!body.autoBytePlusAssetReview && !staleAssetCardCleared) return NextResponse.json({ status: "reviewing", autoBytePlusAssetReview: { triggered: true } });
+
         logVideoTiming("BytePlus human reference auto review started", { model: body.model, requestId: body.requestId, referenceCount: effectiveReferenceImages.length + referenceVideos.length + referenceAudios.length });
         autoBytePlusAssetReview = await autoReviewBytePlusVideoReferences({ userId: user?.id, model: body.model, referenceImages: effectiveReferenceImages, referenceVideos, referenceAudios, requestId: body.requestId, referenceMode: body.referenceMode, settings: body.settings, conversationId: body.conversationId, conversationTitle: body.conversationTitle });
         if (!autoBytePlusAssetReview) throw error;
@@ -975,6 +1011,7 @@ export async function POST(request: Request) {
       if (isBytePlusAssetNotFoundError(videoError)) {
         const staleAssetIds = getBytePlusMissingAssetIds(videoError);
         const clearedCount = await clearStaleBytePlusAssetCards(user?.id, staleAssetIds);
+        staleAssetCardCleared = true;
         void appendVideoDiagnosticsLog({ event: "byteplus-stale-asset-card-cleared", requestId: body.requestId, model: body.model, provider: "byteplus", referenceMode: body.referenceMode, extra: { staleAssetIds, clearedCount, phase: "create-returned-error" } });
       }
       if (isBytePlusRecoverableReferenceError(videoError) && (effectiveReferenceImages.length > 0 || referenceVideos.length > 0 || referenceAudios.length > 0)) {
@@ -985,7 +1022,8 @@ export async function POST(request: Request) {
           autoBytePlusAssetReview = reusedReview;
           task = await createVideoTaskWithTransientRetry(prompt, reusedReview.referenceImages, body.settings, body.model, { bytePlusProviderKey: getBytePlusProviderKey(body.model, creditSource), referenceMode: body.referenceMode, referenceVideos: reusedReview.referenceVideos, referenceAudios: reusedReview.referenceAudios, requestId: body.requestId });
         } else {
-          if (!body.autoBytePlusAssetReview) return NextResponse.json({ status: "reviewing", autoBytePlusAssetReview: { triggered: true } });
+          // ⭐ 同上：凭证过期不问用户、当场重新送审。
+          if (!body.autoBytePlusAssetReview && !staleAssetCardCleared) return NextResponse.json({ status: "reviewing", autoBytePlusAssetReview: { triggered: true } });
           logVideoTiming("BytePlus human reference auto review started", { model: body.model, requestId: body.requestId, referenceCount: effectiveReferenceImages.length + referenceVideos.length + referenceAudios.length });
           autoBytePlusAssetReview = await autoReviewBytePlusVideoReferences({ userId: user?.id, model: body.model, referenceImages: effectiveReferenceImages, referenceVideos, referenceAudios, requestId: body.requestId, referenceMode: body.referenceMode, settings: body.settings, conversationId: body.conversationId, conversationTitle: body.conversationTitle });
           if (autoBytePlusAssetReview) {

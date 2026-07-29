@@ -3,9 +3,10 @@ import { dirname, join } from "node:path";
 
 type VideoDiagnosticReference = {
   index: number;
-  kind: "asset" | "generated" | "remote" | "unknown";
+  kind: "asset" | "data" | "generated" | "remote" | "unknown";
   host?: string;
   pathTail?: string;
+  length?: number;
   role?: string;
   status?: string;
   assetId?: string;
@@ -54,6 +55,11 @@ function getErrorDetails(error: unknown) {
 export function summarizeVideoReference(url: string, index: number, role?: string): VideoDiagnosticReference {
   if (!url) return { index, kind: "unknown", role };
   if (url.startsWith("asset://")) return { index, kind: "asset", assetId: url.slice("asset://".length), role };
+  // ⭐ 必须和 `summarizeGeneratedReference`（generation-diagnostics-log.ts）保持同样的分类，
+  // 否则同一条参考图在两个日志里长得不一样、排查时对不上。
+  // 2026-07-29 踩过：这里缺 `data` 分支，base64 参考图被归成 `kind:"unknown"`，
+  // 查 A5「参考素材不是可审核的公网地址」时只看到 unknown、看不出它其实是 dataURL，白绕一圈。
+  if (url.startsWith("data:")) return { index, kind: "data", length: url.length, role };
   if (url.startsWith("/generated/")) {
     const parts = url.split("?")[0].split("/").filter(Boolean);
     return { index, kind: "generated", pathTail: parts.slice(-4).join("/"), role };

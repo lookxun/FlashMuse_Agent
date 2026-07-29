@@ -2,6 +2,542 @@
 
 > 本批 CHANGELOG 从 2026-07-21 交接文档重建开始记。**此前的全部历史流水**（约 580KB，含 2026-06 起到 07-21 每一次改动/部署细节）在 `historical-handover-docs-last-used-2026-07-21/CHANGELOG.md`，遇到需要历史上下文的难题再翻。
 
+## 2026-07-29（第十七次会话）🚀 **v1.0.0.54 两服部署完成 + 实机巡检全绿 + 红字整轮清零（B_xxx 归 0，开新一轮）**
+
+### 0. 本次会话在干什么（一句话）
+
+把第十六次会话积压的 12 个文件作为 **v1.0.0.54** 部署上线（测试服 → 实机验收 → 正式服 → 实机验收），
+然后按用户要求把**所有历史红字一次性归档、B_xxx 计数器归 0**，从 v54 上线时刻起重新开始一轮红字排查。
+
+✅ **四方同步：正式服 = 测试服 = 本地 = GitHub = `v1.0.0.54`**。无 Prisma 迁移（两服 entrypoint 均 "No pending migrations"）。
+
+### 1. ⭐⭐ 用户本次新加的两条硬要求（已写进 `AGENTS.md` + `03-deploy-and-servers.md`）
+
+| 要求 | 落地位置 |
+|---|---|
+| **每部署完一台就必须真上号点一遍看有没有崩**（curl 200 ≠ 没崩），测试服和正式服**都要**，崩了立刻修 | `AGENTS.md` 部署铁律节 + `03` 的「部署铁律」新增**最小巡检 6 项**；测试服流程加第 7 步、正式服流程加第 9 步（含回滚指引） |
+| **红字全部归档掉、B_xxx 从 1 重新计数、只看新长出来的** | 归档脚本新增 `--reset-all` 模式；`AGENTS.md` 里原来那句"B 编号永不重置"已改写 |
+
+⛔ **`--reset-all` 与日常按规则归档是两回事，别混用**：日常仍走 `RESOLVED_RULES`（逐个根因查清才归档），
+`--reset-all` 不看规则也不看全局护栏，**只在用户明确说"全部归档/清零/重新开始"时跑**。
+
+### 2. 部署过程（照抄可复现）
+
+- 本地 `node scripts/bump-version.mjs` → **v1.0.0.53 → v1.0.0.54**；`npx tsc --noEmit` 全绿。
+- **测试服**：12 文件 tgz（`.runtime/v54.tgz`）→ scp `/tmp` → `tar -xzf -C /opt/flashmuse-staging/app`
+  → `up -d --build staging-app`（No pending migrations）→ `sync-ali-test.sh` → `PUBLISHED_APP_VERSION: "v1.0.0.54"` + force-recreate
+  → `x-app-version: v1.0.0.54`、`101.37.129.164:8080` 200、`staging-static` 200。
+- **正式服**：备份 `/opt/flashmuse/app-backups/20260729-214852-presync-v1.0.0.54` → staging→prod 整份 rsync（**不再 bump**）
+  → `up -d --build flashmuse-app` → `.next/static` 同步阿里**正式**镜像 → `PUBLISHED_APP_VERSION` = v54 + force-recreate
+  → `x-app-version: v1.0.0.54`、**四域名 main/api/ali/static 全 200**。
+- ⚠️ 复习到的老坑：`up --build` 之后 `x-app-version` 仍是**上一版**是正常的（那个头发的是运行时 env，最后一步才改），
+  这时判断新代码上没上去要看 **HTML 里的版本号**。
+
+### 3. ⭐ 实机巡检结果（两台都过，0 控制台 error）
+
+| 验收点 | 测试服 | 正式服 |
+|---|---|---|
+| 登录 | ✅ `12424740@qq.com` | ✅ `lookxun@163.com` |
+| 对话模式渲染 / 历史消息 | ✅ | ✅（Agent 模式正常应答） |
+| 工作流 tldraw 画布 + 点节点弹浮层 | ✅ **不崩**（React #310 老坑没复现） | ✅ **不崩** |
+| 资产库 | ✅ | ✅ |
+| 真跑生图 | ✅ 对话流 3 张参考图合成 + 工作流快捷编辑各一次 | ✅ 工作流 Seedream 4.5 2K 出图 |
+| 真跑生视频 | ✅ Kling v3.0 Standard | ✅ Kling v3.0 Pro |
+| 后台 `/admin?tab=failures` | ✅ | ✅ |
+
+**A5 前端根治验证通过**：上传当下就打了 `POST` **和** `PATCH /api/asset-upload-temp`；
+点发送后**没有第二次 PATCH、没有 `/api/upload-image`**，`/api/image` 请求体里 `referenceImages` 全是 `/generated/...`（**零 base64**）。
+
+**A1 压缩验证通过（两台都实测）**：`5033630 → 1082578` 字节（**-78.5%**，quality 90）；
+`3000x4000 orientation=6` 压完变成 `4000x3000 orientation=undefined` —— **`.rotate()` 把方向烧进像素了，像素总量没变、显示方向正确**。
+小图（978B）**完全没被碰**，日志里不出现 recompress 事件。
+
+⭐⭐ **造测试图的坑（下一个 AI 省半小时）**：拿 `Math.random()` 生成的**纯噪声大图压不下去**
+（实测 3780661 → 4750606 反而变大），只会命中 `upload-image-oversized-recompress-skipped` 这条兜底分支，
+**验不到真正的压缩路径**。要造"像真照片"的图：正弦/余弦渐变 + 少量噪声 + `.blur(1.1)` + `quality:99`，
+配 `withMetadata({ orientation: 6 })` 才能同时验方向。
+
+⭐ **同图去重是在服务端按 contentHash 做的**：重复上传同一张图**不会新建文件**
+（日志 `asset-upload-temp-post-dedup-hit`，直接复用已压缩好的那个 url），
+输入框里虽然多出一个缩略图，但 `/api/image` 的 `referenceImages` 里是**去重后的 3 个**。
+
+### 4. ⭐⭐ 红字整轮清零（本次的收尾动作）
+
+```
+# 先 dry-run（铁律），再 apply；两台都做
+sudo docker exec -w /app flashmuse-flashmuse-app-1        node scripts/archive-resolved-generation-failures.mjs --reset-all
+sudo docker exec -w /app flashmuse-flashmuse-app-1        node scripts/archive-resolved-generation-failures.mjs --reset-all --apply
+sudo docker exec -w /app flashmuse-staging-staging-app-1  node scripts/archive-resolved-generation-failures.mjs --reset-all --apply
+```
+
+| | 正式服 | 测试服 |
+|---|---|---|
+| 归档条数 | **221** | 46 |
+| B_xxx 计数器 | `675` → **0** | `59` → **0** |
+| 归档后待排查 | **0** | 0 |
+
+后台 `/admin?tab=failures` 复核：**待排查 0 / 原因 0 种 / 兜底桶 0**，已归档累计 **745**。
+下一条线上报错会是 **`B_1`**。计数器文件 = `.runtime/error-code-counter.txt`（bind-mount 到 `/opt/flashmuse/data/runtime/`，容器重建不丢）。
+
+⚠️ **归档 ≠ 每条根因都修好了**（B 表那些提供商侧的问题依然存在），只代表"这批历史数据不再计入待排查"。
+文字全部保留、后台里划掉可追溯，`resolvedNote` 里写明了是整轮清零。
+
+### 5. ⭐ 部署后跟踪点巡检（全绿）
+
+| 事件 | 期望 | 实际 |
+|---|---|---|
+| `client-send-time-commit-still-needed` 等 4 条 | 0 | **全 0**（= 上传即转正没有漏网路径） |
+| `upload-image-oversized-recompressed` | 有量 | 1（刚实测那张） |
+| `upload-image-oversized-recompress-failed` | 0 | 0 |
+| `video-provider-poll-failed` / `video-job-poll-error-streak-exceeded` | 0 | 0 |
+
+### 6. 本次踩到的操作坑
+
+- ⛔ **PowerShell 内联 `node -e "...'...'..."` 里带引号/中文/`$` 一律炸**（本次 `docker exec node -e` 直接被本地 PS 解释坏）
+  → 一次性脚本写成 `.js` 文件 → `scp` → `docker cp` 进容器 → `docker exec -w /app node x.js`。
+- ⛔ **`page.locator('text=视频生成')` 在对话流里会命中 7 个元素**（历史消息里那句"当前已切换到视频生成模式"也含这四个字）
+  → 用 `getByRole('button', { name: ... })` 或 `getByText(..., { exact: true })`。
+- ⭐ 工作流画布节点里的输入框点不到时，用 `run_code` 的 `page.mouse.click(x, y)`（老经验，本次再次生效）。
+
+
+## 2026-07-29（第十六次会话）⭐⭐ **A 表 9 条全部收口**：修掉 A5 + 查清 A3/A7（原表述都是错的）+ A1/A2/A4 加明确映射 —— ⚠️ **本地改动未部署未 push（v1.0.0.53 不变，没 bump）**
+
+### 0. 本次会话在干什么（一句话）
+
+接着上一批的 **A 表**排红字。用户逐条点：先 A5 → 又批了前端根治 → A3 → A7 → 最后"剩下 6 条全查、能改的改掉、改不了的说明" → 再点破 A1 的真根因。
+结果 **A 表 9 条全部处理完毕**：A5/A1 真修、A3/A7 查清（**两条的原描述都已过期**）、A2/A4 加明确映射、A6/A8 本来就不用动、A9 数据不足改不了。
+
+⚠️ **无 Prisma 迁移。`npx tsc --noEmit` 全绿。12 个文件未部署未 push、版本号没 bump。**
+🚀 **用户明确交代：下一个 AI 直接部署**（分步清单在 `05-next-actions.md` 顶部）。
+
+### 0.5 ⭐ 本次会话的完整决策脉络（下一个 AI 想知道"为什么这么改"看这里）
+
+| 用户说了什么 | 我做了什么 | 关键转折 |
+|---|---|---|
+| 「A5开始查」 | 查到根因 = 参考图混进 `data:` base64，送审给不出公网地址 → 整单毙 | 顺着查到源头是"发送那一刻才转正、失败就静默退回 dataURL" |
+| 「那就做1+3」（服务端落盘兜底 + 日志统一） | 服务端 `data:` 落盘后送审 + `summarizeVideoReference` 补 `data` 分支 | — |
+| 「这个你说提根因。。我没看懂」 | 用大白话把"上传→转正→发送"三步讲清 | — |
+| 「那这个能不能改成不要发送那一刻转正？上传完了直接转正呢？」 | 去读代码发现**转正只是搬文件、不建 DB 记录**，而且**工作流本来就是上传完一次做完** | ⭐ 用户这一问直接指出了"该统一却分叉"，比我原方案（改报错提示）更正 |
+| 「A吧，做了看看情况日志跟踪住」 | 前端改成上传完当场转正 + 4 个跟踪上报 + `/api/client-error` 改成落盘 | — |
+| 「查a3」 | ⛔ 实测发现文档里"轮询零日志"**是错的**（线上 39,270 条）；真问题是只记 `hasError` 布尔 + 事件名骗人 | 顺出两个真问题（视频任务无重试上限、只写 console.warn） |
+| 「a7也是带星号的。。你也查一下」 | ⛔ 又是过期描述：curl 早装了、ffmpeg 1097/1097 零失败 | 真问题是"错误映射说假话"（环境问题被说成网络问题） |
+| 「服务端少了个程序和ffmpeg转码失败这不都是我们的问题吗？直接修掉啊」 | 老实说明：**根因层面确实没得修了**（一个早修好、一个从没坏过），只把"说假话"修掉 | ⭐ 我上一条回复没说清状态、让用户误以为正在坏，已致歉更正 |
+| 「A表还有6条全都查一下…改不了的跟我说一下」 | A1/A2/A4 加明确映射；A6/A8 确认不用动；A9 说明改不了。**当时我对 A1 的结论是"只能改文案"** | — |
+| 「A1 图片过大不要动。。应该显示成B15或B13这类差不多的文字。。如果是体积大可以压缩一下保存好，质量保证在90%」 | ⭐⭐ **实测重压 → 4444000 变 985381 → 发现这张图从没被我们压过 → 根因翻转成"我们该压没压"**，按用户要求"只压质量不动尺寸"真修掉；文案对齐 B13/B15 | ⭐ **本次最大的翻转**。我漏了"重压一次比大小"这一步 |
+| 「把本对话框内所有做的内容更新到交接文档…下一个ai要直接部署」 | 写了第十四/十五/十六节 + 本条 CHANGELOG + `05` 顶部的分步部署清单 | — |
+
+### 1. A5：红字「参考素材不是可审核的公网地址」
+
+**根因**：参考图里混进了 `data:` base64（1.37MB/1.42MB），BytePlus 送审是"平台上门自取"、只认公网直链，
+`toPublicAssetUrl()` 对 `data:` 返回空串 → 抛错 → **整单毙**（同一单里另外 3 张 `/generated` 明明都拿到 Active 凭证了）。
+
+**base64 从哪来**：对话流是"上传拿 token → **发送那一刻**才 PATCH 转正"，
+`chat-workbench.tsx` 发送处的 catch 兜底会**静默退回原始 dataURL 直发**（`Promise.all` 一失败还是**整批**退回）。
+⭐ **工作流一直是"上传完一次做完 POST+PATCH"、从没出过这个红字** → 典型"该统一却分叉"。
+
+**修了两层**（用户先批 1+3，验证后又批前端 A 版）：
+
+1. **服务端兜底** `src/app/api/video/route.ts`：`data:` 先落盘成正常上传图（复用统一函数 `saveUploadedImageAsset`，
+   同 `users/<uid>/upload_image/` 目录、**内容 hash 命名 → 同图幂等、重试不堆文件**），再拼公网 base 送审。
+2. **前端根治** `chat-workbench.tsx`：新增 `uploadTemporaryAssetImageAndCommit()`，**上传完当场转正**，
+   收敛到工作流那套。两个调用点（选/拖/粘贴 + 重试上传）都换掉，`tempToken` 一律清空
+   → **发送那一刻只读字段、零网络请求可失败**。
+
+⭐ **顺手堵的漏子**：落盘失败原来会把**一整行 ffmpeg 命令 + 服务器路径**当红字漏给用户，
+现在换成「参考图数据已损坏，无法送审。请删除该参考图后重新上传再试。」，原始错误进新日志
+`byteplus-auto-review-data-url-save-failed`。
+
+⭐ **预览不会闪**：输入框缩略图读 `image.previewUrl`（创建时写死 dataURL、从不覆盖），只改 `image.url` 不影响它。
+
+⚠️ **接受的代价**：上传完又不发送 → 正式目录留孤儿文件。内容 hash 命名（同图一份）+ 不建 MediaAsset（不进资产库），
+可接受；要清另写"无 MediaAsset 引用且超 N 天"的脚本。
+
+### 2. ⭐ 日志跟踪住（用户明确要求）
+
+`/api/client-error` 原来只 `console.error`（docker logs 会滚掉、事后查不到），已改成**落盘**
+到 `.runtime/upload-diagnostics-log.jsonl`（带 userId）。4 个跟踪点，**正常情况一条都不该出现**：
+
+```
+client-send-time-commit-still-needed             还有图没转正就走到发送了
+client-send-time-data-url-fallback               发送时还在拿 base64 补救
+client-send-time-data-url-fallback-failed        补救也失败 = A5 直接现场
+client-send-time-persist-uploaded-images-failed  整批退回 base64
+```
+
+### 3. A5 实机验收（本地真登录 + 真上传 + 真发送，全过）
+
+| 项 | 结果 |
+|---|---|
+| 上传时机 | POST + PATCH **上传当下就都打了**（以前 PATCH 要等点发送） |
+| PATCH 返回 | `/generated/users/ID_779117/upload_image/e380f0d8b4e60fbd4f8370ee.jpg` |
+| 预览 src | 仍是 `data:...(1152271 字符)` = 不闪 |
+| 点发送后 | **没有**再打 PATCH、**没有** `/api/upload-image` 兜底 |
+| `/api/image` 请求体 | `referenceImages: ["/generated/users/.../e380f0d8....jpg"]`，不是 base64 |
+| 服务端诊断日志 | 参考图 `kind:"generated"` |
+| 4 个跟踪点 | 一条都没触发 |
+| 同图重复上传（去重分支） | 返回 `duplicate:true` + 正式地址，**不多打 PATCH** |
+
+⚠️ 那次生成本身失败（`(B_237) 网络连接异常`），原因是**本地机器连不上 OpenRouter**（`curl: (55) Send failure`），与改动无关。
+
+### 4. ⛔⛔ A3：文档里的前提是错的 —— "BytePlus 轮询零日志"不存在
+
+**实测线上有 `video-provider-poll-success` 39,270 条（byteplus）+ 483 条（openrouter）。**
+
+真正的两个问题：
+
+1. **只记 `hasError: true` 布尔、不记原文**。记原文的 `summarizeVideoTaskError` 后来才加，
+   **只有 07-29 起的新数据才有 `errorCode`/`errorMessage`** → 所以「必须先补落盘」**其实早做完了，只是没人验证过**。
+2. ⛔ **事件名骗人**：`poll-success` 的 "success" 指"这次 HTTP 查询通了"，任务 `status:"failed"` 的失败**也叫 success**。
+   我差点被它带着去"补落盘"。**已改成任务真失败时叫 `video-provider-poll-failed`。**
+
+**107 条未归档视频失败逐条对账**：能拿到原文 **8**（全 07-29、全 `OutputAudioSensitiveContentDetected.PolicyViolation`）／
+只有 `hasError` 布尔 **42**（07-27 及以前，原文永久丢失）／ 找不到 taskId **55**（创建阶段就失败、不属 A3）／ 有 taskId 无轮询记录 **2**。
+
+⭐ **关键推论**：那 42 条的红字大多已经是「成品视频/音频因版权或敏感内容被拒绝交付」，
+跟今天 8 条有原文的一对照 —— **映射是对的**，根因 = BytePlus 输出音频版权风控 = **B 类、我们修不了**。
+**A3 真正剩下的未知只有 10 条**（6 条「服务器繁忙」B_195/237/246~249/256 + 4 条「API Key 无效」B_60/62/66/67，
+后者**全在 2026-07-14 一天、之后零复发**）。**原文已丢、不可查，别再花时间。**
+
+### 5. 顺带修掉的两个真问题
+
+**① 「API Key 无效」正则误伤面极大**（`src/lib/error-message.ts`）
+原来 `/\b401\b|unauthorized|user not found|invalid api key|api key/` —— **裸的 `api key`**，
+上游任何提到 api key 的文字都判成"密钥失效"；连我们自己抛的 `缺少 BytePlus API Key`
+（= 服务端**根本没配**）也命中，文案却说"请更新密钥后重试"**把人往错方向带**。
+拆成两条：先认"我们没配" → **新文案「服务端没有配置该模型的接口密钥，请联系管理员处理。」**；
+再用精确特征（`invalid_api_key`/`incorrect api key`/`api key expired`/`401`/`unauthorized`…）判"平台说密钥无效"。
+⭐ **`npx tsx` 拿 12 条真实上游原文验映射，12/12 通过**（含 6 条回归：输出音频版权 / 1015 限流 / 402 余额 / 超时 / 真人参考图 / 格式不支持，都没被抢走）。
+
+**② 视频任务没重试上限、失败只写 console.warn**（`src/lib/generation-jobs.ts` `runVideoJob`）
+- 图片任务有 `MAX_IMAGE_JOB_ATTEMPTS = 6` + `image-job-transient-retry` 日志；视频任务 catch 里
+  **只有 `console.warn` + 每 10 秒无限重试、永不放弃、永不留痕**；另两个失败分支也**零诊断日志**。
+- 已修：三个分支都补 `appendGenerationDiagnosticsLog`（带上游原文 + `upstreamRaw` 截 1500 字 + attempts），
+  新事件 `video-job-poll-failed` / `video-job-completed-without-url` / `video-job-poll-error` / `video-job-poll-error-streak-exceeded`。
+- ⛔⛔ **上限绝不能用 `attempts`**：视频轮询正常就要几十次（线上最大 `attempts=208` 且是**成功**的长视频），
+  用 attempts 设限会掐死正常长视频。改成数**连续**失败 `extraJson.pollErrorStreak`（catch +1、查询成功归零），
+  `MAX_VIDEO_POLL_ERROR_STREAK = 30` ≈ 连续 5 分钟查不动才判失败。
+  ⚠️ 等本地存盘那条路是正常 return、**不过 catch**，"平台给了 url 就一直等到存好"的老行为没变。
+- ✅ 线上核实：**实际没有僵尸任务**（当前 0 个 running；最大 attempts=208 是成功的）→ 隐患不是事故。
+
+### 6. A7：curl / ffmpeg 都早就好了，真问题是「错误映射说假话」
+
+⚠️ **跟 A3 一样，A7 的原表述"容器里没装 curl、这条路永远失败"也是过期的。**
+
+| 项 | 线上实测 | 结论 |
+|---|---|---|
+| 容器少装 curl | 容器里 **curl 7.88.1 装着的**（正式+测试服，Debian 12）；`Dockerfile:4-7` 早就装了、注释写着 *"without it the fallback throws spawn curl ENOENT"*。`spawn curl ENOENT` 全站**只有 4 条、全在 2026-07-14 11:12~11:15 三分钟内、之后零复发**；07-29 还有 `provider-curl-success` | **已修，无事可做** |
+| ffmpeg 转码失败 | `upload-image-reencode-start` **1097** = `-success` **1097**，`-failed` **0 条**（该事件确实存在，见 `local-assets.ts:172`，所以 0 是真的零失败）；`ffmpeg-missing-raw-write` 也 0 条 | **线上从未发生过** |
+| 模型键没映射 | `byteplus-provider-key.ts:50` 已有 `seedream-5-0-pro`，`models.ts:105` 也在 | **已修** |
+
+⛔⛔ **排查陷阱**：07-14 之后仍有大量 `image-provider-curl-fallback-failed`（07-15 九 / 07-16 十 / 07-24 十三 / 07-28 十一条），
+**但捞原文一看根因全是「提供商余额不足！请联系管理员充值。」** —— **事件名带 curl，锅完全不在 curl**。
+⭐ **别用事件名推根因，必须捞 `error.message`。**
+
+**⭐ 真正修掉的**：`error-message.ts` 网络规则里塞了 `curl` 和 `command failed` 两个太宽的词，
+于是 `spawn curl ENOENT`（容器少装程序）被说成「网络连接异常，请稍后重试」→
+**用户白等白重试，我们后台也只看到"网络问题"、完全发现不了是部署问题，一埋两周**。已在网络规则**之前**新增：
+
+```ts
+const missingBinary = /\bspawn\s+\S+\s+enoent|\benoent\b/.test(lower);
+const subprocessFailed = /command failed/.test(lower) && !/curl:\s*\(\d+\)/.test(lower);
+if (missingBinary || subprocessFailed) return withErrorCode("服务端环境异常，请联系管理员处理。");
+```
+
+并从网络正则里**删掉 `command failed`**。⭐ 关键设计点：`Command failed: curl … curl: (7) Failed to connect`
+这种"子进程跑起来了、失败在网络"的要放给网络规则，靠 **`curl: (数字)`** 排除。
+⭐ **回归 22/22 通过**（6 条环境类 → 新文案；2 条 curl 网络失败 → 仍是网络；7 条纯网络/超时 → 一字未变；7 条其它高频原文没被抢走）。
+
+### 7. A 表剩下 6 条全部收口（A1 真修 + A2/A4 加映射；A6/A8 不用动；A9 改不了）
+
+用户要求"6 条全查、能改的改掉、改不了的说明"。
+
+#### 7.1 ⭐⭐ A1 的真根因是「我们该压没压」（不是只改文案）
+
+⛔ **我第一版判断错了**，写的是"图太大、官方没写上限、只能改文案 + 建议缩尺寸"。
+用户一句「**图片过大不要动**……如果是体积大可以压缩一下保存好，质量保证在 90%」直接点破 —— 实测后根因完全不同。
+
+**用容器自带 ffmpeg 对线上那张真实的 4.24MB 图重压（同尺寸）**：
+
+```
+源文件               4444000 字节
+-q:v 2（约95%）      1682393
+-q:v 3（约90%）       985381   ← 只有源文件的 22%！
+-q:v 5（约80%）       586398
+```
+
+⭐⭐ **说明这张图从来没被我们压过**（压过就该是 ~985KB）。查到 `local-assets.ts`：
+
+```
+forceReencode 或 非 jpeg     → 压
+jpeg + jpegNeedsReencode()   → 压
+jpeg + 不需要重编码          → writeFile(原始 buffer)   ⛔ 一个字节都不压
+```
+
+而 `jpegNeedsReencode()` **只检查格式兼容性**（分量数 3 + 采样因子 `0x22/0x11/0x11`），**完全不看体积**。
+手机原图正好是标准 baseline 4:2:0 → 判"不用重编码" → **原样存盘 → 原样发给模型 → 被 OpenAI 拒**。
+
+**修法（按用户要求：不动像素尺寸，只把质量压到 90%）**：
+
+- `image-upload-validation.ts` 新增两个常量（放在上传规则唯一来源）：
+  `IMAGE_UPLOAD_RECOMPRESS_OVER_BYTES = 2MB`、`IMAGE_UPLOAD_RECOMPRESS_QUALITY = 90`。
+- `local-assets.ts` 新增 `compressOversizedUploadJpeg()`：超阈值就 sharp
+  `.rotate().jpeg({ quality: 90, mozjpeg: true, chromaSubsampling: "4:2:0" })`，接在那条"原样写盘"分支上。
+- ⭐ **`.rotate()` 必须有**：sharp 默认丢 EXIF，手机照片带 `Orientation` 时不先转正、压完会显示成横躺。
+- ⚠️ **压不动 / 压完更大 / sharp 报错 → 一律保留原文件，绝不让上传失败**，三种情况各有日志：
+  `upload-image-oversized-recompressed` / `-recompress-skipped` / `-recompress-failed`。
+- ⚠️ 与后台"生成图片压缩"（high95/standard80/low60）**是两件事**：那套管我们生成的图，这里管用户上传的参考图。
+
+**本地实测（走真实上传链路）**：
+
+| 用例 | 源 | 存盘后 | 结果 |
+|---|---|---|---|
+| 真实照片放大到手机原图规格 | 3.59MB / 3072×4096 | **0.76MB / 3072×4096** | 体积 **-78.7%**、**尺寸未动** ✅ |
+| 带 EXIF `Orientation=6` 的大图 | 10.58MB / 4000×3000 | 6.82MB / **3000×4000** / 无 orientation | **已按 EXIF 转正**（不会横躺）✅ |
+| 小图 3118 字节 | 800×600 | 3118 字节 / 800×600 | **字节完全一致 = 没被碰** ✅ |
+
+**文案也换了**（历史大图 + 第三方 https 参考图不经过我们的压缩，还会触发），
+按用户要求**句式对齐 B13/B15**：
+**「参考图不符合平台要求，模型读不出这张图。请换一张体积更小的参考图（建议 2MB 以内）后重试。」**
+
+#### 7.2 A2 / A4 加明确映射
+
+| # | 上游真实原文 | 以前 | 现在 |
+|---|---|---|---|
+| **A2** | `图片平台没有返回图片：可直接用这版优化后的文生图提示词：…` | ⛔ **把模型那一大段中文提示词原样当红字贴给用户**（末尾透传最多 500 字） | **模型这次没有出图，只回了一段文字（不是报错），直接重试有可能会成功。以下是模型返回的内容：“…”** |
+| **A4** | `Transaction API error: Unable to start a transaction in the given time.` | 兜底桶「服务器繁忙」，跟上游抖动混在一起 | **服务端数据库繁忙（连接池已满），请稍后重试。** |
+
+⭐ **A2 的关键点**：新文案**故意复用已有的那句**，抽成唯一函数 `buildModelTextInsteadOfImageMessage()` →
+**后台归一化 SQL 那条前缀规则已经存在、一行都不用改**（`admin-failure-triage.ts` 第 4 个 `regexp_replace`）。
+自己另造一句的话，后台会立刻炸成几十条各 1 条。**"能统一一律统一"的现成收益。**
+
+**A2 数据**：112 条 `image-provider-empty-result` 里 **101 条**是"模型回文字不给图"（还在发生，07-29 x5）。
+**A4 池子现状**：`DATABASE_URL` **没配 `connection_limit`/`pool_timeout`** → Prisma 默认
+`CPU核数×2+1`（容器 8 核 → **17 连接**）、`pool_timeout=10s`。日志 6 行、**最后一次 07-17、之后零复发**，且已判可重试。
+
+#### 7.3 不用动 / 动不了
+
+- **A6**（图片 5 分钟超时）：全站 **1 行**（07-23）、零复发，已有明确文案、不在兜底桶。没法让模型更快，调大超时属拍脑袋 → 不做。
+- **A8**（上游非 JSON）：14 行、仍在发生，但**已有明确文案 + `isTransientServerError=true` 会自动退避重试**，多数到不了用户面前。两形态：11 条老接口 **200 但 body 截断**、3 条新接口 **502**。上游抖动，修不了。
+- **A9**：⛔ **改不了，数据不足** —— 连 `requestId`/`model` 都没有（日志里是 `-`），无法定位。全站 1 条、零复发。
+
+✅ **映射回归 21/21 通过**（含 B13「Image pixel is invalid」、B15「aspect ratio must be between」等，确认没被新规则抢走）。
+
+### 8. ⭐ 归档与拍板事项已挪到第 11 条
+
+**A4 真修复：给 `DATABASE_URL` 加 `connection_limit`（25~30）**。
+⚠️ 改环境变量 + 重部署 + 核对 postgres `max_connections`，不是纯代码改动。目前零复发 → **不建议现在动**。
+
+⛔ **已被用户否掉、别再提**：我原来提的"发给模型前把参考图**缩尺寸**（最长边 2048）"——
+用户明确要求**不动尺寸、只压质量到 90%**，实测 -78.7% 已经够用。
+
+### 9. 本次改动的文件（累计待部署 12 个）
+
+本次新改 8 个：
+
+```
+src/components/chat-workbench.tsx        上传完当场转正 + 4 个跟踪上报
+src/app/api/client-error/route.ts        上传链路客户端上报落盘到 upload-diagnostics-log
+src/app/api/video/route.ts               data: 参考图落盘后送审（+ 落盘失败的人话文案）
+src/lib/video-diagnostics-log.ts         summarizeVideoReference 补 data 分支（与 generation 侧统一）
+src/lib/generation-jobs.ts               runVideoJob 三个失败分支补日志 + 连续失败上限
+src/lib/openrouter-video.ts              轮询失败改用 video-provider-poll-failed 事件名
+src/lib/local-assets.ts                  ⭐ 上传大图按 90% 质量原地压缩（不动尺寸）+ .rotate() 保方向
+src/lib/error-message.ts                 收紧 api key 正则 + 环境类错误单列 + A1/A2/A4 三条明确映射
+```
+
+第十五次会话遗留未提交的 2 个（本次 `image-upload-validation.ts` 又追加了压缩阈值常量）：
+`image-upload-validation.ts`、`upload-rules.ts`、`scripts/archive-resolved-generation-failures.mjs`
+（`error-message.ts` / `video/route.ts` / `image-upload-validation.ts` 两批都改过）。
+
+### 10. 🚀 下一个 AI：直接部署（用户明确授权，分步清单在 `05-next-actions.md` 顶部）
+
+**起点**：线上三方 `v1.0.0.53`，本地 `v1.0.0.53` + 12 个文件未提交、**无 Prisma 迁移**、tsc 全绿。
+**动作**：`bump v54` → 测试服 → 实机验收 9 项 → **原样**同步正式服（不再 bump）→ 4 件收尾 → commit + push。
+
+**部署后 4 件收尾**（每一件的代码片段/命令都写在 `05` 第 4 步里，可直接复制）：
+
+1. **归档 A5 那 4 条**：从归档脚本 `NEVER_ARCHIVE_REASON_PATTERNS` **删掉** `/参考素材不是可审核的公网地址/`，
+   再加一条**带 `before` = 正式服部署时刻**的规则（只归档历史那 4 条；以后同名红字必是别的成因、应继续亮着）。
+2. **归档 A7 那批**：⚠️ **不能按 failureReason 匹配**（「网络连接异常」是真网络错误共用的文案，会误吃），
+   必须按**日志原文** `/spawn curl ENOENT/` 匹配。
+3. **观察 7 个新日志事件**（grep 正式服 `upload-diagnostics-log.jsonl`）：
+   4 个 `client-send-time-*` **应为 0**；`upload-image-oversized-recompressed` **应大量出现**、`-recompress-failed` **应为 0**。
+4. **后台 `/admin?tab=failures` 抽查** A1/A2/A4 三条新文案各自聚成一条。
+
+⚠️⚠️ **`scripts/archive-resolved-generation-failures.mjs` 千万别 `git checkout` 掉** ——
+归档动作第十五次会话已经在正式服 DB 跑过（224 → 220 条待排查），但脚本代码一直没提交；
+丢了它以后跑归档会**误吃新数据**（新规则 + 全局护栏都在里面）。
+
+⚠️ **归档前必须重新 dry-run**（220 是快照），且**逐条扫明细里的 failureReason**，别只看数字。
+本地 dry-run 永远是 0 → 必须 `docker cp` 进容器 `/app` 再 `docker exec -w /app node scripts/...`。
+
+### 11. ⭐ 部署后才轮到的：只剩一个「能修但要拍板」的项
+
+**A4 真修复：给 `DATABASE_URL` 加 `connection_limit`（25~30）**。
+⚠️ 改环境变量 + 重部署 + 核对 postgres `max_connections`，不是纯代码改动。目前零复发（最后一次 07-17）→ **不建议现在动**。
+
+⛔ **已被用户否掉、别再提**：我原来提的"发给模型前把参考图**缩尺寸**（最长边 2048）"——
+用户明确要求**不动尺寸、只压质量到 90%**，实测 -78.7% 已经够用。
+
+### 12. 本次的操作记忆（省时间）
+
+- ⭐ **查线上日志用 python3 直接读宿主机 `/opt/flashmuse/data/runtime/*.jsonl`**（挂载出来的，不用进容器）；
+  **连 DB 才需要** node 脚本 `docker cp` 进 `/app` 再 `docker exec -w /app node`。
+- ⭐ **DB 失败事件 ↔ 日志对账姿势**：先用"同时有 requestId 和 taskId 的日志行"建 `requestId→taskId` 映射，
+  再拿 taskId 找最后一条 poll 记录。⛔ **poll 日志行里没有 requestId**，只按 requestId grep 会误判"没日志"。
+- ⭐⭐ **"图太大被拒"这类问题，先问一句"我们到底压过没压过"** —— **本次最大的教训**：
+  我第一版查完就下结论"图太大、官方没写上限、只能改文案"，**漏了最关键的一步**：拿源文件重压一遍对比体积。
+  一压才发现 `4444000 → 985381`，即"这张图从没被我们压过"，根因立刻从"模型限制"变成"我们自己漏了压缩"。
+  ⭐ **判断"该压没压"的最快办法就是重压一次比大小。** 用户那句"可以压缩一下保存好"就是这么点破的。
+- ⭐ **容器里可直接用 `/app/node_modules/ffmpeg-static/ffmpeg` 做压缩实验**（输出 `/tmp`、跑完删），
+  不用把用户的图拉到本地。`-q:v` 与质量粗略对应：`2≈95% / 3≈90% / 5≈80%`。
+- ⛔ **sharp 压缩默认丢 EXIF** → 手机照片必须先 `.rotate()` 把方向烧进像素，否则压完显示成横躺。
+  测这一项要**自己造带 `withMetadata({ orientation: 6 })` 的图**，且**体积必须超过阈值**才会进压缩分支
+  （我第一版测试图只有 1.39MB，压根没进分支，白测一轮）。
+- ⛔⛔ **PowerShell `cd` 对 `[System.IO.File]` 无效、对 `Remove-Item` 有效** ——
+  本次同一条命令里 ReadAllText 读错了目录（失败），后面的相对路径 `Remove-Item` 却真删了文件，
+  **刚写好的一整节交接文档没拼进去就消失、只能重写**。⭐ **拼接文件只用绝对路径。**
+- ⛔ **edit 别吃掉 `export` / 换行**（本次两次手误，tsc 都抓到了）→ **每改完立刻 `npx tsc --noEmit`**。
+- ⭐ **Playwright 上传文件必须放在允许的根目录内**（`.playwright-mcp\`），temp 目录会被拒（`outside allowed roots`）；
+  `showInputTip` 是瞬时提示、`innerText` 抓不到 → **改看网络请求更可靠**。
+
+## 2026-07-29（第十五次会话）⭐⭐ 红字全量归纳成 A/B 两张表 + B 类全部处理完 + 上传格式白名单统一 —— ⚠️ **本地改动未部署未 push（v1.0.0.53 不变，没 bump）**
+
+### 0. 本次会话在干什么（一句话）
+
+用户要求「把所有生成失败原因归纳成表格：真实原因（大白话）／映射成的红字／兜底桶，**我们自己的原因和提供商的分开**，
+已修好的不要列，只列**以后还会真实发生**的」→ 然后**按表逐条处理**。本次把 **B 类（提供商/模型端）全部处理完**，A 类留给下一个 AI。
+
+⚠️ **无 Prisma 迁移。`npx tsc --noEmit` 全绿。5 个文件本地改动，未部署未 push，版本号没 bump（部署测试服时才 bump 成 v1.0.0.54）。**
+
+### 1. ⭐ 归纳口径（下次做同类事照抄，这是本次最大的方法论产出）
+
+第一版表格我是**直接把 DB 里 `GenerationEvent.failureReason` 的分布贴给用户**的 —— **被用户否了，理由完全正确**：
+DB 里那些是**历史字符串**（当时就写死进去的），里面混着大量「已经被新代码取代、以后再也不会产生」的老文案。
+用户要的是「**以后还会发生的根因 → 它现在会映射成哪句红字**」。
+
+**所以正确做法是两步走，缺一不可**：
+1. 从 DB 拿到"有哪些根因"（`GenerationEvent` 按归一化 reason 分组）→ 再逐个回 `.runtime/*-diagnostics-log.jsonl` 捞**上游原文**定根因；
+2. **拿根因去读现在的 `src/lib/error-message.ts`**，看它今天会映射成哪句 —— 表格里填这一句，**不是填 DB 里那句**。
+
+判断"还会不会发生"的四种情形：① 根因已修 → 剔除；② 文案已被取代 → 换成接班人那句；③ 从未发生过（纯预防规则）→ 剔除；④ 被自动重试/自愈消化、到不了用户面前 → 剔除。
+
+### 2. 正式服红字全貌（查询时间 2026-07-29，本次归档后 **220 条待排查 / 524 已归档**）
+
+原始分布是 **21 种 / 224 条**，归纳后：**A 类（我们自己的）9 条根因 42 条事件 ／ B 类（提供商端）14 条根因 178 条事件**。
+两张表的完整内容 → **`07-red-error-triage-and-archive.md` 第十三节**（A 表带样本 requestId 和证据，下一个 AI 直接照着做）。
+桌面上还留了两个 md（`FlashMuse-红字改写表-AB两类.md` 是新口径的、`FlashMuse-B类提供商红字改写表.md` 是旧口径已作废）。
+
+### 3. B 类逐条处理结果（本次全部处理完）
+
+| 原表编号 | 处理 | 结论 |
+|---|---|---|
+| B5「参考图未能通过平台审核」+ B6「参考图可能包含真人或隐私敏感信息」 | ✅ **合并成一句** | 本来就是同一个根因（平台内容安全检测拒绝素材），只是一条精确规则一条兜底规则 |
+| 新增 | ✅ **补了成品图片侧那句** | `OutputImageSensitiveContentDetected` 以前掉进 B6 兜底 → 红字说"参考图可能包含真人"，**用户换一万张图都没用**（错怪） |
+| B7「视频任务创建失败：The request failed because the image format is not supported by the API.」 | ✅ **查清 + 归档 4 条，不加映射** | 根因跟格式无关：音频 `.bin` 混进图片槽（v34 已修）。数据证明不会再发生 |
+| B9「请求太频繁或额度不足」 | ✅ **拆掉、这条文案消失** | 裸 `429`→限流那句；裸 `quota`→余额不足那句。⛔ 不能整条并进"余额不足"：429 时钱是够的，会让用户白催充值 |
+| B10「输出视频被平台过滤」 | ✅ 划掉（不并进 B1） | DB 0 条、日志 0 行，**从未发生过**；且原文只说 `completed with no output`，并进 B1 等于替平台编"因版权敏感"的理由 |
+| B11「平台读取参考图失败」 | ✅ 划掉 | DB 0 条红字。日志 20 行但**全被 `transient-error` 判为可重试、服务端自动退避重试消化掉了**，用户从来没看见过 |
+| B12「审核凭证已失效」 | ✅ 划掉 + 顺手改进 | 自愈逻辑 v47 就有、07-15 后零复发；本次补上"凭证过期不问用户、当场重新送审" |
+| B1 / B2 / B3 / B4 / B8 / B13~B18 | 保留 | 提供商侧真实原因，我们修不了，按铁律该一直亮着 |
+
+### 4. 代码改动明细（5 个文件）
+
+**① `src/lib/error-message.ts`**（+53/-13）
+- 新增 4 个常量做唯一来源：`REFERENCE_REVIEW_REJECTED_MESSAGE`（B5+B6 合并后那句）、`OUTPUT_IMAGE_REJECTED_MESSAGE`（新增）、`PROVIDER_INSUFFICIENT_CREDITS_MESSAGE`、`RATE_LIMITED_MESSAGE`。
+- **合并句措辞从「参考图」改成「参考素材」** —— 线上真实原文里有 `InputVideoSensitiveContentDetected param: content[3]`，被判敏感的是**参考视频**，说"参考图"是错的（音频同理）。
+- **新增成品图片规则**，插在「成品视频/音频」之后、「参考素材」之前：
+  `成品图片被平台判定含敏感内容而拒绝交付（不是参考素材的问题，换图没用）。可直接重试或修改提示词后重试。`
+- **删掉「请求太频繁或额度不足，请稍后再试。」**，拆成 `\b429\b|too many requests`→限流句、`\bquota\b|配额`→充值句。
+
+**② `src/lib/image-upload-validation.ts` + ③ `src/lib/upload-rules.ts`**：图片格式白名单**收敛成唯一来源**
+`IMAGE_UPLOAD_FORMATS = ["jpg","jpeg","png","webp"]`（`IMAGE_UPLOAD_ACCEPT` 由它推导），**删掉 `upload-rules.ts` 里的 `bytePlusImageFormats`**。
+
+**④ `src/app/api/video/route.ts`**（+19）：新增局部标记 `staleAssetCardCleared`，两个分支（创建抛异常 / 创建返回 error 字段）都置。
+两处 `if (!body.autoBytePlusAssetReview) return {status:"reviewing"}` 加上 `&& !staleAssetCardCleared`。
+
+**⑤ `scripts/archive-resolved-generation-failures.mjs`**（+61）：新归档规则 + dry-run 明细 + ⭐ 全局护栏（见下面第 6 条）。
+
+### 5. ⭐⭐ 上传格式白名单：官网权威结论（别再猜，也别再放宽）
+
+用浏览器读了 BytePlus ModelArk 视频生成 API 官方文档，原文：
+
+> • Image formats: `.jpeg`, `.png`, `.webp`, `.bmp`, `.tiff`, `.gif`. In addition, **Seedance 1.5 Pro and Seedance 2.0 series also support `.heic` and `.heif`**.
+
+**所以 `bytePlusImageFormats` 是照官网抄的、没抄错。但我们故意只放 4 种**（`image-upload-validation.ts` 顶部写了长注释）：
+1. **资产跨模型复用** —— 同一张图今天喂 Seedance、明天 `@` 给 GPT/Gemini（只吃 jpg/png/webp），白名单必须取**交集**，否则"换模型再用"时才炸；
+2. **tiff / heic / heif 浏览器 `<img>` 渲染不了** —— 传上去画布节点/缩略图/资产库/@引用全是破图，负收益；gif 只取一帧、bmp 体积大，也没价值；
+3. `accept` 属性一直只给这 4 种，宽白名单**只有"拖拽进工作流画布"能走到** = 隐藏的不一致。
+
+⭐ **以后要放开 heic（iPhone 原图）必须先做"上传时转码成 jpg"，不要只改白名单。**
+
+**分叉现场**（这就是铁律#3 的活标本）：`chat-workbench.tsx:14117` 走 `validateImageUploadFile`（4 种），
+`workflow-tldraw-canvas-inner.tsx:6507` 走 `kindRule.formats.includes`（10 种）→ 同一个"能传什么图"有两个答案。
+**行为变化只有一处**：工作流画布拖 tiff/gif/bmp/heic 进去，以前放过、现在提示"当前模型不支持该图片格式"。数量与大小上限一个没动。
+
+### 6. ⭐⭐ 归档脚本差点误吃 6 条 —— 新增全局护栏（下次跑归档必读）
+
+给脚本加了 **dry-run 明细输出**（以前只给数字），第一次试跑就发现两条老规则会吃掉不该归档的：
+
+| 规则 | 误吃 | 为什么 |
+|---|---|---|
+| `gpt-image-empty-result-legacy-form` | 4 条 failureReason 已是 **v53 新统一文案「模型因色情/暴力/隐私安全等原因拒绝出图」**、07-29 刚发生的 | **haystack = 日志原文 + failureReason**，而日志里还包着 `图片平台没有返回图片：` 这层**内部壳** → 被连带命中。按铁律④这类该一直亮着 |
+| `approved-card-not-reused` | 2 条「**参考素材不是可审核的公网地址**」（A 表里还在流血、根本没修的） | 它靠"走了送审复用、没新建素材"的**事件序列特征**命中，跟 failureReason 无关 |
+
+**修法**：新增 `NEVER_ARCHIVE_REASON_PATTERNS` + `isNeverArchiveEvent()`，在规则匹配**之前**先判：
+failureReason 命中就**任何规则都不许归档**。目前挡 4 类（三种模型拒绝措辞 + 参考素材公网地址）。
+⭐ **比给每条规则配 `before` 更准**（不受部署时刻/时区影响）。⛔ 某条根因**真修好之后**才可以从这里删掉。
+
+护栏加上后 dry-run 从 10 条降到 4 条，`--apply` 只归档了目标那 4 条（B_171/B_210/B_211/B_212），**224 → 220**。
+
+### 7. B7 完整排查过程（音频当图片发，跟"格式"毫无关系）
+
+4 条失败（07-17～07-20，全是同一用户 ID_686996 的 seedance-2-0）的 `byteplus-create-request` 日志里都有这一行：
+
+```json
+{"index":2,"pathTail":"users/ID_686996/files/d7d49e026965eddc8f73acba-武松音色1.bin","role":"reference_image"}
+```
+
+同一个音色文件在下面又正确地以 `role:"reference_audio"` 发了一份 → **音频被当参考图塞进 `image_url` 数组**，
+BytePlus 只能回一句"这图片格式我不支持"。已归档的 26 条 `the specified asset is not an image` 是**同一个根因**，只是上游换了说法，当时的规则没认出这 4 条。
+
+修复是 **v1.0.0.34 / commit `5bb0fc2` / 2026-07-21**（`B_252 音频误入图片槽修`），代码在 `video/route.ts:781-796`（按库里真实 `mediaType` 剔除）。4 条全在修复之前。
+
+**为什么不加中文映射**：查了正式服活跃图片资产扩展名分布 —— `jpg 5302 / png 57`，**bmp/tiff/gif/heic/webp 一条都没有** →
+根因已修 + 上传口已收紧 + 库里零存量，三重保证。真出现了再加（那时还有真实原文可对）。
+
+### 8. B12 的自愈逻辑（用户提的"完美规则"其实已经实现了，本次补最后一步）
+
+用户描述：「凭证不存在就直接拿图重新申请，把新凭证覆盖记好；下次先用存好的，行就直接用，不行再申请覆盖。」
+—— 这**正是 v1.0.0.47 已有的逻辑**（`video/route.ts:911-948` + `977-990`），数据也证明它生效了：
+
+| 检查项 | 结果 |
+|---|---|
+| 这条红字在 `GenerationEvent` 里 | **待排查 0 / 已归档 0** —— 从未真正显示给用户 |
+| 日志里 `asset ... is not found` 最后一次 | **07-15**（v47 是 07-27 上线）→ 此后零复发 |
+| `byteplus-stale-asset-card-cleared` 触发次数 | **0**（没再发生过，没机会触发） |
+| 库里带 BytePlus 凭证的图 | 897 张，**895 张 Active** |
+
+**本次补的最后一步**：清掉死凭证后 `reuseOnly` **必然**找不到 Active 凭证（刚被置 null）→ 只能走完整送审，
+而完整送审原本要求前端带 `autoBytePlusAssetReview`，否则 `return {status:"reviewing"}` 让前端再来一轮 →
+用户会白看一次"检测到真人图片，正在送审"的提示，**可这跟真人毫无关系**。
+现在：凭证过期这一类**不问用户、当场重新送审**（原因 100% 确定），拿到新凭证 `patchWorkspaceBytePlusAssets` 写回库。
+⛔ **真人/隐私审核那条路一行未动**（那个提示是用户该知道的，不能偷偷做）。
+
+### 9. ⭐ 本次的操作记忆（省下一个 AI 的时间）
+
+- ⛔⛔ **`generation-diagnostics-log.jsonl` 里也有 `video-route-failed`** —— **视频失败会双写两个日志**。
+  本次差点据此误报"图片路径也发生过凭证失效、存在分叉"，一看 `event`/`model` 全是 `video-route-failed` / `byteplus:video.seedance-2-0`。
+  ⭐ **按日志文件名判断"是图片还是视频路径"是错的，必须看行里的 `event` 和 `model`。**
+- ⭐ **捞日志原文的姿势**（比 grep 好用）：写个 node 脚本按 requestId 过滤 + 只打 `error.message`/`extra.body`/`upstream.body`，
+  `docker cp` 进 app 容器跑。⛔ **别用 `grep | cut`**：一行 JSON 几千字，`cut -c1-700` 正好把 `error` 字段切没了（本次踩过，白跑一轮）。
+- ⛔ **psql 查 `failureReason` 必须 `left(...,90)`**：有条红字是模型 500 字的小作文，不截断会把工具输出冲爆（本次第一次查就爆了）。
+- ⭐ **视频轮询阶段的失败在 BytePlus 侧没有任何日志**（只有 `byteplus-create-success`）→ 拿 taskId 去捞也是空的。
+  这就是 A3 那 15 条查不动的原因，**必须先补落盘**。（OpenRouter 侧第十一次会话已补。）
+- ⭐ **查官网规格用 playwright**：`browser_navigate` + `browser_find`（正则）比读整页快得多，本次一次就捞到格式那一行。
+- ⭐ **纯函数验收错误映射**：`npx tsx` 直接 import `src/lib/error-message.ts` 跑真实上游原文（本次两轮 10/10 + 10/10），
+  比起服部署快得多；测试文件写在 `.runtime/` 下、跑完删掉。
+
 ## 2026-07-29（第十四次会话）⛔⭐ 撤掉对话流/资产库的 AI 改写 + 模型拒绝类红字统一成一句 —— ✅ **四方同步 v1.0.0.53（正式服 = 测试服 = 本地 = GitHub）**
 
 ### 1. 起因：用户报「d37 这个对话用了 AI 改写，出了非常多的问题」

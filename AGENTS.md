@@ -11,7 +11,8 @@ This version has breaking changes — APIs, conventions, and file structure may 
 - 归档 = 给 `GenerationEvent` 打 `resolvedAt` + `resolvedNote`；后台那条原因**文字保留但划掉**（灰色 line-through），并从上方"待排查"数量里扣掉。
 - 操作只有一步：往 `scripts/archive-resolved-generation-failures.mjs` 的 `RESOLVED_RULES` 加一条规则（`match` 匹配的是**诊断日志里的真实原文**，不是 failureReason），然后跑 `--apply`。⭐ **跑之前必须先 dry-run 看真实数字**（交接文档里的条数只是快照：2026-07-29 记的 101 条，实跑是 120 条）。
 - ⭐⭐ **写归档规则时先问「这个根因以后还会不会再发生」**：修好了、此后零复发 → 不用管；**修不了、只是从兜底桶映射成了明确文案**（余额不足 / 模型拒绝 / 平台审核）→ **必须给规则配 `before` 日期下限**（= 映射上线的时刻，脚本已支持），否则以后每次跑归档都会把「本该一直亮着」的新事件偷偷抹掉、后台再也看不见这个问题（2026-07-29 差点误吃 11 条新的「提供商余额不足」）。
-- **`B_xxx` 错误编号计数器与归档无关，继续自增，永不重置。**
+- **`B_xxx` 错误编号计数器**：日常按规则归档时**与归档无关，继续自增**；⭐ 只有用户明确要求「整轮清零 / 重新开始一轮」时才重置（`--reset-all` 会把 `.runtime/error-code-counter.txt` 写回 0，下一条报错从 `B_1` 开始）。
+- ⭐⭐ **「整轮清零」模式（2026-07-29 用户拍板，新增 `--reset-all`）**：`node scripts/archive-resolved-generation-failures.mjs --reset-all --apply` 会把**当前全部**待排查失败事件一次性归档（不看 `RESOLVED_RULES`、不看全局护栏）+ 把 B_xxx 计数器归 0，从此只看**新长出来**的红字。⛔ 与下面的日常按规则归档是两回事，别混用；只在用户明确说"全部归档/清零/重新开始"时跑。**2026-07-29 v1.0.0.54 部署后已执行过一次（正式服 + 测试服）。**
 - **归档的对象本质是「服务器繁忙，请稍候再试.....」这个兜底桶**（所有没被明确识别的错误都落进它，它是一堆无关根因的混合体）。⭐ **其实有两个兜底桶**：`toUserErrorMessage` 的 fallback 是默认参数 —— 显式传 `GENERIC_MEDIA_ERROR_MESSAGE` 落进「服务器繁忙」，不传落进「**请求失败，请稍后再试。**」，**同一个根因会同时污染两个**（余额不足就是 53 + 13），排查时两个桶都要查。判定只问一句：**这个根因还落在兜底桶里吗？** ①修好了 → 归档；②没修但**已映射成明确文案**（不再落进兜底桶）→ 归档；③还没查清/修不了、仍落在桶里 → 留着亮；④**映射出去后新形成的那条明确原因本身 → 不归档**（修不了就该一直亮着，且它已不污染兜底桶）。例：OpenRouter 余额不足历史 53 条已归档，但新出现的「提供商余额不足！请联系管理员充值。」不归档。
 - 排查方法论 / 已修清单 / 待查清单 / 常见误区 → **`handover/07-red-error-triage-and-archive.md`（排查线上报错必读）**。两条核心：**① `failureReason` 是给用户看的文案（"服务器繁忙"是兜底），从它本身查不出根因，真实原因只在 `.runtime/*-diagnostics-log.jsonl` 里。② ⭐ 日志里 `grep -c` 数出来的行数 ≠ 待排查的失败事件数** —— 必须回 DB 按 requestId 核对 `GenerationEvent.status`：`status='success'` 的是"中间失败/已重试成功"，**后台里根本不占位、不用归档**（2026-07-28 踩坑：「缩略图超时 18 条」实际是同一个 requestId 的 18 行日志、该请求最终成功）。
 
@@ -32,6 +33,7 @@ This version has breaking changes — APIs, conventions, and file structure may 
 - **版本号自增只发生在"部署测试服"这一步**：部署测试服前先跑 `node scripts/bump-version.mjs`（四段 100 进制 vAA.BB.CC.DD 最右段 +1、满 100 进位，写回 `src/lib/app-version.ts`）。**正式服部署绝不跑自增脚本**，只把测试服的代码（含已写好的版本号）原样带过去。
 - 由此保证"**版本号一样 = 测试服和正式服代码一样；不一样 = 代码不一样**"。破坏此保证的操作（正式服再自增、正式服独立改代码、跳过测试服）一律禁止。
 - 版本号是 `src/lib/app-version.ts` 里的 `APP_VERSION` 常量；`NEXT_PUBLIC_IS_TEST=true`（测试服构建 arg）控制显示 `(t)` 后缀与 logo"测试服"标识。改中文源码用 edit 工具，**禁止 PowerShell `Set-Content`**（会把中文注释变乱码，本次已踩坑）。
+- ⭐⭐ **每部署完一台就必须真上号点一遍看有没有崩（2026-07-29 用户加）**：**curl 200 / 版本号头对了 ≠ 没崩**。测试服部署完上号、正式服部署完**也要上号**，**崩了立刻修**（修不了就回滚 `app-backups`，保证用户还能用）。最小巡检 6 项（登录 / 对话模式 / 工作流画布点节点不崩 / 资产库 / 真跑一次生图（动过视频链路再跑生视频）/ 后台 `/admin` 且控制台 0 error）写在 `handover/03-deploy-and-servers.md`「部署铁律」节。
 
 # 铁律：能统一的一律统一，禁止复制多份各走各的
 

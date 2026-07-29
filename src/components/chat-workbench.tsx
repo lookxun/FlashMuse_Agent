@@ -4590,6 +4590,34 @@ async function commitTemporaryAssetImage(tempToken: string) {
   return data.url;
 }
 
+/**
+ * ⭐ 上传完**当场转正**（2026-07-29 加，修红字 A5 的源头）。
+ *
+ * 以前对话流是「上传拿 token → 你点发送那一刻才 PATCH 转正」。转正一失败（临时文件过期、
+ * 网络抖动、登录态刚过期），发送流程的兜底 catch 会**静默退回原始 dataURL 直接发出去**，
+ * 服务端拿到的是一串 base64 而不是网址 —— 而 BytePlus 送审是"平台上门自取"，只认公网直链，
+ * 于是抛「参考素材不是可审核的公网地址。」把**整单**毙掉（正式服 2026-07-28/29 各一起，
+ * 5 张参考图里 3 张已经拿到 Active 凭证，就因为混进 2 张 base64 全废）。
+ *
+ * 现在跟**工作流** `uploadWorkflowImageOnce` 统一：POST + PATCH 一次做完，拿到手就是 `/generated`
+ * 正式地址。工作流一直这么干、从没出过这个红字，属于"该统一却分叉"的收敛。
+ * 好处：发送那一刻只是读一个已经存好的字段，**不再有任何可失败的网络请求**；转正失败会当场把这张图
+ * 标成"上传失败"，走已有护栏（拦住发送 + 亮重试按钮），而不是偷偷发一串 base64 出去。
+ *
+ * ⚠️ 代价：用户上传完又不发送时，正式目录会留一个孤儿文件。可接受 ——
+ * 文件名是内容 hash（同一张图只有一份、不会膨胀）、且**不建 MediaAsset 记录**（不进资产库、用户看不到）。
+ * 真要清就另写"无 MediaAsset 引用且超过 N 天"的清理脚本，与本次改动无关。
+ *
+ * ⚠️ 注意预览不受影响：输入框缩略图读的是 `image.previewUrl`（创建时就写死成 dataURL，见
+ * `readFileAsUploadedImage`），这里只改 `image.url`，所以不会出现"预览重新加载闪一下"。
+ */
+async function uploadTemporaryAssetImageAndCommit(file: File, onProgress?: (progress: number) => void, signal?: AbortSignal, forceReencode = false, dedup = false) {
+  const result = await uploadTemporaryAssetImage(file, onProgress, signal, forceReencode, dedup);
+  // 命中去重时服务端直接给正式地址、没有 token，本来就不需要转正。
+  if ("duplicate" in result) return { url: result.url, contentHash: result.contentHash, name: result.name, duplicate: true as const };
+  return { url: await commitTemporaryAssetImage(result.token), contentHash: result.contentHash, name: result.name, duplicate: false as const };
+}
+
 async function deleteTemporaryAssetImages(tempTokens: string[]) {
   if (tempTokens.length === 0) return;
   const uploadUrl = getUploadApiUrl("/api/asset-upload-temp");
@@ -6815,15 +6843,23 @@ function normalizeMediaErrorText(error: string | undefined, mode: WorkMode | und
   return error;
 }
 
+/**
+ * ⚠️ 这里现在只是**兜底**了。
+ * 正常情况下上传完就已经当场转正（见 `uploadTemporaryAssetImageAndCommit`），
+ * 所以走到"还有 tempToken 要转正"或"url 还是 data:"这两条分支都属于异常，一律上报诊断，
+ * 方便以后回看"改成上传即转正之后还有没有漏网的"。
+ */
 async function persistUploadedImagesForSend(images: UploadedImage[]) {
   return Promise.all(
     images.map(async (image) => {
       if (image.tempToken) {
+        reportClientDiagnostic("send-time-commit-still-needed", { fileName: image.name, uploadStatus: image.uploadStatus });
         const url = await commitTemporaryAssetImage(image.tempToken);
         return { ...image, url, tempToken: undefined, uploadStatus: "ready" as const, uploadProgress: 100 };
       }
       if (!image.url.startsWith("data:")) return image;
 
+      reportClientDiagnostic("send-time-data-url-fallback", { fileName: image.name, uploadStatus: image.uploadStatus, length: image.url.length });
       const response = await fetch("/api/upload-image", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -6831,6 +6867,9 @@ async function persistUploadedImagesForSend(images: UploadedImage[]) {
       });
       const data = await readJson<{ url?: string }>(response);
 
+      // ⛔ 兜底接口也没给出地址 → 这张图会带着 base64 发出去，就是红字 A5
+      // 「参考素材不是可审核的公网地址」的直接现场。服务端已有落盘兜底，但这里必须留痕。
+      if (!data.url) reportClientDiagnostic("send-time-data-url-fallback-failed", { fileName: image.name, uploadStatus: image.uploadStatus, length: image.url.length });
       return data.url ? { ...image, url: data.url } : image;
     }),
   );
@@ -13295,7 +13334,16 @@ export function ChatWorkbench() {
 
     try {
       sendUploadedImages = await persistUploadedImagesForSend(availableUploadedImages);
-    } catch {
+    } catch (error) {
+      // ⛔ 这个兜底会让**整批**图退回原始 dataURL 直发（Promise.all 一失败全失败），
+      // 是红字 A5「参考素材不是可审核的公网地址」的源头。上传即转正之后这里本该永不触发，
+      // 所以一旦触发必须留痕（服务端也有落盘兜底，不会再毙掉整单）。
+      reportClientDiagnostic("send-time-persist-uploaded-images-failed", {
+        imageCount: availableUploadedImages.length,
+        dataUrlCount: availableUploadedImages.filter((image) => image.url.startsWith("data:")).length,
+        tempTokenCount: availableUploadedImages.filter((image) => Boolean(image.tempToken)).length,
+        rawError: error instanceof Error ? error.message : String(error),
+      });
       sendUploadedImages = availableUploadedImages;
     }
 
@@ -14271,23 +14319,23 @@ export function ChatWorkbench() {
     images.forEach((image) => {
       const controller = new AbortController();
       inputImageUploadAbortControllersRef.current.set(image.id, controller);
-      void uploadTemporaryAssetImage(image.uploadFile as File, (progress) => {
+      void uploadTemporaryAssetImageAndCommit(image.uploadFile as File, (progress) => {
         setSessions((current) => current.map((session) => session.id === activeSessionId ? { ...session, uploadedImages: (session.uploadedImages ?? []).map((item) => item.id === image.id ? { ...item, uploadProgress: progress, uploadStatus: "uploading" } : item) } : session));
       }, controller.signal, false, true)
         .then((result) => {
           inputImageUploadAbortControllersRef.current.delete(image.id);
-          const dupUrl = "duplicate" in result ? result.url : undefined;
-          const nextToken = "duplicate" in result ? undefined : result.token;
+          // ⭐ 上传完已经当场转正，这里拿到的就是 /generated 正式地址（见 uploadTemporaryAssetImageAndCommit）。
+          // tempToken 一律清空：没有"待转正"的东西了，发送那一刻不再有可失败的网络请求。
           const nextHash = result.contentHash;
           const serverName = result.name;
-          if (dupUrl) showInputTip("图片已存在，无需重复上传！");
+          if (result.duplicate) showInputTip("图片已存在，无需重复上传！");
           setSessions((current) => current.map((session) => {
             if (session.id !== activeSessionId) return session;
             const list = session.uploadedImages ?? [];
             // 引用名一律用服务端权威名；同框内再兜底去重保证唯一。
             const usedNames = new Set(list.filter((item) => item.id !== image.id).map((item) => item.referenceName).filter((name): name is string => Boolean(name)));
             const referenceName = serverName ? makeUniqueReferenceName(serverName, usedNames) : undefined;
-            return { ...session, uploadedImages: list.map((item) => item.id === image.id ? { ...item, tempToken: nextToken, url: dupUrl ?? item.url, contentHash: nextHash, ...(referenceName ? { referenceName } : {}), uploadProgress: 100, uploadStatus: "ready", forceReencode: undefined, error: undefined } : item) };
+            return { ...session, uploadedImages: list.map((item) => item.id === image.id ? { ...item, tempToken: undefined, url: result.url || item.url, contentHash: nextHash, ...(referenceName ? { referenceName } : {}), uploadProgress: 100, uploadStatus: "ready", forceReencode: undefined, error: undefined } : item) };
           }));
         })
           .catch((error) => {
@@ -14311,22 +14359,21 @@ export function ChatWorkbench() {
     const controller = new AbortController();
     inputImageUploadAbortControllersRef.current.set(imageId, controller);
     setSessions((current) => current.map((session) => session.id === activeSessionId ? { ...session, uploadedImages: (session.uploadedImages ?? []).map((item) => item.id === imageId ? { ...item, tempToken: undefined, uploadProgress: 6, uploadStatus: "uploading", forceReencode: true, error: undefined } : item) } : session));
-    void uploadTemporaryAssetImage(image.uploadFile, (progress) => {
+    void uploadTemporaryAssetImageAndCommit(image.uploadFile, (progress) => {
       setSessions((current) => current.map((session) => session.id === activeSessionId ? { ...session, uploadedImages: (session.uploadedImages ?? []).map((item) => item.id === imageId ? { ...item, uploadProgress: progress, uploadStatus: "uploading" } : item) } : session));
     }, controller.signal, true, true)
       .then((result) => {
         inputImageUploadAbortControllersRef.current.delete(imageId);
-        const dupUrl = "duplicate" in result ? result.url : undefined;
-        const nextToken = "duplicate" in result ? undefined : result.token;
+        // ⭐ 同上：上传完已当场转正，拿到的就是正式地址，tempToken 一律清空。
         const nextHash = result.contentHash;
         const serverName = result.name;
-        if (dupUrl) showInputTip("图片已存在，无需重复上传！");
+        if (result.duplicate) showInputTip("图片已存在，无需重复上传！");
         setSessions((current) => current.map((session) => {
           if (session.id !== activeSessionId) return session;
           const list = session.uploadedImages ?? [];
           const usedNames = new Set(list.filter((item) => item.id !== imageId).map((item) => item.referenceName).filter((name): name is string => Boolean(name)));
           const referenceName = serverName ? makeUniqueReferenceName(serverName, usedNames) : undefined;
-          return { ...session, uploadedImages: list.map((item) => item.id === imageId ? { ...item, tempToken: nextToken, url: dupUrl ?? item.url, contentHash: nextHash, ...(referenceName ? { referenceName } : {}), uploadProgress: 100, uploadStatus: "ready", forceReencode: undefined, error: undefined } : item) };
+          return { ...session, uploadedImages: list.map((item) => item.id === imageId ? { ...item, tempToken: undefined, url: result.url || item.url, contentHash: nextHash, ...(referenceName ? { referenceName } : {}), uploadProgress: 100, uploadStatus: "ready", forceReencode: undefined, error: undefined } : item) };
         }));
       })
       .catch((error) => {

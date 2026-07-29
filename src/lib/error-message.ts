@@ -26,6 +26,31 @@ const LEGACY_MODEL_REFUSED_MESSAGES = [
 // 上游原文最多带这么长（红字要能看完，别糊满整屏）。
 const MODEL_REFUSED_DETAIL_MAX_LENGTH = 260;
 
+// ⭐ 平台内容安全检测拒绝「参考素材」的唯一文案（2026-07-29 合并）。
+//
+// 为什么要合并：以前这一个根因有两句话 ——
+//   ① 精确规则（明确出现 input image/video + real person/copyright/sensitive）说「参考图未能通过平台审核…」
+//   ② 宽松兜底（原文里只要有 sensitive/隐私/真人 字样）说「参考图可能包含真人或隐私敏感信息…」
+// 但 ② 其实就是 ① 漏掉时的兜底，同一件事裂成两种说法，后台也会裂成两条原因。
+//
+// ⭐ 措辞从"参考图"改成"参考素材"：线上真实原文里有 `InputVideoSensitiveContentDetected param: content[3]`
+// —— 被判敏感的是**参考视频**，说"参考图"是错的。参考音频同理。
+const REFERENCE_REVIEW_REJECTED_MESSAGE = "参考素材未能通过平台审核（可能涉及真人、隐私或版权），可以重试，但建议更换参考素材后再重试成功率更高。";
+
+// ⭐ 成品**图片**被平台判定含敏感内容（`OutputImageSensitiveContentDetected`）。
+// 语义对齐"成品视频/音频被拒交付"那句：问题出在生成结果上，换参考素材没用，重试/改提示词才有用。
+const OUTPUT_IMAGE_REJECTED_MESSAGE = "成品图片被平台判定含敏感内容而拒绝交付（不是参考素材的问题，换图没用）。可直接重试或修改提示词后重试。";
+
+// ⭐ 供应商额度/余额相关的唯一文案（2026-07-29 收敛）：402、insufficient credits、
+// insufficient_quota、裸 `quota`（配额用尽）全部走这一句 —— 它们都只能靠充值解决，用户重试无意义。
+const PROVIDER_INSUFFICIENT_CREDITS_MESSAGE = "提供商余额不足！请联系管理员充值。";
+
+// ⭐ 限流的唯一文案（2026-07-29 收敛）：TPM / rate limit / too many requests / 裸 429 全部走这一句。
+// ⛔ 绝不能和上面那句混用 —— 限流时钱是够的，说"请联系管理员充值"会让用户白催一场。
+const RATE_LIMITED_MESSAGE = "当前模型繁忙或被限流，请稍候再重试！";
+
+
+
 // ⭐ 判定「这条失败文案是不是模型拒绝出图」只认这个前缀（文案后半段是可变的上游原文，不能拿整句去比）。
 // 工作流的 gpt-image-safety-retry.ts 靠它决定要不要亮「AI改写重试」，改文案时**必须保持前缀不变**。
 // 历史文案也要认，否则老数据在后台会被拆成一堆各 1 条。
@@ -60,6 +85,27 @@ const MODEL_REFUSAL_PATTERNS = [
 
 export function isModelRefusalText(value: string) {
   return MODEL_REFUSAL_PATTERNS.some((pattern) => pattern.test(value));
+}
+
+/**
+ * ⭐ 「模型 200 但没出图、只回了一段文字」的唯一文案（2026-07-29 抽出，红字 A2）。
+ *
+ * 正式服 `image-provider-empty-result` 112 条里 **101 条**是这个形态：模型（GPT 版老
+ * `/chat/completions` 接口）不报错也不拒绝，回来一段中文 —— 最常见是把**改写后的提示词**原样复读，
+ * 例如「可直接用这版优化后的文生图提示词：**提示词：**…」。
+ *
+ * ⛔ 以前这段文字会被末尾的兜底透传**原样贴给用户当红字**（最多 500 字），
+ * 用户看到的"报错"其实是自己那条提示词的改写版，完全不知道发生了什么；后台也裂成几十条各 1 条。
+ *
+ * ⚠️ 两个调用点共用这一份（`没有返回图片，模型只回了一段文字：` 的新形态 +
+ * `图片平台没有返回图片：<文字>` 的老形态），**别再写第二种说法**。
+ */
+export function buildModelTextInsteadOfImageMessage(detail: string) {
+  const shown = detail.replace(/\s+/g, " ").trim();
+  const clipped = shown.length > MODEL_REFUSED_DETAIL_MAX_LENGTH ? `${shown.slice(0, MODEL_REFUSED_DETAIL_MAX_LENGTH)}...` : shown;
+  return clipped
+    ? `模型这次没有出图，只回了一段文字（不是报错），直接重试有可能会成功。以下是模型返回的内容：“${clipped}”`
+    : "模型这次没有出图，只回了一段文字（不是报错），直接重试有可能会成功。";
 }
 
 // options.model：保留入参（很多调用点在传，且以后可能按模型分文案），但**当前不再影响文案** ——
@@ -114,17 +160,48 @@ export function toUserErrorMessage(value: unknown, fallback = "请求失败，�
   // ⭐ 供应商账户余额不足（OpenRouter 402 `Insufficient credits`、OpenAI `insufficient_quota` 等）：
   // 以前落到"服务器繁忙"，用户以为是我们抖动、会一直重试白花时间。必须说真话让用户来催管理员充值。
   // 放在限流/额度规则之前，避免被 `quota` 那条抢走。
-  if (/\b402\b|insufficient credits|insufficient_quota|insufficient balance|requires more credits|more credits, or fewer max_tokens|add more using|billing hard limit|exceeded your current quota|account balance|余额不足/.test(lower)) return withErrorCode("提供商余额不足！请联系管理员充值。");
+  if (/\b402\b|insufficient credits|insufficient_quota|insufficient balance|requires more credits|more credits, or fewer max_tokens|add more using|billing hard limit|exceeded your current quota|account balance|余额不足/.test(lower)) return withErrorCode(PROVIDER_INSUFFICIENT_CREDITS_MESSAGE);
   // ⭐ 限流：常见原文是 OpenRouter 转来的 `OpenAI was rate limited by Cloudflare (error code: 1015)`
   // —— 限速发生在**上游供应商到模型厂商**那一跳，不是我们的服务忙、也不是用户点太快。
   // 我们已经自动重试过几次才会走到这里（见 transient-error.ts）。
-  if (/tokens per min|\btpm\b|request too large for|rate limit|rate_limit|too many requests|请求太频繁/.test(lower)) return withErrorCode("当前模型繁忙或被限流，请稍候再重试！");
+  if (/tokens per min|\btpm\b|request too large for|rate limit|rate_limit|too many requests|请求太频繁/.test(lower)) return withErrorCode(RATE_LIMITED_MESSAGE);
   if (/\b413\b|request entity too large|content too large|payload too large|too large/.test(lower)) return withErrorCode("请求内容太大，请减少参考图数量或换用更小的图片后重试。");
-  if (/\b401\b|unauthorized|user not found|invalid api key|api key/.test(lower)) return withErrorCode("API Key 无效或已过期，请更新密钥后重试。");
+  // ⭐ 2026-07-29 收紧（排 A3 时发现）：原来这条正则里有个**裸的 `api key`**，
+  // 只要上游原文任何地方提到 "api key" 就判成「API Key 无效或已过期，请更新密钥后重试」。
+  // 两个问题：
+  //  ① 误伤面太大 —— 上游任何一句提到 api key 的说明性文字都会被当成"密钥失效"；
+  //  ② 我们自己抛的 `缺少 BytePlus API Key` / `缺少 API Key`（= 服务端**根本没配**环境变量）
+  //     也命中它，于是文案说"请更新密钥后重试"，而真相是"压根没配"，把人往错方向带。
+  // 现在：先单独认出"我们自己没配"，再用精确特征判"平台说密钥无效"。
+  if (/缺少\s*(byteplus\s*)?api key|missing api key|api key is not configured/.test(lower)) return withErrorCode("服务端没有配置该模型的接口密钥，请联系管理员处理。");
+  if (/\b401\b|unauthorized|user not found|invalid api key|invalid_api_key|incorrect api key|api key expired|无效的?\s*api\s*key/.test(lower)) return withErrorCode("API Key 无效或已过期，请更新密钥后重试。");
   if (/\b403\b|not available in your region|region/.test(lower)) return withErrorCode("当前模型在你的地区不可用，请换一个模型后重试。");
-  if (/\b429\b|rate limit|too many requests|quota/.test(lower)) return withErrorCode("请求太频繁或额度不足，请稍后再试。");
+  // ⭐ 2026-07-29 拆掉原来的「请求太频繁或额度不足，请稍后再试。」——那句把两个根本不同的东西糊在一起：
+  //   · 裸 `429` / too many requests = **纯限流**，等一会儿就好 → 走上面同一句限流文案（RATE_LIMITED_MESSAGE）
+  //   · 裸 `quota` = **配额/额度用尽**，跟"余额不足"是一回事 → 走同一句「联系管理员充值」
+  // ⛔ 千万不能把 429 也说成"余额不足、请联系管理员充值"：钱是够的，用户会白催一场。
+  // ⚠️ 顺序上 `rate limit / too many requests / tpm` 已被上面那条先吃掉，这里只是兜住漏网的裸码。
+  if (/\b429\b|too many requests/.test(lower)) return withErrorCode(RATE_LIMITED_MESSAGE);
+  if (/\bquota\b|配额/.test(lower)) return withErrorCode(PROVIDER_INSUFFICIENT_CREDITS_MESSAGE);
+
   if (/timeout|timed out|etimedout|aborted/.test(lower)) return withErrorCode("请求超时，请稍后重试。");
-  if (/network|fetch failed|econnreset|enotfound|socket|curl|schannel|closed abruptly|close_notify|command failed/.test(lower)) return withErrorCode("网络连接异常，请稍后重试。");
+  // ⭐ 2026-07-29 新增（排 A7 时发现）：**服务端环境/子进程**问题必须单独说清楚，绝不能混进"网络连接异常"。
+  //
+  // ⛔ 以前 `curl` 和 `command failed` 都塞在下面那条网络正则里，后果是：
+  //  · `spawn curl ENOENT`（= 容器里**根本没装 curl**，2026-07-14 真实发生过 4 条）被说成「网络连接异常，请稍后重试」
+  //    → 用户白等白重试；我们在后台也只看到"网络问题"，**完全发现不了是部署少装了个程序**。
+  //    那个坑一直埋到 2026-07-29 翻日志才发现（curl 后来已装进 Dockerfile，零复发）。
+  //  · `Command failed: /app/node_modules/ffmpeg-static/ffmpeg …`（转码失败）同样被说成网络问题。
+  //
+  // 这类错误的共同点：**是我们自己要修的**（缺二进制/权限/磁盘/转码），跟网络和用户都无关，
+  // 所以必须给一句诚实、且**不诱导用户重试**的话，同时保证它在后台是独立可见的一条原因、不被埋进兜底桶。
+  //
+  // ⚠️ 排除项：`Command failed: curl … curl: (7) Failed to connect` 这种**子进程跑起来了、失败在网络**的，
+  // 要放给下面的网络规则，别误报成环境问题 —— 靠 `curl: (数字)` 这个 curl 自己的错误码格式区分。
+  const missingBinary = /\bspawn\s+\S+\s+enoent|\benoent\b/.test(lower);
+  const subprocessFailed = /command failed/.test(lower) && !/curl:\s*\(\d+\)/.test(lower);
+  if (missingBinary || subprocessFailed) return withErrorCode("服务端环境异常，请联系管理员处理。");
+  if (/network|fetch failed|econnreset|enotfound|socket|curl|schannel|closed abruptly|close_notify/.test(lower)) return withErrorCode("网络连接异常，请稍后重试。");
   if (/maximum call stack size exceeded|call stack|rangeerror|typeerror|referenceerror/.test(lower)) return withErrorCode("任务失败，请联系管理员！");
   // ⭐ 模型拒绝出图 —— 两条链路合并成同一条规则，都必须把上游原话带给用户（见文件顶部注释）。
   // A) 直连版（新 /images 接口）：OpenAI 直接 400 `rejected by the safety system`。
@@ -145,21 +222,44 @@ export function toUserErrorMessage(value: unknown, fallback = "请求失败，�
   // C) 模型既没报错、也没拒绝，只回了一段文字就是不给图（常见是把提示词原样复读回来，
   //    或说"你的要求前后矛盾"）。⛔ 以前把这段直接当报错贴出去 → 用户看到的红字是自己的提示词。
   if (/没有返回(?:图片|视频)，模型只回了一段文字/.test(text)) {
-    const detail = text.replace(/^[\s\S]*?模型只回了一段文字[：:]\s*/, "").replace(/\s+/g, " ").trim();
-    const shown = detail.length > MODEL_REFUSED_DETAIL_MAX_LENGTH ? `${detail.slice(0, MODEL_REFUSED_DETAIL_MAX_LENGTH)}...` : detail;
-    return withErrorCode(shown
-      ? `模型这次没有出图，只回了一段文字（不是报错），直接重试有可能会成功。以下是模型返回的内容：“${shown}”`
-      : "模型这次没有出图，只回了一段文字（不是报错），直接重试有可能会成功。");
+    return withErrorCode(buildModelTextInsteadOfImageMessage(text.replace(/^[\s\S]*?模型只回了一段文字[：:]\s*/, "")));
   }
+  // ⭐ A1（2026-07-29 加）：OpenAI 说我们送去的参考图读不了。
+  // 线上真实原文：`Invalid image file or mode for image 1, please check your image file.`
+  // ⛔ 以前纯英文 → 直接落兜底桶（「服务器繁忙」/「请求失败」），用户只会一遍遍重试，永远好不了
+  //    （正式服那 6 条就是同一个用户在 2 分钟里连点了 6 次，每次都同一句"服务器繁忙"）。
+  // ⭐ 真根因已查清并**已修**：那张图**本身完全正常**（baseline JPEG / 8bit / 3 分量 YCbCr / 3072×4096），
+  //    问题是 **4.24MB 原图我们该压没压**（`jpegNeedsReencode` 只看格式、不看体积）。
+  //    现在上传时超过 2MB 会按 90% 质量原地压一遍（不动像素尺寸），见 `local-assets.ts`
+  //    的 `compressOversizedUploadJpeg` + `image-upload-validation.ts` 的两个常量。
+  // ⚠️ 这条文案仍然保留：历史已存的大图、以及第三方 https 参考图（不经过我们的上传压缩）还会触发。
+  //    句式对齐 B13/B15（都是"参考图不合平台要求 + 怎么换"）。
+  if (/invalid image file(?:\s+or\s+mode)?|please check your image file/.test(lower)) return withErrorCode("参考图不符合平台要求，模型读不出这张图。请换一张体积更小的参考图（建议 2MB 以内）后重试。");
+  // ⭐ A4（2026-07-29 加）：我们**自己**的数据库连接池被占满。
+  // 原文 `Transaction API error: Unable to start a transaction in the given time.`
+  // 纯英文 → 以前落兜底桶「服务器繁忙」，跟"上游抖动"混在一起，后台根本看不出是我们自家 DB 的问题。
+  // ⚠️ 它已被 `isTransientServerError` 判为可重试（会自动重试），能走到用户面前说明重试也没抢到连接。
+  // 现在的池子是 Prisma 默认值（8 核 → connection_limit=17、pool_timeout=10s，DATABASE_URL 没显式配）。
+  // 线上最后一次发生 2026-07-17，之后零复发；**若再变多，解法是给 DATABASE_URL 加 connection_limit**。
+  if (/unable to start a transaction|transaction api error|transaction already closed/.test(lower)) return withErrorCode("服务端数据库繁忙（连接池已满），请稍后重试。");
   // 输出审核未过（轮询阶段）：参考图已过审、视频已生成，但成品视频/音频被平台拒绝交付
   if (/output\s+(?:video|audio).*(sensitive|copyright|copyright restrictions|related to copyright)|audio.*sensitive information|输出(?:视频|音频).*(敏感|版权)|参考图已过审|成品(?:视频|音频).*(?:敏感|版权)/.test(lower)) return withErrorCode("参考图已过审、视频也已生成，但成品视频/音频因版权或敏感内容被平台拒绝交付。可直接重试或修改提示词重试；若是音频问题，在提示词中明确“去除背景音乐/不要原声”可提高成功率。");
-  // 输入/参考图审核未过（送审被拒或创建阶段直接被拒）
-  if (/reference-review-failed/.test(lower) || /input\s+(?:image|video).*(real person|copyright|copyright restrictions|related to copyright|sensitive|privacy|privacyinformation)/.test(lower) || /(input image|reference|asset|素材|参考图|审核).*(copyright|copyright restrictions|related to copyright|版权|真人|隐私|sensitive|privacy)/.test(lower) || /审核图片可能涉及版权限制|参考图.*(版权|真人|隐私)|素材.*(版权|真人|隐私)/.test(text)) return withErrorCode("参考图未能通过平台审核（可能涉及真人、隐私或版权），可以重试，但建议更换参考图后再重试成功率更高。");
+  // ⭐ 成品**图片**被判敏感（`OutputImageSensitiveContentDetected`）：跟参考素材一点关系没有！
+  // ⛔ 以前没有这条规则 → 掉进下面那条宽松的 sensitive 兜底 → 红字说"参考图可能包含真人"，
+  //    用户去换参考图换一万张都没用（2026-07-29 在正式服捞到真实原文，确认是错怪）。
+  //    上面 155 那条只管成品"视频/音频"，图片这一路是漏的。
+  if (/output\s*image.*(sensitive|privacy|copyright)|outputimagesensitive/.test(lower) || /(?:成品|输出)图片?.*(敏感|版权)/.test(text)) return withErrorCode(OUTPUT_IMAGE_REJECTED_MESSAGE);
+  // 输入/参考素材审核未过（送审被拒或创建阶段直接被拒）。⭐ 与下面那条宽松 sensitive 兜底
+  // **共用同一句文案**（2026-07-29 合并）：它们本来就是同一个根因（平台内容安全检测拒绝素材），
+  // 只是一条是精确规则、一条是兜底规则，分成两种说法只会让同一件事在后台裂成两条。
+  if (/reference-review-failed/.test(lower) || /input\s+(?:image|video).*(real person|copyright|copyright restrictions|related to copyright|sensitive|privacy|privacyinformation)/.test(lower) || /(input image|reference|asset|素材|参考图|审核).*(copyright|copyright restrictions|related to copyright|版权|真人|隐私|sensitive|privacy)/.test(lower) || /审核图片可能涉及版权限制|参考图.*(版权|真人|隐私)|素材.*(版权|真人|隐私)/.test(text)) return withErrorCode(REFERENCE_REVIEW_REJECTED_MESSAGE);
   if (/completed with no output|no output|content may have been filtered|content.*filtered|filtered/.test(lower) || /已完成.*没有返回视频|没有返回视频地址/.test(text)) return withErrorCode("输出视频被平台过滤，未返回视频。重新生成有可能会成功。");
   // ⭐ 2026-07-29：原来这里是「生成结果可能涉及版权限制，平台拒绝输出。…」，与"模型拒绝"是一个意思，
   // 按用户要求**合并进统一那句**（并附上上游原文），不再单独存在。
   if (/copyright|copyright restrictions|related to copyright|版权/.test(lower)) return withErrorCode(buildModelRefusedMessage(text));
-  if (/sensitive|privacyinformation|real person|privacy|真人|隐私|敏感/.test(lower)) return withErrorCode("参考图可能包含真人或隐私敏感信息，平台拒绝生成。请换一张参考图后重试。");
+  // ⭐ 宽松兜底：原文里只要出现敏感/隐私/真人字样就落这里。与上面那条精确规则**共用同一句**
+  // （2026-07-29 合并，见上面注释）。⚠️ 成品图片那一路已在前面单独拦掉，不会再被这条错怪。
+  if (/sensitive|privacyinformation|real person|privacy|真人|隐私|敏感/.test(lower)) return withErrorCode(REFERENCE_REVIEW_REJECTED_MESSAGE);
   if (/aspect ratio must be between/.test(lower)) return withErrorCode("参考图太窄或太长了，当前视频模型无法使用。请换一张比例更接近常规尺寸（如 16:9、9:16、1:1、4:3）的参考图后重试。");
   // ⭐ 平台返回的不是 JSON 而是 HTML 错误页/网关页（`Unexpected token '<' … is not valid JSON`）：
   // 这是网关/CDN 抖动，不是参数问题。必须放在下面 `not valid` 规则之前，否则会被误报成
@@ -176,6 +276,14 @@ export function toUserErrorMessage(value: unknown, fallback = "请求失败，�
   if (/error code:\s*5\d\d|provider returned an empty response|empty response from provider/.test(lower)) return withErrorCode("平台服务临时异常，请稍后重试。");
   if (/no endpoints found/.test(lower)) return withErrorCode("当前模型不支持这类输出方式，请换一个模型后重试。");
   if (/没有返回图片/.test(text) && /没有返回可用原因|没有返回可用的原因|没有可用原因|没有返回原因|且没有/.test(text)) return withErrorCode(fallback);
+  // ⭐⭐ A2（2026-07-29 加）：`图片平台没有返回图片：<一段文字>` 这个**老形态**的收口。
+  // 走到这里已经排除掉了：模型明文拒绝（上面 isModelRefusalText）、网关抖动 520/空响应、
+  // 以及"连原因都没给"（上一条）→ 剩下的必然是「模型回了文字当结果」，跟上面 C) 是同一件事，
+  // 所以复用同一句文案（`buildModelTextInsteadOfImageMessage`）。
+  // ⛔ 不加这条的后果（线上正在发生）：落到本函数末尾的兜底透传，把模型那段中文提示词
+  //    **原样当红字贴给用户**（最多 500 字）。101 条里绝大多数就是这样。
+  const emptyImageDetail = text.match(/没有返回图片[：:]\s*([\s\S]+)$/)?.[1];
+  if (emptyImageDetail) return withErrorCode(buildModelTextInsteadOfImageMessage(emptyImageDetail));
 
   if (/[{}<>]|\bhtml\b|\bbody\b|\bhead\b|\btrace\b|\bstack\b/i.test(text)) return withErrorCode(fallback);
   if (!/[\u4e00-\u9fff]/.test(text)) return withErrorCode(fallback);
