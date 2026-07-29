@@ -430,6 +430,30 @@ curl -s -H "Authorization: Bearer $KEY" https://openrouter.ai/api/v1/videos/<tas
    拦截类功能最大的风险就是**拦多了**。
 6. 本地进不了后台时：临时把主测试号加进 `.env` 的 `ADMIN_EMAILS`（逗号分隔），**验完记得还原**。
 7. ⛔ 工作流画布（tldraw）**连线不适合自动化**（8% 缩放下节点分散），工作流侧这类验收留给人工。
+   ⭐ **2026-07-29 修正：连线确实不好自动化，但"点节点 → 用快捷菜单"完全可以自动化**，方法见下面第十一·B 节。
+
+## 十一·B、⭐⭐ Playwright 操作 tldraw 画布的可行姿势（2026-07-29 第十三次会话摸出来，验高清下拉时全程跑通）
+
+上一节说"工作流留给人工"只对**连线**成立。**点节点、开快捷菜单、点下拉选项、跑生成、读结果标签，全都能自动化**：
+
+1. ⛔ **`browser_click` 点不到画布里的节点**，会报
+   `<img alt="生成图片" …> from <div class="tl-html-layer tl-shapes"> subtree intercepts pointer events` 然后超时。
+   ✅ **必须用 `browser_run_code_unsafe` 里的 `page.mouse.click(x, y)`**，坐标从 `browser_take_screenshot` 上量。
+2. ✅ **`Shift+1` = 缩放到适应全部节点**（tldraw 快捷键）。点开节点或生成出新节点后视口会变，
+   **每次量坐标之前先 `Shift+1`**，否则上一次的坐标全失效。
+3. ✅ **展开快捷菜单里的下拉**：`page.locator('button', { hasText: '高清' }).first().hover()` + 等 ~700ms，
+   再 `page.getByRole('button', { name: 'GPT 2K', exact: true }).click()`。
+   ⚠️ **`exact: true` 必须加**（`GPT 2K` 会同时匹配 `GPT 4K` 这类）。
+4. ✅ **判断生成结束**：轮询 `document.body.innerText`，`!t.includes('生成中')` 即结束。
+   ⚠️ 单次 `run_code` 有 30s 上限 → **长等待拆成多次调用**，别在一个 `run_code` 里循环 100 秒（本次超时过一次）。
+5. ✅ ⭐ **验证"模型/分辨率有没有走对"不要看图，读节点标签**：节点右上角会打印
+   `模型名 / 比例 / 分辨率 / 实际像素`（例 `Gemini 3.1 Flash Image Preview / 16:9 / 2K / 2752x1536`），
+   直接从 `innerText` 取，既准确又能同时验证"比例贴源图"这类要求。
+6. ⚠️ **`page.reload({ waitUntil: 'networkidle' })` 在本站会超时**（有长轮询）→ 用 `page.goto(url)` + 固定 `waitForTimeout`。
+7. ⚠️ **测"后台开关 → 前台隐藏"必须重新加载前台页面**：`editModelToggles` 随 `/api/model-availability`
+   **只在页面加载时取一次**。我一度以为按钮没恢复，其实那个标签页还是开关关闭时加载的。**不是 bug。**
+8. ⭐ **工作流画布崩了长什么样**：整个画布变成「Something went wrong / Please refresh your browser」，
+   控制台一条 `Minified React error #310`。看到这个先查**是不是往 `WorkflowSelectedNodeOverlay` 的提前 return 之后加了 Hook**。
 
 ## 十二、⭐⭐「图片平台没有返回图片」101 条排查全过程（2026-07-29 第十二次会话，已修）
 

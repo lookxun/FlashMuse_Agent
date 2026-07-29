@@ -77,6 +77,22 @@
 - 备份都在 `/opt/flashmuse/app-backups/<ts>-...`。
 - **只改 nginx**：腾讯 nginx 配置在 `/opt/flashmuse/data/nginx/flashmuse.conf`（容器 flashmuse-nginx）；阿里 `/etc/nginx/sites-enabled/`。改前备份→`nginx -t`→reload。腾讯 main/api 证书走 acme.sh tls-alpn-01（443），cron 自动续。当前正式 nginx `client_max_body_size` 历史为 20m；上传大视频（200MB 规则）若上线需先调网关 body size + 超时（用户交代部署前评估）。
 
+## ⭐ 部署辅助脚本套装（2026-07-29 v52 全程用这四个跑通，照抄即可）
+
+⛔ **为什么必须写成 .sh**：PowerShell 会先解释掉 ssh 内联里的 `$(...)`、引号、中文 → 备份目录名丢时间戳这类坑踩过。
+一律：本地写 `.sh` → `scp` 到 `/tmp` → `ssh "sed -i 's/\r$//' /tmp/x.sh && sudo bash /tmp/x.sh"`。
+
+| 脚本（本次放在本地 `.runtime/`，不进 git） | 内容 |
+|---|---|
+| **测试服发布信号** | `sed -i 's/PUBLISHED_APP_VERSION: ".*"/…: "vX"/' /opt/flashmuse-staging/docker-compose.yml` → `cd … && docker compose up -d --force-recreate staging-app` → `curl -s -D - -o /dev/null http://127.0.0.1:5001/api/models \| grep -i x-app-version` |
+| **正式服备份 + 对齐** | `TS=$(date +%Y%m%d-%H%M%S)`；`cp -r /opt/flashmuse/app "/opt/flashmuse/app-backups/${TS}-presync-vX"`；然后 staging→prod 的 rsync（参数见上一节第 3 步）；最后 `grep APP_VERSION` 确认 |
+| **正式服静态同步阿里** | `rm -rf /tmp/next-static` → `docker cp flashmuse-flashmuse-app-1:/app/.next/static /tmp/next-static` → rsync 到 `root@101.37.129.164:/var/www/flashmuse-static/_next/static/`（⚠️ **正式**镜像，不是 `-test`） |
+| **正式服发布信号 + 健康检查** | sed 改 `/opt/flashmuse/docker-compose.yml` → `force-recreate flashmuse-app` → 验版本头（端口 **5000**）→ 四域名 curl |
+
+⭐ **服务器上 `/tmp/health.sh` 是上一批会话留的、还在**：`sudo bash /tmp/health.sh` 直接打四域名状态码，不用重写。
+⭐ **build 要后台跑 + 轮询**（防 120s 工具超时）：`nohup sudo docker compose up -d --build <svc> > /tmp/xx.log 2>&1 &`，
+然后 `Start-Sleep` + `tail /tmp/xx.log`。v52 实测：测试服/正式服各约 2 分钟（依赖层全 CACHED 时更快）。
+
 ## GitHub
 
 - 仓库 `https://github.com/lookxun/FlashMuse_Agent`，本地 origin 已指向它，identity `lookxun <lookxun@users.noreply.github.com>`。`gh` CLI 未安装。

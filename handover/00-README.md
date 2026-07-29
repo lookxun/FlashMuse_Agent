@@ -63,6 +63,9 @@
 ## ⭐ 重要工具/环境认知
 
 - **可以用浏览器工具（playwright）直读全网站正文**（含火山 BytePlus 这种 JS 渲染的官网）。查官网规格一律用浏览器打开渲染后页面为准；`webfetch` 对 JS 站只拿到空壳=没读到。别拿本地旧复制文档当权威。
+- ⭐⭐ **工作流 tldraw 画布是可以自动化测试的**（2026-07-29 跑通，别再默认"留给人工"）：`browser_click` 点不到画布节点，
+  要用 `run_code` 里的 `page.mouse.click(x,y)`；每次量坐标前先按 `Shift+1`（缩放到适应全部节点）；
+  验"模型/分辨率走对没有"读节点右上角标签而不是看图。完整姿势见 `07` **第十一·B 节**。
 - **改中文源码只用 edit/write 工具，禁 PowerShell `Set-Content`/`Out-File`**（会把中文变乱码）。本地搜文件用 Grep/Read 工具，别用 PowerShell grep。
 - **PowerShell 内联 ssh 命令里的 `$(...)`/`%{}`/中文/嵌套引号会被本地 PS 先解释坏** → 一律把命令写成本地 `.sh`/`.sql`/`.js`，scp 到服务器 `/tmp`，`sed -i 's/\r$//'` 去 CRLF 后再 `bash`/`psql -f`/`node` 跑。
 - ⭐⭐ **本地登录/接口莫名"请求失败"的唯一口诀（2026-07-28 查透）**：**接口全 404/500、或 `npx tsc --noEmit` 报 `.next/dev/types/*` 语法错 → 一定是 `.next` 缓存坏了，跟业务代码无关，别去翻登录逻辑。** 处置：**双击 `start-project.bat` 即可自愈**（脚本会自动杀僵尸 dev server、把坏掉的清单备份到 `.runtime/next-broken/<时间戳>/`、删 `.next`、重启；实测 15 秒）。排查过程看 **`.runtime/start-project-trace.log`**（独立追踪日志，不会被 npm 输出污染）。注意 `routes.d.ts` 是**纯类型文件、运行时被剥掉、不可能导致 404**，它只是症状；真正 404 的是路由清单 `dev/server/app-paths-manifest.json` 这类。复发根因仍未结案（头号嫌疑＝腾讯电脑管家实时防护，已加白名单，待观察）。
@@ -85,6 +88,8 @@
    · 第九节 = ⭐「40 条轮询 failed」全过程 + **OpenRouter 任务事后回查原文**的命令
    · 第十节 = ⭐ **后台「失败排查」页 `/admin?tab=failures`** 的功能与使用动线
    · 第十一节 = ⭐ 实机验收"发送前拦截"类功能的操作要点（Playwright 技巧）
+   · **第十一·B 节 = ⭐⭐ 用 Playwright 操作工作流 tldraw 画布的可行姿势（2026-07-29 新增）**
+   · 第十二节 = ⭐⭐「图片平台没有返回图片」101 条全过程 + **归档规则要不要配 `before` 的判断法**
 8. `CHANGELOG.md` — 本批起的更新流水（历史流水在归档里）
 
 ## 项目基本信息

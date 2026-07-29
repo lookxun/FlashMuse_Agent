@@ -103,6 +103,55 @@ AI改写会尽量保留原意和参考图，但不保证一定成功。以下是
 `src/components/workflow-tldraw-canvas-inner.tsx`、`src/app/admin/admin-system-settings-panel.tsx`、
 `scripts/archive-resolved-generation-failures.mjs`。**只动高清这一条路径 + 归档脚本，其它生成链路零改动。**
 
+### ⭐⭐ 第十三次会话的操作记忆（下次直接照抄，全都实际跑通过）
+
+**Playwright 操作 tldraw 画布（工作流）—— 这套之前没人写下来，摸索了一会儿**
+
+1. ⛔ **`browser_click` 点不到画布里的节点**：会报
+   `<img alt="生成图片" …> from <div class="tl-html-layer tl-shapes"> subtree intercepts pointer events` 然后超时。
+   ✅ **必须用 `browser_run_code_unsafe` 里的 `page.mouse.click(x, y)`**（坐标从截图上量）。
+2. ✅ **`Shift+1` = 缩放到适应全部节点**（tldraw 快捷键）。每次点开节点/生成完新节点后视口会乱，先 `Shift+1` 再按截图量坐标最省事。
+3. ✅ **打开快捷菜单里的下拉**：`page.locator('button', { hasText: '高清' }).first().hover()` + 等 ~700ms，
+   然后 `page.getByRole('button', { name: 'GPT 2K', exact: true }).click()`。
+   ⚠️ **`exact: true` 必须加**，否则 `GPT 2K` 会同时匹配到 `GPT 4K` 之类。
+4. ✅ **判断生成是否结束**：轮询 `document.body.innerText`，`!t.includes('生成中')` 即结束。
+   ⚠️ 单次 `run_code` 有 30s 上限、MCP 调用有超时 → **长等待要拆成多次调用**，别在一个 `run_code` 里循环 100 秒（本次超时过一次）。
+5. ✅ **验证模型/分辨率有没有走对**：节点右上角标签会打印 `模型名 / 比例 / 分辨率 / 实际像素`
+   （例 `Gemini 3.1 Flash Image Preview / 16:9 / 2K / 2752x1536`），直接从 `innerText` 里读，比看图可靠。
+6. ⚠️ **`page.reload({ waitUntil: 'networkidle' })` 在这个站会超时**（有长轮询）→ 用 `page.goto(url)` + 固定 `waitForTimeout`。
+7. ⚠️ **测后台开关对前台的影响，必须重新加载前台页面**：`editModelToggles` 随 `/api/model-availability`
+   **只在页面加载时取一次**。我一度以为高清按钮没了/没恢复，其实是那个标签页还是开关关闭时加载的。**不是 bug。**
+
+**部署辅助脚本（因为 PowerShell 会吃掉 ssh 内联里的 `$(...)`/引号，一律写成本地 .sh → scp → `sed -i 's/\r$//'` → bash）**
+
+本次写了 4 个放在本地 `.runtime/`（不进 git，需要时按下面用途重建即可）：
+
+| 脚本 | 用途 |
+|---|---|
+| `pub52.sh` | 测试服：sed 改 `PUBLISHED_APP_VERSION` → `up -d --force-recreate staging-app` → 验版本头 |
+| `prodsync52.sh` | 正式服：`$(date)` 生成时间戳备份目录 → staging→prod 服务器间 rsync → 打印版本号 |
+| `syncali52.sh` | 正式服：`docker cp .next/static` → rsync 到阿里**正式**镜像 `/var/www/flashmuse-static/_next/static/` |
+| `pub52prod.sh` | 正式服：sed 改 `PUBLISHED_APP_VERSION` → force-recreate → 验版本头 + 四域名健康检查 |
+
+⭐ **服务器上 `/tmp/health.sh` 还在**（上一批会话留的），`bash /tmp/health.sh` 直接就能打四域名 200，不用重写。
+
+**测试服遗留数据（用户交代"测试内容不要删"，已保留）**
+
+`工作流_01` 里多了 3 个本次测试产生的节点：Gemini 2K 成功图、GPT 2K 成功图（悟空那张）、
+GPT 4K 的**失败卡**（模型安全拒绝，带三颗 AI 改写按钮）。⭐ 那张失败卡**留着正好是拒绝类失败卡的活样本**，别删。
+测试服后台的高清 GPT / Gemini 开关**已恢复成 ON 并验证持久化**。
+
+**其它小认知**
+
+- ✅ **测试服后台可以用 `lookxun@163.com` / `dragonstar` 登录**（`/admin` → 邮箱 + 密码）。
+  ⚠️ 注意区分：`01` 文档里说的"该账号没有可用密码"指的是**本地库**，测试服上是能登的。
+- ⚠️ **`createImageEditNode` 的 `highDef` 选项现在是死代码**：它只在 `modelCandidates` 分支里被读，
+  而唯一还用候选链的橡皮从不传 `highDef`。**故意留着没删**（那是共享函数的通用入参，删它要动签名、收益为零）。
+- ⚠️ **本地 dry-run 归档永远是 0**：本地库没有线上失败数据（本次 `pendingFailureEvents: 39`、`toArchive: 0`）。
+  **要看真实数字必须进服务器容器跑**（`docker cp` 脚本进 `/app` 再 `docker exec -w /app node ...`，否则找不到 `@prisma/client`）。
+- ✅ 归档脚本改完先 `node --check` 语法自查：本次 note 里写了 ASCII 双引号 `"没出图"` 直接把 JS 字符串截断了
+  （`SyntaxError: Unexpected identifier`）→ **中文 note 里一律用「」，别用 `"`**。
+
 
 ## 2026-07-29（第十二次会话）⭐⭐ 「图片平台没有返回图片」101 条查清 + 模型拒绝红字改成「统一文案 + 附模型原话」+ 资产库补 AI 改写 —— ⚠️ **只部署了测试服 v1.0.0.51，正式服仍 v1.0.0.50**
 

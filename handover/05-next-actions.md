@@ -40,6 +40,22 @@
 `admin-system-settings-panel.tsx` 的 `HD_MODEL_CHAIN`。
 ⚠️ **高清和橡皮的链已拆开**（`HD_FUNCTION_KEYS` vs `EDIT_FUNCTION_KEYS`），改一个不会影响另一个 —— 别再合回去。
 
+## ⭐ 自动化测工作流画布是可行的（别再默认"留给人工"）
+
+上一批文档写了"tldraw 不适合自动化"，那只对**连线**成立。**点节点 / 开快捷菜单 / 点下拉 / 跑生成 / 读结果标签全都跑通了**，
+完整姿势见 **`07` 第十一·B 节**（新增）。三个最关键的：
+
+- `browser_click` 点不到画布节点（img 拦 pointer events）→ 用 `run_code` 里的 `page.mouse.click(x, y)`，坐标从截图量。
+- 每次量坐标前先按 **`Shift+1`**（缩放到适应全部节点），否则上次的坐标全失效。
+- 验"模型/分辨率走对没有"**读节点右上角标签**（`模型 / 比例 / 分辨率 / 实际像素`），别靠看图。
+
+## ⭐ 归档脚本的两个操作前提（省时间）
+
+- **本地 dry-run 永远是 0**（本地库没有线上失败数据）→ 要看真实数字必须
+  `docker cp` 脚本进容器 `/app` 再 `docker exec -w /app … node scripts/…`（否则找不到 `@prisma/client`）。
+- 改完先 `node --check scripts/archive-resolved-generation-failures.mjs`：
+  ⛔ **中文 note 里不能用 ASCII 双引号**（会截断 JS 字符串，本次踩过 `SyntaxError`），一律用「」。
+
 ## 此前状态（2026-07-29 第十二次会话）
 
 ⚠️ **不是四方同步了**：本地 `v1.0.0.51`（有未 commit 改动）> 测试服 `v1.0.0.51` > 正式服 `v1.0.0.50` = GitHub `v1.0.0.50`。
