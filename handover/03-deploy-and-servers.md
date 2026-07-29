@@ -106,6 +106,41 @@
 ⭐ **build 要后台跑 + 轮询**（防 120s 工具超时）：`nohup sudo docker compose up -d --build <svc> > /tmp/xx.log 2>&1 &`，
 然后 `Start-Sleep` + `tail /tmp/xx.log`。v52 实测：测试服/正式服各约 2 分钟（依赖层全 CACHED 时更快）。
 
+### ⭐⭐ v1.0.0.54 实跑的那一整套（2026-07-29 第十七次会话，命令级留档，下次照抄）
+
+本地脚本都放在 `.runtime/`（不进 git）。**顺序不能乱**，尤其"静态同步完才发布版本信号"。
+
+| # | 本地文件 | 干什么 |
+|---|---|---|
+| 0 | — | `node scripts/bump-version.mjs`（v53→v54）+ `npx tsc --noEmit` |
+| 1 | `v54.tgz` | `tar -czf` 打**改动的源码 + `src/lib/app-version.ts` + `scripts/*`** → scp `/tmp` → `sudo tar -xzf /tmp/v54.tgz -C /opt/flashmuse-staging/app` |
+| 2 | — | `cd /opt/flashmuse-staging && nohup sudo docker compose up -d --build staging-app > /tmp/sb.log 2>&1 &`（本次约 90 秒） |
+| 3 | — | `sudo bash /opt/flashmuse-staging/sync-ali-test.sh`（打印 `staging ali sync done`） |
+| 4 | `pub54.sh` | 测试服发布信号：sed `PUBLISHED_APP_VERSION` → `up -d --force-recreate staging-app` → 验 `x-app-version` |
+| 5 | — | **上号巡检 6 项**（见上面「部署铁律」） |
+| 6 | `prodsync54.sh` | 正式服：`cp -r` 备份到 `app-backups/${TS}-presync-vX` → staging→prod rsync → `grep APP_VERSION` 复核 |
+| 7 | — | `cd /opt/flashmuse && nohup sudo docker compose up -d --build flashmuse-app > /tmp/prodbuild54.log 2>&1 &` |
+| 8 | `syncali54.sh` | `docker cp .next/static` → rsync 到阿里**正式**镜像 `/var/www/flashmuse-static/_next/static/` |
+| 9 | `pub54prod.sh` | 正式服发布信号 + 验版本头（端口 **5000**）+ 四域名 curl |
+| 10 | — | **正式服也上号巡检 6 项** |
+| 11 | `checktrack.sh` | grep 部署后要观察的跟踪点事件计数（本批是上传即转正 4 条 + 压缩 3 条 + 视频轮询 2 条） |
+
+**本次实测耗时**：测试服 build ~90s、正式服 build ~100s，全程（含两轮实机巡检 + 真跑生图生视频）约 1 小时。
+
+⭐ **部署是热的、线上有真实用户在跑任务**：本次正式服刚起来时 `docker logs` 里就有别的用户
+（`ID_315163`）的视频在存盘。所以 **`up -d --build` 的窗口要尽量短、别在高峰反复 recreate**。
+
+⭐ **验"新代码到底上去没有"的两个不同判据**（别搞混）：
+- `up --build` 之后 → 看 **HTML 里的版本号**（`curl -s http://127.0.0.1:5001/ | grep -o 'v1\.0\.0\.[0-9]*'`）；
+- 最后一步 sed + force-recreate 之后 → 才看 **`x-app-version` 响应头**（它发的是运行时 env `PUBLISHED_APP_VERSION`）。
+
+### ⭐ 正式服上号巡检用哪个号
+
+- 后台/前台都用白名单管理员 **`lookxun@163.com`**（正式服用户 ID = **`ID_415958`**，
+  grep 正式服日志找自己的操作记录时用这个 ID）。密码与测试服那套一致，**不在文档里写明文**。
+- ⚠️ 正式服巡检会**真花积分**（本次生图 3 分 + 生视频 59 分）。这是必要成本，用户已认可"必须真跑一次"。
+
+
 ## GitHub
 
 - 仓库 `https://github.com/lookxun/FlashMuse_Agent`，本地 origin 已指向它，identity `lookxun <lookxun@users.noreply.github.com>`。`gh` CLI 未安装。

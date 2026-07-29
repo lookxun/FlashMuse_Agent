@@ -10,6 +10,25 @@
 然后按用户要求把**所有历史红字一次性归档、B_xxx 计数器归 0**，从 v54 上线时刻起重新开始一轮红字排查。
 
 ✅ **四方同步：正式服 = 测试服 = 本地 = GitHub = `v1.0.0.54`**。无 Prisma 迁移（两服 entrypoint 均 "No pending migrations"）。
+📦 **commit `3d9f776`**（19 个文件：10 个 src + `scripts/archive-resolved-generation-failures.mjs` + `AGENTS.md` + 7 份 handover）。
+
+**v1.0.0.54 实际带上线的代码文件（10 个 src + 1 个 script）**：
+
+```
+src/lib/app-version.ts                            v1.0.0.53 → v1.0.0.54
+src/components/chat-workbench.tsx                 ⭐ 上传完当场转正（A5 前端根治）+ 4 个跟踪上报
+src/app/api/client-error/route.ts                 上传链路客户端上报落盘到 upload-diagnostics-log
+src/app/api/video/route.ts                        ⭐ data: 参考图落盘后送审（A5）／凭证过期当场重送审
+src/lib/local-assets.ts                           ⭐ 上传大图按 90% 质量原地压缩（A1 真修，不动尺寸）+ .rotate()
+src/lib/generation-jobs.ts                        runVideoJob 三个失败分支补日志 + 连续失败上限
+src/lib/openrouter-video.ts                       轮询失败改用 video-provider-poll-failed 事件名
+src/lib/video-diagnostics-log.ts                  summarizeVideoReference 补 data 分支
+src/lib/error-message.ts                          A1/A2/A4 明确映射 + api key 收紧 + 环境类单列 + B5/B6 合并
+src/lib/image-upload-validation.ts                格式白名单唯一来源 + 压缩阈值/质量常量
+src/lib/upload-rules.ts                           删掉 bytePlusImageFormats
+scripts/archive-resolved-generation-failures.mjs  ⭐ 新增 --reset-all 整轮清零 + 上一批的新规则/护栏/dry-run 明细
+```
+
 
 ### 1. ⭐⭐ 用户本次新加的两条硬要求（已写进 `AGENTS.md` + `03-deploy-and-servers.md`）
 
@@ -96,8 +115,25 @@ sudo docker exec -w /app flashmuse-staging-staging-app-1  node scripts/archive-r
 - ⛔ **PowerShell 内联 `node -e "...'...'..."` 里带引号/中文/`$` 一律炸**（本次 `docker exec node -e` 直接被本地 PS 解释坏）
   → 一次性脚本写成 `.js` 文件 → `scp` → `docker cp` 进容器 → `docker exec -w /app node x.js`。
 - ⛔ **`page.locator('text=视频生成')` 在对话流里会命中 7 个元素**（历史消息里那句"当前已切换到视频生成模式"也含这四个字）
-  → 用 `getByRole('button', { name: ... })` 或 `getByText(..., { exact: true })`。
+  → 用 `getByRole('button', { name: ... })` 或 `getByText(..., { exact: true })`；
+  输入框用 `page.locator("div[contenteditable='true']").last()`（页面里有多个）。
 - ⭐ 工作流画布节点里的输入框点不到时，用 `run_code` 的 `page.mouse.click(x, y)`（老经验，本次再次生效）。
+- ⭐ **上号巡检要花真钱**：正式服这轮真跑掉 3 分（生图）+ 59 分（Kling Pro 5 秒视频）。用户已认可这是必要成本。
+- ⭐ **部署是热的**：正式服容器刚起来，`docker logs` 里就有别的真实用户（`ID_315163`）的视频在存盘
+  → `up -d --build` 窗口尽量短，别反复 force-recreate。
+
+### 7. ⭐ 本次会话的决策脉络（下一个 AI 想知道"为什么这么做"看这里）
+
+| 用户说了什么 | 我做了什么 |
+|---|---|
+| 「先看交接文档和更新日志，告诉我做到哪了、接下来做啥」 | 读 `00`/`05`/`03`，核对 `git status` + `APP_VERSION`，汇报"A 表已收口、12 文件待部署、下一步直接部署" |
+| 「你全部部署掉到测试服，然后上测试服查下有没有出问题，如果没问题就部署到正式服，部署好正式服**也要上号查**一下…要保证部署完服务线上没有问题，用户还能用别崩掉。**这一条以后写到部署步骤里**」 | 走完整两服部署 + **两台都上号实机巡检**；把这条固化成**最小巡检 6 项**写进 `AGENTS.md` + `03`（测试服流程第 7 步 / 正式服流程第 9 步 + 回滚指引） |
+| 「部署完以后把红字失败**全部归档掉**，bxxx 数字也**重新计数从 1 开始**。现在从部署完开始看后面新出现的红字，**新一轮开始**。等红字多了以后再排查问题」 | 给归档脚本加 `--reset-all` 独立模式（不看规则/不看护栏 + 计数器归 0），两服 dry-run → apply；同步改掉 `AGENTS.md` 里原来那句「B 编号永不重置」；`05` 顶部改成"别急着排红字，先看攒了多少" |
+| 「把本对话框内所有做的内容更新到交接文档和更新日志」 | 本条 CHANGELOG + `00`/`01`/`02`/`03`/`05`/`07` 全部更新（含命令级部署留档、上传链路两处新行为、Playwright 选择器坑、造测试图配方） |
+
+⭐ **注意用户这次主动改了一条既有铁律**（B_xxx 永不重置 → 允许整轮清零）。
+以后再遇到"文档里的铁律和用户当下要求冲突"时：**按用户当下要求做，同时把铁律原文改掉并注明是谁、哪天改的**，
+别留一份自相矛盾的文档给下一个人。
 
 
 ## 2026-07-29（第十六次会话）⭐⭐ **A 表 9 条全部收口**：修掉 A5 + 查清 A3/A7（原表述都是错的）+ A1/A2/A4 加明确映射 —— ⚠️ **本地改动未部署未 push（v1.0.0.53 不变，没 bump）**

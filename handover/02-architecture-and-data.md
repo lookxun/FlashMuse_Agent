@@ -44,6 +44,25 @@
 - **视频/音频/文档** → `POST /api/upload-file`(multipart, field `file`)。服务端 `saveUploadedFileBufferAsset` 写 `/generated/users/<uid>/files/<hash>.<ext>` + MediaAsset/UserAssetState。校验/探测：`src/lib/media-upload-validation.ts` + `src/lib/media-upload-probe.ts`(ffmpeg 真实属性)。视频上传即时生成 `.poster.jpg`。
 - **命名唯一权威** `src/lib/upload-name.ts`（`resolveUploadName`：contentHash 命中复用旧名；否则去扩展名+sanitize+全局唯一 base/base_2）。三条上传接口都返回权威 `name`，前端只显示服务端返回名。
 - **内容去重**：按原始字节 SHA-256（`src/lib/upload-content-hash.ts`）+ `MediaAsset.contentHash`，命中直接复用不重传。
+- ⭐⭐ **v1.0.0.54 起：`POST` 那一步就会「按体积压缩」**（A1 的真修，`src/lib/local-assets.ts`）：
+  原来的 `jpegNeedsReencode()` **只判格式兼容性、完全不看体积** → 手机原图（4MB+）走"原样写盘"分支、
+  一个字节没压就发给模型、被 OpenAI 拒。现在**超阈值（2MB）就 sharp 重压到 quality 90**，
+  ⭐ **只降质量、不动像素尺寸**（用户明确要求），并先 `.rotate()` 把 EXIF 方向烧进像素（sharp 默认丢 EXIF）。
+  阈值/质量常量在 `src/lib/image-upload-validation.ts`。线上实测 5033630 → 1082578（**-78.5%**）。
+  三个观测事件（落 `.runtime/upload-diagnostics-log.jsonl`）：
+  `upload-image-oversized-recompressed` / `-recompress-skipped`（压完反而更大就保留原文件）/ `-recompress-failed`。
+- ⭐⭐ **v1.0.0.54 起：对话流改成「上传完当场转正」**（A5 的前端根治，收敛到工作流那套做法）：
+  以前是**点发送那一刻**才 `PATCH` commit，失败就静默退回 `data:` base64 → 送审拿不到公网直链 → **整单被毙**。
+  现在 `POST` 完成后立刻 `PATCH`，所以**上传当下就能在 Network 里看到 POST + PATCH 两条**，
+  点发送时**不再有第二次 PATCH、也没有 `/api/upload-image`**，`/api/image` 的 `referenceImages` 必须全是 `/generated/...`。
+  4 个"漏网路径"跟踪点（正常应恒为 0）：`client-send-time-commit-still-needed`、
+  `client-send-time-data-url-fallback`、`client-send-time-data-url-fallback-failed`、
+  `client-send-time-persist-uploaded-images-failed`。
+- ⭐ **实机核对上传结果的落盘位置**（排查时常用）：
+  宿主 `/opt/flashmuse/data/generated/users/<uid>/upload_image/<hash>.jpg`（测试服换成 `flashmuse-staging`），
+  容器内是 `/app/public/generated/...`。**同图重传不会新建文件**，日志打 `asset-upload-temp-post-dedup-hit`
+  并直接复用已压好的那个 url；输入框里虽然会多一个缩略图，但发给模型的 `referenceImages` 是去重后的。
+
 - **读取要快必须回传阿里**：`syncGeneratedFilesToAli`（`src/lib/ali-sync.ts`，rsync 到阿里镜像）。"上传走哪≠存哪"，文件始终在腾讯生成，读取快靠阿里本地镜像。`src/lib/recent-upload-origin.ts`：本会话刚上传的读腾讯主源，刷新后走阿里（见 M018）。
 
 ## ⭐ 视频/音频时长限制（2026-07-27 实测 + 收敛，唯一权威）
