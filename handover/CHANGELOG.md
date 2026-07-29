@@ -2,6 +2,87 @@
 
 > 本批 CHANGELOG 从 2026-07-21 交接文档重建开始记。**此前的全部历史流水**（约 580KB，含 2026-06 起到 07-21 每一次改动/部署细节）在 `historical-handover-docs-last-used-2026-07-21/CHANGELOG.md`，遇到需要历史上下文的难题再翻。
 
+## 2026-07-29（第十四次会话）⛔⭐ 撤掉对话流/资产库的 AI 改写 + 模型拒绝类红字统一成一句 —— ✅ **四方同步 v1.0.0.53（正式服 = 测试服 = 本地 = GitHub）**
+
+### 1. 起因：用户报「d37 这个对话用了 AI 改写，出了非常多的问题」
+
+正式服 `WorkspaceSession cmrkbgj3o47juph1tcbsldzup`（`ID_636611`，编号 d37，事发 2026-07-29 01:58–02:08）。
+
+⭐ **查到的硬数据（11 分钟内）**：
+
+| 指标 | 值 |
+|---|---|
+| 实际发起的生图 | **23 次** |
+| 其中成功（已出图、已入库、已扣费） | **17 张**（`MediaAsset` 里 `image_19_d37` ~ `image_36_d37` 全在） |
+| 对话里最终看得见的 | **2 张** |
+| AI 改写接口调用 | **23 次** |
+| 合计扣积分 | **197**（生图 173 + 改写 24） |
+
+⭐ **怎么查的**（下次照抄）：`WorkspaceSession.summaryJson->>'conversationCode' = 'd37'`（编号是前端自增的 `d{n}`，存在 summaryJson 里，**不是 id 截取**）→ 读 `messagesJson` 里带 `gptImageOptimization*` 字段的消息 → 对 `GenerationEvent` / `CreditLedger` / `MediaAsset` 按 userId+时间窗核对。
+
+### 2. 根因（8 个问题，都定位到行）
+
+1. ⭐⭐ **丢图**：`message.requestId` 是**单值**，而改写的并发锁是 `${message.id}:${failedIndex}`（**按槽位**）→ 同一条消息的 3 个失败卡各起一条改写链、互抢 requestId；后启动的一覆盖，先完成的成功图在 `appendImagesToAssistantMessage` 的 `message.requestId === requestId` 匹配不上 → **静默丢弃**。铁证：02:08:48 成功（`cee7aea9`）→ 02:08:51 另一次失败（`45a4eec6`）抢走 requestId → 那张图没了。
+2. ⭐⭐ **成功被判成失败、继续烧钱**：编排用 `getMessageImageCount()` 读 `sessionsRef.current`，而 `sessionsRef` 是在 **useEffect 里赋值**的 → `await` 回来仍是旧值 → 明明成功也 throw、继续下一轮。并发下计数还会被别的链污染（互相误判）。
+3. **消息提示词被改写词覆盖**：`finalizeAssistantImageFailures` 的 `...payload` 带 `content`。用户输「没穿衣服」，界面变「穿不透明罩衫」，而那张图的 `imagePrompts` 又是「穿日常T恤短裤」——**同一张图三种提示词**。
+4. **失败卡永久转圈**：`gptImageOptimizationRetryingIndexes` 残留 `[0,1]` 被持久化进 DB（收尾只 filter 自己那个 index、读的还是过期快照）→ 那两个槽位永远渲染等待卡，计时从消息 createdAt 起算（显示"已等一天"）。
+5. **文案四分叉**：同一个色情拒绝出现 4 种说法 —— `B_652`「模型因色情…拒绝出图」/ `B_626,627`「可能是提示词内容不符合平台安全策略」/ `B_622~625`「**生成结果可能涉及版权限制**」（`-agent` 那条其实也是色情拒绝、被误映射成版权）/ `B_635`「可能是因为提示词中包含了【sexu…】」（提示词里根本没这词）。
+6. **同一失败两个错误码**：slot 里 `B_652`、`mediaErrorReasons` 里 `B_657`（每次映射都走 `createCodedApiError` 自增）→ 用户报的码后台对不上。
+7. **改写记录被污染**：`runPromptSafetyRetry` 每条新链都把原句再 push 一遍 → 历史里原句出现 3 次，看着像"又拿原句去生成了"（实际没有，但记录误导）。
+8. **媒体编号空洞**：`image_19/20/21/...` 号都占了，对话里只有 `image_28`、`image_36`。
+
+### 3. 用户拍板：不修了，直接撤
+
+> 「不用改了，直接把 ai 改写功能从对话流和资产库都撤掉，恢复原来的样子。保留红字。」
+> 「这个对话流的设计不太适合 ai 改写。因为他是一条提词出多图，虽然是四张图，但提示词是相同的，但是如果每张独立改提示词那上面显示的提示词就不对了。这也是一个问题，以后想好再做。」
+> 「当前工作流的 ai 改写继续保留，只有工作流的两个 gpt 图片模型因提示词问题不生图才会触发。」
+
+### 4. 改了什么（2 个文件）
+
+**`src/components/chat-workbench.tsx`（-241 行）**：删掉 `MediaOptimizationRetryActions`、`canConversationOptimizationRetry`、`runConversationGptImageOptimizationRetry`、`canAssetOptimizationRetry`、`runAssetGptImageOptimizationRetry`、`optimizingImageMessagesRef`/`isAssetOptimizingRef`、`retryFailedMedia` 的 `promptOverride`、`generateCharacterImage` 的 `promptOverride`/`carryOptimization`/`rethrowError`、`patchMessageById`、`gpt-image-safety-retry` 的 import；两个 Strip 去掉 `canOptimizationRetry`/`onOptimizationRetry`/`optimizingFailedIndexes` 三个 props，失败卡**恒显示「重新生成」**。
+
+- `Message` / `CharacterGenerationResult` 上的 `gptImageOptimization*` **只留类型声明**（读旧数据不报错），代码里不再写入不再读取。
+- ⭐ **副作用（白捡）**：历史数据里残留的 `gptImageOptimizationRetryingIndexes` 不再被读 → **永久转圈的失败卡自动自愈**，不用去 DB 洗数据。
+
+**`src/lib/error-message.ts`**：三类合并成唯一一句
+
+```
+模型因色情/暴力/隐私安全等原因拒绝出图，你可以调整提示词或更换参考图后重试。以下是模型返回的拒绝原因：“xxxxx…”
+```
+
+- 删掉「模型拒绝了本次生成请求…平台安全策略」与「生成结果可能涉及版权限制，平台拒绝输出…」两句 → 转为 `LEGACY_MODEL_REFUSED_MESSAGES`（**只用于判定与后台归一化，禁止再拿它生成新文案**）。
+- 去掉 `canRewrite` 分支与 `modelSupportsPromptSafetyRewrite` 依赖（`toUserErrorMessage` 的 `options.model` 保留入参但不再影响文案）。
+- ⭐ **`MODEL_REFUSED_PREFIX` 一字未改** → 工作流的 AI 改写按钮判定（`isGptImageSafetyFailure` → `isModelRefusedMessage`）与后台 `FAILURE_REASON_SQL` 前缀归一化**都不受影响**。
+
+⛔ **工作流那套一行未动**（`workflow-tldraw-canvas-inner.tsx` / `gpt-image-safety-retry.ts` / rewrite 接口全部原样）。
+
+### 5. 测试服 v1.0.0.53 实机验收（全过）
+
+| 项 | 结果 |
+|---|---|
+| 对话流 GPT-5.4 Image 2 + 露骨提示词 | ✅ 新文案：`(B_59) 模型因色情/暴力/隐私安全等原因拒绝出图，你可以调整提示词或更换参考图后重试。以下是模型返回的拒绝原因：“sexu…”` |
+| 该失败卡内容 | ✅ 只有「图片生成失败 + 重新生成」，全页 `AI改写重试` 计数 **0** |
+| **反例**：对话流正常生图（橘猫） | ✅ 成功出图，成功路径没被搞坏 |
+| **反例**：工作流失败卡 | ✅ 三颗「AI改写重试 3/5/10 次」+ 说明文字**完整保留**，画布无 `Something went wrong` |
+| 资产库角色生成失败卡 | ✅ 只有「重新生成」 |
+| 纯函数（4 类原文 → 文案 + 按钮判定） | ✅ 5/5：四类全部统一成新文案、工作流按钮仍 true、视频模型 false、兜底桶不误判 |
+| 控制台 | ✅ 0 error |
+
+### 6. 部署
+
+- 测试服：`bump-version.mjs` v52→**v53** → tgz(3 文件) → build → `sync-ali-test.sh` → `PUBLISHED_APP_VERSION` sed → `x-app-version: v1.0.0.53` + 外网 200。
+- 正式服：备份 `/opt/flashmuse/app-backups/20260729-123320-presync-v53` → staging→prod rsync（**不再 bump**）→ build（`No pending migrations to apply.` / `✓ Ready in 78ms`）→ `.next/static` 同步阿里正式镜像 → 发布版本号 → **四域名 main/api/ali/static 全 200**、`x-app-version: v1.0.0.53`。
+- GitHub：commit `ab6e223` 已推。**无 Prisma 迁移。**
+
+### 7. ⛔ 本次的操作记忆
+
+1. ⭐ **查线上 DB 不用写文件**（plan 模式也能用）：把 node 脚本 base64 后 `sudo docker exec <容器> sh -c 'echo <b64> | base64 -d | node'` —— 绕开 PowerShell 吃 `$`/中文/引号的所有坑。
+2. ⛔ **`GenerationEvent` 没有 `surface` 列、`MediaAsset` 没有 `name` 列**（是 `displayName`/`systemName`）、积分表叫 **`CreditLedger`**（字段 `credits`，不是 `amount`）。先 `information_schema.columns` 查列名再写 SQL，省两轮报错。
+3. ⛔ **PowerShell 没有 heredoc**：`git commit -F -` + `<<'EOF'` 直接语法错 → 提交信息写成文件再 `git commit -F <file>`。
+4. ⭐ **删大段代码用 `[System.IO.File]::ReadAllLines` + 切片重写**（UTF8 无 BOM），比 edit 工具贴几十行 oldString 稳；但**改中文字符串一律用 edit 工具**。
+5. ⚠️ `npx eslint` 在本项目本来就有 22 个 error（`react-hooks/immutability` 等历史遗留），**不是本次引入**，别被吓到；判断标准是"报错行是否在本次改动区域"。
+6. ⭐ 老数据里存下来的红字**不会随代码改动而变**（红字是持久化的字符串）。测试时要看**新发起**的那一次。
+
 ## 2026-07-29（第十三次会话）⭐⭐ 归档 120 条「图片平台没有返回图片」 + 工作流「高清」改成四选项下拉 —— ✅ **四方同步 v1.0.0.52（正式服 = 测试服 = 本地 = GitHub）**
 
 ### 1. 归档：正式服 120 条、测试服 3 条（用户拍板归档）
