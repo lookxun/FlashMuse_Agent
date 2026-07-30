@@ -1115,3 +1115,51 @@ node scripts/archive-resolved-generation-failures.mjs --reset-all --apply
 3. **两台都要跑**（正式服 + 测试服），否则测试服后台还挂着一堆老红字，下次排查会被误导。
 
 
+
+## 十八、⭐ 输入文本敏感被错怪成"参考素材没过审"（2026-07-30 第十八次会话，本地实测捞到）
+
+**触发**：用户在本地 workflow_04 生图（提示词含"除去衣服，裸体展示"）。真实上游原文（`.runtime/generation-diagnostics-log.jsonl`）：
+
+```
+{"error":{"code":"InputTextSensitiveContentDetected",
+ "message":"The request failed because the input text may contain sensitive information. Request id: ..."}}
+```
+
+**= 输入的「提示词文字」被判敏感。** 但红字显示成
+`(B_238) 参考素材未能通过平台审核（可能涉及真人、隐私或版权）…建议更换参考素材` → **完全指错方向**，
+用户会去反复换参考图，而参考图根本没问题。
+
+**根因**：`error-message.ts` 最下面那条**宽松兜底**（原文含 `sensitive` 就说参考素材没过审）把它抓走了。
+⭐⭐ **这与第十四/十六节修过的「成品图片被判敏感」是同一类病**：
+**缺一条精确规则 → 掉进宽松兜底 → 错怪参考素材。**
+→ ⛔ **以后凡是新出现的 `*SensitiveContentDetected` 变体，第一反应就是"兜底又错怪参考图了"，先去兜底之前补精确规则。**
+
+**修法**：在兜底之前加精确规则（匹配 `inputtextsensitive` / `input text.*sensitive`），
+映射到**统一那句「模型拒绝」** `buildModelRefusedMessage()`（用户拍板就用这句）。
+⭐ 因为**复用现成文案**，后台 `admin-failure-triage.ts` 的 `FAILURE_REASON_SQL` **一行都不用改**
+（第三次吃到"能统一一律统一"的现成收益，前两次是 A2、B5+B6）。
+
+### ⭐ 顺带：给「模型返回的拒绝原因」加了中文映射
+
+`buildModelRefusedMessage` 尾巴上原来贴的是平台原始英文 JSON（用户看不懂，等于噪音）。
+新增 `UPSTREAM_REFUSAL_DETAIL_DICTIONARY` + `describeUpstreamRefusalDetail`：
+
+- 认识的 code 翻中文：Input/Output × Text/Image/Video/Audio Sensitive、`content_policy_violation`、
+  `safety system`、`moderation_blocked`、`copyright`（**泛化关键词必须排最后**，否则会抢走带具体 code 的）；
+- ⛔ **不认识的一律原样保留** —— 宁可英文难看，也绝不丢信息（否则以后出新错误码，我们在后台就成瞎子）；
+- ⛔ **模型自己说的话不会被字典吃掉**（"抱歉，我不能…" 原样显示；字典只认平台错误码）；
+- ⭐ `MODEL_REFUSED_PREFIX` **一个字没动** → 后台归一化不受影响、老数据不裂成一堆各 1 条。
+
+**效果**：那条红字 219 字 → 78 字：
+`模型因色情/暴力/隐私安全等原因拒绝出图，你可以调整提示词或更换参考图后重试。以下是模型返回的拒绝原因：“输入的提示词文字被平台判定含敏感信息”`
+
+**回归脚本**（都在 `.runtime/`，不进 git）：`check-refusal-detail-dictionary.mjs`（5/5）、
+`check-input-text-sensitive-mapping.mjs`（4/4）。
+⚠️ 中途有一条 FAIL 是**测试用例写错**（不认识的错误码根本走不到"模型拒绝"那条路，落的是最终兜底）—— 不是代码问题。
+
+### ⭐⭐ 一条新的排查经验：**"红字不对"有可能是我们自己刚改的开关引起的**
+
+本次用户其实是在**测试新做的「解除限制」按账号开关**，把某账号关掉后生图才失败的。
+「解除限制」关掉 = 发公开模型名 = **平台审核变严** → 原来能过的敏感提示词开始被拒。
+⛔ 所以看到"某个用户突然开始出现内容审核类红字"，除了看提示词，**还要去 `/admin?tab=account-features`
+看他的「解除限制」是不是被关了**（这是 2026-07-30 起新增的变量，以前不存在）。

@@ -2,7 +2,41 @@
 
 > 本批交接文档 2026-07-21 重建。更早的详细流水在 `historical-handover-docs-last-used-2026-07-21/`（尤其 `CHANGELOG.md` 580KB、`01-current-status.md`、`05-next-actions.md`）。遇到需要历史上下文的难题再翻归档。
 
-## ✅ 当前状态（2026-07-29 第十七次会话更新：**v1.0.0.54 已上线两服，四方同步**）
+## ⚠️ 当前状态（2026-07-30 第十八次会话：**纯本地开发批，全部待部署**）
+
+- 线上（正式服 = 测试服 = GitHub）= **`v1.0.0.54`**；本地 **24 改 + 7 新增未提交、没 bump**，`tsc` 全绿。
+- ⭐⭐ **有 1 个 Prisma 迁移**：`prisma/migrations/20260730000000_user_unlock_limits_enabled/`
+  （只加一列 `User.unlockLimitsEnabled BOOLEAN NOT NULL DEFAULT false`，**没有** UPDATE 存量数据）。
+- 🚀 **下一步 = 直接部署**（用户已授权）。清单在 `05-next-actions.md` 顶部。
+
+### 本批新增/改动的关键文件（速查）
+
+| 文件 | 干什么 |
+|---|---|
+| `src/lib/account-features.ts` 🆕 | **按账号功能开关的唯一读取入口** `resolveUnlockLimitsForUser(userId)`（无 userId / 查库失败 → 回落全局 env） |
+| `src/lib/online-users.ts` 🆕 | **「在线」判定唯一口径**（`activeWorkspaceSeenAt` 1 分钟内 + 未过期 + 未禁用），概览页与用户管理页共用 |
+| `src/app/admin/admin-account-features-panel.tsx` 🆕 | 后台新页「帐号功能管理」 |
+| `src/app/admin/api/users/unlock-limits/` 🆕 | 单账号「解除限制」开关 |
+| `src/app/admin/api/users/admin-whitelist/` 🆕 | 单账号「后台白名单」开关（改 `ADMIN_EMAILS`，护栏：不许移出自己） |
+| `src/app/admin/api/users/feature-bulk/` 🆕 | 三开关共用的批量「一键全开」 |
+| `src/lib/system-settings.ts` | `getBytePlusModelForRequest(key, **unlock?**)`（保持同步）+ 抽出 `writeLocalEnvValues` + 新增 `updateAdminEmailWhitelist` |
+| `src/lib/admin.ts` | `getAdminEmails()` 改成**优先读 `.env.local`**、再回落 `process.env` |
+| `src/lib/openrouter.ts` / `openrouter-video.ts` | 图片·文本·视频三条链路的 `unlock` 参数透传 |
+| `src/lib/error-message.ts` | 输入文本敏感的精确规则 + **拒绝原因中文字典** `UPSTREAM_REFUSAL_DETAIL_DICTIONARY` |
+| `src/components/workflow-tldraw-canvas-inner.tsx` | 「使用提示词」进快捷菜单 + `userInteractedRef` 一整套（置顶判定） |
+| `src/components/chat-workbench.tsx` | `shouldBumpToTop` + `getWorkflowMediaSnapshot` + `onChange` 透传 meta |
+
+### ⭐ 三个"以后改相关功能必须知道"的认知
+
+1. **「解除限制」不跳过任何审核** —— 唯一作用是把发给 BytePlus 的 `model` 从公开模型名换成我们的专属
+   Endpoint ID（端点自带更宽的平台策略）。实测印证：同一条敏感提示词，开着能出图、关掉被
+   `InputTextSensitiveContentDetected` 拦。
+2. **「后台白名单」不在数据库里**，是 `.env.local` 的 `ADMIN_EMAILS`（全站唯一管理员判定来源，
+   `isAdminEmail` 同步函数、15 处引用，改成查库要把所有后台鉴权染成 async → 故意不做）。
+3. **「在线」用 `activeWorkspaceSeenAt` 而不是 `lastSeenAt`** —— 后者任何带登录态的请求都会刷新（虚高），
+   前者只由前台工作台每 2 秒的心跳更新。**只有开着前台工作台才算在线。**
+
+## 历史状态（2026-07-29 第十七次会话：**v1.0.0.54 已上线两服，四方同步**）
 
 ### 版本与部署状态（接手第一眼看这里）
 

@@ -17,6 +17,7 @@ import { enqueueRemoteAssetSave, waitForMediaSaveJob } from "@/lib/media-save-qu
 import { upsertVideoManifestEntry } from "@/lib/video-manifest";
 import { saveDataUrlAsset } from "@/lib/local-assets";
 import { normalizeReferenceAssetUrl, normalizeReferenceAssetUrls } from "@/lib/reference-asset-url";
+import { resolveUnlockLimitsForUser } from "@/lib/account-features";
 
 // 编辑类功能（去背景/高清/快捷编辑/橡皮/编辑元素）失败时，尽量透出真实原因（中文优先）。
 // error-message 已把常见上游报错（如"当前模型不支持所请求的参数"）映射成中文；这里作为兜底文案，
@@ -751,6 +752,8 @@ export async function runImageJob(job: GenerationJobRow) {
       candidateMode: (job.extraJson?.candidateMode as "all" | "best" | undefined) ?? undefined,
       requestId: job.requestId,
       userId: job.userId,
+      // 按账号的「解除限制」：异步 job 脱离 session，靠 DB 上的 job.userId 取。
+      unlockLimits: await resolveUnlockLimitsForUser(job.userId),
       transparent: (job.extraJson?.transparent as boolean | undefined) ?? undefined,
     });
     const providerReturnedImageCount = result.images.length;

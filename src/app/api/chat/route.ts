@@ -9,6 +9,7 @@ import type { Prisma } from "@prisma/client";
 import { appendUploadRuleFeedbackLog, summarizeMessageUploads } from "@/lib/upload-rule-feedback-log";
 import { getUploadRuleOverrides } from "@/lib/system-settings";
 import { validateReferenceImageCount } from "@/lib/upload-rules";
+import { resolveUnlockLimitsForUser } from "@/lib/account-features";
 
 function mergeChatCreditMetadata(metadata: Prisma.InputJsonValue | undefined, extra: Prisma.InputJsonObject): Prisma.InputJsonValue {
   return metadata && typeof metadata === "object" && !Array.isArray(metadata) ? { ...metadata, ...extra } : extra;
@@ -95,6 +96,8 @@ export async function POST(request: Request) {
       messages: body.messages,
       settings: body.settings,
       originalPrompt: body.originalPrompt,
+      // 按账号的「解除限制」（后台「帐号功能管理」）。
+      unlockLimits: await resolveUnlockLimitsForUser(user?.id),
     });
     if (isPromptToolCreditSource(getCreditSource(body.metadata)) && !result.content.trim()) {
       throw new Error("服务器繁忙，请稍候再试！");

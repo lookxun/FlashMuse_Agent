@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { bytePlusImageGenerationModels, bytePlusVideoGenerationModels, imageGenerationModels, videoGenerationModels } from "@/lib/models";
 import { FAILURE_REASON_SQL } from "@/lib/admin-failure-triage";
+import { getOnlineSessionWhere } from "@/lib/online-users";
 
 /**
  * 运营概览（概览页）真实数据聚合。
@@ -103,7 +104,7 @@ export async function getAdminOverviewData(): Promise<AdminOverviewData> {
   const days30 = recentDays(30);
   const sevenDaysAgo = addDays(todayStart, -6);
   const thirtyDaysAgo = addDays(todayStart, -29);
-  const onlineSince = new Date(now.getTime() - 60_000);
+  // ⭐ 「在线」判定已抽到 src/lib/online-users.ts（用户管理页也用同一份），这里不再自己算 onlineSince。
   const active30Since = new Date(now.getTime() - 30 * 60_000);
 
 
@@ -130,7 +131,7 @@ export async function getAdminOverviewData(): Promise<AdminOverviewData> {
     prisma.workspaceWorkflow.count({ where: { deletedAt: null } }),
     prisma.workspaceWorkflow.count({ where: { deletedAt: null, createdAt: { gte: todayStart } } }),
     prisma.creditLedger.findMany({ select: { userId: true, direction: true, kind: true, label: true, model: true, credits: true, usd: true, cny: true, imageCount: true, videoCount: true, createdAt: true, metadata: true, requestId: true } }),
-    prisma.session.findMany({ where: { activeWorkspaceSeenAt: { gte: onlineSince }, expiresAt: { gt: now }, user: { is: { disabled: false } } }, select: { userId: true } }),
+    prisma.session.findMany({ where: getOnlineSessionWhere(now), select: { userId: true } }),
     prisma.session.findMany({ where: { lastSeenAt: { gte: active30Since }, expiresAt: { gt: now }, user: { is: { disabled: false } } }, select: { userId: true } }),
     prisma.session.findMany({ where: { lastSeenAt: { gte: todayStart } }, select: { userId: true } }),
     prisma.session.findMany({ where: { lastSeenAt: { gte: sevenDaysAgo } }, select: { userId: true } }),

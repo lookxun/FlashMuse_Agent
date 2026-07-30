@@ -162,7 +162,12 @@ type CreditResult = {
 type WorkflowCanvasProps = {
   workflowId: string;
   value?: WorkflowCanvasState;
-  onChange: (next: WorkflowCanvasState) => void;
+  /**
+   * `meta.userInitiated`：这次画布变更是不是用户造成的（按下鼠标/键盘、点菜单按钮、生成回填都算）。
+   * 打开工作流时的 normalizeState 归一化写回会传 false —— 父级据此决定「要不要把工作流置顶」，
+   * 但不管 true/false 都会照常保存（数据不丢，脏数据顺势被洗干净）。
+   */
+  onChange: (next: WorkflowCanvasState, meta?: { userInitiated?: boolean }) => void;
   workflowTitle: string;
   onCredit?: (credit?: CreditResult) => void;
   onGeneratedMedia?: (media: { nodeId: string; kind: "image" | "video"; urls: string[]; reservedNames?: string[]; posterUrl?: string; sourcePrompt: string; model?: ModelName; ratio?: string; resolution?: string; duration?: string; dimensions?: Record<string, { width: number; height: number }>; durationSeconds?: Record<string, number>; silent?: boolean; promptOptimization?: { originalPrompt: string; optimizedPrompt: string; attemptsUsed: number; optimizerModel: string } }) => void;
@@ -2087,6 +2092,8 @@ type WorkflowRuntime = {
   createImageEditNode: (sourceNode: WorkflowNode, options: { prompt: string; model?: ModelName; modelCandidates?: ModelName[]; highDef?: boolean; ratio?: string; resolution?: string; transparent?: boolean; bgRemove?: boolean; matchSourceImage?: boolean; ratioFromSourceImage?: boolean; position?: { x: number; y: number }; referenceImageOverride?: string; select?: boolean }) => WorkflowNode | undefined;
   createVideoEditNode: (sourceNode: WorkflowNode, options: { prompt: string; position?: { x: number; y: number }; select?: boolean }) => WorkflowNode | undefined;
   createVideoFrameImageNode: (sourceNode: WorkflowNode, frame: WorkflowVideoFrameKind) => void;
+  // 「使用提示词」：右键菜单与图片/视频快捷菜单共用同一份实现（禁止再写第二套）。
+  addNodeFromPrompt: (sourceNode: WorkflowNode) => void;
   createImageElementSplitNodes: (sourceNode: WorkflowNode) => void;
   runGptImageOptimizationRetry: (node: WorkflowNode, maxAttempts: number) => void;
   runVideoNode: (node: WorkflowNode) => void;
@@ -2526,6 +2533,8 @@ function WorkflowSelectedNodeOverlay() {
   //    整个 tldraw 画布直接崩成「Something went wrong」（2026-07-29 实际踩过）。只有 4 个元素，直接算最省事。
   const hdOptions = getHdOptions(runtime.editModelToggles, new Set(runtime.modelOptions.imageModels.map((item) => item.id)));
   const showMediaQuickMenu = (node.kind === "image" || isVideoQuickMenuNode) && hasWorkflowNodeResult(node) && !node.data.isRunning;
+  // 上传进来的素材节点没有"生成用的提示词"→ 快捷菜单里的「使用提示词」置灰（判定与右键菜单一致）。
+  const isUploadedMediaNode = isWorkflowUploadLikeTitle(node.title);
   // 快捷编辑派发：图片走 createImageEditNode（贴源图参数），视频走 createVideoEditNode（贴源视频参数+融合模式+模型候选链）。
   const submitQuickEdit = (text: string) => {
     const value = text.trim();
@@ -2628,6 +2637,18 @@ function WorkflowSelectedNodeOverlay() {
                 <span className="mx-0.5 h-5 w-px bg-gray-200" />
               </>
             )}
+            {/* 使用提示词：与右键菜单完全同一份实现（runtime.addNodeFromPrompt），图片/视频共用这一处。
+                上传来的媒体节点没有"生成用的提示词"可复用 → 和右键一样置灰禁用。 */}
+            <button
+              type="button"
+              disabled={isUploadedMediaNode}
+              title={isUploadedMediaNode ? "上传的素材没有可复用的提示词" : "用这个节点的提示词和参考素材新建一个节点"}
+              onClick={() => runtime.addNodeFromPrompt(node)}
+              className="flex h-[34px] items-center gap-1 whitespace-nowrap rounded-[8px] px-2 font-medium text-[#1f2937] hover:bg-gray-100 disabled:cursor-not-allowed disabled:text-[#b8b8b8] disabled:hover:bg-transparent"
+            >
+              <RiTBoxLine className="h-[18px] w-[18px]" />
+              <span>使用提示词</span>
+            </button>
             {/* 下载统一走共享的 downloadWorkflowNode（右键菜单用的同一份），图片/视频同源，禁止再各写一份。 */}
             <button type="button" title="下载到本地" onClick={() => { void downloadWorkflowNode(node).catch((error) => console.warn("[workflow] download failed", error)); }} className="flex h-[34px] w-8 items-center justify-center rounded-[8px] text-[#1f2937] hover:bg-gray-100"><RiDownloadLine className="h-[18px] w-[18px]" /></button>
           </div>
@@ -2957,6 +2978,15 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
   const optimizingImageNodesRef = useRef<Set<string>>(new Set());
   const lastExternalKeyRef = useRef(stateKey(stateRef.current));
   const lastEmittedKeyRef = useRef("");
+  // ⭐⭐ 「这条工作流本次打开后，用户到底动过没有」。
+  // 用途：只有用户真动过（或生成出了新媒体，由父级兜底判定）才允许把工作流在左侧列表里置顶。
+  // 为什么需要它：打开一条工作流时 normalizeState() 会把旧数据洗一遍（补默认值/迁移 title/改非法 ratio/
+  // 剔悬空连线/去重历史节点），洗完的结果会被 tldraw 加载后原样回传一次 → 父级拿"脏的老数据"和
+  // "洗干净的新数据"比字符串，必然不相等 → 被误判成"用户改了东西"→ 无辜置顶。
+  // 历史上有人试过"把会变的字段从比较里剔掉"（chat-workbench 的 stripKeys），治不好：剔不完，
+  // 而且再往下剔会把用户改比例/换模型这类真操作也一起屏蔽掉。所以改成在源头标记"是不是用户干的"。
+  const userInteractedRef = useRef(false);
+  const markUserInteracted = useCallback(() => { userInteractedRef.current = true; }, []);
   const loadingRef = useRef(false);
   const rafRef = useRef<number | null>(null);
   const geometryPollRef = useRef<number | null>(null);
@@ -3040,7 +3070,8 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     stateRef.current = next;
     lastEmittedKeyRef.current = key;
     lastExternalKeyRef.current = key;
-    onChange(next);
+    // 打开时的归一化写回也走这里（userInitiated=false）：照常存库让数据逐步自愈，但不置顶。
+    onChange(next, { userInitiated: userInteractedRef.current });
     setEditorTick((tick) => tick + 1);
   }, [exportStateFromEditor, onChange]);
 
@@ -3104,7 +3135,9 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     stateRef.current = next;
     lastEmittedKeyRef.current = stateKey(next);
     lastExternalKeyRef.current = lastEmittedKeyRef.current;
-    onChange(next);
+    // 900ms 几何轮询：只写 x/y 与 visualSize。用户拖动/缩放节点会先经过 pointerdown（已标记）→ 该置顶；
+    // 而 tldraw 自身的吸附/浮点抖动没人碰过画布 → userInitiated 仍为 false → 不置顶。
+    onChange(next, { userInitiated: userInteractedRef.current });
   }, [onChange]);
 
   const loadStateIntoEditor = useCallback((editor: Editor, nextState: WorkflowCanvasState) => {
@@ -3155,7 +3188,8 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
       stateRef.current = next;
       lastEmittedKeyRef.current = stateKey(next);
       lastExternalKeyRef.current = lastEmittedKeyRef.current;
-      onChange(next);
+      // 连线变化：用户拉线/删线必然先 pointerdown（已标记）；加载阶段清理悬空连线时标记为 false → 不置顶。
+      onChange(next, { userInitiated: userInteractedRef.current });
       setEditorTick((tick) => tick + 1);
     };
     const unlistenCreate = editor.sideEffects.registerAfterCreateHandler("shape", (shape) => {
@@ -3183,7 +3217,8 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
         stateRef.current = next;
         lastEmittedKeyRef.current = stateKey(next);
         lastExternalKeyRef.current = lastEmittedKeyRef.current;
-        onChange(next);
+        // 同上：删连线是用户操作时 pointerdown 已标记；加载期清理不算。
+        onChange(next, { userInitiated: userInteractedRef.current });
         return;
       }
       if (shape.type !== "workflow_node") return;
@@ -3218,6 +3253,8 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     if (!workflowChanged && (key === lastExternalKeyRef.current || key === lastEmittedKeyRef.current)) return;
     loadedWorkflowIdRef.current = workflowId;
     lastExternalKeyRef.current = key;
+    // 换到另一条工作流 = 重新开始判定「用户动过没有」（否则上一条的操作会让新打开的这条被误判成用户改过）。
+    if (workflowChanged) userInteractedRef.current = false;
     if (workflowChanged) lastEmittedKeyRef.current = "";
     stateRef.current = next;
     const editor = editorRef.current;
@@ -3258,7 +3295,12 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     stateRef.current = next;
     lastEmittedKeyRef.current = stateKey(next);
     lastExternalKeyRef.current = lastEmittedKeyRef.current;
-    onChange(next);
+    // ⛔⛔ 这里**绝对不能**硬编码 userInitiated: true（2026-07-30 踩过，改完第一版没生效就是因为这个）：
+    // 打开工作流时会有"自动回填/对账"走到这里（媒体系统名回填、生成任务恢复、视频尺寸补齐……），
+    // 它们回传的是整份【已归一化】的 state → 一旦标成用户操作，归一化那点差异就被当真 → 无辜置顶。
+    // 真实的用户操作（菜单、按钮、插入节点、编辑器输入）必然先在画布外壳上 pointerdown/keydown
+    // → userInteractedRef 已经是 true；而"生成出了新媒体"由父级的 mediaChanged 兜底判定。
+    onChange(next, { userInitiated: userInteractedRef.current });
     if (!editor) return;
     loadingRef.current = true;
     const existingIds = new Set(editor.getCurrentPageShapes().filter((shape) => shape.type === "workflow_node").map((shape) => shape.id));
@@ -3788,11 +3830,13 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
   }, [markNodeAction]);
 
   const handleWorkflowPointerDownCapture = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    // ⭐ 用户真的动了画布（按下鼠标就算，拖节点必然先经过这里）→ 之后的画布变更才允许把这条工作流置顶。
+    markUserInteracted();
     if (!contextMenu || event.button !== 0) return;
     const target = event.target as HTMLElement | null;
     if (target?.closest("[data-workflow-context-menu]")) return;
     setContextMenu(null);
-  }, [contextMenu]);
+  }, [contextMenu, markUserInteracted]);
 
   const reorderWorkflowNodeLayer = useCallback((dragNodeId: string, targetNodeId: string, position: "before" | "after") => {
     if (!dragNodeId || !targetNodeId || dragNodeId === targetNodeId) return;
@@ -4918,11 +4962,11 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     importingAssetsRef.current = false;
   }, [assetsToImport, restoreWorkflowAssetToCanvas, updateState, onAssetsImported]);
 
-  const runtime = useMemo<WorkflowRuntime>(() => ({ selectedNodeId, connectingFrom, connectingTo, multiConnectSources, connectionPointer, modelOptions, workflowTitle, updateNode, deleteNode, disconnectNodes, connectTo, setConnectingFrom, beginConnectionDrag, beginInputConnectionDrag, beginMultiConnectionDrag, runImageNode: (node) => void runImageNode(node), createImageEditNode, createVideoEditNode, createVideoFrameImageNode: (node, frame) => void createVideoFrameImageNode(node, frame), createImageElementSplitNodes, runGptImageOptimizationRetry: (node, maxAttempts) => void runGptImageOptimizationRetry(node, maxAttempts), runVideoNode: (node) => void runVideoNode(node), onGeneratedMedia, onShowTip, markNodeAction, onPreviewMedia, getImageDisplayUrl, getVideoPosterDisplayUrl, referenceAssets, referenceAssetsLoadStatus, referenceAssetCounts, onLoadReferenceAssets, onLoadReferenceFilter, referenceFilterLoading, referenceFilterNextOffset, onLoadMoreReferenceAssets, uploadRuleOverrides, editModelToggles, getConnectedInputUploads, getInputTextLength, uploadFilesAsConnectedNodes }), [beginConnectionDrag, beginInputConnectionDrag, beginMultiConnectionDrag, connectTo, connectingFrom, connectingTo, multiConnectSources, connectionPointer, deleteNode, disconnectNodes, getConnectedInputUploads, getImageDisplayUrl, getInputTextLength, getVideoPosterDisplayUrl, markNodeAction, modelOptions, onGeneratedMedia, onLoadReferenceAssets, onLoadReferenceFilter, referenceFilterLoading, referenceFilterNextOffset, onLoadMoreReferenceAssets, onPreviewMedia, onShowTip, referenceAssets, referenceAssetsLoadStatus, referenceAssetCounts, runGptImageOptimizationRetry, runImageNode, createImageEditNode, createVideoEditNode, createVideoFrameImageNode, createImageElementSplitNodes, runVideoNode, selectedNodeId, updateNode, uploadFilesAsConnectedNodes, uploadRuleOverrides, editModelToggles, workflowTitle]);
+  const runtime = useMemo<WorkflowRuntime>(() => ({ selectedNodeId, connectingFrom, connectingTo, multiConnectSources, connectionPointer, modelOptions, workflowTitle, updateNode, deleteNode, disconnectNodes, connectTo, setConnectingFrom, beginConnectionDrag, beginInputConnectionDrag, beginMultiConnectionDrag, runImageNode: (node) => void runImageNode(node), createImageEditNode, createVideoEditNode, createVideoFrameImageNode: (node, frame) => void createVideoFrameImageNode(node, frame), addNodeFromPrompt, createImageElementSplitNodes, runGptImageOptimizationRetry: (node, maxAttempts) => void runGptImageOptimizationRetry(node, maxAttempts), runVideoNode: (node) => void runVideoNode(node), onGeneratedMedia, onShowTip, markNodeAction, onPreviewMedia, getImageDisplayUrl, getVideoPosterDisplayUrl, referenceAssets, referenceAssetsLoadStatus, referenceAssetCounts, onLoadReferenceAssets, onLoadReferenceFilter, referenceFilterLoading, referenceFilterNextOffset, onLoadMoreReferenceAssets, uploadRuleOverrides, editModelToggles, getConnectedInputUploads, getInputTextLength, uploadFilesAsConnectedNodes }), [beginConnectionDrag, beginInputConnectionDrag, beginMultiConnectionDrag, connectTo, connectingFrom, connectingTo, multiConnectSources, connectionPointer, deleteNode, disconnectNodes, getConnectedInputUploads, getImageDisplayUrl, getInputTextLength, getVideoPosterDisplayUrl, markNodeAction, modelOptions, onGeneratedMedia, onLoadReferenceAssets, onLoadReferenceFilter, referenceFilterLoading, referenceFilterNextOffset, onLoadMoreReferenceAssets, onPreviewMedia, onShowTip, referenceAssets, referenceAssetsLoadStatus, referenceAssetCounts, runGptImageOptimizationRetry, runImageNode, createImageEditNode, createVideoEditNode, createVideoFrameImageNode, createImageElementSplitNodes, addNodeFromPrompt, runVideoNode, selectedNodeId, updateNode, uploadFilesAsConnectedNodes, uploadRuleOverrides, editModelToggles, workflowTitle]);
 
   return (
     <WorkflowRuntimeContext.Provider value={runtime}>
-        <div className="relative h-full min-h-full overflow-hidden bg-[#cccccc] text-[#111111] workflow-tldraw-shell workflow-lovart-skin" style={{ "--workflow-canvas-bg": canvasBackground } as CSSProperties} onContextMenu={handleWorkflowContextMenu} onPointerDownCapture={handleWorkflowPointerDownCapture} onDragOverCapture={(event) => { const types = event.dataTransfer.types; if (types.includes("application/x-flashmuse-workflow-asset") || types.includes("application/x-flashmuse-workflow-node") || types.includes("application/x-flashmuse-workflow-history-media") || types.includes("application/x-flashmuse-workflow-history-text") || types.includes("Files")) { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; } }} onDropCapture={handleWorkflowAssetDrop}>
+        <div className="relative h-full min-h-full overflow-hidden bg-[#cccccc] text-[#111111] workflow-tldraw-shell workflow-lovart-skin" style={{ "--workflow-canvas-bg": canvasBackground } as CSSProperties} onContextMenu={handleWorkflowContextMenu} onPointerDownCapture={handleWorkflowPointerDownCapture} onKeyDownCapture={markUserInteracted} onDragOverCapture={(event) => { const types = event.dataTransfer.types; if (types.includes("application/x-flashmuse-workflow-asset") || types.includes("application/x-flashmuse-workflow-node") || types.includes("application/x-flashmuse-workflow-history-media") || types.includes("application/x-flashmuse-workflow-history-text") || types.includes("Files")) { event.preventDefault(); event.dataTransfer.dropEffect = "copy"; } }} onDropCapture={(event) => { markUserInteracted(); handleWorkflowAssetDrop(event); }}>
         <style>{`.workflow-tldraw-shell .tl-watermark_SEE-LICENSE,.workflow-tldraw-shell [data-testid="tl-watermark-unlicensed"],.workflow-tldraw-shell [data-testid="tl-watermark-licensed"]{display:none!important;visibility:hidden!important;opacity:0!important;pointer-events:none!important;width:0!important;height:0!important;}.workflow-tldraw-shell .yinzao-tool-button-active+div{opacity:.9!important;backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);}`}</style>
         <Tldraw hideUi shapeUtils={workflowShapeUtils} bindingUtils={workflowBindingUtils} overlayUtils={workflowOverlayUtils} components={workflowTldrawComponents} overrides={workflowTldrawOverrides} options={workflowTldrawOptions} getShapeVisibility={getWorkflowShapeVisibility} onMount={handleMount} licenseKey="">
           <WorkflowCanvasStatusControls state={stateRef.current} tick={editorTick} canvasBackground={canvasBackground} onCanvasBackgroundChange={setCanvasBackground} isLayerPanelOpen={isLayerPanelOpen} onToggleLayerPanel={() => setIsLayerPanelOpen((current) => !current)} />

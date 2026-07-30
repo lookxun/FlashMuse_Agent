@@ -2,6 +2,8 @@ import { NextResponse } from "next/server";
 import { classifyOpenRouterIntent } from "@/lib/openrouter";
 import { DEFAULT_CHAT_MODEL, isModelName } from "@/lib/models";
 import { createCodedApiError } from "@/lib/error-code";
+import { getCurrentUser } from "@/lib/auth";
+import { resolveUnlockLimitsForUser } from "@/lib/account-features";
 
 export async function POST(request: Request) {
   try {
@@ -16,7 +18,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "参数不完整" }, { status: 400 });
     }
 
-    const result = await classifyOpenRouterIntent({ model, messages: body.messages });
+    const result = await classifyOpenRouterIntent({ model, messages: body.messages, unlockLimits: await resolveUnlockLimitsForUser((await getCurrentUser())?.id) });
 
     return NextResponse.json(result);
   } catch (error) {

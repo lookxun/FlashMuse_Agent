@@ -58,6 +58,48 @@ export function isModelRefusedMessage(value: string) {
   return value.includes(MODEL_REFUSED_PREFIX) || LEGACY_MODEL_REFUSED_MESSAGES.some((legacy) => value.includes(legacy));
 }
 
+/**
+ * ⭐ 上游拒绝原文的「中文说明」映射表（2026-07-30 加）。
+ *
+ * 为什么加：模型拒绝那句尾巴上贴的是平台原始报文，常常是一坨英文 JSON，例如
+ * `{"error":{"code":"InputTextSensitiveContentDetected","message":"The request failed because
+ * the input text may contain sensitive information.","param":"","type":""}}`
+ * —— 普通用户完全看不懂，等于噪音。这里把**认识的 code** 翻成一句中文。
+ *
+ * ⛔ 两条硬规则：
+ *  ① **不认识的一律原样保留**（返回原文）—— 宁可英文难看，也绝不能把信息丢掉，
+ *     否则以后出新错误码时后台就成了瞎子。
+ *  ② 顺序敏感：Output* 必须排在 Input* 之前判断吗？不需要——code 本身互斥，直接按字面匹配即可；
+ *     但 `copyright` 这类**泛化关键词**必须放在最后，别把带具体 code 的抢走。
+ *
+ * ⚠️ 这里只改「”…”」里那段说明，`MODEL_REFUSED_PREFIX` 前缀纹丝不动
+ * → 后台 `admin-failure-triage.ts` 的 `FAILURE_REASON_SQL` 不用改（它按前缀归一化）。
+ */
+const UPSTREAM_REFUSAL_DETAIL_DICTIONARY: Array<{ match: RegExp; text: string }> = [
+  // —— 输入侧（我们发过去的东西被判定不合规）——
+  { match: /inputtextsensitive/i, text: "输入的提示词文字被平台判定含敏感信息" },
+  { match: /inputimagesensitive/i, text: "参考图被平台判定含敏感信息" },
+  { match: /inputvideosensitive/i, text: "参考视频被平台判定含敏感信息" },
+  { match: /inputaudiosensitive/i, text: "参考音频被平台判定含敏感信息" },
+  { match: /inputimagecopyright|inputcopyright/i, text: "参考图被平台判定可能涉及版权限制" },
+  // —— 输出侧（生成结果被判定不合规）——
+  { match: /outputimagesensitive/i, text: "生成出来的图片被平台判定含敏感信息" },
+  { match: /outputvideosensitive/i, text: "生成出来的视频被平台判定含敏感信息" },
+  { match: /outputaudiosensitive/i, text: "生成出来的音频被平台判定含敏感信息" },
+  // —— OpenAI / 通用安全策略 ——
+  { match: /content[_\s-]?policy[_\s-]?violation/i, text: "内容不符合平台的安全策略" },
+  { match: /safety\s*system|rejected by the safety/i, text: "被平台安全系统拒绝" },
+  { match: /moderation[_\s-]?blocked/i, text: "被平台内容审核拦截" },
+  // —— 泛化关键词兜底（必须放最后）——
+  { match: /copyright/i, text: "被平台判定可能涉及版权限制" },
+];
+
+function describeUpstreamRefusalDetail(detail: string) {
+  const matched = UPSTREAM_REFUSAL_DETAIL_DICTIONARY.find((item) => item.match.test(detail));
+  // ⛔ 认识就翻成中文；不认识**原样返回**，绝不丢信息。
+  return matched ? matched.text : detail;
+}
+
 function buildModelRefusedMessage(detail: string) {
   const trimmed = detail
     // 削掉我们自己包在外面的那层壳，只留模型真正说的话。
@@ -66,7 +108,9 @@ function buildModelRefusedMessage(detail: string) {
     .replace(/\s+/g, " ")
     .trim();
   if (!trimmed) return MODEL_REFUSED_FALLBACK_MESSAGE;
-  const shown = trimmed.length > MODEL_REFUSED_DETAIL_MAX_LENGTH ? `${trimmed.slice(0, MODEL_REFUSED_DETAIL_MAX_LENGTH)}...` : trimmed;
+  // 认识的平台错误码翻成中文说明；模型自己说的那段话（"抱歉，我不能…"）不会命中字典，原样保留。
+  const described = describeUpstreamRefusalDetail(trimmed);
+  const shown = described.length > MODEL_REFUSED_DETAIL_MAX_LENGTH ? `${described.slice(0, MODEL_REFUSED_DETAIL_MAX_LENGTH)}...` : described;
   return `${MODEL_REFUSED_PREFIX}${MODEL_REFUSED_HINT}以下是模型返回的拒绝原因：“${shown}”`;
 }
 
@@ -249,6 +293,14 @@ export function toUserErrorMessage(value: unknown, fallback = "请求失败，�
   //    用户去换参考图换一万张都没用（2026-07-29 在正式服捞到真实原文，确认是错怪）。
   //    上面 155 那条只管成品"视频/音频"，图片这一路是漏的。
   if (/output\s*image.*(sensitive|privacy|copyright)|outputimagesensitive/.test(lower) || /(?:成品|输出)图片?.*(敏感|版权)/.test(text)) return withErrorCode(OUTPUT_IMAGE_REJECTED_MESSAGE);
+  // ⭐⭐ 输入**提示词文本**被平台判敏感（`InputTextSensitiveContentDetected`）：跟参考素材毫无关系！
+  // ⛔ 以前没有这条规则 → 原文里带 `sensitive` → 掉进最下面那条宽松兜底 → 红字说"参考素材未能通过平台审核、
+  //    建议更换参考素材"，用户会把参考图换一万张也没用，真正该改的是**提示词**（2026-07-30 本地 workflow_04
+  //    实测捞到原文确认：`The request failed because the input text may contain sensitive information`）。
+  //    这和上面「成品图片被判敏感」是同一类病：缺精确规则 → 被兜底错怪参考图。
+  // ⭐ 归到统一那句「模型拒绝」（AGENTS 铁律：模型拒绝／平台安全策略／版权限制三类合并成唯一一句，
+  //    该句already同时提示"调整提示词或更换参考图"，且复用现成文案 → 后台 FAILURE_REASON_SQL 一行都不用改）。
+  if (/inputtextsensitive|input text.*(sensitive|敏感)|输入文本.*敏感/.test(lower)) return withErrorCode(buildModelRefusedMessage(text));
   // 输入/参考素材审核未过（送审被拒或创建阶段直接被拒）。⭐ 与下面那条宽松 sensitive 兜底
   // **共用同一句文案**（2026-07-29 合并）：它们本来就是同一个根因（平台内容安全检测拒绝素材），
   // 只是一条是精确规则、一条是兜底规则，分成两种说法只会让同一件事在后台裂成两条。

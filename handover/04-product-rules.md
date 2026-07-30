@@ -7,11 +7,27 @@
 - `闪念 / FlashMuse`：内部简易「即梦式」创意助手。模式：Agent/通用对话、图片生成、视频生成、资产库、工作流。
 - 工作流模式在**正式服已开启**（历史上曾 feature-gate，现已放开）。
 
+## ⭐ 帐号功能开关（2026-07-30 加，后台 `/admin?tab=account-features`）
+
+**三个开关，一律"默认关闭、需要谁用再单独开"**（用户 2026-07-30 明确定的产品口径）：
+
+| 开关 | 打开后 | 默认 |
+|---|---|---|
+| 通用模式 | 该账号能用「通用模式」（不开则入口隐藏 + 服务端硬拦） | 关 |
+| **解除限制** | 该账号的 BytePlus 请求发**专属 Endpoint ID**（平台策略更宽，敏感题材更容易过）；关 = 发公开模型名走标准审核。⛔ **不跳过任何我们自己的校验** | 关 |
+| **后台白名单** | 该账号能进 `/admin` 后台 | 关（**只有 `lookxun@163.com` 开**） |
+
+- 表头三个总开关 = **一键全开/全关（批量把所有账号设成同一个值）**，**不是全局覆盖**；
+  真正生效的永远是每个账号自己的开关，批量后仍可单独调。
+- ⛔ **「后台白名单」故意不给总开关**（一键全开等于让全站所有人都能进后台，风险太高）。
+- ⛔ **不许把自己移出白名单**（会当场把自己锁在后台外）；批量关闭白名单时保留操作者。
+- 存储位置与技术细节（尤其"白名单不在数据库里"）见 `02-architecture-and-data.md` 的专节。
+
 ## ⭐⭐ 三条铁律（详见 00-README / AGENTS.md 顶部）
 
 1. **动代码前先评估对既有功能的影响**，有影响先说清、等确认再改（各模式常共用同一份代码）。
 2. **默认只本地不部署**；"部署掉"=只测试服；"部署正式服"才走测试服→整份同步正式服。版本号自增只在部署测试服时跑。
-3. **能统一一律统一**，禁止同一逻辑复制多份各走各的。已有统一入口举例：入库 `media-asset-record.ts`、生成任务/读取 `generation-jobs.ts`、扣费 `credits.ts`(`chargeCredits`)、模型→端点键 `byteplus-provider-key.ts`、**参考素材 url 归一化 `reference-asset-url.ts`(`normalizeReferenceAssetUrl`：进模型/送审前把动态缩略图接口地址 `/api/media-thumbnail?url=` 和自家主机绝对前缀还原成文件静态直链)**、参考图 hint `reference-hint.ts`、错误文案 `error-message.ts`、登录失效跳转 `session-expired-redirect.ts`、@提及匹配/删除 `mention-text.ts`、上传命名 `upload-name.ts`、图片上传校验 `image-upload-validation.ts`、视频音频上传校验 `media-upload-validation.ts`+`media-upload-probe.ts`、参考组合校验 `upload-rules.ts`、视频参考图尺寸 `video-reference-image-rules.ts`、断线判定 `transient-error.ts`、时长文案 `media-duration-format.ts`、音频波形播放器 `audio-waveform-player.tsx`、视频播放角标 `video-play-badge.tsx`、@引用资产选择器 `asset-mention-picker.tsx`。新增模型/模式只改统一函数 + `system-settings.ts` 配置表（对称补齐所有前缀 conversation-image/asset-image/agent-image/video/agent-video）。
+3. **能统一一律统一**，禁止同一逻辑复制多份各走各的。已有统一入口举例：入库 `media-asset-record.ts`、生成任务/读取 `generation-jobs.ts`、扣费 `credits.ts`(`chargeCredits`)、模型→端点键 `byteplus-provider-key.ts`、**按账号功能开关 `account-features.ts`(`resolveUnlockLimitsForUser`)**、**在线判定 `online-users.ts`**、**参考素材 url 归一化 `reference-asset-url.ts`(`normalizeReferenceAssetUrl`：进模型/送审前把动态缩略图接口地址 `/api/media-thumbnail?url=` 和自家主机绝对前缀还原成文件静态直链)**、参考图 hint `reference-hint.ts`、错误文案 `error-message.ts`、登录失效跳转 `session-expired-redirect.ts`、@提及匹配/删除 `mention-text.ts`、上传命名 `upload-name.ts`、图片上传校验 `image-upload-validation.ts`、视频音频上传校验 `media-upload-validation.ts`+`media-upload-probe.ts`、参考组合校验 `upload-rules.ts`、视频参考图尺寸 `video-reference-image-rules.ts`、断线判定 `transient-error.ts`、时长文案 `media-duration-format.ts`、音频波形播放器 `audio-waveform-player.tsx`、视频播放角标 `video-play-badge.tsx`、@引用资产选择器 `asset-mention-picker.tsx`、**写 `.env.local` 的合并逻辑 `system-settings.ts`(`writeLocalEnvValues`)**。新增模型/模式只改统一函数 + `system-settings.ts` 配置表（对称补齐所有前缀 conversation-image/asset-image/agent-image/video/agent-video）。
 
 ## 删除/资产规则
 

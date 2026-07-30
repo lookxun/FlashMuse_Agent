@@ -374,10 +374,9 @@ export function AdminSystemSettingsPanel({ settings, adminEmailCount }: { settin
               <span>BytePlus API</span>
               <SettingSwitch checked={bytePlusEnabled} disabled={isPending} onChange={(value) => saveSettings({ bytePlusApiKeyEnabled: value })} ariaLabel="BytePlus API 开关" />
             </span>
-            <span className="inline-flex items-center gap-2">
-              <span>解除限制</span>
-              <SettingSwitch checked={bytePlusUnlockLimits} disabled={isPending} onChange={(value) => saveSettings({ bytePlusUnlockLimits: value })} ariaLabel="BytePlus 解除限制开关" />
-            </span>
+            {/* ⭐ 2026-07-30：原来这里有个「解除限制」总开关，已改成**按账号**控制，
+                入口移到左侧「帐号功能管理」（标题栏那个是"一键全开"的批量按钮）。
+                `.env.local` 的 BYTEPLUS_UNLOCK_LIMITS 仍保留，只作为"拿不到 userId 时"的回落。 */}
           </div>
           <div className="relative">
             <input

@@ -6,6 +6,7 @@ import { DEFAULT_CHAT_MODEL, isModelName } from "@/lib/models";
 import { createCodedApiError } from "@/lib/error-code";
 import { appendGeneralTaskLog } from "@/lib/general-task-log";
 import { appendUploadRuleFeedbackLog, summarizeMessageUploads } from "@/lib/upload-rule-feedback-log";
+import { resolveUnlockLimitsForUser } from "@/lib/account-features";
 
 function withChargedUsage<T extends { usage?: { promptTokens?: number; completionTokens?: number; totalTokens?: number; usd?: number } }>(result: T, credit: Awaited<ReturnType<typeof chargeCredits>> | undefined) {
   if (!credit || credit.skipped) return result;
@@ -44,7 +45,7 @@ export async function POST(request: Request) {
     }
     await assertUserCanUseCredits(user, "text");
 
-    const result = await planAgentTask({ model, messages: body.messages, mode: body.mode === "general" ? "general" : "agent" });
+    const result = await planAgentTask({ model, messages: body.messages, mode: body.mode === "general" ? "general" : "agent", unlockLimits: await resolveUnlockLimitsForUser(user?.id) });
     if (body.mode === "general") {
       const latestUserMessage = [...body.messages].reverse().find((message) => message.role === "user");
       void appendGeneralTaskLog({

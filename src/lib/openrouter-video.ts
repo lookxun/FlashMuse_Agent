@@ -50,10 +50,11 @@ type CreateVideoOptions = {
 const OPENROUTER_VIDEOS_URL = "https://openrouter.ai/api/v1/videos";
 const execFileAsync = promisify(execFile);
 
-function getBytePlusVideoModelName(modelId?: string, providerKey?: string) {
-  if (modelId === "byteplus:video.seedance-2-0-fast") return getBytePlusModelForRequest(providerKey ?? "video.seedance-2-0-fast");
-  if (modelId === "byteplus:video.seedance-2-0-mini") return getBytePlusModelForRequest(providerKey ?? "video.seedance-2-0-mini");
-  if (modelId === "byteplus:video.seedance-2-0") return getBytePlusModelForRequest(providerKey ?? "video.seedance-2-0");
+// `unlock` = 该账号的「解除限制」开关；传 undefined 回落全局 env（见 getBytePlusModelForRequest）。
+function getBytePlusVideoModelName(modelId?: string, providerKey?: string, unlock?: boolean) {
+  if (modelId === "byteplus:video.seedance-2-0-fast") return getBytePlusModelForRequest(providerKey ?? "video.seedance-2-0-fast", unlock);
+  if (modelId === "byteplus:video.seedance-2-0-mini") return getBytePlusModelForRequest(providerKey ?? "video.seedance-2-0-mini", unlock);
+  if (modelId === "byteplus:video.seedance-2-0") return getBytePlusModelForRequest(providerKey ?? "video.seedance-2-0", unlock);
   return undefined;
 }
 
@@ -249,8 +250,8 @@ async function postOpenRouterVideoTask(prompt: string, referenceImages: string[]
   return data;
 }
 
-export async function createOpenRouterVideoTask(prompt: string, referenceImages: string[] = [], settings?: VideoSettings, model = DEFAULT_VIDEO_MODEL, options?: { bytePlusProviderKey?: string; referenceMode?: VideoReferenceMode; referenceVideos?: string[]; referenceAudios?: string[]; requestId?: string }) {
-  if (getBytePlusVideoModelName(model, options?.bytePlusProviderKey)) return createBytePlusVideoTask(prompt, referenceImages, settings, model, options?.bytePlusProviderKey, options?.referenceMode, options?.referenceVideos, options?.referenceAudios, options?.requestId);
+export async function createOpenRouterVideoTask(prompt: string, referenceImages: string[] = [], settings?: VideoSettings, model = DEFAULT_VIDEO_MODEL, options?: { bytePlusProviderKey?: string; referenceMode?: VideoReferenceMode; referenceVideos?: string[]; referenceAudios?: string[]; requestId?: string; unlockLimits?: boolean }) {
+  if (getBytePlusVideoModelName(model, options?.bytePlusProviderKey, options?.unlockLimits)) return createBytePlusVideoTask(prompt, referenceImages, settings, model, options?.bytePlusProviderKey, options?.referenceMode, options?.referenceVideos, options?.referenceAudios, options?.requestId, options?.unlockLimits);
 
   try {
     return await postOpenRouterVideoTask(prompt, referenceImages, settings, model, { generateAudio: true, requestId: options?.requestId });
@@ -265,11 +266,11 @@ export async function createOpenRouterVideoTask(prompt: string, referenceImages:
   }
 }
 
-async function createBytePlusVideoTask(prompt: string, referenceImages: string[] = [], settings?: VideoSettings, model = DEFAULT_VIDEO_MODEL, bytePlusProviderKey?: string, referenceMode?: VideoReferenceMode, referenceVideos: string[] = [], referenceAudios: string[] = [], requestId?: string) {
+async function createBytePlusVideoTask(prompt: string, referenceImages: string[] = [], settings?: VideoSettings, model = DEFAULT_VIDEO_MODEL, bytePlusProviderKey?: string, referenceMode?: VideoReferenceMode, referenceVideos: string[] = [], referenceAudios: string[] = [], requestId?: string, unlockLimits?: boolean) {
   const apiKey = getConfiguredBytePlusApiKey();
   if (!apiKey) throw new Error("缺少 BytePlus API Key");
 
-  const bytePlusModel = getBytePlusVideoModelName(model, bytePlusProviderKey);
+  const bytePlusModel = getBytePlusVideoModelName(model, bytePlusProviderKey, unlockLimits);
   if (!bytePlusModel) throw new Error("连接不到模型，请联系管理员！");
 
   const videoSettings = resolveVideoSettingsForModel(model, settings);

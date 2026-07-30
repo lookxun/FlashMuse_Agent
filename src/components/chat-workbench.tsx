@@ -3372,6 +3372,14 @@ function getWorkflowTextSnapshot(canvas?: WorkflowCanvasState) {
     .map((node) => ({ id: node.id, text: node.data.text ?? "", prompt: node.data.prompt ?? "", outputText: node.data.outputText ?? "" })));
 }
 
+// 「成品媒体快照」：只看每个节点最终产出的媒体地址（图片/视频/音频）。
+// 用途：生成前后画面确实不一样 → 哪怕 userInitiated 没标上（例如异步生成完成时用户已经切走再切回来），
+// 也必须算"有变化"并置顶。这是 userInitiated 判定之外的兜底，故意只取 url、不掺任何运行时字段。
+function getWorkflowMediaSnapshot(canvas?: WorkflowCanvasState) {
+  if (!canvas) return "";
+  return JSON.stringify((canvas.nodes ?? []).map((node) => [node.id, node.data?.images ?? [], node.data?.videoUrl ?? "", node.data?.audioUrl ?? ""]));
+}
+
 function getWorkflowMeaningfulSnapshot(canvas?: WorkflowCanvasState) {
   if (!canvas) return "";
   // Only user-meaningful content should count toward "changed" (which bumps the workflow to the top of
@@ -11504,7 +11512,7 @@ export function ChatWorkbench() {
     flushNextWorkspaceSaveRef.current = true;
   }, []);
 
-  const updateWorkflowCanvas = useCallback((workflowId: string, canvas: WorkflowCanvasState) => {
+  const updateWorkflowCanvas = useCallback((workflowId: string, canvas: WorkflowCanvasState, meta?: { userInitiated?: boolean }) => {
     setWorkflowItems((current) => {
       const target = current.find((item) => item.id === workflowId);
       if (!target) return current;
@@ -11519,8 +11527,17 @@ export function ChatWorkbench() {
         setNextWorkflowNumber(result.nextWorkflowNumber);
       }
       const textChanged = getWorkflowTextSnapshot(target.canvas) !== getWorkflowTextSnapshot(canvas);
+      // ⭐⭐ 置顶规则（2026-07-30 按用户要求定稿）：「画面真的变了」且「变化是用户造成的」才置顶。
+      //  · 内容变了没有 → meaningfulChanged
+      //  · 是用户造成的吗 → meta.userInitiated（画布在源头标记：按下鼠标/键盘、点菜单按钮、生成回填都算 true；
+      //    打开工作流时 normalizeState 的归一化写回是 false）
+      //  · 兜底 → mediaChanged：成品媒体地址变了（新生成出图/出视频）一律算变化，即使标记没打上。
+      // ⛔ 别再走"往 stripKeys 里加字段"那条老路：剔不完，而且会把改比例/换模型这类真操作也屏蔽掉。
+      // meta 缺省时按 true（兼容其它调用方，宁可多置顶也不要漏掉用户的真操作）。
       const meaningfulChanged = getWorkflowMeaningfulSnapshot(target.canvas) !== getWorkflowMeaningfulSnapshot(canvas);
-      const next = current.map((item) => item.id === workflowId ? { ...item, workflowCode, title, canvas: { ...canvas, generatedMediaCounts: canvas.generatedMediaCounts ?? item.canvas?.generatedMediaCounts, countedGeneratedUrls: canvas.countedGeneratedUrls ?? item.canvas?.countedGeneratedUrls }, updatedAt: meaningfulChanged ? Date.now() : (item.updatedAt ?? Date.now()) } : item);
+      const mediaChanged = getWorkflowMediaSnapshot(target.canvas) !== getWorkflowMediaSnapshot(canvas);
+      const shouldBumpToTop = meaningfulChanged && (meta?.userInitiated !== false || mediaChanged);
+      const next = current.map((item) => item.id === workflowId ? { ...item, workflowCode, title, canvas: { ...canvas, generatedMediaCounts: canvas.generatedMediaCounts ?? item.canvas?.generatedMediaCounts, countedGeneratedUrls: canvas.countedGeneratedUrls ?? item.canvas?.countedGeneratedUrls }, updatedAt: shouldBumpToTop ? Date.now() : (item.updatedAt ?? Date.now()) } : item);
       if (textChanged && workspaceStorageMode === "user") {
         if (workflowTextSaveTimerRef.current !== null) window.clearTimeout(workflowTextSaveTimerRef.current);
         const payload: WorkspaceStatePayload = {
@@ -16035,7 +16052,7 @@ export function ChatWorkbench() {
                       createdAt: activeWorkflow.updatedAt ?? Date.now(),
                     });
                   }}
-                  onChange={(canvas) => updateWorkflowCanvas(activeWorkflow.id, canvas)}
+                  onChange={(canvas, meta) => updateWorkflowCanvas(activeWorkflow.id, canvas, meta)}
                   onCredit={applyWorkflowCreditResult}
                 />
                 {inputReminder ? (

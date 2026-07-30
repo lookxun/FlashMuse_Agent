@@ -24,6 +24,7 @@ import { Prisma } from "@prisma/client";
 import { validateMediaUploadMetadata } from "@/lib/media-upload-validation";
 import { validateVideoReferenceImages, videoModelEnforcesReferenceImageSizeRules } from "@/lib/video-reference-image-rules";
 import { saveUploadedImageAsset } from "@/lib/local-assets";
+import { resolveUnlockLimitsForUser } from "@/lib/account-features";
 
 type UsageMeta = {
   promptTokens?: number;
@@ -799,6 +800,9 @@ export async function POST(request: Request) {
 
     const user = await getCurrentUser();
     await assertUserCanUseCredits(user, "video");
+    // 按账号的「解除限制」（后台「帐号功能管理」）。本 handler 下面 5 处创建视频任务共用这一个值，
+    // 拿不到用户时回落全局 BYTEPLUS_UNLOCK_LIMITS。
+    const unlockLimits = await resolveUnlockLimitsForUser(user?.id);
     // 参考图槽只接受真正的图片资产：@引用/附加时若把音频/视频（尤其历史 .bin 扩展名的音频）漏进了
     // referenceImages，这里按库里真实 mediaType 剔除，避免当图片发给 BytePlus（content[N].image_url
     // not an image）。对话流/工作流共用本路由，统一在服务端权威按 kind 归位，不靠文件扩展名猜。
@@ -938,7 +942,7 @@ export async function POST(request: Request) {
     let staleAssetCardCleared = false;
 
     try {
-      task = await createVideoTaskWithTransientRetry(prompt, modelReferenceImages, body.settings, body.model, { bytePlusProviderKey: getBytePlusProviderKey(body.model, creditSource), referenceMode: body.referenceMode, referenceVideos: modelReferenceVideos, referenceAudios: modelReferenceAudios, requestId: body.requestId });
+      task = await createVideoTaskWithTransientRetry(prompt, modelReferenceImages, body.settings, body.model, { bytePlusProviderKey: getBytePlusProviderKey(body.model, creditSource), referenceMode: body.referenceMode, referenceVideos: modelReferenceVideos, referenceAudios: modelReferenceAudios, requestId: body.requestId, unlockLimits });
     } catch (error) {
       // 我们记的审核通行证在平台侧已失效 → 先把死凭证从库里清掉，后面的送审会重新拿一张新的。
       if (isBytePlusAssetNotFoundError(error)) {
@@ -973,7 +977,7 @@ export async function POST(request: Request) {
       if (reusedReview) {
         logVideoTiming("BytePlus reusing approved asset cards", { model: body.model, requestId: body.requestId, referenceCount: effectiveReferenceImages.length + referenceVideos.length + referenceAudios.length });
         autoBytePlusAssetReview = reusedReview;
-        task = await createVideoTaskWithTransientRetry(prompt, reusedReview.referenceImages, body.settings, body.model, { bytePlusProviderKey: getBytePlusProviderKey(body.model, creditSource), referenceMode: body.referenceMode, referenceVideos: reusedReview.referenceVideos, referenceAudios: reusedReview.referenceAudios, requestId: body.requestId });
+        task = await createVideoTaskWithTransientRetry(prompt, reusedReview.referenceImages, body.settings, body.model, { bytePlusProviderKey: getBytePlusProviderKey(body.model, creditSource), referenceMode: body.referenceMode, referenceVideos: reusedReview.referenceVideos, referenceAudios: reusedReview.referenceAudios, requestId: body.requestId, unlockLimits });
       } else {
         // ⭐ staleAssetCardCleared = 凭证过期这一类：不问用户、当场重新送审（见上面标记处的注释）。
         if (!body.autoBytePlusAssetReview && !staleAssetCardCleared) return NextResponse.json({ status: "reviewing", autoBytePlusAssetReview: { triggered: true } });
@@ -981,7 +985,7 @@ export async function POST(request: Request) {
         logVideoTiming("BytePlus human reference auto review started", { model: body.model, requestId: body.requestId, referenceCount: effectiveReferenceImages.length + referenceVideos.length + referenceAudios.length });
         autoBytePlusAssetReview = await autoReviewBytePlusVideoReferences({ userId: user?.id, model: body.model, referenceImages: effectiveReferenceImages, referenceVideos, referenceAudios, requestId: body.requestId, referenceMode: body.referenceMode, settings: body.settings, conversationId: body.conversationId, conversationTitle: body.conversationTitle });
         if (!autoBytePlusAssetReview) throw error;
-        task = await createVideoTaskWithTransientRetry(prompt, autoBytePlusAssetReview.referenceImages, body.settings, body.model, { bytePlusProviderKey: getBytePlusProviderKey(body.model, creditSource), referenceMode: body.referenceMode, referenceVideos: autoBytePlusAssetReview.referenceVideos, referenceAudios: autoBytePlusAssetReview.referenceAudios, requestId: body.requestId });
+        task = await createVideoTaskWithTransientRetry(prompt, autoBytePlusAssetReview.referenceImages, body.settings, body.model, { bytePlusProviderKey: getBytePlusProviderKey(body.model, creditSource), referenceMode: body.referenceMode, referenceVideos: autoBytePlusAssetReview.referenceVideos, referenceAudios: autoBytePlusAssetReview.referenceAudios, requestId: body.requestId, unlockLimits });
         logVideoTiming("BytePlus human reference auto review completed", { model: body.model, requestId: body.requestId, reviewedCount: autoBytePlusAssetReview.updates.length });
       }
     }
@@ -1020,14 +1024,14 @@ export async function POST(request: Request) {
         if (reusedReview) {
           logVideoTiming("BytePlus reusing approved asset cards", { model: body.model, requestId: body.requestId, referenceCount: effectiveReferenceImages.length + referenceVideos.length + referenceAudios.length });
           autoBytePlusAssetReview = reusedReview;
-          task = await createVideoTaskWithTransientRetry(prompt, reusedReview.referenceImages, body.settings, body.model, { bytePlusProviderKey: getBytePlusProviderKey(body.model, creditSource), referenceMode: body.referenceMode, referenceVideos: reusedReview.referenceVideos, referenceAudios: reusedReview.referenceAudios, requestId: body.requestId });
+          task = await createVideoTaskWithTransientRetry(prompt, reusedReview.referenceImages, body.settings, body.model, { bytePlusProviderKey: getBytePlusProviderKey(body.model, creditSource), referenceMode: body.referenceMode, referenceVideos: reusedReview.referenceVideos, referenceAudios: reusedReview.referenceAudios, requestId: body.requestId, unlockLimits });
         } else {
           // ⭐ 同上：凭证过期不问用户、当场重新送审。
           if (!body.autoBytePlusAssetReview && !staleAssetCardCleared) return NextResponse.json({ status: "reviewing", autoBytePlusAssetReview: { triggered: true } });
           logVideoTiming("BytePlus human reference auto review started", { model: body.model, requestId: body.requestId, referenceCount: effectiveReferenceImages.length + referenceVideos.length + referenceAudios.length });
           autoBytePlusAssetReview = await autoReviewBytePlusVideoReferences({ userId: user?.id, model: body.model, referenceImages: effectiveReferenceImages, referenceVideos, referenceAudios, requestId: body.requestId, referenceMode: body.referenceMode, settings: body.settings, conversationId: body.conversationId, conversationTitle: body.conversationTitle });
           if (autoBytePlusAssetReview) {
-            task = await createVideoTaskWithTransientRetry(prompt, autoBytePlusAssetReview.referenceImages, body.settings, body.model, { bytePlusProviderKey: getBytePlusProviderKey(body.model, creditSource), referenceMode: body.referenceMode, referenceVideos: autoBytePlusAssetReview.referenceVideos, referenceAudios: autoBytePlusAssetReview.referenceAudios, requestId: body.requestId });
+            task = await createVideoTaskWithTransientRetry(prompt, autoBytePlusAssetReview.referenceImages, body.settings, body.model, { bytePlusProviderKey: getBytePlusProviderKey(body.model, creditSource), referenceMode: body.referenceMode, referenceVideos: autoBytePlusAssetReview.referenceVideos, referenceAudios: autoBytePlusAssetReview.referenceAudios, requestId: body.requestId, unlockLimits });
             logVideoTiming("BytePlus human reference auto review completed", { model: body.model, requestId: body.requestId, reviewedCount: autoBytePlusAssetReview.updates.length });
           }
         }

@@ -5,6 +5,9 @@
 ## 数据表（核心）
 
 - `User`：账号、积分、登录审计。`Session`：登录会话 + 活动 workspace 实例。
+  ⭐ **两个"按账号的功能开关"就在 `User` 上**（后台「帐号功能管理」页维护，2026-07-30 加）：
+  `generalModeEnabled`（通用模式）、`unlockLimitsEnabled`（解除限制）。
+  ⛔ **第三个开关「后台白名单」不在数据库里** —— 它是 `.env.local` 的 `ADMIN_EMAILS`，见下面专节。
 - `CreditLedger`：计费记录（text/image/video/prompt 工具 + 媒体成本 metadata）=**计费唯一来源**。
   ⚠️ 表名就叫 `CreditLedger`（**不是** CreditTransaction），金额字段是 **`credits`**（**不是** `amount`）。
   ⭐ `requestId` 自带后缀 `<clientId>:image:0` / `<clientId>:rewrite:2` ——
@@ -28,7 +31,83 @@
 
 **数据权威**：媒体固定事实→`MediaAsset`；用户可变状态→`UserAssetState`；对话→`WorkspaceSession+Message`；计费→`CreditLedger`。新生成/上传媒体统一走 `src/lib/media-asset-record.ts`（`buildMediaAssetRecord`/`classifyAsset`）入库；出生即冻结，之后只有改名/移动/删除（只写 `UserAssetState`）。
 
-## 核心媒体生成链路（图/视频统一，工作流复用同一套）
+## ⭐ 帐号功能开关（后台「帐号功能管理」，2026-07-30 加）
+
+后台 `/admin?tab=account-features`。三个开关**存储位置各不相同**，改相关功能前先认清：
+
+| 开关 | 存储 | 生效路径 |
+|---|---|---|
+| 通用模式 | `User.generalModeEnabled` | 前端隐藏入口 + `api/chat`·`api/agent-plan` 服务端硬拦（防绕过） |
+| **解除限制** | `User.unlockLimitsEnabled` | 见下 |
+| **后台白名单** | **`.env.local` 的 `ADMIN_EMAILS`（不在 DB）** | `isAdminEmail()` |
+
+### 「解除限制」是什么（⛔ 最容易误解的一点）
+**它不跳过任何审核、不绕过任何我们自己的校验。** 唯一作用在 `system-settings.ts` 的
+`getBytePlusModelForRequest(key, unlock?)`：
+- **开** → 发给 BytePlus 的 `model` 用我们的**专属 Endpoint ID**（`ep-2026...`），端点自带**更宽的平台策略**；
+- **关** → 发**公开模型名**（`seedream-4-5-251128`），走平台标准审核。
+
+实测印证（2026-07-30）：同一条敏感提示词，开着能出图；关掉被 `InputTextSensitiveContentDetected` 拦下。
+
+### 按账号读取的唯一入口
+**`src/lib/account-features.ts` 的 `resolveUnlockLimitsForUser(userId)`** ——
+⛔ 禁止在各 route 里自己 `prisma.user.findUnique` 拼一份（历史上 `getBytePlusProviderKey` 复制三份漏修的坑）。
+无 userId / 查库失败 → **回落全局 `.env.local` 的 `BYTEPLUS_UNLOCK_LIMITS`**（绝不因这个开关把生成弄挂）。
+
+### ⭐ 为什么 `getBytePlusModelForRequest` 必须保持同步
+它被 `getBytePlusImageModelName` / `getTextProviderConfig` / `getBytePlusVideoModelName` 调用。
+一旦在里面查 DB → 这三个全被染成 async → 牵连一大片。
+**所以做法是：在 route / job 层（那里有 userId 且已是 async）先算好布尔值，作为参数往下传。**
+
+三条链路的透传点（改生成链路时别漏）：
+- **图片**：`api/image/route.ts`（`user?.id`）、`generation-jobs.ts`（**`job.userId`** —— 异步 job 脱离 session 也有）
+  → `ImageGenerationOptions.unlockLimits` → `openrouter.ts:1254 / 1759`
+- **视频**：`api/video/route.ts`（handler 顶部算一次，**5 处创建任务共用**）→ `createOpenRouterVideoTask` options
+  → `createBytePlusVideoTask`（两层透传）
+- **文本**：`ChatRequest.unlockLimits` → `getTextProviderConfig(model, mode, unlock)`；
+  四个 route：`chat` / `agent-plan` / `conversation-memory` / `intent`
+- ⭐ **故意没接的一处**：`rewriteGptImagePromptForSafety`（工作流 AI 安全改写）拿不到 userId，走全局回落（影响极小）。
+
+### 后台白名单为什么不进数据库
+`ADMIN_EMAILS` 是全站唯一的管理员判定来源（`isAdminEmail`，15 处引用），而它是**同步**函数、没法查库；
+改成查库要把所有后台鉴权染成 async，风险太大。所以开关做的是"改邮箱清单"：
+`system-settings.ts` 的 `updateAdminEmailWhitelist()` 写 `.env.local` + 同步 `process.env` → **当场生效不用重启**。
+`admin.ts` 的 `getAdminEmails()` **优先读 `.env.local`、再回落 `process.env`**。
+写 env 的合并逻辑抽成公用 `writeLocalEnvValues()`（与 `updateAdminSystemSettings` 共用，别再复制第二份）。
+⛔ 两条护栏：**不许把自己移出白名单**（否则当场把自己锁在后台外，只能上服务器改文件才能救）；批量关闭时保留操作者。
+
+## ⭐ 「当前在线用户」判定唯一口径（`src/lib/online-users.ts`，2026-07-30 抽出）
+
+= 满足三条的 Session 所属用户：
+1. **`activeWorkspaceSeenAt` 在 `ONLINE_WINDOW_MS`（1 分钟）内**
+   ⭐ **用它、不是 `lastSeenAt`**：`lastSeenAt` 任何带登录态的请求都会刷新（会虚高）；
+   `activeWorkspaceSeenAt` 只由前台工作台心跳更新（`/api/auth/workspace-instance`，
+   `chat-workbench.tsx` **每 2 秒**打一次）→ 才真代表"人正开着页面在用"。
+2. session 未过期；3. 用户未禁用。
+
+窗口取 1 分钟的理由：浏览器对**后台标签页**会把定时器节流到约 1 分钟一次，1 分钟刚好容得下、又不会长时间"假在线"。
+⚠️ 语义边界：**只有开着前台工作台才算在线**（只登录不开工作台、或只开后台，都不算）。
+**概览页与用户管理页共用这一份**，⛔ 禁止在别处另写一套（否则两个页面显示互相矛盾的在线人数）。
+
+## ⭐⭐ 工作流左侧列表的「置顶」规则（2026-07-30 重做，改前必读）
+
+- 排序 = `updatedAt` 倒序（后端 `workspace-workflows.ts` + 前端 `chat-workbench.tsx` 各排一次）。
+- ⛔ **`WorkspaceWorkflow.updatedAt` 数据库不自动刷新**（schema 里**没有** `@updatedAt`；自动刷新的是
+  没人排序用的 `storedAt`）→ **完全由前端写**。唯一写入点：`chat-workbench.tsx` 的 `updateWorkflowCanvas`。
+- **置顶条件**：`meaningfulChanged && (meta?.userInitiated !== false || mediaChanged)`
+  - `userInitiated` 由**画布在源头标记**（`workflow-tldraw-canvas-inner.tsx` 的 `userInteractedRef`）：
+    画布上 pointerdown / keydown / 拖文件进画布 = true；切换 workflowId 时清零。
+  - `mediaChanged` = 成品媒体 url 变了（`getWorkflowMediaSnapshot`）→ **生成出新图/新视频一律置顶**（兜底）。
+- ⛔⛔ **为什么需要 `userInitiated`**：打开工作流时 `normalizeState()` 会把旧数据洗一遍（补默认值 / 迁移 title /
+  改非白名单 `ratio` / 剔悬空连线 / 历史节点去重），洗完的结果被回传 → 父级拿"脏老数据"和"洗干净的新数据"
+  比字符串必然不等 → **被误判成用户改了东西 → 无辜置顶**（老 bug：工作流 02/04/08 一打开就跳到最上面）。
+- ⛔ **别再走"往 `stripKeys` 里加字段"那条路**（上一个 AI 试过，注释还在 `chat-workbench.tsx:3383`）：
+  剔不完，且会把"改比例/换模型"这类真操作一起屏蔽掉。
+- ⛔⛔ **`updateState` 里绝不能硬编码 `userInitiated: true`** —— 打开工作流时的**自动回填**也走它
+  （媒体系统名回填 `:4895`、生成任务恢复、视频尺寸补齐），标成用户操作就又会无辜置顶（2026-07-30 踩过一次）。
+  `onChange` 的 **5 个出口全部**要带 meta：`emitEditorState`、900ms 几何轮询、连线增删两处、`updateState`。
+
+
 
 - 生成由服务端 `GenerationJob` worker 唯一权威 finalize 出生；provider 临时 URL 可先给前端显示提速，但**绝不能存进 `MediaAsset.url`**。
 - 后台存盘（`.runtime/media-save-jobs.json` 跟踪）；存好后前端轮询 `/api/media-save-status` 把临时 URL 换成本地 `/generated/...`。

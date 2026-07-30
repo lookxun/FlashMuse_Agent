@@ -17,20 +17,23 @@ import { AdminOverview2 } from "./admin-overview-2";
 import { AdminFailureTriagePanel } from "./admin-failure-triage-panel";
 import { getAdminOverviewData } from "@/lib/admin-overview";
 import { getAdminFailureTriageData } from "@/lib/admin-failure-triage";
+import { getOnlineUserIds } from "@/lib/online-users";
 import { AdminUsersPanel, type AdminUserRow } from "./admin-users-panel";
+import { AdminAccountFeaturesPanel, type AdminAccountFeatureRow } from "./admin-account-features-panel";
 import { AdminGptImageThumbnail } from "./admin-gpt-image-thumbnail";
 import { getCreditSettings } from "@/lib/credits";
 import { getAdminSystemSettings, getUploadRuleOverrides, isAssetImageModelEnabled, isConversationImageModelEnabled, isConversationVideoModelEnabled } from "@/lib/system-settings";
 import type { IconType } from "react-icons";
-import { RiAlarmWarningLine, RiDashboardLine, RiFileList3Line, RiListSettingsLine, RiServerLine, RiSettingsLine, RiToggleLine, RiUser3Line, RiVipDiamondLine } from "react-icons/ri";
+import { RiAlarmWarningLine, RiDashboardLine, RiFileList3Line, RiListSettingsLine, RiServerLine, RiSettingsLine, RiShieldKeyholeLine, RiToggleLine, RiUser3Line, RiVipDiamondLine } from "react-icons/ri";
 
 export const dynamic = "force-dynamic";
 
-type AdminTab = "overview" | "users" | "credits" | "records" | "failures" | "settings" | "generation" | "upload-rules" | "gpt-image-optimization" | "server";
+type AdminTab = "overview" | "users" | "account-features" | "credits" | "records" | "failures" | "settings" | "generation" | "upload-rules" | "gpt-image-optimization" | "server";
 
 const adminNavItems: Array<{ key: AdminTab; label: string; icon: IconType }> = [
   { key: "overview", label: "概览", icon: RiDashboardLine },
   { key: "users", label: "用户管理", icon: RiUser3Line },
+  { key: "account-features", label: "帐号功能管理", icon: RiShieldKeyholeLine },
   { key: "credits", label: "积分管理", icon: RiVipDiamondLine },
   { key: "records", label: "生成记录", icon: RiFileList3Line },
   { key: "failures", label: "失败排查", icon: RiAlarmWarningLine },
@@ -43,7 +46,7 @@ const adminNavItems: Array<{ key: AdminTab; label: string; icon: IconType }> = [
 
 function getAdminTab(value: string | string[] | undefined): AdminTab {
   const tab = Array.isArray(value) ? value[0] : value;
-  if (tab === "users" || tab === "credits" || tab === "records" || tab === "failures" || tab === "settings" || tab === "generation" || tab === "upload-rules" || tab === "gpt-image-optimization" || tab === "server") return tab;
+  if (tab === "users" || tab === "account-features" || tab === "credits" || tab === "records" || tab === "failures" || tab === "settings" || tab === "generation" || tab === "upload-rules" || tab === "gpt-image-optimization" || tab === "server") return tab;
   return "overview";
 }
 
@@ -438,7 +441,7 @@ export default async function AdminPage({ searchParams }: { searchParams?: Promi
   }
 
   if (activeTab === "users") {
-    const [users, totalUsers, todayUsers, disabledUsers, userTotals] = await Promise.all([
+    const [users, totalUsers, todayUsers, disabledUsers, userTotals, onlineUserIds] = await Promise.all([
       prisma.user.findMany({
         orderBy: { updatedAt: "desc" },
         take: 1000,
@@ -453,6 +456,8 @@ export default async function AdminPage({ searchParams }: { searchParams?: Promi
       prisma.user.count({ where: { createdAt: { gte: new Date(new Date().setHours(0, 0, 0, 0)) } } }),
       prisma.user.count({ where: { disabled: true } }),
       prisma.user.aggregate({ _sum: { credits: true } }),
+      // 「在线」判定与概览页共用同一份口径（src/lib/online-users.ts）。
+      getOnlineUserIds(),
     ]);
     const normalUsers = totalUsers - disabledUsers;
     const rows: AdminUserRow[] = users.sort((left, right) => {
@@ -470,6 +475,7 @@ export default async function AdminPage({ searchParams }: { searchParams?: Promi
       credits: user.credits,
       disabled: user.disabled,
       generalModeEnabled: user.generalModeEnabled,
+      isOnline: onlineUserIds.has(user.id),
       generatedImageCount: user.generatedImageCount,
       generatedVideoCount: user.generatedVideoCount,
       conversationCount: user.workspaceSessions.filter((session) => !session.deletedAt).length,
@@ -498,7 +504,42 @@ export default async function AdminPage({ searchParams }: { searchParams?: Promi
 
     return (
       <AdminShell adminEmail={currentAdminEmail} activeTab={activeTab}>
-        <AdminUsersPanel users={rows} stats={{ totalUsers, todayUsers, normalUsers, disabledUsers, totalCredits: userTotals._sum.credits || 0 }} />
+        <AdminUsersPanel users={rows} stats={{ totalUsers, todayUsers, normalUsers, disabledUsers, onlineUsers: onlineUserIds.size, totalCredits: userTotals._sum.credits || 0 }} />
+      </AdminShell>
+    );
+  }
+
+  if (activeTab === "account-features") {
+    // 「帐号功能管理」：只取开关相关字段，不需要用户管理那一大堆关联（session/workspace/统计）。
+    // ⚠️ 白名单不在 User 表上，而是 .env.local 的 ADMIN_EMAILS → 用 getAdminEmails() 现算。
+    const [users, totalUsers, generalModeUsers, unlockLimitsUsers] = await Promise.all([
+      prisma.user.findMany({
+        orderBy: { createdAt: "desc" },
+        take: 1000,
+        select: { id: true, email: true, nickname: true, phone: true, avatarUrl: true, generalModeEnabled: true, unlockLimitsEnabled: true },
+      }),
+      prisma.user.count(),
+      prisma.user.count({ where: { generalModeEnabled: true } }),
+      prisma.user.count({ where: { unlockLimitsEnabled: true } }),
+    ]);
+    const whitelist = new Set(getAdminEmails());
+    const featureRows: AdminAccountFeatureRow[] = users.map((user) => ({
+      id: user.id,
+      email: user.email,
+      nickname: user.nickname,
+      phone: user.phone,
+      avatarUrl: user.avatarUrl,
+      generalModeEnabled: user.generalModeEnabled,
+      unlockLimitsEnabled: user.unlockLimitsEnabled,
+      adminWhitelisted: whitelist.has(user.email.trim().toLowerCase()),
+    }));
+
+    return (
+      <AdminShell adminEmail={currentAdminEmail} activeTab={activeTab}>
+        <AdminAccountFeaturesPanel
+          users={featureRows}
+          stats={{ totalUsers, generalModeUsers, unlockLimitsUsers, whitelistUsers: whitelist.size }}
+        />
       </AdminShell>
     );
   }

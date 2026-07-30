@@ -2,6 +2,269 @@
 
 > 本批 CHANGELOG 从 2026-07-21 交接文档重建开始记。**此前的全部历史流水**（约 580KB，含 2026-06 起到 07-21 每一次改动/部署细节）在 `historical-handover-docs-last-used-2026-07-21/CHANGELOG.md`，遇到需要历史上下文的难题再翻。
 
+## 2026-07-30（第十八次会话）🧩 **纯本地开发批：后台「帐号功能管理」新页 + 解除限制改按账号 + 工作流两处修复 + 红字映射修正**
+
+> ⚠️⚠️ **本批全部只做了本地，一行都没部署、没提交、没 bump。线上仍是 `v1.0.0.54`。**
+> **用户明确交代：下一个 AI 直接部署掉**（先测试服 → 验证 → 同步正式服）。部署清单见
+> `05-next-actions.md` 顶部，⭐ **本批有 Prisma 迁移，且有一条"部署后必须手工做"的事，别漏。**
+
+### 0. 本次会话在干什么（一句话）
+
+先修了工作流两个问题（快捷菜单缺「使用提示词」、左侧列表"只打开就置顶"），
+然后做了后台新页 **「帐号功能管理」**（把「通用模式」「解除限制」「后台白名单」三个开关按账号集中管理，
+其中**「解除限制」从全局总开关改成按账号**，动到了图片/视频/文本三条生成链路），
+最后修了一条红字映射错误（输入文本敏感被错怪成"参考素材没过审"）并给拒绝原因加了中文映射。
+
+**改动文件：24 改 + 7 新增**（`git status --short` 原样）：
+
+```
+M AGENTS.md                                          M021 取消的说明
+M handover/00-README.md · 05 · 06                    本次交接文档
+M prisma/schema.prisma                               User.unlockLimitsEnabled
+M src/app/admin/admin-system-settings-panel.tsx      移除「解除限制」总开关
+M src/app/admin/admin-users-panel.tsx                去掉通用模式列 + 卡片合并 + 在线胶囊 + SmallStat 支持 ReactNode
+M src/app/admin/page.tsx                             新 tab + 新数据分支 + 在线集合
+M src/app/api/agent-plan/route.ts                    透传 unlockLimits
+M src/app/api/chat/route.ts                          透传 unlockLimits
+M src/app/api/conversation-memory/route.ts           透传 unlockLimits
+M src/app/api/image/route.ts                         透传 unlockLimits
+M src/app/api/intent/route.ts                        透传 unlockLimits
+M src/app/api/video/route.ts                         透传 unlockLimits（5 处创建任务）
+M src/components/chat-workbench.tsx                  置顶判定 + getWorkflowMediaSnapshot + onChange meta
+M src/components/workflow-tldraw-canvas-inner.tsx    使用提示词 + userInteractedRef 全套
+M src/components/workflow-tldraw-canvas.tsx          onChange 类型加 meta
+M src/lib/admin-overview.ts                          在线判定改用公用口径
+M src/lib/admin.ts                                   ADMIN_EMAILS 优先读 .env.local
+M src/lib/error-message.ts                           输入文本敏感精确规则 + 拒绝原因中文字典
+M src/lib/generation-jobs.ts                         异步 job 透传 unlockLimits
+M src/lib/openrouter-video.ts                        视频两层透传 unlock
+M src/lib/openrouter.ts                              图片/文本 unlock 参数 + ChatRequest 字段
+M src/lib/system-settings.ts                         writeLocalEnvValues 抽出 + updateAdminEmailWhitelist + unlock 参数
+?? prisma/migrations/20260730000000_user_unlock_limits_enabled/
+?? src/app/admin/admin-account-features-panel.tsx    新页面
+?? src/app/admin/api/users/admin-whitelist/          白名单开关
+?? src/app/admin/api/users/feature-bulk/             三开关批量（一键全开）
+?? src/app/admin/api/users/unlock-limits/            解除限制开关
+?? src/lib/account-features.ts                       按账号开关的唯一读取入口
+?? src/lib/online-users.ts                           「在线」判定唯一口径
+```
+
+`npx tsc --noEmit` 全绿。本地已跑 `prisma migrate deploy`（本地库已有新列）。
+
+---
+
+### 1. 工作流：图片/视频快捷菜单加「使用提示词」
+
+- **做法 = 复用，没写第二套**：右键菜单那份真身是 `addNodeFromPrompt`（`workflow-tldraw-canvas-inner.tsx:3327`），
+  原来只通过 props 给右键菜单组件；快捷菜单（`WorkflowSelectedNodeOverlay`）不接 props、靠 `runtime` context 拿能力
+  → 把 `addNodeFromPrompt` 挂进 `WorkflowRuntime` 类型 + `useMemo`（含依赖数组），两处菜单调同一个函数。
+- 按钮放在图片/视频**分支合流之后**（下载按钮之前），**一处代码两种节点都生效**。
+- 上传素材节点与右键一致**置灰禁用**（`isWorkflowUploadLikeTitle`），带 title 说明原因。
+- ⛔ **全程没加 Hook** —— 该组件 `if (!selected) return null;` 之后加 Hook 会触发 React #310 把画布搞崩（老坑）。
+- ⚠️ **未实机验证**（没点过），部署前建议在测试服点一次。
+
+### 2. ⭐⭐ 工作流左侧列表「只打开就置顶」修复（用户报的 bug）
+
+**现象**：工作流 02/04/08 只要点开（什么都不做）就跳到列表最上面，其它工作流不会。
+
+**根因（查了才知道，不是排序逻辑的问题）**：
+- 排序按 `updatedAt` 倒序（后端 `workspace-workflows.ts:270` + 前端 `chat-workbench.tsx:8212` 各排一次）；
+- **`WorkspaceWorkflow.updatedAt` 数据库不自动刷新**（schema 里没 `@updatedAt`，自动刷新的是没人排序用的 `storedAt`）→ 完全听前端；
+- 前端唯一写它的地方是 `chat-workbench.tsx` 的 `updateWorkflowCanvas`：`meaningfulChanged ? Date.now() : 原值`；
+- 而打开工作流时 `normalizeState()`（`workflow-tldraw-canvas-inner.tsx:1547`）会把旧数据**洗一遍**
+  （补默认值 / 迁移 title / 改非白名单 `ratio` / 剔悬空连线 / 历史节点去重），洗完的结果被回传
+  → **拿"脏的老数据"和"洗干净的新数据"比字符串，必然不等 → 被判成用户改了东西 → 置顶**。
+- 所以"只有部分工作流置顶"= **只有那几条的 DB 数据里还残留未归一化的旧字段**。
+
+**⛔ 上一个 AI 修错了方向**：`getWorkflowMeaningfulSnapshot` 里那串 `stripKeys`（`chat-workbench.tsx:3383`）就是上次的补丁，
+注释里直接写了"工作流_02 / _04 jump to the top"。**这条路治不好**：剔不完，且再往下剔会把"用户改比例/换模型"这类真操作也屏蔽掉。
+
+**本次修法（在源头标记"是不是用户干的"）**：
+- 画布里加 `userInteractedRef` + `markUserInteracted`（`:2976`），**切换 workflowId 时清零**（`:3252`）；
+- 标 true 的时机：**画布上 pointerdown**（`:3822`，拖节点必然先经过）、**keydown**（外壳 `onKeyDownCapture`）、
+  **拖文件进画布**（`onDropCapture`）；
+- `onChange` 签名加第二参 `{ userInitiated?: boolean }`（内层 + `workflow-tldraw-canvas.tsx` 壳层类型都改），
+  **5 个出口全部带上**：`emitEditorState`、900ms 几何轮询、连线增删两处、`updateState`；
+- 父级判定改成 `shouldBumpToTop = meaningfulChanged && (meta?.userInitiated !== false || mediaChanged)`；
+- 新增 `getWorkflowMediaSnapshot`（`chat-workbench.tsx:3375`）作**兜底**：只看成品媒体 url（images/videoUrl/audioUrl），
+  **生成出新图/新视频一律算变化**（用户明确要求"生成前后不一样也该置顶"），即使标记没打上；
+- `meta` 缺省按 true（兼容其它调用方，宁可多置顶不漏用户真操作）。
+
+**⛔⛔ 本次踩的坑（下一个 AI 必看）**：第一版我把 `updateState` 里硬编码成 `userInitiated: true`，
+以为"走这个函数的都是用户操作" —— **错**。打开带媒体的工作流时有**媒体系统名回填**（`:4895`，`needsUpdate` 那段）
+会自动走 `updateState`，回传的是**整份已归一化的 state** → 被标成用户操作 → 照样置顶。
+用户刷新后反馈"还是一样"，就是这个洞。**已改成读 `userInteractedRef`**，并在该处写了 ⛔ 警告注释。
+同类会在打开时自动跑的还有：生成任务恢复、视频尺寸补齐。
+
+**遗留**：⚠️ **修完后用户没再复验**（他直接转去做后台了）。部署前建议实测：
+①点开 02/04/08 什么都不做 → 顺序不动；②拖一下节点 → 置顶；③生成一张图 → 置顶。
+⚠️ **已经被顶乱的历史顺序不会自己复原**（`updatedAt` 是持久化的历史值），本次只保证"以后不再乱顶"。
+
+### 3. ⭐⭐⭐ 后台新页「帐号功能管理」+ 「解除限制」改按账号（本批最大改动）
+
+#### 3.1 需求（用户原话拼起来）
+左侧加一栏「帐号功能管理」，右侧布局照抄用户管理但**去掉积分/最近IP/最后登录时间/状态四列**；
+保留通用模式开关 + 新增「解除限制」「白名单」两个开关；卡片显示总用户数/三个开关各自开启数；
+**大表排序按"开着的开关越多越往上"**；三个总开关放**表头**、点了一键全开（**批量语义，不是全局覆盖**）；
+后来追加：**白名单的一键全开隐藏**（太危险）；**所有开关默认关闭，只有 `lookxun@163.com` 的白名单默认开**。
+
+#### 3.2 三个开关分别存在哪（⭐ 关键认知）
+| 开关 | 存储 |
+|---|---|
+| 通用模式 | `User.generalModeEnabled`（老字段，本页只是多一个入口） |
+| **解除限制** | **`User.unlockLimitsEnabled`（本批新增列 + 迁移）** |
+| **后台白名单** | **`.env.local` 的 `ADMIN_EMAILS`，不在数据库里** |
+
+**白名单为什么不能进 DB**：`ADMIN_EMAILS` 是全站唯一的管理员判定来源（`isAdminEmail`，15 处引用），
+而那个判定函数是**同步**的、没法查库；改成查库要把所有后台鉴权染成 async，风险太大。
+所以开关做的是"改邮箱清单"：写 `.env.local` + 同步 `process.env`，**当场生效不用重启**
+（与「模型开关」页保存设置同一套机制）。为此把写 env 的合并逻辑抽成公用 `writeLocalEnvValues`
+（`system-settings.ts`），`updateAdminSystemSettings` 和新增的 `updateAdminEmailWhitelist` 共用，没复制第二份。
+`admin.ts` 的 `getAdminEmails()` 改成 **优先读 `.env.local`、再回落 `process.env`**（原来只读 process.env）。
+
+#### 3.3 「解除限制」到底是什么（⭐ 之前所有人都容易误解）
+它**不跳过任何审核或限制**。唯一作用（`system-settings.ts:280` `getBytePlusModelForRequest`）：
+**开 = 发我们的专属 Endpoint ID（`ep-2026...`），关 = 发公开模型名（`seedream-4-5-251128`）** ——
+靠端点自带的更宽平台策略生效，不是我们自己绕。本次实测印证：同一条敏感提示词，
+开着能出图、关掉被 `InputTextSensitiveContentDetected` 拦住。
+
+#### 3.4 改成按账号的做法（⭐ 设计决策，别推翻）
+- `getBytePlusModelForRequest(key, unlock?)` 加**可选**参数，**故意保持同步**：
+  一旦在里面查 DB，会把 `getBytePlusImageModelName` / `getTextProviderConfig` / `getBytePlusVideoModelName`
+  全部染成 async。`unlock` 传 `undefined` 时回落全局 env → 向后兼容 + 兜住拿不到 userId 的调用点。
+- 新增 **`src/lib/account-features.ts` 的 `resolveUnlockLimitsForUser(userId)` 作唯一读取入口**
+  （查库失败/无 userId 一律回落全局，绝不因这个开关把生成弄挂）。⛔ 禁止各处自己 `prisma.user.findUnique`。
+- 三条链路透传（都在 route/job 层先算好布尔值往下传）：
+  - **图片**：`api/image/route.ts`（`user?.id`）+ `generation-jobs.ts`（**`job.userId`**，异步 job 脱离 session 也有）；
+    `ImageGenerationOptions` 加 `unlockLimits?`，两个调用点 `openrouter.ts:1254 / 1759`。
+  - **视频**：`openrouter-video.ts` 的 `createOpenRouterVideoTask` options 加 `unlockLimits` → 透传给
+    `createBytePlusVideoTask`（两层）；`api/video/route.ts` 在 handler 顶部算一次 `const unlockLimits = ...`，
+    **5 处创建任务共用**。
+  - **文本**：`ChatRequest` 加 `unlockLimits?`；`getTextProviderConfig(model, mode, unlock?)`；
+    四个 route 传值：`chat` / `agent-plan`（`planAgentTask`）/ `conversation-memory` / `intent`（`classifyOpenRouterIntent`）。
+- ⭐ **有一处故意没改**：`rewriteGptImagePromptForSafety`（工作流 AI 安全改写）拿不到 userId，仍走全局回落。
+  它优先用 OpenRouter 的 gpt-5.5，只在兜底时才碰 BytePlus，影响极小。
+
+#### 3.5 迁移与"默认全关"（⚠️ 部署最关键的一段）
+- 迁移 `prisma/migrations/20260730000000_user_unlock_limits_enabled/migration.sql`
+  = **只有** `ALTER TABLE "User" ADD COLUMN "unlockLimitsEnabled" BOOLEAN NOT NULL DEFAULT false;`
+- ⛔ **中途我写过一行 `UPDATE "User" SET "unlockLimitsEnabled" = true`（为了"保住改造前行为"），
+  被用户否掉 —— 他要的是"所有开关默认关闭，需要谁用再单独开"。那行已删除，且在 migration.sql 里留了 ⛔ 注释，
+  别再加回去。**
+- **本地额外做的收尾**（服务器不用做、但要知道存在）：
+  - 因为迁移已跑过又改了文件 → **checksum 会不一致**，所以先回退再重跑：
+    `.runtime/rollback-unlock-limits-migration.sql`（DROP COLUMN + 删 `_prisma_migrations` 那行）→ `migrate deploy`。
+  - 存量数据归零：`.runtime/reset-account-feature-flags.sql`（把 `generalModeEnabled` / `unlockLimitsEnabled`
+    全置 false）。⭐ 原来有 2 个账号开着通用模式（`lookxun` 与 `12424740`），**一并关掉了**。
+  - `.env.local` 的 `BYTEPLUS_UNLOCK_LIMITS` 从 `true` 改成 **`false`**（否则"所有账号都关、但无 userId 的
+    边角调用仍解除限制"语义矛盾）。改完重启了 dev（env 变化热更不生效）。
+  - 白名单没动：`ADMIN_EMAILS=lookxun@163.com` 在 `.env` 里，本来就只有他一个，正好符合要求。
+
+#### 3.6 新增的三个接口（都照抄 `users/general-mode` 那 22 行的模板，鉴权三行一模一样）
+| 路径 | body | 说明 |
+|---|---|---|
+| `POST /admin/api/users/unlock-limits` | `{ userId, unlockLimitsEnabled }` | 改 `User.unlockLimitsEnabled` |
+| `POST /admin/api/users/admin-whitelist` | `{ userId, whitelisted }` | 改 `ADMIN_EMAILS`。⛔ 两条护栏：**不许把自己移出白名单**（否则当场把自己锁在后台外，只能上服务器改文件才能救）、目标用户必须真实存在 |
+| `POST /admin/api/users/feature-bulk` | `{ feature, enabled }` | 三开关**共用一个**批量接口（`generalMode` / `unlockLimits` / `adminWhitelist`）。⛔ 白名单批量关闭时**保留当前操作者** |
+
+⭐ `feature-bulk` 的 `adminWhitelist` 分支**代码还在，但前端已无入口**（白名单总开关按用户要求隐藏了）。
+
+#### 3.7 前端新页 `src/app/admin/admin-account-features-panel.tsx`
+- 表格列：用户ID | 用户 | 通用模式 | 解除限制 | 后台白名单（**只有开关，没有展开详情/弹窗** —— 那些是用户管理的职责）。
+- **排序：开着的开关数量多的靠前**，同数量按邮箱稳定排（避免刷新乱跳）。搜索 + 分页（15/页）照抄用户管理。
+- 卡片 4 张：总用户数量 / 通用模式开启 / 解除限制开启 / 后台白名单。
+- **总开关在表头、跟在列名后面**（和行内开关上下对齐，一眼看出"这列全开"），带悬停提示；
+  `featureColumns` 里用 `bulk: boolean` 控制显示 → **白名单是 `bulk: false`**（不显示总开关）。
+- **弹框用项目通用样式**（照抄工作流「删除节点」确认框：白卡片 + 右下"取消 / 黑底长按钮 `px-12` 确定"），
+  ⛔ **不用 `window.confirm` / `window.alert`**（会显示"localhost:3000 显示"这种系统字样）。
+  两个弹框：批量确认 + 出错提示（比如白名单护栏的报错）。
+- 复用 `admin-users-panel.tsx` 导出的 `SmallStat` / `UserAvatar`；为此把 **`UserAvatar` 入参从 `AdminUserRow`
+  收窄成 `Pick<AdminUserRow, "email"|"nickname"|"avatarUrl">`**（原来写死整行类型，精简行必须强转）。
+
+#### 3.8 `page.tsx` 三处 + 其它页面清理
+- 新 tab 要改**三处**（漏一处 tab 会被吞回 overview）：`AdminTab` 类型、`adminNavItems`（图标 `RiShieldKeyholeLine`）、
+  `getAdminTab()` 白名单；再加 `if (activeTab === "account-features")` 数据分支。
+- 「模型开关」页（`admin-system-settings-panel.tsx`）**移除了「解除限制」总开关**，原地留注释说明去哪了。
+- 「用户管理」页**移除「通用模式」开关列**（8 列→7 列，两处 `colSpan` 8→7），删掉 `toggleUserGeneralMode`，
+  原地留 ⛔ 注释"别再往用户管理表格里加功能开关列"。展开详情里那行**只读**文字「通用模式：已开启/未开启」保留。
+
+### 4. 红字映射修正：`InputTextSensitiveContentDetected` 被错怪成"参考素材没过审"
+
+**用户在本地 workflow_04 生图触发**（`.runtime/generation-diagnostics-log.jsonl` 捞到真实原文）：
+```
+{"error":{"code":"InputTextSensitiveContentDetected",
+ "message":"The request failed because the input text may contain sensitive information..."}}
+```
+即**输入的提示词文字**被判敏感。但红字显示的是
+`(B_238) 参考素材未能通过平台审核（可能涉及真人、隐私或版权）…建议更换参考素材` → **完全指错方向**，
+用户会去反复换参考图，而参考图根本没问题。
+
+**原因**：`error-message.ts` 最下面那条**宽松兜底**（原文含 `sensitive` 就说参考素材没过审）把它抓走了。
+⭐ **这与 07-29 修过的「成品图片被判敏感」是同一类病**：缺精确规则 → 掉进兜底 → 错怪参考图。
+
+**修法**：在兜底之前加精确规则（`error-message.ts:252` 附近），映射到**统一那句「模型拒绝」**
+（`buildModelRefusedMessage`）—— 用户拍板就用这句。⭐ 因为复用现成文案，
+**后台 `admin-failure-triage.ts` 的 `FAILURE_REASON_SQL` 一行都不用改**。
+（中途我提议过单独一句更精确的文案、也写了 `INPUT_TEXT_SENSITIVE_MESSAGE` 常量，被用户否掉，**已删除**。）
+
+**顺带按用户要求做了「拒绝原因中文映射」**：`buildModelRefusedMessage` 尾巴上原来贴的是平台原始英文 JSON
+（用户看不懂），新增 `UPSTREAM_REFUSAL_DETAIL_DICTIONARY` + `describeUpstreamRefusalDetail`：
+- 认识的 code 翻中文：Input/Output × Text/Image/Video/Audio Sensitive、`content_policy_violation`、
+  `safety system`、`copyright`（泛化兜底**必须排最后**）；
+- ⛔ **不认识的一律原样保留** —— 宁可英文难看，也绝不丢信息（否则以后出新错误码我们在后台就成瞎子）；
+- ⛔ **模型自己说的话不会被字典吃掉**（"抱歉，我不能…"原样显示，字典只认平台错误码）。
+- 效果：那条红字从 219 字降到 78 字 → `…以下是模型返回的拒绝原因：“输入的提示词文字被平台判定含敏感信息”`。
+- ⭐ `MODEL_REFUSED_PREFIX` 一个字没动 → 后台归一化不受影响、老数据不裂。
+
+**回归**：`.runtime/check-refusal-detail-dictionary.mjs`（5/5）+ `.runtime/check-input-text-sensitive-mapping.mjs`（4/4）。
+⚠️ 中途有一条 FAIL 是**测试用例写错**（不认识的错误码根本走不到"模型拒绝"那条路，落的是最终兜底），不是代码问题。
+
+### 5. 用户管理页卡片改造 + 「在线」标识
+
+- 卡片仍 5 张：`总用户` / `今日新增` / **`正常用户/禁用用户 95/7`（合并）** / **`在线用户`（新增）** / `总积分余额`。
+  ⭐ 合并那张卡**只有禁用的数字是红色**，正常数字和斜杠保持黑色 → 为此把 `SmallStat` 的 `value`
+  从 `string` 放宽成 `ReactNode`。
+- **「在线」判定复用项目已有口径**（概览页那个「当前在线用户」本来就在用），抽成
+  **`src/lib/online-users.ts`**（`ONLINE_WINDOW_MS` / `getOnlineSessionWhere` / `getOnlineUserIds`），
+  **概览页 `admin-overview.ts` 也改成用这一份**（原来内联，再复制一份就是"该统一却分叉"）。
+  判定 = `activeWorkspaceSeenAt` 在 **1 分钟**内 + session 未过期 + 用户未禁用。
+  ⭐ **用 `activeWorkspaceSeenAt` 不是 `lastSeenAt`**：后者任何带登录态的请求都会刷新（会虚高），
+  前者只由前台工作台心跳更新（`/api/auth/workspace-instance`，`chat-workbench.tsx:10164` **每 2 秒**）。
+  窗口取 1 分钟是因为浏览器对**后台标签页**会把定时器节流到约 1 分钟一次。
+  ⚠️ 语义边界：**只有开着前台工作台才算在线**（只登录不开工作台、或只开后台，都不算）。
+- **在线标识 = 头像下沿的绿色胶囊「在线」**（实心 `bg-emerald-500` 白字，11px + `font-medium`）。
+  ⭐ **`absolute -bottom-3` + 父级 `relative`**：绝对定位不参与布局 → **永远不会把表格行撑高**
+  （用户硬要求）。`-bottom-3`(12px) 是"尽量往下"的实际上限：头像下沿到行分隔线约 13.5px
+  （文字块比头像高出的 ~1.5px + 单元格 `py-3` 的 12px）。
+  ⛔ **必须带 `whitespace-nowrap`** —— 绝对定位的包含块是 36px 宽的头像容器，不加会让"在线"两个字**竖着断行**（踩过）。
+  ⛔ 别改成 flex 竖排，那会真的撑高行。
+- `AdminUserRow.isOnline` 做成**可选**字段：展开详情走 `/admin/api/records/user-detail`，那边不算在线，缺字段不该报错。
+
+### 6. 备忘变更
+
+- **M021（对话流 AI 改写重做）取消** —— 用户 2026-07-30 明确说不做了，`AGENTS.md` 里那句"要重做必须先解决展示模型"
+  已改成"**彻底不做了，别再提**"。
+- **M022（给 `ID_636611` 补 197 积分）取消** —— 图本来都在他资产库里，不是白扣，不补。**任何人都没动过他的积分。**
+- **M023（`connection_limit`）重写**：从"加 25~30"改成"**等它下次真犯病、拿到 `pg_stat_activity` 现场数据再改**"。
+  写清了三个坑：①病因 A（池子太小）/ B（慢查询占住连接）解法相反，别照抄 25~30；
+  ②**改 `.env.local` 无效**（`docker-compose.yml` 的 `environment:` 会覆盖），要改两个 compose；
+  ③别想在测试服压测求这个数（空载 + 与正式服共享同一台物理机）。
+
+### 7. ⛔ 本次会话踩的坑（下一个 AI 省时间）
+
+1. **⛔⛔ 我用 PowerShell `Set-Content` 改了 `src/lib/openrouter.ts` → 给文件加了 BOM**（第 1 行进了 diff）。
+   中文没坏（控制台显示的乱码只是终端编码），但**违了 AGENTS 铁律**。已用 .NET `UTF8Encoding($false)` 清掉 BOM 并补回结尾换行。
+   **教训：改源码只用 edit/write 工具，一次都别偷懒。**
+2. **⛔ `updateState` 里不能硬编码 `userInitiated: true`**（详见第 2 节）—— 打开工作流时的自动回填也走它。
+3. **⛔ 绝对定位元素在窄父容器里会让中文竖排** —— 记得 `whitespace-nowrap`。
+4. **⛔ 改了已应用过的 migration 文件 → checksum 会不一致**，本地要"回退 + 重跑"才干净（见 3.5）。
+5. **⛔ `npx prisma generate` 被 dev server 占着 dll 报 EPERM** —— 先停 dev server（老坑，又踩了一次）。
+6. **⭐ 排查工作流列表排序时的正确姿势**：别猜排序函数，直接去查"谁写 `updatedAt`" ——
+   数据库不自动刷新的字段，写入点一定在前端。
+
+---
+
+
 ## 2026-07-29（第十七次会话）🚀 **v1.0.0.54 两服部署完成 + 实机巡检全绿 + 红字整轮清零（B_xxx 归 0，开新一轮）**
 
 ### 0. 本次会话在干什么（一句话）

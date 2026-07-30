@@ -23,6 +23,10 @@ model User {
   textCreditRemainder        Float     @default(0)
   disabled                   Boolean   @default(false)
   generalModeEnabled         Boolean   @default(false)
+  // 「解除限制」按账号开关：开 = 发给 BytePlus 的 model 用我们的专属 Endpoint ID（平台策略更宽），
+  // 关 = 发公开模型名。历史上这是 .env.local 里的全局开关 BYTEPLUS_UNLOCK_LIMITS，
+  // 2026-07-30 改成按账号；全局那个只留作"没传按账号值时"的回落，后台入口已移到「帐号功能管理」。
+  unlockLimitsEnabled        Boolean   @default(false)
   generatedImageCount        Int       @default(0)
   generatedVideoCount        Int       @default(0)
   createdAt                  DateTime  @default(now())

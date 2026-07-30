@@ -14,6 +14,7 @@ import { recordGenerationEvent } from "@/lib/analytics-events";
 import { createImageJob } from "@/lib/generation-jobs";
 import { getBytePlusProviderKey } from "@/lib/byteplus-provider-key";
 import { normalizeReferenceAssetUrls } from "@/lib/reference-asset-url";
+import { resolveUnlockLimitsForUser } from "@/lib/account-features";
 
 function getRequestedImageCount(value: unknown) {
   const count = typeof value === "number" ? value : typeof value === "string" ? Number(value) : 1;
@@ -163,6 +164,8 @@ export async function POST(request: Request) {
       candidateMode: body.candidateMode,
       requestId: body.requestId,
       userId: user?.id,
+      // 按账号的「解除限制」（后台「帐号功能管理」）。拿不到用户时回落全局开关。
+      unlockLimits: await resolveUnlockLimitsForUser(user?.id),
     });
     const providerReturnedImageCount = result.images.length;
     const deliveredImages = pickRequestedImages(result.images, result.imageDimensions, requestedImageCount, body.model, body.settings);

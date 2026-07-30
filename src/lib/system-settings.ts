@@ -277,9 +277,24 @@ export function getBytePlusModelSelection(key: string) {
   return settings.bytePlusModelSelections[key] || DEFAULT_BYTEPLUS_MODEL_SELECTIONS[key];
 }
 
-export function getBytePlusModelForRequest(key: string) {
+/**
+ * 决定发给 BytePlus 的 `model` 字段值。
+ *
+ * - 「解除限制」开 → 发我们的专属 Endpoint ID（`ep-2026...`），平台策略更宽；
+ * - 关 → 发公开模型名（`seedream-4-5-251128`）。
+ *   ⚠️ 它只改这一个字符串，**不跳过任何我们自己的校验/送审**。
+ *
+ * ⭐ 2026-07-30：从"全局一个开关"改成"按账号"。
+ * `unlock` 由调用方（route / job 层，那里有 userId 且已是 async）先查好用户的
+ * `unlockLimitsEnabled` 再传进来；传 `undefined` 时回落到全局 env（向后兼容，
+ * 也兜住那些确实拿不到 userId 的调用点）。
+ * ⛔ 故意保持**同步**：一旦在这里查 DB，会把 getBytePlusImageModelName /
+ * getTextProviderConfig / getBytePlusVideoModelName 全部染成 async。
+ */
+export function getBytePlusModelForRequest(key: string, unlock?: boolean) {
   const endpointId = getBytePlusModelSelection(key);
-  if (getAdminSystemSettings().bytePlusUnlockLimits) return endpointId;
+  const unlockEnabled = unlock ?? getAdminSystemSettings().bytePlusUnlockLimits;
+  if (unlockEnabled) return endpointId;
   return BYTEPLUS_ENDPOINT_MODEL_NAMES[endpointId] ?? endpointId;
 }
 
@@ -405,6 +420,41 @@ export async function updateUploadRuleOverrides(overrides: UploadRuleOverrides) 
   return sanitized;
 }
 
+/**
+ * 把一批 key=value 合并写回 `.env.local`（已存在的原地替换、不存在的追加）。
+ * ⭐ 唯一实现：`updateAdminSystemSettings` 与「后台白名单」共用，禁止再复制第二份合并逻辑。
+ */
+async function writeLocalEnvValues(nextValues: Map<string, string>) {
+  const seen = new Set<string>();
+  const nextLines = getLocalEnvLines().map((line) => {
+    const match = line.match(/^([A-Za-z_][A-Za-z0-9_]*)=/);
+    const key = match?.[1];
+    if (!key || !nextValues.has(key)) return line;
+    seen.add(key);
+    return `${key}=${nextValues.get(key) ?? ""}`;
+  });
+
+  for (const [key, value] of nextValues) {
+    if (!seen.has(key)) nextLines.push(`${key}=${value}`);
+  }
+
+  await mkdir(dirname(ENV_PATH), { recursive: true });
+  await writeFile(ENV_PATH, `${nextLines.join("\n").replace(/\n+$/, "")}\n`, "utf8");
+}
+
+/**
+ * 「后台白名单」= 允许进入 `/admin` 的邮箱清单（`ADMIN_EMAILS`）。
+ * 后台「帐号功能管理」页按账号开关它，落到 `.env.local`（服务器上那份是挂载的持久文件）。
+ * 写完同步 `process.env`，当前进程立即生效、不用重启。
+ */
+export async function updateAdminEmailWhitelist(emails: string[]) {
+  const normalized = [...new Set(emails.map((item) => item.trim().toLowerCase()).filter(Boolean))];
+  const value = normalized.join(",");
+  await writeLocalEnvValues(new Map([["ADMIN_EMAILS", formatEnvValue(value)]]));
+  process.env.ADMIN_EMAILS = value;
+  return normalized;
+}
+
 export async function updateAdminSystemSettings(settings: AdminSystemSettings) {
   const nextValues = new Map<string, string>([
     ["OPENROUTER_API_KEY", formatEnvValue(settings.openRouterApiKey.trim())],
@@ -421,21 +471,7 @@ export async function updateAdminSystemSettings(settings: AdminSystemSettings) {
     ["VIDEO_COMPRESSION_ENABLED", settings.videoCompressionEnabled ? "true" : "false"],
     ["VIDEO_COMPRESSION_QUALITY", settings.videoCompressionQuality],
   ]);
-  const seen = new Set<string>();
-  const nextLines = getLocalEnvLines().map((line) => {
-    const match = line.match(/^([A-Za-z_][A-Za-z0-9_]*)=/);
-    const key = match?.[1];
-    if (!key || !nextValues.has(key)) return line;
-    seen.add(key);
-    return `${key}=${nextValues.get(key) ?? ""}`;
-  });
-
-  for (const [key, value] of nextValues) {
-    if (!seen.has(key)) nextLines.push(`${key}=${value}`);
-  }
-
-  await mkdir(dirname(ENV_PATH), { recursive: true });
-  await writeFile(ENV_PATH, `${nextLines.join("\n").replace(/\n+$/, "")}\n`, "utf8");
+  await writeLocalEnvValues(nextValues);
 
   process.env.OPENROUTER_API_KEY = settings.openRouterApiKey.trim();
   process.env.OPENROUTER_API_KEY_ENABLED = settings.openRouterApiKeyEnabled ? "true" : "false";

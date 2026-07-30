@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useTransition, type ReactNode } from "react";
 import { RiArrowDownSLine, RiArrowRightSLine, RiCloseLine, RiMusic2Line, RiQuillPenAiLine, RiSearchLine } from "react-icons/ri";
 import { useBodyScrollLock } from "@/components/use-body-scroll-lock";
 import { getMentionRanges } from "@/lib/mention-text";
@@ -90,6 +90,11 @@ export type AdminUserRow = {
   credits: number;
   disabled: boolean;
   generalModeEnabled: boolean;
+  /**
+   * 是否"当前在线"。判定口径见 `src/lib/online-users.ts`（工作台心跳 1 分钟内 + session 未过期 + 未禁用）。
+   * ⚠️ 可选：展开详情走的是 /admin/api/records/user-detail，那边不算在线，缺这个字段不该报错。
+   */
+  isOnline?: boolean;
   generatedImageCount: number;
   generatedVideoCount: number;
   conversationCount: number;
@@ -137,6 +142,8 @@ type AdminUserStats = {
   todayUsers: number;
   normalUsers: number;
   disabledUsers: number;
+  /** 当前在线用户数。判定口径见 src/lib/online-users.ts（与概览页共用同一份）。 */
+  onlineUsers: number;
   totalCredits: number;
 };
 
@@ -146,7 +153,8 @@ function formatNumber(value: number) {
   return value.toLocaleString("en-US");
 }
 
-export function UserAvatar({ user }: { user: AdminUserRow }) {
+// 入参只要这三个字段就够（原来写死 AdminUserRow，导致「帐号功能管理」那种精简行必须强转）。
+export function UserAvatar({ user }: { user: Pick<AdminUserRow, "email" | "nickname" | "avatarUrl"> }) {
   if (user.avatarUrl) {
     return (
       <div className="h-9 w-9 overflow-hidden rounded-full bg-[#f1f1f1]">
@@ -165,7 +173,9 @@ export function UserAvatar({ user }: { user: AdminUserRow }) {
   );
 }
 
-export function SmallStat({ label, value, tone = "default" }: { label: string; value: string; tone?: "default" | "blue" | "red" }) {
+// value 支持传 ReactNode：用户管理那张「正常用户/禁用用户」卡要做到**只有禁用的数字是红的**，
+// 正常数字和斜杠保持默认黑色，所以不能只靠整卡的 tone。
+export function SmallStat({ label, value, tone = "default" }: { label: string; value: ReactNode; tone?: "default" | "blue" | "red" }) {
   const toneClass = tone === "blue" ? "text-[#367cee]" : tone === "red" ? "text-[#e5484d]" : "text-[#111111]";
 
   return (
@@ -778,17 +788,9 @@ export function AdminUsersPanel({ users, stats }: { users: AdminUserRow[]; stats
     });
   }
 
-  function toggleUserGeneralMode(user: AdminUserRow) {
-    startTransition(async () => {
-      const response = await fetch("/admin/api/users/general-mode", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId: user.id, generalModeEnabled: !user.generalModeEnabled }),
-      });
-      if (!response.ok) return;
-      window.location.reload();
-    });
-  }
+  // ⭐ 2026-07-30：原来这里有 toggleUserGeneralMode（表格里的「通用模式」开关）。
+  // 该开关已统一收敛到后台「帐号功能管理」页（和「解除限制」「后台白名单」放在一起），
+  // 本页只在展开详情里以只读文字显示状态。⛔ 别再往用户管理表格里加功能开关列。
 
   return (
     <>
@@ -830,8 +832,18 @@ export function AdminUsersPanel({ users, stats }: { users: AdminUserRow[]; stats
       <div className="grid grid-cols-5 gap-4">
         <SmallStat label="总用户" value={formatNumber(stats.totalUsers)} tone="blue" />
         <SmallStat label="今日新增" value={formatNumber(stats.todayUsers)} />
-        <SmallStat label="正常用户" value={formatNumber(stats.normalUsers)} />
-        <SmallStat label="禁用用户" value={formatNumber(stats.disabledUsers)} tone={stats.disabledUsers > 0 ? "red" : "default"} />
+        {/* 正常/禁用合并成一张卡：`95/7`。⭐ 只有**禁用的那个数字**是红色，正常数字和斜杠保持黑色。 */}
+        <SmallStat
+          label="正常用户/禁用用户"
+          value={
+            <>
+              {formatNumber(stats.normalUsers)}
+              <span className="text-[#111111]">/</span>
+              <span className={stats.disabledUsers > 0 ? "text-[#e5484d]" : undefined}>{formatNumber(stats.disabledUsers)}</span>
+            </>
+          }
+        />
+        <SmallStat label="在线用户" value={formatNumber(stats.onlineUsers)} />
         <SmallStat label="总积分余额" value={formatNumber(stats.totalCredits)} />
       </div>
 
@@ -847,7 +859,6 @@ export function AdminUsersPanel({ users, stats }: { users: AdminUserRow[]; stats
                   "积分",
                   "最近登录 IP / 归属地",
                   "最后登录时间",
-                  "通用模式",
                   "状态",
                 ].map((item, index) => (
                   <th key={`${item}-${index}`} className={`border-b border-[#eeeeee] py-3 font-medium ${index === 0 ? "w-[44px] pl-6 pr-0" : index === 1 ? "w-[135px] pl-2 pr-4" : index === 2 ? "w-[290px] px-4" : index === 3 ? "w-[120px] px-4" : "px-4"}`}>
@@ -878,7 +889,20 @@ export function AdminUsersPanel({ users, stats }: { users: AdminUserRow[]; stats
                         <td className="border-b border-[#f2f2f2] py-3 pl-2 pr-4 font-mono text-[12px] text-[#777777]">{user.id}</td>
                         <td className="border-b border-[#f2f2f2] px-4 py-3">
                           <div className="flex items-center gap-3">
-                            <UserAvatar user={user} />
+                            {/* 头像 + 压在头像下沿的「在线」绿色胶囊（在线判定见 src/lib/online-users.ts）。
+                                ⭐ absolute 定位 + 父级 relative：胶囊脱离文档流，**永远不会把表格行撑高**
+                                   （绝对定位不参与布局计算，所以往下偏多少都不影响行高）。
+                                ⭐ `-bottom-3`(12px) 是"尽量往下"的实际上限：头像下沿到行分隔线约 13.5px
+                                   （= 文字块比头像高出来的 ~1.5px + 单元格 py-3 的 12px），
+                                   再往下就会压到分隔线、侵入下一行。⛔ 别改成 flex 竖排，那会真的撑高行。 */}
+                            <div className="relative shrink-0">
+                              <UserAvatar user={user} />
+                              {user.isOnline ? (
+                                <span className="absolute -bottom-3 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full bg-emerald-500 px-1.5 py-px text-[11px] font-medium leading-4 text-white shadow-[0_1px_3px_rgba(0,0,0,0.18)]">
+                                  在线
+                                </span>
+                              ) : null}
+                            </div>
                             <div className="min-w-0">
                               <div className="truncate text-[13px] font-medium text-[#222222]">{user.email}</div>
                               <div className="mt-0.5 truncate text-[12px] text-[#888888]">{user.nickname || "未设置昵称"}</div>
@@ -896,17 +920,6 @@ export function AdminUsersPanel({ users, stats }: { users: AdminUserRow[]; stats
                         </td>
                         <td className="border-b border-[#f2f2f2] px-4 py-3 text-[#777777]">{user.lastLoginAtLabel}</td>
                         <td className="border-b border-[#f2f2f2] px-4 py-3">
-                          <button
-                            type="button"
-                            disabled={isPending}
-                            onClick={(event) => { event.stopPropagation(); toggleUserGeneralMode(user); }}
-                            className={`relative h-5 w-9 rounded-full transition disabled:cursor-not-allowed disabled:opacity-60 ${user.generalModeEnabled ? "bg-[#367cee]" : "bg-[#d8d8d8]"}`}
-                            aria-label="通用模式开关"
-                          >
-                            <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition ${user.generalModeEnabled ? "left-[18px]" : "left-0.5"}`} />
-                          </button>
-                        </td>
-                        <td className="border-b border-[#f2f2f2] px-4 py-3">
                           <div className="flex items-center gap-2">
                             <span className={`rounded-full px-2.5 py-1 text-[12px] ${user.disabled ? "bg-red-50 text-red-500" : "bg-emerald-50 text-emerald-600"}`}>{user.disabled ? "禁用" : "正常"}</span>
                             <button type="button" disabled={isPending} onClick={(event) => { event.stopPropagation(); toggleUserDisabled(user); }} className="h-7 rounded-[7px] border border-[#e7e7e7] bg-white px-2.5 text-[#555555] transition hover:border-[#367cee] hover:text-[#367cee] disabled:cursor-not-allowed disabled:opacity-50">
@@ -918,7 +931,7 @@ export function AdminUsersPanel({ users, stats }: { users: AdminUserRow[]; stats
 
                       {isExpanded ? (
                         <tr className="bg-[#fbfbfb]">
-                          <td colSpan={8} className="border-b border-[#f2f2f2] px-4 py-4">
+                          <td colSpan={7} className="border-b border-[#f2f2f2] px-4 py-4">
                             {isLoadingDetail ? <AdminDetailLoading label="正在加载用户详情..." /> : detailError ? <div className="px-3 py-8 text-center text-[13px] text-red-500">{detailError}</div> : (
                             <div className="grid grid-cols-4 gap-[5px] px-1 py-1 text-left">
                               <div className="space-y-px">
@@ -962,7 +975,7 @@ export function AdminUsersPanel({ users, stats }: { users: AdminUserRow[]; stats
                 })
               ) : (
                 <tr>
-                  <td colSpan={8} className="px-4 py-12 text-center text-[13px] text-[#999999]">
+                  <td colSpan={7} className="px-4 py-12 text-center text-[13px] text-[#999999]">
                     当前没有匹配用户
                   </td>
                 </tr>

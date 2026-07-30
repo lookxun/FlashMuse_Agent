@@ -26,6 +26,12 @@ export type ChatRequest = {
     style?: string;
     duration?: string;
   };
+  /**
+   * 该账号的「解除限制」开关（后台「帐号功能管理」按账号维护）。
+   * 由 route 层用 `resolveUnlockLimitsForUser(user?.id)` 先算好塞进来；
+   * 不传 = 回落全局 `BYTEPLUS_UNLOCK_LIMITS`（保持改造前行为）。
+   */
+  unlockLimits?: boolean;
 };
 
 export type IntentClassification = {
@@ -400,11 +406,13 @@ function getBytePlusHeaders(apiKey: string) {
   };
 }
 
-function getBytePlusImageModelName(modelId: string, providerKey?: string) {
-  if ((modelId === "byteplus:conversation-image.seedream-4-5" || modelId === "byteplus:conversation-image.seedream-5-0" || modelId === "byteplus:conversation-image.seedream-5-0-pro") && providerKey) return getBytePlusModelForRequest(providerKey);
-  if (modelId === "byteplus:conversation-image.seedream-4-5") return getBytePlusModelForRequest("conversation-image.seedream-4-5");
-  if (modelId === "byteplus:conversation-image.seedream-5-0") return getBytePlusModelForRequest("conversation-image.seedream-5-0");
-  if (modelId === "byteplus:conversation-image.seedream-5-0-pro") return getBytePlusModelForRequest("conversation-image.seedream-5-0-pro");
+// `unlock` = 该账号的「解除限制」开关（后台「帐号功能管理」）。传 undefined 时 getBytePlusModelForRequest
+// 会回落到全局 env，保持改造前行为。
+function getBytePlusImageModelName(modelId: string, providerKey?: string, unlock?: boolean) {
+  if ((modelId === "byteplus:conversation-image.seedream-4-5" || modelId === "byteplus:conversation-image.seedream-5-0" || modelId === "byteplus:conversation-image.seedream-5-0-pro") && providerKey) return getBytePlusModelForRequest(providerKey, unlock);
+  if (modelId === "byteplus:conversation-image.seedream-4-5") return getBytePlusModelForRequest("conversation-image.seedream-4-5", unlock);
+  if (modelId === "byteplus:conversation-image.seedream-5-0") return getBytePlusModelForRequest("conversation-image.seedream-5-0", unlock);
+  if (modelId === "byteplus:conversation-image.seedream-5-0-pro") return getBytePlusModelForRequest("conversation-image.seedream-5-0-pro", unlock);
   return undefined;
 }
 
@@ -422,7 +430,8 @@ function getTextProviderKey(model: string, mode?: ChatRequest["mode"]) {
   return undefined;
 }
 
-function getTextProviderConfig(model: string, mode?: ChatRequest["mode"]) {
+// `unlock` = 该账号的「解除限制」开关；不传则回落全局 env（见 getBytePlusModelForRequest）。
+function getTextProviderConfig(model: string, mode?: ChatRequest["mode"], unlock?: boolean) {
   const providerKey = getTextProviderKey(model, mode);
   const source = mode === "image" || mode === "video" ? "prompt" : "chat";
   if (mode === "general" ? !isGeneralTextModelEnabled(model) : !isTextModelEnabled(model, source)) throw new Error("连接不到模型，请联系管理员！");
@@ -432,7 +441,7 @@ function getTextProviderConfig(model: string, mode?: ChatRequest["mode"]) {
     return {
       url: `${getBytePlusBaseUrl()}/chat/completions`,
       headers: getBytePlusHeaders(apiKey),
-      model: getBytePlusModelForRequest(providerKey),
+      model: getBytePlusModelForRequest(providerKey, unlock),
       provider: "byteplus" as const,
     };
   }
@@ -830,7 +839,7 @@ export async function sendToOpenRouter(request: ChatRequest): Promise<ChatRespon
         ? `当前模式：视频${settingsText ? `。生成参数：${settingsText}` : ""}。用户当前是手动选择视频生成模式，这个模式优先级最高，不能改成图片模式。即使用户原话更像海报、封面、一张图、图片，也要把需求改写成视频提示词。请基于上下文，只输出最终可直接用于视频生成的完整提示词。必须包含：主体外貌/身份、场景、动作变化、镜头运动、光线氛围、画面风格；若用户原话偏静态，要补出合理的动作与镜头变化。控制在 80-160 个中文字符。不要解释，不能说自己无法生成，不能让用户复制到其它工具，不能输出标题或“视频提示词：”前缀。`
         : `当前模式：图片${settingsText ? `。生成参数：${settingsText}` : ""}。用户当前是手动选择图片生成模式，这个模式优先级最高，不能改成视频模式。即使用户原话里出现“视频”“一段”“镜头”“运镜”“动起来”“动画”等词，也必须把需求改写成适合单帧图片生成的提示词：保留主体、动作瞬间、场景、构图、氛围、风格，把时序和镜头语言改成定格画面表达。请基于上下文，只输出最终可直接用于图片生成的提示词，不要解释，不能说自己无法生成，不能让用户复制到其它工具，不能输出“通用生图提示词”之类的说明。`;
 
-  const providerConfig = getTextProviderConfig(request.model, request.mode);
+  const providerConfig = getTextProviderConfig(request.model, request.mode, request.unlockLimits);
   const messages = [
         {
           role: "system" as const,
@@ -1006,8 +1015,8 @@ function parseAgentPlan(text: string): Omit<AgentPlan, "usage"> {
   }
 }
 
-export async function planAgentTask(request: Pick<ChatRequest, "model" | "messages"> & { mode?: "agent" | "general" }): Promise<AgentPlan> {
-  const providerConfig = getTextProviderConfig(request.model, request.mode === "general" ? "general" : "agent");
+export async function planAgentTask(request: Pick<ChatRequest, "model" | "messages" | "unlockLimits"> & { mode?: "agent" | "general" }): Promise<AgentPlan> {
+  const providerConfig = getTextProviderConfig(request.model, request.mode === "general" ? "general" : "agent", request.unlockLimits);
   const memoryMessages = request.messages.filter((message) => message.content.includes("长期工作记忆摘要")).slice(-1);
   const recentMessages = request.messages.filter((message) => !message.content.includes("长期工作记忆摘要")).slice(-10);
   const body = {
@@ -1040,8 +1049,8 @@ export async function planAgentTask(request: Pick<ChatRequest, "model" | "messag
   return { ...parseAgentPlan(data.choices?.[0]?.message?.content ?? ""), usage: await getUsageMeta(data, providerConfig.provider === "openrouter" ? request.model : providerConfig.model, providerConfig.provider === "openrouter") };
 }
 
-export async function classifyOpenRouterIntent(request: Pick<ChatRequest, "model" | "messages">): Promise<IntentClassification> {
-  const providerConfig = getTextProviderConfig(request.model, "agent");
+export async function classifyOpenRouterIntent(request: Pick<ChatRequest, "model" | "messages" | "unlockLimits">): Promise<IntentClassification> {
+  const providerConfig = getTextProviderConfig(request.model, "agent", request.unlockLimits);
   const body = {
     model: providerConfig.model,
     messages: [
@@ -1106,6 +1115,12 @@ type ImageGenerationOptions = {
   candidateMode?: "all" | "best";
   requestId?: string;
   userId?: string;
+  /**
+   * 该账号的「解除限制」开关（后台「帐号功能管理」按账号维护）。
+   * 由 route / job 层用 `resolveUnlockLimitsForUser(userId)` 先算好传进来；
+   * 不传 = 回落全局 `BYTEPLUS_UNLOCK_LIMITS`（保持改造前行为）。
+   */
+  unlockLimits?: boolean;
   // 编辑类功能（去背景/编辑元素）需要真透明输出：gpt 走 background:"transparent"+output_format:"png"，
   // 落库时不能把 png flatten 成白底 jpg（见 local-assets keepTransparent 旁路）。
   transparent?: boolean;
@@ -1243,7 +1258,7 @@ async function generateBytePlusImage(prompt: string, referenceImages: string[] =
   if (!apiKey) throw new Error("缺少 BytePlus API Key");
 
   const model = options.model || DEFAULT_IMAGE_MODEL;
-  const bytePlusModel = getBytePlusImageModelName(model, options.bytePlusProviderKey);
+  const bytePlusModel = getBytePlusImageModelName(model, options.bytePlusProviderKey, options.unlockLimits);
   if (!bytePlusModel) throw new Error("连接不到模型，请联系管理员！");
 
   const count = Math.min(4, Math.max(1, Math.floor(options.count ?? 1)));
@@ -1748,7 +1763,7 @@ async function generateGptImage2(prompt: string, referenceImages: string[], opti
 
 export async function generateOpenRouterImage(prompt: string, referenceImages: string[] = [], options: ImageGenerationOptions = {}) {
   const model = options.model || process.env.OPENROUTER_IMAGE_MODEL || DEFAULT_IMAGE_MODEL;
-  const bytePlusImageModel = getBytePlusImageModelName(model, options.bytePlusProviderKey);
+  const bytePlusImageModel = getBytePlusImageModelName(model, options.bytePlusProviderKey, options.unlockLimits);
   if (bytePlusImageModel) return generateBytePlusImage(prompt, referenceImages, { ...options, model });
 
   const apiKey = getOpenRouterApiKey();

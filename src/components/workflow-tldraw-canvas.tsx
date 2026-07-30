@@ -24,7 +24,8 @@ type CreditResult = {
 type WorkflowCanvasProps = {
   workflowId: string;
   value?: WorkflowCanvasState;
-  onChange: (next: WorkflowCanvasState) => void;
+  /** meta.userInitiated：变更是否由用户造成（打开时的归一化写回为 false）。父级据此决定是否置顶。 */
+  onChange: (next: WorkflowCanvasState, meta?: { userInitiated?: boolean }) => void;
   workflowTitle: string;
   onCredit?: (credit?: CreditResult) => void;
   onGeneratedMedia?: (media: { nodeId: string; kind: "image" | "video"; urls: string[]; reservedNames?: string[]; posterUrl?: string; sourcePrompt: string; model?: ModelName; ratio?: string; resolution?: string; duration?: string; dimensions?: Record<string, { width: number; height: number }>; durationSeconds?: Record<string, number>; silent?: boolean; promptOptimization?: { originalPrompt: string; optimizedPrompt: string; attemptsUsed: number; optimizerModel: string } }) => void;

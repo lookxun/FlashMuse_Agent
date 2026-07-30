@@ -4,6 +4,7 @@ import { assertUserCanUseCredits, chargeCredits, isUnauthenticatedError, UNAUTHE
 import { createCodedApiError } from "@/lib/error-code";
 import { DEFAULT_CHAT_MODEL, isModelName } from "@/lib/models";
 import { sendToOpenRouter } from "@/lib/openrouter";
+import { resolveUnlockLimitsForUser } from "@/lib/account-features";
 
 export const runtime = "nodejs";
 
@@ -47,6 +48,7 @@ export async function POST(request: Request) {
       model,
       mode: "chat",
       messages: [{ role: "user", content: prompt }],
+      unlockLimits: await resolveUnlockLimitsForUser(user?.id),
     });
     const credit = user ? await chargeCredits(user.id, "text", result.usage, { conversationId: body.conversationId, conversationTitle: body.conversationTitle, requestId: body.requestId ? `${body.requestId}:memory` : undefined, label: "长期记忆摘要", model }) : undefined;
 
