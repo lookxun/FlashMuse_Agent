@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getAdminEmails, isAdminEmail } from "@/lib/admin";
 import { getCurrentAdminEmail } from "@/lib/admin-auth";
 import { normalizeEmail } from "@/lib/auth";
+import { PERMANENT_ADMIN_EMAILS } from "@/lib/permanent-admins";
 import { prisma } from "@/lib/prisma";
 import { updateAdminEmailWhitelist } from "@/lib/system-settings";
 
@@ -18,7 +19,9 @@ export const runtime = "nodejs";
  *  - `unlockLimits`  → User.unlockLimitsEnabled
  *  - `adminWhitelist`→ `.env.local` 的 ADMIN_EMAILS（不在 User 表上，见 admin-whitelist/route.ts）
  *
- * ⛔ 白名单批量关闭时会**保留当前操作者自己**，否则一键关掉等于把自己锁在后台外面。
+ * ⛔ 白名单批量关闭时会**保留当前操作者自己 + 永久管理员**（`lib/permanent-admins.ts`），
+ *    否则一键关掉等于把自己（甚至所有人）锁在后台外面。
+ *    ⭐ 其实 `updateAdminEmailWhitelist` 落盘时还会再补一次永久管理员（双保险），这里写明是为了可读。
  */
 export async function POST(request: Request) {
   const email = await getCurrentAdminEmail();
@@ -41,8 +44,8 @@ export async function POST(request: Request) {
   if (feature === "adminWhitelist") {
     const self = normalizeEmail(email);
     if (!enabled) {
-      // 全关：只留自己，避免把自己也踢出去。
-      const saved = await updateAdminEmailWhitelist([self]);
+      // 全关：只留自己 + 永久管理员，避免把自己或最后一个入口也踢出去。
+      const saved = await updateAdminEmailWhitelist([self, ...PERMANENT_ADMIN_EMAILS]);
       return NextResponse.json({ feature, enabled, affected: saved.length });
     }
     const users = await prisma.user.findMany({ select: { email: true } });

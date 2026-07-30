@@ -2,7 +2,103 @@
 
 > 本批交接文档 2026-07-21 重建。更早的详细流水在 `historical-handover-docs-last-used-2026-07-21/`（尤其 `CHANGELOG.md` 580KB、`01-current-status.md`、`05-next-actions.md`）。遇到需要历史上下文的难题再翻归档。
 
-## ✅ 当前状态（2026-07-30 第十九次会话：**v1.0.0.55 已上线两服，四方同步**）
+## ✅ 当前状态（2026-07-30 第二十次会话末：**四方同步 v1.0.0.56，已部署两服**）
+
+- ✅ **四方同步：正式服 = 测试服 = 本地 = GitHub = `v1.0.0.56`**，四域名 main/api/ali/static 全 200。
+  **无待部署、无未推、无 Prisma 迁移**（两服 entrypoint 均 `No pending migrations to apply.`）。
+- 正式服备份：`/opt/flashmuse/app-backups/20260730-203104-presync-v56`。
+- **本批上线内容 = 下面第十九次会话攒的那两批**（A 永久后台白名单 + B 工作区响应体瘦身 ①③④）
+  ＋ **4 处 nginx 配置**（腾讯正式/测试、阿里正式/测试）。
+- ⭐ **两服都真上号巡检过、0 控制台 error**：
+  - **测试服 11 项验收全过**（清单见 `05-next-actions.md` 历史节），含真跑生图（扣 8 分）+ 真跑生视频（Kling v3.0 Standard 5s，扣 44 分）。
+  - **正式服**：登录 / 对话模式 / 工作流点节点不崩 / 资产库 / **真跑生图成功**（Gemini 3 Pro Image Preview，扣 10 分）/ 后台各页 / 白名单置灰 + 接口 400。
+- ⭐⭐ **本批三条最危险的验收，全部实测通过**（都是"改错了会真删用户数据"的）：
+  1. **`feedbackLogs` PUT 合并**：库里 0 → 点反馈 →1 → 再点 →2 → **刷新页面**（此时前端手里没有 feedbackLogs）再点 →**3**。
+     ⭐ 即"下行不发 + PUT 只带新增"这条链路**不会抹掉历史**，跨刷新也不会。
+  2. **消息投影的 PUT 恢复**：库里 82 条消息，被投影掉的字段
+     （`originalPrompt` 44 / `itemPrompts` 11 / `videoPrompts` 9）**一条都没丢**。
+  3. **提示词 UI**：23 条历史消息的提示词全部正常显示（含超长提示词、@引用、参考图），
+     点「使用提示词」能正确回填输入框。
+- ⭐ **gzip 四处都验过生效**（`Content-Encoding: gzip`）；⭐ **落盘临时文件告警从 8 条 → 0 条**，部署后无 5xx。
+- ⛔ **别的项目没被影响**：阿里正式那份 conf 用的是幂等增量脚本（插入 2 处），
+  `/tiantangqiyuan/` 部署后仍 200。
+
+### ⭐⭐ M025（②工作流 canvas 瘦身）的结论：**不做了，收益已被 gzip 吃掉**
+
+用户本次要求"部署完再判断 M025 还值不值得"。**实测数据说不值得**（脚本 `.runtime/m025.js`，正式服真实数据）：
+
+| 用户 | canvas 未压缩 | **gzip 后** | 压缩率 | M025 做完还能再省 |
+|---|---|---|---|---|
+| ID_868181（9 工作流/429 节点） | 655.4KB | **105.1KB** | 16.0% | 31.0KB（29.5%） |
+| ID_686996（18 工作流/103 节点） | 447.6KB | 111.3KB | 24.9% | 17.9KB（16.1%） |
+| ID_708423 | 325.9KB | 64.2KB | 19.7% | 14.0KB（21.7%） |
+| ID_636611 | 159.9KB | 29.2KB | 18.3% | 2.4KB（8.3%） |
+
+**判断依据（三条）**：
+1. **病根已经堵死**：那 17~30 秒的根因是响应撑爆 `proxy_buffers`（32KB）被落盘。
+   现在缓冲区是 **32×32k = 1MB**，而最大用户压缩后只有约 105KB → **差 10 倍余量，物理上不会再落盘**。实测告警已归 0。
+2. **M025 的剩余收益只有 ~31KB**（最重的那个用户，且只有他这么大），**对总耗时基本无感**。
+3. **风险与收益严重不成比例**：它要改**前端工作流加载路径** + 新增"按需拉单个 canvas"接口，
+   而 `workflowItems` 是**整体覆盖回写**的（`chat-workbench.tsx:10329`），
+   下行剥字段一旦有一处 PUT 侧没恢复上 = **真删用户画布**。
+
+⭐ **M025 已在 `06-memo-tasks.md` 里标成"不做（收益已被 gzip 吃掉）"**，方案原文保留备查。
+**以后如果又出现"打开工作台慢"，先量 gzip 后的字节和 nginx 落盘告警，别直接翻出 M025 来做。**
+
+## 历史状态（2026-07-30 第十九次会话末：当时本地有两批待部署，线上 v1.0.0.55）
+
+- 线上（正式服 = 测试服 = GitHub）= **`v1.0.0.55`**；本地多了下面**两批**改动，**未部署、未 bump**，
+  `npx tsc --noEmit` 全绿、**无 Prisma 迁移**。
+- ✅ **已于第二十次会话全部部署完毕**（v1.0.0.56 两服上线 + 实机验收 + nginx 4 处 + M025 判定为不做）。
+  下面两批的文件清单只作**"本批改了什么"的速查**留档，**不要再照着部署一遍**。
+
+### （已上线）批次 A：永久后台白名单
+
+- **一句话**：`lookxun@163.com` 变成**永久管理员** —— 后台「帐号功能管理」里它那行的「后台白名单」开关
+  **置灰、永远开着、谁也关不掉**，保证**后台永远有一个账号能进**
+  （避免"手滑把最后一个管理员关掉 = 全世界进不了后台、只能 ssh 改文件救"的死局）。
+
+| 文件 | 干什么 |
+|---|---|
+| `src/lib/permanent-admins.ts` 🆕 | **唯一来源** `PERMANENT_ADMIN_EMAILS` + `isPermanentAdminEmail()`。⚠️ **故意零 import**（`admin.ts` 依赖 `system-settings.ts`，常量放这两个里任一个都会循环依赖） |
+| `src/lib/admin.ts` | `getAdminEmails()` 无条件把永久管理员并进清单 → **即使 `.env.local` 被改坏/写没了也还是管理员**（最底层兜底） |
+| `src/lib/system-settings.ts` | `updateAdminEmailWhitelist()` 落盘时强制补回（第二道保险） |
+| `src/app/admin/api/users/admin-whitelist/route.ts` | 单账号关闭时直接 400 拒绝（防直接打接口绕过前端置灰） |
+| `src/app/admin/api/users/feature-bulk/route.ts` | 「一键全关」时保留 `self + 永久管理员` |
+| `src/app/admin/page.tsx` + `admin-account-features-panel.tsx` | 服务端算 `adminWhitelistLocked` 传给面板 → 那行开关 `disabled` + hover 说明。**前端不硬编码邮箱** |
+
+⭐ **四个咽喉全部收口**（`grep ADMIN_EMAILS` 复核过，没有任何地方绕过 `getAdminEmails()` 直读 env）。
+
+### （已上线）批次 B：工作区响应体瘦身（M024 的 ①③④）
+
+- **一句话**：打开工作台那个接口的响应从最大 **1.19MB** 砍下来，实测**总省 45.2%**（单用户最高省 94.7%），
+  治的是「打开工作台偶发转圈 17~30 秒」。根因排查全文 + 实测数据在 **`06-memo-tasks.md` 的 M024**。
+
+| 文件 | 干什么 |
+|---|---|
+| `src/app/api/workspace-state/route.ts` | ①`feedbackLogs` 下行不再发（前端确认不读）+ PUT 侧 `mergeFeedbackLogs()` 按 id 合并保留，数据一条不丢 |
+| `src/lib/workspace-sessions.ts` | ③a `projectWorkspaceMessageForClient()` 把**重复的提示词副本**不下发（靠前端已有回落链兜住，语义不变）＋配对的 `restoreProjectedMessageFields()` 在 PUT 时补回库；③b 消息上限 **50 → 30** |
+| `nginx/flashmuse.conf` | ④ 腾讯正式：大响应不落盘（`proxy_buffers` 32×32k + `proxy_max_temp_file_size 0`）+ JSON gzip。⚠️ **顺手把仓库这份和服务器实际内容对齐了**（原来仓库少了 443 server 块和 CORS 头） |
+| `deploy/staging/flashmuse-staging.conf` | ④ 腾讯测试服，同上 |
+| `deploy/staging/flashmuse-test-8080.conf` | ④ 阿里测试服入口。⚠️ 这台 `nginx.conf` 的 `gzip_types` **整段是注释的** → JSON 一直没被压过，必须在 server 块显式写 |
+| `deploy/ali/ali-add-proxy-buffers.sh` 🆕 | ④ 阿里**正式**（ali/static）用的**幂等增量脚本**（自带备份 + `nginx -t` + 失败自动回滚）。⛔ 为什么不整份覆盖：那份 conf 里**还有别的项目**（`/tiantangqiyuan/`），整份覆盖会违反「绝不影响其它项目」铁律 |
+
+- ⛔⛔ **三个"改的时候差点踩"的坑，改这块前必读 M024 的「坑」小节**：
+  ① `feedbackLogs` 不能在 `baseState` 上剥（它会**回写数据库**，剥了等于真删用户数据）；
+  ② 下行投影**必须配一个 PUT 侧恢复**（`messageJson` 是整体覆盖，前端存回瘦身版就等于删字段）；
+  ③ 投影只能"**整体相等才省**"，逐项省会让 `itemPrompts` 下标错位/回落到另一条提示词。
+- ⭐ **剩下那个 ②（工作流 canvas 瘦身 = M025）已于第二十次会话判定「不做」** ——
+  gzip 上线后它的收益只剩 ~31KB，而病根已被 `proxy_buffers` 堵死。**详见本文件顶部那张表。**
+- ⭐ **验证工具留档**：`scripts/measure-workspace-state-size.mjs`（**已进 git**，用法写在文件头注释里：
+  scp 进容器 `node mw.mjs` 跑，会自动挑出重度用户并打印改动前后字节数 + 各字段占比）。
+
+### ⭐ 另外查清的两件事（结论在 `06-memo-tasks.md`）
+
+- **M024** = 上面批次 B 的根因（响应体 1.19MB 撑爆 nginx 32KB 缓冲 → 落盘临时文件 → 那 17~30 秒）。
+- **502** = 纯**部署窗口**现象（`connect() failed (111: Connection refused)`，容器没在监听），**不是 bug**；
+  但它**确实会打到真实用户**（今天两个窗口里 3 个客户端受影响，含一次 `PUT /api/workspace-state` 保存丢失）。
+
+## 历史状态（2026-07-30 第十九次会话：**v1.0.0.55 已上线两服，四方同步**）
 
 - ✅ **四方同步：正式服 = 测试服 = 本地 = GitHub = `v1.0.0.55`**（commit `e6a66e0`），四域名 main/api/ali/static 全 200。
   **无待部署、无未推。**

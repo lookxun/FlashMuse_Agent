@@ -4,6 +4,50 @@
 This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code. Heed deprecation notices.
 <!-- END:nextjs-agent-rules -->
 
+# 铁律：查"慢/卡"这类性能问题，先分层掐表 + 逐层量字节，禁止看代码猜（2026-07-30 加）
+
+排查「某个接口慢」时，**先量再说**，顺序固定：
+
+1. **分层掐表**把范围缩到一层：容器内直打 app → 宿主打 nginx → 本机走 TLS → 跨境。
+   本次实测 39ms / 2ms / 20ms / 0.43s，**四层都快 = 问题在"响应体大小"而不是"处理慢"**。
+2. **nginx 日志按 body 字节排序**（`awk` 取第 10 段），一眼看出哪个接口最大、多大。
+   ⭐ nginx 会自己把病因写在 warn 里：`an upstream response is buffered to a temporary file`
+   = **响应撑爆了 `proxy_buffers`（默认才 8×4k=32KB），被落盘到磁盘再转发** —— 这就是本次那 17~30 秒。
+3. **逐层量字节**：顶层各字段 → 钻进最大那个 → 再钻一层。本次钻了三层才发现"同一份提示词存了 4 份"。
+   ⛔ **别在第一层就下结论**：我第一次判断"消息一次全发"就是错的（消息早就有分页），**是用户纠正的**。
+4. **改完必须再量一次**（拿真实重度用户数据跑，见 `.runtime/verify-gain.js`），否则不知道有没有效果、还剩多少。
+5. ⭐⭐ **要不要"为了省字节改代码"，必须先量 gzip 后的大小，别拿未压缩字节做决策**（2026-07-30 加）。
+   本次实测：工作流 canvas 未压缩 **655KB**，gzip 后只有 **105KB（16%）** ——
+   因为 `data.prompt` 是纯中文提示词文本还大量重复，**正好是 gzip 最擅长的东西**。
+   于是那个"看起来能省 655KB"的优化（M025）**收益只剩 ~31KB，被直接否掉了**。
+   姿势：`zlib.gzipSync(Buffer.from(JSON.stringify(x)), { level: 5 }).length`（模板 `.runtime/m025.js`）。
+   ⭐ 顺序永远是「**先上 gzip + 放大缓冲，再谈剥字段**」—— 前者零风险，后者要动前端读写链路、改错就删用户数据。
+6. ⭐ **怀疑"新版本变慢/报错"，先拿还没升级的那台做对照** ——
+   本次靠"部署前的 v54 也有 30.8s 的 401"排除了"是新代码引起的"。
+   ⭐ 同理，**怀疑"数据被自己弄丢了"时，先找一个"这次没被碰过"的行/用户做对照**
+   （2026-07-30：查库发现 `feedbackLogs` 是 0，差点以为被自己的 PUT 洗了；
+   靠另一个没登录过的用户那行 `updatedAt` 还是部署前的时间、也是 0，才确认本来就是空的）。
+7. ⭐ **502 `connect() failed (111: Connection refused)` 基本都是部署窗口**（容器没在监听），不是 bug；
+   判据 = 时间戳全挤在 `up -d --build` / `force-recreate` 那几秒。⛔ 别和"慢"混成一个问题查。
+8. ⭐ **覆盖服务器上的 nginx conf 前，先看 diff 里有没有 `<` 行**（2026-07-30 加）：
+   全是 `>`（纯新增）= 仓库那份是服务器的严格超集、期间没人手改过，才敢覆盖；
+   出现 `<` = 服务器被手改过，**先搞清楚再动**。
+
+**配套的代码铁律：下行做了"投影/瘦身"，就必须配一个 PUT 侧的"字段恢复"。**
+因为 `messageJson` / `canvasJson` 这类都是**整体覆盖**保存的，前端把瘦身版存回来就等于**删库**。
+现成的成对实现照抄：`workspace-sessions.ts` 的 `projectWorkspaceMessageForClient()` ↔ `restoreProjectedMessageFields()`、
+`workspace-workflows.ts` 的 `mergeWorkflowCanvasMedia()`。
+⛔ 投影只能"**整体相等才省**"，逐项省会让按下标取的数组（`itemPrompts`）错位、或回落到另一条数据上。
+⛔ **别在会被回写数据库的对象上剥字段**（`route.ts` 的 `baseState` 就会回写，剥了等于真删用户数据）。
+
+# 铁律：nginx 配置以仓库为准，禁止只在服务器手改（2026-07-30 加）
+
+nginx 配置在仓库里有副本（`nginx/flashmuse.conf`、`deploy/staging/*.conf`、`deploy/ali/`）。
+**先改仓库、再部署过去**；2026-07-30 发现仓库那份已经和服务器漂移了（服务器多了 443 server 块和 CORS 头）。
+⛔ **阿里正式那份 `flashmuse-static-ip` 不许整份覆盖** —— 它里面还有**别的项目**的配置（`/tiantangqiyuan/`），
+整份覆盖会违反下面"绝不能影响其它项目"的约定。要改就用幂等增量脚本
+（`deploy/ali/ali-add-proxy-buffers.sh` 是模板：备份 → 只插需要的几行 → `nginx -t` → 失败自动回滚 → 可重复跑）。
+
 # 铁律：排查掉一批红字失败原因，就必须去后台归档（2026-07-27 加）
 
 后台「运营概览 → 失败原因」里的红字，每查清一类根因并修掉/堵上后，**必须把这批历史失败事件归档**：

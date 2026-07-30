@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { UploadKind, UploadRuleOverrides } from "@/lib/upload-rules";
+import { PERMANENT_ADMIN_EMAILS } from "@/lib/permanent-admins";
 
 export const BYTEPLUS_CONVERSATION_IMAGE_MODEL_KEYS: Record<string, string> = {
   "byteplus:conversation-image.seedream-4-5": "conversation-image.seedream-4-5",
@@ -446,9 +447,12 @@ async function writeLocalEnvValues(nextValues: Map<string, string>) {
  * 「后台白名单」= 允许进入 `/admin` 的邮箱清单（`ADMIN_EMAILS`）。
  * 后台「帐号功能管理」页按账号开关它，落到 `.env.local`（服务器上那份是挂载的持久文件）。
  * 写完同步 `process.env`，当前进程立即生效、不用重启。
+ *
+ * ⭐⭐ **落盘时强制补回 `PERMANENT_ADMIN_EMAILS`**（`lib/admin.ts` 的唯一来源）——
+ * 这是"后台永远有人能进"的最后一道保险：不管调用方传进来的清单少了谁，永久账号都写得回去。
  */
 export async function updateAdminEmailWhitelist(emails: string[]) {
-  const normalized = [...new Set(emails.map((item) => item.trim().toLowerCase()).filter(Boolean))];
+  const normalized = [...new Set([...PERMANENT_ADMIN_EMAILS, ...emails].map((item) => item.trim().toLowerCase()).filter(Boolean))];
   const value = normalized.join(",");
   await writeLocalEnvValues(new Map([["ADMIN_EMAILS", formatEnvValue(value)]]));
   process.env.ADMIN_EMAILS = value;

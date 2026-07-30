@@ -2,30 +2,255 @@
 
 > 历史 END-OF-SESSION 记录都在 `historical-handover-docs-last-used-2026-07-21/05-next-actions.md`（很长）。这里只留当前有效待办。
 
-## ✅ 当前状态（2026-07-30 第十九次会话）
+## ✅ 当前状态：**无待部署、无未推**（2026-07-30 第二十次会话末）
 
-✅ **四方同步：正式服 = 测试服 = 本地 = GitHub = `v1.0.0.55`**（commit `e6a66e0`），四域名全 200，无待部署、无未推。
-✅ **那条 Prisma 迁移两台都成功应用**；**部署后那两件手工事两台都做完了**。
-✅ **两台都真上号巡检过、0 控制台 error**（含真跑生图 + 真跑生视频），**后台新页 14 项验收全过**。
+**四方同步 = `v1.0.0.56`**（正式服 = 测试服 = 本地 = GitHub），四域名全 200，无 Prisma 迁移。
+本次做完的事、实测数据、M025 的最终结论 → **`01-current-status.md` 顶部**。
 
-## 🎯 接手第一件事：**什么都别急着改**
+### ⭐ 接手可以做的事（按优先级，都不急）
 
-没有积压待办。正确动作：
+1. **红字排查**：仍是 v54 那一轮，**用户交代攒多了再查、别主动查、⛔ 别跑归档脚本**。
+   去 `/admin?tab=failures` 看实时数字（上次快照：正式服待排查 9 条 / 全是审核类 / 兜底桶 0 条）。
+   方法论在 `07-red-error-triage-and-archive.md`。
+2. ⛔ **M025 已判定不做**（②工作流 canvas 瘦身）—— 收益被 gzip 吃掉了，
+   **别再翻出来做**，理由和实测数据在 `06-memo-tasks.md` 的 M025。
+3. **[已拍板不主动做] M023**：给 `DATABASE_URL` 显式配 `connection_limit`，等它下次真犯病再取现场数据。
+4. 存量小问题见本文件下方「存量待办」。
 
-1. 去 `/admin?tab=failures` 看新红字攒了多少（第十九次会话末：正式服 **9 条 / 2 种、兜底桶 0**，全是改不了的审核类）；
-2. **量还很少 → 直接跟用户说"红字还没攒够，建议再等等"**，然后等派活（⛔ **别跑归档脚本**）；
-3. 量够了 → 按 `07-red-error-triage-and-archive.md` 排查。
+### ⭐ 本批留下的可复用工具（都在 `.runtime/`，不进 git）
 
-### ⚠️ 唯一需要留个心眼的运营点（本批的副作用，不是 bug）
+| 文件 | 干什么 |
+|---|---|
+| `m025.js` | 量每个用户 canvas 的**未压缩 vs gzip** 字节 + 模拟瘦身后能再省多少（docker cp 进容器跑） |
+| `baseline-prod.sh` / `after-prod.sh` | nginx 日志按响应体字节排序 Top10 + 数「落盘临时文件」告警条数 + 查 5xx |
+| `check-feedback.sh` | 查某用户 `UserWorkspaceState.state->'feedbackLogs'` 条数（验 PUT 合并有没有抹数据） |
+| `push-staging-nginx.sh` / `push-ali-test-nginx.sh` / `push-prod-nginx.sh` | 三处 nginx 的部署脚本（**自带备份 + `nginx -t` + 失败自动回滚 + 先打 diff**） |
+| `prodsync56.sh` / `syncali56.sh` / `pub56prod.sh` / `pub56.sh` | 正式服备份+对齐 / 静态同步阿里 / 发布版本信号+健康检查 / 测试服发布信号 |
 
-迁移让「解除限制」**全站默认关**，正式服目前**只有 `lookxun@163.com` 开着**，其余 36 个账号都是关的。
-原来靠全局开关吃专属 Endpoint ID 的用户，从 v55 上线起内容敏感的提示词会开始被平台拒。
-→ **有用户反馈"以前能出图现在被拒"，去 `/admin?tab=account-features` 把他的「解除限制」打开即可。**
+⭐ **`.runtime/m025.js` 那个"顺手量 gzip"的姿势值得记住**：
+以后判断"要不要为了省字节改代码"，**先用 `zlib.gzipSync` 量一遍压缩后的大小**，
+别拿未压缩字节做决策 —— 本次就是这一步把一个"看起来省 655KB"的优化否掉了。
 
-### 唯一一个存量项（已拍板：不主动做，等它下次犯病）
+---
 
-**M023：给 `DATABASE_URL` 显式配 `connection_limit`**（`06-memo-tasks.md`）。
-⛔ 别照抄"25~30"（病因 A/B 解法相反）、别改 `.env.local`（会被 compose 覆盖）、别想在测试服压测求这个数。
+## 历史：第十九次会话攒的那批部署清单（已于第二十次会话执行完毕，留档备查）
+
+> ✅ **本节已全部执行完毕**（v1.0.0.56 两服上线 + nginx 4 处 + 11 项验收 + M025 判定）。
+> 下面原文只作为「一次含 nginx 的完整部署交接长什么样」的模板留档，**不要再照着跑一遍**。
+
+## 🚀🚀 （已完成）接手第一件事：**直接部署这两批**（2026-07-30 第十九次会话末，用户已明确授权）
+
+> ✅ **不用再问用户要不要部署。** 用户 2026-07-30 明确交代「保证无缝接让下个 AI 部署」+ 确认「下个 AI 可以直接部署」。
+> 已授权：**先测试服 → 实机验收 → 再原样同步正式服**（铁律顺序不能跳）。
+> ⭐ 本批**比平常多一步**：除了代码，还要**部署 4 处 nginx 配置**（第 2 步，命令可直接抄）。
+> ⛔ **只部署"已做完的"那些**（批次 A + B 的 ①③④）。**② 工作流 canvas 瘦身没做**（= M025，等用户拍板），
+> 别顺手去动它。
+> 服务器信息 / 命令模板照抄 **`03-deploy-and-servers.md`**；两批改动的文件清单在 `01-current-status.md` 顶部；
+> 做了什么在 `CHANGELOG.md` 顶部。
+
+### 第 0 步：确认起点
+
+| 位置 | 版本 | 状态 |
+|---|---|---|
+| 线上（正式服 = 测试服 = GitHub） | `v1.0.0.55` | 三者一致 |
+| 本地 | `v1.0.0.55` + **两批未提交** | **没 bump**；`npx tsc --noEmit` 全绿；**无 Prisma 迁移** |
+
+```
+git status --short
+```
+应看到（17 改 + 3 新增）：
+```
+ M AGENTS.md                                      本次新增两条铁律
+ M deploy/staging/flashmuse-staging.conf          ④ nginx（腾讯测试服）
+ M deploy/staging/flashmuse-test-8080.conf        ④ nginx（阿里测试服入口）
+ M nginx/flashmuse.conf                           ④ nginx（腾讯正式）+ 顺手对齐了仓库漂移
+ M handover/00-README.md
+ M handover/01-current-status.md
+ M handover/05-next-actions.md
+ M handover/06-memo-tasks.md
+ M handover/CHANGELOG.md
+ M src/app/admin/admin-account-features-panel.tsx A 白名单开关置灰
+ M src/app/admin/api/users/admin-whitelist/route.ts A 拒绝关闭永久管理员
+ M src/app/admin/api/users/feature-bulk/route.ts   A 一键全关时保留永久管理员
+ M src/app/admin/page.tsx                          A 传 adminWhitelistLocked
+ M src/app/api/workspace-state/route.ts            B ① feedbackLogs 不下发 + PUT 合并
+ M src/lib/admin.ts                                A getAdminEmails 并入永久管理员
+ M src/lib/system-settings.ts                      A 落盘时补回永久管理员
+ M src/lib/workspace-sessions.ts                   B ③ 投影 + PUT 恢复 + 上限 50→30
+?? deploy/ali/ali-add-proxy-buffers.sh             ④ 阿里正式的幂等增量脚本
+?? scripts/measure-workspace-state-size.mjs        量响应体大小/验证收益的工具
+?? src/lib/permanent-admins.ts                     A 唯一来源常量
+```
+
+⚠️⚠️ **打 tgz 时别漏这三个新文件**（尤其 `src/lib/permanent-admins.ts`，漏了 build 直接失败）。
+⚠️ `nginx/` 和 `deploy/` 里那几个 conf **不在 app 的 tgz 里**，是**第 2 步单独部署**的，别混在一起。
+
+### 第 1 步：部署测试服（代码）
+照 `03-deploy-and-servers.md`「测试服部署流程」。要点：
+1. `node scripts/bump-version.mjs` → **v1.0.0.55 → v1.0.0.56**（⚠️ 只在这一步 bump）
+2. `npx tsc --noEmit` 必须全绿
+3. 打 tgz（**含 `src/lib/permanent-admins.ts`**）→ scp → 解到 `/opt/flashmuse-staging/app`
+4. `nohup sudo docker compose up -d --build staging-app > /tmp/sb.log 2>&1 &`（后台跑 + 轮询 tail）
+   - **无迁移**，entrypoint 应输出 "No pending migrations"
+5. `sudo bash /opt/flashmuse-staging/sync-ali-test.sh`
+6. sed 改 `PUBLISHED_APP_VERSION: "v1.0.0.56"` + `force-recreate staging-app`
+
+### 第 2 步：⭐ 部署 nginx（本批特有，**代码部署完再做**；下面命令可直接抄）
+
+> 统一前置（下文 `$PEM` 就指它）：
+> `$PEM = "C:\Users\ASUS\AppData\Local\Temp\opencode\CinematicFlow.pem"`
+> ⚠️ 4 处都要做：腾讯测试 / 阿里测试 / 腾讯正式 / 阿里正式。**测试服那两处先做、验证完再做正式那两处。**
+
+**2.1 腾讯测试服（容器 `flashmuse-staging-staging-nginx-1`）**
+```powershell
+scp -i $PEM -o StrictHostKeyChecking=no "deploy\staging\flashmuse-staging.conf" ubuntu@119.28.116.16:/tmp/
+ssh -i $PEM -o StrictHostKeyChecking=no ubuntu@119.28.116.16 @'
+set -e
+sudo cp /opt/flashmuse-staging/data/nginx/flashmuse-staging.conf /opt/flashmuse-staging/data/nginx/flashmuse-staging.conf.bak.$(date +%Y%m%d-%H%M%S)
+sudo sed -i "s/\r$//" /tmp/flashmuse-staging.conf
+sudo cp /tmp/flashmuse-staging.conf /opt/flashmuse-staging/data/nginx/flashmuse-staging.conf
+sudo docker exec flashmuse-staging-staging-nginx-1 nginx -t
+sudo docker exec flashmuse-staging-staging-nginx-1 nginx -s reload
+echo STAGING_NGINX_OK
+'@
+```
+⚠️ `nginx -t` 不过就把 `.bak` 拷回去再 reload。
+
+**2.2 阿里测试服入口（阿里主机 `/etc/nginx/sites-enabled/flashmuse-test-8080`，走腾讯跳板）**
+```powershell
+scp -i $PEM -o StrictHostKeyChecking=no "deploy\staging\flashmuse-test-8080.conf" ubuntu@119.28.116.16:/tmp/
+```
+然后把下面存成本地 `.runtime/push-ali-test-nginx.sh`，scp 到腾讯 `/tmp` 再 `sudo bash`（⛔ 别用 ssh 内联，PowerShell 会吃掉引号）：
+```bash
+#!/bin/bash
+set -e
+KEY=/opt/flashmuse/data/runtime/flashmuse_to_ali_ed25519
+ALI="ssh -o StrictHostKeyChecking=no -i $KEY root@101.37.129.164"
+sed -i 's/\r$//' /tmp/flashmuse-test-8080.conf
+scp -o StrictHostKeyChecking=no -i $KEY /tmp/flashmuse-test-8080.conf root@101.37.129.164:/tmp/
+$ALI 'set -e
+  mkdir -p /root/nginx-backups
+  cp /etc/nginx/sites-enabled/flashmuse-test-8080 /root/nginx-backups/flashmuse-test-8080.$(date +%Y%m%d-%H%M%S).bak
+  cp /tmp/flashmuse-test-8080.conf /etc/nginx/sites-enabled/flashmuse-test-8080
+  nginx -t && nginx -s reload && echo ALI_TEST_NGINX_OK'
+curl -s -o /dev/null -w "8080=%{http_code}\n" http://101.37.129.164:8080/
+```
+
+**2.3 腾讯正式服（容器 `flashmuse-flashmuse-nginx-1`）**
+```powershell
+scp -i $PEM -o StrictHostKeyChecking=no "nginx\flashmuse.conf" ubuntu@119.28.116.16:/tmp/
+ssh -i $PEM -o StrictHostKeyChecking=no ubuntu@119.28.116.16 @'
+set -e
+sudo sed -i "s/\r$//" /tmp/flashmuse.conf
+echo "===== diff（只该看到本次新增的 proxy_buffer*/gzip 那几行）====="
+sudo diff /opt/flashmuse/data/nginx/flashmuse.conf /tmp/flashmuse.conf || true
+'@
+```
+⭐ **先看 diff**：仓库这份已按服务器实际内容对齐过（含 443 server 块 + `/generated` 的 CORS 头），
+所以 diff 里**只应该出现 `proxy_buffer*` / `proxy_max_temp_file_size` / `gzip*` / `Accept-Encoding` / 注释**这些新增行。
+若出现别的差异 = 期间有人手改过服务器，**先搞清楚再覆盖**。确认后：
+```powershell
+ssh -i $PEM -o StrictHostKeyChecking=no ubuntu@119.28.116.16 @'
+set -e
+sudo cp /opt/flashmuse/data/nginx/flashmuse.conf /opt/flashmuse/data/nginx/flashmuse.conf.bak.$(date +%Y%m%d-%H%M%S)
+sudo cp /tmp/flashmuse.conf /opt/flashmuse/data/nginx/flashmuse.conf
+sudo docker exec flashmuse-flashmuse-nginx-1 nginx -t
+sudo docker exec flashmuse-flashmuse-nginx-1 nginx -s reload
+echo PROD_NGINX_OK
+'@
+```
+
+**2.4 阿里正式（ali/static）**：⛔ **绝对不要整份覆盖** ——
+那份 `flashmuse-static-ip` 里还有**别的项目**的配置（`/tiantangqiyuan/`），整份覆盖会违反「绝不影响其它项目」铁律。
+跑仓库里的幂等增量脚本（自带备份 + `nginx -t` + 失败自动回滚 + 跑完打四域名状态码，可重复跑）：
+```powershell
+scp -i $PEM -o StrictHostKeyChecking=no "deploy\ali\ali-add-proxy-buffers.sh" ubuntu@119.28.116.16:/tmp/
+ssh -i $PEM -o StrictHostKeyChecking=no ubuntu@119.28.116.16 "sed -i 's/\r$//' /tmp/ali-add-proxy-buffers.sh && sudo bash /tmp/ali-add-proxy-buffers.sh"
+```
+期望输出里有 `插入了 2 处`（正式那份有两个 server 块）+ `nginx -t 通过并已 reload` + 四域名 200。
+⭐ 若输出 `已经加过了（找到 marker），幂等跳过` = 之前跑过，正常。
+
+**2.5 ⭐ 验证 gzip 真的生效了**（4 处都验，`Content-Encoding: gzip` 必须出现）
+```powershell
+"测试服(阿里8080)"; curl.exe -s -D - -o NUL -H "Accept-Encoding: gzip" http://101.37.129.164:8080/api/models | Select-String "content-encoding|HTTP/"
+"正式(腾讯main)";   curl.exe -s -D - -o NUL -H "Accept-Encoding: gzip" https://main.venusface.com/api/models | Select-String "content-encoding|HTTP/"
+"正式(阿里ali)";    curl.exe -s -D - -o NUL -H "Accept-Encoding: gzip" https://ali.venusface.com/api/models | Select-String "content-encoding|HTTP/"
+```
+⚠️ `/api/models` 响应可能小于 `gzip_min_length 1024` 而不压 —— 那就换成登录后打
+`/api/workspace-state?summary=1&panel=chat`（浏览器 Network 里看最直观，同时能验响应体变小）。
+
+### 第 3 步：测试服实机验收（⭐ 是必须点到的）
+
+测试账号 `12424740@qq.com` / `dragonstar`。
+
+| # | 怎么测 | 期望 |
+|---|---|---|
+| ⭐1 | 后台 `/admin?tab=account-features` 看 `lookxun@163.com` 那行 | 「后台白名单」开关**蓝色但点不动**，hover 提示「该账号是永久管理员…」 |
+| ⭐2 | 直接打接口试着关它（绕过前端）：`POST /admin/api/users/admin-whitelist {userId, whitelisted:false}` | 返回 **400**「该账号是永久管理员，后台白名单不可关闭」 |
+| 3 | 别的账号的白名单开关 | 照旧可开可关 |
+| ⭐4 | **打开工作台，Network 看 `/api/workspace-state?summary=1&panel=chat`** | ① 响应**明显变小**；② 响应头有 **`Content-Encoding: gzip`**；③ **响应里没有 `feedbackLogs`** |
+| ⭐5 | 对话流：滚到底看历史 | 首屏 **30 条**（原 50），往上有「加载更早的消息」且能正常加载出来 |
+| ⭐6 | **随便点一条历史图片/视频消息的「使用提示词」** | 提示词**正常显示、和原来一致**（这是验③投影没把提示词弄丢，**最关键的一条**） |
+| ⭐7 | 点几个「喜欢/不喜欢/回答不对」，刷新页面，再点一次 | 不报错；**去 DB 查 `UserWorkspaceState.state->'feedbackLogs'` 条数应该在增长、不能被清零**（验 ① 的 PUT 合并） |
+| ⭐8 | 发一条新消息 + 生成一张图，刷新 | 消息、图、提示词全在（验 ③ 的 PUT 恢复没把库里字段删掉） |
+| 9 | 工作流模式：点节点、拖节点、切换工作流 | 一切照旧（本批**没动** canvas，②还没做） |
+| 10 | 资产库 / 后台各页 | 正常，0 控制台 error |
+| ⭐11 | 跑一次生图 + 一次生视频 | 成功 |
+
+⚠️ **#6/#7/#8 是本批风险最集中的三条**（投影 + PUT 恢复），务必实测。
+⭐ **最好拿"聊得多、有很多图文消息"的号验**（测试服 `12424740@qq.com` 有资产）。
+
+### 第 4 步：同步正式服
+照 `03`「正式服部署流程」（备份 → rsync 对齐 → build → 同步 `.next/static` 到阿里**正式**镜像 → 发布信号 → 四域名健康检查）。
+⚠️ **不再 bump**。⚠️ **正式服的 nginx（2.3 / 2.4）也要做**。
+
+### 第 5 步：两台都真上号巡检（铁律，`03` 的「最小巡检 6 项」）
+⭐ 本批动了工作区读写链路 → **除 6 项之外，正式服也要再验一遍上面的 #4/#6/#8**。
+
+### 第 6 步：⭐ 量一下实际收益（本批特有，值得做）
+部署后重跑一次 nginx 日志排序，确认那个接口的响应体真的下来了：
+```
+sudo docker logs --tail 50000 flashmuse-flashmuse-nginx-1 2>&1 | grep 'workspace-state' \
+ | awk '{for(i=1;i<=NF;i++) if($i ~ /^"(GET|PUT|POST)$/){print $(i+4)"\t"$(i+1); break}}' | sort -rn | head -10
+```
+- 改动前：Top 是 **1,188,114 字节**
+- 期望：明显变小（②还没做的用户仍可能有几百 KB，见 M025）
+- ⭐ 也可以把 `scripts/measure-workspace-state-size.mjs` 拷进容器再跑一次对比
+
+### 第 7 步：收尾
+- `git add` 全部（含 2 个新增）→ commit → push
+- 更新 `00-README.md` / `01-current-status.md` / 本文件顶部为"四方同步 v1.0.0.56"
+- ⛔ **不要跑归档脚本**（红字仍是新一轮，攒够再说）
+- ⭐ **回头问用户 M025（②工作流 canvas 瘦身）要不要做** —— 那是剩下最大的一块（单用户 655KB）
+
+### ⚠️ 回滚
+- **代码**：按 `03` 用 `/opt/flashmuse/app-backups/<时间戳>` 复原。
+- **nginx**：正式/测试的 conf 覆盖前都要留 `.bak`；阿里正式那个脚本自动备份到 `/root/nginx-backups/`。
+- ⭐ **本批无迁移**，数据库不用动。
+- ⚠️ **③ 的投影若真出问题**（提示词显示不对），最快的止血是把 `workspaceMessageRowsToMessages` 里
+  `projectWorkspaceMessageForClient(...)` 这层调用去掉（一行），立刻恢复原样 ——
+  **库里的数据一直是完整的**，投影只影响下行。
+
+## 📌 其它状态（部署完之后看这里）
+
+### 红字：仍是 v54 那一轮，**别主动查、别跑归档脚本**
+用户 2026-07-29 交代：「从 v54 部署完开始看后面新出现的红字，**等红字多了以后再排查**」。
+第十九次会话末快照：正式服 **待排查 9 条 / 2 种、兜底桶 0 条、已归档 745**，
+9 条**全是「审核 / 内容策略类」**（平台或模型拒绝，我们改不了 → 按铁律不归档、就该一直亮着）。
+→ 量还很少就直接跟用户说"红字还没攒够，建议再等等"；量够了按 `07-red-error-triage-and-archive.md` 排。
+
+### ⚠️ 运营上要留心的一点（v55 的既定副作用，不是 bug）
+v55 那条迁移让「解除限制」**全站默认关**，正式服目前**只有 `lookxun@163.com` 开着**，其余 36 个账号都是关的。
+原来靠全局开关吃专属 Endpoint ID 的用户，从 v55 起内容敏感的提示词会开始被平台拒。
+→ **有人反馈"以前能出图现在被拒"，去 `/admin?tab=account-features` 把他的「解除限制」打开即可。**
+
+### 存量待办
+- **[⛔ 已判定不做] M025**：② 工作流 canvas 瘦身 —— **2026-07-30 第二十次会话按实测数据否掉**：
+  gzip 上线后最大用户的 canvas 只有 105KB（未压缩 655KB），M025 还能省的只有 ~31KB，
+  而病根（撑爆 32KB 缓冲被落盘）已被 `proxy_buffers 32 32k` 堵死、告警归 0。
+  **别再翻出来做**，理由全文在 `06-memo-tasks.md` 的 M025。
+- **[已拍板不主动做] M023**：给 `DATABASE_URL` 显式配 `connection_limit`，留 v54 那句红字当哨兵，等它下次真犯病再取现场数据。
+  ⛔ 别照抄"25~30"（病因 A/B 解法相反）、别改 `.env.local`（会被 compose 覆盖）、别想在测试服压测求这个数。
 
 ---
 

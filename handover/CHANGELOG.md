@@ -2,7 +2,245 @@
 
 > 本批 CHANGELOG 从 2026-07-21 交接文档重建开始记。**此前的全部历史流水**（约 580KB，含 2026-06 起到 07-21 每一次改动/部署细节）在 `historical-handover-docs-last-used-2026-07-21/CHANGELOG.md`，遇到需要历史上下文的难题再翻。
 
-## 2026-07-30（第十九次会话）🚀 **v1.0.0.55 两服部署上线 + 14 项验收全过 + 收尾四方同步**
+## 2026-07-30（第二十次会话）🚀 **v1.0.0.56 两服上线（含 4 处 nginx）+ 三条高危验收全过 + ⛔ M025 按实测数据否掉**
+
+> ✅ **四方同步 `v1.0.0.56`**（正式服 = 测试服 = 本地 = GitHub），四域名全 200，**无 Prisma 迁移**。
+> 正式服备份 `/opt/flashmuse/app-backups/20260730-203104-presync-v56`。
+> **本次没写新功能代码** —— 干的是：把第十九次会话攒的两批部署上线、真上号验收、然后用实测数据回答用户那个问题（M025 还值不值得做）。
+
+### 0. 用户交代与执行顺序
+
+用户拍板走「方案 A」：**先测试服 → 上号测试不崩 → 再正式服 → 上号测试不崩，崩了立刻修 → 最后回来判断 M025**。
+全程按 `AGENTS.md` 铁律执行（测试服先行、只在测试服那步 bump、正式服原样同步不再 bump、每台部署完都真上号）。
+
+### 1. 部署过程（命令级留档，下次照抄）
+
+| # | 干什么 | 结果 |
+|---|---|---|
+| 0 | `node scripts/bump-version.mjs`（v55→**v56**）+ `npx tsc --noEmit` | 全绿 |
+| 1 | 打 tgz（**11 个文件**，清单法 `.runtime/v56-files.txt`）→ scp → 解到 staging | ⭐ `tar -tzf` 复核过，新文件 `src/lib/permanent-admins.ts` 在包里 |
+| 2 | 测试服 `up -d --build staging-app`（后台 + 轮询） | ~90s，entrypoint 输出 `No pending migrations to apply.` |
+| 3 | `sync-ali-test.sh` → `pub56.sh`（发布版本信号） | `x-app-version: v1.0.0.56`、8080=200 |
+| 4 | nginx 测试服两处（腾讯 staging + 阿里 8080） | **两处的 diff 都只有本次新增行**，`nginx -t` 通过 |
+| 5 | **测试服 11 项实机验收** | 全过（见下节） |
+| 6 | `prodsync56.sh`（备份 + staging→prod rsync） | 版本号复核 = v56 |
+| 7 | 正式服 `up -d --build flashmuse-app` | ~110s，`No pending migrations` |
+| 8 | `syncali56.sh`（`.next/static` → 阿里**正式**镜像） | OK |
+| 9 | `pub56prod.sh`（发布信号 + 健康检查） | 四域名 main/api/ali/static **全 200** |
+| 10 | nginx 正式两处 | 腾讯正式覆盖前 diff 全是新增行；阿里正式**跑幂等增量脚本**、插入 2 处 |
+| 11 | **正式服实机巡检** | 全过、0 控制台 error、真跑生图成功 |
+
+⭐ **腾讯正式 nginx 覆盖前那次 diff 很关键**：输出里**一行 `<` 都没有**（全是 `>` 新增）
+→ 证明"仓库这份是服务器那份的严格超集"、期间没人手改过服务器，才敢覆盖。
+**以后覆盖服务器 conf 前一定先看 diff 里有没有 `<`。**
+
+### 2. ⭐⭐ 三条高危验收（都是"改错了会真删用户数据"的，全部实测通过）
+
+1. **`feedbackLogs` 的 PUT 合并**（① 的风险点）
+   库里 0 → 点「喜欢」→ **1** → 点「不喜欢」→ **2** → ⭐ **刷新页面**（此时前端手里根本没有 feedbackLogs）再点一次 → **3**。
+   → 证明「下行不发 + PUT 只带新增 + 服务端按 id 合并」这条链路**不会抹掉历史，跨刷新也不会**。
+   ⛔ **排查时差点误判**：一开始查库发现是 **0**，我以为被自己的 PUT 洗了。
+   **靠"看另一个没登录过的用户 `lookxun` 那行的 `updatedAt` 是部署前的 10:00、也是 0"** 才确认**本来就是空的**。
+   ⭐ **教训：怀疑"数据被自己弄丢了"时，先找一个"这次没被碰过"的行做对照。**
+2. **消息投影的 PUT 恢复**（③ 的风险点）
+   库里 82 条消息，被投影掉的字段 `originalPrompt` **44** / `itemPrompts` **11** / `videoPrompts` **9**、`content` 82 条全在
+   → **一条都没丢**，`restoreProjectedMessageFields()` 确认有效。
+3. **提示词 UI**：23 条历史消息的提示词全部正常显示（含一条 500+ 字超长提示词、@引用、参考图缩略图），
+   点「使用提示词」正确回填到输入框。
+
+### 3. 实机验收明细
+
+**测试服（`12424740@qq.com`）11 项全过**：白名单开关置灰（`disabled=true`）/ 打接口关它返回 **400** /
+别的账号照旧可开可关 / 响应带 `Content-Encoding: gzip` 且**不含 `feedbackLogs`** / 首屏 **30 条**消息 + 「加载更早消息」能加载 /
+使用提示词正常 / 反馈合并 0→1→2→3 / 发新消息+生图后刷新数据全在 / 工作流点节点不崩 / 资产库+后台各页 0 error /
+**真跑生图成功**（扣 8 分）+ **真跑生视频成功**（Kling v3.0 Standard 5s，扣 44 分）。
+
+**正式服（`lookxun@163.com` = ID_415958）**：登录 / 对话模式 / 工作流点节点**不崩**（菜单齐全）/ 资产库缩略图 /
+**真跑生图成功**（Gemini 3 Pro Image Preview，15,854→15,844 扣 10 分）/ 后台 10 个页签无 pageerror /
+白名单开关 `disabled=true` + 打接口返回 400 / **0 控制台 error**。
+
+### 4. nginx 生效验证
+
+- **gzip 四处都验过**：阿里测试 8080、腾讯 main、阿里 ali 都返回 `Content-Encoding: gzip`。
+- ⭐⭐ **落盘临时文件告警：部署前 8 条 → 部署后 0 条**（`buffered to a temporary file`），部署后无 5xx。
+- ⛔ **别的项目没被影响**：阿里正式那份 conf 里还有 `/tiantangqiyuan/`，用的是幂等增量脚本（只插 4 行×2 处），
+  部署后 `/tiantangqiyuan/` 仍 **200**。
+
+### 5. ⛔⛔ M025（②工作流 canvas 瘦身）**判定：不做**
+
+用户要求"部署完再判断还值不值得"。**答案是不值得**，理由是量出来的不是猜的（脚本 `.runtime/m025.js`）：
+
+| 用户 | canvas 未压缩 | **gzip 后** | 压缩率 | M025 做完还能再省 |
+|---|---|---|---|---|
+| ID_868181（9 工作流/429 节点） | 655.4KB | **105.1KB** | 16.0% | 31.0KB（29.5%） |
+| ID_686996（18 工作流/103 节点） | 447.6KB | 111.3KB | 24.9% | 17.9KB（16.1%） |
+| ID_708423 | 325.9KB | 64.2KB | 19.7% | 14.0KB（21.7%） |
+| ID_636611 | 159.9KB | 29.2KB | 18.3% | 2.4KB（8.3%） |
+
+1. **病根已物理堵死**：缓冲区现在 32×32k = **1MB**，最大用户压缩后才 ~105KB → **10 倍余量**，不可能再落盘（告警已归 0）。
+2. **剩余收益只有 ~31KB**，且只有最重那一个用户这么大 → 对耗时基本无感。
+3. ⛔ **风险与收益不成比例**：要改前端工作流加载路径 + 新增按需拉取接口，
+   而 `workflowItems` 是**整体覆盖回写**的（`chat-workbench.tsx:10329`），漏一处 PUT 恢复 = **真删用户画布**。
+
+⭐⭐ **本次最有价值的一条通用教训**：
+**`data.prompt` 之所以能压到 16%，是因为它是纯中文提示词文本还大量重复 —— 正好是 gzip 最擅长的。
+所以"要不要为了省字节改代码"这类决策，必须先 `zlib.gzipSync` 量一遍压缩后的大小，
+别拿未压缩字节做决策。** 本次就是这一步把一个"看起来能省 655KB"的优化直接否掉了。
+
+### 6. 踩到的小坑（省下一个人的时间）
+
+1. ⛔ **`grep -o 'v1\.0\.0\.[0-9]*' app-version.ts` 会先命中注释里的举例**（输出 `v1.0.0.1`）→
+   验版本号必须 `grep 'export const APP_VERSION'`。
+2. ⛔ **`WorkspaceMessage` 直接有 `userId`**，不用 join `WorkspaceSession`；`User` 表**没有 `userCode` 列**。
+   先查 `information_schema.columns` 再写 SQL。
+3. ⛔ **Playwright 点「使用提示词」会被那个 hover 提示浮层挡住**
+   （`group-hover/prompt` 的 `absolute` 层 intercepts pointer events）→ 换一条**短提示词**的消息点就行。
+4. ⛔ **登录面板的输入框要用面板作用域定位**：`page.locator('input').first()` 会打到**首页那个输入框**上（我踩了）。
+5. ⭐ **`page.waitForTimeout` 循环等生成结果会超工具 120s** → 改成外面 `Start-Sleep` 再截图看。
+
+---
+
+## 2026-07-30（第十九次会话 · 后半）🔧 **永久后台白名单 + 工作区响应体瘦身（省 45.2%）+ 查清两个线上问题**
+
+> ✅ **本批已随 v1.0.0.56 于第二十次会话全部上线**（原文下面那句"没部署没提交"已过时，留档备查）。
+> ⛔ **② 工作流 canvas 瘦身（M025）最终判定为「不做」**，见上面第二十次会话那条。
+
+### 0. 本次做了什么（一句话）
+
+① 把 `lookxun@163.com` 做成**永久管理员**（后台白名单开关锁死，保证后台永远有账号能进）；
+② 顺着上一节部署时发现的「打开工作台偶发转圈 17~30 秒」一路查到底，**查清根因**并做掉了三分之二的优化
+（实测总省 45.2%）；③ 顺手查清了那批 502 到底是什么。
+
+---
+
+### 1. 永久后台白名单（批次 A）
+
+**为什么要做**：「后台白名单」存在 `.env.local` 的 `ADMIN_EMAILS`，而后台「帐号功能管理」页能改它
+→ 存在"手滑把最后一个管理员也关掉 = **全世界都进不了后台**、只能 ssh 上服务器改文件才能救"的死局。
+
+**唯一来源** `src/lib/permanent-admins.ts` 🆕（`PERMANENT_ADMIN_EMAILS` + `isPermanentAdminEmail()`），
+⚠️ **故意零 import** —— `admin.ts` 依赖 `system-settings.ts`，常量放这两个里任何一个都会**循环依赖**。
+
+**四个咽喉全部堵上**（`grep ADMIN_EMAILS` 复核过，没有任何地方绕过 `getAdminEmails()` 直读 env）：
+
+| 咽喉 | 作用 |
+|---|---|
+| `lib/admin.ts` 的 `getAdminEmails()` | 无条件把永久管理员并进清单 → **即使 `.env.local` 被改坏/写没了也还是管理员**（最底层兜底） |
+| `lib/system-settings.ts` 的 `updateAdminEmailWhitelist()` | 落盘时强制补回（第二道保险） |
+| `admin/api/users/admin-whitelist/route.ts` | 单账号关闭时直接 **400** 拒绝（防绕过前端直接打接口） |
+| `admin/api/users/feature-bulk/route.ts` | 「一键全关」时保留 `self + 永久管理员` |
+| `admin/page.tsx` + `admin-account-features-panel.tsx` | 服务端算 `adminWhitelistLocked` 传给面板 → 那行开关 `disabled` + hover 说明。**前端不硬编码邮箱** |
+
+---
+
+### 2. ⭐⭐ 「打开工作台转圈 17~30 秒」：查清根因 + 做掉 ①③④（批次 B）
+
+> 排查全过程、实测数据、坑、以及**还没做的那一半**，全部沉淀在 **`06-memo-tasks.md` 的 M024 / M025**。
+> ⛔ **下一个 AI 别重复排查，先读那两条。**
+
+#### 2.1 根因（nginx 自己写在 warn 日志里，不是推测）
+
+```
+an upstream response is buffered to a temporary file /var/cache/nginx/proxy_temp/... while reading upstream,
+request: "GET /api/workspace-state?summary=1&panel=chat"
+```
+→ nginx 默认 `proxy_buffers` 只有 **8×4k=32KB**，而这个接口响应线上实测最大 **1,188,114 字节（1.19MB）**
+→ nginx 只能**把整个响应先写磁盘临时文件再转发**，叠加跨境传输 = 那 17~30 秒。
+**它也是全站所有 `/api/` 里最大的响应**（按 body 字节排序 Top-25 全是它）。
+
+#### 2.2 ⛔ 一个走偏过的判断（留档警示）
+
+我一开始判断是"**消息一次全发**"，**这是错的** —— 消息早就有分页
+（`DEFAULT_WORKSPACE_MESSAGE_LIMIT`、`hasMore`/`nextBefore`，会话列表也有 10 条上限）。
+**是用户提醒"我记得已经做了分页啊"才纠正的。**
+⭐ 教训：**下结论前必须逐层量字节，不能看着代码"觉得"**。后面就是靠三层实测才找到真正的大头。
+
+#### 2.3 三个真正的大头（逐层量出来的）
+
+| # | 大头 | 实测最大 | 内部构成 |
+|---|---|---|---|
+| 1 | `workflowItems[].canvas` | **655.4 KB**（ID_868181，占其响应 **98.7%**） | `data.prompt` 43.7% / `data.uploads` 9.1% / `data.imageDimensions` 9.0% |
+| 2 | 活跃会话的 50 条消息 | **785.6 KB**（ID_686996，平均 8~18 KB/条） | `generationMeta` 45.7% / `content` 21.9% / `videoPrompts` 21.9% |
+| 3 | `feedbackLogs` | **727.8 KB**（ID_332396，占其响应 **93%**） | `context` **79.7%** / `message` 15.4% |
+
+⭐⭐ **最有价值的一条洞察**：`generationMeta.itemPrompts`(138.6KB) + `generationMeta.originalPrompt`(138.5KB)
+\+ `videoPrompts` 的值(134.2KB) + `content`(138.8KB) **装的基本是同一批提示词** ——
+550KB 里约 **415KB 是同一份提示词的重复副本**。
+而前端读取本来就是**层层回落**：
+`videoPrompts?.[url] ?? generationMeta?.itemPrompts?.[i] ?? generationMeta?.originalPrompt ?? content`
+→ 所以「值相同就少发一层」**语义完全不变、前端一行都不用改**。
+
+#### 2.4 做了什么
+
+| 项 | 改了什么 | 文件 |
+|---|---|---|
+| ① | **`feedbackLogs` 下行不再发**。⭐ 前端确认**根本不读它**：唯一看似在用的 `getAgentGenerationModel(..., { feedbackLogs })` 是**死参数**（函数体没引用），其余只是"从响应恢复→原样写回→追加"。PUT 侧用 `mergeFeedbackLogs()` 按 id 去重合并、留最近 300 条 → **一条不丢** | `api/workspace-state/route.ts` |
+| ③a | **重复提示词副本不下发**：`projectWorkspaceMessageForClient()`；配对的 `restoreProjectedMessageFields()` 在 PUT 时把字段补回库 | `lib/workspace-sessions.ts` |
+| ③b | `DEFAULT_WORKSPACE_MESSAGE_LIMIT` **50 → 30** | `lib/workspace-sessions.ts` |
+| ④ | **nginx 大响应不落盘 + JSON gzip**（4 处：腾讯正式 / 腾讯测试 / 阿里测试 / 阿里正式） | `nginx/flashmuse.conf`、`deploy/staging/*.conf`、`deploy/ali/ali-add-proxy-buffers.sh` 🆕 |
+
+⭐ **实测收益**（`scripts/measure-workspace-state-size.mjs`，8 个重度用户真实数据）：
+**合计 4905 KB → 2688 KB，总省 45.2%**
+- ID_332396 **省 94.7%**（772→41 KB）、ID_271898 **省 70.9%**（473→138 KB，消息 415→80 KB）
+- ID_673536 省 57.8%、ID_686996 省 44.0%、ID_315163 省 42.4%
+- ⚠️ **ID_868181 省 0.0%** ← 它 98.7% 是 canvas，正好是**没做的 ②**
+- ⭐ 叠加 ④ 的 gzip 后，下行还能再压到这个数的 15%~30%
+
+#### 2.5 ④ nginx 的两个额外发现
+
+- ⚠️ **仓库里的 `nginx/flashmuse.conf` 和服务器上那份不一致**（服务器多了 443 server 块 + `/generated` 的 CORS 头，
+  仓库还是旧的单 server 版）→ **已按服务器实际内容同步回仓库**。⭐ 以后改 nginx **先改仓库再部署**，别只在服务器手改。
+- ⚠️ **阿里测试服（8080）那台 `nginx.conf` 里 `gzip_types` 整段是注释的** → 默认只压 `text/html`，
+  **API 的 JSON 一直没被压过**。所以必须在 server 块里显式写 `gzip_types`。
+- ⛔ **阿里正式（ali/static）那份 conf 里还有别的项目的配置（`/tiantangqiyuan/`）** →
+  整份覆盖会违反「绝不能影响其它项目」铁律 → 改用**幂等增量脚本** `deploy/ali/ali-add-proxy-buffers.sh`
+  （只在两个 server 块插 4 行，自带备份 + `nginx -t` + 失败自动回滚 + 可重复跑）。
+
+#### 2.6 ⛔ 三个"差点踩、以后别踩"的坑
+
+1. **`feedbackLogs` 不能在 `baseState` 上剥** —— `baseState` 在 `route.ts` 里会被**回写数据库**
+   （`hasJsonChanged` → `update`），在它身上剥等于**真删用户数据**。只能在往 `Response.json` 塞的那一刻剥。
+2. **下行投影必须配一个 PUT 侧恢复** —— `upsertWorkspaceMessages` 是 `messageJson: message` **整体覆盖**，
+   前端把瘦身版存回来就等于删字段。（`workspace-workflows.ts` 的 `mergeWorkflowCanvasMedia` 早就是这个模式。）
+3. **投影只能"整体相等才省"，绝不能逐项省** —— `itemPrompts` 是**按下标**取的、`videoPrompts` 的回落目标又是
+   `itemPrompts[i]`，逐项删会下标错位或回落到**另一条**提示词上，那才是真 bug。
+
+#### 2.7 ⭐ 没做的 ②（工作流 canvas 瘦身）→ 登记为 M025，等用户拍板
+
+它是**剩下最大的一块**（ID_868181 有 655KB 全在这），但必须改前端工作流加载路径：
+前端有 **8 处跨工作流全量遍历 canvas**，而且局部更新是 `{ ...node.data }` 展开回写 → **缺字段就会真删画布**。
+`AGENTS.md` 铁律第一条要求「有影响先告诉用户、等确认再改」，且用户刚验收过工作流那两处修复
+→ **方案 / 受影响的 8 个前端点 / 必测清单全写进 M025，等拍板。**
+
+---
+
+### 3. 502 查清了：**部署窗口现象，不是 bug**
+
+- 正式服今天 24 条 502 **全部挤在 `10:02:35~40` 和 `10:05:39~41` 两个时刻**，正是那次
+  `up -d --build` 和 `force-recreate` 的容器重启窗口；错误全是
+  `connect() failed (111: Connection refused) while connecting to upstream` = **app 容器当时没在监听**
+  （不是超时、不是代码报错）。测试服那 54 条同理，散在 07/21、07/24、07/27、07/28 各次部署窗口。
+- ⚠️ **但它确实会打到真实用户**：那两个窗口里 3 个不同客户端
+  （`104.249.174.135` / `122.225.228.122` / `60.186.53.107`）的 `/api/auth/me`、`workspace-instance`、
+  `generation-status`、**`PUT /api/workspace-state`** 都吃了 502（最后那条 = **那一次工作区保存丢了**）。
+- 想彻底消除需要**零停机切换**（蓝绿双容器 + upstream 切换 + 健康检查），属架构改动，用户没要求过 → 先不做。
+  现实缓解：**别在高峰部署、build 窗口尽量短、别反复 recreate**。
+
+### 4. ⭐ 排查方法论沉淀（下次遇到"某接口慢"照这个来）
+
+1. **先分层掐表，把范围缩到一层**：容器内直打 app（39~44ms）→ 宿主打 nginx（1.5~3.7ms）→
+   本机走 TLS（20ms）→ 跨境（0.43s 基线）。**四层都快 = 问题在"响应体大小"而不是"处理慢"。**
+2. **去 nginx 日志按 body 字节排序**（`awk` 取第 10 段），一眼看出哪个接口最大、最大多少。
+3. **然后逐层量字节**：先量顶层各字段 → 再钻进最大那个字段量它的子字段 → 再钻一层。
+   本次钻了三层才找到"提示词存了 4 份"。⛔ **不要在第一层就下结论。**
+4. **改完必须再量一次**（`scripts/measure-workspace-state-size.mjs` 那种脚本，跑在真实重度用户数据上），
+   否则不知道到底有没有效果、也不知道还剩多少。
+5. ⭐ **怀疑"新版本变慢/报错"时，先拿还没升级的那台做对照** ——
+   本次就是靠"部署前的 v54 也有 30.8s 的 401"排除了"是新代码引起的"。
+
+---
+
+## 2026-07-30（第十九次会话 · 前半）🚀 **v1.0.0.55 两服部署上线 + 14 项验收全过 + 收尾四方同步**
 
 > ✅ **结果：四方同步 `v1.0.0.55`**（commit `e6a66e0`），四域名全 200，两台都真上号巡检过、0 控制台 error。
 > 本次**没写任何新功能代码**，就是把第十八次会话那批（下面那条）完整部署掉 + 实机验收 + 收尾。

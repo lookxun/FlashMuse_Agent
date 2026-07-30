@@ -22,6 +22,13 @@ export type AdminAccountFeatureRow = Pick<AdminUserRow, "id" | "email" | "nickna
   generalModeEnabled: boolean;
   unlockLimitsEnabled: boolean;
   adminWhitelisted: boolean;
+  /**
+   * ⭐ 该账号是**永久管理员**（`lib/permanent-admins.ts` 的 `PERMANENT_ADMIN_EMAILS`）→
+   * 「后台白名单」开关置灰、永远开着、点不动，保证后台永远有账号能进。
+   * ⚠️ 由服务端 `admin/page.tsx` 算好传下来，**前端不硬编码邮箱**；
+   * 接口侧也会拒绝关闭它（防直接打接口绕过）。
+   */
+  adminWhitelistLocked: boolean;
 };
 
 export type AdminAccountFeatureStats = {
@@ -38,6 +45,8 @@ const PAGE_SIZE = 15;
 // `bulk`：该列表头是否显示「一键全开」总开关。
 // ⛔ 后台白名单**故意不给总开关**（2026-07-30 用户要求隐藏）：一键全开等于让全站所有人都能进后台，
 //    风险太高、又几乎没有真实使用场景。白名单只能一个一个点。
+// ⭐ 另外：**永久管理员那一行的白名单开关是锁死的**（置灰、永远开着），
+//    保证后台永远有一个账号能进 —— 唯一来源 `lib/permanent-admins.ts`，前端只看 `adminWhitelistLocked`。
 const featureColumns: Array<{ key: FeatureKey; label: string; field: keyof Pick<AdminAccountFeatureRow, "generalModeEnabled" | "unlockLimitsEnabled" | "adminWhitelisted">; bulk: boolean }> = [
   { key: "generalMode", label: "通用模式", field: "generalModeEnabled", bulk: true },
   { key: "unlockLimits", label: "解除限制", field: "unlockLimitsEnabled", bulk: true },
@@ -222,11 +231,24 @@ export function AdminAccountFeaturesPanel({ users, stats }: { users: AdminAccoun
                       </div>
                     </div>
                   </td>
-                  {featureColumns.map((column) => (
-                    <td key={column.key} className="border-b border-[#f2f2f2] px-4 py-3">
-                      <FeatureSwitch checked={Boolean(user[column.field])} disabled={isPending} onClick={() => toggleSingle(user, column.key)} ariaLabel={`${column.label}开关`} />
-                    </td>
-                  ))}
+                  {featureColumns.map((column) => {
+                    // 永久管理员的「后台白名单」开关锁死：置灰 + 点不动 + hover 说明原因。
+                    const locked = column.key === "adminWhitelist" && user.adminWhitelistLocked;
+                    return (
+                      <td key={column.key} className="border-b border-[#f2f2f2] px-4 py-3">
+                        <FeatureSwitch
+                          checked={Boolean(user[column.field])}
+                          disabled={isPending || locked}
+                          onClick={() => {
+                            if (locked) return;
+                            toggleSingle(user, column.key);
+                          }}
+                          ariaLabel={`${column.label}开关`}
+                          title={locked ? "该账号是永久管理员，后台白名单不可关闭（保证后台永远有账号能进）" : undefined}
+                        />
+                      </td>
+                    );
+                  })}
                 </tr>
               ))
             ) : (

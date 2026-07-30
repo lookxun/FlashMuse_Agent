@@ -92,13 +92,66 @@ function getPositiveInteger(value: string | null, fallback: number, max: number)
   return Math.min(max, Math.max(0, Math.floor(parsed)));
 }
 
+/**
+ * 「工作区外壳」字段白名单 = GET 时允许回给前端的顶层小字段。
+ *
+ * ⛔⛔ **`feedbackLogs` 故意不在这里**（2026-07-30 性能优化，实测根因）：
+ * 它是用户点「喜欢/不喜欢/回答不对」攒下的反馈日志，**只增不减**，
+ * 线上实测单个用户已攒到 **727 KB**（其中 `context` 字段占 79.7%），
+ * 占了那次 `?summary=1&panel=chat` 响应的 93% —— 是「打开工作台要转圈 30 秒」的三大元凶之一。
+ * ⭐ 而**前端根本不读它**：`chat-workbench.tsx` 里 `feedbackLogs` 只有"从响应恢复 → 原样写回 → 追加新条目"，
+ * 唯一看似在用的 `getAgentGenerationModel(..., { feedbackLogs })` 是个**死参数**（函数体没引用）。
+ * 所以下行不发它，纯赚。
+ * ⚠️ **不发就必须防它被写没**：PUT 时前端会带着空数组回来 → 由 `mergeFeedbackLogs()` 与库里已有的合并去重，
+ * 数据一条不丢（同 `mergeWorkspaceAssets` 那套"空 payload 不许抹掉已有数据"的既有做法）。
+ */
 function getWorkspaceShellState(state: unknown) {
   if (!isRecord(state)) return {};
   const shell: Record<string, unknown> = {};
-  (["activePanel", "activeSessionId", "assetFilter", "assetScrollTopByFilter", "workflowItems", "activeWorkflowId", "nextConversationNumber", "nextWorkflowNumber", "inputSettings", "intentMemoryRules", "feedbackLogs"] as const).forEach((key) => {
+  (["activePanel", "activeSessionId", "assetFilter", "assetScrollTopByFilter", "workflowItems", "activeWorkflowId", "nextConversationNumber", "nextWorkflowNumber", "inputSettings", "intentMemoryRules"] as const).forEach((key) => {
     if (key in state) shell[key] = state[key];
   });
   return shell;
+}
+
+/** 与 `MAX_FEEDBACK_LOGS`（`chat-workbench.tsx`）保持一致：库里最多留这么多条反馈日志。 */
+const MAX_STORED_FEEDBACK_LOGS = 300;
+
+/**
+ * 反馈日志合并：GET 不下发 `feedbackLogs`（见上），所以 PUT 上来的那份**只可能是"本次新增的"或空**。
+ * 直接覆盖会把历史记录全抹掉 → 这里按 `id` 去重合并、新的在前、截到 `MAX_STORED_FEEDBACK_LOGS`。
+ * ⛔ 别改成"直接用 incoming 覆盖"，否则等于删库。
+ */
+function mergeFeedbackLogs(existingState: unknown, incoming: unknown) {
+  const existing = isRecord(existingState) && Array.isArray(existingState.feedbackLogs) ? existingState.feedbackLogs : [];
+  const next = Array.isArray(incoming) ? incoming : [];
+  if (next.length === 0 && existing.length === 0) return undefined;
+  const seen = new Set<string>();
+  const merged: unknown[] = [];
+  for (const item of [...next, ...existing]) {
+    const id = isRecord(item) && typeof item.id === "string" ? item.id : "";
+    if (id) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+    }
+    merged.push(item);
+    if (merged.length >= MAX_STORED_FEEDBACK_LOGS) break;
+  }
+  return merged;
+}
+
+/**
+ * 输出前剥掉 `feedbackLogs`（下行不发它，见 `getWorkspaceShellState` 的注释）。
+ *
+ * ⛔⛔ **只能在"往 Response 里塞"的那一刻剥，绝不能在 `baseState` 上剥** ——
+ * `baseState` 在下面 605~613 行会被**回写数据库**（`hasJsonChanged` → `update`），
+ * 在它身上剥等于**把用户的反馈日志真删了**。这是本次差点踩的坑，别改。
+ */
+function stripFeedbackLogsForResponse(state: unknown) {
+  if (!isRecord(state)) return state;
+  if (!("feedbackLogs" in state)) return state;
+  const { feedbackLogs: _feedbackLogs, ...rest } = state;
+  return rest;
 }
 
 type WorkspaceSessionListRow = {
@@ -637,7 +690,7 @@ export async function GET(request: Request) {
       sessionRows.map((row) => workspaceSessionRowToPayload(row, !historyOnly && row.sessionId === nextActiveSessionId, row.sessionId === nextActiveSessionId ? activeMessagePage?.messages : undefined, row.sessionId === nextActiveSessionId ? activeMessagePage : undefined)),
     );
     const state = {
-      ...(isRecord(baseState) ? baseState : {}),
+      ...(isRecord(baseState) ? (stripFeedbackLogsForResponse(baseState) as Record<string, unknown>) : {}),
       workflowItems,
       activeSessionId: nextActiveSessionId,
       sessions,
@@ -657,10 +710,10 @@ export async function GET(request: Request) {
   if (allRows.length > 0) {
     const sessions = await applyLedgerUsageSummariesToSessions(user.id, allRows.map((row) => workspaceSessionRowToPayload(row, true)));
     const workflowItems = await getWorkspaceWorkflowPayloads(user.id, workspace?.state);
-    return Response.json({ state: { ...(isRecord(baseState) ? baseState : {}), workflowItems, sessions } });
+    return Response.json({ state: { ...(isRecord(baseState) ? (stripFeedbackLogsForResponse(baseState) as Record<string, unknown>) : {}), workflowItems, sessions } });
   }
 
-  if (baseState) return Response.json({ state: { ...(isRecord(baseState) ? baseState : {}), workflowItems: await getWorkspaceWorkflowPayloads(user.id, workspace?.state), sessions: [], sessionsHasMore: false, sessionsNextOffset: 0 } });
+  if (baseState) return Response.json({ state: { ...(isRecord(baseState) ? (stripFeedbackLogsForResponse(baseState) as Record<string, unknown>) : {}), workflowItems: await getWorkspaceWorkflowPayloads(user.id, workspace?.state), sessions: [], sessionsHasMore: false, sessionsNextOffset: 0 } });
 
   return Response.json({ state: null });
 }
@@ -681,7 +734,11 @@ export async function PUT(request: Request) {
   }
   const cleanBody = stripLegacyAssetsFromWorkspaceState(stripWorkflowsFromWorkspaceState(stripSessionsFromWorkspaceState(compactWorkspaceState(replaceLegacyMediaUrls(stripUserProfileFromWorkspaceState(body))))));
   const existingWorkspace = await prisma.userWorkspaceState.findUnique({ where: { userId: user.id }, select: { state: true } });
-  const safeBody = mergeWorkspaceAssets(existingWorkspace?.state, cleanBody);
+  const mergedAssets = mergeWorkspaceAssets(existingWorkspace?.state, cleanBody);
+  // ⭐ 反馈日志：GET 不下发它 → 前端带上来的只可能是"本次新增的"或空 → 必须与库里已有的合并，
+  //    否则直接覆盖就等于删库（详见 mergeFeedbackLogs / getWorkspaceShellState 的注释）。
+  const mergedFeedbackLogs = mergeFeedbackLogs(existingWorkspace?.state, isRecord(body) ? body.feedbackLogs : undefined);
+  const safeBody = isRecord(mergedAssets) && mergedFeedbackLogs ? { ...mergedAssets, feedbackLogs: mergedFeedbackLogs } : mergedAssets;
 
   await prisma.userWorkspaceState.upsert({
     where: { userId: user.id },

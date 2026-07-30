@@ -1,4 +1,5 @@
 import { getAdminEmails, isAdminEmail } from "@/lib/admin";
+import { isPermanentAdminEmail } from "@/lib/permanent-admins";
 import { getCurrentAdminEmail } from "@/lib/admin-auth";
 import { bytePlusImageGenerationModels, bytePlusVideoGenerationModels, frontendImageGenerationModels, imageGenerationModels, videoGenerationModels } from "@/lib/models";
 import { prisma } from "@/lib/prisma";
@@ -532,6 +533,9 @@ export default async function AdminPage({ searchParams }: { searchParams?: Promi
       generalModeEnabled: user.generalModeEnabled,
       unlockLimitsEnabled: user.unlockLimitsEnabled,
       adminWhitelisted: whitelist.has(user.email.trim().toLowerCase()),
+      // ⭐ 永久管理员那一行的白名单开关置灰、点不动（服务端算好传下来，**前端不硬编码邮箱**）。
+      //    服务端接口也会拒绝关闭它，见 admin/api/users/admin-whitelist/route.ts。
+      adminWhitelistLocked: isPermanentAdminEmail(user.email),
     }));
 
     return (

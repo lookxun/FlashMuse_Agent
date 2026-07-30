@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getAdminEmails, isAdminEmail } from "@/lib/admin";
 import { getCurrentAdminEmail } from "@/lib/admin-auth";
 import { normalizeEmail } from "@/lib/auth";
+import { isPermanentAdminEmail } from "@/lib/permanent-admins";
 import { prisma } from "@/lib/prisma";
 import { updateAdminEmailWhitelist } from "@/lib/system-settings";
 
@@ -14,9 +15,12 @@ export const runtime = "nodejs";
  * （这是全站唯一的管理员判定来源，`isAdminEmail` 读它）。所以这里的写法是"改邮箱清单"，
  * 不是"改用户的某个布尔字段"。
  *
- * ⛔ 两条护栏：
- *  ① 不允许把**自己**移出白名单 —— 否则点完当场把自己锁在后台外面，只能上服务器改文件才能救回来。
- *  ② 目标用户必须真实存在，避免把错的/不存在的邮箱写进管理员清单。
+ * ⛔ 三条护栏：
+ *  ① **永久管理员不许关**（`PERMANENT_ADMIN_EMAILS`，见 `lib/permanent-admins.ts`）——
+ *     保证后台永远有一个账号能进，不会出现"全世界都被锁在后台外面"的死局。
+ *     前端那一行的开关也是置灰的，这里再挡一层是防绕过（直接打接口）。
+ *  ② 不允许把**自己**移出白名单 —— 否则点完当场把自己锁在后台外面。
+ *  ③ 目标用户必须真实存在，避免把错的/不存在的邮箱写进管理员清单。
  */
 export async function POST(request: Request) {
   const email = await getCurrentAdminEmail();
@@ -33,6 +37,9 @@ export async function POST(request: Request) {
 
   const targetEmail = normalizeEmail(user.email);
   if (!targetEmail) return NextResponse.json({ error: "该用户没有可用邮箱" }, { status: 400 });
+  if (!whitelisted && isPermanentAdminEmail(targetEmail)) {
+    return NextResponse.json({ error: "该账号是永久管理员，后台白名单不可关闭（保证后台永远有账号能进）" }, { status: 400 });
+  }
   if (!whitelisted && targetEmail === normalizeEmail(email)) {
     return NextResponse.json({ error: "不能把自己移出后台白名单" }, { status: 400 });
   }

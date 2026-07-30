@@ -23,7 +23,17 @@ type WorkspaceMessageRow = {
 
 export const DEFAULT_WORKSPACE_SESSION_LIMIT = 10;
 export const WORKSPACE_SESSION_LOAD_MORE_LIMIT = 5;
-export const DEFAULT_WORKSPACE_MESSAGE_LIMIT = 50;
+/**
+ * 一次回给前端的消息条数。⭐ **2026-07-30 由 50 降到 30**（性能优化）。
+ *
+ * 为什么：条数上限本身早就有，但**单条消息很重** —— 线上实测正式服重度用户
+ * 平均 **8~18 KB/条**（图文消息里有图片地址、参考图、缩略图信息、提示词、尺寸…），
+ * 50 条就是 **415~785 KB**，是「打开工作台转圈 30 秒」的三大元凶之一。
+ * 30 条对首屏完全够看，往上滚有「加载更早的消息」（`messagesHasMore` + `messagesBeforeCursor`，
+ * 前端 `chat-workbench.tsx:9638` 那套已有分页），语义不变。
+ * ⭐ 想再调小/调大只改这一个常量，GET 全量分支和 `/api/workspace-session` 都跟着走。
+ */
+export const DEFAULT_WORKSPACE_MESSAGE_LIMIT = 30;
 
 function toDate(value: unknown) {
   const timestamp = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
@@ -222,20 +232,64 @@ export async function upsertWorkspaceSessions(userId: string, sessions: unknown)
   );
 }
 
+/**
+ * ⭐⭐ **PUT 侧的配对操作：把下行投影省掉的字段补回去**（和 `projectWorkspaceMessageForClient` 严格配对）。
+ *
+ * 为什么必须有它：GET 时我们把重复的提示词副本省掉了，前端拿到的是瘦身版；
+ * 前端保存时会把这份瘦身版**原样 PUT 回来**，而 `upsertWorkspaceMessages` 是
+ * `messageJson: message` **整体覆盖** → 不补回来，库里那几个字段就**真的被删了**。
+ * （同 `workspace-workflows.ts` 的 `mergeWorkflowCanvasMedia`：客户端 payload 缺的，用库里的补。）
+ *
+ * ⛔ 只恢复"投影会省掉的那三个字段"，**不做全量深合并** ——
+ * 否则前端**故意**删掉的东西会被复活（比如清空某个字段），那是另一类 bug。
+ * ⛔ incoming 里已经有该字段时**一律用 incoming 的**（前端可能真的改了提示词）。
+ * ⭐ 改了这里就必须回头看 `projectWorkspaceMessageForClient`，两边字段清单必须一致。
+ */
+function restoreProjectedMessageFields(incoming: Record<string, unknown>, existing: unknown) {
+  if (!isRecord(existing)) return incoming;
+  const next: Record<string, unknown> = { ...incoming };
+
+  if (!("videoPrompts" in next) && isRecord(existing.videoPrompts)) next.videoPrompts = existing.videoPrompts;
+
+  const existingMeta = isRecord(existing.generationMeta) ? existing.generationMeta : undefined;
+  if (existingMeta) {
+    const incomingMeta = isRecord(next.generationMeta) ? { ...next.generationMeta } : {};
+    if (!("originalPrompt" in incomingMeta) && typeof existingMeta.originalPrompt === "string") incomingMeta.originalPrompt = existingMeta.originalPrompt;
+    if (!("itemPrompts" in incomingMeta) && Array.isArray(existingMeta.itemPrompts)) incomingMeta.itemPrompts = existingMeta.itemPrompts;
+    if (Object.keys(incomingMeta).length > 0) next.generationMeta = incomingMeta;
+  }
+
+  return next;
+}
+
 export async function upsertWorkspaceMessages(userId: string, sessionId: string, messages: unknown[]) {
   const validMessages = messages.filter(isRecord).filter((message) => getMessageId(message));
   if (validMessages.length === 0) return;
+
+  // 先把库里已有的这批消息读出来，用于补回下行投影省掉的字段（见 restoreProjectedMessageFields）。
+  const existingByMessageId = new Map<string, unknown>();
+  try {
+    const existingRows = await prisma.workspaceMessage.findMany({
+      where: { userId, sessionId, messageId: { in: validMessages.map((message) => getMessageId(message)).filter(Boolean) as string[] } },
+      select: { messageId: true, messageJson: true },
+    });
+    for (const row of existingRows) existingByMessageId.set(row.messageId, row.messageJson);
+  } catch (error) {
+    // 读失败就退化成"原样覆盖"（和改动前行为一致），不因为这个可选优化把保存整条链路搞挂。
+    console.warn("[workspace-sessions] load existing messages for field restore failed", { userId, sessionId, error: error instanceof Error ? error.message : String(error) });
+  }
 
   for (let index = 0; index < validMessages.length; index += 50) {
     const chunk = validMessages.slice(index, index + 50);
     await prisma.$transaction(
       chunk.map((message) => {
         const messageId = getMessageId(message);
+        const restored = restoreProjectedMessageFields(message, existingByMessageId.get(messageId ?? ""));
         const data = {
-          role: getMessageRole(message),
-          content: getMessageContent(message),
-          createdAt: toDate(message.createdAt),
-          messageJson: message as Prisma.InputJsonObject,
+          role: getMessageRole(restored),
+          content: getMessageContent(restored),
+          createdAt: toDate(restored.createdAt),
+          messageJson: restored as Prisma.InputJsonObject,
         };
 
         return prisma.workspaceMessage.upsert({
@@ -259,7 +313,66 @@ export async function migrateWorkspaceSessionsFromState(userId: string, state: u
 }
 
 export function workspaceMessageRowsToMessages(rows: WorkspaceMessageRow[]) {
-  return rows.map((row) => sanitizeWorkspaceMessage(row.messageJson)).filter(isRecord);
+  return rows.map((row) => projectWorkspaceMessageForClient(sanitizeWorkspaceMessage(row.messageJson))).filter(isRecord);
+}
+
+/**
+ * ⭐⭐ **下行投影：把"同一份提示词的重复副本"从响应里拿掉**（2026-07-30 性能优化，实测根因）。
+ *
+ * 线上实测（正式服重度用户，活跃会话 50 条消息共 633 KB）：
+ * | 字段 | 占比 |
+ * |---|---|
+ * | `generationMeta.itemPrompts`   | 138.6 KB / 47.9% of generationMeta |
+ * | `generationMeta.originalPrompt`| 138.5 KB / 47.8% of generationMeta |
+ * | `videoPrompts`（值）           | 134.2 KB |
+ * | `content`                      | 138.8 KB |
+ * → **这四个装的基本是同一批提示词**，550 KB 里约 415 KB 是重复。
+ *
+ * ⭐ 而前端读取本来就是**层层回落**（`chat-workbench.tsx` 多处）：
+ *   `message.videoPrompts?.[url] ?? generationMeta?.itemPrompts?.[i] ?? generationMeta?.originalPrompt ?? message.content`
+ * 所以只要"值完全相同"，少发一层，前端自动回落到下一层，**显示结果一模一样、前端一行都不用改**。
+ *
+ * ⛔⛔ 三条铁规则（都是为了绝对不改变语义，别放松）：
+ *  ① **只在"整体完全相等"时才省，绝不逐项省**。
+ *     `itemPrompts` 是**按下标**取的数组、`videoPrompts` 的回落目标又是 `itemPrompts[i]` ——
+ *     逐项删会让下标错位、或回落到**另一条**提示词上，那就是真 bug 了。
+ *  ② **只影响下行响应，不动数据库**。库里那份原封不动（PUT 走的是另一条路径），
+ *     所以万一将来发现问题，删掉这个函数调用就能立刻恢复原样。
+ *  ③ 比较必须是**严格字符串相等**，不做 trim / 大小写归一 —— 差一个空格就老老实实发原样。
+ */
+export function projectWorkspaceMessageForClient(value: unknown) {
+  if (!isRecord(value)) return value;
+  const next: Record<string, unknown> = { ...value };
+  const meta = isRecord(next.generationMeta) ? { ...next.generationMeta } : undefined;
+  const content = typeof next.content === "string" ? next.content : undefined;
+  const originalPrompt = meta && typeof meta.originalPrompt === "string" ? meta.originalPrompt : undefined;
+  // 提示词的"最终回落值"：itemPrompts / videoPrompts 都能落到它身上。
+  const baseline = originalPrompt ?? content;
+
+  if (meta) {
+    // itemPrompts：每一项都等于 baseline 才整体省掉（回落 → originalPrompt / content，值相同）。
+    if (Array.isArray(meta.itemPrompts) && baseline !== undefined && meta.itemPrompts.length > 0 && meta.itemPrompts.every((item) => item === baseline)) {
+      delete meta.itemPrompts;
+    }
+    // originalPrompt === content 时省掉（回落 → content，值相同）。
+    // ⚠️ 必须在 itemPrompts 判定**之后**做，否则上面的 baseline 会先失去 originalPrompt。
+    if (typeof meta.originalPrompt === "string" && content !== undefined && meta.originalPrompt === content) {
+      delete meta.originalPrompt;
+    }
+    if (Object.keys(meta).length > 0) next.generationMeta = meta; else delete next.generationMeta;
+  }
+
+  // videoPrompts：只有"所有值都等于 baseline"且 itemPrompts 已不构成不同回落时才整体省。
+  if (isRecord(next.videoPrompts) && baseline !== undefined) {
+    const metaAfter = isRecord(next.generationMeta) ? next.generationMeta : undefined;
+    const itemPromptsStillDiffer = Array.isArray(metaAfter?.itemPrompts);
+    const values = Object.values(next.videoPrompts);
+    if (!itemPromptsStillDiffer && values.length > 0 && values.every((item) => item === baseline)) {
+      delete next.videoPrompts;
+    }
+  }
+
+  return next;
 }
 
 function collectMessageMediaUrls(message: Record<string, unknown>) {

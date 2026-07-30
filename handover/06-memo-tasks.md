@@ -9,7 +9,155 @@
 - **[取消] M021** 对话流的 AI 改写重做 —— **2026-07-30 用户明确说不做了**。对话流「一条提示词出多图」的展示模型与 AI 改写天然冲突，不再考虑重做。⛔ 别再把 v1.0.0.53 撤掉的那批代码捡回来（工作流那份 `gpt-image-safety-retry.ts` 保留不动、继续用）。
 - **[取消] M022** 给 `ID_636611` 补积分（d37 丢图事件）—— **2026-07-30 用户明确说不做了**。丢掉的 15 张图本来就都在他资产库里（`image_19_d37`~`image_36_d37`），属"出了但没在对话里显示"，不是白扣，不补。**任何人都没动过他的积分。**
 
+## 已查清 / 无需再查（留档防重复劳动）
+
+### 502（`connect() failed (111: Connection refused)`）= **部署窗口现象，不是 bug**（2026-07-30 查清）
+
+- **证据**：正式服今天 24 条 502 **全部挤在 `10:02:35~10:02:40` 和 `10:05:39~10:05:41` 两个时刻**，
+  正是那次 `up -d --build flashmuse-app` 和 `force-recreate` 的容器重启窗口；
+  nginx error log 里全是 `connect() failed (111: Connection refused) while connecting to upstream`
+  = **app 容器当时根本没在监听**（不是超时、不是代码报错）。
+  测试服那 54 条同理，分布在 07/21、07/24、07/27、07/28 各次部署窗口。
+- ⚠️ **但它确实会打到真实用户**：今天那两个窗口里，3 个不同客户端（`104.249.174.135` / `122.225.228.122` / `60.186.53.107`）
+  的 `/api/auth/me`、`/api/auth/workspace-instance`、`/api/generation-status`、**`PUT /api/workspace-state`** 都吃了 502
+  （最后那条 = **那一次工作区保存丢了**）。
+- **想彻底消除需要零停机切换**（蓝绿/双容器 + nginx upstream 切换 + 健康检查），属架构改动，**用户没要求过、先不做**。
+  现实缓解：**别在高峰部署、`up -d --build` 窗口尽量短、别反复 recreate**（`03` 里已有这条）。
+
 ## 活跃备忘
+
+### [x] M025 ②「工作流列表不带完整画布」——⛔⛔ **已判定「不做」（2026-07-30 第二十次会话，用户授权后按实测数据决定）**
+
+> ⛔⛔ **结论：不做。收益已经被 gzip 吃掉了，剩下的量不值得担那个"改错就真删用户画布"的风险。**
+> ⭐ **以后再遇到「打开工作台慢」，先按下面第 1、2 步量一遍，别直接翻出这条来做。**
+>
+> **实测数据（正式服真实数据，脚本 `.runtime/m025.js`，v1.0.0.56 上线后跑的）**：
+>
+> | 用户 | canvas 未压缩 | **gzip 后** | 压缩率 | M025 做完还能再省 |
+> |---|---|---|---|---|
+> | ID_868181（9 工作流/429 节点） | 655.4KB | **105.1KB** | 16.0% | 31.0KB（29.5%） |
+> | ID_686996（18 工作流/103 节点） | 447.6KB | 111.3KB | 24.9% | 17.9KB（16.1%） |
+> | ID_708423 | 325.9KB | 64.2KB | 19.7% | 14.0KB（21.7%） |
+> | ID_636611 | 159.9KB | 29.2KB | 18.3% | 2.4KB（8.3%） |
+>
+> **三条判断依据**：
+> 1. ⭐⭐ **病根已经物理堵死**：那 17~30 秒的根因是响应撑爆 `proxy_buffers`（默认 32KB）被 nginx 落盘。
+>    现在缓冲区 **32×32k = 1MB**，最大用户压缩后才 ~105KB → **10 倍余量，不可能再落盘**。
+>    实测「`buffered to a temporary file`」告警 **8 条 → 0 条**。
+> 2. **剩余收益只有 ~31KB**，且只有最重的那一个用户这么大 → 对总耗时基本无感。
+> 3. ⛔ **风险与收益严重不成比例**：它要改**前端工作流加载路径** + 新增"按需拉单个 canvas"接口，
+>    而 `workflowItems` 是**整体覆盖回写**的（`chat-workbench.tsx:10329`），
+>    下行剥字段只要有一处 PUT 侧没恢复上 = **真删用户画布**。
+>
+> ⭐ **`data.prompt` 之所以压缩率这么高（16%）**：它是纯中文提示词文本、还大量重复，
+> 正好是 gzip 最擅长的东西。**这也是"先上 gzip 再谈剥字段"的通用教训。**
+>
+> 下面原方案**只作备查**（万一以后 canvas 涨到 gzip 后也上 MB 级，可以照它做）。
+
+**它值多少（当时的估算，⚠️ 是未压缩字节，已被上面的 gzip 实测推翻）**：`workflowItems[].canvas` 是剩下最大的一块。实测（正式服）：
+- ID_868181：canvas **655.4 KB**，占它整个响应 **98.7%** → ①③④ 对它一点用都没有（省 0.0%）
+- ID_686996：447.9 KB、ID_708423：325.9 KB、ID_636611：160.0 KB
+- canvas 内部构成（ID_868181，9 个工作流 429 个节点）：
+  `data.prompt` **229.3 KB（43.7%）** / `data.uploads` 47.9 KB / `data.imageDimensions` 47.2 KB /
+  `data.mediaSystemNames` 41.3 KB / `data.images` 35.4 KB
+
+**为什么不能简单地"列表就不发 canvas"**（这是关键，别踩）：
+1. 前端有 **8 处跨工作流全量遍历 canvas**（`chat-workbench.tsx`）：
+   `980` / `1076~1092` / `2212` / `2226` / `5196` / `8374` / `8487`（判断有没有节点在生成中）/ `10398`（按 URL 反查节点）。
+   canvas 一空，这些逻辑全部失效（比如"有工作流正在生成"的全局提示会消失）。
+2. ⚠️⚠️ **更危险**：前端局部更新节点时是 `{ ...node.data, ... }` 展开回写（如 `12303` 行），
+   PUT 上来的 canvas 若缺字段，**会把库里的画布内容真删掉**。
+
+**正确设计（推荐，分三步；服务端那半有现成的既有模式可复用）**：
+1. **只给"活跃的那一个工作流"下发完整 canvas**，其余工作流下发**瘦身版**
+   （去掉 `data.prompt` / `data.uploads` 这两个最大且列表用不到的字段，**保留** `id/kind/x/y/images/videoUrl/isRunning/mediaSystemNames/imageDimensions` —— 上面那 8 处遍历只用这些）。
+2. **PUT 侧配对恢复**：`workspace-workflows.ts` 的 **`mergeWorkflowCanvasMedia()` 已经在做这件事了**
+   （客户端缺 `images`/`videoUrl`/`imageDimensions`/`mediaSystemNames` 就从库里补回来）→
+   **只需把 `data.prompt` / `data.uploads` 加进它的恢复清单**，不用另起炉灶。
+   ⭐ 这与本次 ③ 的做法完全同构：`workspace-sessions.ts` 的
+   `projectWorkspaceMessageForClient()`（下行投影）+ `restoreProjectedMessageFields()`（PUT 恢复）。**照抄那对函数的写法。**
+3. **前端按需补拉**：切换/打开某个工作流时，若发现该工作流是瘦身版（可加个 `canvasTrimmed: true` 标记），
+   就调一次"拉单个工作流完整 canvas"的接口再渲染。
+   → 需要新增 `GET /api/workspace-state?workflowId=xxx`（或独立 route），返回单个完整 canvas。
+
+**必测清单（做完必须逐条实测，测试服 `12424740@qq.com`）**：
+- 打开工作流 A（非活跃）→ **节点上的提示词要正常显示**（这是最容易破的一条）
+- 在 A 里拖一个节点 / 改提示词 → 切到工作流 B → 再切回 A → **提示词和画布内容都不能丢**
+- 在 A 里生成一张图 → 切走再回来 → 图还在、名字还在
+- 工作流列表**顺序不能乱**（刚修好的"只打开不置顶"别回归）
+- 点任意节点**不能崩**（React #310 老坑）
+- 后台 `/admin?tab=records` 里那次生成记录正常
+- ⭐ **拿 ID_868181 这种"多工作流大画布"的号验**，否则测不出效果
+
+**验证收益的现成工具**：`scripts/measure-workspace-state-size.mjs`（**已进 git**，用法在文件头注释）。
+它会自动挑出重度用户、打印改动前后字节数。做 ② 时把 canvas 那一列也接进去（现在那列显示"未动"），就能量出 ② 的实际收益。
+
+### [x] M024 `/api/workspace-state` 响应体过大 —— **①③④ 已做完（2026-07-30，未部署）**，② 见上面 M025
+
+> ⭐ 根因排查全文见本条下方「排查实录」，**别重复排查**。也**别把它和 502 混在一起**（两件不同的事，见下面「已查清/无需再查」）。
+
+- **现象**：浏览器里打开工作台 `/api/workspace-state` 偶发 **17~30 秒**。
+- ⭐⭐ **根因（nginx 自己写在 warn 日志里）**：
+  `an upstream response is buffered to a temporary file /var/cache/nginx/proxy_temp/... while reading upstream,
+   request: "GET /api/workspace-state?summary=1&panel=chat"`
+  → **响应体超过 nginx 的 `proxy_buffers`（默认 8×4k=32KB），nginx 先落盘到磁盘临时文件再转发**，
+  叠加跨境传输 → 十几~三十秒。
+- **实测量级**：该接口响应最大 **1,188,114 字节（1.19MB）**，是全站所有 `/api/` 里最大的（Top-25 全是它）。
+
+#### ⭐ 三个真正的大头（逐层量出来的，不是推测）
+
+⛔ **先纠正一个容易走偏的判断**：「消息一次全发」是**错的** ——
+消息早就有分页（`DEFAULT_WORKSPACE_MESSAGE_LIMIT`、`hasMore`/`nextBefore`，会话列表也有 10 条上限）。
+真正的原因是下面三个：
+
+| # | 大头 | 实测最大 | 内部构成 |
+|---|---|---|---|
+| 1 | `workflowItems[].canvas` | **655.4 KB**（ID_868181，占其响应 98.7%） | `data.prompt` 43.7% / `data.uploads` 9.1% / `data.imageDimensions` 9.0% |
+| 2 | 活跃会话的消息（50 条） | **785.6 KB**（ID_686996，平均 8~18 KB/条） | `generationMeta` 45.7% / `content` 21.9% / `videoPrompts` 21.9% |
+| 3 | `feedbackLogs` | **727.8 KB**（ID_332396，占其响应 93%） | `context` **79.7%** / `message` 15.4% |
+
+⭐⭐ **第 2 项的关键洞察（最有价值的一条）**：`generationMeta.itemPrompts`(138.6KB) +
+`generationMeta.originalPrompt`(138.5KB) + `videoPrompts` 的值(134.2KB) + `content`(138.8KB)
+**装的基本是同一批提示词** —— 550KB 里约 **415KB 是同一份提示词的重复副本**。
+而前端读取本来就是**层层回落**：
+`videoPrompts?.[url] ?? generationMeta?.itemPrompts?.[i] ?? generationMeta?.originalPrompt ?? content`
+→ 所以「值相同就少发一层」**语义完全不变、前端一行都不用改**。
+
+#### ✅ 已做（2026-07-30 本地，未部署）
+
+| 项 | 改了什么 | 文件 |
+|---|---|---|
+| ① | **`feedbackLogs` 下行不再发**（前端确认不读它：`getAgentGenerationModel(..., { feedbackLogs })` 是**死参数**，函数体没引用）；PUT 侧用 `mergeFeedbackLogs()` 按 id 去重合并、留最近 300 条 → **数据一条不丢** | `src/app/api/workspace-state/route.ts` |
+| ③a | **重复提示词副本不下发**：`projectWorkspaceMessageForClient()`；配对的 `restoreProjectedMessageFields()` 在 PUT 时把字段补回库（否则前端回写会真删库） | `src/lib/workspace-sessions.ts` |
+| ③b | `DEFAULT_WORKSPACE_MESSAGE_LIMIT` **50 → 30** | `src/lib/workspace-sessions.ts` |
+| ④ | **nginx 大响应不落盘 + JSON gzip**（腾讯正式/测试 + 阿里测试整份改好；阿里正式用幂等增量脚本） | `nginx/flashmuse.conf`、`deploy/staging/*.conf`、`deploy/ali/ali-add-proxy-buffers.sh` |
+
+⭐ **实测收益（`scripts/measure-workspace-state-size.mjs`，8 个重度用户，真实数据）：合计 4905 KB → 2688 KB，总省 45.2%**
+- ID_332396 **省 94.7%**（772→41 KB，feedbackLogs 那 727KB 全省）
+- ID_271898 **省 70.9%**（473→138 KB，消息 415→80 KB）
+- ID_673536 省 57.8%、ID_686996 省 44.0%、ID_315163 省 42.4%
+- ⚠️ **ID_868181 省 0.0%** ← 它 98.7% 是 canvas，**正好是没做的 ②**（见 M025）
+- ⭐ 叠加 ④ 的 gzip 后，实际下行还能再压到这个数的 15%~30%
+
+#### ⛔ 三个"改的时候差点踩、以后别踩"的坑
+
+1. **`feedbackLogs` 不能在 `baseState` 上剥** —— `baseState` 在 `route.ts` 里会被**回写数据库**
+   （`hasJsonChanged` → `update`），在它身上剥等于**真删用户数据**。只能在往 `Response.json` 塞的那一刻剥（已加注释）。
+2. **下行投影必须配一个 PUT 侧恢复** —— `upsertWorkspaceMessages` 是 `messageJson: message` **整体覆盖**，
+   前端把瘦身版存回来就等于删字段。这也是 `mergeWorkflowCanvasMedia` 早就在用的既有模式。
+3. **投影只能"整体相等才省"，绝不能逐项省** —— `itemPrompts` 是**按下标**取的、`videoPrompts` 的回落目标又是
+   `itemPrompts[i]`，逐项删会下标错位或回落到**另一条**提示词上，那才是真 bug。
+
+#### 已排除的方向（别再花时间）
+
+- **不是 app 慢**：容器内直打 `127.0.0.1:3000` 稳定 **39~44ms**（8 次）。
+- **不是 nginx / TLS 本身慢**：宿主打 `:5000` **1.5~3.7ms**；本机走 443+TLS **20ms**。
+- **不是阿里反代**：阿里 `proxy_read/send_timeout` 都是 600s。
+- **不是 DB 连接池（M023）**：这条链路没有慢查询证据，纯粹是响应体大。
+- ⚠️ **另一个独立现象，别混淆**：本地 `curl` 打 **401（无 body）也偶发 30s** ——
+  那是**纯跨境网络抖动**（基线 0.43~0.55s，TLS 握手占 0.29s）。
+  ⭐ 判据：**部署前的 v54 一样有**（5 次里一次 30.8s）→ 跟版本、跟这次优化都无关。
+
 
 ### [ ] M020 视频「高清」（真·超分/放大）—— 押后，**等有免费方案再做**（2026-07-27 用户交代）
 - **押后原因**：现有所有可行方案都要花钱（第三方托管 API 按秒计费），用户说"如果没有免费版以后再做这个功能"。自建开源方案没 GPU（我们腾讯那台是共享 CPU 机器）。
