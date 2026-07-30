@@ -19,7 +19,8 @@ This version has breaking changes — APIs, conventions, and file structure may 
 5. ⭐⭐ **要不要"为了省字节改代码"，必须先量 gzip 后的大小，别拿未压缩字节做决策**（2026-07-30 加）。
    本次实测：工作流 canvas 未压缩 **655KB**，gzip 后只有 **105KB（16%）** ——
    因为 `data.prompt` 是纯中文提示词文本还大量重复，**正好是 gzip 最擅长的东西**。
-   于是那个"看起来能省 655KB"的优化（M025）**收益只剩 ~31KB，被直接否掉了**。
+   于是那个"看起来能省 655KB"的优化（M025）**实际收益只剩 ~31KB**（据此建议不做，🗣️ 但**最终结论用户还没拍板**，
+   见 `06-memo-tasks.md` 的 M025）。
    姿势：`zlib.gzipSync(Buffer.from(JSON.stringify(x)), { level: 5 }).length`（模板 `.runtime/m025.js`）。
    ⭐ 顺序永远是「**先上 gzip + 放大缓冲，再谈剥字段**」—— 前者零风险，后者要动前端读写链路、改错就删用户数据。
 6. ⭐ **怀疑"新版本变慢/报错"，先拿还没升级的那台做对照** ——
