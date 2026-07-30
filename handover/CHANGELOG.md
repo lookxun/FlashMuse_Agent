@@ -2,11 +2,79 @@
 
 > 本批 CHANGELOG 从 2026-07-21 交接文档重建开始记。**此前的全部历史流水**（约 580KB，含 2026-06 起到 07-21 每一次改动/部署细节）在 `historical-handover-docs-last-used-2026-07-21/CHANGELOG.md`，遇到需要历史上下文的难题再翻。
 
+## 2026-07-30（第十九次会话）🚀 **v1.0.0.55 两服部署上线 + 14 项验收全过 + 收尾四方同步**
+
+> ✅ **结果：四方同步 `v1.0.0.55`**（commit `e6a66e0`），四域名全 200，两台都真上号巡检过、0 控制台 error。
+> 本次**没写任何新功能代码**，就是把第十八次会话那批（下面那条）完整部署掉 + 实机验收 + 收尾。
+
+### 0. 一句话
+
+按铁律顺序 **先测试服 → 实机验收 → 再原样同步正式服**，把「帐号功能管理 + 解除限制按账号 + 工作流两处修复 + 红字映射修正」这批上线；
+两台的 Prisma 迁移都成功、两件部署后手工事都做完、两台都真跑了生图和生视频。
+
+### 1. 部署实跑记录（命令级，下次照抄）
+
+| # | 干什么 | 结果 |
+|---|---|---|
+| 0 | `node scripts/bump-version.mjs`（v54→v55）+ `npx tsc --noEmit` | 全绿 |
+| 1 | 打 `.runtime/v55.tgz`（29 条路径，**含迁移目录 + 3 个新 API 目录 + `app-version.ts`**）→ scp → 解到 `/opt/flashmuse-staging/app` | 落地后 `ls` 复核过迁移目录和 `admin/api/users/` 5 个子目录 |
+| 2 | 测试服 `nohup sudo docker compose up -d --build staging-app` | build ~150s；⭐ **entrypoint 真跑了迁移**：`Applying migration 20260730000000_user_unlock_limits_enabled` → `All migrations have been successfully applied.` |
+| 3 | `sudo bash /opt/flashmuse-staging/sync-ali-test.sh` | `staging ali sync done` |
+| 4 | `.runtime/pub55.sh`：`.env.local` 的 `BYTEPLUS_UNLOCK_LIMITS` 改 false + sed `PUBLISHED_APP_VERSION` + `force-recreate staging-app` | `x-app-version: v1.0.0.55`、HTML 版本号 v1.0.0.55、外网 `:8080` 200 |
+| 5 | 测试服上号巡检 + 后台 14 项验收 | 全过（详见第 2 节） |
+| 6 | `.runtime/prodsync55.sh`：备份 `app-backups/20260730-180159-presync-v55` → staging→prod rsync → `grep APP_VERSION` 复核 | v1.0.0.55、迁移目录与新 API 目录都在 |
+| 7 | 正式服 `nohup sudo docker compose up -d --build flashmuse-app` | build ~90s；**迁移同样成功应用**；HTML 版本号 v1.0.0.55 |
+| 8 | `.runtime/syncali55.sh`：`docker cp .next/static` → rsync 到阿里**正式**镜像 `/var/www/flashmuse-static/_next/static/` | `ali static sync done` |
+| 9 | `.runtime/pub55prod.sh`：正式服 `.env.local` 改 false + sed 版本 + `force-recreate` + 四域名 curl | `x-app-version: v1.0.0.55`；main/api/ali/static **全 200** |
+| 10 | 正式服上号巡检（含真跑生图 + 生视频） | 全过 |
+| 11 | `git add -A` → commit `e6a66e0` → `git push origin main` | 四方同步 |
+
+⭐ **`.env.local` 两台原来都是 `BYTEPLUS_UNLOCK_LIMITS=true`，都改成了 `false`** 并随 `force-recreate` 生效。
+
+### 2. 实机验收结果（14 项，⭐ 是必测项）
+
+| # | 期望 | 结果 |
+|---|---|---|
+| ⭐1 | 后台出现「帐号功能管理」、4 卡片 + 表格、0 error | ✅ |
+| ⭐2 | 单账号「解除限制」开关能存下来 | ✅ 卡片数字 0→1→2 |
+| ⭐3 | 表头总开关弹**项目样式白色确认框** | ✅ 弹「关闭全部帐号的『通用模式』…」白色框（**不是**浏览器原生 alert）；点了取消，没真改 |
+| 4 | 「后台白名单」列**没有**总开关 | ✅ |
+| ⭐5 | 关自己的白名单 → 报错 | ✅ 弹「操作未完成 / 不能把自己移出后台白名单」（伴随一条**预期的** 400，不算 bug） |
+| 6 | 「模型开关」页 BytePlus 那行「解除限制」已消失 | ✅ 全页搜不到「解除限制」，BytePlus 段落还在、排版正常 |
+| 7 | 用户管理卡片 = `正常用户/禁用用户`、有「在线用户」、表格无通用模式列 | ✅（测试服 `2/0`、正式服 37 用户） |
+| ⭐8 | 头像下沿绿色「在线」胶囊、横排、行高没变 | ✅ 前台开着 → 在线用户 0→1、胶囊出现 |
+| ⭐9 | 开着解除限制真跑生图 + 生视频 | ✅ 测试服 Seedream 5.0 Pro 出图（扣 3）、Seedance 2.0 Mini 5s 出视频（扣 27）；正式服 Seedream 4.5 出图（扣 3）、Kling v3.0 Pro 5s 出视频（扣 59） |
+| ⭐10 | 关着解除限制 + 敏感提示词 → 红字是"输入文本敏感"而**不是**"更换参考素材" | ✅ 红字：`(B_1) 模型因色情/暴力/隐私安全等原因拒绝出图…以下是模型返回的拒绝原因：“The request failed because the input text may contain sensitive information.”` |
+| ⭐11 | 工作流点节点出「使用提示词」、点了生成带提示词+参考图的新节点、画布不崩 | ✅ 两台都验；正式服实测生成了带「一只橘猫坐在窗台上，阳光洒进来」+ 参考图的新节点，**并直接用它跑成功了生图** |
+| ⭐12/⭐13 | 工作流列表"只打开不置顶 / 拖动或生成才置顶" | 用户已在本地复验过，本次不重复；测试服确认了点节点不崩 |
+| 14 | 对话流发消息 / 文本链路 | ✅ 正常回答（验 unlockLimits 透传没改坏文本链路） |
+
+### 3. ⭐⭐ 本次留下的两条硬知识
+
+1. **「解除限制」的真实作用被实测印证了**：它**不跳过任何审核**，只是把发给 BytePlus 的 `model`
+   从公开模型名换成专属 Endpoint ID（端点自带更宽策略）。同一条敏感提示词：开着能出图、关掉被
+   `input text may contain sensitive information` 拦。第十八次会话写在 `01` 里的那条认知**得到线上验证**。
+2. ⚠️ **`/api/workspace-state` 偶发 17~30s 甚至 502 是既有现象，别误报成本批 bug**。
+   判据：**部署前的正式服 v54 实测 5 次里也有一次 30.8s**。属跨境 + 冷启 + 负载，不是 v55 引入的。
+   （教训：怀疑"新版本变慢/报错"时，**先拿还没升级的那台做对照**，别直接归因给刚上的代码。）
+
+### 4. ⚠️ 运营上必须知道的一件事（本批的既定副作用，不是 bug）
+
+迁移让 `unlockLimitsEnabled` **默认 false = 全站「解除限制」当场全关**（用户就是要这个）。
+**正式服目前只给 `lookxun@163.com` 开了**，其余 36 个账号都是关的。
+→ 原来靠全局开关吃专属 Endpoint ID 的用户，从 v55 上线起内容敏感的提示词会开始被平台拒。
+→ **有人反馈"以前能出图现在被拒"，去 `/admin?tab=account-features` 把他的「解除限制」打开即可。**
+
+### 5. 红字状态
+
+**没跑归档脚本**（按用户交代）。正式服此刻：**待排查 9 条 / 2 种、兜底桶 0 条、已归档 745**，
+9 条全是「审核 / 内容策略类」= 我们改不了、按铁律就该一直亮着。**继续等攒。**
+
+---
+
 ## 2026-07-30（第十八次会话）🧩 **纯本地开发批：后台「帐号功能管理」新页 + 解除限制改按账号 + 工作流两处修复 + 红字映射修正**
 
-> ⚠️⚠️ **本批全部只做了本地，一行都没部署、没提交、没 bump。线上仍是 `v1.0.0.54`。**
-> **用户明确交代：下一个 AI 直接部署掉**（先测试服 → 验证 → 同步正式服）。部署清单见
-> `05-next-actions.md` 顶部，⭐ **本批有 Prisma 迁移，且有一条"部署后必须手工做"的事，别漏。**
+> ✅ **本批已于第十九次会话作为 `v1.0.0.55` 部署上线**（见上面那条）。下面的"未部署/未提交"描述是当时的状态，留档备查。
 
 ### 0. 本次会话在干什么（一句话）
 

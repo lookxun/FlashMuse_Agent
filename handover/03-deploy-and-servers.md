@@ -81,6 +81,18 @@
    **崩了立刻修**：能马上改就改（走"先测试服再正式服"顺序），修不了就用 `/opt/flashmuse/app-backups/<ts>-presync-vXX`
    回滚 `/opt/flashmuse/app` → `up -d --build flashmuse-app` → 重新同步 `.next/static` 到阿里正式镜像 → `PUBLISHED_APP_VERSION` 改回旧版。
 
+### ⭐ v1.0.0.55（2026-07-30 第十九次会话）新增的三条部署经验
+
+1. ⭐⭐ **带 Prisma 迁移的批次怎么确认迁移真跑了**：`up -d --build` 之后去
+   `sudo docker logs --tail 30 <app容器>` 看 entrypoint 那段，必须出现
+   `Applying migration \`xxx\`` + `All migrations have been successfully applied.`
+   （没迁移的批次只会输出 "No pending migrations"）。**两台都要看。**
+2. ⛔ **`ssh "... nohup ... &"` 这种内联后台命令会把 ssh 会话挂住** → 工具 120s 超时（本次踩过）。
+   正确姿势：`ssh "... & sleep 3; echo started"` 起完就断开，**然后另起一条 ssh 去 `tail` 日志轮询**。
+3. ⭐ **打 tgz 用文件清单法**，别手写一长串 tar 参数：把路径写进 `.runtime/vXX-files.txt`
+   （每行一个，目录直接写目录名），然后 `tar -czf .runtime/vXX.tgz -T .runtime/vXX-files.txt`；
+   打完必须 `tar -tzf` grep 一遍**新增目录**是否真在包里（漏了新目录 = 上线当场 404/崩）。
+
 ## 关键踩坑与记忆
 
 - **PowerShell 坑**：ssh 内联含 `$(...)`/`%{}`/中文/嵌套引号会被本地 PS 先解释坏（备份目录名丢时间戳=踩过）→ 一律写本地 `.sh`/`.sql`/`.js`，scp `/tmp`，`sed -i 's/\r$//'` 后 `bash`/`psql -f`/`node`。改中文源码禁 `Set-Content`（mojibake）。
