@@ -4,7 +4,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { createPortal } from "react-dom";
 import { BaseBoxShapeUtil, BindingUtil, CubicBezier2d, HTMLContainer, Mat, Rectangle2d, SVGContainer, SelectionForegroundOverlayUtil, ShapeUtil, T, Tldraw, Vec, createShapeId, defaultBindingUtils, defaultOverlayUtils, defaultShapeUtils, resizeBox, useActions, useEditor, useValue, vecModelValidator, type Editor, type IndexKey, type RecordProps, type TLBinding, type TLComponents, type TLHandle, type TLHandleDragInfo, type TLResizeInfo, type TLShape, type TLShapeId, type TLUiOverrides, type TldrawOptions, type VecModel } from "tldraw";
 import { type IconType } from "react-icons";
-import { RiEraserLine, RiDragMove2Line, RiHdLine, RiSparkling2Line, RiAccountBoxLine, RiBellLine, RiAddLine, RiArrowDownSLine, RiArrowUpLine, RiBringForward, RiBringToFront, RiCameraLine, RiCheckLine, RiCheckboxBlankCircleLine, RiCheckboxCircleLine, RiCheckboxMultipleLine, RiClipboardLine, RiCloseLine, RiCursorLine, RiDeleteBinLine, RiDownloadLine, RiEmotionSadLine, RiExportFill, RiExportLine, RiEyeLine, RiEyeOffLine, RiFileCodeLine, RiFileCopy2Line, RiFileCopyLine, RiFileImageLine, RiFileTextLine, RiFilmAiLine, RiFocus3Line, RiGoogleFill, RiHand, RiHistoryLine, RiImage2Line, RiImageAiLine, RiImageCircleLine, RiImageLine, RiInformation2Line, RiLandscapeLine, RiLayoutLeft2Line, RiLayoutLeftLine, RiLoader4Line, RiLockLine, RiLockUnlockLine, RiMoreLine, RiMultiImageLine, RiNodeTree, RiOpenaiFill, RiResetLeftLine, RiRoadMapLine, RiScissorsCutLine, RiSendBackward, RiSendToBack, RiShining2Line, RiStackLine, RiTBoxLine, RiTextBlock, RiTextSnippet, RiTimeLine, RiTiktokFill, RiUpload2Line, RiVideoLine, RiVideoOnLine, RiVoiceprintLine, RiZoomInLine, RiZoomOutLine } from "react-icons/ri";
+import { RiEraserLine, RiDragMove2Line, RiHdLine, RiSparkling2Line, RiAccountBoxLine, RiBellLine, RiAddLine, RiArrowDownSLine, RiArrowUpLine, RiBringForward, RiBringToFront, RiCameraLine, RiCheckLine, RiCheckboxBlankCircleLine, RiCheckboxCircleLine, RiCheckboxMultipleLine, RiClipboardLine, RiCloseLine, RiCursorLine, RiDeleteBinLine, RiDownloadLine, RiEmotionSadLine, RiExportFill, RiExportLine, RiEyeLine, RiEyeOffLine, RiFileCodeLine, RiFileCopy2Line, RiFileCopyLine, RiFileImageLine, RiFileTextLine, RiFilmAiLine, RiFolderOpenLine, RiGalleryView, RiAttachment2, RiFocus3Line, RiGoogleFill, RiHand, RiHistoryLine, RiImage2Line, RiImageAiLine, RiImageCircleLine, RiImageLine, RiInformation2Line, RiLandscapeLine, RiSidebarFoldLine, RiSidebarUnfoldLine, RiLoader4Line, RiLockLine, RiLockUnlockLine, RiMoreLine, RiMultiImageLine, RiNodeTree, RiOpenaiFill, RiResetLeftLine, RiRoadMapLine, RiScissorsCutLine, RiSendBackward, RiSendToBack, RiShining2Line, RiStackLine, RiTBoxLine, RiTextBlock, RiTextSnippet, RiTimeLine, RiTiktokFill, RiUpload2Line, RiVideoLine, RiVideoOnLine, RiVoiceprintLine, RiZoomInLine, RiZoomOutLine } from "react-icons/ri";
 import { BytePlusIcon } from "@/components/byteplus-icon";
 import { AudioWaveformPlayer } from "@/components/audio-waveform-player";
 import { AssetMentionPicker, type MentionPickerCategory, type MentionPickerItem } from "@/components/asset-mention-picker";
@@ -54,6 +54,11 @@ export type WorkflowNodeData = {
   isRunning?: boolean;
   uploadProgress?: number;
   uploadPreviewUrl?: string;
+  // 「使用提示词」建出的新节点：提示词与参考素材还在从后端权威 job 读回来的那一小会儿。
+  // 期间输入框整体禁用 + 居中转圈，避免用户对着空框以为没生效、或打字被回填冲掉。
+  // ⭐ 运行时临时字段，绝不进数据库（在 chat-workbench 的 stripWorkflowItemTransientUploadState 里剥掉），
+  // 否则刷新后节点会永久卡在禁用转圈态（那次 fetch 早随页面销毁、没有恢复机制）。
+  promptLoading?: boolean;
   taskId?: string;
   videoRequestId?: string;
   imageRequestId?: string;
@@ -184,6 +189,7 @@ type WorkflowCanvasProps = {
   uploadRuleOverrides?: UploadRuleOverrides;
   editModelToggles?: Record<string, boolean>;
   leftSidebarVisible?: boolean;
+  leftSidebarToggleLabel?: string;
   onToggleLeftSidebar?: () => void;
   workflowAssets?: WorkflowAssetSummary[];
   referenceAssets?: WorkflowReferenceAsset[];
@@ -226,6 +232,9 @@ type WorkflowReferenceAsset = {
   groupLabel: string;
 };
 
+// 「从当前画布选择」弹窗里的一项：就是 @引用资产 那套形状，外加它在画布上的来源节点（连线用）。
+type WorkflowCanvasMediaAsset = WorkflowReferenceAsset & { sourceNodeId: string };
+
 // "@引用资产" 弹窗分类（迷你版资产库，和对话流/资产库导入一致）。groupType = 服务端计数键。
 const WORKFLOW_MENTION_CATEGORIES: MentionPickerCategory[] = [
   { label: "角色图片", value: "character_image", icon: RiAccountBoxLine },
@@ -240,6 +249,15 @@ const WORKFLOW_MENTION_CATEGORIES: MentionPickerCategory[] = [
   { label: "工作流生成图片", value: "workflow_images", icon: RiImageAiLine },
   { label: "工作流生成视频", value: "workflow_videos", icon: RiFilmAiLine },
 ];
+// 「从当前画布选择」弹窗分类：图片 / 视频 / 音频三页（= 画布上能被引用的三种媒体节点）。
+// ⭐ 复用同一个 AssetMentionPicker 组件（只换标题/分类/数据源），禁止再写第二套弹窗。
+const WORKFLOW_CANVAS_MENTION_CATEGORIES: MentionPickerCategory[] = [
+  { label: "图片", value: "canvas_image", icon: RiImageLine },
+  { label: "视频", value: "canvas_video", icon: RiVideoOnLine },
+  { label: "音频", value: "canvas_audio", icon: RiVoiceprintLine },
+];
+// 上传按钮的「从资产库导入」进去时优先停在哪个分类（图片→角色图片、视频→上传视频、音频→上传音频）。
+const WORKFLOW_UPLOAD_KIND_MENTION_GROUP: Partial<Record<WorkflowUploadKind, string>> = { image: "character_image", video: "upload_videos", audio: "upload_audios" };
 const workflowReadableDocumentFormats = ["md", "txt", "csv"];
 const MAX_WORKFLOW_DOCUMENT_TEXT_CHARS = 50_000;
 const MAX_WORKFLOW_DOCUMENT_CONTEXT_CHARS = 30_000;
@@ -820,6 +838,14 @@ function getWorkflowUploadExtension(upload: WorkflowUploadItem) {
   if (fromName) return fromName;
   const source = upload.url ?? upload.previewUrl ?? "";
   return getWorkflowNameExtension(source);
+}
+
+// 剪贴板里粘到画布的文件，只认图片/视频/音频（与拖拽上传通道 handleUploadNodeFiles 支持的三类媒体一致）。
+// ⛔ 故意不认 .txt：文本粘贴要留给 tldraw 自己的 paste（内部节点复制粘贴、纯文本等），别抢。
+// 判定口径与 handleUploadNodeFile 里的分支保持一致（含 mp3/wav 只有扩展名没 mime 的情况）。
+function isWorkflowPasteMediaFile(file: File) {
+  if (file.type.startsWith("image/") || file.type.startsWith("video/") || file.type.startsWith("audio/")) return true;
+  return ["mp3", "wav"].includes(getWorkflowFileExtension(file));
 }
 
 function validateWorkflowUploadNodeFile(file: File, kind: "image" | "video" | "audio" | "text", media?: { durationSeconds?: number; dimensions?: { width: number; height: number } }, text?: string) {
@@ -2114,6 +2140,10 @@ type WorkflowRuntime = {
   uploadRuleOverrides?: UploadRuleOverrides;
   editModelToggles?: Record<string, boolean>;
   getConnectedInputUploads: (nodeId: string) => WorkflowUploadItem[];
+  // 「从当前画布选择」弹窗的数据源：当前画布上所有节点里的图片/视频/音频（按 url 去重）。
+  getCanvasMediaAssets: () => WorkflowCanvasMediaAsset[];
+  // 把画布上那个媒体节点连到当前节点；返回错误文案，undefined = 成功（或本来就连着）。
+  connectNodeAsInput: (sourceNodeId: string, targetNodeId: string) => string | undefined;
   getInputTextLength: (nodeId: string) => number;
   uploadFilesAsConnectedNodes: (targetNodeId: string, files: File[], onDuplicateTip?: (message: string) => void) => void;
 };
@@ -2964,7 +2994,7 @@ function WorkflowCustomContextMenu({ menu, onClose, onAddNode, onUploadNode, onI
   );
 }
 
-export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onCredit, onGeneratedMedia, onPreviewMedia, onShowTip, onUploadedAsset, getImageDisplayUrl, getVideoPosterDisplayUrl, enabledTextModelIds, textModelProviders = {}, enabledImageModelIds, enabledVideoModelIds, uploadRuleOverrides, editModelToggles, leftSidebarVisible = true, onToggleLeftSidebar, workflowAssets = [], referenceAssets = [], referenceAssetsLoadStatus = "idle", referenceAssetCounts, onLoadReferenceAssets, onLoadReferenceFilter, referenceFilterLoading, referenceFilterNextOffset, onLoadMoreReferenceAssets, onExternalFilesDrop, onOpenAssetImport, assetsToImport, onAssetsImported }: WorkflowCanvasProps) {
+export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onCredit, onGeneratedMedia, onPreviewMedia, onShowTip, onUploadedAsset, getImageDisplayUrl, getVideoPosterDisplayUrl, enabledTextModelIds, textModelProviders = {}, enabledImageModelIds, enabledVideoModelIds, uploadRuleOverrides, editModelToggles, leftSidebarVisible = true, leftSidebarToggleLabel, onToggleLeftSidebar, workflowAssets = [], referenceAssets = [], referenceAssetsLoadStatus = "idle", referenceAssetCounts, onLoadReferenceAssets, onLoadReferenceFilter, referenceFilterLoading, referenceFilterNextOffset, onLoadMoreReferenceAssets, onExternalFilesDrop, onOpenAssetImport, assetsToImport, onAssetsImported }: WorkflowCanvasProps) {
   const editorRef = useRef<Editor | null>(null);
   const stateRef = useRef(normalizeState(value));
   const loadedWorkflowIdRef = useRef(workflowId);
@@ -3366,61 +3396,94 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     }));
   }, [updateState]);
 
+  /**
+   * 「使用提示词」：用某个生成节点的提示词+参考素材新建一个同类节点。
+   *
+   * ⭐⭐ 时序铁律（2026-07-31 用户明确要求）：**点了立刻出节点**，绝不等接口。
+   * 提示词与参考素材要从后端权威 job 读（`/api/workflow-generation-references`，画布上没有可靠副本），
+   * 那是个跨境请求，最坏要几百毫秒到几秒 —— 原来是 `await` 完才建节点，用户点下去屏幕上什么都不动，
+   * 感觉像"没反应/很卡"。现在改成：
+   *   ① 同步建出节点 + 选中 + 镜头飞过去（`promptLoading: true`）；
+   *   ② 期间输入框整体禁用 + 居中「正在加载中...」转圈（所以用户打不了字，回填不可能冲掉用户输入）；
+   *   ③ 接口回来后只 patch 这一个节点的 prompt/uploads 并清掉 promptLoading。
+   * ⛔ 别改回"先 await 再建节点"。⛔ 也别让 promptLoading 落库（见 stripWorkflowItemTransientUploadState）。
+   */
   const addNodeFromPrompt = useCallback((sourceNode: WorkflowNode) => {
     if (sourceNode.kind !== "image" && sourceNode.kind !== "video") return;
     const kind = sourceNode.kind;
     const defaultData = getDefaultNodeData(kind);
-    const buildAndInsert = (uploads: WorkflowUploadItem[] | undefined, promptOverride?: string) => {
-      const current = stateRef.current;
-      const data: WorkflowNodeData = {
-        ...defaultData,
-        prompt: (typeof promptOverride === "string" && promptOverride.trim()) ? promptOverride : (sourceNode.data.prompt ?? ""),
-        model: sourceNode.data.model ?? defaultData.model,
-        ratio: sourceNode.data.ratio ?? defaultData.ratio,
-        resolution: sourceNode.data.resolution ?? defaultData.resolution,
-        duration: kind === "video" ? sourceNode.data.duration ?? defaultData.duration : undefined,
-        videoReferenceMode: kind === "video" ? sourceNode.data.videoReferenceMode : undefined,
-        uploads: uploads && uploads.length > 0 ? uploads : undefined,
-      };
-      const draftNode: WorkflowNode = { id: createId("workflow_node"), kind, title: getNodeLabel(kind), x: 0, y: 0, data };
-      const size = getWorkflowNodeVisualSize(draftNode);
-      const position = findNonOverlappingNodePosition(current.nodes, size, sourceNode);
-      const node = { ...draftNode, x: position.x, y: position.y };
-      recentActionNodeIdsRef.current = [node.id, ...recentActionNodeIdsRef.current].slice(0, 20);
-      updateState((state) => ({ ...state, nodes: [...state.nodes, node] }));
-      window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
-        const editor = editorRef.current;
-        if (!editor) return;
-        const shapeId = getShapeId(node.id);
-        if (!editor.getShape(shapeId)) return;
-        editor.select(shapeId);
-        focusWorkflowNodeInViewport(editor, node);
-      }));
-    };
     // Legacy fallback for old nodes that still carry an inline snapshot on the canvas.
     const legacyUploads = (sourceNode.data.generationUploads ?? sourceNode.data.uploads)?.map((upload) => {
       const { readonlySource: _readonlySource, sourceNodeId: _sourceNodeId, ...rest } = upload;
       return { ...rest, id: createId("workflow_upload"), status: "ready" as const };
     });
-    // Preferred: read the reference inputs (with display names) that this node's generation actually used
-    // from the authoritative backend job. This does not depend on a fragile per-node canvas snapshot, so it
-    // works no matter how the generation was finalized (browser / backend worker / self-heal).
+
+    // ① 立刻插入节点（提示词先留空 + 禁用转圈，等后端那份权威提示词回来再填，避免先闪一版又跳变）。
+    const current = stateRef.current;
+    const data: WorkflowNodeData = {
+      ...defaultData,
+      prompt: "",
+      promptLoading: true,
+      model: sourceNode.data.model ?? defaultData.model,
+      ratio: sourceNode.data.ratio ?? defaultData.ratio,
+      resolution: sourceNode.data.resolution ?? defaultData.resolution,
+      duration: kind === "video" ? sourceNode.data.duration ?? defaultData.duration : undefined,
+      videoReferenceMode: kind === "video" ? sourceNode.data.videoReferenceMode : undefined,
+    };
+    const draftNode: WorkflowNode = { id: createId("workflow_node"), kind, title: getNodeLabel(kind), x: 0, y: 0, data };
+    const size = getWorkflowNodeVisualSize(draftNode);
+    const position = findNonOverlappingNodePosition(current.nodes, size, sourceNode);
+    const node = { ...draftNode, x: position.x, y: position.y };
+    recentActionNodeIdsRef.current = [node.id, ...recentActionNodeIdsRef.current].slice(0, 20);
+    updateState((state) => ({ ...state, nodes: [...state.nodes, node] }));
+    window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+      const editor = editorRef.current;
+      if (!editor) return;
+      const shapeId = getShapeId(node.id);
+      if (!editor.getShape(shapeId)) return;
+      editor.select(shapeId);
+      focusWorkflowNodeInViewport(editor, node);
+    }));
+
+    // ③ 只 patch 这一个节点；节点可能已被用户删掉（那就什么都不做）。
+    const finish = (uploads: WorkflowUploadItem[] | undefined, promptOverride?: string) => {
+      updateState((state) => ({
+        ...state,
+        nodes: state.nodes.map((item) => item.id !== node.id ? item : ({
+          ...item,
+          data: {
+            ...item.data,
+            promptLoading: undefined,
+            prompt: (typeof promptOverride === "string" && promptOverride.trim()) ? promptOverride : (sourceNode.data.prompt ?? ""),
+            uploads: uploads && uploads.length > 0 ? uploads : undefined,
+          },
+        })),
+      }));
+    };
+
+    // ② 读后端权威 job 里这次生成真正用过的参考素材（带显示名）与用户真实提示词。
+    // 不依赖脆弱的画布内快照，所以无论生成是怎么收尾的（浏览器/后端 worker/自愈）都能带回。
+    // ⭐ 带超时兜底：网络挂住时绝不能让输入框永久禁用，超时就回落画布自带那份。
     void (async () => {
+      const controller = new AbortController();
+      const timer = window.setTimeout(() => controller.abort(), 15000);
       try {
         const sourceMediaUrl = sourceNode.data.images?.[0] ?? sourceNode.data.videoUrl ?? sourceNode.data.audioUrl ?? "";
-        const response = await fetch("/api/workflow-generation-references", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ workflowId, workflowNodeId: sourceNode.id, mediaUrl: sourceMediaUrl }) });
+        const response = await fetch("/api/workflow-generation-references", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ workflowId, workflowNodeId: sourceNode.id, mediaUrl: sourceMediaUrl }), signal: controller.signal });
         const data = await readJson<{ references?: Array<{ url?: string; name?: string; kind?: "image" | "video" | "audio" }>; prompt?: string }>(response);
         const refs = Array.isArray(data.references) ? data.references.filter((ref): ref is { url: string; name?: string; kind: "image" | "video" | "audio" } => Boolean(ref?.url) && (ref?.kind === "image" || ref?.kind === "video" || ref?.kind === "audio")) : [];
         // 用后端权威 job 里的「用户真实提示词」(输入框+连线文本节点，含 @蓝字，不含 hint) 回填；查不到再回退画布自带。
         const restoredPrompt = typeof data.prompt === "string" && data.prompt.trim() ? data.prompt : undefined;
         if (refs.length > 0 || restoredPrompt) {
-          buildAndInsert(refs.length > 0 ? refs.map((ref, index) => ({ id: createId("workflow_upload"), kind: ref.kind, name: ref.name ?? `${ref.kind === "image" ? "图片" : ref.kind === "video" ? "视频" : "音频"}${index + 1}`, url: ref.url, status: "ready" as const, progress: 100 })) : undefined, restoredPrompt);
+          finish(refs.length > 0 ? refs.map((ref, index) => ({ id: createId("workflow_upload"), kind: ref.kind, name: ref.name ?? `${ref.kind === "image" ? "图片" : ref.kind === "video" ? "视频" : "音频"}${index + 1}`, url: ref.url, status: "ready" as const, progress: 100 })) : undefined, restoredPrompt);
           return;
         }
       } catch {
         // fall through to legacy inline snapshot below
+      } finally {
+        window.clearTimeout(timer);
       }
-      buildAndInsert(legacyUploads);
+      finish(legacyUploads);
     })();
   }, [updateState, workflowId]);
 
@@ -3542,6 +3605,28 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     const nodeIds = (await Promise.all(files.map((file) => handleUploadNodeFile(file)))).filter((nodeId): nodeId is string => Boolean(nodeId));
     selectAndFocusUploadedNodes(nodeIds);
   }, [handleUploadNodeFile, selectAndFocusUploadedNodes]);
+
+  // 复制粘贴（Ctrl+V）图片/视频/音频到画布 → 走与拖拽上传完全相同的通道（handleUploadNodeFiles）。
+  // 于是校验/去重/命名/进资产库/上传进度节点全部复用同一份实现，符合「能统一一律统一」。
+  // ⭐ 用 window 捕获阶段：tldraw 自己在 ownerDocument 上以冒泡阶段监听 paste（useClipboardEvents），
+  //    我们要在它之前拿到事件、否则它会把剪贴板里的图片建成一个 tldraw 原生 image shape（不是我们的节点）。
+  // ⛔ 只在剪贴板里真有媒体文件时才 preventDefault + stopPropagation；否则一律放行，
+  //    不然会把 tldraw 的「节点复制粘贴」和纯文本粘贴一起打断。
+  useEffect(() => {
+    const handleCanvasPaste = (event: ClipboardEvent) => {
+      // 输入框 / 提示词框（contenteditable）里的粘贴由它们各自的 onPaste 负责，画布不插手。
+      const target = event.target as HTMLElement | null;
+      if (target?.closest?.('input, textarea, [contenteditable="true"]')) return;
+      const files = Array.from(event.clipboardData?.files ?? []).filter((file) => isWorkflowPasteMediaFile(file));
+      if (files.length === 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      markUserInteracted();
+      void handleUploadNodeFiles(files);
+    };
+    window.addEventListener("paste", handleCanvasPaste, true);
+    return () => window.removeEventListener("paste", handleCanvasPaste, true);
+  }, [handleUploadNodeFiles, markUserInteracted]);
 
   // 视频截图（快捷菜单）：截首帧/尾帧/当前帧 → 当成一张上传图片走统一上传链路（去重/命名/进资产库都复用），
   // 节点放在源视频右侧、不连线。截帧本身复用与右键导出同一份 getWorkflowVideoFrameJpeg。
@@ -3980,6 +4065,21 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     setConnectionPointer(undefined);
   }, [connectingFrom, onShowTip, updateState, uploadRuleOverrides]);
 
+  // 「从当前画布选择」用：直接把画布上那个媒体节点连到当前节点（等价于用户手动拉一根线）。
+  // ⭐ 校验完全复用手动连线那一套（getWorkflowConnectionError + 文本/上传规则），禁止另写一套判断。
+  // 返回错误文案；返回 undefined = 连上了（或本来就连着）。
+  const connectNodeAsInput = useCallback((sourceNodeId: string, targetNodeId: string) => {
+    const current = stateRef.current;
+    const source = current.nodes.find((node) => node.id === sourceNodeId);
+    const target = current.nodes.find((node) => node.id === targetNodeId);
+    if (!source || !target) return "找不到要连接的节点";
+    if (current.edges.some((edge) => edge.source === sourceNodeId && edge.target === targetNodeId)) return undefined;
+    const error = getWorkflowConnectionError(source, target, current.edges) || validateWorkflowConnectionTextLimit(source, target, current) || validateWorkflowConnectionUploadRules(source, target, current, uploadRuleOverrides);
+    if (error) return error;
+    updateState((state) => ({ ...state, edges: [...state.edges, { id: createId("workflow_edge"), source: sourceNodeId, target: targetNodeId }] }));
+    return undefined;
+  }, [updateState, uploadRuleOverrides]);
+
   const beginConnectionDrag = useCallback((nodeId: string, event: ReactPointerEvent) => {
     const current = stateRef.current;
     const source = current.nodes.find((node) => node.id === nodeId);
@@ -4129,6 +4229,33 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
 
   const getIncomingNodes = useCallback((nodeId: string) => stateRef.current.edges.filter((edge) => edge.target === nodeId).map((edge) => stateRef.current.nodes.find((node) => node.id === edge.source)).filter(Boolean) as WorkflowNode[], []);
   const getConnectedInputUploads = useCallback((nodeId: string) => getWorkflowConnectedInputUploads(stateRef.current, nodeId), []);
+  // 「从当前画布选择」弹窗的数据源。
+  // ⭐ 逐个节点走 getWorkflowNodeOutputUploadItems（= 连线进来的缩略图用的同一份实现），
+  //    这样弹窗里显示的名字和"连上线之后"缩略图上的名字天然一致，不会两处各算一套。
+  // 按 url 去重（同一张图出现在多个节点时只列一次），并带上 sourceNodeId 供连线用。
+  const getCanvasMediaAssets = useCallback((): WorkflowCanvasMediaAsset[] => {
+    const seen = new Set<string>();
+    const items: WorkflowCanvasMediaAsset[] = [];
+    for (const node of stateRef.current.nodes) {
+      for (const upload of getWorkflowNodeOutputUploadItems(node)) {
+        if (!upload.url) continue;
+        const key = normalizeWorkflowMediaUrl(upload.url);
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        items.push({
+          id: `canvas:${key}`,
+          name: upload.name,
+          url: upload.url,
+          thumbnailUrl: upload.kind === "video" ? getVideoPosterDisplayUrl?.(upload.url, upload.previewUrl) : upload.kind === "image" ? getImageDisplayUrl?.(upload.url) : undefined,
+          kind: upload.kind === "video" ? "video" : upload.kind === "audio" ? "audio" : "image",
+          groupType: upload.kind === "video" ? "canvas_video" : upload.kind === "audio" ? "canvas_audio" : "canvas_image",
+          groupLabel: upload.kind === "video" ? "视频" : upload.kind === "audio" ? "音频" : "图片",
+          sourceNodeId: node.id,
+        });
+      }
+    }
+    return items;
+  }, [getImageDisplayUrl, getVideoPosterDisplayUrl]);
   const getInputText = useCallback((nodeId: string) => getIncomingNodes(nodeId).map(getWorkflowTextNodeOutput).filter(Boolean).join("\n\n"), [getIncomingNodes]);
   const getInputTextLength = useCallback((nodeId: string) => Array.from(getInputText(nodeId)).length, [getInputText]);
   const getReferenceImages = useCallback((nodeId: string) => {
@@ -4962,7 +5089,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     importingAssetsRef.current = false;
   }, [assetsToImport, restoreWorkflowAssetToCanvas, updateState, onAssetsImported]);
 
-  const runtime = useMemo<WorkflowRuntime>(() => ({ selectedNodeId, connectingFrom, connectingTo, multiConnectSources, connectionPointer, modelOptions, workflowTitle, updateNode, deleteNode, disconnectNodes, connectTo, setConnectingFrom, beginConnectionDrag, beginInputConnectionDrag, beginMultiConnectionDrag, runImageNode: (node) => void runImageNode(node), createImageEditNode, createVideoEditNode, createVideoFrameImageNode: (node, frame) => void createVideoFrameImageNode(node, frame), addNodeFromPrompt, createImageElementSplitNodes, runGptImageOptimizationRetry: (node, maxAttempts) => void runGptImageOptimizationRetry(node, maxAttempts), runVideoNode: (node) => void runVideoNode(node), onGeneratedMedia, onShowTip, markNodeAction, onPreviewMedia, getImageDisplayUrl, getVideoPosterDisplayUrl, referenceAssets, referenceAssetsLoadStatus, referenceAssetCounts, onLoadReferenceAssets, onLoadReferenceFilter, referenceFilterLoading, referenceFilterNextOffset, onLoadMoreReferenceAssets, uploadRuleOverrides, editModelToggles, getConnectedInputUploads, getInputTextLength, uploadFilesAsConnectedNodes }), [beginConnectionDrag, beginInputConnectionDrag, beginMultiConnectionDrag, connectTo, connectingFrom, connectingTo, multiConnectSources, connectionPointer, deleteNode, disconnectNodes, getConnectedInputUploads, getImageDisplayUrl, getInputTextLength, getVideoPosterDisplayUrl, markNodeAction, modelOptions, onGeneratedMedia, onLoadReferenceAssets, onLoadReferenceFilter, referenceFilterLoading, referenceFilterNextOffset, onLoadMoreReferenceAssets, onPreviewMedia, onShowTip, referenceAssets, referenceAssetsLoadStatus, referenceAssetCounts, runGptImageOptimizationRetry, runImageNode, createImageEditNode, createVideoEditNode, createVideoFrameImageNode, createImageElementSplitNodes, addNodeFromPrompt, runVideoNode, selectedNodeId, updateNode, uploadFilesAsConnectedNodes, uploadRuleOverrides, editModelToggles, workflowTitle]);
+  const runtime = useMemo<WorkflowRuntime>(() => ({ selectedNodeId, connectingFrom, connectingTo, multiConnectSources, connectionPointer, modelOptions, workflowTitle, updateNode, deleteNode, disconnectNodes, connectTo, setConnectingFrom, beginConnectionDrag, beginInputConnectionDrag, beginMultiConnectionDrag, runImageNode: (node) => void runImageNode(node), createImageEditNode, createVideoEditNode, createVideoFrameImageNode: (node, frame) => void createVideoFrameImageNode(node, frame), addNodeFromPrompt, createImageElementSplitNodes, runGptImageOptimizationRetry: (node, maxAttempts) => void runGptImageOptimizationRetry(node, maxAttempts), runVideoNode: (node) => void runVideoNode(node), onGeneratedMedia, onShowTip, markNodeAction, onPreviewMedia, getImageDisplayUrl, getVideoPosterDisplayUrl, referenceAssets, referenceAssetsLoadStatus, referenceAssetCounts, onLoadReferenceAssets, onLoadReferenceFilter, referenceFilterLoading, referenceFilterNextOffset, onLoadMoreReferenceAssets, uploadRuleOverrides, editModelToggles, getConnectedInputUploads, getCanvasMediaAssets, connectNodeAsInput, getInputTextLength, uploadFilesAsConnectedNodes }), [beginConnectionDrag, beginInputConnectionDrag, beginMultiConnectionDrag, connectTo, connectingFrom, connectingTo, multiConnectSources, connectionPointer, deleteNode, disconnectNodes, getCanvasMediaAssets, connectNodeAsInput, getConnectedInputUploads, getImageDisplayUrl, getInputTextLength, getVideoPosterDisplayUrl, markNodeAction, modelOptions, onGeneratedMedia, onLoadReferenceAssets, onLoadReferenceFilter, referenceFilterLoading, referenceFilterNextOffset, onLoadMoreReferenceAssets, onPreviewMedia, onShowTip, referenceAssets, referenceAssetsLoadStatus, referenceAssetCounts, runGptImageOptimizationRetry, runImageNode, createImageEditNode, createVideoEditNode, createVideoFrameImageNode, createImageElementSplitNodes, addNodeFromPrompt, runVideoNode, selectedNodeId, updateNode, uploadFilesAsConnectedNodes, uploadRuleOverrides, editModelToggles, workflowTitle]);
 
   return (
     <WorkflowRuntimeContext.Provider value={runtime}>
@@ -4978,8 +5105,8 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
         {isLayerPanelOpen ? <WorkflowLayerPanel state={stateRef.current} workflowAssets={workflowAssets} selectedNodeId={selectedNodeId} getImageDisplayUrl={getImageDisplayUrl} getVideoPosterDisplayUrl={getVideoPosterDisplayUrl} onClose={() => setIsLayerPanelOpen(false)} onSelectNode={(nodeId, focus) => { const editor = editorRef.current; const node = stateRef.current.nodes.find((item) => item.id === nodeId); if (!editor || !node || node.data.isHidden) return; editor.select(getShapeId(nodeId)); if (focus) focusWorkflowNodeInViewport(editor, node); else centerWorkflowNodeInViewport(editor, node); }} onReorderNode={reorderWorkflowNodeLayer} onRestoreAsset={restoreWorkflowAssetToCanvas} onRestoreTextNode={restoreHistoricalTextNodeToCanvas} onDeleteHistoricalTextNode={deleteHistoricalTextNode} onRestoreMediaNode={restoreHistoricalMediaNode} onDeleteMediaNode={deleteHistoricalMediaNode} onDeleteHistoricalAsset={deleteHistoricalWorkflowAsset} onToggleNodeLock={toggleWorkflowNodeLock} onToggleNodeHidden={toggleWorkflowNodeHidden} /> : null}
         <div className="pointer-events-auto absolute left-4 top-3 z-20 flex items-center gap-2 text-[#5c626b]">
           {onToggleLeftSidebar ? (
-            <button type="button" onClick={onToggleLeftSidebar} className="flex h-8 w-8 items-center justify-center rounded-md text-[#5c626b] transition hover:bg-black/5 hover:text-[#30343a]" aria-label={leftSidebarVisible ? "隐藏左侧栏" : "显示左侧栏"} title={leftSidebarVisible ? "隐藏左侧栏" : "显示左侧栏"}>
-              {leftSidebarVisible ? <RiLayoutLeft2Line className="h-[22px] w-[22px]" aria-hidden="true" /> : <RiLayoutLeftLine className="h-[22px] w-[22px]" aria-hidden="true" />}
+            <button type="button" onClick={onToggleLeftSidebar} className="flex h-8 w-8 items-center justify-center rounded-md text-[#5c626b] transition hover:bg-black/5 hover:text-[#30343a]" aria-label={leftSidebarToggleLabel ?? (leftSidebarVisible ? "隐藏左侧栏" : "显示左侧栏")} title={leftSidebarToggleLabel ?? (leftSidebarVisible ? "隐藏左侧栏" : "显示左侧栏")}>
+              {leftSidebarVisible ? <RiSidebarFoldLine className="h-[22px] w-[22px]" aria-hidden="true" /> : <RiSidebarUnfoldLine className="h-[22px] w-[22px]" aria-hidden="true" />}
             </button>
           ) : null}
           <div className="max-w-[260px] truncate text-[13px] font-semibold text-[#5c626b]">{workflowTitle || "Untitled"}</div>
@@ -6155,7 +6282,7 @@ function WorkflowUploadIcon({ kind }: { kind: WorkflowUploadKind }) {
   return <RiImageLine className="h-5 w-5" aria-hidden="true" />;
 }
 
-function WorkflowMentionEditor({ value, placeholder, running, maxHeight = 500, maxLength = MAX_WORKFLOW_PROMPT_LENGTH, validReferences, focusRequest, externalEditorRef, onChange, onRun, onPasteImages, onLimit, onCursorChange, onAtTrigger, onAtClose }: { value: string; placeholder: string; running?: boolean; maxHeight?: number; maxLength?: number; validReferences: Set<string>; focusRequest?: { offset: number; key: number }; externalEditorRef?: MutableRefObject<HTMLDivElement | null>; onChange: (value: string) => void; onRun: () => void; onPasteImages: (files: File[]) => void; onLimit: () => void; onCursorChange: (offset: number) => void; onAtTrigger: (query: { index: number; query: string; cursor: number }) => void; onAtClose: () => void }) {
+function WorkflowMentionEditor({ value, placeholder, running, loadingLabel, maxHeight = 500, maxLength = MAX_WORKFLOW_PROMPT_LENGTH, validReferences, focusRequest, externalEditorRef, onChange, onRun, onPasteImages, onLimit, onCursorChange, onAtTrigger, onAtClose }: { value: string; placeholder: string; running?: boolean; loadingLabel?: string; maxHeight?: number; maxLength?: number; validReferences: Set<string>; focusRequest?: { offset: number; key: number }; externalEditorRef?: MutableRefObject<HTMLDivElement | null>; onChange: (value: string) => void; onRun: () => void; onPasteImages: (files: File[]) => void; onLimit: () => void; onCursorChange: (offset: number) => void; onAtTrigger: (query: { index: number; query: string; cursor: number }) => void; onAtClose: () => void }) {
   const editorRef = useRef<HTMLDivElement | null>(null);
   const setEditorRef = useCallback((el: HTMLDivElement | null) => {
     editorRef.current = el;
@@ -6237,7 +6364,11 @@ function WorkflowMentionEditor({ value, placeholder, running, maxHeight = 500, m
 
   return (
     <div className="relative">
-      {!value ? <div className="pointer-events-none absolute left-2 top-1 z-20 text-[14px] leading-6 text-[#b3b3b3]">{placeholder}</div> : null}
+      {!value && !loadingLabel ? <div className="pointer-events-none absolute left-2 top-1 z-20 text-[14px] leading-6 text-[#b3b3b3]">{placeholder}</div> : null}
+      {/* ⛔ 这里**不要**再盖 loading 层了。「使用提示词」读取中的毛玻璃 + 转圈盖在
+          WorkflowPromptBox 的**整张卡片**上（见那边的 promptLoading 那段）。
+          历史教训：只盖这一条文字输入区 → 后面本来就是空的，模糊一片空白 = 看起来就是"中间一块白底"。
+          loadingLabel 现在只用来在读取期间藏掉 placeholder。 */}
       <div
         ref={setEditorRef}
         contentEditable={!running}
@@ -6331,13 +6462,28 @@ function WorkflowInputToast({ message, exiting }: { message: string; exiting?: b
 
 function WorkflowPromptBox({ node, value, placeholder, maxPromptHeight, onChange, children, running, onRun }: { node: WorkflowNode; value: string; placeholder: string; maxPromptHeight?: number; onChange: (value: string) => void; children: ReactNode; running?: boolean; onRun: () => void }) {
   const runtime = useWorkflowRuntime();
+  // 「使用提示词」建出的新节点：提示词/参考素材还在从后端读回来 → 输入框整体禁用 + 居中转圈。
+  // ⭐ 复用 running 那一整套禁用（contentEditable=false、所有输入事件早退、灰字、发送按钮置灰），
+  // ⛔ 别另写一套 disabled 分支（"能统一一律统一"）。
+  const promptLoading = Boolean(node.data.promptLoading);
+  const inputDisabled = Boolean(running) || promptLoading;
+
   const [isReferenceMenuOpen, setIsReferenceMenuOpen] = useState(false);
+  // 上传按钮（图片/视频/音频）点了先弹一个三选菜单：从本地上传 / 从资产库导入 / 从当前画布选择。
+  // 用按钮的 label 当 key（而不是 kind），因为「首帧/尾帧」两个按钮的 kind 都是 image。
+  const [uploadMenuKey, setUploadMenuKey] = useState<string | null>(null);
+  const [isCanvasPickerOpen, setIsCanvasPickerOpen] = useState(false);
+  const [canvasPickerGroupType, setCanvasPickerGroupType] = useState("canvas_image");
   const [referenceGroupType, setReferenceGroupType] = useState("character_image");
   const [activeAtQuery, setActiveAtQuery] = useState<{ index: number; query: string; cursor: number } | null>(null);
   const [cursorOffset, setCursorOffset] = useState(0);
   const [localTip, setLocalTip] = useState<{ message: string; exiting?: boolean }>();
   const suppressAtTriggerUntilRef = useRef(0);
   const editorElementRef = useRef<HTMLDivElement | null>(null);
+  // 每个上传按钮一个隐藏 input（按 label 存）。⛔ 别把 input 放进菜单里用 <label> 包住：
+  // 那样只有"用户真的选完文件"才会触发 onChange，菜单在系统选文件框弹着时一直留在屏幕上，
+  // 用户点了取消更是永远不关。改成菜单项是普通按钮 → 先关菜单、再 input.click() 主动开选文件框。
+  const uploadInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
   const uploadsRef = useRef<WorkflowUploadItem[]>(node.data.uploads ?? []);
   const localTipTimerRef = useRef<number | null>(null);
   const connectedUploads = runtime.getConnectedInputUploads(node.id);
@@ -6383,7 +6529,7 @@ function WorkflowPromptBox({ node, value, placeholder, maxPromptHeight, onChange
   }, [visibleUploads, runtime.referenceAssets]);
   const getVisibleUploadReferenceName = useCallback((upload: WorkflowUploadItem) => uploadReferenceNameById.get(upload.id) ?? getWorkflowUploadReferenceName(upload), [uploadReferenceNameById]);
   const currentImageReferenceCount = showVideoReferenceModeMenu ? mergeWorkflowUploadItems([...visibleUploads.filter((upload) => upload.kind === "image"), ...getWorkflowPromptReferenceUrls(value, node, runtime.referenceAssets, "image").map((url) => ({ id: `prompt-image-${url}`, kind: "image" as const, name: url, url, status: "ready" as const }))]).length : 0;
-  const canRun = (Boolean(value.trim()) || connectedTextLength > 0) && !running && currentImageReferenceCount >= requiredImageReferenceCount;
+  const canRun = (Boolean(value.trim()) || connectedTextLength > 0) && !inputDisabled && currentImageReferenceCount >= requiredImageReferenceCount;
   const uploadCounts = visibleUploads.reduce<Record<WorkflowUploadKind, number>>((counts, upload) => ({ ...counts, [upload.kind]: counts[upload.kind] + 1 }), { image: 0, document: 0, video: 0, audio: 0 });
   const useSlotUploadLayout = showVideoReferenceModeMenu && (selectedVideoReferenceMode === "first_frame" || selectedVideoReferenceMode === "first_last_frame");
   const visibleUploadButtons = useSlotUploadLayout
@@ -6413,7 +6559,7 @@ function WorkflowPromptBox({ node, value, placeholder, maxPromptHeight, onChange
   };
 
   useEffect(() => {
-    const close = () => setIsReferenceMenuOpen(false);
+    const close = () => { setIsReferenceMenuOpen(false); setUploadMenuKey(null); setIsCanvasPickerOpen(false); };
     window.addEventListener("workflow-close-popups", close);
     return () => window.removeEventListener("workflow-close-popups", close);
   }, []);
@@ -6623,6 +6769,80 @@ function WorkflowPromptBox({ node, value, placeholder, maxPromptHeight, onChange
     if (!(target as HTMLElement | null)?.closest("[data-workflow-menu]")) closeWorkflowPopups();
   };
 
+  // 「从当前画布选择」的数据源：只在弹窗打开时才算（画布节点多时避免每次渲染都遍历）。
+  const canvasPickerAssets = isCanvasPickerOpen ? runtime.getCanvasMediaAssets() : [];
+  const canvasPickerCounts = WORKFLOW_CANVAS_MENTION_CATEGORIES.reduce<Record<string, number>>((counts, cat) => ({ ...counts, [cat.value]: canvasPickerAssets.filter((asset) => asset.groupType === cat.value).length }), {});
+  // 选中画布上的媒体 = 把它的节点连到当前节点（等价于手动拉线），⛔ 不是往 node.data.uploads 里再复制一份
+  // （那样断线后会残留、也会和连接来的缩略图重复）。连线的校验复用手动连线那一套。
+  const insertCanvasAssetReference = (asset: WorkflowCanvasMediaAsset) => {
+    setIsCanvasPickerOpen(false);
+    const existing = visibleUploads.find((upload) => upload.kind === asset.kind && upload.url === asset.url);
+    if (existing) { insertReferenceText(getVisibleUploadReferenceName(existing)); return; }
+    const error = runtime.connectNodeAsInput(asset.sourceNodeId, node.id);
+    if (error) { showLocalTip(error); return; }
+    insertReferenceText(sanitizeWorkflowReferenceName(asset.name));
+  };
+
+  // 上传按钮：图片/视频/音频先弹三选菜单；「文件」（文本节点读文档）没有资产库/画布来源，保持原来的直接选文件。
+  const renderUploadButton = ({ label, icon: Icon, ariaLabel, kind, hideCount, multiple = true }: (typeof uploadButtons)[number]) => {
+    const accept = getWorkflowUploadAccept(uploadRule, kind);
+    const chipClassName = "workflow-upload-chip flex h-[70px] w-[64px] shrink-0 cursor-pointer flex-col items-center justify-center gap-1.5 rounded-[16px] text-[#a7a7a7] transition";
+    const chipInner = (
+      <>
+        <Icon className="h-4.5 w-4.5" aria-hidden="true" />
+        <span className="text-[12px] leading-none">{label}</span>
+        {hideCount ? null : <span className="text-[10px] leading-none text-[#b5b5b5]">1-{uploadRule[kind].maxCount}</span>}
+      </>
+    );
+    if (kind === "document") {
+      return (
+        <label key={label} style={{ backgroundColor: "#ededed" }} className={chipClassName} aria-label={ariaLabel} title={accept}>
+          <input type="file" hidden multiple={multiple} accept={accept} onChange={(event) => { void handleUploadFiles(kind, Array.from(event.target.files ?? [])); event.target.value = ""; }} />
+          {chipInner}
+        </label>
+      );
+    }
+    // ⛔ 字号必须写在里面的 <span> 上，写在 <button> 上无效：
+    //    tldraw 的 ui.css 有一条"无 layer"的 `button{font-size:inherit}`，
+    //    而 Tailwind 的工具类在 @layer 里 —— 无 layer 的样式永远赢过 @layer 里的，字号会被吃掉变成继承值。
+    const menuItemClassName = "flex h-10 w-full cursor-pointer items-center gap-2.5 rounded-lg px-2.5 text-left text-[#333333] transition hover:bg-[#ececec]";
+    const menuItemTextClassName = "text-[14px] leading-none";
+    const menuIconClassName = "h-[18px] w-[18px] shrink-0 text-[#777777]";
+    return (
+      // 鼠标碰到按钮就弹菜单、离开就消失（点一下也能开，兼容触屏）。
+      // ⚠️ 菜单容器用 pb-2 而不是 mb-2：外边距会在按钮和菜单之间留出一段"没有元素"的缝，
+      //    鼠标穿过那道缝就会触发 mouseleave 把菜单关掉。用内边距把命中区连成一片。
+      <div key={label} data-workflow-menu className="relative shrink-0" onPointerDown={(event) => event.stopPropagation()} onMouseEnter={() => { if (uploadMenuKey !== label) { closeWorkflowPopups(); setUploadMenuKey(label); } }} onMouseLeave={() => setUploadMenuKey((current) => current === label ? null : current)}>
+        {/* 隐藏 input 放在菜单外面：菜单关掉后它还在，选完文件的 onChange 才不会丢 */}
+        <input ref={(element) => { uploadInputRefs.current[label] = element; }} type="file" hidden multiple={multiple} accept={accept} onChange={(event) => { void handleUploadFiles(kind, Array.from(event.target.files ?? [])); event.target.value = ""; }} />
+        <button type="button" onClick={() => { if (uploadMenuKey !== label) { closeWorkflowPopups(); setUploadMenuKey(label); } }} style={{ backgroundColor: "#ededed" }} className={chipClassName} aria-label={ariaLabel} title={ariaLabel}>
+          {chipInner}
+        </button>
+        {uploadMenuKey === label ? (
+          <div className="absolute bottom-full left-0 z-[10000] pb-2">
+            <div className="w-[186px] rounded-[10px] bg-white p-1.5 shadow-[0_18px_44px_rgba(0,0,0,0.14)]">
+              {/* 从本地上传 = 原来的功能：先关菜单，再主动点那个隐藏 input 打开系统选文件框 */}
+              <button type="button" className={menuItemClassName} title={accept} onClick={() => { setUploadMenuKey(null); uploadInputRefs.current[label]?.click(); }}>
+                <RiAttachment2 className={menuIconClassName} aria-hidden="true" />
+                <span className={menuItemTextClassName}>从本地上传</span>
+              </button>
+              {/* 从资产库导入 = 直接复用 @ 那个引用资产弹窗（同一份状态、同一个位置，禁止再写第二套）；
+                  进去时按当前按钮的类型优先停在对应分类（图片→角色图片 / 视频→上传视频 / 音频→上传音频）。 */}
+              <button type="button" className={menuItemClassName} onClick={() => { const group = WORKFLOW_UPLOAD_KIND_MENTION_GROUP[kind] ?? referenceGroupType; setUploadMenuKey(null); setActiveAtQuery(null); setReferenceGroupType(group); runtime.onLoadReferenceFilter?.(group, 0); setIsReferenceMenuOpen(true); }}>
+                <RiFolderOpenLine className={menuIconClassName} aria-hidden="true" />
+                <span className={menuItemTextClassName}>从资产库导入</span>
+              </button>
+              <button type="button" className={menuItemClassName} onClick={() => { setUploadMenuKey(null); setCanvasPickerGroupType(kind === "video" ? "canvas_video" : kind === "audio" ? "canvas_audio" : "canvas_image"); setIsCanvasPickerOpen(true); }}>
+                <RiGalleryView className={menuIconClassName} aria-hidden="true" />
+                <span className={menuItemTextClassName}>从当前画布选择</span>
+              </button>
+            </div>
+          </div>
+        ) : null}
+      </div>
+    );
+  };
+
   return (
     <div
       className="relative z-20 rounded-[26px] border-2 border-[#f1f2f2] bg-white/78 px-4 py-4 shadow-none backdrop-blur-[18px] transition focus-within:border-white/70 focus-within:shadow-[0_10px_32px_rgba(0,0,0,0.12)]"
@@ -6631,15 +6851,18 @@ function WorkflowPromptBox({ node, value, placeholder, maxPromptHeight, onChange
       onFocusCapture={(event) => closeMenusIfOutsideMenu(event.target)}
     >
       {localTip ? <div className="pointer-events-none absolute bottom-full left-1/2 z-[10000] mb-3 -translate-x-1/2"><WorkflowInputToast message={localTip.message} exiting={localTip.exiting} /></div> : null}
+      {/* 「使用提示词」正在读后端提示词：把**整张输入卡片**（上传按钮 + 输入区 + 模型/比例那一行 + 发送键）
+          整体毛玻璃模糊，转圈 + 文案在整张卡片的正中。
+          ⛔ 不要用白底色块，也⛔不要只盖中间那条文字输入区（后面本来就是空的，模糊出来就是"一块白底"）。
+          输入拦截仍靠 running/inputDisabled 那一整套，这一层只负责视觉。 */}
+      {promptLoading ? (
+        <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center gap-2 rounded-[26px] text-[13px] font-medium text-[#8a8a8a] backdrop-blur-[4px]">
+          <RiLoader4Line className="h-4 w-4 animate-spin" aria-hidden="true" />
+          <span>正在加载中...</span>
+        </div>
+      ) : null}
       <div className="mb-2 flex min-h-[76px] flex-wrap items-start gap-2 px-0.5">
-        {!useSlotUploadLayout ? visibleUploadButtons.map(({ label, icon: Icon, ariaLabel, kind, hideCount, multiple = true }) => (
-          <label key={label} style={{ backgroundColor: "#ededed" }} className="workflow-upload-chip flex h-[70px] w-[64px] shrink-0 cursor-pointer flex-col items-center justify-center gap-1.5 rounded-[16px] text-[#a7a7a7] transition" aria-label={ariaLabel} title={getWorkflowUploadAccept(uploadRule, kind)}>
-            <input type="file" hidden multiple={multiple} accept={getWorkflowUploadAccept(uploadRule, kind)} onChange={(event) => { void handleUploadFiles(kind, Array.from(event.target.files ?? [])); event.target.value = ""; }} />
-            <Icon className="h-4.5 w-4.5" aria-hidden="true" />
-            <span className="text-[12px] leading-none">{label}</span>
-            {hideCount ? null : <span className="text-[10px] leading-none text-[#b5b5b5]">1-{uploadRule[kind].maxCount}</span>}
-          </label>
-        )) : null}
+        {!useSlotUploadLayout ? visibleUploadButtons.map(renderUploadButton) : null}
         {visibleUploads.map((upload) => {
           const referenceName = getVisibleUploadReferenceName(upload);
           const canInsert = upload.status === "ready";
@@ -6684,16 +6907,9 @@ function WorkflowPromptBox({ node, value, placeholder, maxPromptHeight, onChange
             </div>
           );
         })}
-        {useSlotUploadLayout ? visibleUploadButtons.map(({ label, icon: Icon, ariaLabel, kind, hideCount, multiple = true }) => (
-          <label key={label} style={{ backgroundColor: "#ededed" }} className="workflow-upload-chip flex h-[70px] w-[64px] shrink-0 cursor-pointer flex-col items-center justify-center gap-1.5 rounded-[16px] text-[#a7a7a7] transition" aria-label={ariaLabel} title={getWorkflowUploadAccept(uploadRule, kind)}>
-            <input type="file" hidden multiple={multiple} accept={getWorkflowUploadAccept(uploadRule, kind)} onChange={(event) => { void handleUploadFiles(kind, Array.from(event.target.files ?? [])); event.target.value = ""; }} />
-            <Icon className="h-4.5 w-4.5" aria-hidden="true" />
-            <span className="text-[12px] leading-none">{label}</span>
-            {hideCount ? null : <span className="text-[10px] leading-none text-[#b5b5b5]">1-{uploadRule[kind].maxCount}</span>}
-          </label>
-        )) : null}
+        {useSlotUploadLayout ? visibleUploadButtons.map(renderUploadButton) : null}
       </div>
-      <WorkflowMentionEditor value={value} placeholder={placeholder} running={running} maxHeight={maxPromptHeight} maxLength={Math.max(0, MAX_WORKFLOW_PROMPT_LENGTH - connectedTextLength)} validReferences={validReferenceNames} externalEditorRef={editorElementRef} onChange={onChange} onRun={runFromPromptBox} onPasteImages={(files) => { void handleUploadFiles("image", files); }} onLimit={() => showLocalTip("输入框和连接文本合计最多2000字")} onCursorChange={setCursorOffset} onAtTrigger={(query) => { if (Date.now() < suppressAtTriggerUntilRef.current) return; runtime.onLoadReferenceFilter?.(referenceGroupType, 0); setActiveAtQuery(query); setIsReferenceMenuOpen(true); }} onAtClose={() => { setActiveAtQuery(null); setIsReferenceMenuOpen(false); }} />
+      <WorkflowMentionEditor value={value} placeholder={placeholder} running={inputDisabled} loadingLabel={promptLoading ? "正在加载中..." : undefined} maxHeight={maxPromptHeight} maxLength={Math.max(0, MAX_WORKFLOW_PROMPT_LENGTH - connectedTextLength)} validReferences={validReferenceNames} externalEditorRef={editorElementRef} onChange={onChange} onRun={runFromPromptBox} onPasteImages={(files) => { void handleUploadFiles("image", files); }} onLimit={() => showLocalTip("输入框和连接文本合计最多2000字")} onCursorChange={setCursorOffset} onAtTrigger={(query) => { if (Date.now() < suppressAtTriggerUntilRef.current) return; runtime.onLoadReferenceFilter?.(referenceGroupType, 0); setActiveAtQuery(query); setIsReferenceMenuOpen(true); }} onAtClose={() => { setActiveAtQuery(null); setIsReferenceMenuOpen(false); }} />
       <div className="mt-3 flex min-w-0 flex-nowrap items-center justify-between gap-3 pb-0.5">
         <div className="flex min-w-0 flex-1 flex-nowrap items-center gap-2 text-[12px]">
           <div data-workflow-menu className="relative shrink-0" onPointerDown={(event) => event.stopPropagation()}>
@@ -6713,6 +6929,21 @@ function WorkflowPromptBox({ node, value, placeholder, maxPromptHeight, onChange
                   getMediaSrc={(url) => getStaticMediaUrl(url) ?? url}
                   onScrollLoadMore={(value, loadedCount) => { if (!activeAtQuery?.query) runtime.onLoadReferenceFilter?.(value, runtime.referenceFilterNextOffset?.[value] ?? loadedCount); }}
                   onPick={(item) => { const asset = referenceAssetById(item.id); if (asset) insertAssetReference(asset); }}
+                />
+              </div>
+            ) : null}
+            {/* 「从当前画布选择」：同一个 AssetMentionPicker（只换标题/分类/数据源），位置也和 @ 弹窗一致 */}
+            {isCanvasPickerOpen ? (
+              <div className="absolute bottom-full left-0 z-[10000] mb-2">
+                <AssetMentionPicker
+                  title="当前画布的资产"
+                  categories={WORKFLOW_CANVAS_MENTION_CATEGORIES}
+                  activeValue={canvasPickerGroupType}
+                  onSelectCategory={setCanvasPickerGroupType}
+                  itemsFor={(value) => canvasPickerAssets.filter((asset) => asset.groupType === value).map((asset) => ({ id: asset.id, name: asset.name, url: asset.url, thumbnailUrl: asset.thumbnailUrl, kind: asset.kind ?? "image" }))}
+                  counts={canvasPickerCounts}
+                  getMediaSrc={(url) => getStaticMediaUrl(url) ?? url}
+                  onPick={(item) => { const asset = canvasPickerAssets.find((candidate) => candidate.id === item.id); if (asset) insertCanvasAssetReference(asset); else setIsCanvasPickerOpen(false); }}
                 />
               </div>
             ) : null}

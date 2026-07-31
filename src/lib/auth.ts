@@ -12,6 +12,51 @@ const authSecret = process.env.AUTH_SECRET || "flashmuse-local-dev-secret-change
 const forceInsecureAuthCookie = process.env.FORCE_INSECURE_AUTH_COOKIE === "true";
 const authCookieDomain = process.env.AUTH_COOKIE_DOMAIN?.trim() || undefined;
 
+/**
+ * ⭐⭐ `Session.lastSeenAt` 的写入节流（2026-07-31 用户拍板做 A+B 两条）。
+ *
+ * 背景：`getCurrentSession()` 是**全站每个登录态接口的第一件事**。它原来干两件事：
+ *   ① 查库确认"你是谁"（省不掉）；② `await` 写一次 `lastSeenAt`（纯记录，跟"你是谁"无关）。
+ * 数据库在新加坡，国内用户一个来回几百毫秒 → ② 那一下**每次点击都在白等**。
+ *
+ * 两条优化：
+ * - **A：不再 `await` 那次写**（fire-and-forget）。写照样发生，只是不占请求的等待时间 →
+ *   全站每个接口立刻省一个 DB 往返。
+ * - **B：60 秒内不重复写同一个 session**。用户疯狂点击时一分钟能发几十个请求、
+ *   往同一行写几十次同一分钟的时间戳，纯属浪费。
+ *
+ * ⛔ 影响面（改这里前必读，2026-07-31 已跟用户确认过）：
+ * - 后台绿色「在线」胶囊 / 「在线用户」数字用的是 **`activeWorkspaceSeenAt`，不是 `lastSeenAt`**
+ *   （唯一口径写在 `online-users.ts` 顶部）→ **完全不受影响**。
+ * - 用到 `lastSeenAt` 的是后台「今日活跃 / 7天 / 30天活跃用户」与用户详情页「最后活跃时间」，
+ *   都是**按天/按分钟**粒度 → 最多晚 60 秒，看不出差别。
+ * - ⛔ 别把节流窗口调大到分钟级以上（会开始影响"今日活跃"的跨零点归属）。
+ * - ⛔ 别把 `refreshCurrentSessionActivity()`（`/api/auth/activity` 的续期心跳）也节流掉：
+ *   它除了写 `lastSeenAt` 还要**延长 `expiresAt` 并重发 cookie**，漏一次会让用户提前掉线。
+ *
+ * 进程内内存表，多进程/重启后各自重新计时 —— 无所谓，最坏就是多写一次。
+ */
+const lastSeenWriteThrottleMs = 60 * 1000;
+const lastSeenWriteAt = new Map<string, number>();
+
+function shouldWriteLastSeen(sessionId: string, now: number) {
+  const previous = lastSeenWriteAt.get(sessionId);
+  if (previous !== undefined && now - previous < lastSeenWriteThrottleMs) return false;
+  // 防内存无限增长：条目多了先清掉已过期的（登出/换设备的老 session 再也不会来）。
+  if (lastSeenWriteAt.size > 5000) {
+    for (const [id, at] of lastSeenWriteAt) {
+      if (now - at >= lastSeenWriteThrottleMs) lastSeenWriteAt.delete(id);
+    }
+  }
+  lastSeenWriteAt.set(sessionId, now);
+  return true;
+}
+
+/** 心跳续期走的是另一条路（要改 expiresAt + 重发 cookie），写完把节流计时对齐，避免紧接着又写一次。 */
+export function markSessionLastSeenWritten(sessionId: string, now = Date.now()) {
+  lastSeenWriteAt.set(sessionId, now);
+}
+
 export function normalizeEmail(value: unknown) {
   return typeof value === "string" ? value.trim().toLowerCase() : "";
 }
@@ -183,7 +228,11 @@ export async function getCurrentSession() {
     return null;
   }
 
-  await prisma.session.update({ where: { id: session.id }, data: { lastSeenAt: new Date() } }).catch(() => null);
+  // ⭐ A+B：这次写只是"签到"，跟"你是谁"无关 → 不 await（不占请求等待时间）+ 60 秒内不重复写。
+  // 详见文件顶部 lastSeenWriteAt 那段注释（含影响面）。⛔ 别改回 `await`。
+  if (shouldWriteLastSeen(session.id, now.getTime())) {
+    void prisma.session.update({ where: { id: session.id }, data: { lastSeenAt: new Date() } }).catch(() => null);
+  }
   return session;
 }
 
@@ -211,7 +260,10 @@ export async function refreshCurrentSessionActivity() {
 
   const token = tokenByHash.get(session.tokenHash);
   if (!token) return false;
+  // ⛔ 这条**必须 await、必须每次都写**：它同时延长 `expiresAt` 并重发 cookie，
+  // 漏一次会让用户提前掉线。只是写完顺手对齐上面那套节流计时，避免紧接着的接口又写一次。
   await prisma.session.update({ where: { id: session.id }, data: { expiresAt: new Date(Date.now() + sessionMaxAgeSeconds * 1000), lastSeenAt: new Date() } }).catch(() => null);
+  markSessionLastSeenWritten(session.id, Date.now());
   setAuthCookie(cookieStore, token, sessionMaxAgeSeconds);
   return true;
 }

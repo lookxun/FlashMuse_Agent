@@ -11,6 +11,46 @@
 - **DNS**：`main`/`api`.venusface.com → 腾讯 119.28.116.16（腾讯 nginx 443 直接 SSL 终止）；`ali`/`static` → 阿里。
 - **公网域名**：`https://main.venusface.com`、`https://api.venusface.com`、`https://ali.venusface.com`、`https://static.venusface.com`。
 
+## ⭐⭐ 入口架构：测试服和正式服**不一样**（2026-08-01 实测核实，用户专门问过）
+
+🗣️ 用户问：「难道测试服和正式服不一样吗？正式服是直连腾讯的？」→ **是的。**
+
+| 域名 | DNS 实测指向 | 是谁 |
+|---|---|---|
+| `main.venusface.com` | `119.28.116.16` | **腾讯新加坡直连**（443 在腾讯终止 SSL） |
+| `api.venusface.com` | `119.28.116.16` | **腾讯新加坡直连** |
+| `ali.venusface.com` | `101.37.129.164` | 阿里 → 反代回腾讯:5000 |
+| `static.venusface.com` | `101.37.129.164` | 阿里静态镜像 |
+| `staging-static.venusface.com` / `:8080` | `101.37.129.164` | **阿里** → 反代回腾讯:5001（**测试服只有这一个入口**） |
+
+- ⭐ `next.config.ts` **没有 `assetPrefix`**，且 `main.venusface.com` 的 HTML 里 `_next/static` **全是相对路径**
+  （0 处指向 `static.venusface.com`）→ **正式服主入口连静态资源都是腾讯直发**；阿里那份静态镜像只服务走 ali/static 的人。
+- ✅✅ **2026-08-01 已修：阿里那两个入口都加了「回源长连接复用（upstream keepalive）」**（原 M027，已完成）。
+  改前 ali 中位 1.64s → 改后 **0.37s**；测试服 1.62s → **0.30s**。`connect` 从 1.3s → 0.00008s。
+  **仓库权威副本**：`deploy/staging/flashmuse-test-8080.conf`、`deploy/staging/flashmuse-staging-static-ssl.conf`、
+  `deploy/ali/ali-add-upstream-keepalive.py`（正式服那份混着别的项目，只能用这个增量脚本）。
+  ⭐ 完整原理 / 踩坑 / 备份位置 → `06-memo-tasks.md` 的 **M027**。
+- ⭐⭐ **「走阿里为什么曾经比直连腾讯慢 10 倍」的正确解释**（🗣️ 用户追问过两轮，别再答错）：
+  **不是"多一跳"**，是三条叠加 —— ① 换了一条更烂的跨境路（阿里→腾讯 RTT 255ms、**丢包 33.3%**，
+  而正常国内到新加坡只需 50~80ms）；② ⭐ **连接复用**（浏览器直连会自己复用、一个页面只握手 1 次，
+  而阿里回源那段当时每请求都重新握手）；③ **SYN 阶段没有快速重传**，丢包只能 RTO 翻倍等
+  （0.25→1.27→3.2→11.4s）= "忽快忽慢、偶尔卡死几十秒"的来源。
+- ⛔⛔ **量这类性能必须站在「阿里本机」测，别站在腾讯 curl 阿里**（那等于跨境跑两趟、数字全污染，踩过）。
+  用户→阿里那段本来就快（本地静态实测 0.005s），**唯一变量是"阿里→腾讯"这一跳**。
+- ⛔⛔ **「测试服和正式服关键的东西必须一样」（🗣️ 2026-08-01 用户拍板）**：
+  曾提过"测试服入口绕开阿里直连 `119.28.116.16:5001`"的方案，**已被用户否掉、以后别再提** ——
+  那会让两服入口架构不一致，**测试服测好的东西到正式服就不作数了**。
+  ⭐ 一切基础设施优化都要**两服都做**。（`http://119.28.116.16:5001/` 仍可用于**临时排查**、排除链路噪声，但不能当入口。）
+
+- ⚠️⚠️ **所以「测试服慢」不代表「正式服慢」**：同一个 `/api/models` 从国内实测 4 次 ——
+  `main` **614 / 210 / 216 / 211ms（稳）**；`ali.venusface.com` 687 / 652 / **1685** / 597ms；
+  测试服 `:8080` 1740 / 582 / **4739** / 1475ms；**测试服绕开阿里直连 `119.28.116.16:5001` = 385 / 166 / 330ms**。
+- ⭐ 根因（跨境丢包 25~37% + 阿里 nginx 缺 upstream keepalive）→ **`06-memo-tasks.md` 的 M027（2026-08-01 已修完）**。
+  ✅ 修完后的实测：`ali` 中位 **0.37s**、测试服 **0.30s**。⛔ 残留偶发 1.0~1.5s 毛刺（丢包 33% 导致的数据重传），属方案 C（花钱）。
+- ⭐ **调试建议**：要排除链路噪声地验测试服，可直接打 **`http://119.28.116.16:5001/`**（端口已开、实测 200）。
+  ⛔ **但它只能用于临时排查，不能当测试服入口**（见上面那条「两服必须一样」的铁律）。
+
+
 ## 正式服（腾讯）目录与容器
 
 - 部署位置 `/opt/flashmuse/`：`app/`（源码含 Dockerfile）+ `docker-compose.yml` + `data/{.env.local, generated, runtime(=.runtime), pgdata, home-assets, nginx/flashmuse.conf}`。独立网络 `flashmuse_default`。
@@ -105,6 +145,39 @@
 - 备份都在 `/opt/flashmuse/app-backups/<ts>-...`。
 - **只改 nginx**：腾讯 nginx 配置在 `/opt/flashmuse/data/nginx/flashmuse.conf`（容器 flashmuse-nginx）；阿里 `/etc/nginx/sites-enabled/`。改前备份→`nginx -t`→reload。腾讯 main/api 证书走 acme.sh tls-alpn-01（443），cron 自动续。当前正式 nginx `client_max_body_size` 历史为 20m；上传大视频（200MB 规则）若上线需先调网关 body size + 超时（用户交代部署前评估）。
 
+### ⭐⭐ 改阿里 nginx 的完整套路（2026-08-01 加 upstream keepalive 时总结，下次照抄）
+
+⛔ **前提认知：阿里那台 nginx 上还有三个别的项目**（`tiantangqiyuan` / `venusai` / `video-downloader`）
++ FlashMuse 正式服入口 `flashmuse-static-ip`（**它自己内部就混着 `/tiantangqiyuan/`**）。
+**配置写坏会连带把别人搞死**，所以：
+
+| 文件 | 能不能整份覆盖 | 怎么改 |
+|---|---|---|
+| `flashmuse-test-8080` | ✅ 能（测试服独占、不含别的项目） | 仓库 `deploy/staging/flashmuse-test-8080.conf` 整份 scp 过去 |
+| `flashmuse-staging-static-ssl`（**符号链接 → `sites-available/`**） | ✅ 能 | 仓库 `deploy/staging/flashmuse-staging-static-ssl.conf`；⚠️ **必须写 `sites-available` 那一端** |
+| `flashmuse-static-ip`（正式服） | ⛔⛔ **绝对不能** | 只能用幂等增量脚本：`deploy/ali/ali-add-proxy-buffers.sh`、`ali-add-upstream-keepalive.py` |
+
+**六步固定流程**：
+1. ⭐ **先只读勘察**：`cat` 出服务器上那份，**和仓库那份 diff** ——
+   全是 `>`（纯新增）= 服务器是仓库的严格超集、没人手改过，才敢覆盖；出现 `<` = 被手改过，先搞清楚。
+   顺便 `grep -rn "upstream \|map \$http_upgrade" /etc/nginx/` **确认新加的名字不会重名**（重名会 `duplicate` 直接起不来）。
+2. ⭐ **量基线**（站在阿里本机！见上面那条铁律），否则改完不知道有没有效果。
+3. **备份**到 `/root/nginx-backups/<文件名>.<时间戳>.bak`。
+4. **改**（整份覆盖 or 增量脚本）。增量脚本必须有：幂等 marker、**替换条数断言**、**"别的项目条数没变"断言**，
+   任一不符就**一个字都不改**直接退出。
+5. **`nginx -t` → 失败自动 `cp` 备份回去再 `nginx -t` 确认恢复**；通过才 `nginx -s reload`（⛔ 不要 `restart`）。
+6. **验证**：复测性能 + **FlashMuse 四域名 + 测试服两入口 + 三个别的项目全部 curl 一遍**。
+
+⭐ **keepalive 三件套缺一不可**（只做第一个等于没做）：
+`upstream` + `keepalive N` ／ **`proxy_http_version 1.1`** ／ **`Connection` 头置空**（用 map 变量）。
+默认是 HTTP/1.0 + `Connection: close`，keepalive 池根本用不上。
+命名带项目前缀（`fm_test_app` / `fm_prod_app` / `$fm_prod_conn_upgrade`）。
+
+⛔ **纯验证脚本别开 `set -e`**：`curl` 超时返回非 0 会把脚本整段掐断、后面的复测全不跑（踩过）。
+⛔ **别用 `grep -o 'v[0-9.]*'` 抓版本号**：会抓到 `app-version.ts` **注释里的示例 `v1.0.0.1`**，
+看着像"版本没更新"、虚惊一场。要 `grep 'APP_VERSION ='`。
+
+
 ## ⭐ 部署辅助脚本套装（2026-07-29 v52 全程用这四个跑通，照抄即可）
 
 ⛔ **为什么必须写成 .sh**：PowerShell 会先解释掉 ssh 内联里的 `$(...)`、引号、中文 → 备份目录名丢时间戳这类坑踩过。
@@ -164,6 +237,27 @@
 **已知留在正式服 `lookxun@163.com` 上的测试痕迹（2026-07-31，下一任别当成用户自己的数据）**：
 `工作流_01` 从 3 个节点变成 5 个（多了 `image_3_w1` 一杯咖啡 + `video_1_w1` 白猫打滚），共扣 47 积分。
 用户没让删，先留着；要删只删这两个节点。
+
+**已知留在测试服 `12424740@qq.com` 上的测试痕迹（2026-08-01 v58 巡检，别当用户数据）**：
+新建了 **`工作流_03`**，里面 5 个节点 ——
+真生成的 `image_1_w3`（宇航员橘猫，扣 3 积分）、一个连着 edge 的「@image_1_w3 把这只猫改成戴墨镜」图片节点、
+一个空视频节点、一个 Ctrl+V 粘贴测试建的「上传图片」节点（蓝底 `PASTE TEST`）、一个 Ctrl+C/V 复制出来的节点。
+按用户交代「测试内容不要删」全留着。
+
+### ⭐ v1.0.0.58~60（2026-08-01 第二十四次会话）新增的三条部署/验收经验
+
+1. ⭐⭐ **验"新代码到底进构建产物没有"，比看版本号更硬的姿势**：
+   `sudo docker exec <app容器> sh -lc 'grep -rl "从当前画布选择" /app/.next/static | head -3'`
+   —— 直接在**构建产物**里 grep 本次新加的中文字符串，命中就是真编译进去了。
+   ⛔ 别写成 `ssh "... sh -c '...中文...'"` 这种多层嵌套引号（PowerShell + sh 一起搞坏，报
+   `Unterminated quoted string`）→ 一律写本地 `.sh` scp 过去跑。
+2. ⭐ **HTML 里 grep 版本号不一定有**：`curl http://127.0.0.1:5001/ | grep 'v1\.0\.0\.'` 在首页会**抓不到**
+   （版本号是客户端渲染的）。用 `x-app-version` 响应头（sed + force-recreate 之后才准），
+   或者上号看页脚 `版本号(t):vX`。
+3. ⭐ **本地写 `pubXX.sh` 的省事姿势**：把上一版那个直接 `-replace` 版本号另存
+   （`(Get-Content .runtime/pub58.sh) -replace 'v1\.0\.0\.58','v1.0.0.60' | Set-Content -Encoding ascii .runtime/pub60.sh`），
+   ⚠️ 必须 `-Encoding ascii`（脚本里没中文），再 scp + `sed -i 's/\r$//'`。
+
 
 
 ## GitHub

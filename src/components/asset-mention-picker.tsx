@@ -31,6 +31,8 @@ export interface AssetMentionPickerProps {
   onScrollLoadMore?: (value: string, loadedCount: number) => void;
   /** 把资产 url 解析成可播放/可显示的真实地址（视频首帧、音频波形用） */
   getMediaSrc?: (url: string) => string;
+  /** 左上角标题，默认「@引用资产」；工作流「从当前画布选择」复用本组件时传自己的标题 */
+  title?: string;
   className?: string;
 }
 
@@ -51,6 +53,7 @@ export function AssetMentionPicker({
   onPick,
   onScrollLoadMore,
   getMediaSrc = (url) => url,
+  title = "@引用资产",
   className,
 }: AssetMentionPickerProps) {
   const items = itemsFor(activeValue);
@@ -63,7 +66,7 @@ export function AssetMentionPicker({
         .mention-cat-scroll::-webkit-scrollbar-thumb{background-color:#c7c7c7;border-radius:8px;}
         .mention-cat-scroll::-webkit-scrollbar-track{background:transparent;}
       `}</style>
-      <div className="px-1 pb-2 text-[12px] font-medium text-[#8a8a8a]">@引用资产</div>
+      <div className="px-1 pb-2 text-[12px] font-medium text-[#8a8a8a]">{title}</div>
       {loading ? (
         <div className="flex min-h-[220px] items-center justify-center gap-2 text-[13px] font-medium text-[#367cee]"><RiLoader4Line className="h-[18px] w-[18px] animate-spin" /><span>正在加载中...</span></div>
       ) : (

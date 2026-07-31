@@ -1,4 +1,4 @@
-import { getCurrentSession, jsonError } from "@/lib/auth";
+import { getCurrentSession, jsonError, markSessionLastSeenWritten } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
 export const runtime = "nodejs";
@@ -22,12 +22,15 @@ export async function POST(request: Request) {
       where: { id: session.id },
       data: { activeWorkspaceInstanceId: instanceId, activeWorkspaceSeenAt: new Date(), lastSeenAt: new Date() },
     });
+    // 这条心跳本身就写了 lastSeenAt → 对齐节流计时，别让下一个接口再白写一次（见 auth.ts 顶部注释）。
+    markSessionLastSeenWritten(session.id);
     return Response.json({ active: true });
   }
 
   const active = session.activeWorkspaceInstanceId === instanceId;
   if (active) {
     await prisma.session.update({ where: { id: session.id }, data: { activeWorkspaceSeenAt: new Date(), lastSeenAt: new Date() } }).catch(() => null);
+    markSessionLastSeenWritten(session.id);
   }
 
   return Response.json({ active });

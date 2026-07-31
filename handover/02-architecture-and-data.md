@@ -152,6 +152,36 @@
 ⚠️ 语义边界：**只有开着前台工作台才算在线**（只登录不开工作台、或只开后台，都不算）。
 **概览页与用户管理页共用这一份**，⛔ 禁止在别处另写一套（否则两个页面显示互相矛盾的在线人数）。
 
+## ⭐⭐ `Session.lastSeenAt` 的写入「不等 + 60 秒节流」（`src/lib/auth.ts`，2026-07-31 加，改鉴权前必读）
+
+**背景**：`getCurrentSession()` 是**全站每个登录态接口的第一件事**，它原来干两件事：
+① 查库确认"你是谁"（省不掉）；② **`await` 写一次 `lastSeenAt`**（纯签到记录，跟"你是谁"无关）。
+数据库在新加坡，国内一个来回几百毫秒 → ② 那一下**每次点击都在白等，而且全站每个接口都付**。
+
+**现在的做法（用户 2026-07-31 拍板 A+B 都做）**：
+- **A**：那次写改成 `void`（fire-and-forget），写照样发生、但不占请求等待时间 → **全站每接口省一个 DB 往返**。
+- **B**：同一个 session **60 秒内不重复写**（进程内 `Map<sessionId, 上次写入时间>` + `shouldWriteLastSeen()`；
+  表超 5000 条时顺手清过期条目防涨）。多进程/重启后各自重新计时，最坏多写一次。
+
+⛔⛔ **三条禁忌**：
+1. **别改回 `await`**（那就白费了）。
+2. **别把 `refreshCurrentSessionActivity()`（`/api/auth/activity` 续期心跳）也节流/也改成不等** ——
+   它除了写 `lastSeenAt` 还要**延长 `expiresAt` 并重发 cookie**，**漏一次会让用户提前掉线**。
+   它写完只需调 `markSessionLastSeenWritten()` 对齐节流计时。
+3. **别把 60 秒窗口调大到分钟级以上**（会开始影响"今日活跃"的跨零点归属）。
+
+**谁在用 `lastSeenAt`（影响面，已跟用户逐条确认）**：
+
+| 用途 | 字段 | 受影响吗 |
+|---|---|---|
+| 绿色「在线」胶囊 / 「在线用户」数字 | **`activeWorkspaceSeenAt`**（见上一节） | ❌ **完全不受影响**（那条心跳仍每次 await 写） |
+| 后台「今日活跃 / 7天 / 30天活跃用户」（`admin-overview.ts`） | `lastSeenAt` | 时间戳最多晚 60 秒，**按天统计无差别** |
+| 用户详情页/用户管理「最后活跃时间」「最后登录时间」排序 | `lastSeenAt` | 最多晚 60 秒 |
+| 登录状态 / 会话过期 / 掉线 | `expiresAt` + cookie | ❌ **没碰** |
+
+⭐ **工作台开着时那个「在线」心跳本来就在周期性写 `lastSeenAt`**（`/api/auth/workspace-instance` 那两处
+`session.update` 都带了它）→ 真实使用中 B 的"最多晚 60 秒"基本不会发生。
+
 ## ⭐⭐ 工作流左侧列表的「置顶」规则（2026-07-30 重做，改前必读）
 
 - 排序 = `updatedAt` 倒序（后端 `workspace-workflows.ts` + 前端 `chat-workbench.tsx` 各排一次）。
@@ -250,14 +280,70 @@
 - `chat-workbench.tsx:2617`：`getAssetIdentityKey = 归一化url || mediaId || id`（**url 优先**）。
 - 原因：同一媒体文件在客户端可能同时来自"消息内嵌引用（只有 url、无 mediaId）"和"资产库懒加载权威记录（有 mediaId）"。若 mediaId 优先，两份 key 不同 → @引用资产弹窗把同一视频/资产显示成两个。url 才是文件唯一身份 → url 优先必合并。三处 @引用资产共用同一 `assets` + 此函数 + `isAssetInFilter`。
 
-## @引用资产弹窗（三处统一）
+## @引用资产弹窗（三处统一）+ 「从当前画布选择」（第四处复用）
 
 - 共享组件 `src/components/asset-mention-picker.tsx`（左分类标签+右 5 列 80×80 缩略图，高 378px；左侧分类溢出时滚动条常驻=`mention-cat-scroll` 样式）。对话流输入框(chat-workbench)、资产库生成弹窗(chat-workbench)、工作流输入框(workflow-inner)三处共用。
 - 懒加载：首次只加载当前标签 30 个 + 全部计数，切标签/下拉再各自加载（`loadMentionFilterPage`/`mentionFilterPaging`）。视频/音频可引用（复用 + 号上传的 uploadRule 校验，从 url 读元数据）。
+- ⭐ **2026-08-01 新增第四个复用点：工作流上传按钮的「从当前画布选择」**。
+  只给组件加了一个**带默认值的可选 `title`**（默认 `"@引用资产"`，那边传 `"当前画布的资产"`），
+  ⛔ **禁止为了新弹窗 fork 这个组件**。分类 `WORKFLOW_CANVAS_MENTION_CATEGORIES`
+  = `canvas_image` / `canvas_video` / `canvas_audio`（图片/视频/音频三页）。
+
+## 工作流上传按钮的三选菜单（2026-08-01 加）
+
+上传 chip（图片/视频/音频）**悬停**弹菜单，三项都在 `workflow-tldraw-canvas-inner.tsx` 的
+`renderUploadButton()` 里（原来那段 chip JSX 抄了两份，已收敛成这一个）：
+
+| 菜单项 | 图标 | 走哪条路 |
+|---|---|---|
+| 从本地上传 | `RiAttachment2` | `handleUploadFiles(kind, files)` → `uploadFilesAsConnectedNodes`（原功能） |
+| 从资产库导入 | `RiFolderOpenLine` | 复用 `isReferenceMenuOpen` = @ 那个弹窗（同一份状态、同一个位置） |
+| 从当前画布选择 | `RiGalleryView` | `isCanvasPickerOpen` + `runtime.getCanvasMediaAssets()` → `insertCanvasAssetReference` |
+
+- `WORKFLOW_UPLOAD_KIND_MENTION_GROUP` = `{ image: "character_image", video: "upload_videos", audio: "upload_audios" }`
+  → 「从资产库导入」进去时优先停在的分类。
+- **`runtime.getCanvasMediaAssets()`**（`WorkflowCanvas` 里）：逐个节点走
+  **`getWorkflowNodeOutputUploadItems(node)`**（= 连线缩略图用的同一份实现）→ 名字天然一致；
+  按 `normalizeWorkflowMediaUrl` 去重；带 `sourceNodeId`。类型
+  `WorkflowCanvasMediaAsset = WorkflowReferenceAsset & { sourceNodeId: string }`。
+- **`runtime.connectNodeAsInput(source, target)`**：选中画布媒体后**加一条边**（等价手动拉线），
+  ⭐ 校验完全复用 `getWorkflowConnectionError` + `validateWorkflowConnectionTextLimit`
+  + `validateWorkflowConnectionUploadRules`，**没写第二套判断**。
+  ⛔ **不往 `node.data.uploads` 塞副本**（会和连接进来的缩略图同 url 重复、断线后幽灵复现）。
+- ⚠️ 已知语义：**连线是按节点连的**，源节点里有 4 张图就 4 张一起进来（超限会被上面那套校验拦住）。
+- ⛔ 三条 UI 陷阱（字号写 span / 间距用 padding / 选文件 input 放菜单外）→ 见 `AGENTS.md` 顶部铁律。
+
+## 工作流画布的粘贴（Ctrl+V）→ 汇入拖拽上传通道（2026-08-01 加）
+
+`workflow-tldraw-canvas-inner.tsx` 里一个 `useEffect` 在 **window 捕获阶段**监听 `paste`：
+`isWorkflowPasteMediaFile()` 认出图片/视频/音频（+ mp3/wav 扩展名兜底，⛔ 不认 .txt）后交给
+**`handleUploadNodeFiles`** —— 与拖拽上传**同一个函数**，所以校验/去重/命名/进度/入库全自动一致。
+⛔ 必须捕获阶段（tldraw 在 `ownerDocument` 冒泡阶段监听）、⛔ 只在真有媒体文件时才
+`preventDefault + stopPropagation`、⛔ 焦点在输入框里直接 return。详见 `AGENTS.md` 那条铁律。
+
+## 侧边栏三态（2026-08-01 收口）
+
+- 三态仍用两个布尔编码：常规 = `isSidebarVisible && !isSidebarCollapsed`(262px)、
+  简化 = `isSidebarVisible && isSidebarCollapsed`(80px)、隐藏 = `!isSidebarVisible`(0)。**编码没变**，
+  所以简化态的弹出菜单定位、折叠版历史菜单、`sidebarWidth` 那些逻辑都没动。
+- **唯一切换入口 `cycleSidebarState()`**（`chat-workbench.tsx`）：常规 → 简化 → 隐藏 → 常规循环。
+  三处按钮（对话/资产库顶栏、工作流空态、工作流画布工具栏）全部指向它，
+  文案由 `sidebarToggleLabel` 算好、经新 prop `leftSidebarToggleLabel` 传给画布那个。
+  **全项目只有这一个按钮能切侧边栏。**
+- 图标：`RiSidebarFoldLine`（显示中，含常规+简化）/ `RiSidebarUnfoldLine`（隐藏）。
+- **点 logo = `window.location.reload()`**（不再切换收起）。
+- **「首次进工作流自动收起」已整套删除**（`applyWorkflowFirstSessionCollapse` + sessionStorage 标记 + 相关 helper）。
+- ⚠️ **没做持久化**，刷新回常规态。→ 见 `06-memo-tasks.md` 的 **M028**（用户没拍板）。
 
 ## 跨境链路固有软肋
 
 - 腾讯新加坡（源）↔ 阿里（国内入口）走公网跨境，有丢包/延迟。两台已开 BBR 缓解。这是双服务器方案固有痛点、非 bug。长期优化方向见归档。
+- ⭐⭐ **2026-08-01 首次量到具体数字**：**阿里 ping 腾讯 37.5% 丢包 / 腾讯 ping 阿里 25% 丢包**，RTT 255ms；
+  跨境 `connect` 耗时 0.25 / 1.27 / 3.2 / **11.4s**（= Linux SYN 重传指数退避）。
+  而**应用本身只要 48~65ms**。且阿里那份 conf **没有 upstream keepalive** 还写死了
+  `proxy_set_header Connection "upgrade"` → **每个请求都重建一次跨境连接**。
+  ⭐ **正式服主入口 `main`/`api` 是直连腾讯的、不吃这一跳**（稳定 210ms）；**测试服只有阿里这一个入口**。
+  → 完整数据 + 三个方案见 `06-memo-tasks.md` 的 **M027** 和 `03-deploy-and-servers.md` 的入口架构那节。
 
 ## 迁移脚本 / 一次性脚本
 

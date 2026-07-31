@@ -43,8 +43,8 @@ import {
   RiImage2Line,
   RiImageCircleLine,
   RiImageLine,
-  RiLayoutLeft2Line,
-  RiLayoutLeftLine,
+  RiSidebarFoldLine,
+  RiSidebarUnfoldLine,
   RiLeafLine,
   RiLockPasswordLine,
   RiMoreLine,
@@ -676,7 +676,6 @@ const HOME_PROMPT_STORAGE_KEY = "flashmuse-home-prompt-v1";
 const WORKSPACE_USER_DIALOG_STORAGE_KEY = "flashmuse-workspace-user-dialog-v1";
 const WORKSPACE_THEME_STORAGE_KEY = "flashmuse-workspace-theme-v1";
 const WORKSPACE_UI_STATE_STORAGE_KEY = "flashmuse-workspace-ui-state-v1";
-const WORKFLOW_SESSION_COLLAPSE_STORAGE_PREFIX = "flashmuse-workflow-first-collapse-v1";
 type WorkspaceThemeMode = "light" | "dark" | "system";
 
 function getStoredWorkspaceThemeMode(): WorkspaceThemeMode {
@@ -3474,16 +3473,20 @@ function stripWorkflowItemTrimmedCanvas(item: WorkflowItem): WorkflowItem {
   return rest;
 }
 
-// 上传态是运行时临时字段：uploadProgress(上传百分比) 与 uploadPreviewUrl(blob: 本地预览，刷新即失效)。
-// 绝不能写进数据库，否则刷新后节点会卡在"上传中 99%"(上传的 promise 早已随页面销毁，没有恢复机制)。
+// 上传态是运行时临时字段：uploadProgress(上传百分比) 与 uploadPreviewUrl(blob: 本地预览，刷新即失效)；
+// 还有 promptLoading（「使用提示词」新节点正在读后端提示词的禁用转圈态）。
+// 绝不能写进数据库，否则刷新后节点会卡在"上传中 99%"/"永久禁用转圈"(对应的 promise 早已随页面销毁，没有恢复机制)。
 // 运行时内存里的 canvas 仍保留这两个字段(实时进度、echo 守卫需要它们)，只在存库边界剥离。
 function stripWorkflowItemTransientUploadState(item: WorkflowItem): WorkflowItem {
   if (!item.canvas) return item;
   const stripNodeUploadState = (node: WorkflowNode): WorkflowNode => {
-    if (node.data.uploadProgress === undefined && node.data.uploadPreviewUrl === undefined) return node;
+    if (node.data.uploadProgress === undefined && node.data.uploadPreviewUrl === undefined && node.data.promptLoading === undefined) return node;
     const data = { ...node.data };
     delete data.uploadProgress;
     delete data.uploadPreviewUrl;
+    // promptLoading：「使用提示词」新节点正在从后端读提示词/参考素材的临时禁用态。
+    // 存库了会让刷新后的节点永久卡在禁用转圈（那次 fetch 早没了），必须和上传态一起剥。
+    delete data.promptLoading;
     return { ...node, data };
   };
   return {
@@ -3693,21 +3696,6 @@ function setStoredWorkspaceUiState(next: StoredWorkspaceUiState) {
   try {
     const current = getStoredWorkspaceUiState();
     window.localStorage.setItem(WORKSPACE_UI_STATE_STORAGE_KEY, JSON.stringify({ ...current, ...next }));
-  } catch {
-    // UI state persistence is best-effort.
-  }
-}
-
-function getWorkflowSessionCollapseStorageKey(userId: string, email: string) {
-  const userKey = userId.trim() || email.trim();
-  return userKey ? `${WORKFLOW_SESSION_COLLAPSE_STORAGE_PREFIX}:${userKey}` : "";
-}
-
-function clearWorkflowSessionCollapseStorage(userId: string, email: string) {
-  if (typeof window === "undefined") return;
-  try {
-    const key = getWorkflowSessionCollapseStorageKey(userId, email);
-    if (key) window.sessionStorage.removeItem(key);
   } catch {
     // UI state persistence is best-effort.
   }
@@ -8061,36 +8049,18 @@ export function ChatWorkbench() {
     if (!currentUserGeneralModeEnabled && mode === "general") setMode("agent");
   }, [currentUserGeneralModeEnabled, mode]);
 
-  const applyWorkflowFirstSessionCollapse = useCallback(() => {
-    const storageKey = getWorkflowSessionCollapseStorageKey(currentUserId, currentUserEmail === "user@example.com" && !currentUserId ? "" : currentUserEmail);
-    if (!storageKey) return;
-    try {
-      if (window.sessionStorage.getItem(storageKey)) return;
-      window.sessionStorage.setItem(storageKey, "1");
-    } catch {
-      // UI state persistence is best-effort.
-    }
-    setIsSidebarVisible(true);
-    setIsSidebarCollapsed(true);
-  }, [currentUserEmail, currentUserId]);
-
-  useEffect(() => {
-    if (activePanel !== "workflow" || !WORKFLOW_MODE_ENABLED) return;
-    applyWorkflowFirstSessionCollapse();
-  }, [activePanel, applyWorkflowFirstSessionCollapse]);
-
+  // ⛔ 原来这里有「首次进工作流自动收起侧边栏」（applyWorkflowFirstSessionCollapse + sessionStorage 标记）。
+  // 2026-08 用户拍板取消：进工作流不再改侧边栏状态，全项目只有左上角那个按钮能切侧边栏。
   const enterWorkflowPanel = useCallback(() => {
     if (!WORKFLOW_MODE_ENABLED) return;
-    applyWorkflowFirstSessionCollapse();
     setStoredWorkspaceUiState({ activePanel: "workflow" });
     setActivePanel("workflow");
-  }, [applyWorkflowFirstSessionCollapse]);
+  }, []);
 
   const logoutUser = useCallback(async () => {
-    clearWorkflowSessionCollapseStorage(currentUserId, currentUserEmail);
     await fetch("/api/auth/logout", { method: "POST" }).catch(() => null);
     window.location.href = "/";
-  }, [currentUserEmail, currentUserId]);
+  }, []);
 
   const openUserDialog = useCallback((tab: UserDialogTab) => {
     setIsUserMenuOpen(false);
@@ -15264,16 +15234,32 @@ export function ChatWorkbench() {
       ? "flashmuse-workspace-root grid h-screen min-h-screen grid-cols-1 overflow-hidden bg-white lg:grid-cols-[80px_minmax(0,1fr)]"
       : "flashmuse-workspace-root grid h-screen min-h-screen grid-cols-1 overflow-hidden bg-white lg:grid-cols-[262px_minmax(0,1fr)]"
     : "flashmuse-workspace-root grid h-screen min-h-screen grid-cols-1 overflow-hidden bg-white";
-  const toggleSidebarVisibility = () => {
+  // 侧边栏三态唯一切换入口：常规态 → 简化态 → 隐藏 → 常规态（循环）。
+  // ⛔ 全项目只允许这一个按钮切侧边栏：点 logo 不切（改成刷新页面）、进工作流也不切。
+  const cycleSidebarState = () => {
     closeAllPopupMenus();
-    setIsSidebarVisible((current) => !current);
+    if (!isSidebarVisible) {
+      // 隐藏 → 常规态
+      setIsSidebarVisible(true);
+      setIsSidebarCollapsed(false);
+      return;
+    }
+    if (!isSidebarCollapsed) {
+      // 常规态 → 简化态
+      setIsSidebarCollapsed(true);
+      return;
+    }
+    // 简化态 → 隐藏
+    setIsSidebarVisible(false);
   };
+  // 图标口径：显示中（常规/简化）都用 fold；隐藏时用 unfold。
+  const sidebarToggleLabel = !isSidebarVisible ? "显示左侧栏" : isSidebarCollapsed ? "隐藏左侧栏" : "收起左侧栏";
 
   return (
     <section className={workspaceRootClassName}>
       {isSidebarVisible ? (
       <aside className={isSidebarCollapsed ? "flashmuse-sidebar relative z-10 hidden h-screen min-h-0 flex-col overflow-visible border-r border-[#e5e5e5] bg-[#f9f9f9] px-2 pb-1 pt-4 lg:flex" : "flashmuse-sidebar relative z-10 hidden h-screen min-h-0 flex-col overflow-visible border-r border-[#e5e5e5] bg-[#f9f9f9] px-3 pb-1 pt-4 lg:flex"}>
-          <button type="button" onClick={() => setIsSidebarCollapsed((current) => !current)} className={isSidebarCollapsed ? "mb-5 flex justify-center text-left" : "mb-5 flex items-center gap-3 px-2 text-left"} aria-label={isSidebarCollapsed ? "展开左侧栏" : "收起左侧栏"} title={isSidebarCollapsed ? "展开左侧栏" : "收起左侧栏"}>
+          <button type="button" onClick={() => { window.location.reload(); }} className={isSidebarCollapsed ? "mb-5 flex justify-center text-left" : "mb-5 flex items-center gap-3 px-2 text-left"} aria-label="刷新页面" title="刷新页面">
           <div className={isSidebarCollapsed ? "flex h-[50px] w-[50px] items-center justify-center" : "flex h-[50px] w-[50px] items-center justify-center"}>
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src="/home-assets/logo.png" alt="闪念 FlashMuse" className="h-[50px] w-[50px] object-contain" />
@@ -15940,12 +15926,12 @@ export function ChatWorkbench() {
         {activePanel !== "workflow" ? <div className="relative z-30 flex h-[56px] shrink-0 items-center justify-center border-b border-[#eeeeee] bg-white px-14">
           <button
             type="button"
-            onClick={toggleSidebarVisibility}
+            onClick={cycleSidebarState}
             className="absolute left-4 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-md text-[#6f6f6f] transition hover:bg-[#f2f2f2] hover:text-[#111111]"
-            aria-label={isSidebarVisible ? "隐藏左侧栏" : "显示左侧栏"}
-            title={isSidebarVisible ? "隐藏左侧栏" : "显示左侧栏"}
+            aria-label={sidebarToggleLabel}
+            title={sidebarToggleLabel}
           >
-            {isSidebarVisible ? <RiLayoutLeft2Line className="h-[22px] w-[22px]" aria-hidden="true" /> : <RiLayoutLeftLine className="h-[22px] w-[22px]" aria-hidden="true" />}
+            {isSidebarVisible ? <RiSidebarFoldLine className="h-[22px] w-[22px]" aria-hidden="true" /> : <RiSidebarUnfoldLine className="h-[22px] w-[22px]" aria-hidden="true" />}
           </button>
 
           <div className="flex min-w-0 items-center gap-1.5 text-center">
@@ -16092,7 +16078,8 @@ export function ChatWorkbench() {
                   value={activeWorkflow.canvas}
                   workflowTitle={activeWorkflow.title}
                   leftSidebarVisible={isSidebarVisible}
-                  onToggleLeftSidebar={toggleSidebarVisibility}
+                  leftSidebarToggleLabel={sidebarToggleLabel}
+                  onToggleLeftSidebar={cycleSidebarState}
                   workflowAssets={assets.filter((asset) => isWorkflowAsset(asset) && (asset.workflowId || asset.sessionId) === activeWorkflow.id).map((asset) => ({ id: asset.id, name: asset.name, url: asset.url, posterUrl: asset.posterUrl, kind: isVideoAsset(asset) ? "video" : "image", nodeId: asset.workflowNodeId, sourcePrompt: asset.sourcePrompt, model: asset.model as ModelName | undefined, ratio: asset.previewMeta?.ratio, resolution: asset.previewMeta?.resolution, duration: asset.previewMeta?.duration, dimensions: getPreviewMetaDimensions(asset.previewMeta) }))}
                   referenceAssets={MENTION_CATEGORIES.flatMap((cat) => assets.filter((asset) => isAssetInFilter(asset, cat.value)).map((asset) => { const item = assetToMentionPickerItem(asset); return { id: asset.id, name: asset.name, url: asset.url, thumbnailUrl: item.thumbnailUrl, kind: item.kind, groupType: cat.value, groupLabel: cat.label }; }))}
                   referenceAssetsLoadStatus={assetsLoadStatus}
@@ -16243,8 +16230,8 @@ export function ChatWorkbench() {
               </>
             ) : (
               <div className="relative flex h-full min-h-full items-center justify-center bg-[#f3f3f3] bg-[linear-gradient(to_right,#d8d8d8_1px,transparent_1px),linear-gradient(to_bottom,#d8d8d8_1px,transparent_1px),linear-gradient(to_right,#e9e9e9_1px,transparent_1px),linear-gradient(to_bottom,#e9e9e9_1px,transparent_1px)] bg-[size:120px_120px,120px_120px,24px_24px,24px_24px] text-center">
-                <button type="button" onClick={toggleSidebarVisibility} className="absolute left-4 top-3 flex h-8 w-8 items-center justify-center rounded-md text-[#5c626b] transition hover:bg-black/5 hover:text-[#30343a]" aria-label={isSidebarVisible ? "隐藏左侧栏" : "显示左侧栏"} title={isSidebarVisible ? "隐藏左侧栏" : "显示左侧栏"}>
-                  {isSidebarVisible ? <RiLayoutLeft2Line className="h-[22px] w-[22px]" aria-hidden="true" /> : <RiLayoutLeftLine className="h-[22px] w-[22px]" aria-hidden="true" />}
+                <button type="button" onClick={cycleSidebarState} className="absolute left-4 top-3 flex h-8 w-8 items-center justify-center rounded-md text-[#5c626b] transition hover:bg-black/5 hover:text-[#30343a]" aria-label={sidebarToggleLabel} title={sidebarToggleLabel}>
+                  {isSidebarVisible ? <RiSidebarFoldLine className="h-[22px] w-[22px]" aria-hidden="true" /> : <RiSidebarUnfoldLine className="h-[22px] w-[22px]" aria-hidden="true" />}
                 </button>
               </div>
             )

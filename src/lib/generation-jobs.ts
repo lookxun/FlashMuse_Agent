@@ -355,12 +355,70 @@ export function buildJobReferenceItems(job: { referenceImages?: unknown; referen
   return [...build(job.referenceImages, "image"), ...build(job.referenceVideos, "video"), ...build(job.referenceAudios, "audio")];
 }
 
-/** 取某工作流节点最近一次成功生成的任务（供"使用提示词"还原参考素材+名字）。 */
-export async function getLatestSucceededJobForWorkflowNode(userId: string, workflowId: string, workflowNodeId: string): Promise<GenerationJobRow | undefined> {
-  const rows = await prisma.$queryRaw<GenerationJobRow[]>`
-    SELECT * FROM "GenerationJob"
-    WHERE "userId" = ${userId} AND "workflowId" = ${workflowId} AND "workflowNodeId" = ${workflowNodeId} AND "status" = 'succeeded'
-    ORDER BY "updatedAt" DESC
+// ⛔ 原来这里有个 `getLatestSucceededJobForWorkflowNode`（`SELECT *` 取整行 job）已删除：
+// 唯一调用者是「使用提示词」接口，已换成下面的窄查询 `getWorkflowPromptReferenceRow`。别把它捡回来。
+
+/**
+ * ⭐ 「使用提示词」专用的**窄查询**（`/api/workflow-generation-references` 唯一调用者）。
+ *
+ * 为什么不复用上面两个函数：它们都是 `SELECT *`，会把 `settingsJson`/`metadataJson`/`extraJson`/`prompt`
+ * 这几个大 JSON 列整行拉回来，而这个接口**只用到 6 个字段**；而且它们是串行 `?? await`，
+ * 命中不了节点时还要再连着走 2~3 个往返。用户点「使用提示词」是**交互路径**，跨境每个往返都要 ~0.4s。
+ *
+ * 这里做三件事：① 只查用得到的列（`extraJson->>'cleanPrompt'` 在库里就把大 JSON 里那一个字段抽出来）；
+ * ② 「按节点找」和「按媒体 url 找 requestId」**并发**发出（原来是串行）；
+ * ③ 兜底那条「裸 requestId → `xxx:image:0`」用 `= 或 LIKE` 合成一条语句，不再多一个往返。
+ * 结果：命中常见路径 1 个往返、最坏 2 个（原来最坏 4 个）。
+ *
+ * ⛔ 别把这个函数改成通用工具去别处复用：它的返回是"够这个接口用"的窄形状，不是完整 job 行。
+ * 参考素材拍平仍统一走唯一实现 `buildJobReferenceItems`。
+ */
+export type WorkflowPromptReferenceRow = {
+  referenceImages: unknown;
+  referenceVideos: unknown;
+  referenceAudios: unknown;
+  referenceNames: unknown;
+  referenceMode: string | null;
+  cleanPrompt: string | null;
+};
+
+const workflowPromptReferenceColumns = Prisma.sql`
+  "referenceImages", "referenceVideos", "referenceAudios", "referenceNames", "referenceMode",
+  "extraJson"->>'cleanPrompt' AS "cleanPrompt"
+`;
+
+export async function getWorkflowPromptReferenceRow(userId: string, workflowId: string, workflowNodeId: string, mediaUrl: string): Promise<WorkflowPromptReferenceRow | undefined> {
+  const cleanMediaUrl = mediaUrl ? mediaUrl.split("?")[0].split("#")[0].replace(/^https?:\/\/[^/]+/, "") : "";
+  const [nodeRows, assetRows] = await Promise.all([
+    prisma.$queryRaw<WorkflowPromptReferenceRow[]>`
+      SELECT ${workflowPromptReferenceColumns}
+      FROM "GenerationJob"
+      WHERE "userId" = ${userId} AND "workflowId" = ${workflowId} AND "workflowNodeId" = ${workflowNodeId} AND "status" = 'succeeded'
+      ORDER BY "updatedAt" DESC
+      LIMIT 1
+    `,
+    // 本工作流节点没有对应 job（从资产库导入的、在对话流/别的工作流生成的）时才用得上；
+    // 但它和上面那条互不依赖，所以并发发出，不要等上面那条落空了再发。
+    mediaUrl
+      ? prisma.$queryRaw<Array<{ requestId: string | null }>>`
+          SELECT "requestId" FROM "MediaAsset"
+          WHERE "userId" = ${userId} AND ("url" = ${mediaUrl} OR "url" = ${cleanMediaUrl} OR "normalizedUrl" = ${cleanMediaUrl})
+            AND "requestId" IS NOT NULL AND "requestId" <> ''
+          LIMIT 1
+        `
+      : Promise.resolve([] as Array<{ requestId: string | null }>),
+  ]);
+  if (nodeRows[0]) return nodeRows[0];
+
+  const requestId = assetRows[0]?.requestId ?? undefined;
+  if (!requestId) return undefined;
+  // 兼容对话流历史裸 requestId（job 的 requestId 是 `<裸>:image|video:0`）：
+  // 精确命中排前面，不再分两次查。
+  const rows = await prisma.$queryRaw<WorkflowPromptReferenceRow[]>`
+    SELECT ${workflowPromptReferenceColumns}
+    FROM "GenerationJob"
+    WHERE "userId" = ${userId} AND ("requestId" = ${requestId} OR "requestId" LIKE ${requestId + ":%"})
+    ORDER BY ("requestId" = ${requestId}) DESC, "createdAt" DESC
     LIMIT 1
   `;
   return rows[0];

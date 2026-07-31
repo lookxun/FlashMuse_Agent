@@ -26,6 +26,125 @@
 
 ## 活跃备忘
 
+### [x] M027 阿里入口没有 upstream keepalive，跨境每请求重建连接 —— **2026-08-01 已做完（方案 B，测试服 + 正式服都改了）**
+
+> ✅ **结论：做的是方案 B（加 upstream keepalive），⛔ 方案 A 被否掉。**
+> 🗣️ 用户否 A 的理由（原话意思）：「我做测试服就是为了提前测试，测试服和正式服关键的东西一定要一样，
+> 这样在测试服测好的东西到正式服才最大限度不出问题。」→ **A 会让两服入口架构不一致，测出来的不作数。**
+>
+> **实测收益（都在阿里本机测，隔离出「阿里→腾讯」这唯一慢的一跳）**：
+>
+> | 入口 | 改前中位数 | 改后中位数 | 倍数 |
+> |---|---|---|---|
+> | 测试服 `:8080` | **1.62s** | **0.30s** | 5.4× |
+> | 测试服 `staging-static`（HTTPS） | — | **0.36s** | — |
+> | **正式服 `ali.venusface.com`** | **1.64s** | **0.37s** | 4.4× |
+>
+> `connect` 耗时从 **1.26~1.33s → 0.00008s**（复用现成连接，压根不用握手）—— 这一列最能说明问题。
+> **0.30s 已基本触到物理下限**（其中 255ms 是 RTT，应用本身只占 40ms）。
+>
+> ⛔ **没解决的残留**：偶发 1.0~1.5s 毛刺还在，因为那条线 **实测丢包 33.3%**，
+> 握手不用了但传数据时丢包照样要重传。**这属方案 C（花钱）**，配置层面到顶了。
+>
+> ### ⭐⭐ 改的时候踩到/学到的（下次改 nginx 必看）
+>
+> 1. ⛔⛔ **量性能必须站在「阿里本机」测，不能站在腾讯 curl 阿里** ——
+>    后者等于跨境跑两趟（腾讯→阿里→腾讯），数字全被污染。我第一轮就是这么测的，
+>    看到 `connect=0.25~1.37s` 差点以为 keepalive 没生效，其实那是腾讯到阿里的那一跳。
+> 2. ⭐ **keepalive 三件套缺一不可**：`upstream` + `keepalive N`、`proxy_http_version 1.1`、
+>    `Connection` 头置空。**只加 upstream 不改后两个 = 完全没效果**（默认 HTTP/1.0 + `Connection: close`）。
+>    正式服那 6 个 location 原本连 `proxy_http_version 1.1` 都没有。
+> 3. ⭐ **`Connection` 用 map 变量而不是写死**：`map $http_upgrade $xxx_conn_upgrade { default upgrade; '' ''; }`
+>    → 普通请求为空（长连接）、WebSocket 才是 upgrade。原来写死 `"upgrade"` = 每个请求都被当成升级请求。
+> 4. ⛔ **命名必须带项目前缀**（`fm_test_app` / `fm_prod_app` / `$fm_prod_conn_upgrade`）：
+>    那台 nginx 还 include 着 `tiantangqiyuan` / `venusai` / `video-downloader` 三个别的项目，
+>    upstream 名或 map 变量名重名会 `duplicate` 直接起不来、把别人也搞死。改前先
+>    `grep -rn "upstream \|map \$http_upgrade" /etc/nginx/` 确认没撞（本次实测全站一个都没有）。
+> 5. ⭐⭐ **改混着别的项目的文件用「精确替换 + 计数断言」**（脚本 `deploy/ali/ali-add-upstream-keepalive.py`）：
+>    先勘察出两类特征（正式服那份：6 处「proxy_pass 紧跟 `Host 101.47.19.109`」缺 1.1，
+>    2 处 `location /`「紧跟 `proxy_request_buffering off`」已有 Connection），
+>    替换后**断言条数必须等于 (6, 2, 2)**、断言 `tiantangqiyuan` 条数没变，不符就一个字都不改直接退出。
+>    ⛔ 比 `sed` 全局替换安全得多，也比整份覆盖安全得多。
+> 6. ⛔ **`set -e` + `curl` 会把验证脚本掐断**：curl 超时返回非 0 → 后面的复测全不跑了（本次踩过一次）。
+>    纯验证脚本别开 `set -e`。
+> 7. ⭐ **顺手补掉一个漏项**：`staging-static.venusface.com` 那份 conf **压根没有 M024 那批的
+>    `proxy_buffers` 和 `gzip`**（当时只加到了 8080 那份）→ 走 HTTPS 访问测试服时，
+>    大响应一直在写磁盘临时文件、JSON 从来没被压缩过。已补齐，实测 `Content-Encoding: gzip` 生效。
+>    ⭐ **教训：同一个功能有多个入口 conf 时，改一个必须把兄弟们都 grep 一遍**（这正是"能统一一律统一"）。
+>
+> **备份**（要回滚就用这些）：
+> - 测试服两份：阿里 `/root/nginx-backups/{flashmuse-test-8080,flashmuse-staging-static-ssl}.20260731-171942.bak`
+> - 正式服：阿里 `/root/nginx-backups/flashmuse-static-ip.20260731-173554.bak`
+>
+> **仓库里的权威副本**（铁律：以仓库为准，先改仓库再部署）：
+> `deploy/staging/flashmuse-test-8080.conf`、`deploy/staging/flashmuse-staging-static-ssl.conf`、
+> `deploy/ali/ali-add-upstream-keepalive.py`（正式服那份混着别的项目，只能用这个增量脚本，幂等可重复跑）。
+
+<details>
+<summary>以下是当初的排查记录（保留备查）</summary>
+
+**起因**：用户报「测试服读取慢、一开始加载整个工作流画布也非常慢」。查清了 —— **不是代码问题**。
+
+**已量到的硬数据**（工具在 `.runtime/perf-staging.sh` / `perf-ali.sh` / `perf-ali2.sh`）：
+
+| 层 | 耗时 |
+|---|---|
+| 腾讯宿主 → staging nginx `/api/models` | **48 ~ 65 ms**（应用一点不慢） |
+| 阿里 → 腾讯:5001 `/` | 0.54s / 1.52s / **3.28s** / 0.54s / **3.17s** |
+| 阿里 → 腾讯:5001 `/api/models` | 0.57s / 2.56s / **36.4 秒**（connect 就 11.4s） |
+
+```
+阿里 ping 腾讯：37.5% packet loss, RTT 255ms
+腾讯 ping 阿里：25%   packet loss, RTT 255ms
+```
+`connect` 耗时 0.25/1.27/3.2/**11.4s** = **Linux SYN 重传的指数退避（1→2→4→8s）**，握手包被丢在重传。
+
+**配置层面的两个问题**（`/etc/nginx/sites-enabled/flashmuse-test-8080` 的 `location /`）：
+1. **没有 `upstream` 块、没有 `keepalive`** → 每个请求重做一次跨境 TCP 握手，37% 丢包下每次都有 1/3 概率 +1s/+3s/+11s。
+2. 写死了 `proxy_set_header Connection "upgrade";`（不是 `$connection_upgrade` 映射）
+   → **等于每个普通请求都告诉上游"这不是长连接"，连接永远不可能复用**。这是 bug。
+
+⭐⭐ **顺带查清的架构事实（用户专门问了「难道测试服和正式服不一样吗」）**：
+
+| 域名 | 指向 | 说明 |
+|---|---|---|
+| `main` / `api`.venusface.com | `119.28.116.16` | **腾讯新加坡直连**，443 在腾讯终止 SSL；`next.config.ts` 没 `assetPrefix`、HTML 里 `_next/static` 全是相对路径 → **静态也是腾讯直发** |
+| `ali` / `static`.venusface.com | `101.37.129.164` | 阿里，反代回腾讯:5000 |
+| `staging-static` / `:8080` | `101.37.129.164` | **测试服只有这一个入口** → 必然多一跳跨境 |
+
+同一个 `/api/models` 从国内实测：main **210ms 稳** / ali 600~1685ms / 测试服 582~4739ms /
+**测试服绕开阿里直连 `119.28.116.16:5001` = 166~385ms**。
+
+**三个方案（一个都没做，等用户拍板）**：
+
+| 方案 | 改什么 | 效果 | 风险 |
+|---|---|---|---|
+| **A（推荐）** | 测试服入口改用 `http://119.28.116.16:5001/` 直连腾讯 | 1.6~10.7s → 0.17~0.39s | **零风险**（端口已开、实测 200，不改任何服务器配置；但 `sync-ali-test.sh` 就不需要了） |
+| B | 阿里那份 conf 加 `upstream` + `keepalive 32`，`Connection` 改成 `$connection_upgrade` 映射 | 复用连接、大幅减少 SYN 重传惩罚 | 中。`flashmuse-test-8080` 是测试服独占文件，可备份 + `nginx -t` + 失败回滚 |
+| C（长期） | 丢包 25~37% 是公网路由本身的问题 → 专线/全球加速，或国内也部一份 app | 根治 | 要花钱 |
+
+⚠️⚠️ **还没查、但很可能有同样问题的**：`ali.venusface.com`（**正式服的国内入口，有真实用户在走**）比 main 慢 3~8 倍。
+它的配置在阿里的 `flashmuse-static-ip` 里 —— ⛔ **那个文件混着别的项目 `/tiantangqiyuan/`，禁止整份覆盖**
+（见 `AGENTS.md` nginx 铁律），要改只能用幂等增量脚本（模板 `deploy/ali/ali-add-proxy-buffers.sh`）。
+我提议"只读地看一眼那份配置再报结论"，🗣️ **用户也说以后再说**。
+
+> ✅ **上面这段"还没查"的部分，2026-08-01 已经查了并且修了**（用户当天改口说「正式服照样做吧」）：
+> 确认 `ali.venusface.com` 就是同一个毛病，8 处 `proxy_pass` 全部裸连、6 处连 `proxy_http_version 1.1` 都没有。
+> 已用增量脚本修好，`tiantangqiyuan` 一个字没动。
+
+</details>
+
+### [ ] M028 侧边栏三态要不要持久化（记到 localStorage）
+
+2026-08-01 侧边栏改成一个按钮循环三态后，**状态没做持久化**（原本也没有），刷新回常规态。
+又因为点 logo 现在是"刷新页面"，所以**在简化态点 logo 会变回常规态**。
+🗣️ 我问过用户"要不要存 localStorage"，**用户没回答** → 没做。
+
+真要做：往 `chat-workbench.tsx` 的 `StoredWorkspaceUiState` 加
+`sidebarState?: "normal" | "collapsed" | "hidden"`，在 `getStoredWorkspaceUiState` 里校验，
+`useState` 从 `initialWorkspaceUiStateRef.current` 取初值，`cycleSidebarState` 里 `setStoredWorkspaceUiState`。
+（`WORKSPACE_UI_STATE_STORAGE_KEY = "flashmuse-workspace-ui-state-v1"`）
+
 ### [ ] M026 单个工作流内部的节点也要分页（一次读 10~20 个，读完再读下面的）
 
 > 🗣️ **用户 2026-07-30 原话意思**：「比如他一个工作流里生成了几百上千个节点图片和视频，那光一个工作流就很大了，
