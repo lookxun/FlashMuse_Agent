@@ -2,24 +2,173 @@
 
 > 历史 END-OF-SESSION 记录都在 `historical-handover-docs-last-used-2026-07-21/05-next-actions.md`（很长）。这里只留当前有效待办。
 
-## ✅ 当前状态：**无待部署、无未推**（2026-07-30 第二十次会话末）
+## ✅ 当前状态：**无待部署、无未推**（2026-07-31 第二十二次会话末）
 
-**四方同步 = `v1.0.0.56`**（正式服 = 测试服 = 本地 = GitHub），四域名全 200，无 Prisma 迁移。
-本次做完的事、实测数据 → **`01-current-status.md` 顶部**；
-🗣️ **M025 的实测数据 + 我的建议（但用户还没拍板）→ `06-memo-tasks.md` 的 M025**。
+**四方同步 = `v1.0.0.57`**（正式服 = 测试服 = 本地 = GitHub），四域名全 200，无 Prisma 迁移。
+本批上线 = 工作流按需加载（骨架版）+ **第二阶段「其余只发标题」** + 修掉一个真删数据的 bug。
+做了什么 / 收益数字 / 验收清单全在 `CHANGELOG.md` 顶条与 `01-current-status.md` 顶部。
 
-### ⭐ 接手第一件事：**和用户讨论 M025**（用户明确交代）
+### 🚀 接手可以做的（按优先级，用户没催的别自己加戏）
 
-1. 🗣️🗣️ **M025（②工作流 canvas 瘦身）—— 用户要和你讨论，还没拍板。**
-   ⛔ **既不是"已否决"、也不是"可以直接做"；用户没拍板前别动代码。**
-   → **把 `06-memo-tasks.md` 的 M025 整条念给用户听**（那里按"是什么 / 值多少 / 我的建议 / 真要做怎么做"
-   四块写好了），然后等他定。我上一任的建议是**倾向不做**：
-   gzip 上线后最重用户 canvas 只剩 105KB，M025 还能省 ~31KB，而病根已被 1MB 缓冲堵死（告警 8→0）。
+1. **[小尾巴·可选] 多标签页完整时序补测**：本批只验到「两个标签页同时开同一个号 → 数据没丢」。
+   完整场景（标签页 A 编辑工作流 A、标签页 B 停在工作流 B，各自自动保存）没跑完（Playwright 工具超时）。
+   按设计它比以前更安全（B 手里 A 是"只发标题"→ 压根不会回写 A），**但没实测**。
+2. **[用户已拍板不做] M026**（单个工作流内的节点分页）：用户说"先不做，以后再说"。见 `06-memo-tasks.md`。
+3. **红字排查**：仍停在 v54 那一轮。⚠️ **用户交代：攒多了再查、别主动查、⛔ 别跑归档脚本。**
+   看实时数字用 `/admin?tab=failures`；方法论在 `07-red-error-triage-and-archive.md`。
+4. **[已拍板不主动做] M023**：给 `DATABASE_URL` 显式加 `connection_limit`，等它下次真犯病再取现场数据。
+5. 存量小问题见本文件下方「存量待办」。
+
+### ⭐ 本批留下的可复用工具（都在 `.runtime/`，不进 git）
+
+| 文件 | 干什么 |
+|---|---|
+| `measure57.js` | ⭐ 量「只发标题」的真实收益：按用户比较 老口径/新口径 的 raw + gzip 字节（docker cp 进 app 容器 `node measure57.js`） |
+| `wfcheck.sql` | ⭐⭐ **验"有没有删用户数据"的那条 SQL**（每工作流的 nodes/prompts/uploads/历史节点/counted/远端地址/卡住的 isRunning/字节数）。部署前后各跑一次逐行 diff |
+| `prodsync57.sh` / `syncali57.sh` / `pub57.sh` / `pub57prod.sh` | 正式服备份+对齐 / 静态同步阿里正式镜像 / 测试服发布信号 / 正式服发布信号+四域名健康检查 |
+| `prod-wf-baseline.txt` / `prod-wf-after.txt` | 正式服部署前后的 87 行快照（用 `Compare-Object` 逐行 diff 的原始数据） |
+
+⭐ **核对姿势**：`ssh ... "sudo docker exec <db容器> psql -U flashmuse -d flashmuse -t -A -F '|' -f /tmp/wfcheck.sql" > 快照.txt`
+然后 `Compare-Object (Get-Content 前) (Get-Content 后)`。**判据 = 任何一行的 prompts/uploads/hist_*/counted 都不许变少**。
+
+---
+
+## 历史：第二十一次会话末的待办（部署 + 详细测试）—— ✅ 已于第二十二次会话全部执行完毕
+
+> ✅ 下面原文只作为「一次"接手先部署上一任攒的活"的交接长什么样」留档，**不要再照着跑一遍**。
+
+## 🚀🚀 （已完成）当前状态：**本地有一批未部署改动（工作流按需加载，M025+）**（2026-07-30 第二十一次会话末）
+
+线上（正式服 = 测试服 = GitHub）仍是 **`v1.0.0.56`**；本地多了下面这批，**未部署、未 bump、未提交**。
+`npx tsc --noEmit` 全绿，**无 Prisma 迁移**。
+
+### ⭐ 接手第一件事：**部署这批（用户已明确授权）+ 做详细测试**
+
+> 🗣️ **用户 2026-07-30 原话意思**：「等做完下一个 AI 一起部署吧」「**详细测试等下个 AI 部署完再做**」。
+> → 上一任只做了**简单测试**（下面列了做过哪些）。**详细测试是你的活**，清单在下面「本批必须补测的」，
+> 全部内联在本文件里、**不需要翻别的文档、也不依赖 `.runtime/`（它 gitignore、可能已被清掉）**。
+> 部署顺序照铁律：`bump v56→v57` → 测试服 → 实机验收 → 原样同步正式服（不再 bump）。
+
+**改了 6 个文件**（做了什么见 `01-current-status.md` 顶部 / `CHANGELOG.md` 顶条）：
+
+```
+src/lib/workspace-workflows.ts        骨架版下发 + 三道防删 + 落地后改画布地址
+src/app/api/workspace-state/route.ts  活跃工作流判定 + 单工作流画布接口 + runningWorkflowIds
+src/lib/generation-jobs.ts            getRunningWorkflowIds + 成功后改画布地址
+src/lib/media-assets.ts               getSavedMediaOrigins（媒体归属的服务端权威）
+src/app/api/media-save-status/route.ts 返回 origin
+src/components/chat-workbench.tsx     按需补拉 + 占位/重试 + 三处遍历改成读服务端
+```
+
+⛔⛔ **本批唯一会造成不可逆损失的风险点：工作流画布被写成缺字段的版本 = 真删用户提示词。**
+上一任上了三道防线（见 `workspace-workflows.ts` 的 `upsertWorkspaceWorkflows` 注释），
+**验收时必须按下面第 1 条实测**，别只看页面正常。
+
+### ⭐⭐ 验收用的核对 SQL（**直接抄，别去找 `.runtime/`**）
+
+放服务器上跑（`docker exec <pg容器> psql -U <user> -d <db> -f /tmp/x.sql`，连接信息见 `03-deploy-and-servers.md`）。
+⚠️ PowerShell 吃引号，**写成 .sql 文件再 `docker cp` 进去跑**，别用 `psql -c`。
+
+```sql
+-- 「有没有删掉用户数据」+「有没有残留会过期的远端地址」一次看完
+SELECT u.email, w.title,
+  jsonb_array_length(COALESCE(w."canvasJson"->'nodes','[]'::jsonb)) AS nodes,
+  (SELECT count(*) FROM jsonb_array_elements(COALESCE(w."canvasJson"->'nodes','[]'::jsonb)) n
+    WHERE length(COALESCE(n->'data'->>'prompt','')) > 0) AS prompts,
+  (SELECT count(*) FROM jsonb_array_elements(COALESCE(w."canvasJson"->'nodes','[]'::jsonb)) n
+    WHERE n->'data'->'uploads' IS NOT NULL) AS uploads,
+  jsonb_array_length(COALESCE(w."canvasJson"->'historicalMediaNodes','[]'::jsonb)) AS hist_media,
+  jsonb_array_length(COALESCE(w."canvasJson"->'historicalTextNodes','[]'::jsonb)) AS hist_text,
+  jsonb_array_length(COALESCE(w."canvasJson"->'countedGeneratedUrls','[]'::jsonb)) AS counted,
+  (SELECT count(*) FROM jsonb_array_elements(COALESCE(w."canvasJson"->'nodes','[]'::jsonb)) n,
+        jsonb_array_elements_text(COALESCE(n->'data'->'images','[]'::jsonb)) img
+    WHERE img LIKE 'http%') AS remote_imgs,
+  (SELECT count(*) FROM jsonb_array_elements(COALESCE(w."canvasJson"->'nodes','[]'::jsonb)) n
+    WHERE n->'data'->>'videoUrl' LIKE 'http%') AS remote_videos,
+  (SELECT count(*) FROM jsonb_array_elements(COALESCE(w."canvasJson"->'nodes','[]'::jsonb)) n
+    WHERE n->'data'->>'isRunning' = 'true') AS stuck_running,
+  length(w."canvasJson"::text) AS bytes, w."updatedAt"
+FROM "WorkspaceWorkflow" w JOIN "User" u ON u.id = w."userId"
+WHERE w."deletedAt" IS NULL
+ORDER BY u.email, w.title;
+```
+
+**怎么判读**：
+- `prompts` / `uploads` / `hist_media` / `hist_text` / `counted` —— **部署前后必须完全一样**，少一条就是删数据了，**立刻回滚**。
+- **没打开过的工作流**，`bytes` 和 `updatedAt` 也应该**完全不变**（上一任本地实测就是纹丝不动）。
+- `remote_imgs` / `remote_videos` / `stuck_running` —— **应该都是 0**（这三个是 ① 那条改动要保证的）。
+
+### ⭐ 本批必须补测的（上一任只做了简单测试）
+
+1. ⭐⭐ **拿真实重度用户核对上面那条 SQL**（最重要）：**部署前先跑一次存档**，
+   然后上号切几个工作流 + 改点东西 + 等自动保存（约 5~10 秒），**再跑一次比对**。
+   ⭐ **必须拿 `ID_868181` 这种"多工作流大画布"的号验**，小号测不出效果。
+2. **`③ media-save-status 的 origin`**：本地**没能实机跑通**（本地网络快，服务端图片落地后前端手里
+   根本没有远端地址，那条轮询不触发）。上一任只用 SQL 验了数据源字段齐全。
+   **线上跨境慢，这条路径会真的走到** → 部署后去资产库确认：新生成的工作流图片
+   **名字是 `image_N_wM` 而不是"图片生成"这种兜底名，提示词也对**。
+3. **视频链路**：本批动了 `runVideoJob` 的成功分支（加了改画布地址），**本地没跑视频**。必须真跑一次生视频。
+4. **`①` 的并发兜底**：生成中不停切工作流/切面板，跑完用上面 SQL 看 `remote_imgs`/`stuck_running` 是否为 0。
+5. **打开非活跃工作流 → 节点上的提示词要正常显示**（最容易破的一条），且**点任意节点不能崩**
+   （React #310 老坑，见 `AGENTS.md` 里 `WorkflowSelectedNodeOverlay` 那条）。
+6. **工作流列表顺序不能乱**（"只打开不置顶"那个修复别回归）。
+7. **多标签页**：两个标签页开同一个账号，一个在工作流 A 编辑、另一个在工作流 B，互相不能覆盖。
+8. 后台 `/admin?tab=records` 里那次生成记录正常 + 常规最小巡检 6 项（`03-deploy-and-servers.md`）。
+
+### ⭐ 量收益的工具
+
+- `scripts/measure-workspace-state-size.mjs`（**已进 git**，用法在文件头注释）：挑重度用户、打印字节数。
+- 或直接在浏览器控制台：
+  `fetch('/api/workspace-state?summary=1&panel=chat').then(r=>r.text()).then(t=>console.log(t.length))`
+  再看 `workflowItems` 里 `canvasTrimmed` 的个数（应该是"总数 - 1"，只有活跃那个是完整版）。
+
+### ✅ 上一任做过的简单测试（都过了，0 控制台 error）
+
+切工作流自动补拉（41 条提示词全在）｜来回切 4 个不丢、顺序不乱、打开不置顶｜
+**重命名/删除没打开过的工作流**（标题生效、画布字节纹丝不动）｜真跑生图 4 次成功｜
+生成中切走别的工作流→仍发完整版→切回来正确回填｜对话流/资产库正常｜
+**核对数据库：提示词/uploads/历史节点条数与基线一字不差，没打开过的工作流连字节数和 updatedAt 都没变**。
+
+实测收益（本地 8 工作流/162 节点）：接口响应 **233KB → 137KB（-41%）**，骨架版画布 **117KB → 69KB**。
+
+### ⚠️ 上一任在**本地库**留下的测试痕迹（只影响本地，别当成 bug）
+
+用 `12424740@qq.com` 测的，本地 postgres（docker `flashmuse-postgres`）里：
+
+| 改了什么 | 现状 |
+|---|---|
+| `工作流_03` 加了 5 个节点（1 个空文本 + 4 张测试生图 `image_11_w3`~`image_15_w3`） | 保留，**没删**（是"生成回填正常"的活样本） |
+| `工作流_07` 加了 2 个空文本节点（原 43 → 45） | 保留 |
+| `工作流_06` 改名成"改名测试"过 | ✅ **已改回 `工作流_06`** |
+| `工作流_05` 删除过 | ✅ **已恢复**（`deletedAt` 清空） |
+
+⭐ 所以**本地的"基线数字"是改动后的**：01/20、02/7、03/10、04/52、05/1、06/5、07/45、08/29（节点数）。
+要在本地重新比对，**以现在的数字为基线**，别拿 `CHANGELOG` 里 162 节点那组老数字对。
+⛔ **线上数据一个字节都没动过**（本批从没部署过）。
+
+### ⚠️ 一个仍未解决的事（要不要做，用户还没定）
+
+**骨架版仍然是"每个工作流都发"**，只是每个变小了。上一任量过：骨架版每节点约 560 字节 →
+**1000 个工作流仍是几十 MB**。要彻底断根需要"其余工作流只发标题"，
+而本批的 ①②③ 已经把三处跨工作流遍历全部搬到服务端了 —— **地基已经打好，可以往下做**。
+⛔ 用户没拍板前别动。
+
+---
+
+## 历史：第二十次会话末的待办（M025 讨论）—— ✅ 已于第二十一次会话拍板并实现
+
+1. ✅ **M025 用户拍板"必须做"**（理由：以后一个人可能 100~1000 个工作流，一次性下发必卡），
+   并追加要求「单个工作流内的节点以后也要分页」（= 新备忘 M026，**用户明确说这次不做**）。
 2. **红字排查**：仍是 v54 那一轮，**用户交代攒多了再查、别主动查、⛔ 别跑归档脚本**。
    去 `/admin?tab=failures` 看实时数字（上次快照：正式服待排查 9 条 / 全是审核类 / 兜底桶 0 条）。
    方法论在 `07-red-error-triage-and-archive.md`。
 3. **[已拍板不主动做] M023**：给 `DATABASE_URL` 显式配 `connection_limit`，等它下次真犯病再取现场数据。
 4. 存量小问题见本文件下方「存量待办」。
+
+## ✅ 此前状态：**无待部署、无未推**（2026-07-30 第二十次会话末）
+
+**四方同步 = `v1.0.0.56`**（正式服 = 测试服 = 本地 = GitHub），四域名全 200，无 Prisma 迁移。
+
 
 ### ⭐ 本批留下的可复用工具（都在 `.runtime/`，不进 git）
 

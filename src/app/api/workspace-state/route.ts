@@ -7,8 +7,9 @@ import { getCreditSettings } from "@/lib/credits";
 import { migrateLegacyUserProfileFromWorkspace, stripUserProfileFromWorkspaceState } from "@/lib/user-profile";
 import { compactWorkspaceState, hasJsonChanged, replaceLegacyMediaUrls } from "@/lib/workspace-state-cleanup";
 import { DEFAULT_WORKSPACE_SESSION_LIMIT, getWorkspaceSessionMessages, stripSessionsFromWorkspaceState, upsertWorkspaceSessions, workspaceSessionRowToPayload } from "@/lib/workspace-sessions";
-import { getWorkspaceWorkflowPayloads, stripWorkflowsFromWorkspaceState, upsertWorkspaceWorkflows } from "@/lib/workspace-workflows";
+import { getWorkspaceWorkflowCanvas, getWorkspaceWorkflowPayloads, stripWorkflowsFromWorkspaceState, upsertWorkspaceWorkflows } from "@/lib/workspace-workflows";
 import { getMediaModelDisplayName, resolveAssetPreviewMeta } from "@/lib/media-asset-record";
+import { getRunningWorkflowIds } from "@/lib/generation-jobs";
 
 export const runtime = "nodejs";
 
@@ -537,6 +538,11 @@ function stripLegacyAssetsFromWorkspaceState(state: unknown) {
   return rest;
 }
 
+/** 取当前活跃工作流 id —— 只有它（以及后端还有生成任务在跑的）下发完整画布，其余只发标题。 */
+function getActiveWorkflowId(state: unknown) {
+  return isRecord(state) && typeof state.activeWorkflowId === "string" ? state.activeWorkflowId : "";
+}
+
 async function getWorkspaceStateWithoutLegacySessions(userId: string, state: unknown) {
   await migrateLegacyUserProfileFromWorkspace(userId, state);
   const cleanState = await applyLedgerUsageSummaries(userId, compactWorkspaceState(replaceLegacyMediaUrls(stripUserProfileFromWorkspaceState(state))));
@@ -554,6 +560,15 @@ export async function GET(request: Request) {
   const panel = params.get("panel");
   const limit = getPositiveInteger(params.get("limit"), DEFAULT_WORKSPACE_SESSION_LIMIT, 50) || DEFAULT_WORKSPACE_SESSION_LIMIT;
   const offset = getPositiveInteger(params.get("offset"), 0, 100000);
+
+  // ⭐ 按需拉取单个工作流的完整画布（"点哪个读哪个"）。列表响应里非活跃工作流**只发标题、不发画布**，
+  //   前端切到它时调这里补全，见 workspace-workflows.ts 顶部注释。
+  const workflowCanvasId = params.get("workflowCanvasId");
+  if (workflowCanvasId) {
+    const workflow = await getWorkspaceWorkflowCanvas(user.id, workflowCanvasId);
+    if (!workflow) return jsonError("工作流不存在", 404);
+    return Response.json({ workflow });
+  }
 
   if (summaryOnly && historyOnly) {
     const [rows, sessionsTotalCount] = await Promise.all([
@@ -625,10 +640,12 @@ export async function GET(request: Request) {
   if (summaryOnly && panel === "chat") {
     const shellState = getWorkspaceShellState(baseState);
     const activeSessionId = typeof shellState.activeSessionId === "string" ? shellState.activeSessionId : "";
+    // ⭐ 先拿"哪些工作流后端还在跑"（GenerationJob 表）：它决定了除活跃工作流之外还有谁要发完整画布。
+    const runningWorkflowIds = await getRunningWorkflowIds(user.id);
     const [rows, sessionsTotalCount, workflowItems] = await Promise.all([
       getOrderedWorkspaceSessionRows(user.id, offset, limit + 1),
       prisma.workspaceSession.count({ where: { userId: user.id, deletedAt: null } }),
-      getWorkspaceWorkflowPayloads(user.id, baseState),
+      getWorkspaceWorkflowPayloads(user.id, baseState, { activeWorkflowId: getActiveWorkflowId(shellState), runningWorkflowIds }),
     ]);
     const pageRows = rows.slice(0, limit);
     const activeRow = activeSessionId && !pageRows.some((row) => row.sessionId === activeSessionId)
@@ -646,6 +663,7 @@ export async function GET(request: Request) {
       state: {
         ...shellState,
         workflowItems,
+        runningWorkflowIds,
         activeSessionId: nextActiveSessionId,
         sessions: sessionRows.map((row) => workspaceSessionRowToPayload(row, row.sessionId === nextActiveSessionId, row.sessionId === nextActiveSessionId ? activeMessagePage?.messages : undefined, row.sessionId === nextActiveSessionId ? activeMessagePage : undefined)),
         sessionsHasMore: rows.length > limit + (activeRowWasFirstExtra ? 1 : 0),
@@ -667,10 +685,11 @@ export async function GET(request: Request) {
 
   if (summaryOnly) {
     const activeSessionId = isRecord(baseState) && typeof baseState.activeSessionId === "string" ? baseState.activeSessionId : "";
+    const runningWorkflowIds = await getRunningWorkflowIds(user.id);
     const [rows, sessionsTotalCount, workflowItems] = await Promise.all([
       getOrderedWorkspaceSessionRows(user.id, offset, limit + 1),
       prisma.workspaceSession.count({ where: { userId: user.id, deletedAt: null } }),
-      getWorkspaceWorkflowPayloads(user.id, workspace?.state),
+      getWorkspaceWorkflowPayloads(user.id, workspace?.state, { activeWorkflowId: getActiveWorkflowId(baseState), runningWorkflowIds }),
     ]);
     const pageRows = rows.slice(0, limit);
     const activeRow = activeSessionId && !pageRows.some((row) => row.sessionId === activeSessionId)
@@ -692,6 +711,7 @@ export async function GET(request: Request) {
     const state = {
       ...(isRecord(baseState) ? (stripFeedbackLogsForResponse(baseState) as Record<string, unknown>) : {}),
       workflowItems,
+      runningWorkflowIds,
       activeSessionId: nextActiveSessionId,
       sessions,
       sessionsHasMore: hasMore,
@@ -709,11 +729,15 @@ export async function GET(request: Request) {
   });
   if (allRows.length > 0) {
     const sessions = await applyLedgerUsageSummariesToSessions(user.id, allRows.map((row) => workspaceSessionRowToPayload(row, true)));
-    const workflowItems = await getWorkspaceWorkflowPayloads(user.id, workspace?.state);
-    return Response.json({ state: { ...(isRecord(baseState) ? (stripFeedbackLogsForResponse(baseState) as Record<string, unknown>) : {}), workflowItems, sessions } });
+    const runningWorkflowIds = await getRunningWorkflowIds(user.id);
+    const workflowItems = await getWorkspaceWorkflowPayloads(user.id, workspace?.state, { activeWorkflowId: getActiveWorkflowId(baseState), runningWorkflowIds });
+    return Response.json({ state: { ...(isRecord(baseState) ? (stripFeedbackLogsForResponse(baseState) as Record<string, unknown>) : {}), workflowItems, runningWorkflowIds, sessions } });
   }
 
-  if (baseState) return Response.json({ state: { ...(isRecord(baseState) ? (stripFeedbackLogsForResponse(baseState) as Record<string, unknown>) : {}), workflowItems: await getWorkspaceWorkflowPayloads(user.id, workspace?.state), sessions: [], sessionsHasMore: false, sessionsNextOffset: 0 } });
+  if (baseState) {
+    const runningWorkflowIds = await getRunningWorkflowIds(user.id);
+    return Response.json({ state: { ...(isRecord(baseState) ? (stripFeedbackLogsForResponse(baseState) as Record<string, unknown>) : {}), workflowItems: await getWorkspaceWorkflowPayloads(user.id, workspace?.state, { activeWorkflowId: getActiveWorkflowId(baseState), runningWorkflowIds }), runningWorkflowIds, sessions: [], sessionsHasMore: false, sessionsNextOffset: 0 } });
+  }
 
   return Response.json({ state: null });
 }

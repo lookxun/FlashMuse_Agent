@@ -496,6 +496,7 @@ type WorkspaceStatePayload = {
   assetFilter?: AssetFilter;
   assetScrollTopByFilter?: Partial<Record<AssetFilter, number>>;
   workflowItems?: WorkflowItem[];
+  runningWorkflowIds?: string[];
   activeWorkflowId?: string;
   assetGenerateJobs?: AssetGenerateJob[];
   activeSessionId?: string;
@@ -590,6 +591,12 @@ type WorkflowItem = {
   usageSummary?: UsageSummary;
   generatedMediaCounts?: { images: number; videos: number };
   canvas?: WorkflowCanvasState;
+  // ⭐ 服务端下发的「这个工作流只发了标题、没发画布」标记（除活跃工作流 + 后端还在生成的之外全是它）。
+  //   为 true 表示 `canvas` **根本不存在**：打开它之前必须先按需补拉完整画布（hydrateWorkflowCanvas）。
+  //   保存时 getPersistableWorkflowItems 会把 canvas 键整个去掉、只把这个标记回传给服务端，
+  //   服务端见到它就不写 canvasJson（三道防线之一）。
+  //   ⛔ 别在本地随手把它改成 false —— 那等于允许一份空画布覆盖数据库、真删用户整份画布。
+  canvasTrimmed?: boolean;
 };
 
 type ApiError = string | { message?: string };
@@ -842,6 +849,21 @@ type MediaSaveStatusJob = {
   type?: "image" | "video";
   status: "pending" | "downloading" | "saved" | "failed" | "expired";
   dimensions?: ImageDimensions;
+  // ⭐ 服务端给的归属信息（属于哪个工作流/节点、终生ID、源提示词、模型、生成参数）。
+  //   ⛔ 别改回"前端扫所有工作流的画布反查"：那会逼着接口下发全部工作流画布，工作流一多就卡。
+  //   来源是 MediaAsset（服务端在生成成功那一刻就建好了），比画布里的副本更全更准。
+  origin?: {
+    systemName?: string;
+    sourcePrompt?: string;
+    model?: string;
+    workflowId?: string;
+    workflowNodeId?: string;
+    conversationId?: string;
+    messageId?: string;
+    ratio?: string;
+    resolution?: string;
+    duration?: string;
+  };
 };
 
 function preloadImageUrl(url: string | undefined, timeoutMs = 30_000) {
@@ -977,6 +999,11 @@ function collectRemoteMediaUrls(sessions: WorkSession[], assets: AssetItem[], as
   assets.forEach((asset) => addRemoteUrl(asset.url));
   assetGenerateJobs.forEach((job) => addRemoteUrl(job.result.url));
   workflowItems.forEach((workflow) => {
+    // ⭐ 只扫**已加载完整画布**的工作流（用户真的打开过的那一两个）。
+    //   只发了标题的（没打开过）手里根本没有画布，也不用管：服务端在生成落地那一刻就已经把它画布里的
+    //   地址改成本地了（generation-jobs.ts → applyWorkflowJobResultToCanvas），比等浏览器开着更可靠。
+    //   ⛔ 别改回扫全部：那会逼着接口下发所有工作流的画布，工作流一多就卡。
+    if (workflow.canvasTrimmed) return;
     workflow.canvas?.nodes?.forEach((node) => {
       node.data.images?.forEach(addRemoteUrl);
       addRemoteUrl(node.data.videoUrl);
@@ -2205,6 +2232,19 @@ function getSessionMediaCounts(session?: WorkSession | null) {
   return { images: imageUrls.size, videos: videoUrls.size };
 }
 
+/**
+ * ⭐ 「这个工作流在生成中吗」的唯一判定（侧栏跳动点、入口动画三处共用）。
+ *
+ * · 已加载完整画布的工作流（用户真的打开过）→ 用它自己节点的 isRunning，最实时。
+ * · 只发了标题的工作流（从没打开过）→ 用服务端 runningWorkflowIds（GenerationJob 表）。
+ *   这样就**不需要它们的画布**，"只发标题"才能成立。
+ * ⛔ 别改回 `item.canvas?.nodes?.some(...)` 单条判断：只发标题后那些工作流手里没有画布，跳动点会永远不亮。
+ */
+function isWorkflowItemRunning(item: WorkflowItem, runningWorkflowIds: string[]) {
+  if (item.canvasTrimmed) return runningWorkflowIds.includes(item.id);
+  return Boolean(item.canvas?.nodes?.some((node) => node.data.isRunning));
+}
+
 function getWorkflowMediaCounts(workflow?: WorkflowItem | null) {
   const imageUrls = new Set<string>();
   const videoUrls = new Set<string>();
@@ -3418,7 +3458,20 @@ function keepSingleUntitledWorkflow(items: WorkflowItem[]) {
 }
 
 function getPersistableWorkflowItems(items: WorkflowItem[]) {
-  return keepSingleUntitledWorkflow(ensureWorkflowItems(items)).map(stripWorkflowItemTransientUploadState);
+  return keepSingleUntitledWorkflow(ensureWorkflowItems(items)).map(stripWorkflowItemTrimmedCanvas).map(stripWorkflowItemTransientUploadState);
+}
+
+/**
+ * ⭐⭐ 只发标题的工作流（canvasTrimmed，用户从没打开过）**连 canvas 键都不许回传**。
+ *
+ * 服务端那边有三道防线拦这种回写，但最稳的是"根本不发"：既省上行字节，
+ * 又让服务端的结构性防线（"没有 nodes 数组就不写"）有明确依据。
+ * ⛔ 别删这一步：手里没有画布却把 `{}` 或 `{nodes:[]}` 存回去 = 真删用户整份画布（不可逆）。
+ */
+function stripWorkflowItemTrimmedCanvas(item: WorkflowItem): WorkflowItem {
+  if (!item.canvasTrimmed) return item;
+  const { canvas: _canvas, ...rest } = item;
+  return rest;
 }
 
 // 上传态是运行时临时字段：uploadProgress(上传百分比) 与 uploadPreviewUrl(blob: 本地预览，刷新即失效)。
@@ -7680,6 +7733,14 @@ export function ChatWorkbench() {
   const [workflowItems, setWorkflowItems] = useState<WorkflowItem[]>([]);
   const [activeWorkflowId, setActiveWorkflowId] = useState("");
   const [workflowVisibleItemCount, setWorkflowVisibleItemCount] = useState(WORKFLOW_INITIAL_ITEM_COUNT);
+  // ⭐ 工作流画布按需加载：非活跃工作流下发的是骨架版（canvasTrimmed），切到它时补拉完整画布。
+  //   这里只记"补拉失败的 id"，用来在画布位置显示重试按钮；正在补拉不用 state（看 canvasTrimmed 即可）。
+  const [workflowCanvasLoadFailedIds, setWorkflowCanvasLoadFailedIds] = useState<string[]>([]);
+  // ⭐ 「哪些工作流正在生成中」由服务端给（查 GenerationJob 表），前端只读。
+  //   ⛔ 别再改回"扫所有工作流的 isRunning"：那会逼着接口下发全部工作流的画布（工作流一多就卡），
+  //      而且 isRunning 是持久化标记、后台跑完不会清，反而不准。详见 generation-jobs.ts 的 getRunningWorkflowIds。
+  const [runningWorkflowIds, setRunningWorkflowIds] = useState<string[]>([]);
+  const hydratingWorkflowIdsRef = useRef<Set<string>>(new Set());
   const [activeSessionId, setActiveSessionId] = useState("");
   const [loadingSessionIds, setLoadingSessionIds] = useState<Set<string>>(() => new Set());
   const [loadingOlderMessageSessionIds, setLoadingOlderMessageSessionIds] = useState<Set<string>>(() => new Set());
@@ -8248,6 +8309,39 @@ export function ChatWorkbench() {
     const nextActiveWorkflowId = activeWorkflowItems.some((item) => item.id === activeWorkflowId) ? activeWorkflowId : activeWorkflowItems[0]?.id ?? "";
     if (nextActiveWorkflowId !== activeWorkflowId) setActiveWorkflowId(nextActiveWorkflowId);
   }, [activePanel, activeWorkflowId, activeWorkflowItems]);
+
+  /**
+   * ⭐ 补拉单个工作流的完整画布（"点哪个读哪个"）。
+   * 打开工作台时只有活跃工作流（和后端还在生成的）带画布，其余**只有标题**。
+   * ⛔ 必须在渲染画布**之前**补齐：没有画布直接渲染会是一张空画布。
+   * 拉到之后清掉 canvasTrimmed → 这份画布才重新获得"可以写回数据库"的权威性。
+   */
+  const hydrateWorkflowCanvas = useCallback(async (workflowId: string) => {
+    if (!workflowId || hydratingWorkflowIdsRef.current.has(workflowId)) return;
+    hydratingWorkflowIdsRef.current.add(workflowId);
+    setWorkflowCanvasLoadFailedIds((current) => current.filter((id) => id !== workflowId));
+    try {
+      const { data } = await fetchJsonWithRetry<{ workflow?: { id?: string; canvas?: WorkflowCanvasState } }>(`/api/workspace-state?workflowCanvasId=${encodeURIComponent(workflowId)}`, { cache: "no-store" }, 2, 30_000);
+      const canvas = data.workflow?.canvas;
+      if (!canvas || typeof canvas !== "object") throw new Error("工作流画布数据无效");
+      setWorkflowItems((current) => current.map((item) => (item.id === workflowId ? { ...item, canvas, canvasTrimmed: undefined } : item)));
+      // 补拉到完整画布后，这个工作流的"在生成中"就以它自己的 isRunning 为准了，把服务端那份旧列表里的它去掉。
+      if (!(canvas.nodes ?? []).some((node) => node.data?.isRunning)) {
+        setRunningWorkflowIds((current) => (current.includes(workflowId) ? current.filter((id) => id !== workflowId) : current));
+      }
+    } catch (error) {
+      console.warn("[workflow] 加载工作流画布失败", { workflowId, error });
+      setWorkflowCanvasLoadFailedIds((current) => (current.includes(workflowId) ? current : [...current, workflowId]));
+    } finally {
+      hydratingWorkflowIdsRef.current.delete(workflowId);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (activePanel !== "workflow" || !activeWorkflow?.canvasTrimmed) return;
+    if (workflowCanvasLoadFailedIds.includes(activeWorkflow.id)) return;
+    void hydrateWorkflowCanvas(activeWorkflow.id);
+  }, [activePanel, activeWorkflow?.id, activeWorkflow?.canvasTrimmed, workflowCanvasLoadFailedIds, hydrateWorkflowCanvas]);
   const updateUploadedRowScrollState = useCallback(() => {
     const filesRow = uploadedFilesRowRef.current;
     const imagesRow = uploadedImagesRowRef.current;
@@ -8484,7 +8578,8 @@ export function ChatWorkbench() {
   const validReferenceNames = new Set([...getValidReferenceNames(assets, activeUploadedImages, activeConversationImageReferences), ...getUploadedMediaReferences(activeUploadedFiles).map((reference) => reference.name)]);
   const hasAnyConversationRunning = resolvingSessionIds.size > 0 || sessions.some((session) => getSessionPendingRequests(session).length > 0) || Boolean(modelInfoSessionId);
   const hasAnyAssetGenerating = assetGenerateJobs.some((job) => job.result.status === "generating");
-  const hasAnyWorkflowGenerating = activeWorkflowItems.some((workflow) => workflow.canvas?.nodes?.some((node) => node.data.isRunning));
+  // 判定口径统一在 isWorkflowItemRunning()：已加载画布的看自己的 isRunning，只发标题的看服务端 runningWorkflowIds。
+  const hasAnyWorkflowGenerating = activeWorkflowItems.some((workflow) => isWorkflowItemRunning(workflow, runningWorkflowIds));
   const hasAnyGenerationRunning = hasAnyConversationRunning || hasAnyAssetGenerating || hasAnyWorkflowGenerating;
   const characterValidReferenceNames = getValidReferenceNames(assets, [], []);
   const assetGenerateReferenceImages = assetGenerateReferenceDrafts[assetGenerateType] ?? [];
@@ -10003,6 +10098,7 @@ export function ChatWorkbench() {
           setHistoryVisibleSessionCount(Math.max(HISTORY_INITIAL_SESSION_COUNT, nextSessions.length));
           setNextConversationNumber(normalizedWorkspace.nextConversationNumber);
           setWorkflowItems(nextWorkflows);
+          setRunningWorkflowIds(Array.isArray(state.runningWorkflowIds) ? state.runningWorkflowIds.filter((id): id is string => typeof id === "string") : []);
           setNextWorkflowNumber(nextWorkflowNumberValue);
           setWorkflowVisibleItemCount(Math.max(WORKFLOW_INITIAL_ITEM_COUNT, Math.min(nextWorkflows.filter((item) => !isDeletedWorkflow(item)).length, WORKFLOW_INITIAL_ITEM_COUNT)));
           setActiveWorkflowId(nextActiveWorkflowId);
@@ -10395,21 +10491,21 @@ export function ChatWorkbench() {
             return message.images?.includes(job.remoteUrl) || message.imageResultSlots?.some((slot) => slot.type === "image" && slot.url === job.remoteUrl);
           });
           const fromAsset = assets.find((asset) => asset.url === job.remoteUrl);
-          const fromWorkflow = workflowItems.flatMap((workflow) => workflow.canvas?.nodes?.map((node) => ({ workflow, node })) ?? []).find(({ node }) => {
-            if (isVideo) return node.data.videoUrl === job.remoteUrl;
-            return node.data.images?.includes(job.remoteUrl);
-          });
+          // ⭐ 工作流归属改由服务端给（job.origin，来源 MediaAsset）。
+          //   ⛔ 别改回 workflowItems.flatMap 扫全部画布反查 —— 详见 MediaSaveStatusJob.origin 的注释。
+          const origin = job.origin;
+          const fromWorkflowId = origin?.workflowId;
           const message = fromMessage?.message;
           const session = fromMessage?.session;
-          const workflowName = fromWorkflow?.node.data.mediaSystemNames?.[job.remoteUrl] ?? (job.localUrl ? fromWorkflow?.node.data.mediaSystemNames?.[job.localUrl] : undefined);
-          const name = message?.mediaSystemNames?.[job.remoteUrl] ?? fromAsset?.systemName ?? fromAsset?.name ?? workflowName ?? fromWorkflow?.node.title;
+          const workflowName = fromWorkflowId ? origin?.systemName : undefined;
+          const name = message?.mediaSystemNames?.[job.remoteUrl] ?? fromAsset?.systemName ?? fromAsset?.name ?? workflowName;
           const promptDetail = isVideo ? message?.videoPromptDetails?.[job.remoteUrl] : message?.imagePromptDetails?.[job.remoteUrl];
-          const workflowPrompt = fromWorkflow ? getWorkflowNodeSourcePrompt(fromWorkflow.workflow, fromWorkflow.node) : undefined;
+          const workflowPrompt = fromWorkflowId ? origin?.sourcePrompt : undefined;
           const sourcePrompt = isVideo
             ? promptDetail?.prompt ?? message?.videoPrompts?.[job.remoteUrl] ?? message?.generationMeta?.originalPrompt ?? workflowPrompt ?? fromAsset?.sourcePrompt ?? message?.content
             : promptDetail?.prompt ?? message?.imagePrompts?.[job.remoteUrl] ?? workflowPrompt ?? fromAsset?.sourcePrompt ?? message?.content;
           const assetGenerationCategory = fromAsset && ["character_image", "scene_image", "prop_image", "shot_image"].includes(fromAsset.type) ? fromAsset.type : undefined;
-          const currentCategory = fromWorkflow
+          const currentCategory = fromWorkflowId
             ? isVideo ? "workflow_videos" : "workflow_images"
             : fromAsset?.librarySource === "asset_generation" && assetGenerationCategory
             ? fromAsset.type
@@ -10427,10 +10523,10 @@ export function ChatWorkbench() {
             promptSource: "generated",
             conversationId: session?.id ?? fromAsset?.sessionId,
             messageId: message?.id ?? fromAsset?.messageId,
-            workflowId: fromWorkflow?.workflow.id,
-            workflowNodeId: fromWorkflow?.node.id,
-            model: fromWorkflow?.node.data.model,
-            settings: fromWorkflow ? { ratio: fromWorkflow.node.data.ratio, resolution: fromWorkflow.node.data.resolution, duration: fromWorkflow.node.data.duration } : undefined,
+            workflowId: fromWorkflowId,
+            workflowNodeId: origin?.workflowNodeId,
+            model: fromWorkflowId ? origin?.model : undefined,
+            settings: fromWorkflowId ? { ratio: origin?.ratio, resolution: origin?.resolution, duration: origin?.duration } : undefined,
           }];
         });
 
@@ -15418,7 +15514,7 @@ export function ChatWorkbench() {
                     <div className="yinzao-chat-scroll yinzao-scrollbar-hover min-h-0 flex-1 space-y-[3px] overflow-y-auto pr-1">
                       {activePanel === "workflow" ? visibleWorkflowItems.map((item) => {
                         const isMenuOpen = openWorkflowMenuId === item.id;
-                        const isWorkflowRunning = Boolean(item.canvas?.nodes?.some((node) => node.data.isRunning));
+                        const isWorkflowRunning = isWorkflowItemRunning(item, runningWorkflowIds);
 
                         return (
                           <div key={item.id} className="relative">
@@ -15519,7 +15615,7 @@ export function ChatWorkbench() {
             ) : <div className="yinzao-chat-scroll yinzao-scrollbar-hover -mr-3 min-h-0 flex-1 space-y-[3px] overflow-y-auto pb-10 pl-px pr-3 pt-px">
               {activePanel === "workflow" ? visibleWorkflowItems.map((item) => {
                 const isMenuOpen = openWorkflowMenuId === item.id;
-                const isWorkflowRunning = Boolean(item.canvas?.nodes?.some((node) => node.data.isRunning));
+                const isWorkflowRunning = isWorkflowItemRunning(item, runningWorkflowIds);
 
                 return (
                   <div key={item.id} className="relative">
@@ -15977,6 +16073,19 @@ export function ChatWorkbench() {
           ) : activePanel === "workflow" ? (
             activeWorkflow ? (
               <>
+                {activeWorkflow.canvasTrimmed ? (
+                  // 画布还没补拉回来 → 先不渲染画布（否则会是一张空画布）。
+                  <div className="flex h-full w-full items-center justify-center">
+                    {workflowCanvasLoadFailedIds.includes(activeWorkflow.id) ? (
+                      <div className="flex flex-col items-center gap-3">
+                        <div className="text-[13px] text-[#666]">工作流加载失败，请检查网络后重试。</div>
+                        <button type="button" onClick={() => { void hydrateWorkflowCanvas(activeWorkflow.id); }} className="flex h-9 items-center rounded-lg bg-[#111] px-4 text-[13px] font-medium text-white transition hover:bg-[#333]">重新加载</button>
+                      </div>
+                    ) : (
+                      <div className="text-[13px] text-[#999]">工作流加载中…</div>
+                    )}
+                  </div>
+                ) : (
                 <WorkflowCanvas
                   key={activeWorkflow.id}
                   workflowId={activeWorkflow.id}
@@ -16055,7 +16164,7 @@ export function ChatWorkbench() {
                   onChange={(canvas, meta) => updateWorkflowCanvas(activeWorkflow.id, canvas, meta)}
                   onCredit={applyWorkflowCreditResult}
                 />
-                {inputReminder ? (
+                )}                {inputReminder ? (
                   <div className="pointer-events-none absolute bottom-[108px] left-1/2 z-[10000] -translate-x-1/2">
                     <ReminderToast reminder={inputReminder} />
                   </div>

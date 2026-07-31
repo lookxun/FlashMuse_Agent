@@ -161,3 +161,59 @@ export async function canonicalizeSavedMediaUrl(userId: string, localUrl: string
     ]);
   }
 }
+
+/**
+ * ⭐ 「这个落地后的媒体属于哪个工作流/哪个节点、叫什么名字、源提示词是什么」的服务端权威来源。
+ *
+ * 以前这是前端**扫一遍所有工作流的所有节点**用 URL 反查出来的（chat-workbench.tsx 的 fromWorkflow），
+ * 那是按需加载的最后一道阻力：为了这一个反查，接口必须把所有工作流的画布都下发。
+ *
+ * 而服务端的数据本来就更全也更准：`finalizeImageJobAsset` / `finalizeVideoJobAsset`
+ * （generation-jobs.ts）在任务成功那一刻就已经把 MediaAsset 建好了，
+ * workflowId / workflowNodeId / systemName(终生ID) / sourcePrompt / model / 生成参数全在里面，
+ * 而且 canonicalizeSavedMediaUrl 已经把它的 url 从远端改成了本地。
+ * ⛔ 别改回前端反查：画布里的 mediaSystemNames 只是这份记录的副本，工作流没打开时前端根本没有它。
+ */
+export async function getSavedMediaOrigins(userId: string, localUrls: string[]) {
+  const normalized = Array.from(new Set(localUrls.map((url) => normalizeMediaAssetUrl(url)).filter(Boolean)));
+  if (normalized.length === 0) return new Map<string, SavedMediaOrigin>();
+  const rows = await prisma.mediaAsset.findMany({
+    where: { userId, normalizedUrl: { in: normalized }, archivedAt: null },
+    select: {
+      normalizedUrl: true, systemName: true, initialName: true, sourcePrompt: true, model: true,
+      workflowId: true, workflowNodeId: true, conversationId: true, messageId: true, generationSettings: true,
+    },
+  });
+  const map = new Map<string, SavedMediaOrigin>();
+  for (const row of rows) {
+    const settings = row.generationSettings && typeof row.generationSettings === "object" && !Array.isArray(row.generationSettings)
+      ? row.generationSettings as Record<string, unknown>
+      : undefined;
+    map.set(row.normalizedUrl, {
+      systemName: row.systemName ?? row.initialName ?? undefined,
+      sourcePrompt: row.sourcePrompt ?? undefined,
+      model: row.model ?? undefined,
+      workflowId: row.workflowId ?? undefined,
+      workflowNodeId: row.workflowNodeId ?? undefined,
+      conversationId: row.conversationId ?? undefined,
+      messageId: row.messageId ?? undefined,
+      ratio: typeof settings?.ratio === "string" ? settings.ratio : undefined,
+      resolution: typeof settings?.resolution === "string" ? settings.resolution : undefined,
+      duration: typeof settings?.duration === "string" ? settings.duration : undefined,
+    });
+  }
+  return map;
+}
+
+export type SavedMediaOrigin = {
+  systemName?: string;
+  sourcePrompt?: string;
+  model?: string;
+  workflowId?: string;
+  workflowNodeId?: string;
+  conversationId?: string;
+  messageId?: string;
+  ratio?: string;
+  resolution?: string;
+  duration?: string;
+};

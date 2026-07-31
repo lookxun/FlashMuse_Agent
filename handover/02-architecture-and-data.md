@@ -31,6 +31,69 @@
 
 **数据权威**：媒体固定事实→`MediaAsset`；用户可变状态→`UserAssetState`；对话→`WorkspaceSession+Message`；计费→`CreditLedger`。新生成/上传媒体统一走 `src/lib/media-asset-record.ts`（`buildMediaAssetRecord`/`classifyAsset`）入库；出生即冻结，之后只有改名/移动/删除（只写 `UserAssetState`）。
 
+## ⭐⭐ 工作流的下发与保存：「点哪个读哪个」（2026-07-30 第二十一次会话加，改这块前必读）
+
+**存储早就是分开的**（这一点历史交接文档没说清、导致上一任误判过）：
+`WorkspaceSession` 一行一个对话、`WorkspaceMessage` **一行一条消息**、`WorkspaceWorkflow` 一行一个工作流。
+而且 `upsertWorkspaceWorkflows` **本来就是逐行 upsert**（`workspace-workflows.ts:213` 注释：
+"客户端没带的工作流绝不删"）→ **"少发一个工作流会丢一个工作流"这种事不会发生。**
+
+### 下发（GET）
+
+| 哪些工作流 | 发什么 |
+|---|---|
+| **活跃的那一个**（`state.activeWorkflowId`，空/失效则取 `updatedAt` 最新那个兜底） | 完整画布 |
+| **画布里有节点 `isRunning` 的**（切走后回填结果要用） | 完整画布 |
+| 其余全部 | **骨架版** + `canvasTrimmed: true` |
+
+**骨架版 = 去掉这 4 个字段，节点和连线一个不少**（`trimWorkflowCanvasForList`）：
+`data.prompt`、`data.uploads`、`historicalMediaNodes`、`historicalTextNodes`。
+⛔ **往这份清单加字段前，必须 grep 确认 `chat-workbench.tsx` 里没有跨工作流代码读它**
+（已核实：`data.uploads` 只有画布组件读；`historicalMediaNodes` 那两处只是原样搬运）。
+⛔ **`countedGeneratedUrls` / `generatedMediaCounts` 故意不剥** —— 媒体累计计数的自愈逻辑
+（`chat-workbench.tsx:12320`）靠"它是否存在"判断要不要重新播种，剥掉会把累计数字重置；才 4KB，不值得。
+
+前端切到骨架版工作流时调 **`GET /api/workspace-state?workflowCanvasId=xxx`** 补拉完整画布，
+补拉完成前画布位置显示「工作流加载中…」（失败给「重新加载」）。
+⛔ **必须补齐后再渲染** —— 骨架版直接渲染会让节点提示词框显示成空的。
+
+### ⛔⛔ 保存（PUT）：三道"绝不覆盖"的防线
+
+前端自动保存是**把手里全部工作流打包发一遍**，而改节点是 `{...node.data, 改的字段}` 展开回写
+→ **手里是骨架版、存回去就等于真删用户的提示词**（不可逆）。`upsertWorkspaceWorkflows` 里三道：
+
+1. 客户端回传 `canvasTrimmed: true` → 这份画布没权威性，**不写 `canvasJson`**；
+2. **不依赖客户端的兜底**：这份画布与「库里画布摘成骨架版」**逐字段相等**（`stableStringify`，键顺序无关）
+   → 用户根本没动过它，同样不写。**这一道是标记丢失时的保命符。**
+3. `mergeWorkflowCanvasMedia` 里的**字段级恢复**：客户端**整个 `prompt` 键都没带**（严格 `undefined`）
+   而库里有内容 → 从库补回。
+   ⭐ **只认 `undefined`**：用户真清空提示词时前端传 `""`，那种必须让它覆盖，否则用户永远清不掉。
+
+⛔ **三道都只跳过 `canvasJson`**，标题 / 编号 / `deletedAt` 照常写 ——
+否则在列表里**重命名、删除一个没打开过的工作流会失效**（这两条都实测过）。
+
+### ⭐ 跨工作流的信息一律服务端算，前端只读
+
+| 要什么 | 服务端权威 | ⛔ 别改回 |
+|---|---|---|
+| 有没有工作流在生成 | `generation-jobs.ts` 的 `getRunningWorkflowIds()`（查 `GenerationJob` `status IN ('queued','running')`），响应给 `runningWorkflowIds` | 扫所有工作流的 `isRunning`（它是持久化标记、后台跑完不清，反而不准） |
+| 这张图属于哪个工作流哪个节点 / 叫什么 / 源提示词 | `media-assets.ts` 的 `getSavedMediaOrigins()`（读 `MediaAsset`），`/api/media-save-status` 返回 `origin` | 扫所有工作流用 URL 反查（画布里的 `mediaSystemNames` 只是 `MediaAsset` 的副本） |
+| 远端图片地址换成本地地址 | `workspace-workflows.ts` 的 `applyWorkflowJobResultToCanvas()`，生成落地那一刻服务端直接改画布 | 前端轮询 `/api/media-save-status` 扫全部工作流再整份存回（**那样只在用户开着页面时才换，关了页面就留着会过期的地址 = 死链**） |
+
+⭐ `applyWorkflowJobResultToCanvas` 换地址时**必须同步换 `mediaSystemNames` / `imageDimensions` 的键**
+（它们以 url 为键），否则名字和尺寸会对不上；并清掉 `isRunning`/`taskId` 等等待态。
+⭐ 它属于"服务端直接改一个会被客户端整体覆盖的字段"→ 配了并发兜底：`mergeWorkflowCanvasMedia` 里
+客户端还挂着 `http(s)://` 而 job 已落地 → 一律用 job 的本地地址。
+
+### ⚠️ 两个必须知道的数字与限制
+
+- **骨架版每节点约 560 字节** → 8 工作流/162 节点时骨架版合计 69KB，但 **1000 个工作流 × 50 节点 ≈ 28MB**。
+  即**本方案降低了常数、没有消除线性增长**。彻底断根 = 其余工作流只发标题
+  （三处遍历已搬走、地基已备好），⛔ **但用户还没拍板。**
+- **`WorkspaceWorkflow` 的所有节点挤在一个 `canvasJson` 字段里** → 数据库层面**没法"只取 20 个节点"**。
+  要做"单个工作流内节点分页"（M026）**必须先把节点拆成一张表**（要 Prisma 迁移 + 迁存量数据），
+  而且得先定"画布只加载一部分节点时连线怎么画"的产品行为。**用户明确说先不做。**
+
 ## ⭐ 帐号功能开关（后台「帐号功能管理」，2026-07-30 加）
 
 后台 `/admin?tab=account-features`。三个开关**存储位置各不相同**，改相关功能前先认清：

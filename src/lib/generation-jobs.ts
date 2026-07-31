@@ -18,6 +18,7 @@ import { upsertVideoManifestEntry } from "@/lib/video-manifest";
 import { saveDataUrlAsset } from "@/lib/local-assets";
 import { normalizeReferenceAssetUrl, normalizeReferenceAssetUrls } from "@/lib/reference-asset-url";
 import { resolveUnlockLimitsForUser } from "@/lib/account-features";
+import { applyWorkflowJobResultToCanvas } from "@/lib/workspace-workflows";
 
 // 编辑类功能（去背景/高清/快捷编辑/橡皮/编辑元素）失败时，尽量透出真实原因（中文优先）。
 // error-message 已把常见上游报错（如"当前模型不支持所请求的参数"）映射成中文；这里作为兜底文案，
@@ -401,6 +402,25 @@ export async function getActiveGenerationJobs(userId: string, sinceMs = 6 * 60 *
   `;
 }
 
+/**
+ * ⭐ 「哪些工作流正在生成中」的唯一权威来源（服务端算，前端只读）。
+ *
+ * 以前这是前端**扫一遍所有工作流的所有节点**找 `data.isRunning` 得出的
+ * （chat-workbench.tsx 的 hasAnyWorkflowGenerating），这带来两个问题：
+ *   ① 逼着接口把所有工作流的画布都下发（工作流一多就卡，这是按需加载的最后一道阻力）；
+ *   ② `isRunning` 是画布里的**持久化标记**，你切走后后台生成完了它也不会清 →
+ *      侧边栏那颗跳动的点会一直亮着，其实早就跑完了。
+ * 改由服务端查 GenerationJob 表后，两个问题一起没了，而且比前端准。
+ */
+export async function getRunningWorkflowIds(userId: string): Promise<string[]> {
+  const rows = await prisma.$queryRaw<Array<{ workflowId: string | null }>>`
+    SELECT DISTINCT "workflowId" FROM "GenerationJob"
+    WHERE "userId" = ${userId} AND "status" IN ('queued','running') AND "workflowId" IS NOT NULL
+    LIMIT 200
+  `;
+  return rows.map((row) => row.workflowId).filter((id): id is string => Boolean(id));
+}
+
 // ---- image helpers (mirrors src/app/api/image/route.ts, kept in sync) ----
 
 function isAssetImageCreditSource(source: string | null | undefined) {
@@ -704,6 +724,10 @@ async function localizeAndFinalizeImages(job: GenerationJobRow, deliveredImages:
   const reservedNames = (job.reservedNames ?? []).slice(0, finalImages.length);
   await finalizeImageJobAsset({ ...job, reservedNames }, finalImages, hasFinalDimensions ? finalImageDimensions : undefined);
   await markJobSucceeded(job.id, { resultUrls: finalImages, reservedNames, resultDimensions: hasFinalDimensions ? finalImageDimensions : undefined, usage, credit });
+  // ⭐ 工作流：直接把画布里那个节点的地址改成本地地址（不再等浏览器开着才换，也避免留下会过期的远端地址）。
+  if (job.workflowId && job.workflowNodeId) {
+    await applyWorkflowJobResultToCanvas({ userId: job.userId, workflowId: job.workflowId, workflowNodeId: job.workflowNodeId, kind: "image", urls: finalImages, reservedNames, dimensions: hasFinalDimensions ? finalImageDimensions : undefined });
+  }
   void recordGenerationEvent({ userId: job.userId, requestId: job.requestId, kind: "image", creditSource, model: job.model ?? undefined, provider: job.provider ?? undefined, status: "success", durationMs: Date.now() - startedAt, referenceImageCount: referenceImages.length });
   void appendGenerationDiagnosticsLog({ event: "image-job-success", requestId: job.requestId, conversationId: job.conversationId ?? undefined, userId: job.userId, mode: "image", model: job.model ?? undefined, prompt: job.prompt ?? undefined, settings, durationMs: Date.now() - startedAt, extra: { requestedImageCount, returnedImageCount: finalImages.length, providerReturnedImageCount, finalImages: finalImages.map((url, index) => summarizeGeneratedReference(url, index)), dimensions: finalImageDimensions, credit, isResume } });
 }
@@ -907,6 +931,10 @@ export async function runVideoJob(job: GenerationJobRow) {
       const credit = await chargeCredits(job.userId, "video", usage, { conversationId: job.conversationId ?? undefined, conversationTitle: job.conversationTitle ?? undefined, requestId: job.requestId, label: "视频生成", model: job.model ?? undefined, videoCount: 1, metadata: { ...(job.metadataJson ?? {}), settings: job.settingsJson, ratio: job.settingsJson?.ratio, resolution: job.settingsJson?.resolution, duration: job.settingsJson?.duration, originalPrompt: job.prompt, mediaUrls: [deliveredUrl], remoteMediaUrls: [videoUrl], posterUrl: saveJob.posterUrl, delivered: true, savedLocal: true, localSaveStatus: "saved", mediaSaveJobId: saveJob.id } });
       await finalizeVideoJobAsset(job, deliveredUrl, saveJob.posterUrl, saveJob.dimensions);
       await markJobSucceeded(job.id, { resultUrls: [deliveredUrl], reservedNames: job.reservedNames ?? [], posterUrl: saveJob.posterUrl, usage: withChargedUsage(usage, credit), credit });
+      // ⭐ 与图片同理：工作流画布里那个节点的视频地址直接改成本地地址。
+      if (job.workflowId && job.workflowNodeId) {
+        await applyWorkflowJobResultToCanvas({ userId: job.userId, workflowId: job.workflowId, workflowNodeId: job.workflowNodeId, kind: "video", urls: [deliveredUrl], reservedNames: job.reservedNames ?? [], posterUrl: saveJob.posterUrl });
+      }
       void recordGenerationEvent({ userId: job.userId, requestId: job.requestId, kind: "video", creditSource: job.creditSource ?? undefined, model: job.model ?? undefined, provider: job.provider ?? undefined, status: "success" });
       return;
     }
