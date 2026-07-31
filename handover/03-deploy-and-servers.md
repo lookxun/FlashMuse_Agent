@@ -28,12 +28,14 @@
 - ⭐⭐ **每部署完一台，必须真上号点一遍看有没有崩（2026-07-29 用户加的硬性要求）**：
   **curl 200 / 版本号头对了 ≠ 没崩**。测试服部署完要上号，正式服部署完**也要上号**，**发现崩了立刻修**（能回滚就先回滚，保证用户还能用）。
   最小巡检 6 项（每台都做，用 Playwright 或手点都行）：
-  1. 登录能进（测试服 `12424740@qq.com`/`dragonstar`；正式服用自己号）
+  1. 登录能进（**三个环境一律 `12424740@qq.com`/`dragonstar`**，见本文件末尾「巡检/测试用哪个号」）
   2. **对话模式**列表 + 历史消息渲染正常
   3. **工作流模式** tldraw 画布能打开、**点一下任意节点不变「Something went wrong」**（React #310 老坑）
   4. **资产库**能开、缩略图出得来
   5. **真跑一次生图**（成功出图 + 积分扣掉）；改过视频链路时**再真跑一次生视频**
+     ⭐ 会留痕的实验**新建一个工作流**来做（用户交代"测试内容不要删"）
   6. **后台 `/admin`** 能进、`browser_console_messages` 里 **0 error**（hydration mismatch #418 老坑）
+     ⭐ 后台是唯一允许用 `lookxun@163.com` 的地方（要管理员权限），**只看页面、别在上面生成东西**
 
 ---
 
@@ -42,8 +44,9 @@
 - **入口**：`http://101.37.129.164:8080/`（阿里，IP）或 `https://staging-static.venusface.com/`（阿里 DNS + Let's Encrypt 443）；后台 `/admin`。
 - **架构**：腾讯 `/opt/flashmuse-staging/` 独立 Docker 栈（容器 `flashmuse-staging-staging-{app,db,nginx}-1`，宿主 5001）+ 阿里 `/var/www/flashmuse-static-test/` 独立镜像（nginx 8080）+ 独立 ali-sync（`sync-ali-test.sh`）。测试库独立、`staging-db`，`psql -U flashmuse -d flashmuse`。
 - **测试账号（明文；密码都 `dragonstar`；登录页选"密码登录"→填邮箱点"提交邮箱"→填密码）**：
-  - **`12424740@qq.com`（主测试号，普通用户 ID_535317）—— 模拟真实用户优先用它**，有资产。
-  - `lookxun@163.com`（白名单/管理员 ID_176407）、`176107103@qq.com`（白名单）——**不**用来做真实模拟。
+  - ⭐⭐ **`12424740@qq.com`（主测试号，普通用户 ID_535317）—— 一切测试只用它**（本地/测试服/正式服都有这个号）。
+  - `lookxun@163.com`（白名单/管理员 ID_176407）、`176107103@qq.com`（白名单）——
+    ⛔ **只用于登后台 `/admin`**，禁止在上面做前台测试/生成（`lookxun@163.com` 是**用户自己的号**）。
   - 白名单走 env `ADMIN_EMAILS`。**测试内容不要删**（用户交代）。
 - 测试服 env 差异（`/opt/flashmuse-staging/data/.env.local`）：`NEXT_PUBLIC_IS_TEST=true`（build arg，显示测试服标识）、`FORCE_INSECURE_AUTH_COOKIE=true`、`NEXT_PUBLIC_PRIMARY_BASE_URL`+`NEXT_PUBLIC_UPLOAD_BASE_URL`=`https://staging-static.venusface.com`、`ALI_SYNC_DEST_ROOT=/var/www/flashmuse-static-test/generated`。⚠️ 拼参考图 URL 的 base 优先用 `NEXT_PUBLIC_PRIMARY_BASE_URL`。
 
@@ -146,11 +149,21 @@
 - `up --build` 之后 → 看 **HTML 里的版本号**（`curl -s http://127.0.0.1:5001/ | grep -o 'v1\.0\.0\.[0-9]*'`）；
 - 最后一步 sed + force-recreate 之后 → 才看 **`x-app-version` 响应头**（它发的是运行时 env `PUBLISHED_APP_VERSION`）。
 
-### ⭐ 正式服上号巡检用哪个号
+### ⭐⭐ 巡检/测试用哪个号（2026-07-31 用户拍板，⛔ 别再看旧口径）
 
-- 后台/前台都用白名单管理员 **`lookxun@163.com`**（正式服用户 ID = **`ID_415958`**，
-  grep 正式服日志找自己的操作记录时用这个 ID）。密码与测试服那套一致，**不在文档里写明文**。
-- ⚠️ 正式服巡检会**真花积分**（本次生图 3 分 + 生视频 59 分）。这是必要成本，用户已认可"必须真跑一次"。
+🗣️ **用户原话意思**：「以后本地，测试服和正式服都用 `12424740@qq.com` 这个号测试，这个记录清楚让后面的 AI 不要弄错。」
+
+- **本地 / 测试服 / 正式服，一律用 `12424740@qq.com`**（密码 `dragonstar`，三个库里都有这个号；
+  测试服 ID_535317）。它是**普通用户**，正好也最接近真实用户视角。
+- ⛔⛔ **禁止再用 `lookxun@163.com` 做前台巡检 / 真跑生图生视频** —— 那是**用户自己的号**，
+  在上面加节点、烧积分 = 动用户的数据和钱。它**只**用于"必须管理员权限"的场合（登后台 `/admin` 看页面）。
+- ⭐ **测试内容不要删**（用户长期交代）→ 要做会留痕的实验，**新建一个工作流/对话**来做，别动现有的。
+- ⚠️ 正式服真跑生成会花真钱，这是"部署完必须真上号验一遍"的必要成本（用户已认可），
+  但**必须花在测试号上、且在交接文档里写清留下了什么痕迹**。
+
+**已知留在正式服 `lookxun@163.com` 上的测试痕迹（2026-07-31，下一任别当成用户自己的数据）**：
+`工作流_01` 从 3 个节点变成 5 个（多了 `image_3_w1` 一杯咖啡 + `video_1_w1` 白猫打滚），共扣 47 积分。
+用户没让删，先留着；要删只删这两个节点。
 
 
 ## GitHub
