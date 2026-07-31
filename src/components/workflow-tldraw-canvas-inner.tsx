@@ -967,6 +967,16 @@ function mergeWorkflowUploadItems(uploads: WorkflowUploadItem[]) {
   return merged;
 }
 
+// 一个节点的「输出」= 可以顺着连线交给下游的媒体。连线进来的缩略图、「从当前画布选择」弹窗都用这一份。
+// ⭐⭐ 产品规则（2026-08-01 用户确认、以后也不会变）：**工作流一个生成节点永远只出一张图 / 一个视频。**
+//    工作流没有"生成数量"选项（那是对话流才有的），代码上有三处保证：
+//    ① 发给 /api/image 的请求写死 count: 1  ② applyImageNodeResult 里 images 是覆盖不是追加
+//    ③ 上传/资产还原建节点都是 images: [url]，一次拖 N 张图是建 N 个独立节点。
+//    → 所以下面 node.data.images 虽然是 string[]，**实际长度恒为 1**，这里的 .map() 只是写法兼容。
+// ⭐ 正因如此，「从当前画布选择」用"连接整个源节点"（而不是复制单张图）是安全的 ——
+//    不存在"源节点里有 4 张、结果一起连进来"的情况。详见 handover/04-product-rules.md。
+// ⛔ 若哪天真要做"一次生成多张"，必须先回去读那条产品规则：连线粒度问题会浮现，
+//    需要给 edge 加 sourceItemIndex，且所有"顺着连线取输入"的地方都要跟着改。
 function getWorkflowNodeOutputUploadItems(node: WorkflowNode): WorkflowUploadItem[] {
   if (node.kind === "image") {
     return (node.data.images ?? []).map((url, index) => ({

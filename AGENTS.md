@@ -4,7 +4,24 @@
 This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code. Heed deprecation notices.
 <!-- END:nextjs-agent-rules -->
 
+# 铁律：判断「某个字段实际会不会有多个」要看写入方，不能只看 TypeScript 类型（2026-08-01 加）
+
+⛔⛔ 2026-08-01 我看到工作流节点的 `data.images` 是 `string[]`，就按"数组可能有多项"
+**推出了一个根本不存在的问题**（"源节点里有 4 张图会一起连进来"），还把它当"待办"报给了用户。
+🗣️ **用户当场纠正**：「一个节点只能生一个视频或一张图片」——查证后他是对的。
+
+- ⭐ **正解：去看写入方**。本次三处一看就清楚：
+  ① 发给 `/api/image` 的请求写死 **`count: 1`**；
+  ② `applyImageNodeResult` 里 `images` 是**覆盖不是追加**；
+  ③ `handleUploadNodeFiles` 一次拖 N 张图是**建 N 个独立节点**、不是一个节点装 N 张。
+  → `data.images` **实际长度恒为 1**，那个 `.map()` 只是写法兼容。
+- ⛔ **类型只说明"能装多个"，不说明"业务上会装多个"。** 同理别只看 `?`（可选）就假设"经常是空"。
+- ⭐ 这和另一条老教训同源：**「交接文档/表格里的描述可能已过期，动手前先用数据或代码验前提」**
+  （历史上"6 处跨工作流遍历"实际只有 3 处，也是这么翻出来的）。
+- ⭐ **报"待办/风险"之前先问自己：这个场景在产品上真的会发生吗？** 能举出具体的用户操作路径才算成立。
+
 # 铁律：测试服和正式服「关键的东西」必须一样，基础设施优化要两服都做（2026-08-01 用户拍板）
+
 
 🗣️ **用户原话意思**：「我做测试服就是为了提前测试，也就是**测试服和正式服关键的东西一定要一样**，
 这样我们在测试服上测试好的东西到正式服就会最大限度不出问题。」
