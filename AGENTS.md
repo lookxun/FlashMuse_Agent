@@ -28,6 +28,35 @@ This version has breaking changes — APIs, conventions, and file structure may 
   （2026-08-02 的排除名单用的是前缀匹配版，**当前线上没有受影响的路由，是有意不单独为它发版**；
   下次谁动 `middleware.ts` 顺手评估要不要换成整段匹配。）
 
+# 铁律⭐⭐：报"根因"之前，先把那个 `if` 的条件抄出来逐项验证（2026-08-02 加，代价惨痛）
+
+2026-08-02 排查"工作流节点传参考图静默挂不上"，**连续两次归因都是错的**，两次的共同点是
+**从"现象 + 记忆里一闪而过的 tip 文案"反推是哪条分支**，而不是**去读那条分支的判据条件**：
+
+1. 第一次说是"服务端 dedup（`duplicate:true`）导致" → 错。反例：能挂上的那张图，POST **也**返回了 `duplicate:true`。
+2. 第二次说是 `workflow-tldraw-canvas-inner.tsx:3761` 的 by-name 历史恢复分支 → 也错。
+   那行判据是 **`asset.name === file.name`**，而 `asset.name` 是服务端权威名、
+   `upload-name.ts:26` 的 `sanitizeUploadBaseName()` **已经去掉扩展名**（`replace(/\.[^.]+$/, "")`）
+   → `"ref-r1"` 永远不等于 `"ref-r1.jpg"`，**这条分支对任何带扩展名的文件根本进不去**。
+
+- ⭐ **姿势**：怀疑某个 `if`/`find`/`filter` 分支是元凶时，**把它的条件原样抄进你的笔记**，
+  逐个变量确认"在我这个场景里它的实际值是什么"。⭐ **特别小心两个看着同名的东西**
+  （`asset.name` 去了扩展名 vs `file.name` 带扩展名；`lastSeenAt` vs `activeWorkspaceSeenAt`）。
+- ⭐ **没验证过的归因必须标明「假设，未验证」**，⛔ 不许当结论写进交接文档 ——
+  错的根因会让下一个人朝错误方向改一整天。
+- ⭐ **tip / toast 文案不能当证据**：它们一闪而过、而且经常长得很像
+  （`已存在，已直接连接` vs `已在历史记录中，已恢复并连接`）。要么复现时录下来，要么去代码里对文案。
+
+# 铁律：往"共享命名空间"里加新标识符之前，先枚举现存的全部取值（2026-08-02 加）
+
+2026-08-02 新增备忘任务时取了 `M031`，而 `M031` 早就被「数据保留 / 清理策略」占了 →
+`01`/`05`/`CHANGELOG` 里的 "M031" 从此**指向两个不同的东西**（已改成 `M032`）。
+⛔ **不许"找一个看起来没用过的号"**，必须先枚举：
+
+- 备忘编号：`grep '### \[.\] M' handover/06-memo-tasks.md`
+- `B_xxx` 错误编号：看 `.runtime/error-code-counter.txt`（规则见 `07-red-error-triage-and-archive.md`）
+- Prisma 迁移名、工作流/节点系统名、`upload-rules.ts` 的规则 key —— 同理。
+
 # 铁律：把 `/generated/` 地址变成本地文件路径，只能走 `resolveGeneratedFilePath()`（2026-08-02 加）
 
 ⛔⛔ 历史上有 **6 处**都是这么写的，**全都能被路径穿越**：
