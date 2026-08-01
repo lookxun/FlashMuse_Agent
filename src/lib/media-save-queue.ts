@@ -7,6 +7,7 @@ import { createVideoPosterFromLocalVideo, getLocalVideoDimensions } from "@/lib/
 import { getOpenRouterHeaders, getRequiredOpenRouterApiKey } from "@/lib/openrouter-video";
 import { upsertVideoManifestEntry } from "@/lib/video-manifest";
 import { appendGenerationDiagnosticsLog, summarizeGeneratedReference } from "@/lib/generation-diagnostics-log";
+import { isRemoteUrlAllowed } from "@/lib/ssrf-guard";
 
 type MediaSaveType = "image" | "video";
 type MediaSaveStatus = "pending" | "downloading" | "saved" | "failed" | "expired";
@@ -289,6 +290,14 @@ export async function enqueueRemoteAssetSave(input: {
   keepTransparent?: boolean;
 }) {
   if (!isRemoteUrl(input.remoteUrl)) return undefined;
+  // ⛔ 第二道 SSRF 防线（2026-08-02 加）：在**建任务之前**就拒掉内网地址。
+  //   下载那一层（`saveRemoteAsset` → `safeFetch`）已经会拦，但如果只拦在那里，
+  //   队列里会留下一条注定失败的任务、还会按退避重试到过期为止（纯浪费 + 污染诊断日志）。
+  //   这里直接返回 undefined = 压根不入队。理由与拦法见 `lib/ssrf-guard.ts` 顶部。
+  if (!(await isRemoteUrlAllowed(input.remoteUrl))) {
+    console.warn("[media-save] 已拒绝一个不允许出网的远端地址", { remoteUrl: input.remoteUrl.slice(0, 160), userId: input.userId });
+    return undefined;
+  }
   const id = getJobId(input.remoteUrl, input.userId);
   const now = Date.now();
   const job = await updateJobs((jobs) => {

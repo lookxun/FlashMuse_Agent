@@ -2,10 +2,195 @@
 
 > 历史 END-OF-SESSION 记录都在 `historical-handover-docs-last-used-2026-07-21/05-next-actions.md`（很长）。这里只留当前有效待办。
 
-## 🚀🚀 当前状态（2026-08-01 第二十五次会话末）：**四方同步 `v1.0.0.60`，两服都已部署**
+## 🔒 当前状态（2026-08-02 第二十六次会话末）：**本地有一批安全修复未部署；备份体系已上线**
+
+线上（正式服 = 测试服 = GitHub）仍 **`v1.0.0.60`**；本地多了「3 个安全洞修复」，
+**未 bump、未部署、未提交**。`tsc` 全绿，eslint 与基线一致（零新增），无 Prisma 迁移。
+
+### 🎯🎯 待办 1（最优先）：**部署这批安全修复** —— 🗣️ 等用户说了才做
+
+用户这次只说了「先做 0 档」，**部署节奏他没定**。按铁律我没有部署。
+
+⭐ **我的建议：尽快上**，理由是可利用性：
+
+| 洞 | 谁能打 | 后果 |
+|---|---|---|
+| ① SSRF | **不用账号，任何人** | 读云元数据拿实例凭证、扫内网、读同机另两个项目（CinematicFlow / VibeSocial） |
+| ② 路径穿越 | 任何**登录用户** | 读 `.env.local` → 全部 API key + **`AUTH_SECRET`**（能自签管理员 cookie 登 `/admin`） |
+| ③ 上传 XSS | 任何登录用户 | 在主域名下执行 JS，以受害者身份调所有接口 |
+
+---
+
+#### 📋 这批的完整部署清单（下个 AI 照这个走）
+
+**⚠️ 与平时的部署有两点不同，别按老流程闭眼跑：**
+1. **改了 4 份 nginx conf** → 除了应用代码，还要推 nginx 配置并 reload。
+2. **正式服阿里那份 `flashmuse-static-ip` 也 serve `/generated/`，本次没碰它** → 见下面的「已知缺口」。
+
+**无 Prisma 迁移**（本批一个都没有）→ 不需要额外的迁移前备份，但**建议顺手跑一次带标签的备份**，
+反正只要 36 秒：
+
+```bash
+sudo /opt/flashmuse/scripts/flashmuse-db-backup.sh --stack prod --label pre-deploy-security
+```
+
+##### 步骤
+
+| # | 步骤 | 备注 |
+|---|---|---|
+| 1 | `node scripts/bump-version.mjs` | v1.0.0.60 → **v1.0.0.61**。⛔ 只在部署测试服这一步 bump，正式服不再 bump |
+| 2 | 按 `03-deploy-and-servers.md`「测试服部署流程」推应用代码 | 本批改了 14 个文件 + 新增 4 个（清单见下） |
+| 3 | ⭐ **推测试服的 3 份 nginx conf 并 reload** | ① `deploy/staging/flashmuse-test-8080.conf`、② `deploy/staging/flashmuse-staging-static-ssl.conf` → 阿里那台的 `/etc/nginx/sites-enabled/`；③ `deploy/staging/flashmuse-staging.conf` → 腾讯 `/opt/flashmuse-staging/data/nginx/flashmuse-staging.conf`（bind-mount 进 `staging-nginx` 容器，见 `deploy/staging/docker-compose.yml:44`）。**这三份都不含别的项目，可整份覆盖**（既有约定）。⛔ ③ 不能漏：漏了它测试服容器内 nginx 就没加固，而测试服正是验 attachment 头的地方 → 会验出假结果。推完逐个 `nginx -t` 再 `reload` |
+| 4 | 测试服跑下面那 8 项验收 | 见下 |
+| 5 | 巡检 6 项（`03` 里的最小巡检） | 登录 / 对话 / 工作流点节点不崩 / 资产库 / 真跑生图 / 后台 0 error |
+| 6 | 用户确认后，按「正式服部署流程」把测试服那份**原样** rsync 过去（⛔ 不再 bump） | |
+| 7 | ⭐ **推正式服的 nginx conf** | `nginx/flashmuse.conf` → 腾讯 `/opt/flashmuse/data/nginx/flashmuse.conf`（它被 bind-mount 进 `flashmuse-nginx` 容器）→ 然后 `sudo docker exec flashmuse-flashmuse-nginx-1 nginx -t && sudo docker exec flashmuse-flashmuse-nginx-1 nginx -s reload`。⚠️ **覆盖前先 diff**：全是 `>`（纯新增）才敢覆盖，出现 `<` 说明服务器被手改过（这是既有铁律） |
+| 8 | 同步 `.next/static` 到阿里正式镜像 | 漏了会全站 404 |
+| 9 | 发版本信号 + 四域名健康检查 | |
+| 10 | **正式服也要上号巡检** | 用 `12424740@qq.com` |
+| 11 | commit + push | |
+
+##### ⭐ 这批必须验的 8 项（都是我改动直接影响的路径）
+
+| # | 验什么 | 预期 | 为什么要验 |
+|---|---|---|---|
+| 1 | 上传一个正常 **pdf / docx / txt** | 成功 | 洞③ 新加了白名单，怕误伤正常文档 |
+| 2 | 尝试上传一个 **`.html` 或 `.svg`** | **被拒**，提示"不支持的文件格式：.html" | 洞③ 是否真的拦住 |
+| 3 | 上传一个 **>10MB 的 pdf** | 被拒，提示"文件不能超过 10MB" | 新加的大小上限 |
+| 4 | **对话流真跑一次生图**（带参考图） | 出图、图能落地进资产库 | 洞② 改了 `openrouter.ts` 的参考图读取路径（4 处），这是最怕改坏的地方 |
+| 5 | **工作流真跑一次生图**（带参考图/@提及） | 同上 | 同上，且工作流走的是另一条链路 |
+| 6 | **真跑一次生视频** | 出视频 + 有封面 | 改过 `openrouter-video.ts` 和 `seedance.ts` |
+| 7 | 生成完等图/视频落地 | `media-save-status` 轮询正常、图进资产库 | 洞① 给这个接口**加了强制登录**，怕轮询挂 |
+| 8 | 资产库缩略图正常显示 + 浏览器直接打开一个 `/generated/xxx.jpg` | 都正常 | 改过 `media-thumbnail`；nginx 加了 nosniff/attachment，怕误伤正常图片 |
+
+⭐ **快速自查（不用部署就能跑）**：`node scripts/verify-ssrf-guard.mjs` 应输出 **25/25 全过**。
+
+##### 本批改动的文件（18 个）
+
+```
+新增（4）
+  src/lib/generated-asset-path.ts       /generated/ → 本地路径的唯一权威（resolve 包含校验）
+  src/lib/ssrf-guard.ts                 SSRF 防护唯一权威（含逐跳校验的 safeFetch）
+  scripts/verify-ssrf-guard.mjs         SSRF 自验（25 用例，纯本地不联网）
+  deploy/backup/                        备份/恢复/安装 3 个脚本 + README（⚠️ 服务器上已经装好了，
+                                        这个目录只是仓库权威副本，部署时不需要额外动作）
+
+改动（14）
+  src/app/api/media-save-status/route.ts   加强制登录（洞①）
+  src/lib/local-assets.ts                  saveRemoteAsset 改走 safeFetch；curl -fL → -f
+  src/lib/media-save-queue.ts              enqueue 处第二道 SSRF 防线
+  src/lib/openrouter.ts                    4 处路径穿越 → 统一实现；删掉本地重复的 getMimeType
+  src/lib/openrouter-video.ts              删掉重复的 toDataUrlIfLocalPublicAsset + getMimeType
+  src/lib/seedance.ts                      同上
+  src/app/api/media-thumbnail/route.ts     本地 isInsideGenerated → 复用共享实现（防漂移）
+  src/app/api/upload-file/route.ts         文档后缀白名单 + 大小上限（multipart 和 base64 两个分支）
+  src/lib/media-upload-validation.ts       新增 DOCUMENT_UPLOAD_FORMATS / validateDocumentUploadFile
+  src/lib/upload-rules.ts                  documentFormats 改为 import（唯一权威）
+  nginx/flashmuse.conf                     ⭐ 两个 server 块的 /generated/ + /home-assets/ 加固
+  deploy/staging/flashmuse-staging.conf     ⭐ 同上
+  deploy/staging/flashmuse-test-8080.conf   ⭐ 同上
+  deploy/staging/flashmuse-staging-static-ssl.conf ⭐ 同上
+```
+
+**自查状态**：`npx tsc --noEmit` **全绿**；`npx eslint src` = **230 problems（106 errors / 124 warnings），
+与改动前基线完全一致、零新增**；**无 Prisma 迁移**。
+
+##### ⛔ 这批已知的缺口（部署完仍然存在，要不要补请问用户）
+
+1. **阿里那份 `flashmuse-static-ip` 没加固**。它**也 serve `/generated/`**（阿里是国内入口 + 静态镜像），
+   所以从 `ali.venusface.com` / `static.venusface.com` 访问历史 `.html` 时**仍然没有 attachment 头**。
+   ⛔ 那份 conf **混着别的项目（`/tiantangqiyuan/`），按铁律禁止整份覆盖** →
+   要补必须写一个幂等增量脚本，照抄 `deploy/ali/ali-add-upstream-keepalive.py` 的做法
+   （精确替换 + 计数断言 + 断言别的项目未被动 + 备份 + `nginx -t` + 失败自动回滚 + 只 reload）。
+   ⭐ **注意**：洞③ 的**上传侧白名单已经堵住了"新增"**，这个缺口只影响"历史已存在的危险文件"，
+   而且主域名那边已经堵上了。所以不紧急，但应该补。
+2. 洞①②③ 之外的其它安全项（限流、`/api/intent` 免费调用、管理员会话无状态等）**全部没做** →
+   见 `08-full-audit-2026-08-02.md` 的 2.8 节。
+
+
+### ✅ 已完成：数据库备份体系（本会话建立并全部验过）
+
+每天**北京时间 03:30** 备份两服 → 本机 + 异地阿里；**每周一 04:10 自动恢复演练**。
+**用法、紧急恢复步骤、9 条踩过的坑 → `deploy/backup/README.md`。**
+
+日常只需要看一眼：
+
+```bash
+sudo cat /opt/flashmuse/backups/last-status.txt   # OK / OK_LOCAL_ONLY / FAILED
+sudo tail -30 /opt/flashmuse/backups/drill.log    # 每周演练结果
+```
+
+⚠️ **这台机器没装 MTA，cron 发不出邮件** → 不会有失败通知，只能靠上面这两个文件。
+
+### 🎯 待办 2：媒体文件备份（21GB）—— 🗣️ 用户说"单独议"
+
+现状：阿里镜像那边**碰巧**有一份（因为同步脚本没加 `--delete`），**是巧合不是设计**，
+而且不覆盖 `home-assets` 和 `.runtime`。
+要做的话得单独设计（增量、限速、避开高峰），因为跨境链路只有 74KB/s。
+
+### 🎯 待办 3：跨境线路的残留毛刺（方案 C，要花钱 → **等用户拍板**）
+
+keepalive 已经把"每请求重新握手"这个放大器干掉了，但偶发 1.0~1.5s 毛刺还在，
+因为那条线**本次实测丢包 30~40%**（比上次记录的 33% 还差些）。配置层面已经到顶。
+方案见下面「上一状态」里那张表（C-1 全球加速 / C-2 国内也部一台 app / C-3 什么都不做）。
+⭐ 我的建议仍是先什么都不做。
+
+### 🎯 待办 4：红字（⛔ 别自己开工、别跑归档脚本）
+
+正式服待排查 38 条 / 5 种，其中审核类 33 条（改不了、就该一直亮），兜底桶仅 2 条（5.3%，很干净）。
+🗣️ 用户交代**等红字攒多了再排查**。
+
+---
+
+## 🗳️🗳️ 需要用户拍板的全部事项（下个 AI：**这些一条都别自己决定**）
+
+> 按优先级排。每条都写清了"我建议什么 + 为什么"，方便直接拿去问用户。
+
+| # | 要拍板的事 | 我的建议 | 依据 / 代价 |
+|---|---|---|---|
+| **1** | **这批安全修复什么时候部署？** | **尽快**，走完整测试服→正式服流程 | 洞①不用账号就能打；洞②能拿到 `AUTH_SECRET` = 别人可自签管理员 cookie |
+| **2** | 要不要补上**阿里 `flashmuse-static-ip`** 的 `/generated/` 加固？ | 要补，但不紧急 | 上传侧已堵住新增；这只影响历史文件从 ali/static 域名访问。⛔ 必须用幂等增量脚本（混着别的项目） |
+| **3** | **数据库密码明文在 git 里**怎么处理？ | 挪到 `env_file` + **换密码**；git 历史是否重写由你定 | 已推 GitHub，换密码不洗历史 = 旧密码永久留档。共用机器，别人拿到 shell 就能连库 |
+| **4** | **媒体 21GB** 要不要纳入备份？ | 要，但方案要单独设计（增量 + 限速 + 避高峰） | 跨境只有 74KB/s。现在阿里那份是**因为同步脚本没加 `--delete` 碰巧留下的，不是设计**，且不含 `home-assets` / `.runtime` |
+| **5** | **数据保留/清理策略**要不要做？窗口定多久？ | 需要你定天数 | `GenerationEvent`/`GenerationJob`/`UploadEvent`/`WorkspaceMessage` **只增不减**；`UserAssetState.purgeAt` 这个列**从来不真删**。⚠️ 你长期交代过"测试内容不要删"，所以我不敢自己定 |
+| **6** | **积分并发白刷**要不要修？ | 要修，2 小时的事 | 在漏真钱。扣费改原子 `decrement` 是小改动；"生成前占额度"要动更多地方 |
+| **7** | 要不要提前动 **M023（`connection_limit`）**？ | 建议连同 1.2 / 1.4 一起修，因为本次发现了两个**新的**加压来源 | 🗣️ 你 2026-07-30 拍板"等下次真犯病再动" —— 所以要你重新拍 |
+| **8** | 要不要补**日志轮转 / 内存上限 / healthcheck / 告警**？ | 要，1 天 | **磁盘满是下一次故障最可能的原因**，而这台机器还有另外两个项目（你交代过绝不能影响它们） |
+| **9** | ⭐ **要不要拆 `chat-workbench.tsx`（18,015 行）**？ | **建议做**，2~3 天 | 它与工作流文件有 **42 对孪生函数、20 对已漂移**，其中 1 个是**线上真 bug**。不拆就会继续漂。⚠️ 前两任 AI 提过、你没否也没同意 |
+| **10** | 要不要加**两个测试 + lint 门禁**？ | 建议只加 2 个（纯函数单测 + "临时字段不许落库"契约测试） | 后者能永久消灭那**一整类** bug（`promptLoading` 已经犯过两次了）。⚠️ 归档里从没讨论过测试 |
+| **11** | **跨境毛刺（方案 C）**要不要花钱？ | 先什么都不做，观察 | 中位数已 0.30~0.37s，配置层面到顶。本次实测丢包 30~40% |
+| **12** | 归档里丢掉的 **M029 单轮询器 / M030 文档解析**还做不做？ | 你当年都说过以后做，请重新确认优先级 | 见 `06-memo-tasks.md` |
+
+---
+
+## 📋 完整问题清单（1~4 档）→ 见 **`08-full-audit-2026-08-02.md`**
+
+2026-08-02 通读全项目（含两个历史归档 + 全部源码 + 部署方案）后整理，**用户目前只批了 0 档**。
+那份文档里每一条都有**文件行号 + 影响 + 建议修法**，并且交叉引用了已有的 M 编号（避免重复立项）。
+
+**如果只看三条，看这三个现存真 bug**：
+
+| 位置 | 问题 |
+|---|---|
+| `workflow-tldraw-canvas-inner.tsx:1775` | **`getStaticMediaUrl` 是个空函数**（两个分支都 `return url`）→ 工作流画布从来没用上静态域名 / 缓存破除。**线上真 bug** |
+| `chat-workbench.tsx:3582` | `getPersistableSessions` 剥了 `uploadedImages` **但没剥 `uploadedFiles`** → 上传中刷新，"卡在 47%" 会**存进数据库** |
+| `chat-workbench.tsx:11615` | 在 `setWorkflowItems` 的 **updater 里面发 fetch PUT**（React 可能重跑 updater → 重复发），且它是第二个写 `/api/workspace-state` 的人（250ms vs 500ms，无顺序保证） |
+
+⭐ 那份文档最后两节同样重要，**动手前先看**：
+- **「⛔ 用户明确否过的，别再提」** —— 对象存储 / CDN / 真删除 / 对话流 AI 改写 等 13 条
+- **「✅ 已经做得好的，别浪费时间重做」** —— 20 条（任务队列、幂等键、按需加载读侧、
+  阿里 keepalive、`deploy/ali/*.py` 那个增量脚本模板…）
+
+---
+
+
+## ✅ 上一状态（2026-08-01 第二十五次会话末）：**四方同步 `v1.0.0.60`，两服都已部署**
+
 
 **正式服 = 测试服 = 本地 = GitHub = `v1.0.0.60`。无待部署、无未推、无 Prisma 迁移。**
 上一会话那三条待办（同步正式服 / 鉴权必测 / M027）**全部做完了**。
+
+> ⚠️ 2026-08-02 更新：上面这段"无待部署"已过期 —— 现在本地有一批安全修复未部署，见本文件顶部。
 
 ### 🎯 待办 1：跨境线路的残留毛刺（方案 C，要花钱 → **等用户拍板**）
 

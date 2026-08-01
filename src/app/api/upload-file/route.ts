@@ -10,7 +10,7 @@ import { syncGeneratedFilesToAli } from "@/lib/ali-sync";
 import { createUploadedVideoPoster } from "@/lib/video-poster";
 import { resolveUploadNameInTx, withUploadNameLock } from "@/lib/upload-name";
 import { getBearerToken, verifyUploadToken } from "@/lib/upload-token";
-import { validateMediaUploadBuffer, type MediaUploadMetadata, type UploadMediaKind } from "@/lib/media-upload-validation";
+import { validateDocumentUploadFile, validateMediaUploadBuffer, type MediaUploadMetadata, type UploadMediaKind } from "@/lib/media-upload-validation";
 import { probeUploadedMedia } from "@/lib/media-upload-probe";
 import { appendUploadDiagnosticsLog } from "@/lib/upload-diagnostics-log";
 
@@ -135,6 +135,13 @@ export async function POST(request: Request) {
         if (validationError) return NextResponse.json({ error: validationError }, { status: 400, headers });
         durationSeconds = metadata.durationSeconds;
         dimensions = metadata.width && metadata.height ? { width: metadata.width, height: metadata.height } : undefined;
+      } else {
+        // ⛔⛔ 文档路径原来是**零校验**（2026-08-02 补）：不限后缀、不限大小，
+        //   而落盘后缀直接取客户端文件名 → 能传 `.html`/`.svg` 到同源 `/generated/` 下执行 JS（存储型 XSS）。
+        //   这里按 `DOCUMENT_UPLOAD_FORMATS` 白名单 + 10MB 上限硬拦。
+        //   ⚠️ 用 `buffer.byteLength` 而不是 `file.size`：后者是客户端声明值，可以撒谎。
+        const documentError = validateDocumentUploadFile({ name, size: buffer.byteLength });
+        if (documentError) return NextResponse.json({ error: documentError }, { status: 400, headers });
       }
       // 出生前先算原始字节哈希；命中"同一文件"直接复用旧地址+旧权威名，不重复落库。
       contentHash = createHash("sha256").update(buffer).digest("hex");
@@ -153,7 +160,12 @@ export async function POST(request: Request) {
       durationSeconds = typeof body.durationSeconds === "number" ? body.durationSeconds : undefined;
       dimensions = isRecord(body.dimensions) ? body.dimensions : undefined;
       const base64 = file.includes(",") ? file.split(",").pop() ?? "" : file;
-      contentHash = createHash("sha256").update(Buffer.from(base64, "base64")).digest("hex");
+      const decodedBuffer = Buffer.from(base64, "base64");
+      // ⛔ 同上：base64/JSON 这条老路也必须校验（2026-08-02 补）。
+      //   这条路只走文档（视频/音频强制 requiresServerUrl，走 multipart），所以一律按文档规则拦。
+      const legacyDocumentError = mediaKindRaw === "video" || mediaKindRaw === "audio" ? undefined : validateDocumentUploadFile({ name, size: decodedBuffer.byteLength });
+      if (legacyDocumentError) return NextResponse.json({ error: legacyDocumentError }, { status: 400, headers });
+      contentHash = createHash("sha256").update(decodedBuffer).digest("hex");
       if (userId) {
         const dup = await findDedupUpload(userId, contentHash);
         if (dup) return NextResponse.json({ url: dup.url, dedup: true, name: dup.name, posterUrl: await ensureDedupPosterUrl(userId, dup, mediaKindRaw, name) });

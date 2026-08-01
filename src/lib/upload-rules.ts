@@ -1,5 +1,5 @@
 import { IMAGE_UPLOAD_ACCEPT, IMAGE_UPLOAD_FORMATS } from "@/lib/image-upload-validation";
-import { MEDIA_DURATION_EPSILON_SECONDS } from "@/lib/media-upload-validation";
+import { DOCUMENT_UPLOAD_FORMATS, MEDIA_DURATION_EPSILON_SECONDS } from "@/lib/media-upload-validation";
 
 export type UploadRuleMode = "agent" | "general" | "image" | "video" | "asset-image";
 export type UploadTransportMode = "local-base64" | "server-url";
@@ -49,7 +49,11 @@ export const BYTEPLUS_SEEDANCE_UPLOAD_RULE_KEYS = {
 // ⛔ 禁止在这里另写一份图片格式数组 —— 历史上就是因为这里多了一份 bytePlusImageFormats
 //    （含 bmp/tiff/gif/heic/heif），导致"对话流传不上去、工作流拖进来能过"的分叉。
 const commonImageFormats = [...IMAGE_UPLOAD_FORMATS];
-const documentFormats = ["pdf", "txt", "csv", "docx", "doc", "xlsx", "xls", "pptx", "ppt", "md"];
+// ⭐ 同理，文档格式白名单只有一个来源：media-upload-validation.ts 的 DOCUMENT_UPLOAD_FORMATS
+//    （服务端 `/api/upload-file` 的硬校验用的就是那一份，前后端必须完全一致，
+//     否则会出现"前端让你选、传上去被拒"或更糟的"前端拦住了但接口能直传"）。
+// ⛔ 禁止在这里另写一份文档格式数组。
+const documentFormats: string[] = [...DOCUMENT_UPLOAD_FORMATS];
 
 
 const disabledRule: UploadKindRule = { enabled: false, maxCount: 0, maxSizeMb: 0, formats: [] };

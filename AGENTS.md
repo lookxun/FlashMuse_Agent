@@ -4,7 +4,109 @@
 This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code. Heed deprecation notices.
 <!-- END:nextjs-agent-rules -->
 
+# 铁律：把 `/generated/` 地址变成本地文件路径，只能走 `resolveGeneratedFilePath()`（2026-08-02 加）
+
+⛔⛔ 历史上有 **6 处**都是这么写的，**全都能被路径穿越**：
+
+```ts
+const localUrl = normalizeReferenceAssetUrl(url);
+if (!localUrl.startsWith("/generated/")) return url;      // ← 唯一的校验
+const filePath = join(process.cwd(), "public", localUrl.replace(/^\//, ""));
+readFileSync(filePath)                                     // ← 直接读
+```
+
+`startsWith("/generated/")` **拦不住 `..`**，而 `normalizeReferenceAssetUrl` 只剥 query 和 `#`
+（`reference-asset-url.ts:67`），不做路径规范化。于是任何**登录用户**把参考图填成
+`/generated/../../.env.local`，`join()` 折叠掉 `..` 后就读到了 `.env.local`，
+内容被 base64 塞进发给模型的请求 —— 等于泄露 `OPENROUTER_API_KEY` / `BYTEPLUS_*` /
+**`AUTH_SECRET`**（它一泄，别人能自己签管理员 cookie 登 `/admin`）/ 数据库口令。
+
+- ⭐ **唯一正解：`resolve()` 之后必须仍在 `public/generated` 里面。**
+  这个判断对任何编码方式都有效（`..`、`%2e%2e`、绝对路径），比"过滤 `..` 字符串"可靠得多。
+- ⭐ **唯一权威 = `src/lib/generated-asset-path.ts`**：
+  `resolveGeneratedFilePath()` / `isInsideGeneratedRoot()` / `generatedAssetExists()` /
+  `getGeneratedFileSize()` / `toDataUrlIfLocalPublicAsset()`。
+  ⛔ **禁止再在别处自己写 `join(process.cwd(), "public", ...)` + `readFileSync`。**
+- ⭐ 顺带收掉一个既有分叉：`toDataUrlIfLocalPublicAsset` 原本在
+  `openrouter.ts` / `openrouter-video.ts` / `seedance.ts` **一字不差地存了三份**（连 `getMimeType` 都一样），
+  三份都带着同一个漏洞。现在是一份。
+- ⭐ 判据：**项目里本来就有一处写对了**（`api/media-thumbnail/route.ts` 的 `isInsideGenerated`），
+  另外 6 处压根没写。**发现"同一个判断有的地方有、有的地方没有"，就是该收敛的信号。**
+
+# 铁律：服务端"按用户给的地址去下载东西"，必须过 SSRF 防护，且**逐跳**校验（2026-08-02 加）
+
+`POST /api/media-save-status` 原本**不要求登录**（只写了 `const user = await getCurrentUser()`
+然后一路用 `user?.id`，**没有"没登录就退出"那一句**），而 `getMediaSaveStatuses()` 对任何
+没见过的地址都会 `enqueueRemoteAssetSave()` → `saveRemoteAsset()` → `fetch(url)`，
+唯一的过滤是 `/^https?:\/\//`。下载到的字节写进 `public/generated/`，**下一次轮询就把 `localUrl` 回给调用方**。
+→ 任何人（不用账号）发两个请求就能让服务器去读**云元数据 `169.254.169.254`**（拿实例凭证）、
+扫内网、读同机另外两个项目的端口，然后把结果存成公开文件下载走。
+
+- ⭐ **唯一权威 = `src/lib/ssrf-guard.ts`**：`assertRemoteUrlAllowed()` / `isRemoteUrlAllowed()` / **`safeFetch()`**。
+- ⭐⭐ **必须解析 DNS 之后再判 IP**，不能只看域名字符串 ——
+  否则攻击者拿自己的域名解析到 `169.254.169.254` 就绕过了。用 `dns.lookup(all)`，
+  **任意一条 A/AAAA 落在私网就整体拒绝**。
+- ⛔⛔ **不能用 `fetch(url, { redirect: "follow" })`，也不能用 `curl -L`** ——
+  那样只校验了第一跳，一个正常公网地址 302 到元数据接口就穿透了。
+  必须 `redirect: "manual"` 自己逐跳校验（`safeFetch` 已实现，最多 5 跳）。
+- ⭐ **2026-08-02 用户拍板：走「内网黑名单」不走「域名白名单」。**
+  白名单更严，但供应商回给我们的媒体域名是**运行时才知道的**
+  （BytePlus 是 `ark-*.tos-ap-southeast-1.volces.com`，OpenRouter 那条无法穷举），
+  **漏一个域名就等于用户丢图**；而"拒绝私网"覆盖了全部真实攻击面且不可能误伤公网供应商。
+- ⭐ 两道防线都要：`enqueueRemoteAssetSave` 里拦（不建注定失败的任务）+ `saveRemoteAsset` 里拦（根治）。
+- ⭐ 自验脚本 `scripts/verify-ssrf-guard.mjs`（25 个用例，含真实供应商域名必须放行）。
+  ⚠️ **改了 `ssrf-guard.ts` 的网段表，必须同步改那个脚本里的副本**，否则测的不是线上那份。
+
+# 铁律：上传接口的校验不能只覆盖一部分 mediaKind（2026-08-02 加）
+
+`POST /api/upload-file` 原本**只在 `mediaKind` 是 video/audio 时才校验**（`route.ts` 的 `requestedKind`），
+文档路径是**零校验** —— 既不限后缀也不限大小，而落盘后缀是**直接取客户端传的文件名**
+（`local-assets.ts` 的 `getExtensionFromUrl(originalName)`）。
+→ 传一个 `x.html` 就得到 `https://main.venusface.com/generated/.../xxx-x.html`，
+而 `/generated/` 是**同源**静态目录 → **在自己域名下执行 JS（存储型 XSS）**。`.svg` 同理。
+没有大小上限还意味着 `await file.arrayBuffer()` 能被用来打内存/磁盘。
+
+- ⭐ 文档格式白名单的**唯一权威 = `media-upload-validation.ts` 的 `DOCUMENT_UPLOAD_FORMATS`**
+  + `validateDocumentUploadFile()`；`upload-rules.ts` 的 `documentFormats` 从那里 import
+  （和图片走 `image-upload-validation.ts` 的 `IMAGE_UPLOAD_FORMATS` 是同一个既有约定）。
+- ⭐ **只认后缀、不认客户端给的 `Content-Type`**（后者能随便伪造，而决定 nginx 返回什么 MIME、
+  浏览器要不要执行的，正是落盘后的后缀）。用 `buffer.byteLength` 而不是 `file.size`（后者是客户端声明值）。
+- ⭐ **两个分支都要拦**：multipart 和 base64/JSON 老路都能上传。
+- ⭐ 配套 nginx（4 份 conf 全部）：`/generated/` 加 `X-Content-Type-Options: nosniff`，
+  并对危险后缀（`html?|xhtml|xht|shtml|svgz?|xml|xsl|js|mjs|css|wasm`）加 `Content-Disposition: attachment`。
+  ⛔ **不能对整个 `/generated/` 加 attachment**（会影响正常图片视频）。
+  ⚠️ **nginx 的 `if` 是一个新的配置层级，里面写了 `add_header` 就不再继承外层的** →
+  必须把 `Cache-Control` / CORS / nosniff 在 `if` 里**重新写一遍**（已实测验证）。
+- ⭐ 改 nginx 一定要**真验**，别只看 `nginx -t`：本次用 docker 起 nginx 实测了
+  `.html`/`.svg` 有 attachment、`.jpg`/`.mp4`/`.txt` 没有、Range 请求仍返回 206。
+
+# 铁律：数据库备份 —— 没演练过的备份不算备份（2026-08-02 建立）
+
+完整用法、紧急恢复步骤、以及 **9 条踩过的坑** 见 **`deploy/backup/README.md`（要恢复数据先看那里）**。
+这里只留最容易致命的几条：
+
+- ⛔⛔ **`pg_restore` 不能用 stdin 管道喂**：`-Fc` 归档 + `-j` 并行**要求可 seek**，
+  管道会**恢复出 0 张表且报错看不见**。必须解压成文件 → `docker cp` 进容器 → 按路径恢复。
+  ⭐ **第一次演练就是这么失败的** —— 这正说明"演练"这步不可省；只跑备份不演练，
+  等于一直以为自己有备份。
+- ⚠️ **cron 按系统本地时区跑，不是 UTC**（这台是 `Asia/Shanghai +0800`）。
+  我写 `30 19` 并注释成"UTC 19:30 = 北京 03:30"，实际会在**北京晚 19:30 高峰**跑。改前先 `timedatectl`。
+- ⚠️ **crontab 里 `%` 是特殊字符**（换行），命令含 `%` 必须写 `\%`，否则**从 `%` 处截断**。
+  我的探针用了 `date '+%F'` 被截断，一度误判"cron 没生效"。
+- ⚠️ **这台机器没装 MTA，cron 发不出邮件** → 不能依赖"失败会收到通知"，一切落日志 + `last-status.txt`。
+- ⛔ **`local a="$1" b="$X/$a"` 在 bash 里是错的**：`local` 的全部参数**在它执行前就被展开**，
+  那时 `$a` 还没赋值，配合 `set -u` 直接中断整个脚本。必须先声明再逐个赋值。
+- ⛔ **`--append-verify` 和 `--partial-dir` 互斥**（rsync rc=1 秒失败）。
+  ⭐ 选 `--partial-dir`：`--append-verify` 会把没传完的文件**以最终文件名**留在目标端，
+  "看起来像完整备份的截断文件"比没有备份更危险。
+- ⭐ **xz 的 `-6` 和 `-9` 在这个库上差 40%（14.3MB vs 8.5MB），不是我以为的 4%** ——
+  字典 8MiB vs 64MiB，而库里有大量重复的中文提示词。**别凭直觉调压缩等级，要实测。**
+  用 `-T 1` 不用 `-T0`：`-9` 每线程 ~674MB，而**这是多项目共用的机器**。
+- ⭐ **多项目共用的机器上装定时任务：绝不碰 root crontab**，只新增 `/etc/cron.d/<自己的名字>`，
+  并**断言 root crontab 条数改前改后不变**。
+
 # 铁律：判断「某个字段实际会不会有多个」要看写入方，不能只看 TypeScript 类型（2026-08-01 加）
+
 
 ⛔⛔ 2026-08-01 我看到工作流节点的 `data.images` 是 `string[]`，就按"数组可能有多项"
 **推出了一个根本不存在的问题**（"源节点里有 4 张图会一起连进来"），还把它当"待办"报给了用户。

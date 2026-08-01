@@ -58,3 +58,41 @@ export function validateMediaUploadBuffer(buffer: Uint8Array, file: Pick<File, "
   // File 的 name/type 是原型 getter，禁止用 {...file} 展开（会丢失），必须显式取字段。
   return validateMediaUploadFile({ name: file.name, type: file.type, size: buffer.byteLength }, kind) ?? validateMediaUploadMetadata(kind, metadata);
 }
+
+// ============ 文档上传（pdf/docx/xlsx/txt...） ============
+//
+// ⛔⛔ 为什么这一段必须存在（2026-08-02 安全加固）：
+// `POST /api/upload-file` 原来**只在 `mediaKind` 是 video/audio 时才校验**
+// （`route.ts:131` 的 `requestedKind`），文档路径是**零校验** ——
+// 既不限后缀也不限大小，而落盘时的后缀是**直接取客户端传来的文件名**
+// （`local-assets.ts:423` 的 `getExtensionFromUrl(originalName)`）。
+//
+// 后果：传一个 `x.html` 上去就得到 `https://main.venusface.com/generated/.../xxx-x.html`，
+// 而 `/generated/` 是**同源**静态目录 → **在我们自己的域名下执行 JS（存储型 XSS）**。
+// 会话 cookie 是 httpOnly 偷不走，但脚本能以受害者身份调用全部接口。`.svg` 同理。
+// 另外没有大小上限 → `await file.arrayBuffer()` 会把整个文件读进内存，是个免费的内存/磁盘 DoS。
+//
+// ⭐ 这里是文档格式的**唯一权威**：`upload-rules.ts` 的 `documentFormats` 从这里导入，
+//    与图片走 `image-upload-validation.ts` 的 `IMAGE_UPLOAD_FORMATS` 是同一个约定。
+// ⛔ 禁止在别处另写一份文档后缀数组（历史上图片格式就是因为多写了一份，
+//    导致"对话流传不上去、工作流拖进来能行"的分叉）。
+export const DOCUMENT_UPLOAD_FORMATS = ["pdf", "txt", "csv", "docx", "doc", "xlsx", "xls", "pptx", "ppt", "md"] as const;
+
+// 与 `upload-rules.ts` 里文档规则的 `maxSizeMb: 10` 保持一致。
+export const DOCUMENT_UPLOAD_MAX_BYTES = 10 * MB;
+
+/**
+ * 文档上传的服务端硬校验（后缀白名单 + 大小上限）。
+ * ⚠️ 只认**后缀**、不认客户端给的 `Content-Type`（后者可以随便伪造，
+ *    而真正决定 nginx 返回什么 MIME、浏览器要不要执行的，正是落盘后的后缀）。
+ */
+export function validateDocumentUploadFile(file: Pick<File, "name" | "size">) {
+  const extension = extensionOf(file.name);
+  if (!extension) return "文件缺少扩展名";
+  if (!(DOCUMENT_UPLOAD_FORMATS as readonly string[]).includes(extension)) {
+    return `不支持的文件格式：.${extension}（仅支持 ${DOCUMENT_UPLOAD_FORMATS.join("、")}）`;
+  }
+  if (file.size <= 0) return "文件为空";
+  if (file.size > DOCUMENT_UPLOAD_MAX_BYTES) return `文件不能超过 ${Math.floor(DOCUMENT_UPLOAD_MAX_BYTES / MB)}MB`;
+  return undefined;
+}

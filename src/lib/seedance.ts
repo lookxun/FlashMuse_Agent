@@ -1,7 +1,7 @@
 import { DEFAULT_VIDEO_MODEL } from "@/lib/models";
-import { normalizeReferenceAssetUrl } from "@/lib/reference-asset-url";
+import { toDataUrlIfLocalPublicAsset } from "@/lib/generated-asset-path";
 import { existsSync, readFileSync } from "node:fs";
-import { extname, join } from "node:path";
+import { join } from "node:path";
 
 type VideoSettings = {
   ratio?: string;
@@ -87,27 +87,10 @@ function getVideoMode(referenceImageCount: number) {
   return undefined;
 }
 
-function getMimeType(filePath: string) {
-  const extension = extname(filePath).toLowerCase();
-
-  if (extension === ".jpg" || extension === ".jpeg") return "image/jpeg";
-  if (extension === ".webp") return "image/webp";
-  if (extension === ".gif") return "image/gif";
-  return "image/png";
-}
-
-function toDataUrlIfLocalPublicAsset(url: string) {
-  // 自家资产（含被绝对化的历史地址、被写成 `/api/media-thumbnail?url=` 的缩略图接口地址）
-  // 一律先归一化回 `/generated/...`，再读本地文件转 base64。唯一权威见 lib/reference-asset-url.ts。
-  const localUrl = normalizeReferenceAssetUrl(url);
-  if (!localUrl.startsWith("/generated/")) return url;
-
-  const filePath = join(process.cwd(), "public", localUrl.replace(/^\//, ""));
-  if (!existsSync(filePath)) return localUrl;
-
-  const data = readFileSync(filePath);
-  return `data:${getMimeType(filePath)};base64,${data.toString("base64")}`;
-}
+// ⭐ `getMimeType` + `toDataUrlIfLocalPublicAsset` 已收敛到唯一权威实现
+//   `lib/generated-asset-path.ts`（原先本文件、openrouter.ts、openrouter-video.ts 三处一字不差地各存一份，
+//    且三份都只用 `startsWith("/generated/")` 判断、拦不住 `..` 路径穿越 → 能读到 .env.local）。
+//   ⛔ 禁止在本文件里再写一份，改动请改那个模块。
 
 export async function createSeedanceVideoTaskWithReferences(prompt: string, referenceImages: string[] = [], settings?: VideoSettings) {
   const config = getSeedanceConfig();

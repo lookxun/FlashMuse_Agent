@@ -1,11 +1,10 @@
-import { existsSync, readFileSync } from "node:fs";
 import { execFile } from "node:child_process";
-import { extname, join } from "node:path";
 import { promisify } from "node:util";
 import { appendGenerationDiagnosticsLog, summarizeGeneratedReference } from "@/lib/generation-diagnostics-log";
 import { DEFAULT_VIDEO_MODEL, resolveVideoSettingsForModel } from "@/lib/models";
 import { getBytePlusBaseUrl, getBytePlusModelForRequest, getConfiguredBytePlusApiKey, getConfiguredOpenRouterApiKey } from "@/lib/system-settings";
 import { normalizeReferenceAssetUrl } from "@/lib/reference-asset-url";
+import { toDataUrlIfLocalPublicAsset } from "@/lib/generated-asset-path";
 
 type VideoSettings = {
   ratio?: string;
@@ -129,26 +128,10 @@ export function getRequiredOpenRouterApiKey() {
   return apiKey;
 }
 
-function getMimeType(filePath: string) {
-  const extension = extname(filePath).toLowerCase();
-
-  if (extension === ".jpg" || extension === ".jpeg") return "image/jpeg";
-  if (extension === ".webp") return "image/webp";
-  if (extension === ".gif") return "image/gif";
-  return "image/png";
-}
-
-function toDataUrlIfLocalPublicAsset(url: string) {
-  // 自家资产（含被绝对化/被写成缩略图接口的地址）一律先归一化回 `/generated/...`，再读本地文件转 base64。
-  const localUrl = normalizeReferenceAssetUrl(url);
-  if (!localUrl.startsWith("/generated/")) return url;
-
-  const filePath = join(process.cwd(), "public", localUrl.replace(/^\//, ""));
-  if (!existsSync(filePath)) return localUrl;
-
-  const data = readFileSync(filePath);
-  return `data:${getMimeType(filePath)};base64,${data.toString("base64")}`;
-}
+// ⭐ `getMimeType` + `toDataUrlIfLocalPublicAsset` 已收敛到唯一权威实现
+//   `lib/generated-asset-path.ts`（原先本文件、openrouter.ts、seedance.ts 三处一字不差地各存一份，
+//    且三份都只用 `startsWith("/generated/")` 判断、拦不住 `..` 路径穿越 → 能读到 .env.local）。
+//   ⛔ 禁止在本文件里再写一份，改动请改那个模块。
 
 function toPublicGeneratedAssetUrl(value: string) {
   // 给平台的地址必须是**文件静态直链**：先过唯一权威归一化（剥自家主机前缀、把

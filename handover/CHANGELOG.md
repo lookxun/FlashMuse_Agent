@@ -2,7 +2,260 @@
 
 > 本批 CHANGELOG 从 2026-07-21 交接文档重建开始记。**此前的全部历史流水**（约 580KB，含 2026-06 起到 07-21 每一次改动/部署细节）在 `historical-handover-docs-last-used-2026-07-21/CHANGELOG.md`，遇到需要历史上下文的难题再翻。
 
-## 2026-08-01（第二十五次会话）🚀 **正式服上线 v1.0.0.60（跨 3 版）+ ⭐⭐ 阿里 nginx 加 upstream keepalive（测试服 5.4×、正式服 4.4×）｜四方同步恢复**
+## 2026-08-02（第二十六次会话）🔒 **补掉 3 个可被利用的安全洞（本地代码，未部署）+ 🗄️ 从零建立数据库备份体系（已上服务器并全部验过）**
+
+> ⚠️⚠️ **当前不是四方同步**：线上（正式服 = 测试服 = GitHub）仍是 **`v1.0.0.60`**；
+> **本地多了这一批安全修复，未 bump、未部署、未提交。**
+> 🗣️ 用户要求「先做 0 档」= 安全洞 + 备份；**部署节奏还没定，等用户拍板。**
+>
+> ✅ **备份体系已经在服务器上跑起来了**（这部分用户明确批准我上服务器装）：
+> 每天北京时间 03:30 备份正式服+测试服 → 本机 + 异地阿里，每周一 04:10 自动恢复演练。
+> **`prisma migrate deploy` 是容器启动自动跑的、跑之前从来没有备份** —— 这个缺口现在补上了。
+
+### 起因
+
+用户要求把整个项目（含两个历史交接归档、全部源码、部署方案）通读一遍，找问题。
+我用 4 个并行 explore agent 扫了：部署/基建、后端安全、前端代码健康、数据层，
+外加自己复核了最要命的几条。报告出来后用户拍板「先做 0 档」，并逐项回答了 5 个拍板问题
+（都选了我推荐的方案，见下面「用户拍板」一节）。
+
+### 一、补掉的 3 个安全洞（都亲手复核过是真的可利用）
+
+| # | 洞 | 严重性 | 修法 |
+|---|---|---|---|
+| 1 | **`POST /api/media-save-status` 不要求登录 → 任意 URL SSRF** | 🔴 不用账号就能打 | 加强制登录 + 新建 `ssrf-guard.ts` 逐跳校验 |
+| 2 | **参考图 `/generated/../../.env.local` → 任意文件读** | 🔴 登录用户即可，泄露 `AUTH_SECRET` | 新建 `generated-asset-path.ts`，收敛 6 处 |
+| 3 | **`upload-file` 文档路径零校验 → 传 `.html` 同源执行 JS** | 🟠 存储型 XSS | 后缀白名单 + 大小上限 + nginx 加固 |
+
+#### 洞 1：不用登录的 SSRF（最严重）
+
+`media-save-status/route.ts` 原本只写了 `const user = await getCurrentUser()` 然后一路用 `user?.id`，
+**没有「没登录就退出」那一句**。而 `getMediaSaveStatuses()` 对没见过的地址会直接
+`enqueueRemoteAssetSave()` → `saveRemoteAsset()` → `fetch(url)`，唯一过滤是 `/^https?:\/\//`
+（`media-save-queue.ts:55`）。下载的字节写进 `public/generated/`，**下次轮询把 `localUrl` 回给调用方**。
+
+→ 任何人发两个请求就能读**云元数据 `169.254.169.254`**（拿实例凭证）、扫内网、
+读同机另外两个项目（CinematicFlow / VibeSocial）的端口，再把结果当公开文件下载走。
+`.mp4` 结尾会被判成 video、**原字节保存**，拿到的是精确副本。
+
+**修法（三层）**：
+1. 路由加 `if (!user) return 401`。⭐ 先确认过**调用方只有两处**
+   （`chat-workbench.tsx:10436` 登录后才轮询、`workspace-workflows.ts:458` 服务端内部不走 HTTP）→ 加登录零破坏。
+2. 新建 **`src/lib/ssrf-guard.ts`**：`assertRemoteUrlAllowed()` / `isRemoteUrlAllowed()` / **`safeFetch()`**。
+   **解析 DNS 之后再判 IP**（不然攻击者把自己域名解析到 169.254.169.254 就绕过了），
+   任意一条 A/AAAA 落在私网就整体拒绝。
+3. `saveRemoteAsset` 改走 `safeFetch`（`redirect: "manual"` **逐跳**校验，最多 5 跳），
+   并把 curl 兜底的 **`-fL` 改成 `-f`**（`-L` 跟随重定向 = 绕开刚做完的校验）。
+   `enqueueRemoteAssetSave` 里再拦一道（不建注定失败的任务）。
+
+⭐ **用户拍板走「内网黑名单」不走「域名白名单」**：供应商媒体域名是运行时才知道的
+（实测本地队列里全是 `ark-acg-*` / `ark-content-generation-v2-*.tos-ap-southeast-1.volces.com`，
+OpenRouter 那条无法穷举），**漏一个域名就等于用户丢图**；而"拒绝私网"覆盖全部真实攻击面、
+不可能误伤公网供应商。
+
+✅ **自验脚本 `scripts/verify-ssrf-guard.mjs`，25 个用例全过**：
+元数据接口/回环/Docker 网段/IPv6 内网/内嵌凭据/`file:`/`gopher:` 全部拦住；
+**真实供应商域名 + 我们自己四个公网地址全部放行**（这一半同样重要，证明不会丢图）。
+
+#### 洞 2：路径穿越读任意文件
+
+`openrouter.ts:565` 等 **6 处**都是「只判 `startsWith("/generated/")` 就 `join`+`readFileSync`」。
+`startsWith` 拦不住 `..`，而 `normalizeReferenceAssetUrl` 只剥 query 和 `#`（`reference-asset-url.ts:67`）。
+→ 参考图填 `/generated/../../.env.local` 就读到了 `OPENROUTER_API_KEY` / `BYTEPLUS_*` /
+**`AUTH_SECRET`**（一泄别人能自签管理员 cookie 登 `/admin`）/ 数据库口令。
+
+**修法**：新建 **`src/lib/generated-asset-path.ts`**，用 `resolve()` 之后必须仍在
+`public/generated` 里面（对 `..`、`%2e%2e`、绝对路径全都有效）。
+⭐ **顺带收掉一个既有分叉**：`toDataUrlIfLocalPublicAsset` 原本在
+`openrouter.ts` / `openrouter-video.ts` / `seedance.ts` **一字不差存了三份**（连 `getMimeType` 都一样），
+三份都带同一个漏洞 —— 现在是一份。
+⭐ **判据**：项目里**本来就有一处写对了**（`media-thumbnail/route.ts:15` 的 `isInsideGenerated`），
+另外 6 处压根没写。**「同一个判断有的地方有、有的地方没有」就是该收敛的信号。**
+那一处也改成复用共享实现，避免两份以后各自漂移。
+
+#### 洞 3：上传 `.html` → 同源存储型 XSS
+
+`upload-file/route.ts:131` 的校验**只在 `mediaKind` 是 video/audio 时才跑**，文档路径零校验；
+而落盘后缀**直接取客户端文件名**（`local-assets.ts:423`）。
+
+**修法**：`media-upload-validation.ts` 新增 `DOCUMENT_UPLOAD_FORMATS`（10 种）+
+`DOCUMENT_UPLOAD_MAX_BYTES`（10MB）+ `validateDocumentUploadFile()`，
+`upload-rules.ts` 的 `documentFormats` 改成从那里 import
+（**和图片走 `IMAGE_UPLOAD_FORMATS` 是同一个既有约定**，不新造规矩）。
+multipart 和 base64/JSON **两个分支都拦**；用 `buffer.byteLength` 不用 `file.size`（后者是客户端声明值）。
+
+### 二、nginx 加固（4 份 conf 全部，⭐ 实测过而不是只看 nginx -t）
+
+`/generated/` 与 `/home-assets/` 加 `X-Content-Type-Options: nosniff`；
+对危险后缀（`html?|xhtml|xht|shtml|svgz?|xml|xsl|js|mjs|css|wasm`）加 `Content-Disposition: attachment`。
+
+- ⛔ **不能对整个 `/generated/` 加 attachment**（会影响正常图片视频）。
+- ⚠️⚠️ **nginx 的 `if` 是一个新的配置层级**：里面写了 `add_header` 就**不再继承外层的** →
+  必须把 `Cache-Control` / CORS / nosniff 在 `if` 里**重新写一遍**。
+- ✅ **用 docker 起真 nginx 实测**（不是只跑 `nginx -t`）：
+
+| 文件 | Content-Disposition | nosniff | Cache-Control | CORS |
+|---|---|---|---|---|
+| `evil.html` | **attachment** | ✅ | ✅ | ✅ |
+| `evil.svg` | **attachment** | ✅ | ✅ | ✅ |
+| `photo.jpg` | 无 | ✅ | ✅ | ✅ |
+| `clip.mp4` | 无 | ✅ | ✅ | ✅ |
+| `normal.txt` | 无 | ✅ | ✅ | ✅ |
+
+  非匹配文件外层头**全部保留**（证明 `if` 没把它们弄丢）；
+  **Range 请求仍返回 206 + 正确 Content-Range**（视频拖进度条不受影响）；图片字节完好。
+- 4 份 conf `nginx -t` 全部通过（测试服那两份必须一起 include 才有 upstream，已按线上方式一起测）。
+- 🗣️ **用户拍板：历史已上传的 `.html`/`.svg` 不动**，只靠 nginx 加固（符合"历史数据不删不改"的既有原则）。
+
+### 三、⭐⭐ 从零建立数据库备份体系（已上服务器，全部验过）
+
+**动手前的事实勘察**（很关键，决定了整个方案）：
+
+| 项 | 实测值 |
+|---|---|
+| 正式库大小 | **164 MB**（pgdata 272MB） |
+| 测试库大小 | 14 MB |
+| `generated`（媒体） | **21 GB** |
+| 腾讯磁盘 | 493G，剩 286G |
+| 阿里磁盘 | 99G，剩 55G |
+| 宿主有 pg_dump 吗 | **没有** → 必须用容器里的（16.13，版本天然匹配） |
+| root crontab | 已有 stargate + acme.sh **2 条**（⛔ 不能碰） |
+| `/etc/cron.d` | 已有 certbot / e2scrub_all / sgagenttask / sysstat / yunjing |
+
+**最终形态**：
+
+| 项 | 值 |
+|---|---|
+| 内容 | 正式 + 测试**两个库**全量 + 各自 `.env.local` |
+| 位置 | 腾讯 `/opt/flashmuse/backups/` + **异地阿里 `/opt/flashmuse-backups/`** |
+| 频率 | 每天**北京时间 03:30**；每周一 **04:10 自动恢复演练** |
+| 保留 | 本机 14 天 + 每月 1 号留 12 个月；异地不删 |
+| 体积 | 正式 **8.2MB**、测试 0.33MB；耗时约 36 秒 |
+| 仓库权威 | `deploy/backup/`（3 个脚本 + README） |
+
+**⭐ 压缩格式是实测选出来的，不是拍脑袋**：
+
+| 方式 | 体积 |
+|---|---|
+| `-Fc --compress=6`（最直觉） | 27.9MB |
+| `-Fc --compress=9` | 27.7MB |
+| 纯 SQL + gzip -9 | 27.8MB |
+| 纯 SQL + zstd -19 | 14.2MB（但失去 pg_restore 能力） |
+| **`-Fc --compress=0` + `xz -9`** | **8.2MB** ⭐ 体积最小且**保留** pg_restore 全部能力 |
+
+跨境链路实测**丢包 30~40%、只有 74KB/s** → 27.9MB 要 7~15 分钟且很可能中断，
+8.2MB 只要 2~3 分钟。**这是可靠性收益（更可能传完），不只是快。**
+
+**三重校验**（每次备份都跑）：体积下限 → `xz -t` 完整性 → 解压后 `pg_restore --list` 认出 ≥20 个对象。
+再记 sha256 + 关键表行数快照。
+
+### 四、⭐⭐ 验证过程（这一节最值钱：抓到了 5 个真 bug，全是我自己写的）
+
+| # | 现象 | 根因 | 教训 |
+|---|---|---|---|
+| 1 | **首次恢复演练恢复出 0 张表** | 用 stdin 管道喂 `pg_restore`，而 `-Fc` + `-j` **要求可 seek** | ⭐⭐ **只跑备份不演练，等于一直以为自己有备份** |
+| 2 | 备份跑到一半中断，staging 和异地都没跑 | `local stack="$1" outdir="$BACKUP_ROOT/$stack"` —— `local` 的**全部参数在它执行前就被展开**，那时 `$stack` 还没赋值，`set -u` 直接中断 | `bash -n` 查不出这类运行期错误 |
+| 3 | 异地同步 3 次都在 4 秒内 rc=1 | **`--append-verify` 和 `--partial-dir` 互斥** | 我还把 stderr 丢了（`>/dev/null 2>&1`）→ 只看到 rc=1。**别丢 stderr** |
+| 4 | cron 探针没触发，一度以为 cron 坏了 | **crontab 里 `%` 是特殊字符**，`date '+%F'` 被从 `%` 处截断 | 真实备份命令不含 `%`，不受影响 |
+| 5 | 我把 cron 写成 `30 19` 注释"UTC 19:30=北京03:30" | **cron 按系统本地时区跑**，这台是 `Asia/Shanghai +0800` → 会在**北京晚 19:30 高峰**跑 | 改 cron 前先 `timedatectl` |
+
+⭐ 另外发现 **这台机器没装 MTA**（`No MTA installed, discarding output`）→
+**cron 发不出邮件**，所以"失败会收到通知"的假设是错的，一切必须落日志 + `last-status.txt`。
+
+**最终验证结果（全部通过）**：
+
+- ✅ 真实备份：正式 8.2MB / 测试 336K，行数 `User=37 CreditLedger=7929 MediaAsset=9362 WorkspaceWorkflow=103 WorkspaceMessage=6784`
+- ✅ **两服恢复演练都通过**，恢复出来的行数与线上**逐项精确吻合**、16 张表全对，临时库自动清理，**正式库毫发无损**
+- ✅ 异地同步成功（第 1 次尝试，11 秒），阿里 4 个文件 **sha256 与本机逐一一致**
+- ✅ **cron 真实触发验证**：探针在 02:20:01 被执行，syslog 有对应记录（不是只写进文件就算完）
+- ✅ **没动别的项目**：root crontab 条数改前改后都是 2；`/etc/cron.d` 只多了我们那一个文件
+- ✅ 收尾：6 个容器全 Up、端口 5000/5001 → 200、**四域名 main/api/ali/static 全 200**、
+  无残留临时库、行数无变化、app 日志无新报错、磁盘 286G 剩余
+
+### 五、🗣️ 用户拍板的 5 件事（都选了我推荐的方案）
+
+1. **SSRF**：内网黑名单 + 强制登录（不用域名白名单，避免漏域名导致丢图）
+2. **历史危险文件**：只在 nginx 加 nosniff + Content-Disposition，**不动历史文件**
+3. **备份存放**：腾讯本机 + 同步到阿里
+4. **媒体（21GB）**：**这批先只备数据库 + `.env.local`，媒体单独议**
+5. **权限**：代码只改本地；**备份脚本批准我上服务器直接装**
+
+### 六、⛔ 还没做 / 明确留着的
+
+- ⛔⛔ **这批安全修复还没部署**（本地 14 改 + 4 新增）。**等用户定部署节奏。**
+  ⭐ **下个 AI：完整部署清单 + 8 项必验 + 已知缺口，全部写在 `05-next-actions.md` 顶部，照着走。**
+  ⚠️ 和平时不一样的两点：① **改了 4 份 nginx conf**，要一起推并 reload；
+  ② **阿里那份 `flashmuse-static-ip` 本次没碰**，而它**也 serve `/generated/`**
+  （混着别的项目，按铁律禁止整份覆盖，要补得写幂等增量脚本）。
+- ⛔⛔ **通读全项目发现的其余问题，一条都没做**（🗣️ 用户只批了 0 档）→
+  **完整清单在新建的 `08-full-audit-2026-08-02.md`**（1~4 档、带文件行号、含建议修法），
+  **需要用户拍板的 12 件事整理成表放在 `05-next-actions.md`**。
+  其中 3 个**现存真 bug**：`getStaticMediaUrl` 在工作流里是空函数、
+  `session.uploadedFiles` 的 `uploadProgress` 会落库、`setWorkflowItems` 的 updater 里发 fetch PUT。
+- ⛔ **媒体 21GB 没纳入备份**（🗣️ 用户说"媒体单独议"）。现在阿里那边**碰巧**有一份
+  （同步脚本没加 `--delete`），但那是巧合不是设计，且不含 `home-assets` / `.runtime`。
+- ⛔ 没有 WAL 归档/PITR：最坏丢 24 小时。
+- ⛔ 没有告警：磁盘满 / 证书过期 / 备份连续失败都只能靠人看文件。
+- ⭐ **顺手确认了一件好事**：BBR + fq 在**两台机器上都还开着且已持久化**（写在 `/etc/sysctl.conf`），
+  不是回归；跨境慢纯粹是线路本身（属既有的"方案 C 要花钱"问题）。
+- ⭐ **acme.sh 证书续期确实在 root crontab 里**（`38 1,7,13,19`），我之前担心的"静默过期"
+  至少 cron 那一环是有的。⚠️ **但"续期后 reload 容器内 nginx"那一环仍未核实**
+  （443 是容器占着的，宿主续期后必须 `docker exec ... nginx -s reload`）→ 记进 `08` 的 2.6，建议下个 AI 花 10 分钟核实。
+
+### 七、⭐ 交接文档做了哪些结构性补充（下个 AI 受益的地方）
+
+| 动作 | 说明 |
+|---|---|
+| **新建 `08-full-audit-2026-08-02.md`** | 全项目审计完整清单，1~4 档、每条带文件行号。⭐ 最后两节尤其重要：**「⛔ 用户明确否过的，别再提」13 条**（对象存储/CDN/真删除/对话流 AI 改写…）和 **「✅ 已做得好的，别重做」20 条** |
+| `00-README.md` 加**文档索引表** | 以前没有，新人不知道该看哪一份 |
+| `05-next-actions.md` 加**本批部署清单 + 8 项必验** | 下个 AI 可以直接执行，不用自己推 |
+| `05-next-actions.md` 加 **🗳️ 需要用户拍板的 12 件事** | 每条写清"我建议什么 + 依据"，可直接拿去问用户 |
+| `03-deploy-and-servers.md` 顶部加**备份 + 迁移前必做** | 部署的人一定会看到 |
+| `06-memo-tasks.md` 新增 **M029 / M030 / M031** | M029 是**从归档里捞回来的丢失任务**（见下）；M030 服务端文档解析；M031 数据保留策略（需用户定窗口） |
+| `06-memo-tasks.md` 更新 **M001 / M023** | M001 的 `toDataUrlIfLocalPublicAsset` 已收敛成一份（别再写三份）；M023 补上本次发现的**两个新加压来源** |
+| `06-memo-tasks.md` 补记**已核销的历史数据** | 2026-06-19~21 那 243 视频 + 378 图不可恢复、当年已说不追 → 防止以后被当新 bug 重查 |
+| `AGENTS.md` 加 **4 条新铁律** | `/generated/` 路径解析、SSRF 逐跳校验、上传校验要覆盖全部 mediaKind、数据库备份 |
+
+⭐⭐ **本次最值得记的一条文档教训**：归档里的 **M018「对话流统一单轮询器」**
+（有完整方案、用户当年同意以后做）在 2026-07-22 被**另一件事复用了同一个编号**，
+→ 原任务在现行文档里**彻底消失**，grep "单轮询器" 零命中。本次捞回并重新登记为 **M029**。
+**教训：复用 M 编号 = 静默删掉一个任务。以后只准往后取新号。**
+
+
+### 七、本次改动的文件
+
+```
+新增（4）
+  src/lib/generated-asset-path.ts            /generated/ → 本地路径的唯一权威（含 resolve 包含校验）
+  src/lib/ssrf-guard.ts                      SSRF 防护唯一权威（含逐跳校验的 safeFetch）
+  scripts/verify-ssrf-guard.mjs              SSRF 自验（25 用例）
+  deploy/backup/                             备份/恢复/安装 3 个脚本 + README（9 条坑）
+
+改动（14）
+  src/app/api/media-save-status/route.ts      ⭐ 加强制登录（洞 1）
+  src/lib/ssrf-guard.ts 接入：
+    src/lib/local-assets.ts                   saveRemoteAsset 改走 safeFetch + curl -fL → -f
+    src/lib/media-save-queue.ts               enqueue 处第二道防线
+  src/lib/openrouter.ts                       4 处路径穿越 → 统一实现；删掉本地重复的 getMimeType
+  src/lib/openrouter-video.ts                 删掉重复的 toDataUrlIfLocalPublicAsset + getMimeType
+  src/lib/seedance.ts                         同上
+  src/app/api/media-thumbnail/route.ts        本地 isInsideGenerated → 复用共享实现（防漂移）
+  src/app/api/upload-file/route.ts            文档后缀白名单 + 大小上限（两个分支）
+  src/lib/media-upload-validation.ts          新增 DOCUMENT_UPLOAD_FORMATS / validateDocumentUploadFile
+  src/lib/upload-rules.ts                     documentFormats 改为 import（唯一权威）
+  nginx/flashmuse.conf                        2 个 server 块的 /generated/ 加固
+  deploy/staging/flashmuse-staging.conf        同上
+  deploy/staging/flashmuse-test-8080.conf      同上
+  deploy/staging/flashmuse-staging-static-ssl.conf 同上
+```
+
+**自查**：`npx tsc --noEmit` **全绿**；`npx eslint src` = **230 problems（106 errors / 124 warnings）
+与改动前基线完全一致、零新增**；无 Prisma 迁移。
+
+---
+
+## 2026-08-01（第二十五次会话）🚀 **正式服上线 v1.0.0.60（跨 3 版）+ ⭐⭐ 阿里 nginx 加 upstream keepalive（测试服 5.4×、正式服 4.4×）｜四方同步**
+
 
 > ✅✅ **四方同步恢复：正式服 = 测试服 = 本地 = GitHub = `v1.0.0.60`**。四域名 main/api/ali/static 全 200。
 > **无待部署、无未推、无 Prisma 迁移**（33=33，本批没有迁移）。

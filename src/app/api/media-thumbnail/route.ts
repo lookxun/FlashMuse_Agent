@@ -1,22 +1,19 @@
 import { existsSync } from "node:fs";
 import { mkdir, readFile } from "node:fs/promises";
 import { execFile } from "node:child_process";
-import { dirname, extname, join, resolve } from "node:path";
+import { dirname, extname, join } from "node:path";
 import { promisify } from "node:util";
 import ffmpegPath from "ffmpeg-static";
 import { NextResponse } from "next/server";
+// ⭐ 目录包含校验的唯一权威实现。本文件原来自己写了一份 `isInsideGenerated`（写得是对的，
+//   而另外 6 处压根没写 → 2026-08-02 才发现能穿越读 .env.local）。现在收敛成一份，防止以后再漂移。
+import { isInsideGeneratedRoot } from "@/lib/generated-asset-path";
 
 const execFileAsync = promisify(execFile);
 const PUBLIC_ROOT = join(process.cwd(), "public");
 const GENERATED_ROOT = join(PUBLIC_ROOT, "generated");
 const THUMBNAIL_ROOT = join(GENERATED_ROOT, "image-thumbnails");
 const SUPPORTED_IMAGE_EXTENSIONS = new Set([".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".tif", ".tiff", ".heic", ".heif"]);
-
-function isInsideGenerated(filePath: string) {
-  const generatedRoot = resolve(GENERATED_ROOT);
-  const resolvedPath = resolve(filePath);
-  return resolvedPath === generatedRoot || resolvedPath.startsWith(`${generatedRoot}\\`) || resolvedPath.startsWith(`${generatedRoot}/`);
-}
 
 function toFallbackRedirect(request: Request, publicUrl: string) {
   return NextResponse.redirect(new URL(publicUrl, request.url), 307);
@@ -33,7 +30,7 @@ export async function GET(request: Request) {
   const cleanPublicUrl = publicUrl.split("?")[0].split("#")[0];
   const sourcePath = join(PUBLIC_ROOT, cleanPublicUrl.replace(/^\//, ""));
 
-  if (!isInsideGenerated(sourcePath) || !existsSync(sourcePath)) {
+  if (!isInsideGeneratedRoot(sourcePath) || !existsSync(sourcePath)) {
     return toFallbackRedirect(request, cleanPublicUrl);
   }
 

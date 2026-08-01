@@ -11,6 +11,19 @@
 
 ## 已查清 / 无需再查（留档防重复劳动）
 
+### 2026-06-19~21 的一批远端媒体**已正式核销，别再查**（2026-08-02 从归档补记）
+
+- **243 个视频 + 378 张图**持有已过期的 volces 签名 URL，**文件不可恢复**，全部集中在 2026-06-19~21。
+- 成因：那是"任务化（job 化）"之前的老实现，远端签名 URL 只有 24 小时有效期、当时没有及时本地化。
+- **当年已经和用户确认过"不追了"**（`historical-handover-docs-last-used-2026-07-21/CHANGELOG.md:951`、
+  `05-next-actions.md:498`）。往后的实现已经修好（job 化 + 先本地化再 finalize）。
+- ⭐ **为什么要补记这条**：现行交接文档里没有它 → 以后有人查资产库死链，会把它当成一个新 bug 重新查一遍。
+
+### 首页 hero 视频在正式服是黑色占位（2026-08-02 从归档补记）
+
+`public/home-assets` 里的真视频**从未上传到正式服**，所以首页那几个 hero 视频是黑的
+（`historical-handover-docs-last-used-2026-06-20/03-progress.md:471`）。属已知、非 bug。
+
 ### 502（`connect() failed (111: Connection refused)`）= **部署窗口现象，不是 bug**（2026-07-30 查清）
 
 - **证据**：正式服今天 24 条 502 **全部挤在 `10:02:35~10:02:40` 和 `10:05:39~10:05:41` 两个时刻**，
@@ -133,6 +146,46 @@
 > 已用增量脚本修好，`tiantangqiyuan` 一个字没动。
 
 </details>
+
+### [ ] M029 对话流生成「统一单轮询器」—— ⚠️⚠️ **这条曾经因为编号撞车丢过一次，2026-08-02 从归档里捞回来重新登记**
+
+- ⛔⛔ **为什么要特别说明**：归档里的 **M018** 原本就是这件事（`historical-handover-docs-last-used-2026-07-21/06-memo-tasks.md:165-177`，
+  有完整方案），但 2026-07-22 有人把 M018 这个编号**复用给了另一件事**（"刚上传媒体不刷新自动切阿里镜像"）
+  → 原任务在现行文档里**彻底消失**。2026-08-02 全项目审计时 grep 发现
+  **"单轮询器"/"双轮询器" 在全部现行文档里零命中**，才把它捞回来。
+  ⭐ **教训：复用 M 编号 = 静默删掉一个任务。以后只准往后取新号。**
+- **押后原因**：当年只落地了"防重复"的 guard（`runningRequestIdsRef`），重构本身没做。用户当时同意以后做。
+- **问题**：对话流的生成状态有**两个轮询器**——前端的 `while` 循环 + 数据驱动的后台 reconcile。
+  两者都会 `+1` 失败计数器 → 历史上**出过两次"重复失败卡"**（先视频、后图片）。
+- **重构方向**：干掉前端 `while` 轮询，让 reconcile 成为唯一轮询器，并把这 4 项职责搬进去：
+  ① BytePlus 人工审核往返 ② 实时状态文案（排队中/渲染中）③ 停止/中断 ④ 超大参考图压缩重试。
+- **做之前**：先把这 4 项的现有行为列成回归清单，否则很容易丢掉其中一项。
+
+### [ ] M030 服务端文档解析（pdf/docx/xlsx/pptx → 文本分块入库）—— 2026-08-02 从归档捞回
+
+- **押后原因**：整套计划在 2026-06 的归档里有（`historical-handover-docs-last-used-2026-06-20/03-progress.md:1455,1501`、
+  `05-chat.md:1017`），但**在现行交接文档里零命中**，等于被遗忘了。
+- **现状**：文档只是"挂上去 + 显示"，**没有任何服务端解析**。Agent 拿不到文档内容。
+- **以后怎么做**：服务端解析 pdf/docx/xlsx/pptx → 文本 + 分块存库 → Agent 读分块而不是原文件。
+- ⚠️ **注意本次（2026-08-02）新增的约束**：文档上传现在有**后缀白名单**
+  （`media-upload-validation.ts` 的 `DOCUMENT_UPLOAD_FORMATS`）和 10MB 上限，
+  做解析时如果要支持新格式，**必须同时加进那个唯一权威列表**。
+
+### [ ] M031 数据保留 / 清理策略 —— 🗣️ **必须用户先定保留窗口，我不敢自己定**
+
+- **背景**（2026-08-02 审计发现）：**全项目只有 4 处 `deleteMany`，全在 `auth.ts` 且全是 Session。**
+  也就是说除了会话表，**这个应用从来不删任何一行**。
+- 只增不减的表：`GenerationEvent`（每次生成尝试一行，归档脚本只打 `resolvedAt` 标记、**从不删行**）、
+  `GenerationJob`（**9 个 jsonb 列，按字节算最大**）、`CreditLedger`、`UploadEvent`、
+  `GptImagePromptOptimizationCase`、`WorkspaceMessage`。
+- 软删除永不清除：`WorkspaceSession.deletedAt`、`WorkspaceWorkflow.deletedAt`
+  （⚠️ 而且已删工作流的 `canvasJson` **每次 PUT 还在被读**，见 `08` 的 1.4）、
+  **`UserAssetState.purgeAt`（这个列名是个承诺，但代码从不据它删任何东西）**、`MediaAsset.archivedAt`。
+- 孤儿：DB 有行文件没了 = 永久隐形僵尸；文件有 DB 没行 = 永久占盘无人扫。
+  `scripts/audit-asset-consistency.mjs` 是审计不是清理，且要手动跑。
+- ⛔ **为什么押后**：用户长期交代过「**测试内容不要删**」，而且用户明确定过"真删除一律禁止、只软删"。
+  → **保留天数必须他本人定**，任何自动删除都要他签字。
+- 做的时候：先 dry-run 报数量、先备份（备份体系已经有了）、分批删、每步打印影响行数。
 
 ### [ ] M028 侧边栏三态要不要持久化（记到 localStorage）
 
@@ -391,6 +444,12 @@ M025 = **只把"当前正在用的那一个工作流"发完整，其余工作流
 ### [ ] M001 Server-To-Provider Public Reference URLs
 - 押后：域名可能再变，公网 URL base 要稳定后再改 provider 请求行为。
 - 以后：把本地 `/generated/...` 参考媒体以公网 HTTPS URL 发 BytePlus/OpenRouter（而非转回 base64），先验证域名 provider 可达。相关 `openrouter.ts`/`openrouter-video.ts`/`seedance.ts` 的 `toDataUrlIfLocalPublicAsset()`。
+- ⚠️⚠️ **2026-08-02 更新（做这条之前必读）**：`toDataUrlIfLocalPublicAsset()` 原本在
+  `openrouter.ts` / `openrouter-video.ts` / `seedance.ts` **一字不差地存了三份**（连 `getMimeType` 都一样），
+  而且三份**都带同一个路径穿越漏洞**（只判 `startsWith("/generated/")`，能读到 `.env.local`）。
+  → 现在已收敛成**唯一一份**：`src/lib/generated-asset-path.ts` 的 `toDataUrlIfLocalPublicAsset()`。
+  **做 M001 时只改那一个文件即可，⛔ 别再往三个地方各写一份。**
+
 
 ### [ ] M005 输入框 @mention 重构
 - 押后：当前 @mention 行为可接受，重构风险 > 收益。逻辑已收敛 `src/lib/mention-text.ts`。
@@ -427,6 +486,19 @@ M025 = **只把"当前正在用的那一个工作流"发完整，其余工作流
   "文件太大发给模型被拒"那个动机**已经不存在了**。以后要做时按这个新前提重新评估收益。
 
 ### [ ] M023 给 `DATABASE_URL` 显式配 `connection_limit` —— 押后：**等它下次真犯病、拿到现场数据再动**（2026-07-30 用户拍板）
+
+> ⚠️⚠️ **2026-08-02 更新：全项目审计独立又撞上了这条，而且发现了两个「当年不知道」的加压来源
+> → 建议把它重新拿给用户拍板一次**（⛔ 但在他重新拍板前，仍按 2026-07-30 的决定不动）：
+>
+> 1. **`generation-jobs.ts:99-144`（`reserveJobNames`）**：**每次生成**都在
+>    「持着 `pg_advisory_xact_lock` 的事务里」把该用户**历史上全部 MediaAsset** 捞出来
+>    （只为给新文件起名字）→ 长时间占用连接 + 串行化该用户的生成。
+>    ⭐ 而 `WorkspaceWorkflow.nextImageNumber`/`nextVideoNumber` 两列**早就存在**就是为了免掉这个扫表。
+> 2. **`workspace-workflows.ts:301`**：保存工作流时用 `Promise.all` 发**每个工作流一条 upsert**
+>    → 一千个工作流 = 一千条并发查询，**直接打穿 17 连接的池子**。
+>
+> → 也就是说 A4 那个"连接池打满"很可能**不是随机的**，而是这两处在特定数据量下必然触发。
+> 细节见 `08-full-audit-2026-08-02.md` 的 1.2 / 1.4 / 1.6。
 
 - **来历**：A4「数据库连接池被打满」的**真修复**（第十六次会话查清）。当前靠 v54 加的明确错误文案兜着 ——
   即 `src/lib/error-message.ts:244` 那句 **「服务端数据库繁忙（连接池已满），请稍后重试。」**

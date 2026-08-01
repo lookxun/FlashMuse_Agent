@@ -1,8 +1,8 @@
 import { execFile } from "node:child_process";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { writeFile, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { extname, join } from "node:path";
+import { join } from "node:path";
 import { promisify } from "node:util";
 import type { ConversationModel, ModelName } from "@/lib/models";
 import { ADVANCED_CHAT_MODEL, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, getExpectedImageDimensions, getImageModelRule, GPT_IMAGE2_MODEL_ID, isGptImage2Model, models, normalizeImageQuality, resolveImageSettingsForModel, resolveOpenRouterImageModelName } from "@/lib/models";
@@ -14,6 +14,7 @@ import { appendGenerationDiagnosticsLog, summarizeGeneratedReference } from "@/l
 import { getBytePlusBaseUrl, getBytePlusModelForRequest, getConfiguredBytePlusApiKey, getConfiguredOpenRouterApiKey, getModelProviderPreference, isGeneralTextModelEnabled, isTextModelEnabled } from "@/lib/system-settings";
 import { sanitizeModelOutputText } from "@/lib/text-cleanup";
 import { normalizeReferenceAssetUrl } from "@/lib/reference-asset-url";
+import { generatedAssetExists, getGeneratedFileSize, getReferenceAssetMimeType, resolveGeneratedFilePath, toDataUrlIfLocalPublicAsset } from "@/lib/generated-asset-path";
 
 export type ChatRequest = {
   model: ModelName;
@@ -548,28 +549,10 @@ async function postChatCompletion(url: string, headers: Record<string, string>, 
   }
 }
 
-function getMimeType(filePath: string) {
-  const extension = extname(filePath).toLowerCase();
-
-  if (extension === ".jpg" || extension === ".jpeg") return "image/jpeg";
-  if (extension === ".webp") return "image/webp";
-  if (extension === ".gif") return "image/gif";
-  return "image/png";
-}
-
-function toDataUrlIfLocalPublicAsset(url: string) {
-  // 自家资产（含被绝对化的历史地址、被写成 `/api/media-thumbnail?url=` 的缩略图接口地址）
-  // 一律先归一化回 `/generated/...`，再读本地文件转 base64。否则会把动态接口地址原样发给平台，
-  // 平台来拉必超时（2026-07-28 排查到的 18 条线上失败）。
-  const localUrl = normalizeReferenceAssetUrl(url);
-  if (!localUrl.startsWith("/generated/")) return url;
-
-  const filePath = join(process.cwd(), "public", localUrl.replace(/^\//, ""));
-  if (!existsSync(filePath)) return localUrl;
-
-  const data = readFileSync(filePath);
-  return `data:${getMimeType(filePath)};base64,${data.toString("base64")}`;
-}
+// ⭐ `toDataUrlIfLocalPublicAsset` 已收敛到唯一权威实现 `lib/generated-asset-path.ts`
+//   （原先 openrouter / openrouter-video / seedance 三处一字不差地各存一份，
+//    且三份都只用 `startsWith("/generated/")` 判断、拦不住 `..` 路径穿越）。
+//   ⛔ 禁止在本文件里再写一份，改动请改那个模块。
 
 // gpt-5.4-image-2 走 OpenRouter 新图片接口时，参考图改传公网 URL（不再内联 base64，更稳更快）。
 // OpenRouter 新接口只认 HTTPS URL（http 会报 "Only HTTPS URLs are allowed"）。
@@ -593,9 +576,10 @@ function toPublicGeneratedImageUrl(value: string) {
 // 优先把"自家 /generated 资产"映射到本地文件直接读；本地找不到再抓取远程字节。
 function resolveOwnLocalAssetPath(url: string): string | undefined {
   const localUrl = normalizeReferenceAssetUrl(url);
-  if (localUrl.startsWith("/generated/")) return join(process.cwd(), "public", localUrl.replace(/^\//, ""));
+  const direct = resolveGeneratedFilePath(localUrl);
+  if (direct) return direct;
   const m = localUrl.match(OWN_HOST_ABSOLUTE_RE);
-  if (m && m[1].startsWith("/generated/")) return join(process.cwd(), "public", m[1].replace(/^\//, ""));
+  if (m) return resolveGeneratedFilePath(m[1]);
   return undefined;
 }
 async function referenceToDataUrl(value: string): Promise<string> {
@@ -604,7 +588,7 @@ async function referenceToDataUrl(value: string): Promise<string> {
   const localPath = resolveOwnLocalAssetPath(url);
   if (localPath && existsSync(localPath)) {
     const buf = readFileSync(localPath);
-    return `data:${getMimeType(localPath)};base64,${buf.toString("base64")}`;
+    return `data:${getReferenceAssetMimeType(localPath)};base64,${buf.toString("base64")}`;
   }
   try {
     const resp = await fetch(toPublicGeneratedImageUrl(url));
@@ -627,8 +611,7 @@ function measureReferenceImageSize(url: string): number | undefined {
       return Math.floor((base64.length * 3) / 4);
     }
     if (url.startsWith("/generated/")) {
-      const filePath = join(process.cwd(), "public", url.replace(/^\//, ""));
-      if (existsSync(filePath)) return statSync(filePath).size;
+      return getGeneratedFileSize(url);
     }
   } catch {
     return undefined;
@@ -640,8 +623,7 @@ function getReferenceImageDebugInfo(url: string, index: number) {
   if (url.startsWith("data:")) return { index, type: "data-url", exists: true };
   if (/^https?:\/\//i.test(url)) return { index, type: "remote-url", exists: true };
   if (url.startsWith("/generated/")) {
-    const filePath = join(process.cwd(), "public", url.replace(/^\//, ""));
-    return { index, type: "local-generated", exists: existsSync(filePath), path: url };
+    return { index, type: "local-generated", exists: generatedAssetExists(url), path: url };
   }
 
   return { index, type: "unknown", exists: false, path: url.slice(0, 120) };

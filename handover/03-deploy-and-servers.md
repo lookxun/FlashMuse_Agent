@@ -1,5 +1,29 @@
 # Deploy And Servers（2026-07-21 重建，改代码/部署必读）
 
+## 🗄️🗄️ 数据库备份（2026-08-02 建立）—— 部署前必看
+
+**完整用法 / 紧急恢复步骤 / 9 条踩过的坑 → `deploy/backup/README.md`。**
+
+- 每天**北京时间 03:30** 自动备份正式服 + 测试服（含各自 `.env.local`）→
+  腾讯 `/opt/flashmuse/backups/` + **异地阿里 `/opt/flashmuse-backups/`**。
+  正式 8.2MB / 测试 0.33MB，全程约 36 秒。cron 在 `/etc/cron.d/flashmuse-db-backup`。
+- **每周一北京时间 04:10 自动做一次恢复演练**（恢复到临时库比对行数再删掉，**不碰正式库**）。
+- 日常只看：`sudo cat /opt/flashmuse/backups/last-status.txt`（`OK` / `OK_LOCAL_ONLY` / `FAILED`）。
+  ⚠️ **本机没装 MTA，cron 发不出邮件** → 不会有失败通知，只能靠这个文件和 `backup.log`。
+- ⛔ **媒体（`generated`，21GB）还没纳入备份**（2026-08-02 用户说"单独议"）。
+
+### ⭐⭐ 部署前必做（任何带新 Prisma 迁移的批次）
+
+`docker-entrypoint.sh` 在容器启动时会自动 `prisma migrate deploy`，**而迁移是单向的** ——
+代码能回滚，库迁上去了回不来；而本文档下面写的回滚办法（还原旧 `app/` + 重建）
+**对带迁移的批次其实是不安全的**（代码退回旧版、库还停在新 schema）。所以动手前先跑一次：
+
+```bash
+sudo /opt/flashmuse/scripts/flashmuse-db-backup.sh --stack prod --label pre-deploy
+```
+
+（判断有没有新迁移：比对 `prisma/migrations/` 目录数与服务器上 `_prisma_migrations` 表行数。）
+
 ## 服务器全景（当前）
 
 - **腾讯云新加坡 `119.28.116.16`（主服务器，跑 app）**：Ubuntu 24.04，用户 `ubuntu`（免密 sudo）。Docker 栈。**真正跑 FlashMuse app 的就是这台。**

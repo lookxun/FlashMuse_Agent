@@ -10,6 +10,7 @@ import sharp from "sharp";
 import { appendUploadDiagnosticsLog } from "@/lib/upload-diagnostics-log";
 import { getCompressionQualityPercent, getGenerationCompressionSettings } from "@/lib/system-settings";
 import { IMAGE_UPLOAD_RECOMPRESS_OVER_BYTES, IMAGE_UPLOAD_RECOMPRESS_QUALITY } from "@/lib/image-upload-validation";
+import { safeFetch } from "@/lib/ssrf-guard";
 
 type AssetType = "image" | "video";
 type SaveAssetOptions = { userId?: string; diagnostics?: { requestId?: string; fileName?: string; fileSize?: number }; keepTransparent?: boolean };
@@ -441,13 +442,26 @@ export async function saveRemoteAsset(url: string, type: AssetType, init?: Reque
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), REMOTE_DOWNLOAD_TIMEOUT_MS);
   try {
-    const response = await fetch(url, { ...init, cache: "no-store", signal: controller.signal });
+    // ⛔⛔ 出网必须走 `safeFetch`（2026-08-02 加）：这个函数的 url 可以来自用户输入
+    //   （`/api/media-save-status` 会把没见过的地址直接入队），不拦就等于"服务器帮外人去读内网"。
+    //   `safeFetch` 会**逐跳**校验（不能用 `redirect: "follow"`，那只校验第一跳）。
+    //   拦法与理由见 `lib/ssrf-guard.ts` 顶部。⛔ 禁止为了"让某个地址能过"而在这里开后门。
+    const response = await safeFetch(url, { ...init, cache: "no-store", signal: controller.signal });
     const imageDir = join(GENERATED_ROOT, getGeneratedFolder(getAssetFolder("image"), options));
 
     if (!response.ok) {
       try {
-        const { stdout } = await execFileAsync(getCurlCommand(), ["-fL", "-sS", "--max-time", String(Math.ceil(REMOTE_DOWNLOAD_TIMEOUT_MS / 1000)), ...toCurlHeaderArgs(init?.headers), url], { encoding: "buffer", maxBuffer: 500 * 1024 * 1024, signal: controller.signal });
+        // ⛔ 这里原来用的是 `curl -fL`，`-L` 会**跟随重定向**——那等于绕开 SSRF 校验
+        //   （公网地址 302 到 `http://169.254.169.254/...` 就穿透了）。
+        //   已改成 `-f` 不跟随；供应商的直链本来就不需要重定向。
+        const { stdout } = await execFileAsync(getCurlCommand(), ["-f", "-sS", "--max-time", String(Math.ceil(REMOTE_DOWNLOAD_TIMEOUT_MS / 1000)), ...toCurlHeaderArgs(init?.headers), url], { encoding: "buffer", maxBuffer: 500 * 1024 * 1024, signal: controller.signal });
         const buffer = Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout);
+        // ⛔ 空 body 必须当失败（2026-08-02 加）：curl 的 `-f` 只对 HTTP >= 400 报错，
+        //   遇到 302（不带 -L 时不会去跟随）会**成功退出（exit 0）并输出空 body**。
+        //   不拦这一句，0 字节的 buffer 会被当成图片/视频原样存盘 ——
+        //   比"明确失败"更难查（用户看到一张打不开的图，日志却一切正常）。
+        //   走 throw 是为了复用下面现成的 catch 失败分支，不新造错误路径。
+        if (buffer.byteLength <= 0) throw new Error("curl 返回了空响应体");
         if (type === "image") {
           const encoded = await encodeGeneratedImageBuffer(buffer, join(imageDir, `${Date.now()}-${randomUUID()}`), undefined, url, options.keepTransparent);
           const asset = createPublicAssetPath("image", encoded.extension, options);
