@@ -19,5 +19,17 @@ export function middleware() {
 }
 
 export const config = {
-  matcher: ["/api/:path*"],
+  // ⛔⛔ 3 个 multipart 大上传路由**故意排除**在 middleware 之外（2026-08-02 加）：
+  // Next 16 只要请求命中 middleware（新版叫 proxy），就会**克隆并整份缓冲 body 到内存**，
+  // 且默认上限 10MB —— 超出部分被静默截断，`request.formData()` 直接解析失败，
+  // 用户看到的是毫无信息的 500「文件上传失败，请稍后再试。」
+  // （视频规则允许 200MB、音频 15MB，全都因此挂掉过。）
+  // 而这个 middleware **压根不读 body**（只给响应加 x-app-version 头），
+  // 为它缓冲 200MB 视频纯属浪费 → 排除后既不截断、也不吃内存，严格优于调大上限。
+  //
+  // ⚠️ 代价（有意接受）：这 3 个路由的响应**没有 x-app-version 头**。
+  //   版本提示条（version-update-notifier）是给 window.fetch 打补丁、从任意响应读这个头，
+  //   全站 /api/models、/api/workspace-state、/api/media-save-status 等高频流量都带它，不缺这 3 个。
+  // ⚠️ 以后新增 multipart 上传路由，记得把名字加进下面这个负向断言名单。
+  matcher: ["/api/:path((?!upload-file|asset-upload-temp|upload-image).*)"],
 };
