@@ -162,6 +162,14 @@ sudo /opt/flashmuse/scripts/flashmuse-db-backup.sh --stack prod --label pre-depl
 
 ## 关键踩坑与记忆
 
+- ⭐⭐ **在服务器本机自测接口"莫名 401"，先换 Host 再怀疑代码**（2026-08-02 实测）：
+  `curl 127.0.0.1:5001/api/auth/me` 带有效 session cookie 返回 `{"user":null}`（未登录），
+  而 `curl 119.28.116.16:5001/api/auth/me` 带同一个 cookie 就正常返回用户 ——
+  **本项目的会话校验对 Host 敏感**。在服务器本机自测带登录态的接口，一律用公网 IP/域名，别用 127.0.0.1。
+- ⭐ **部署里要推测试服 nginx 时，是 3 份不是 2 份**（2026-08-02 踩过）：
+  ① 阿里 `flashmuse-test-8080` ② 阿里 `flashmuse-staging-static-ssl`（写 `sites-available` 那端）
+  ③ **腾讯容器内** `/opt/flashmuse-staging/data/nginx/flashmuse-staging.conf`（bind-mount 进 staging-nginx）。
+  漏了 ③ = 容器层没生效，而测试服恰恰是验收的地方 → 会验出假结果。
 - **PowerShell 坑**：ssh 内联含 `$(...)`/`%{}`/中文/嵌套引号会被本地 PS 先解释坏（备份目录名丢时间戳=踩过）→ 一律写本地 `.sh`/`.sql`/`.js`，scp `/tmp`，`sed -i 's/\r$//'` 后 `bash`/`psql -f`/`node`。改中文源码禁 `Set-Content`（mojibake）。
 - **一次性 node 脚本**必须放进容器 `/app` 里跑（`sudo docker cp x.js 容器:/app/ && sudo docker exec -w /app 容器 node x.js`）才找得到 `@prisma/client`。
 - **DB heredoc SQL 用 `docker exec -i`**；含中文 SQL 写 .sql scp + `docker cp` + `psql -f`。腾讯→阿里跳板：`sudo ssh -o StrictHostKeyChecking=no -i /opt/flashmuse/data/runtime/flashmuse_to_ali_ed25519 root@101.37.129.164 '...'`。

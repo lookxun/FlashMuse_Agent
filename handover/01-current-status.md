@@ -2,7 +2,52 @@
 
 > 本批交接文档 2026-07-21 重建。更早的详细流水在 `historical-handover-docs-last-used-2026-07-21/`（尤其 `CHANGELOG.md` 580KB、`01-current-status.md`、`05-next-actions.md`）。遇到需要历史上下文的难题再翻归档。
 
-## 🔒🔒 当前状态（2026-08-02 第二十六次会话末：**本地有一批安全修复未部署；备份体系已上线**）
+## ✅✅ 当前状态（2026-08-02 第二十七次会话末：**四方同步 `v1.0.0.62`，两服都已部署**）
+
+- ✅ **四方同步恢复：正式服 = 测试服 = 本地 = GitHub = `v1.0.0.62`**，四域名 main/api/ali/static 全 200。
+  **工作区干净、无待部署、无未推、无 Prisma 迁移。**
+- 正式服备份：`/opt/flashmuse/app-backups/20260802-045242-presync-v62`；
+  数据库备份（部署前带标签）：`pre-deploy-security` / `pre-deploy-v62` 两次（用法见 `deploy/backup/README.md`）。
+- ⭐⭐ **本批 = 3 个安全洞上线 + Next 10MB body 截断修复**（分 R1/R2 两轮，测试服→正式服各验一轮）：
+  1. 🔒 **洞① 不用登录的 SSRF（最严重）**：`POST /api/media-save-status` 原本匿名可调，
+     任何人能让服务器读云元数据 `169.254.169.254`、扫内网、读同机另两个项目，结果还存成公开文件。
+     → 加强制登录 + `src/lib/ssrf-guard.ts`（DNS 解析后判 IP、`safeFetch` 逐跳校验、curl 去掉 `-L`）。
+  2. 🔒 **洞② 路径穿越读任意文件**：参考图填 `/generated/../../.env.local` 能读到全部 API key 和 `AUTH_SECRET`
+     （一泄别人能自签管理员 cookie）。→ `src/lib/generated-asset-path.ts`：resolve 后必须仍在 generated 目录内。
+  3. 🔒 **洞③ 上传 `.html` 同源存储型 XSS**：文档上传路径零校验 → 后缀白名单 + 10MB 上限
+     + 4 份 nginx conf 加 nosniff/危险后缀 attachment。
+  4. ⚡ **Next 10MB body 截断（R2，存量线上问题）**：Next 16 对命中 middleware 的请求**克隆+缓冲 body、默认上限 10MB**
+     → 用户传 >10MB 的视频/音频一直在失败，且只看到毫无信息的 500。
+     ⭐ 修法是**零内存代价**的：把 3 个 multipart 上传路由从 `src/middleware.ts` 的 matcher 里排除
+     （这个 middleware 只加版本头、不读 body），**不是**调大上限；
+     另加 `experimental.proxyClientMaxBodySize: '32mb'` 兜底 JSON/base64 路线。
+- ⭐ **双 AI 协作机制（本轮新建，临时机制）**：`handover/09-ai-review-channel.md`。
+  执行方 A（写代码/部署）↔ 审计方 B（派任务/审收），用户只负责传话"去看 09"。
+  R1/R2 全部通过，R3 = 本文档沉淀。**随时可删，删前确认结论都已进永久文档。**
+- ⛔⛔ **本轮最值钱的方法论教训（已写进 `06-memo-tasks.md` M031 + AGENTS.md 2 条新铁律）**：
+  - "工作流节点传参考图偶发静默挂不上" = **M031，根因未知**。
+    A 连续两次归因错误（dedup / by-name 分支）都被 B 用**判据条件**证伪
+    （`:3761` 的 `asset.name === file.name` 中 asset.name 已去扩展名，对带扩展名文件永远不相等）。
+    ⛔ **严谨复现之前不许动代码**，复现设计在 M031 里。
+  - 新铁律①：改 Next 配置项先读 `node_modules/next/dist/docs/`（运行时错误信息里的名字可能是旧名）。
+  - 新铁律②：matcher 改了要测 `.next/server/middleware-manifest.json` 的编译产物正则，必须含嵌套多段路由。
+- ✅ **实测确认的关键事实**：
+  - 11.7MB mp4 上传成功（修复前 500）；206MB mp4 被应用规则 400 拒「视频不能超过 200MB」（不是 500）；
+    >10MB pdf 拿到 400「文件不能超过 10MB」（修复前是 500）。
+  - `/api/models` 等仍带 `x-app-version: v1.0.0.62`；3 个上传路由不带（有意）；嵌套路由 `/api/auth/session`、`/api/admin/overview` 仍带。
+  - `.html` 在三层（腾讯容器/阿里 8080/阿里 staging-static）都返回 `Content-Disposition: attachment`，`.jpg` 正常显示。
+- 📌 **正式服本次痕迹**（别当用户数据）：`12424740@qq.com` 新建 **`工作流_09`** ——
+  真生成 `image_1_w9`（赛博朋克三视图，扣 3 积分）+ ref6-r2 参考图上传节点。按交代全留着。
+- 📌 **测试服本次痕迹**：`工作流_04`（R1 的像素风 PS2 `image_1_w4` + 8 秒视频 `video_1_w4` + 若干上传节点）、
+  1 个新对话（水彩/素描各 1 图）、一批 r1/r2 测试上传文件。共扣 95 积分（R1 91 + R2 4）。
+- ⛔ **已知缺口（不紧急，待办在 05）**：阿里正式那份 `flashmuse-static-ip` 没加 nosniff/attachment
+  （混着别的项目，要补必须写幂等增量脚本）；`middleware.ts` 的排除名单是前缀匹配版（当前无受影响路由）。
+- ⛔⛔ **账号铁律**：**本地 / 测试服 / 正式服，一切测试只用 `12424740@qq.com`**（密码 `dragonstar`）；
+  `lookxun@163.com` 是**用户自己的号**，**只**用于登后台 `/admin`。
+- **主服务器 = 腾讯云新加坡 `119.28.116.16`**（Docker 栈）。阿里 `101.37.129.164` = 国内入口/静态镜像 + 反代回腾讯。
+- **测试服**（独立、数据隔离）：入口 `http://101.37.129.164:8080/` 或 `https://staging-static.venusface.com/`、后台 `/admin`。
+
+## ✅ 上一状态（2026-08-02 第二十六次会话末：本地有一批安全修复未部署；备份体系已上线）
 
 - ⚠️⚠️ **不是四方同步**：线上（正式服 = 测试服 = GitHub）仍 **`v1.0.0.60`**；
   **本地多了「3 个安全洞修复」这一批，未 bump、未部署、未提交**（14 改 + 4 新增）。

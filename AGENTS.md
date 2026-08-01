@@ -4,6 +4,30 @@
 This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code. Heed deprecation notices.
 <!-- END:nextjs-agent-rules -->
 
+# 铁律：改 Next 配置项之前必须读 `node_modules/next/dist/docs/`，⛔ 不许照运行时错误信息里的名字写（2026-08-02 加）
+
+2026-08-02 修"上传 >10MB 被 500"时，运行时错误信息给的配置名是 `middlewareClientMaxBodySize`（还带文档链接），
+**那是旧名字** —— Next 16.2.4 已经把它改名成 **`experimental.proxyClientMaxBodySize`**
+（证据在 `docs/01-app/02-guides/upgrading/codemods.md` 的 middleware→proxy 重命名清单里）。
+⛔⛔ 照旧名字写下去，Next 不认识这个键、**静默无效** —— 配置没生效，但我们以为修好了。
+⭐ 姿势：改任何 Next 配置项，先在 `node_modules/next/dist/docs/` 里 grep 到它当前的名字和位置
+（尤其注意是不是在 `experimental` 里），再动手；改完 `next build`，确认它出现在
+`Experiments (use with caution):` 列表里才算被接受。
+
+# 铁律：middleware/proxy 的 matcher 改了之后，要测编译产物里的正则，别只 curl 几个接口（2026-08-02 加）
+
+改了 `src/middleware.ts` 的 matcher 后，光 curl 几个接口不够 —— 运行时真正生效的是
+**`.next/server/middleware-manifest.json` → `middleware["/"].matchers[0].regexp`** 那份编译产物，
+用 `node -e "new RegExp(regexp)"` 批量跑十几个路径，几秒钟覆盖全部用例。
+
+- ⭐ **必须包含嵌套多段路由**（`/api/auth/session`、`/api/admin/overview`）——
+  "`.*` 到底能不能跨 `/`" 正是这类写法最容易翻车的地方，单段路由验不出来。
+- ⚠️ **负向断言 `(?!a|b)` 是前缀匹配，不是整段匹配**：matcher 里写 `(?!upload-file)`，
+  将来新增的 `/api/upload-filex`、`/api/upload-files` 也会被一并排除。
+  要整段匹配就写 `(?!(?:upload-file|asset-upload-temp|upload-image)(?:$|/))`。
+  （2026-08-02 的排除名单用的是前缀匹配版，**当前线上没有受影响的路由，是有意不单独为它发版**；
+  下次谁动 `middleware.ts` 顺手评估要不要换成整段匹配。）
+
 # 铁律：把 `/generated/` 地址变成本地文件路径，只能走 `resolveGeneratedFilePath()`（2026-08-02 加）
 
 ⛔⛔ 历史上有 **6 处**都是这么写的，**全都能被路径穿越**：

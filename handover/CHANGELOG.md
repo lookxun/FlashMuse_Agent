@@ -2,6 +2,81 @@
 
 > 本批 CHANGELOG 从 2026-07-21 交接文档重建开始记。**此前的全部历史流水**（约 580KB，含 2026-06 起到 07-21 每一次改动/部署细节）在 `historical-handover-docs-last-used-2026-07-21/CHANGELOG.md`，遇到需要历史上下文的难题再翻。
 
+## 2026-08-02（第二十七次会话）🚀 **3 个安全洞上正式服（v61）+ Next 10MB body 截断修复（v62）· 两服四方同步**
+
+> ✅ **四方同步恢复：正式服 = 测试服 = 本地 = GitHub = `v1.0.0.62`**，四域名全 200，工作区干净、无未推。
+> ⭐ **本轮是双 AI 协作**（执行方 A 写代码/部署、审计方 B 派任务/审收，频道 `handover/09-ai-review-channel.md`，临时机制）。
+> 两轮派单均通过：**R1**（3 个安全洞部署，v61）、**R2**（Next body 截断修复 + 两服，v62）、**R3**（本文档沉淀）。
+> 为什么是 v61 → v62 两次 bump：R1 部署完测试服后，用户拍板把 R1 发现的 Next body 问题"一起做"，
+> 按铁律加了新代码就必须**重回测试服 + 再 bump 一次**（不能拿 v61 的测试结果给 v62 背书）。
+
+### 一、R1：3 个安全洞上线（v1.0.0.61）
+
+上一会话（第二十六次）已在本地修好并审过，本轮部署。洞的细节见上一会话条目，此处只记部署事实：
+
+1. 部署前带标签备份：`flashmuse-db-backup.sh --stack prod --label pre-deploy-security`（8.2MB，本机+异地 OK）。
+2. **B 审计抓到部署清单漏了 1 份 nginx conf**：`deploy/staging/flashmuse-staging.conf`（腾讯容器内 staging-nginx）
+   —— 漏了它测试服容器层就没加固，会验出假结果。实际推了 **3 份**（阿里 8080、阿里 staging-static-ssl、腾讯容器），
+   逐份备份 + `nginx -t` + reload。`05-next-actions.md` 步骤 3 已从"2 份"改成"3 份"。
+3. **顺手修掉 B 抓的一个隐患**：`local-assets.ts` 把 curl `-fL` 改 `-f` 后，遇 302 会 exit 0 + 空 body
+   → 0 字节文件被当图存盘。修法：`buffer.byteLength <= 0` 当失败，走原有 catch 分支（无新文案、无静默成功）。
+4. 测试服验收 10 项 + 巡检 6 项全过（真跑 2 次生图 + 1 次生视频，-91 积分，痕迹 `工作流_04`）。
+   `.html` 三层（腾讯 5001/阿里 8080/阿里 staging-static）实测都带 `Content-Disposition: attachment`，`.jpg` 无。
+5. 阿里正式 `flashmuse-static-ip` **有意没碰**（混着别的项目）→ 已知缺口，见 `05-next-actions.md`。
+
+### 二、R2：Next 10MB body 截断修复（v1.0.0.62）—— 顺带解决一个存量线上问题
+
+**根因**（B 查 Next 16.2.4 随包文档确认）：只要请求命中 middleware（16 里叫 proxy），Next 就会
+**克隆并整份缓冲 body 到内存**，默认上限 10MB；超出被静默截断 → `request.formData()` 解析失败 →
+用户看到毫无信息的 500「文件上传失败，请稍后再试。」。
+而 `src/middleware.ts` 的 matcher 是 `["/api/:path*"]`（全 API 命中），它却**只加 `x-app-version` 头、不读 body**。
+**影响面**：视频规则允许 200MB、音频 15MB —— 即**用户传大视频一直在失败**（存量问题，非本批引入）。
+
+**修法（零内存代价，不是调大上限）**：
+- ⭐ 主修：`middleware.ts` matcher 排除 3 个 multipart 上传路由（upload-file / asset-upload-temp / upload-image），
+  这些请求不进 proxy → 不缓冲、不截断。注释里写清了代价（这 3 个响应没有版本头，有意接受）和"新增上传路由要加进名单"。
+- 兜底：`next.config.ts` 加 `experimental.proxyClientMaxBodySize: "32mb"`（base64/JSON 老路 + 大画布 JSON）。
+  ⛔ 不许再调大（per-request 占内存，多项目共宿主机）。
+- ⛔⛔ **配置名差点写错**：运行时错误信息给的是旧名 `middlewareClientMaxBodySize`；
+  Next 16 已改名 `experimental.proxyClientMaxBodySize`（codemods.md 重命名清单）→ **已写进 AGENTS.md 新铁律**。
+  验证方式：build 输出 `Experiments (use with caution): · proxyClientMaxBodySize: "32mb"` = 被接受。
+
+**实测证据（测试服 v62）**：
+- 11.7MB mp4 上传**成功**（修复前 500）；206MB mp4 被应用规则 **400** 拒 `{"error":"视频不能超过 200MB"}`
+  （证明 216MB body 完整穿过 Next、应用校验正常工作、不是 nginx 拦的）；
+  >10MB pdf 拿到 **400** `{"error":"文件不能超过 10MB"}`（R1 时是 500，那句校验从死代码变真生效）。
+- 版本头：`/api/models`、`/api/media-save-status` 带 `x-app-version: v1.0.0.62`；3 个上传路由不带（有意）。
+  B 用编译产物正则（`.next/server/middleware-manifest.json`）补验了 **A 没验的嵌套路由**
+  `/api/auth/session`、`/api/admin/overview` → 均仍带版本头（`.*` 能跨 `/`）。
+  ⚠️ 遗留小知识：负向断言是**前缀匹配**（`/api/upload-filex` 会被误排；当前无此路由，有意不单独发版）。
+
+**正式服同步（命令级留档）**：备份 `app-backups/20260802-045242-presync-v62` →
+`rsync -a --delete`（排除 node_modules/.next/.env.local/.runtime 等）staging→prod →
+`docker compose up -d --build flashmuse-app` → 推腾讯正式 `nginx/flashmuse.conf`
+（覆盖前 diff 全是 `>`、备份 `.bak.20260801-2053`、`nginx -t` ok、reload）→
+`docker cp flashmuse-flashmuse-app-1:/app/.next/static` + rsync 到阿里正式镜像 →
+`sed PUBLISHED_APP_VERSION: "v1.0.0.62"` + force-recreate → 四域名 200。
+正式服上号巡检 6 项全过（真跑生图 `image_1_w9`，-3 积分，痕迹 `工作流_09`）。
+
+### 三、⭐⭐ 本轮最值钱的方法论产出（已沉淀）
+
+1. **M031（`06-memo-tasks.md`）**："工作流节点传参考图偶发静默挂不上" —— **根因未知，严谨复现前不许动代码**。
+   A 连续两次归因错误（dedup / by-name 分支 :3761），均被 B 用**判据条件**证伪：
+   `:3761` 判据 `asset.name === file.name`，而 asset.name 经 `upload-name.ts:26` 已去扩展名 →
+   对带扩展名文件**永远不相等、那条分支根本进不去**。
+   ⭐ 教训：**报根因之前先把那个 `if` 的条件抄出来，逐项确认它在你的场景下真的成立。**
+2. **AGENTS.md 新增 2 条铁律**：① 改 Next 配置项先读 `node_modules/next/dist/docs/`（错误信息里的名字可能是旧名）；
+   ② matcher 改了要测编译产物正则（必须含嵌套多段路由；负向断言是前缀匹配）。
+3. **`03-deploy-and-servers.md` 新增 2 条**：本机 `curl 127.0.0.1:5001` 带 cookie 会被判未登录
+   （会话校验对 Host 敏感，用 `119.28.116.16:5001`）；测试服 nginx 是 **3 份**（含腾讯容器内那份）。
+
+### 四、两服痕迹与账目
+
+- 测试服 `12424740@qq.com`：R1 -91 积分（2 图 1 视频，`工作流_04`）+ R2 -4（1 图）；
+  一批 r1/r2 测试上传文件（含 11.7MB big-video-r1.mp4）。安全探针 `sec-test-r1.html` 测完已删（两边）。
+- 正式服 `12424740@qq.com`：-3 积分（`工作流_09` 的 `image_1_w9` + ref6 参考上传节点）。测试内容按交代全留着。
+- commit：`259ca13`（R1 批次）→ `b240ff8`（v62）→ `b956eb6` + 本次文档 commit，均已 push。
+
 ## 2026-08-02（第二十六次会话）🔒 **补掉 3 个可被利用的安全洞（本地代码，未部署）+ 🗄️ 从零建立数据库备份体系（已上服务器并全部验过）**
 
 > ⚠️⚠️ **当前不是四方同步**：线上（正式服 = 测试服 = GitHub）仍是 **`v1.0.0.60`**；
