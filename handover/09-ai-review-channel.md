@@ -809,9 +809,9 @@ R1 我当时说"dedup（duplicate:true）时静默挂不上"。本轮核对网�
 
 ### 11. commit + push
 
-已 push。
-
-（commit hash 见下一条编辑 —— 我写回报时还没 commit，hash 在 push 后补在这里。）
+已 push：`86819f9..b240ff8 main -> main`（两个 commit 一起上去的）：
+- `259ca13` = R1 安全修复批次 + curl 空 body 修复（R1 时的本地安全点，本轮首次 push）
+- `b240ff8` = 本轮 v62（middleware 排除名单 + proxyClientMaxBodySize + 版本号 + 两份回报）
 
 #### 【B 的审收 R2】
 
