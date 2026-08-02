@@ -164,7 +164,6 @@ function getAssetString(record: Record<string, unknown>, key: string) {
 }
 
 const BYTEPLUS_REVIEW_ATTEMPT_PREFIX = "__byteplus_review_attempts=";
-const MAX_BYTEPLUS_REFERENCE_REVIEW_ATTEMPTS = 3;
 
 function parseBytePlusReviewError(value: string) {
   const match = value.match(/^__byteplus_review_attempts=(\d+)__\s*/);

@@ -8,7 +8,7 @@ import { migrateLegacyUserProfileFromWorkspace, stripUserProfileFromWorkspaceSta
 import { compactWorkspaceState, hasJsonChanged, replaceLegacyMediaUrls } from "@/lib/workspace-state-cleanup";
 import { DEFAULT_WORKSPACE_SESSION_LIMIT, getWorkspaceSessionMessages, stripSessionsFromWorkspaceState, upsertWorkspaceSessions, workspaceSessionRowToPayload } from "@/lib/workspace-sessions";
 import { getWorkspaceWorkflowCanvas, getWorkspaceWorkflowPayloads, stripWorkflowsFromWorkspaceState, upsertWorkspaceWorkflows } from "@/lib/workspace-workflows";
-import { getMediaModelDisplayName, resolveAssetPreviewMeta } from "@/lib/media-asset-record";
+import { resolveAssetPreviewMeta } from "@/lib/media-asset-record";
 import { getRunningWorkflowIds } from "@/lib/generation-jobs";
 
 export const runtime = "nodejs";
@@ -198,26 +198,6 @@ function isUploadPromptPlaceholder(value: string | null | undefined) {
   return value === UPLOAD_IMAGE_PROMPT_PLACEHOLDER || value === "资产库上传" || value === "对话流上传";
 }
 
-
-function getCommonRatioLabel(width: number, height: number) {
-  const commonRatios: Array<[string, number]> = [["16:9", 16 / 9], ["21:9", 21 / 9], ["9:16", 9 / 16], ["4:3", 4 / 3], ["3:4", 3 / 4], ["1:1", 1]];
-  const ratio = width / height;
-  const match = commonRatios.find(([, value]) => Math.abs(ratio - value) / value < 0.025);
-  if (match) return match[0];
-  const gcd = (a: number, b: number): number => (b === 0 ? a : gcd(b, a % b));
-  const divisor = gcd(width, height);
-  return `${Math.round(width / divisor)}:${Math.round(height / divisor)}`;
-}
-
-function getImageResolutionFromDimensions(width: number | null | undefined, height: number | null | undefined) {
-  if (!width || !height) return undefined;
-  // 用总像素区分档位（不同模型/比例的最长边会重叠，总像素不会）：1K≈1M、2K≈4M、3K≈9M、4K≈16.7M。
-  const totalPixels = width * height;
-  if (totalPixels >= 13_000_000) return "4K";
-  if (totalPixels >= 6_500_000) return "3K";
-  if (totalPixels >= 2_500_000) return "2K";
-  return "1K";
-}
 
 function categoryToLegacyType(value: unknown) {
   return typeof value === "string" && ["character_image", "scene_image", "prop_image", "shot_image", "shot_video", "other", "trash"].includes(value) ? value : "other";

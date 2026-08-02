@@ -101,3 +101,234 @@ export function replaceMentionName(text: string, referenceName: string, replacem
   if (!text || !referenceName) return text;
   return text.replace(new RegExp(`@${escapeMentionRegExp(referenceName)}(?=$|[\\s，。！？；;、])`, "g"), replacement);
 }
+
+// ============ contenteditable 选区引擎（对话流输入框 / 工作流节点输入框共用） ============
+//
+// ⭐ 唯一权威（2026-08-02 收敛）：这套 DOM 选区函数原来在 chat-workbench(-core).tsx 和
+// workflow-tldraw-canvas-inner.tsx 各存一份且已漂移 —— 工作流那份有「mention 原子化」处理
+// （光标绝不落在 @文件名 蓝色 span 内部），对话流那份没有。两处编辑器渲染出的 mention span
+// 结构完全一致（data-mention="true" + contentEditable=false），所以统一采用带原子化的版本。
+// 两个编辑器都必须用它，禁止再各写一份。
+
+/** 读取 contenteditable 的纯文本（BR→\n，\u00a0→空格，末尾占位 BR 不算，全空视为空串）。 */
+export function getEditableText(element: HTMLElement) {
+  let text = "";
+  const walk = (node: Node) => {
+    node.childNodes.forEach((child) => {
+      if (child.nodeType === Node.TEXT_NODE) {
+        text += child.textContent ?? "";
+        return;
+      }
+      if (child.nodeName === "BR") {
+        if (!(child instanceof HTMLElement) || child.dataset.trailingBreak !== "true") text += "\n";
+        return;
+      }
+      walk(child);
+    });
+  };
+  walk(element);
+  const normalizedText = text.replace(/\u00a0/g, " ");
+  // Browsers keep an empty contenteditable focusable by inserting a lone <br>.
+  // Treat that browser placeholder as empty input, not as a real newline.
+  if (normalizedText.replace(/\n/g, "") === "") return "";
+  return normalizedText;
+}
+
+/** 把纯文本按 \n 拆成 textNode + <br> 追加进编辑器。 */
+export function appendEditorText(element: HTMLElement, text: string) {
+  text.split("\n").forEach((line, index) => {
+    if (index > 0) element.append(document.createElement("br"));
+    if (line) element.append(document.createTextNode(line));
+  });
+}
+
+function getMentionAwareNodeTextLength(node: Node): number {
+  if (node.nodeType === Node.TEXT_NODE) return node.textContent?.length ?? 0;
+  if (node.nodeName === "BR") return node instanceof HTMLElement && node.dataset.trailingBreak === "true" ? 0 : 1;
+  return Array.from(node.childNodes).reduce((sum, child) => sum + getMentionAwareNodeTextLength(child), 0);
+}
+
+/** 当前光标在「编辑器纯文本」里的偏移；选区不在此元素内/无选区时返回文本末尾。 */
+export function getSelectionTextOffset(element: HTMLElement) {
+  const selection = window.getSelection();
+  if (!selection || selection.rangeCount === 0) return getEditableText(element).length;
+  const range = selection.getRangeAt(0);
+  if (!element.contains(range.startContainer)) return getEditableText(element).length;
+
+  let offset = 0;
+  let found = false;
+  const walk = (node: Node) => {
+    if (found) return;
+
+    // mention span 原子化：光标落在 @文件名 内部时，偏移按整个 mention 的末尾算。
+    if (node instanceof HTMLElement && node.dataset.mention === "true") {
+      offset += getMentionAwareNodeTextLength(node);
+      if (node.contains(range.startContainer)) found = true;
+      return;
+    }
+
+    if (node === range.startContainer) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        offset += range.startOffset;
+      } else {
+        Array.from(node.childNodes).slice(0, range.startOffset).forEach((child) => { offset += getMentionAwareNodeTextLength(child); });
+      }
+      found = true;
+      return;
+    }
+    if (node.nodeType === Node.TEXT_NODE || node.nodeName === "BR") {
+      offset += getMentionAwareNodeTextLength(node);
+      return;
+    }
+    node.childNodes.forEach(walk);
+  };
+  walk(element);
+  return found ? offset : getEditableText(element).length;
+}
+
+/** 读取当前选区的文本起止偏移（start<=end）。无选区时 start===end（即光标位置）。用于"选中文本后点 @文件名 → 覆盖选中区"。 */
+export function getSelectionTextRange(element: HTMLElement): { start: number; end: number } {
+  const selection = window.getSelection();
+  const fallback = getEditableText(element).length;
+  if (!selection || selection.rangeCount === 0) return { start: fallback, end: fallback };
+  const range = selection.getRangeAt(0);
+  if (!element.contains(range.startContainer) || !element.contains(range.endContainer)) return { start: fallback, end: fallback };
+
+  const offsetOf = (targetNode: Node, targetOffset: number): number => {
+    let offset = 0;
+    let found = false;
+    const walk = (node: Node) => {
+      if (found) return;
+      if (node instanceof HTMLElement && node.dataset.mention === "true") {
+        offset += getMentionAwareNodeTextLength(node);
+        if (node.contains(targetNode)) found = true;
+        return;
+      }
+      if (node === targetNode) {
+        if (node.nodeType === Node.TEXT_NODE) {
+          offset += targetOffset;
+        } else {
+          Array.from(node.childNodes).slice(0, targetOffset).forEach((child) => { offset += getMentionAwareNodeTextLength(child); });
+        }
+        found = true;
+        return;
+      }
+      if (node.nodeType === Node.TEXT_NODE || node.nodeName === "BR") {
+        offset += getMentionAwareNodeTextLength(node);
+        return;
+      }
+      node.childNodes.forEach(walk);
+    };
+    walk(element);
+    return found ? offset : fallback;
+  };
+
+  const a = offsetOf(range.startContainer, range.startOffset);
+  const b = offsetOf(range.endContainer, range.endOffset);
+  return a <= b ? { start: a, end: b } : { start: b, end: a };
+}
+
+/** 把光标放到「编辑器纯文本」的指定偏移处；mention span 原子化（只落在它前面或后面，绝不落进内部）。 */
+export function setSelectionTextOffset(element: HTMLElement, offset: number) {
+  const selection = window.getSelection();
+  if (!selection) return;
+  let remaining = Math.max(0, offset);
+  const placeCaret = (container: Node): boolean => {
+    const children = Array.from(container.childNodes);
+    for (const child of children) {
+      if (child instanceof HTMLElement && child.dataset.mention === "true") {
+        const length = child.textContent?.length ?? 0;
+        if (remaining <= length) {
+          const range = document.createRange();
+          if (remaining <= 0) range.setStartBefore(child);
+          else range.setStartAfter(child);
+          range.collapse(true);
+          selection.removeAllRanges();
+          selection.addRange(range);
+          return true;
+        }
+        remaining -= length;
+        continue;
+      }
+
+      if (child.nodeType === Node.TEXT_NODE) {
+        const length = child.textContent?.length ?? 0;
+        if (remaining <= length) {
+          const range = document.createRange();
+          range.setStart(child, remaining);
+          range.collapse(true);
+          selection.removeAllRanges();
+          selection.addRange(range);
+          return true;
+        }
+        remaining -= length;
+        continue;
+      }
+      if (child.nodeName === "BR") {
+        if (remaining <= 1) {
+          const parent = child.parentNode;
+          if (!parent) return false;
+          const range = document.createRange();
+          range.setStart(parent, children.indexOf(child) + 1);
+          range.collapse(true);
+          selection.removeAllRanges();
+          selection.addRange(range);
+          return true;
+        }
+        remaining -= 1;
+        continue;
+      }
+      if (placeCaret(child)) return true;
+    }
+    return false;
+  };
+  if (placeCaret(element)) return;
+
+  if (element.lastChild?.nodeName === "BR") {
+    const range = document.createRange();
+    range.setStart(element, element.childNodes.length);
+    range.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    return;
+  }
+
+  const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+  let node = walker.nextNode() as Text | null;
+  while (node) {
+    const length = node.textContent?.length ?? 0;
+    if (remaining <= length) {
+      const range = document.createRange();
+      range.setStart(node, remaining);
+      range.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      return;
+    }
+    remaining -= length;
+    node = walker.nextNode() as Text | null;
+  }
+
+  const range = document.createRange();
+  range.selectNodeContents(element);
+  range.collapse(false);
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
+/** 光标处是否正处于「@正在输入」状态，返回 @ 的位置/已输入的查询串/光标。 */
+export function getAtQueryAtCursor(text: string, cursorOffset: number) {
+  const cursor = Math.min(Math.max(0, cursorOffset), text.length);
+  const beforeCursor = text.slice(0, cursor);
+  const match = beforeCursor.match(/@([^@\s，。！？；;、]*)$/);
+  if (!match) return null;
+  return { index: cursor - match[0].length, query: match[1] ?? "", cursor };
+}
+
+/** 同上，但查询串已经完整命中某个有效引用名时返回 null（已完成的 @文件名 不再当"正在输入"）。 */
+export function getAtQueryAtCursorForReferences(text: string, cursorOffset: number, validReferences: Set<string>) {
+  const query = getAtQueryAtCursor(text, cursorOffset);
+  if (!query) return null;
+  if (query.query && validReferences.has(query.query)) return null;
+  return query;
+}

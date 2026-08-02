@@ -10,7 +10,8 @@ import { APP_VERSION } from "@/lib/app-version";
 // 「已完全部署（含静态同步）后才置为新版」的信号——部署最后一步才 set 它 + force-recreate，
 // 保证「提示条弹出时 = 静态资源已就绪 = 刷新必正常」。
 // 本地开发（非 production）没有该变量时回退到 APP_VERSION，方便即时看到效果。
-export function middleware() {
+// （Next 16 已把 middleware 文件约定改名 proxy，本文件即原 middleware.ts，2026-08-02 迁移。）
+export function proxy() {
   const response = NextResponse.next();
   const published = process.env.PUBLISHED_APP_VERSION?.trim();
   const advertise = published || (process.env.NODE_ENV !== "production" ? APP_VERSION : "");
@@ -31,5 +32,8 @@ export const config = {
   //   版本提示条（version-update-notifier）是给 window.fetch 打补丁、从任意响应读这个头，
   //   全站 /api/models、/api/workspace-state、/api/media-save-status 等高频流量都带它，不缺这 3 个。
   // ⚠️ 以后新增 multipart 上传路由，记得把名字加进下面这个负向断言名单。
-  matcher: ["/api/:path((?!upload-file|asset-upload-temp|upload-image).*)"],
+  // ⭐ 负向断言用「整段匹配」（`(?:$|/)`，2026-08-02 从纯前缀匹配改过来）：
+  //   只排除 upload-file / asset-upload-temp / upload-image 这三个路由本身及其子路径，
+  //   不会误伤将来可能出现的 /api/upload-filex、/api/upload-files 这类撞前缀的新路由。
+  matcher: ["/api/:path((?!(?:upload-file|asset-upload-temp|upload-image)(?:$|/)).*)"],
 };

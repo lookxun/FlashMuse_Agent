@@ -82,6 +82,10 @@ sudo /opt/flashmuse/scripts/flashmuse-db-backup.sh --stack prod --label pre-depl
 - ⚠️ **为什么必须有 nginx 容器**：`next start` 只服务构建时已存在于 `public/` 的静态文件，`/generated/*` 会 404，必须 nginx 服务。
 - `.env.local` 是**可写状态文件**（后台"模型开关/系统设置/上传规则"保存会改写它、API key 运行时从它读），bind-mount、重启不丢。**env 是每台服务器独立数据、不随代码同步**（如 `UPLOAD_RULE_OVERRIDES`）。
 - 阿里同步密钥：`/opt/flashmuse/data/runtime/flashmuse_to_ali_ed25519`（**root 属主，一切到阿里的 ssh/rsync 必须 sudo**）。
+- ⭐ **DB 密码 2026-08-02 已轮换**（旧串已失效，历史文档里的 `REMOVED_PROD_DB_PASSWORD` 就是它）。
+  连接姿势：`docker exec -e PGPASSWORD=<新串> flashmuse-flashmuse-db-1 psql -U flashmuse -d flashmuse`。
+  ⚠️ **容器内 local/127.0.0.1 是 pg_hba `trust`，任何密码都能连** —— 验证密码对不对必须走 TCP
+  （`psql -h <容器IP>`，走 `scram-sha-256`）；容器内直连"能连上"不能证明密码正确。
 
 ---
 

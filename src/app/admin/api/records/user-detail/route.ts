@@ -61,13 +61,6 @@ function getModelLabel(type: "image" | "video", modelId: string) {
   return models.find((model) => model.id === modelId)?.label ?? modelId;
 }
 
-function getDimensionsLabel(value: unknown) {
-  if (!isRecord(value)) return "-";
-  const width = Math.max(0, Math.floor(finiteNumber(value.width)));
-  const height = Math.max(0, Math.floor(finiteNumber(value.height)));
-  return width > 0 && height > 0 ? `${width} × ${height}` : "-";
-}
-
 function formatAdminMediaName(systemName: string | undefined, userName: string | undefined, fallback: string) {
   const system = (systemName ?? "").trim();
   const user = (userName ?? "").trim();
@@ -149,11 +142,6 @@ function buildAdminWorkspaceState(state: unknown, sessionRows: Array<{ sessionId
   };
 }
 
-function getDeletedAssetInfoMap(state: unknown) {
-  void state;
-  return new Map<string, { deletedAtLabel?: string }>();
-}
-
 function getWorkspaceAssetDisplayNameMap(state: unknown) {
   void state;
   return new Map<string, string>();
@@ -187,48 +175,6 @@ function getWorkspaceConversations(state: unknown): AdminConversation[] {
       }),
     };
   });
-}
-
-function getWorkspaceMediaItems(state: unknown): AdminMediaItem[] {
-  if (!isRecord(state) || !Array.isArray(state.sessions)) return [];
-  const items: AdminMediaItem[] = [];
-  const deletedAssetInfoMap = getDeletedAssetInfoMap(state);
-  const assetDisplayNameMap = getWorkspaceAssetDisplayNameMap(state);
-  for (const session of state.sessions.filter(isRecord)) {
-    const messages = Array.isArray(session.messages) ? session.messages.filter(isRecord) : [];
-    for (const message of messages) {
-      if (message.role !== "assistant") continue;
-      const meta = isRecord(message.generationMeta) ? message.generationMeta : undefined;
-      const settings = isRecord(meta?.settings) ? meta.settings : undefined;
-      const modelId = getString(meta?.model, "-");
-      const ratio = getString(settings?.ratio, "-");
-      const resolution = getString(settings?.resolution, "-");
-      const duration = getString(settings?.duration, "-");
-      const imageDimensions = isRecord(message.imageDimensions) ? message.imageDimensions : undefined;
-      const videoDimensionsMap = isRecord(message.videoDimensionsMap) ? message.videoDimensionsMap : undefined;
-      const mediaSystemNames = isRecord(message.mediaSystemNames) ? message.mediaSystemNames : undefined;
-      const imageSlotUrls = Array.isArray(message.imageResultSlots) ? message.imageResultSlots.filter(isRecord).filter((slot) => slot.type === "image").map((slot) => getString(slot.url)).filter(Boolean) : [];
-      const imageUrls = imageSlotUrls.length > 0 ? imageSlotUrls : getStringArray(message.images);
-      imageUrls.forEach((url, index) => {
-        const deletedInfo = deletedAssetInfoMap.get(url) ?? deletedAssetInfoMap.get(normalizeMediaUrlForAdmin(url));
-        const systemName = getString(mediaSystemNames?.[url]);
-        items.push({ id: `${getString(message.id, "message")}-image-${index}`, requestId: `${getString(message.requestId, getString(message.id, "message"))}:image:${index}`, type: "image", systemName, isDeleted: Boolean(deletedInfo), deletedAtLabel: deletedInfo?.deletedAtLabel, name: assetDisplayNameMap.get(url) ?? assetDisplayNameMap.get(normalizeMediaUrlForAdmin(url)) ?? formatAdminMediaName(systemName, undefined, `图片${index + 1}`), url, prompt: getMetadataString(meta, "originalPrompt") || getString(message.content), model: getModelLabel("image", modelId), ratio, resolution, duration: "-", size: getDimensionsLabel(imageDimensions?.[url]), style: getString(settings?.style, "-"), createdAtTs: finiteNumber(message.createdAt) });
-      });
-      const videoUrl = getString(message.videoUrl);
-      const videoUrls = videoUrl ? [...getStringArray(message.videos), videoUrl].filter((url, index, array) => array.indexOf(url) === index) : getStringArray(message.videos);
-      videoUrls.forEach((url, index) => {
-        const deletedInfo = deletedAssetInfoMap.get(url) ?? deletedAssetInfoMap.get(normalizeMediaUrlForAdmin(url));
-        const systemName = getString(mediaSystemNames?.[url]);
-        items.push({ id: `${getString(message.id, "message")}-video-${index}`, requestId: `${getString(message.requestId, getString(message.id, "message"))}:video:${index}`, type: "video", systemName, isDeleted: Boolean(deletedInfo), deletedAtLabel: deletedInfo?.deletedAtLabel, name: assetDisplayNameMap.get(url) ?? assetDisplayNameMap.get(normalizeMediaUrlForAdmin(url)) ?? formatAdminMediaName(systemName, undefined, `视频${index + 1}`), url, prompt: getMetadataString(meta, "originalPrompt") || getString(message.content), model: getModelLabel("video", modelId), ratio, resolution, duration, size: getDimensionsLabel(videoDimensionsMap?.[url] ?? message.videoDimensions), style: "-", createdAtTs: finiteNumber(message.createdAt) });
-      });
-    }
-  }
-  return items;
-}
-
-function getWorkspaceAssetMediaItems(state: unknown): AdminMediaItem[] {
-  void state;
-  return [];
 }
 
 function isAdminVideoUrl(url: string) {
@@ -407,7 +353,6 @@ function classifyUploadKind(state: any): "image" | "video" | "audio" | "document
   const media = state?.mediaAsset;
   if (!media) return null;
   const category = getString(state.currentCategory);
-  const mediaType = getString(media.mediaType);
   if (UPLOAD_VIDEO_CATEGORIES.has(category)) return "video";
   if (UPLOAD_AUDIO_CATEGORIES.has(category)) return "audio";
   if (UPLOAD_DOCUMENT_CATEGORIES.has(category)) return "document";
@@ -494,7 +439,7 @@ function getFastMediaSummary(assetStates: any[]) {
   return summary;
 }
 
-function getFastCreditSummary(ledgers: any[], creditsPerCny: number) {
+function getFastCreditSummary(ledgers: any[]) {
   const summary = { giftedCredits: 0, signupGiftedCredits: 0, adminAdjustedGiftedCredits: 0, consumedCredits: 0, consumedTokens: 0, consumedUsd: 0, consumedCny: 0, conversationConsumedCredits: 0, assetGenerationConsumedCredits: 0, promptToolConsumedCredits: 0, workflowConsumedCredits: 0 };
   for (const item of ledgers) {
     if (item.direction === "increase") {
@@ -607,13 +552,12 @@ export async function GET(request: Request) {
   // Lightweight credits-only mode for the credits panel row expand: only reads the credit ledger
   // (no workspace state, messages, or asset states), computes the credit breakdown, and returns.
   if (isCreditsMode) {
-    const [creditUserRow, creditSettings, ledgers] = await Promise.all([
+    const [creditUserRow, ledgers] = await Promise.all([
       prisma.user.findUnique({ where: { id: userId }, select: { id: true, email: true, nickname: true, avatarUrl: true, credits: true } }),
-      getCreditSettings(),
       prisma.creditLedger.findMany({ where: { userId }, orderBy: { createdAt: "desc" }, select: { direction: true, kind: true, credits: true, totalTokens: true, usd: true, cny: true, metadata: true, createdAt: true } }),
     ]);
     if (!creditUserRow) return NextResponse.json({ error: "用户不存在" }, { status: 404 });
-    const creditSummary = getFastCreditSummary(ledgers, creditSettings.creditsPerCny);
+    const creditSummary = getFastCreditSummary(ledgers);
     const creditUser: AdminCreditUser = {
       id: creditUserRow.id,
       userEmail: creditUserRow.email,
@@ -833,7 +777,7 @@ export async function GET(request: Request) {
 
   if (isRecordsMode) {
     const mediaSummary = getFastMediaSummary(user.userAssetStates);
-    const creditSummary = getFastCreditSummary(ledgers, creditSettings.creditsPerCny);
+    const creditSummary = getFastCreditSummary(ledgers);
     const conversations: AdminConversation[] = (user as any).workspaceSessions.map((session: any) => ({
       id: session.sessionId,
       title: session.title || "新对话",

@@ -6,7 +6,7 @@ import { useBodyScrollLock } from "@/components/use-body-scroll-lock";
 import { getMentionRanges } from "@/lib/mention-text";
 import { AdminHoverImagePreview } from "./admin-hover-image-preview";
 import { getCachedAdminDetail, setCachedAdminDetail } from "./admin-detail-cache";
-import { fallbackAdminImageToOriginal, getAdminMediaSourceUrl, getAdminMediaThumbnailUrl, normalizeAdminMediaUrl } from "./admin-media-url";
+import { fallbackAdminImageToOriginal, getAdminMediaSourceUrl, getAdminMediaThumbnailUrl } from "./admin-media-url";
 
 function getLocalVideoPosterUrl(url: string) {
   const userVideoMatch = url.match(/^\/generated\/users\/([^/]+)\/videos\//);

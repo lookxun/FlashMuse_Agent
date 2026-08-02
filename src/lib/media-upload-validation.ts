@@ -59,6 +59,22 @@ export function validateMediaUploadBuffer(buffer: Uint8Array, file: Pick<File, "
   return validateMediaUploadFile({ name: file.name, type: file.type, size: buffer.byteLength }, kind) ?? validateMediaUploadMetadata(kind, metadata);
 }
 
+/**
+ * 参考视频「只量得到尺寸、量不到时长」时的纯尺寸校验（@引用资产 / 画布媒体等场景）。
+ * 唯一权威实现（2026-08-02 收敛）：原来在 chat-workbench-core.tsx 和 workflow-tldraw-canvas-inner.tsx
+ * 各手抄了一份（300/6000/0.4/2.5/409600/8295044 同一批数写三遍，正是 15.35/15.35/16.01 那个病）。
+ * 数值与上面的 validateMediaUploadMetadata 保持一致；量不到尺寸时不拦（返回"读取失败"由调用方决定）。
+ */
+export function validateReferenceVideoDimensions(dimensions?: { width?: number; height?: number }) {
+  if (!dimensions?.width || !dimensions.height) return "视频尺寸读取失败";
+  const ratio = dimensions.width / dimensions.height;
+  if (ratio < 0.4 || ratio > 2.5) return "视频宽高比需在 0.4 到 2.5 之间";
+  if (dimensions.width < 300 || dimensions.width > 6000 || dimensions.height < 300 || dimensions.height > 6000) return "视频宽高需在 300 到 6000 像素之间";
+  const pixels = dimensions.width * dimensions.height;
+  if (pixels < 409600 || pixels > 8295044) return "视频总像素需在 409600 到 8295044 之间";
+  return undefined;
+}
+
 // ============ 文档上传（pdf/docx/xlsx/txt...） ============
 //
 // ⛔⛔ 为什么这一段必须存在（2026-08-02 安全加固）：

@@ -37,10 +37,6 @@ function formatNumber(value: number) {
   return value.toLocaleString("en-US");
 }
 
-function conversationImageCount(user: AdminUserRow) {
-  return user.mediaItems.filter((item) => item.type === "image" && !item.isUploadedAsset).length;
-}
-
 function CountWithDeleted({ total, deleted }: { total: number; deleted: number }) {
   return <span>{formatNumber(total)}{deleted > 0 ? <span className="ml-1 text-red-500">({formatNumber(deleted)})</span> : null}</span>;
 }
@@ -62,10 +58,6 @@ function RecordUserAvatar({ user }: { user: AdminRecordSummary }) {
       {initial}
     </div>
   );
-}
-
-function makeUploadCategory(id: string, title: string, items: AdminCreditFlowItem[]): AdminCreditCategoryDetail[] {
-  return [{ id, title, totalCredits: 0, totalUsd: 0, totalCny: 0, items: [...items].sort((left, right) => right.createdAtTs - left.createdAtTs) }];
 }
 
 function normalizeRecordMediaUrl(url: string) {
@@ -134,14 +126,6 @@ function workspaceAssetGeneratedImageItems(user: AdminUserRow, creditUser: Admin
   return user.assetMediaItems.filter((item) => item.type === "image" && !item.isUploadedAsset).map((item, index) => mediaItemToFlowItem(item, index, creditLookup));
 }
 
-function makeGeneratedCategories(user: AdminUserRow, creditUser: AdminCreditUser | undefined) {
-  return [
-    makeUploadCategory("conversation-generated-images", "对话流生成图片列表", workspaceConversationGeneratedItems(user, creditUser, "image"))[0],
-    makeUploadCategory("conversation-generated-videos", "对话流生成视频列表", workspaceConversationGeneratedItems(user, creditUser, "video"))[0],
-    makeUploadCategory("asset-generated-images", "资产库生成图片列表", workspaceAssetGeneratedImageItems(user, creditUser))[0],
-  ];
-}
-
 function uploadRecordToFlowItem(record: NonNullable<AdminUserRow["uploadRecords"]>[number]): AdminCreditFlowItem {
   const kindLabel = record.kind === "image" ? "上传图片" : record.kind === "video" ? "上传视频" : record.kind === "audio" ? "上传音频" : "上传文档";
   return {
@@ -190,7 +174,6 @@ export function AdminRecordsPanel({ summaries }: { summaries: AdminRecordSummary
   const [creditFlowUser, setCreditFlowUser] = useState<AdminCreditUser | null>(null);
   const [assetCreditUser, setAssetCreditUser] = useState<AdminCreditUser | null>(null);
   const [promptToolUser, setPromptToolUser] = useState<AdminCreditUser | null>(null);
-  const [generatedListDialog, setGeneratedListDialog] = useState<{ user: AdminCreditUser; categories: AdminCreditCategoryDetail[]; initialCategoryId: string } | null>(null);
   const [uploadDialog, setUploadDialog] = useState<{ user: AdminCreditUser; categories: AdminCreditCategoryDetail[]; initialCategoryId: string } | null>(null);
   const [loadingDialogTitle, setLoadingDialogTitle] = useState<string | null>(null);
 
@@ -280,33 +263,6 @@ export function AdminRecordsPanel({ summaries }: { summaries: AdminRecordSummary
     }
   };
 
-  const loadFullDetailForDialog = async (userId: string, title: string) => {
-    const existingDetail = detailsByUserId[userId];
-    if (existingDetail?.user.mediaItems.length || existingDetail?.user.assetMediaItems.length || existingDetail?.creditUser.conversationCreditDetails.length || existingDetail?.creditUser.assetGenerationCreditDetails.length) return existingDetail;
-    setLoadingUserIds((current) => new Set(current).add(userId));
-    setLoadingDialogTitle(title);
-    setDetailErrors((current) => {
-      const next = { ...current };
-      delete next[userId];
-      return next;
-    });
-    try {
-      const detail = await fetchUserDetail(userId, "full");
-      setDetailsByUserId((current) => ({ ...current, [userId]: detail }));
-      return detail;
-    } catch (error) {
-      setDetailErrors((current) => ({ ...current, [userId]: error instanceof Error ? error.message : "加载失败" }));
-      return undefined;
-    } finally {
-      setLoadingUserIds((current) => {
-        const next = new Set(current);
-        next.delete(userId);
-        return next;
-      });
-      setLoadingDialogTitle(null);
-    }
-  };
-
   const loadMediaDetailForDialog = async (userId: string, title: string) => {
     setLoadingUserIds((current) => new Set(current).add(userId));
     setLoadingDialogTitle(title);
@@ -347,12 +303,6 @@ export function AdminRecordsPanel({ summaries }: { summaries: AdminRecordSummary
     });
   };
 
-  const openGeneratedListDialog = async (userId: string, initialCategoryId: string) => {
-    const detail = await loadFullDetailForDialog(userId, "正在加载生成列表...");
-    if (!detail) return;
-    setGeneratedListDialog({ user: detail.creditUser, categories: makeGeneratedCategories(detail.user, detail.creditUser), initialCategoryId });
-  };
-
   const openMediaDialogForUser = (userId: string, userLabel: string, mediaType: AdminMediaDialogType) => {
     setMediaDialog({ userId, userLabel, mediaType });
   };
@@ -361,14 +311,6 @@ export function AdminRecordsPanel({ summaries }: { summaries: AdminRecordSummary
     const detail = await loadMediaDetailForDialog(userId, "正在加载上传记录...");
     if (!detail) return;
     setUploadDialog({ user: detail.creditUser, categories: makeAllUploadCategories(detail.user), initialCategoryId });
-  };
-
-  const openCreditDialogForUser = async (userId: string, type: "conversation" | "asset" | "prompt") => {
-    const detail = await loadFullDetailForDialog(userId, "正在加载积分明细...");
-    if (!detail) return;
-    if (type === "conversation") setCreditFlowUser(detail.creditUser);
-    if (type === "asset") setAssetCreditUser(detail.creditUser);
-    if (type === "prompt") setPromptToolUser(detail.creditUser);
   };
 
   return (
@@ -490,7 +432,6 @@ export function AdminRecordsPanel({ summaries }: { summaries: AdminRecordSummary
       {creditFlowUser ? <CreditFlowDialog user={creditFlowUser} onClose={() => setCreditFlowUser(null)} /> : null}
       {assetCreditUser ? <CreditCategoryDialog title="资产库消耗积分详细" user={assetCreditUser} categories={assetCreditUser.assetGenerationCreditDetails} onClose={() => setAssetCreditUser(null)} /> : null}
       {promptToolUser ? <CreditCategoryDialog title="反推/优化提示词消耗积分详细" user={promptToolUser} categories={promptToolUser.promptToolCreditDetails} onClose={() => setPromptToolUser(null)} /> : null}
-      {generatedListDialog ? <CreditCategoryDialog title="生成列表" user={generatedListDialog.user} categories={generatedListDialog.categories} initialCategoryId={generatedListDialog.initialCategoryId} showPromptCopyColumn onClose={() => setGeneratedListDialog(null)} /> : null}
       {uploadDialog ? <CreditCategoryDialog title="上传记录" user={uploadDialog.user} categories={uploadDialog.categories} initialCategoryId={uploadDialog.initialCategoryId} showPromptCopyColumn onClose={() => setUploadDialog(null)} /> : null}
       {loadingDialogTitle ? <div className="fixed inset-0 z-[11000] flex items-center justify-center bg-black/42 px-8 py-8 backdrop-blur-[4px]"><div className="w-[360px] rounded-[12px] bg-white shadow-[0_24px_80px_rgba(0,0,0,0.22)]"><AdminDetailLoading label={loadingDialogTitle} /></div></div> : null}
     </>

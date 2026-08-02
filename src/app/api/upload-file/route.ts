@@ -49,12 +49,6 @@ function getFileCategory(mediaType: string, flow: "conversation" | "workflow") {
   return classifyAsset({ origin: "upload", flow, mediaType: mediaType as AssetMediaType }).initialCategory;
 }
 
-function getUploadPrompt(mediaType: string) {
-  if (mediaType === "video") return "上传视频";
-  if (mediaType === "audio") return "上传音频";
-  return "上传文档";
-}
-
 /**
  * 按内容哈希查"以前上传过的字节完全一致的同一文件"。命中就复用，不重复落库。
  * 只在已存在可见（未删除/未隐藏/未归档）的资产时返回。文件不物理删除，故不再核对磁盘。

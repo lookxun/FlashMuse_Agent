@@ -4,23 +4,22 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { createPortal } from "react-dom";
 import { BaseBoxShapeUtil, BindingUtil, CubicBezier2d, HTMLContainer, Mat, Rectangle2d, SVGContainer, SelectionForegroundOverlayUtil, ShapeUtil, T, Tldraw, Vec, createShapeId, defaultBindingUtils, defaultOverlayUtils, defaultShapeUtils, resizeBox, useActions, useEditor, useValue, vecModelValidator, type Editor, type IndexKey, type RecordProps, type TLBinding, type TLComponents, type TLHandle, type TLHandleDragInfo, type TLResizeInfo, type TLShape, type TLShapeId, type TLUiOverrides, type TldrawOptions, type VecModel } from "tldraw";
 import { type IconType } from "react-icons";
-import { RiEraserLine, RiDragMove2Line, RiHdLine, RiSparkling2Line, RiAccountBoxLine, RiBellLine, RiAddLine, RiArrowDownSLine, RiArrowUpLine, RiBringForward, RiBringToFront, RiCameraLine, RiCheckLine, RiCheckboxBlankCircleLine, RiCheckboxCircleLine, RiCheckboxMultipleLine, RiClipboardLine, RiCloseLine, RiCursorLine, RiDeleteBinLine, RiDownloadLine, RiEmotionSadLine, RiExportFill, RiExportLine, RiEyeLine, RiEyeOffLine, RiFileCodeLine, RiFileCopy2Line, RiFileCopyLine, RiFileImageLine, RiFileTextLine, RiFilmAiLine, RiFolderOpenLine, RiGalleryView, RiAttachment2, RiFocus3Line, RiGoogleFill, RiHand, RiHistoryLine, RiImage2Line, RiImageAiLine, RiImageCircleLine, RiImageLine, RiInformation2Line, RiLandscapeLine, RiSidebarFoldLine, RiSidebarUnfoldLine, RiLoader4Line, RiLockLine, RiLockUnlockLine, RiMoreLine, RiMultiImageLine, RiNodeTree, RiOpenaiFill, RiResetLeftLine, RiRoadMapLine, RiScissorsCutLine, RiSendBackward, RiSendToBack, RiShining2Line, RiStackLine, RiTBoxLine, RiTextBlock, RiTextSnippet, RiTimeLine, RiTiktokFill, RiUpload2Line, RiVideoLine, RiVideoOnLine, RiVoiceprintLine, RiZoomInLine, RiZoomOutLine } from "react-icons/ri";
+import { RiEraserLine, RiHdLine, RiSparkling2Line, RiAccountBoxLine, RiBellLine, RiAddLine, RiArrowDownSLine, RiArrowUpLine, RiBringForward, RiBringToFront, RiCameraLine, RiCheckLine, RiCheckboxBlankCircleLine, RiCheckboxCircleLine, RiCheckboxMultipleLine, RiClipboardLine, RiCloseLine, RiCursorLine, RiDeleteBinLine, RiDownloadLine, RiEmotionSadLine, RiExportFill, RiExportLine, RiEyeLine, RiEyeOffLine, RiFileCodeLine, RiFileCopy2Line, RiFileCopyLine, RiFileImageLine, RiFileTextLine, RiFilmAiLine, RiFolderOpenLine, RiGalleryView, RiAttachment2, RiFocus3Line, RiGoogleFill, RiHand, RiHistoryLine, RiImage2Line, RiImageAiLine, RiImageCircleLine, RiImageLine, RiInformation2Line, RiLandscapeLine, RiSidebarFoldLine, RiSidebarUnfoldLine, RiLoader4Line, RiLockLine, RiLockUnlockLine, RiMoreLine, RiMultiImageLine, RiNodeTree, RiOpenaiFill, RiResetLeftLine, RiRoadMapLine, RiScissorsCutLine, RiSendBackward, RiSendToBack, RiShining2Line, RiStackLine, RiTBoxLine, RiTextBlock, RiTextSnippet, RiTimeLine, RiTiktokFill, RiUpload2Line, RiVideoLine, RiVideoOnLine, RiVoiceprintLine, RiZoomInLine, RiZoomOutLine } from "react-icons/ri";
 import { BytePlusIcon } from "@/components/byteplus-icon";
 import { AudioWaveformPlayer } from "@/components/audio-waveform-player";
 import { AssetMentionPicker, type MentionPickerCategory, type MentionPickerItem } from "@/components/asset-mention-picker";
 import { VideoUploadThumbnail } from "@/components/video-upload-thumbnail";
 import { VideoPlayBadge } from "@/components/video-play-badge";
-import { DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, DEFAULT_IMAGE_QUALITY, GPT_IMAGE2_MODEL_ID, IMAGE_QUALITY_OPTIONS, IMAGE_QUALITY_LABELS, isGptImage2Model, isGptImage2AgentModel, getImageModelSelectHint, bytePlusVideoGenerationModels, frontendConversationModels, frontendImageGenerationModels, getExpectedImageDimensions, getExpectedVideoDimensions, getSupportedImageResolutions, getSupportedVideoRatios, getSupportedVideoResolutions, imageGenerationModels, normalizeImageResolutionForModel, normalizeVideoRatioForModel, normalizeVideoResolutionForModel, validateVideoDurationWithReferences, videoGenerationModels, type ConversationModel, type GenerationModel, type ImageResolution, type ModelName } from "@/lib/models";
+import { DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, DEFAULT_IMAGE_QUALITY, GPT_IMAGE2_MODEL_ID, IMAGE_QUALITY_OPTIONS, IMAGE_QUALITY_LABELS, isGptImage2Model, getImageModelSelectHint, bytePlusVideoGenerationModels, frontendConversationModels, frontendImageGenerationModels, getExpectedImageDimensions, getExpectedVideoDimensions, getSupportedImageResolutions, getSupportedVideoRatios, getSupportedVideoResolutions, normalizeImageResolutionForModel, normalizeVideoRatioForModel, normalizeVideoResolutionForModel, validateVideoDurationWithReferences, videoGenerationModels, type ConversationModel, type GenerationModel, type ImageResolution, type ModelName } from "@/lib/models";
 import { GENERIC_MEDIA_ERROR_MESSAGE, toUserErrorMessage } from "@/lib/error-message";
 import { isGptImageSafetyFailure, normalizeAttemptPrompt, runPromptSafetyRetry } from "@/lib/gpt-image-safety-retry";
 import { handleSessionExpiredResponse, SESSION_EXPIRED_SILENT_ERROR } from "@/lib/session-expired-redirect";
 import { buildReferenceHint } from "@/lib/reference-hint";
-import { getMentionNames as getSharedMentionNames, getMentionRangeForDeletion as getSharedMentionRangeForDeletion, getMentionRanges as getSharedMentionRanges, removeMentionName } from "@/lib/mention-text";
+import { appendEditorText as appendWorkflowEditorText, getAtQueryAtCursorForReferences as getWorkflowAtQueryAtCursorForReferences, getEditableText as getWorkflowEditableText, getMentionNames as getSharedMentionNames, getMentionRangeForDeletion as getSharedMentionRangeForDeletion, getMentionRanges as getSharedMentionRanges, getSelectionTextOffset as getWorkflowSelectionTextOffset, getSelectionTextRange as getWorkflowSelectionTextRange, removeMentionName, setSelectionTextOffset as setWorkflowSelectionTextOffset } from "@/lib/mention-text";
 import { createUploadProgressTracker } from "@/lib/upload-progress";
-import { sanitizeModelOutputText } from "@/lib/text-cleanup";
 import { getUploadKindFromFileName, getUploadRule, getVideoAudioUploadDisabledMessage, validateReferenceTotalDuration, validateVideoReferenceCombination, type UploadKind, type UploadKindRule, type UploadRule, type UploadRuleOverrides } from "@/lib/upload-rules";
 import { IMAGE_UPLOAD_ACCEPT, validateImageUploadFile } from "@/lib/image-upload-validation";
-import { AUDIO_UPLOAD_ACCEPT, MEDIA_DURATION_EPSILON_SECONDS, validateMediaUploadFile, validateMediaUploadMetadata, validateReferenceMediaDurationRange as validateWorkflowMediaDuration, VIDEO_UPLOAD_ACCEPT } from "@/lib/media-upload-validation";
+import { AUDIO_UPLOAD_ACCEPT, MEDIA_DURATION_EPSILON_SECONDS, validateMediaUploadFile, validateMediaUploadMetadata, validateReferenceMediaDurationRange as validateWorkflowMediaDuration, validateReferenceVideoDimensions as validateWorkflowReferenceVideoDimensions, VIDEO_UPLOAD_ACCEPT } from "@/lib/media-upload-validation";
 import { validateVideoReferenceImagesBeforeSend, videoModelEnforcesReferenceImageSizeRules } from "@/lib/video-reference-image-rules";
 import { computeFileContentHashHex, precheckUploadedFileDedup } from "@/lib/upload-content-hash";
 import { getStaticMediaUrl } from "@/lib/static-media-url";
@@ -261,8 +260,6 @@ const WORKFLOW_CANVAS_MENTION_CATEGORIES: MentionPickerCategory[] = [
 const WORKFLOW_UPLOAD_KIND_MENTION_GROUP: Partial<Record<WorkflowUploadKind, string>> = { image: "character_image", video: "upload_videos", audio: "upload_audios" };
 const workflowReadableDocumentFormats = ["md", "txt", "csv"];
 const MAX_WORKFLOW_DOCUMENT_TEXT_CHARS = 50_000;
-const MAX_WORKFLOW_DOCUMENT_CONTEXT_CHARS = 30_000;
-const WORKFLOW_TEXT_OUTPUT_INSTRUCTIONS = "\n\n输出要求：请只用中文回答，不要夹带英文段落或英文标题；不要输出代码、代码块、命令行、JSON、Markdown 表格或反引号内容；不要解释格式规则。第一行写一个简短中文标题，不要带 # 号；正文用清晰分段、短句和列表表达。可以适当使用少量自然表情或符号做视觉提示，但不要堆砌。重点可用 **加粗**，重要提醒可用 [blue]...[/blue] 或 [red]...[/red]。";
 const BYTEPLUS_AUTO_REVIEW_NOTICE = "系统检测到真人图片，需要审核才能生成视频，此次视频生成任务会延长时间，请稍候....";
 
 class WorkflowSelectionForegroundOverlayUtil extends SelectionForegroundOverlayUtil {
@@ -374,7 +371,6 @@ const fallbackVideoDurationOptions = ["5秒", "10秒", "15秒"];
 const workflowVideoModels = [...videoGenerationModels, ...bytePlusVideoGenerationModels];
 const videoPollIntervalMs = 10_000;
 const videoMaxPollAttempts = 90;
-const videoAbsoluteMaxPollAttempts = 360;
 const imagePollIntervalMs = 3_000;
 
 type WorkflowImageJobStatus = {
@@ -552,15 +548,6 @@ function pruneWorkflowUploadsForVideoReferenceMode(node: WorkflowNode, videoRefe
   return pruneWorkflowUploadsForRule({ ...node, data: { ...node.data, videoReferenceMode } }, getEffectiveWorkflowUploadRule(node, overrides, videoReferenceMode));
 }
 
-function readWorkflowFileAsDataUrl(file: File) {
-  return new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(typeof reader.result === "string" ? reader.result : "");
-    reader.onerror = () => reject(reader.error ?? new Error("文件读取失败"));
-    reader.readAsDataURL(file);
-  });
-}
-
 function decodeWorkflowTextBuffer(buffer: ArrayBuffer) {
   const bytes = new Uint8Array(buffer);
   const hasUtf8Bom = bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf;
@@ -601,7 +588,8 @@ function getWorkflowImageFileDimensions(file: File) {
       const width = image.naturalWidth || image.width;
       const height = image.naturalHeight || image.height;
       URL.revokeObjectURL(objectUrl);
-      width && height ? resolve({ width, height }) : reject(new Error("图片尺寸读取失败"));
+      if (width && height) resolve({ width, height });
+      else reject(new Error("图片尺寸读取失败"));
     };
     image.onerror = () => {
       URL.revokeObjectURL(objectUrl);
@@ -615,15 +603,7 @@ function getWorkflowUploadDuration(upload: WorkflowUploadItem) {
   return Math.max(0, upload.durationSeconds ?? 0);
 }
 
-function validateWorkflowReferenceVideoDimensions(dimensions?: { width: number; height: number }) {
-  if (!dimensions?.width || !dimensions.height) return "视频尺寸读取失败";
-  const ratio = dimensions.width / dimensions.height;
-  if (ratio < 0.4 || ratio > 2.5) return "视频宽高比需在 0.4 到 2.5 之间";
-  if (dimensions.width < 300 || dimensions.width > 6000 || dimensions.height < 300 || dimensions.height > 6000) return "视频宽高需在 300 到 6000 像素之间";
-  const pixels = dimensions.width * dimensions.height;
-  if (pixels < 409600 || pixels > 8295044) return "视频总像素需在 409600 到 8295044 之间";
-  return undefined;
-}
+// validateWorkflowReferenceVideoDimensions 已从 media-upload-validation.ts 导入（唯一权威，2026-08-02 收敛，原来这里手抄了一份）。
 
 function readWorkflowMediaFileMetadata(file: File, kind: "video" | "audio") {
   return new Promise<{ durationSeconds?: number; dimensions?: { width: number; height: number } }>((resolve, reject) => {
@@ -663,24 +643,6 @@ function readWorkflowMediaMetadataFromUrl(url: string, kind: "video" | "audio") 
     element.onerror = () => reject(new Error(kind === "video" ? "视频信息读取失败" : "音频信息读取失败"));
     element.src = url;
   });
-}
-
-function appendWorkflowDocumentContext(prompt: string, uploads?: WorkflowUploadItem[]) {
-  const documents = (uploads ?? []).filter((upload) => upload.kind === "document" && upload.status === "ready" && upload.text?.trim());
-  if (documents.length === 0) return prompt;
-
-  let remaining = MAX_WORKFLOW_DOCUMENT_CONTEXT_CHARS;
-  const sections: string[] = [];
-  documents.forEach((document, index) => {
-    if (remaining <= 0) return;
-    const content = (document.text ?? "").trim().slice(0, remaining);
-    if (!content) return;
-    remaining -= content.length;
-    sections.push(`文档${index + 1}：${document.name}\n${content}`);
-  });
-
-  if (sections.length === 0) return prompt;
-  return `${prompt || "请阅读我上传的文档，并告诉我可以怎么继续创作。"}\n\n已读取文档内容如下。请把这些内容作为当前上下文，不要假装没有读取：\n\n${sections.join("\n\n---\n\n")}`;
 }
 
 async function getWorkflowDirectUploadToken() {
@@ -850,7 +812,6 @@ function isWorkflowPasteMediaFile(file: File) {
 }
 
 function validateWorkflowUploadNodeFile(file: File, kind: "image" | "video" | "audio" | "text", media?: { durationSeconds?: number; dimensions?: { width: number; height: number } }, text?: string) {
-  const extension = getWorkflowFileExtension(file);
   if (kind === "text") return (text ?? "").length > 2000 ? "上传文本不能超过 2000 字" : undefined;
   if (kind === "image") {
     return validateImageUploadFile(file);
@@ -1125,16 +1086,6 @@ function getWorkflowConnectionBindings(editor: Editor, connection: WorkflowConne
   return {
     start: bindings.find((binding) => binding.props.terminal === "start"),
     end: bindings.find((binding) => binding.props.terminal === "end"),
-  };
-}
-
-function getWorkflowConnectionNodeIds(editor: Editor, connection: WorkflowConnectionShape | TLShapeId) {
-  const bindings = getWorkflowConnectionBindings(editor, connection);
-  const startShape = bindings.start ? editor.getShape(bindings.start.toId) : undefined;
-  const endShape = bindings.end ? editor.getShape(bindings.end.toId) : undefined;
-  return {
-    start: startShape?.type === "workflow_node" ? (startShape as WorkflowNodeShape).props.node.id : undefined,
-    end: endShape?.type === "workflow_node" ? (endShape as WorkflowNodeShape).props.node.id : undefined,
   };
 }
 
@@ -2412,12 +2363,8 @@ function WorkflowShapeComponent({ shape }: { shape: WorkflowNodeShape }) {
   const isSelected = useValue(`workflow-selected-${shape.id}`, () => editor.getSelectedShapeIds().includes(shape.id), [editor, shape.id]);
   const isHovered = useValue(`workflow-hovered-${shape.id}`, () => editor.getHoveredShapeId() === shape.id, [editor, shape.id]);
   const isEditing = useValue(`workflow-editing-${shape.id}`, () => editor.getEditingShapeId() === shape.id, [editor, shape.id]);
-  const sourcePrompt = node.data.prompt?.trim() || node.data.text?.trim() || node.data.outputText?.trim() || runtime.workflowTitle;
   const imageUrl = node.data.images?.[0];
   const imageDisplayUrl = imageUrl ? getStaticMediaUrl(imageUrl) ?? imageUrl : undefined;
-  const videoPosterDisplayUrl = node.data.videoUrl ? runtime.getVideoPosterDisplayUrl?.(node.data.videoUrl, node.data.posterUrl) : undefined;
-  const imageMediaName = imageUrl ? node.data.mediaSystemNames?.[imageUrl] ?? "图片生成" : "图片生成";
-  const videoMediaName = node.data.videoUrl ? node.data.mediaSystemNames?.[node.data.videoUrl] ?? "视频生成" : "视频生成";
   const showOutputPort = ((isSelected || isHovered || keepPortVisible) && !runtime.connectingFrom || Boolean(runtime.connectingTo)) && canWorkflowNodeOutput(node);
   const showInputPort = (isSelected || isHovered || keepPortVisible || Boolean(runtime.connectingFrom) || runtime.multiConnectSources.length > 0) && canWorkflowNodeInput(node);
 
@@ -4562,11 +4509,10 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
       await new Promise((resolve) => window.setTimeout(resolve, videoPollIntervalMs));
       if (!pollMountedRef.current || loadedWorkflowIdRef.current !== workflowId) return;
       attempt += 1;
-      let pollData: VideoApiResponse;
       let pollResponse: Response;
       try {
         pollResponse = await fetch("/api/generation-status", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ requestIds: [requestId] }) });
-      } catch (error) {
+      } catch {
         updateNode(node.id, { isRunning: true, error: undefined, taskId });
         continue;
       }
@@ -4576,7 +4522,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
       }
       const statusData = await readJson<{ jobs?: Array<{ status?: string; resultUrls?: string[]; reservedNames?: string[]; posterUrl?: string; error?: string; errorCode?: string; usage?: UsageMeta; credit?: CreditResult; extra?: { preview?: { videoUrl?: string } } }> }>(pollResponse);
       const job = statusData.jobs?.[0];
-      pollData = job ? { status: job.status, content: { video_url: job.resultUrls?.[0], poster_url: job.posterUrl }, error: job.error, errorCode: job.errorCode, usage: job.usage, credit: job.credit } as VideoApiResponse : { status: "running" } as VideoApiResponse;
+      const pollData = (job ? { status: job.status, content: { video_url: job.resultUrls?.[0], poster_url: job.posterUrl }, error: job.error, errorCode: job.errorCode, usage: job.usage, credit: job.credit } : { status: "running" }) as VideoApiResponse;
       usage = pollData.usage ?? usage;
       const pollError = getWorkflowApiErrorMessage({ error: pollData.error, errorCode: pollData.errorCode }, GENERIC_MEDIA_ERROR_MESSAGE);
       if (pollData.status === "failed" || pollData.error) throw new Error(pollError);
@@ -5729,7 +5675,6 @@ function FailedCard({ isImage, selected, height, error, onRetry, onOptimizationR
   const fixedScale = useWorkflowFixedScreenScale();
   const inset = 14 * fixedScale;
   const errorLineHeight = 20 * fixedScale;
-  const errorMaxHeight = Math.max(errorLineHeight, height - inset * 2 - 44 * fixedScale);
   const hasOptimizationRetry = Boolean(maybeOptimizationRetry);
   const onOptimizationRetry = maybeOptimizationRetry ?? (() => undefined);
   const titleHeight = 26 * fixedScale;
@@ -5812,7 +5757,6 @@ function TextDisplayCard({ node, height, isEditing }: { node: WorkflowNode; sele
     </div>
   );
 }
-function PreviewEyeButton({ label, onPreview }: { label: string; onPreview: () => void }) { return <button type="button" onPointerDown={(event) => event.stopPropagation()} onClick={(event) => { event.stopPropagation(); onPreview(); }} className="absolute bottom-3 right-3 z-20 inline-flex h-9 w-9 items-center justify-center rounded-full bg-black/55 text-white shadow-[0_8px_20px_rgba(0,0,0,0.24)] backdrop-blur transition hover:bg-black/72" aria-label={label} title={label}><RiEyeLine className="h-4.5 w-4.5" /></button>; }
 function UploadingNodeOverlay({ progress, width, height, previewUrl, isVideo }: { progress?: number; width: number; height: number; previewUrl?: string; isVideo?: boolean }) {
   const pct = Math.max(1, Math.min(99, Math.round(progress ?? 1)));
   const degrees = pct * 3.6;
@@ -5870,11 +5814,28 @@ function WorkflowVideoSaveBadge({ saving, savedFlashAt }: { saving?: boolean; sa
   </div>;
 }
 
-function WorkflowInlineVideo({ node, url, onSelect, saving = false, savedFlashAt }: { node: WorkflowNode; url: string; onSelect: () => void; saving?: boolean; savedFlashAt?: number }) {
+function WorkflowInlineVideo({ node, url, onSelect, saving = false, savedFlashAt, selected = false }: { node: WorkflowNode; url: string; onSelect: () => void; saving?: boolean; savedFlashAt?: number; selected?: boolean }) {
   const editor = useEditor();
   const runtime = useWorkflowRuntime();
   const lastSavedTimeRef = useRef(node.data.videoCurrentTime ?? 0);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
   const displayUrl = getStaticMediaUrl(url) ?? url;
+  // 选中即播放、取消选中即暂停。play() 可能被浏览器自动播放策略拒绝（无声报错），catch 吞掉即可——用户仍可手点播放。
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    if (!selected) {
+      video.pause();
+      return;
+    }
+    // ⛔ 必须延迟一帧：浏览器对 <video controls> 有「点视频本体切换播放/暂停」的原生行为，
+    //    和本 effect 在同一次点击里赛跑（实测选中后时播时不播）→ 让 play() 稳赢。
+    //    之后的点击不受影响（selected 不再变，effect 不重跑），用户仍可点视频本体手动暂停。
+    const raf = requestAnimationFrame(() => {
+      void video.play().catch(() => undefined);
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [selected]);
   const markVideoEvent = (event: SyntheticEvent) => {
     if (isRightClickOrContextMenuEvent(event)) return;
     event.stopPropagation();
@@ -5909,37 +5870,14 @@ function WorkflowInlineVideo({ node, url, onSelect, saving = false, savedFlashAt
     });
   };
 
-  return <div className="relative h-full w-full cursor-default bg-[#e6e6e6]" style={{ pointerEvents: "all" }}><video src={displayUrl} className="h-full w-full select-none object-cover" style={{ pointerEvents: "all", cursor: "default" }} draggable={false} controls playsInline preload="auto" onLoadedMetadata={(event) => saveVideoMetadata(event.currentTarget)} onDragStart={(event) => event.preventDefault()} onTimeUpdate={(event) => saveCurrentTime(event.currentTarget.currentTime)} onPause={(event) => saveCurrentTime(event.currentTarget.currentTime, true)} onSeeked={(event) => saveCurrentTime(event.currentTarget.currentTime, true)} onEnded={(event) => saveCurrentTime(event.currentTarget.currentTime, true)} onPointerDownCapture={markVideoEvent} onPointerUpCapture={markVideoEvent} onMouseDownCapture={markVideoEvent} onMouseUpCapture={markVideoEvent} onClickCapture={markVideoEvent} onDoubleClickCapture={markVideoEvent} /><WorkflowVideoSaveBadge saving={saving} savedFlashAt={savedFlashAt} /><div className="absolute left-0 right-0 top-0 z-10 cursor-default" style={{ bottom: 112, pointerEvents: "all" }} onDragStart={(event) => event.preventDefault()} onPointerDown={(event) => { if (event.button !== 2) onSelect(); }} /></div>;
+  return <div className="relative h-full w-full cursor-default bg-[#e6e6e6]" style={{ pointerEvents: "all" }}><video ref={videoRef} src={displayUrl} className="h-full w-full select-none object-cover" style={{ pointerEvents: "all", cursor: "default" }} draggable={false} controls playsInline preload="auto" onLoadedMetadata={(event) => saveVideoMetadata(event.currentTarget)} onDragStart={(event) => event.preventDefault()} onTimeUpdate={(event) => saveCurrentTime(event.currentTarget.currentTime)} onPause={(event) => saveCurrentTime(event.currentTarget.currentTime, true)} onSeeked={(event) => saveCurrentTime(event.currentTarget.currentTime, true)} onEnded={(event) => saveCurrentTime(event.currentTarget.currentTime, true)} onPointerDownCapture={markVideoEvent} onPointerUpCapture={markVideoEvent} onMouseDownCapture={markVideoEvent} onMouseUpCapture={markVideoEvent} onClickCapture={markVideoEvent} onDoubleClickCapture={markVideoEvent} /><WorkflowVideoSaveBadge saving={saving} savedFlashAt={savedFlashAt} /><div className="absolute left-0 right-0 top-0 z-10 cursor-default" style={{ bottom: 112, pointerEvents: "all" }} onDragStart={(event) => event.preventDefault()} onPointerDown={(event) => { if (event.button !== 2) onSelect(); }} /></div>;
 }
 
-function VideoDisplayCard({ node, selected, height, onSelect }: { node: WorkflowNode; selected?: boolean; height: number; onSelect: () => void }) { const runtime = useWorkflowRuntime(); if (node.data.isRunning && node.data.videoPreviewUrl) return <div className={`relative w-full overflow-hidden border bg-[#e6e6e6] ${cardBorderClassName(selected)}`} style={{ height }}><WorkflowInlineVideo node={node} url={node.data.videoPreviewUrl} saving onSelect={onSelect} /></div>; if (node.data.isRunning) return <WaitingCard isImage={false} startedAt={node.data.startedAt} selected={selected} height={height} />; if (node.data.error) return <FailedCard isImage={false} selected={selected} height={height} error={node.data.error} onRetry={() => runtime.runVideoNode(node)} />; if (node.data.videoUrl) return <div className={`relative w-full overflow-hidden border bg-[#e6e6e6] ${cardBorderClassName(selected)}`} style={{ height }}><WorkflowInlineVideo node={node} url={node.data.videoUrl} savedFlashAt={node.data.videoSavedFlashAt} onSelect={onSelect} /></div>; return <EmptyMediaCard kind="video" selected={selected} height={height} />; }
+function VideoDisplayCard({ node, selected, height, onSelect }: { node: WorkflowNode; selected?: boolean; height: number; onSelect: () => void }) { const runtime = useWorkflowRuntime(); if (node.data.isRunning && node.data.videoPreviewUrl) return <div className={`relative w-full overflow-hidden border bg-[#e6e6e6] ${cardBorderClassName(selected)}`} style={{ height }}><WorkflowInlineVideo node={node} url={node.data.videoPreviewUrl} saving selected={selected} onSelect={onSelect} /></div>; if (node.data.isRunning) return <WaitingCard isImage={false} startedAt={node.data.startedAt} selected={selected} height={height} />; if (node.data.error) return <FailedCard isImage={false} selected={selected} height={height} error={node.data.error} onRetry={() => runtime.runVideoNode(node)} />; if (node.data.videoUrl) return <div className={`relative w-full overflow-hidden border bg-[#e6e6e6] ${cardBorderClassName(selected)}`} style={{ height }}><WorkflowInlineVideo node={node} url={node.data.videoUrl} savedFlashAt={node.data.videoSavedFlashAt} selected={selected} onSelect={onSelect} /></div>; return <EmptyMediaCard kind="video" selected={selected} height={height} />; }
 
-function getWorkflowEditableText(element: HTMLElement) {
-  let text = "";
-  const walk = (node: Node) => {
-    node.childNodes.forEach((child) => {
-      if (child.nodeType === Node.TEXT_NODE) {
-        text += child.textContent ?? "";
-        return;
-      }
-      if (child.nodeName === "BR") {
-        if (!(child instanceof HTMLElement) || child.dataset.trailingBreak !== "true") text += "\n";
-        return;
-      }
-      walk(child);
-    });
-  };
-  walk(element);
-  const normalizedText = text.replace(/\u00a0/g, " ");
-  return normalizedText.replace(/\n/g, "") === "" ? "" : normalizedText;
-}
-
-function appendWorkflowEditorText(element: HTMLElement, text: string) {
-  text.split("\n").forEach((line, index) => {
-    if (index > 0) element.append(document.createElement("br"));
-    if (line) element.append(document.createTextNode(line));
-  });
-}
+// 选区引擎（getWorkflowEditableText / appendWorkflowEditorText / getWorkflowSelectionTextOffset /
+// getWorkflowSelectionTextRange / setWorkflowSelectionTextOffset / getWorkflowAtQueryAtCursor 等）
+// 唯一权威在 mention-text.ts（2026-08-02 收敛，原来这里和对话流各存一份且已漂移），上面已按别名导入。
 
 function getWorkflowMentionRanges(value: string, validReferences: Set<string>) {
   return getSharedMentionRanges(value, validReferences);
@@ -5947,197 +5885,6 @@ function getWorkflowMentionRanges(value: string, validReferences: Set<string>) {
 
 function getWorkflowMentionRangeForDeletion(value: string, cursorOffset: number, direction: "backward" | "forward", validReferences: Set<string>) {
   return getSharedMentionRangeForDeletion(value, cursorOffset, direction, validReferences);
-}
-
-function getWorkflowAtQueryAtCursor(text: string, cursorOffset: number) {
-  const cursor = Math.min(Math.max(0, cursorOffset), text.length);
-  const beforeCursor = text.slice(0, cursor);
-  const match = beforeCursor.match(/@([^@\s，。！？；;、]*)$/);
-  if (!match) return null;
-  return { index: cursor - match[0].length, query: match[1] ?? "", cursor };
-}
-
-function getWorkflowAtQueryAtCursorForReferences(text: string, cursorOffset: number, validReferences: Set<string>) {
-  const query = getWorkflowAtQueryAtCursor(text, cursorOffset);
-  if (!query) return null;
-  if (query.query && validReferences.has(query.query)) return null;
-  return query;
-}
-
-function getWorkflowSelectionTextOffset(element: HTMLElement) {
-  const selection = window.getSelection();
-  if (!selection || selection.rangeCount === 0) return getWorkflowEditableText(element).length;
-  const range = selection.getRangeAt(0);
-  if (!element.contains(range.startContainer)) return getWorkflowEditableText(element).length;
-
-  let offset = 0;
-  let found = false;
-  const nodeTextLength = (node: Node): number => {
-    if (node.nodeType === Node.TEXT_NODE) return node.textContent?.length ?? 0;
-    if (node.nodeName === "BR") return node instanceof HTMLElement && node.dataset.trailingBreak === "true" ? 0 : 1;
-    return Array.from(node.childNodes).reduce((sum, child) => sum + nodeTextLength(child), 0);
-  };
-  const walk = (node: Node) => {
-    if (found) return;
-
-    if (node instanceof HTMLElement && node.dataset.mention === "true") {
-      offset += nodeTextLength(node);
-      if (node.contains(range.startContainer)) found = true;
-      return;
-    }
-
-    if (node === range.startContainer) {
-      if (node.nodeType === Node.TEXT_NODE) {
-        offset += range.startOffset;
-      } else {
-        Array.from(node.childNodes).slice(0, range.startOffset).forEach((child) => { offset += nodeTextLength(child); });
-      }
-      found = true;
-      return;
-    }
-    if (node.nodeType === Node.TEXT_NODE || node.nodeName === "BR") {
-      offset += nodeTextLength(node);
-      return;
-    }
-    node.childNodes.forEach(walk);
-  };
-  walk(element);
-  return found ? offset : getWorkflowEditableText(element).length;
-}
-
-// 读取当前选区文本起止偏移（start<=end）。无选区则 start===end（光标）。用于"选中后点 @文件名 覆盖"。
-function getWorkflowSelectionTextRange(element: HTMLElement): { start: number; end: number } {
-  const selection = window.getSelection();
-  const fallback = getWorkflowEditableText(element).length;
-  if (!selection || selection.rangeCount === 0) return { start: fallback, end: fallback };
-  const range = selection.getRangeAt(0);
-  if (!element.contains(range.startContainer) || !element.contains(range.endContainer)) return { start: fallback, end: fallback };
-
-  const nodeTextLength = (node: Node): number => {
-    if (node.nodeType === Node.TEXT_NODE) return node.textContent?.length ?? 0;
-    if (node.nodeName === "BR") return node instanceof HTMLElement && node.dataset.trailingBreak === "true" ? 0 : 1;
-    return Array.from(node.childNodes).reduce((sum, child) => sum + nodeTextLength(child), 0);
-  };
-  const offsetOf = (targetNode: Node, targetOffset: number): number => {
-    let offset = 0;
-    let found = false;
-    const walk = (node: Node) => {
-      if (found) return;
-      if (node instanceof HTMLElement && node.dataset.mention === "true") {
-        offset += nodeTextLength(node);
-        if (node.contains(targetNode)) found = true;
-        return;
-      }
-      if (node === targetNode) {
-        if (node.nodeType === Node.TEXT_NODE) {
-          offset += targetOffset;
-        } else {
-          Array.from(node.childNodes).slice(0, targetOffset).forEach((child) => { offset += nodeTextLength(child); });
-        }
-        found = true;
-        return;
-      }
-      if (node.nodeType === Node.TEXT_NODE || node.nodeName === "BR") {
-        offset += nodeTextLength(node);
-        return;
-      }
-      node.childNodes.forEach(walk);
-    };
-    walk(element);
-    return found ? offset : fallback;
-  };
-
-  const a = offsetOf(range.startContainer, range.startOffset);
-  const b = offsetOf(range.endContainer, range.endOffset);
-  return a <= b ? { start: a, end: b } : { start: b, end: a };
-}
-
-function setWorkflowSelectionTextOffset(element: HTMLElement, offset: number) {
-  const selection = window.getSelection();
-  if (!selection) return;
-  let remaining = Math.max(0, offset);
-  const placeCaret = (container: Node): boolean => {
-    const children = Array.from(container.childNodes);
-    for (const child of children) {
-      if (child instanceof HTMLElement && child.dataset.mention === "true") {
-        const length = child.textContent?.length ?? 0;
-        if (remaining <= length) {
-          const range = document.createRange();
-          if (remaining <= 0) range.setStartBefore(child);
-          else range.setStartAfter(child);
-          range.collapse(true);
-          selection.removeAllRanges();
-          selection.addRange(range);
-          return true;
-        }
-        remaining -= length;
-        continue;
-      }
-
-      if (child.nodeType === Node.TEXT_NODE) {
-        const length = child.textContent?.length ?? 0;
-        if (remaining <= length) {
-          const range = document.createRange();
-          range.setStart(child, remaining);
-          range.collapse(true);
-          selection.removeAllRanges();
-          selection.addRange(range);
-          return true;
-        }
-        remaining -= length;
-        continue;
-      }
-      if (child.nodeName === "BR") {
-        if (remaining <= 1) {
-          const parent = child.parentNode;
-          if (!parent) return false;
-          const range = document.createRange();
-          range.setStart(parent, children.indexOf(child) + 1);
-          range.collapse(true);
-          selection.removeAllRanges();
-          selection.addRange(range);
-          return true;
-        }
-        remaining -= 1;
-        continue;
-      }
-      if (placeCaret(child)) return true;
-    }
-    return false;
-  };
-  if (placeCaret(element)) return;
-
-  if (element.lastChild?.nodeName === "BR") {
-    const range = document.createRange();
-    range.setStart(element, element.childNodes.length);
-    range.collapse(true);
-    selection.removeAllRanges();
-    selection.addRange(range);
-    return;
-  }
-
-  const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
-  let node = walker.nextNode() as Text | null;
-
-  while (node) {
-    const length = node.textContent?.length ?? 0;
-    if (remaining <= length) {
-      const range = document.createRange();
-      range.setStart(node, remaining);
-      range.collapse(true);
-      selection.removeAllRanges();
-      selection.addRange(range);
-      return;
-    }
-    remaining -= length;
-    node = walker.nextNode() as Text | null;
-  }
-
-  const range = document.createRange();
-  range.selectNodeContents(element);
-  range.collapse(false);
-  selection.removeAllRanges();
-  selection.addRange(range);
 }
 
 function renderWorkflowEditorContent(element: HTMLElement, value: string, validReferences: Set<string>) {
@@ -6178,95 +5925,6 @@ function preserveWorkflowEditorScroll(element: HTMLElement, callback: () => void
   const previousScrollTop = element.scrollTop;
   callback();
   element.scrollTop = wasAtBottom ? element.scrollHeight : previousScrollTop;
-}
-
-function renderWorkflowInlineFormatting(text: string) {
-  const pattern = /(\*\*[^*]+\*\*|\[red\][\s\S]+?\[\/red\]|\[blue\][\s\S]+?\[\/blue\])/g;
-  const nodes: ReactNode[] = [];
-  let lastIndex = 0;
-  const cleanText = (value: string) => value.replace(/\*\*/g, "").replace(/__/g, "").replace(/`/g, "");
-
-  text.replace(pattern, (match, _token, index: number) => {
-    if (index > lastIndex) nodes.push(cleanText(text.slice(lastIndex, index)));
-    if (match.startsWith("**")) {
-      nodes.push(<strong key={`${match}-${index}`} className="font-semibold text-[#111111]">{match.slice(2, -2)}</strong>);
-    } else if (match.startsWith("[red]")) {
-      nodes.push(<span key={`${match}-${index}`} className="rounded-md bg-[#fff1f1] px-1.5 py-0.5 text-[13px] font-semibold text-[#d36b63]">{match.slice(5, -6)}</span>);
-    } else {
-      nodes.push(<span key={`${match}-${index}`} className="rounded-md bg-[#eef5ff] px-1.5 py-0.5 text-[13px] font-semibold text-[#6f95d8]">{match.slice(6, -7)}</span>);
-    }
-    lastIndex = index + match.length;
-    return match;
-  });
-
-  if (lastIndex < text.length) nodes.push(cleanText(text.slice(lastIndex)));
-  return nodes.length > 0 ? nodes : cleanText(text);
-}
-
-function sanitizeWorkflowTextOutputForDisplay(content: string) {
-  const raw = content.trim();
-  let text = raw;
-  if (raw.startsWith("{") && raw.endsWith("}")) {
-    try {
-      const parsed = JSON.parse(raw) as { content?: unknown; displayText?: unknown };
-      text = typeof parsed.content === "string" ? parsed.content : typeof parsed.displayText === "string" ? parsed.displayText : raw;
-    } catch {}
-  }
-
-  return sanitizeModelOutputText(text)
-    .replace(/```[\s\S]*?```/g, "")
-    .replace(/^\s*[{[][^\n]*$/gm, "")
-    .replace(/\r\n|\n|\r/g, "\n")
-    .replace(/\t/g, " ")
-    .replace(/^```[\w-]*\s*$/gm, "")
-    .replace(/^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/gm, "")
-    .replace(/`([^`]+)`/g, "$1")
-    .trim();
-}
-
-function extractWorkflowTextContent(content: string | undefined) {
-  const raw = (content ?? "").trim();
-  if (!raw) return "";
-  if (!raw.startsWith("{")) return raw;
-
-  try {
-    const parsed = JSON.parse(raw) as { content?: unknown; displayText?: unknown };
-    if (typeof parsed.content === "string") return parsed.content;
-    if (typeof parsed.displayText === "string") return parsed.displayText;
-  } catch {}
-
-  return raw;
-}
-
-function WorkflowFormattedText({ content }: { content: string }) {
-  const displayContent = sanitizeWorkflowTextOutputForDisplay(content);
-  const blocks = displayContent.split(/\n{2,}/).map((block) => block.trim()).filter(Boolean);
-  if (blocks.length === 0) return null;
-
-  const renderLine = (line: string, key: string, isFirstLine: boolean) => {
-    const divider = /^-{3,}$/.test(line);
-    const heading = line.match(/^(#{1,3})\s*(.*)$/);
-    const boldHeading = line.match(/^\*\*([^*]{2,24})\*\*$/);
-    const labeledListItem = line.match(/^(?:[-*]|\d+[.、])\s*(.{2,30}?[：:])\s*([\s\S]*)$/);
-    const bulletItem = line.match(/^[-*]\s+([\s\S]+)$/);
-    const plainHeading = isFirstLine && line.length <= 28 && !/[。！？.!?]$/.test(line);
-
-    if (divider) return <hr key={key} className="my-3 border-[#d8d8d8]" />;
-    if (heading || boldHeading || plainHeading) {
-      const headingText = heading ? heading[2]?.trim() ?? "" : boldHeading ? boldHeading[1] : line;
-      if (!headingText) return null;
-      return <h2 key={key} className="pt-1 text-[17px] font-semibold leading-7 tracking-[-0.01em] text-[#111111]">{renderWorkflowInlineFormatting(headingText)}</h2>;
-    }
-    if (labeledListItem) {
-      return <div key={key} className="flex gap-2"><span className="mt-[0.72em] h-1.5 w-1.5 shrink-0 rounded-full bg-[#111111]" aria-hidden="true" /><p className="min-w-0 flex-1"><span className="font-semibold text-[#111111]">{renderWorkflowInlineFormatting(labeledListItem[1])}</span>{labeledListItem[2] ? renderWorkflowInlineFormatting(labeledListItem[2]) : null}</p></div>;
-    }
-    if (bulletItem) {
-      return <div key={key} className="flex gap-2"><span className="mt-[0.72em] h-1.5 w-1.5 shrink-0 rounded-full bg-[#111111]" aria-hidden="true" /><p className="min-w-0 flex-1">{renderWorkflowInlineFormatting(bulletItem[1])}</p></div>;
-    }
-    return <p key={key}>{renderWorkflowInlineFormatting(line)}</p>;
-  };
-
-  return <div className="space-y-3">{blocks.map((block, blockIndex) => <div key={blockIndex} className="space-y-2">{block.split(/\n/).map((line) => line.trim()).filter(Boolean).map((line, lineIndex) => renderLine(line, `${blockIndex}-${lineIndex}`, blockIndex === 0 && lineIndex === 0))}</div>)}</div>;
 }
 
 function WorkflowUploadProgressOverlay({ progress }: { progress?: number }) {
@@ -7017,30 +6675,12 @@ function WorkflowVideoReferenceModeMenu({ value, onChange }: { value: WorkflowVi
   const SelectedIcon = workflowVideoReferenceModeOptions.find((option) => option.value === value)?.icon ?? RiImageCircleLine;
   return <div data-workflow-menu className="relative" onPointerDown={(event) => event.stopPropagation()}><button type="button" onClick={toggle} className={`${workflowToolButtonClassName} ${open ? "yinzao-tool-button-active" : ""}`}><SelectedIcon className="h-[18px] w-[18px] shrink-0 text-[#777777]" /><span className="font-medium text-[#777777]">{getWorkflowVideoReferenceModeLabel(value)}</span><RiArrowDownSLine className="h-3.5 w-3.5 shrink-0 text-[#8a8a8a]" /></button>{open ? <div className="absolute bottom-full right-0 z-[10000] mb-2 min-w-[180px] rounded-[12px] bg-white p-2 shadow-[0_18px_40px_rgba(0,0,0,0.12)]"><div className="px-2 pb-2 text-[12px] font-medium text-[#a0a0a0]">参考模式</div>{workflowVideoReferenceModeOptions.map((option) => { const OptionIcon = option.icon; return <button key={option.value} type="button" onClick={() => { onChange(option.value); setOpen(false); }} className={option.value === value ? "flex h-10 w-full items-center justify-between whitespace-nowrap rounded-[8px] bg-[#f5f5f5] px-3 text-left text-[14px] font-medium text-[#111111]" : "flex h-10 w-full items-center justify-between whitespace-nowrap rounded-[8px] px-3 text-left text-[14px] text-[#555555] hover:bg-[#f7f7f7]"}><span className="flex items-center gap-2"><OptionIcon className="h-[18px] w-[18px] shrink-0 text-[#777777]" /><span>{option.label}</span></span>{option.value === value ? <RiCheckLine className="h-[18px] w-[18px] text-[#111111]" /> : null}</button>; })}</div> : null}</div>;
 }
-function WorkflowSettingsMenuV2({ mode, model, ratio, resolution, ratios, resolutions, onChange, className = "" }: { mode: "image" | "video"; model?: ModelName; ratio: string; resolution: string; ratios: string[]; resolutions: string[]; onChange: (patch: { ratio?: string; resolution?: string }) => void; className?: string }) {
-  const [open, setOpen] = useState(false);
-  const resolutionGridClassName = mode === "video" ? "gap-1.5 px-1.5" : "gap-2 px-2";
-  const resolutionButtonPaddingClassName = mode === "video" ? "px-2" : "px-4";
-  const resolutionLabelGapClassName = mode === "video" ? "gap-1.5" : "gap-2";
-  const dimensions = mode === "image" ? getExpectedImageDimensions(model, resolution, ratio) : getExpectedVideoDimensions(model, resolution, ratio);
-
-  useEffect(() => {
-    const close = () => setOpen(false);
-    window.addEventListener("workflow-close-popups", close);
-    return () => window.removeEventListener("workflow-close-popups", close);
-  }, []);
-
-  return <div className={`relative ${className}`} onPointerDown={(event) => event.stopPropagation()}><button type="button" onClick={() => setOpen((current) => !current)} className={`relative ${workflowToolButtonClassName} ${open ? "yinzao-tool-button-active" : ""} pl-10`}><span className="flex min-w-0 flex-nowrap items-center gap-2"><span className="font-medium text-[#777777]">{ratio} /</span><span className="font-medium text-[#777777]">{resolution}</span><RiArrowDownSLine className="h-3.5 w-3.5 shrink-0 text-[#8a8a8a]" /></span><span className="absolute left-3.5 top-1/2 -translate-y-1/2"><RatioOptionIcon option={ratio} /></span></button>{open ? <div className="absolute bottom-full left-0 z-[10000] mb-2 w-[min(420px,calc(100vw-40px))] rounded-[12px] bg-white p-5 shadow-[0_18px_40px_rgba(0,0,0,0.12)]"><div className="pb-2 text-[13px] font-medium text-[#a0a0a0]">选择比例</div><div className="mt-2 grid auto-cols-fr grid-flow-col gap-1 rounded-[12px] bg-[#f6f6f6] px-1.5 py-1">{ratios.map((option) => <button key={option} type="button" onClick={() => onChange({ ratio: option })} className={option === ratio ? "flex h-[58px] min-w-0 flex-col items-center justify-center gap-1 rounded-[10px] bg-white px-1 text-[#111111] shadow-[0_2px_10px_rgba(0,0,0,0.06)]" : "flex h-[58px] min-w-0 flex-col items-center justify-center gap-1 rounded-[10px] px-1 text-[#555555] transition hover:bg-white/80"}><RatioOptionIcon option={option} /><span className="text-[13px] font-medium leading-none">{option}</span></button>)}</div><div className="mt-4 text-[13px] font-medium text-[#a0a0a0]">选择分辨率</div><div className={`mt-2 grid ${resolutionGridClassName} rounded-[12px] bg-[#f6f6f6] py-1 ${resolutions.length === 1 ? "grid-cols-1" : resolutions.length === 2 ? "grid-cols-2" : resolutions.length === 3 ? "grid-cols-3" : "grid-cols-4"}`}>{resolutions.map((option) => <button key={option} type="button" onClick={() => onChange(mode === "video" ? { resolution: option, ratio: normalizeVideoRatioForModel(model, ratio, option) } : { resolution: option })} className={option === resolution ? `flex h-[56px] items-center justify-center rounded-[10px] bg-white ${resolutionButtonPaddingClassName} text-[#111111] shadow-[0_2px_10px_rgba(0,0,0,0.06)]` : `flex h-[56px] items-center justify-center rounded-[10px] ${resolutionButtonPaddingClassName} text-[#666666] transition hover:bg-white/80`}><span className={`flex items-center ${resolutionLabelGapClassName} whitespace-nowrap text-[13px] font-medium leading-none`}><CompactResolutionIcon option={option} mode={mode} /><span>{option}</span></span></button>)}</div><div className="mt-4 text-[13px] font-medium text-[#a0a0a0]">尺寸</div><div className="mt-2 grid grid-cols-[1fr_auto_1fr_auto] items-center gap-3"><div className="flex h-[48px] items-center justify-between rounded-[12px] bg-[#f6f6f6] px-4"><span className="text-[13px] font-medium text-[#9a9a9a]">W</span><span className="text-[13px] font-medium text-[#111111]">{formatDimensionValue(dimensions.width)}</span></div><div className="flex h-[48px] w-[24px] items-center justify-center text-[#8a8a8a]"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true"><path d="M4 4L10 10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /><path d="M10 4L4 10" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg></div><div className="flex h-[48px] items-center justify-between rounded-[12px] bg-[#f6f6f6] px-4"><span className="text-[13px] font-medium text-[#9a9a9a]">H</span><span className="text-[13px] font-medium text-[#111111]">{formatDimensionValue(dimensions.height)}</span></div><div className="text-[13px] font-medium text-[#8a8a8a]">PX</div></div></div> : null}</div>;
-}
 function getGenerationModelIcon(modelId: string) { if (modelId.startsWith("byteplus:") || modelId.startsWith("byteplus/") || modelId.startsWith("ep-")) return BytePlusIcon; if (modelId.startsWith("openai/")) return RiOpenaiFill; if (modelId.startsWith("google/")) return RiGoogleFill; if (modelId.startsWith("bytedance/") || modelId.startsWith("bytedance-seed/")) return RiTiktokFill; return null; }
 function isGoldGenerationModel(modelId: string) { return modelId === "openai/gpt-5.4-image-2" || modelId === "bytedance/seedance-2.0" || modelId === "byteplus:video.seedance-2-0"; }
 function getModelLabel(options: readonly (ConversationModel | GenerationModel)[], value: string) { return options.find((item) => item.id === value)?.label ?? value; }
 function AiGenerate3dIcon({ className = "h-[18px] w-[18px] shrink-0 text-[#777777]" }: { className?: string }) { return <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" className={className}><path d="M15.1416 2.81836L13.1016 3.94824L12 3.31055L4.5 7.65234V7.6582L12 12V20.6895L19.5 16.3467V11.5L21.5 10.3291V17.5L12 23L2.5 17.5V6.5L12 1L15.1416 2.81836ZM18.5293 2.31934C18.7059 1.8935 19.2943 1.89349 19.4707 2.31934L19.7236 2.93066C20.1556 3.97346 20.9615 4.80618 21.9746 5.25684L22.6924 5.57617C23.1026 5.75901 23.1026 6.3562 22.6924 6.53906L21.9326 6.87695C20.9449 7.31624 20.1534 8.11944 19.7139 9.12793L19.4668 9.69336C19.2864 10.1075 18.7137 10.1075 18.5332 9.69336L18.2871 9.12793C17.8476 8.11929 17.0552 7.31628 16.0674 6.87695L15.3076 6.53906C14.8974 6.35622 14.8974 5.75899 15.3076 5.57617L16.0254 5.25684C17.0385 4.80618 17.8445 3.97348 18.2764 2.93066L18.5293 2.31934Z" /></svg>; }
 function RatioOptionIcon({ option }: { option: string }) { const meta = ratioCardMeta[option] ?? ratioCardMeta["1:1"]; if (meta.icon === "spark") return <RiShining2Line className="h-[18px] w-[18px] shrink-0 text-[#777777]" />; return <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true" className="shrink-0 text-[#777777]"><rect x={(18 - Number(meta.width)) / 2} y={(18 - Number(meta.height)) / 2} width={meta.width} height={meta.height} rx="2.2" stroke="currentColor" strokeWidth="1.4" /></svg>; }
 function CompactResolutionIcon({ option, mode }: { option?: string; mode: "image" | "video" }) { if (mode === "video") return <span className="inline-flex h-4 min-w-6 items-center justify-center rounded-[3px] bg-[#111111] px-1 text-[9px] font-bold leading-none text-white">{option === "480p" ? "SD" : option === "1080p" ? "FHD" : option === "4K" ? "4K" : "HD"}</span>; return <span className="inline-flex h-4 min-w-5 items-center justify-center rounded-[3px] border border-[#d5d5d5] px-1 text-[9px] font-bold leading-none text-[#777777]">{option ?? "1K"}</span>; }
-function WorkflowModelMenu({ value, options, title, onChange, className = "" }: { value: ModelName; options: readonly (ConversationModel | GenerationModel)[]; title: string; onChange: (value: ModelName) => void; className?: string }) { const [open, setOpen] = useState(false); const SelectedIcon = getGenerationModelIcon(value); const selectedLabel = getModelLabel(options, value); const selectedGold = isGoldGenerationModel(value); return <div className={`relative min-w-0 ${className}`} onPointerDown={(event) => event.stopPropagation()}><button type="button" onClick={() => setOpen((current) => !current)} className={`${workflowToolButtonClassName} ${open ? "yinzao-tool-button-active" : ""} w-full max-w-none justify-start whitespace-nowrap`}><span className="flex min-w-0 flex-nowrap items-center gap-2">{SelectedIcon ? <SelectedIcon className="h-[18px] w-[18px] shrink-0 text-[#777777]" /> : <AiGenerate3dIcon />}<span className={`min-w-0 truncate whitespace-nowrap font-medium ${selectedGold ? "text-[#b8860b]" : "text-[#777777]"}`}>{selectedLabel}</span><RiArrowDownSLine className="h-3.5 w-3.5 shrink-0 text-[#8a8a8a]" /></span></button>{open ? <div className="absolute bottom-full left-0 z-[10000] mb-2 w-[300px] rounded-[12px] bg-white p-2 shadow-[0_18px_40px_rgba(0,0,0,0.12)]"><div className="px-2 pb-2 text-[12px] font-medium text-[#a0a0a0]">{title}</div>{options.map((option) => { const ModelIcon = getGenerationModelIcon(option.id); const selected = option.id === value; const gold = isGoldGenerationModel(option.id); return <button key={option.id} type="button" onClick={() => { onChange(option.id as ModelName); setOpen(false); }} className={selected ? "my-[3px] flex h-11 w-full items-center justify-between rounded-[8px] bg-[#f5f5f5] px-3 text-left text-[14px] font-medium text-[#111111]" : "my-[3px] flex h-11 w-full items-center justify-between rounded-[8px] px-3 text-left text-[14px] text-[#555555] hover:bg-[#f7f7f7]"}><span className="flex min-w-0 items-center gap-2">{ModelIcon ? <ModelIcon className="h-4.5 w-4.5 shrink-0 text-[#555555]" /> : <AiGenerate3dIcon className="h-4.5 w-4.5 shrink-0 text-[#555555]" />}<span className={`min-w-0 truncate text-[13px] ${gold ? "text-[#b8860b]" : ""}`}>{option.label}</span></span>{selected ? <RiCheckLine className="ml-2 h-[18px] w-[18px] shrink-0 text-[#111111]" /> : null}</button>; })}</div> : null}</div>; }
-function WorkflowSettingsMenu({ mode, ratio, resolution, ratios, resolutions, onChange, className = "" }: { mode: "image" | "video"; ratio: string; resolution: string; ratios: string[]; resolutions: string[]; onChange: (patch: { ratio?: string; resolution?: string }) => void; className?: string }) { const [open, setOpen] = useState(false); const isSmartSettings = mode === "image" && ratio === "智能比例"; const resolutionGridClassName = mode === "video" ? "gap-1.5 px-1.5" : "gap-2 px-2"; return <div className={`relative ${className}`} onPointerDown={(event) => event.stopPropagation()}><button type="button" onClick={() => setOpen((current) => !current)} className={`relative ${workflowToolButtonClassName} ${open ? "yinzao-tool-button-active" : ""} pl-10`}><span className="flex min-w-0 flex-nowrap items-center gap-2"><span className="font-medium text-[#777777]">{ratio} /</span><span className="font-medium text-[#777777]">{resolution}</span><RiArrowDownSLine className="h-3.5 w-3.5 shrink-0 text-[#8a8a8a]" /></span><span className="absolute left-3.5 top-1/2 -translate-y-1/2"><RatioOptionIcon option={ratio} /></span></button>{open ? <div className="absolute bottom-full left-0 z-[10000] mb-2 w-[min(420px,calc(100vw-40px))] rounded-[12px] bg-white p-5 shadow-[0_18px_40px_rgba(0,0,0,0.12)]"><div className="pb-2 text-[13px] font-medium text-[#a0a0a0]">选择比例</div><div className="mt-2 grid auto-cols-fr grid-flow-col gap-1 rounded-[12px] bg-[#f6f6f6] px-1.5 py-1">{ratios.map((option) => <button key={option} type="button" onClick={() => onChange({ ratio: option })} className={option === ratio ? "flex h-[58px] min-w-0 flex-col items-center justify-center gap-1 rounded-[10px] bg-white px-1 text-[#111111] shadow-[0_2px_10px_rgba(0,0,0,0.06)]" : "flex h-[58px] min-w-0 flex-col items-center justify-center gap-1 rounded-[10px] px-1 text-[#555555] transition hover:bg-white/80"}><RatioOptionIcon option={option} /><span className="text-[13px] font-medium leading-none">{option === "智能比例" ? "智能" : option}</span></button>)}</div><div className="mt-4 text-[13px] font-medium text-[#a0a0a0]">选择分辨率</div><div className={`mt-2 grid ${resolutionGridClassName} rounded-[12px] bg-[#f6f6f6] py-1 ${resolutions.length === 1 ? "grid-cols-1" : resolutions.length === 2 ? "grid-cols-2" : resolutions.length === 3 ? "grid-cols-3" : "grid-cols-4"} ${isSmartSettings ? "opacity-45" : ""}`}>{resolutions.map((option) => <button key={option} type="button" disabled={isSmartSettings} onClick={() => onChange({ resolution: option })} className={option === resolution ? "flex h-[56px] items-center justify-center gap-2 rounded-[10px] bg-white px-2 text-[#111111] shadow-[0_2px_10px_rgba(0,0,0,0.06)] disabled:cursor-not-allowed" : "flex h-[56px] items-center justify-center gap-2 rounded-[10px] px-2 text-[#666666] transition hover:bg-white/80 disabled:cursor-not-allowed disabled:hover:bg-transparent"}><CompactResolutionIcon option={option} mode={mode} /><span className="whitespace-nowrap text-[13px] font-medium leading-none">{option}</span></button>)}</div></div> : null}</div>; }
-function WorkflowDurationMenu({ value, options, onChange }: { value: string; options: string[]; onChange: (value: string) => void }) { const [open, setOpen] = useState(false); return <div className="relative" onPointerDown={(event) => event.stopPropagation()}><button type="button" onClick={() => setOpen((current) => !current)} className={`${workflowToolButtonClassName} ${open ? "yinzao-tool-button-active" : ""}`}><RiTimeLine className="h-[18px] w-[18px] shrink-0 text-[#777777]" /><span className="font-medium text-[#777777]">{value}</span><RiArrowDownSLine className="h-3.5 w-3.5 shrink-0 text-[#8a8a8a]" /></button>{open ? <div className="absolute bottom-full left-0 z-[10000] mb-2 max-h-[420px] min-w-[180px] overflow-y-auto rounded-[12px] bg-white p-2 shadow-[0_18px_40px_rgba(0,0,0,0.12)]"><div className="px-2 pb-2 text-[12px] font-medium text-[#a0a0a0]">视频时长</div>{options.map((option) => <button key={option} type="button" onClick={() => { onChange(option); setOpen(false); }} className={option === value ? "flex h-10 w-full items-center justify-between whitespace-nowrap rounded-[8px] bg-[#f5f5f5] px-3 text-left text-[14px] font-medium text-[#111111]" : "flex h-10 w-full items-center justify-between whitespace-nowrap rounded-[8px] px-3 text-left text-[14px] text-[#555555] hover:bg-[#f7f7f7]"}><span>{option}</span>{option === value ? <RiCheckLine className="h-[18px] w-[18px] text-[#111111]" /> : null}</button>)}</div> : null}</div>; }
 function WorkflowImageQualityMenuSingle({ value, onChange, className = "" }: { value: string; onChange: (quality: string) => void; className?: string }) {
   const { open, setOpen, toggle } = useWorkflowMenuOpen();
   const current = IMAGE_QUALITY_OPTIONS.includes(value as (typeof IMAGE_QUALITY_OPTIONS)[number]) ? value : DEFAULT_IMAGE_QUALITY;

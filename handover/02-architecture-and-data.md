@@ -275,6 +275,39 @@
 - `workspaceKind`=`conversation`/`workflow`/`asset_generation` + `workspaceId` 标记来源；工作流资产不混进对话流筛选。
 - **资产分类过滤在服务端** `workspace-state` 路由（`getAssetPageWhere`/`getAssetCounts`），前端 `isAssetInFilter` 做本地保留/计数——**改分类必须两处同步**。`.bin` 存的上传音频靠扩展名认不出，必须靠 `MediaAsset.mediaType`（workspace-state + media-assets GET 都已透传）。
 
+## ⭐⭐ 资产库的生成子系统（第四个生图入口，2026-08-02 补记，之前全项目文档零记载）
+
+资产库不只是存图——**它自己就是一条完整的生图链路**，和对话流 / 工作流 / Agent 并列的**第四个生图入口**。
+⛔ 动生图链路（`/api/image`、generation-jobs、扣费、模型端点映射、提示词规则）时**必须把它算进影响面**，
+`getBytePlusProviderKey` 当年就是"改一处漏三处"这么炸的。
+
+**产品形态**：资产库四个分类各有一个"生成"入口（虚线方卡按钮）——
+**角色图片 / 场景图片 / 道具图片 / 分镜图片**。点开是一个全屏生成界面
+（`chat-workbench.tsx` 的 `assetGenerate*` 一整套 state + `isCharacterGenerateOpen`），
+各自独立的提示词草稿 / 参考图草稿 / 比例选择（`assetGeneratePromptDrafts` 等按类型分桶）。
+角色图比例 = 单人 9:16 或**三视图 16:9**；场景有"四宫格"；分镜是电影截图感单帧。
+
+**链路（和对话流共用同一套后端，区别只在 metadata）**：
+
+1. 前端 `chat-workbench.tsx` `submitAssetGenerateJob` → `POST /api/image`，
+   **`metadata.creditSource` = `character_image_generation` / `scene_image_generation` / `prop_image_generation` / `shot_image_generation`**
+   —— 这 4 个字符串是整个子系统的"身份标识"，全靠它分叉。
+2. 模型→端点：`getBytePlusProviderKey(model, creditSource)` 看到这四个 source 就用 **`asset-image.` 前缀**
+   （`byteplus-provider-key.ts`；system-settings 配置表里 asset-image / conversation-image / agent-image 各配了同一批模型）。
+3. 提示词强制规则在 `chat-workbench-core.tsx`（约 4700~4810 行）：按类型+模型注入
+   「内部强制规则」（角色三视图四姿态、单人全身白底、场景纯场景无人、四宫格、分镜单镜头截图）。
+   ⭐ **按模型的仍然有效的老规则**（归档 `06-20/CHANGELOG:863`）：**Gemini 3 Pro / Seedream 4.5 出三视图不稳；
+   Seedream 需要正向表述**（所以强制规则按模型分了三套文案）。
+4. 落库：`generation-jobs.ts` 的 `isAssetImageCreditSource` → `media-asset-record.ts` 的
+   `AssetGenerationKind = character/scene/prop/shot` → `UserAssetState.currentCategory`
+   = `character_image`/`scene_image`/`prop_image`/`shot_image`（= 资产库分类页签）。
+   `workspaceKind` = `"asset_generation"`。起名走 `reserveJobNames` 的 assetFlow 分支。
+5. 账单/后台识别：`/api/credits/me` 把这四个 source 聚合显示为"角色/场景/道具/分镜图片生成"
+   （imageCount 从 UserAssetState 分类现算）；后台 `admin/api/records/user-detail` 显示为 `资产库_角色图片` 等；
+   `analytics-events.ts` 映射成 `source="asset"`；admin-overview 的功能使用统计把它们单列。
+6. 任务恢复：`assetGenerateJobs` 存进 UserWorkspaceState.state（`getPersistableAssetGenerateJobs`），
+   刷新后 `resumeAssetGenerateJob` 重新挂轮询（`assetGenerateJobPollersRef` 防重复）。
+
 ## ⭐ 关键去重规则：`getAssetIdentityKey`（2026-07-21 修）
 
 - `chat-workbench.tsx:2617`：`getAssetIdentityKey = 归一化url || mediaId || id`（**url 优先**）。
@@ -331,7 +364,10 @@
   文案由 `sidebarToggleLabel` 算好、经新 prop `leftSidebarToggleLabel` 传给画布那个。
   **全项目只有这一个按钮能切侧边栏。**
 - 图标：`RiSidebarFoldLine`（显示中，含常规+简化）/ `RiSidebarUnfoldLine`（隐藏）。
-- **点 logo = `window.location.reload()`**（不再切换收起）。
+- **点 logo = 切换线路**（2026-08-02 v65 起；与首页一致）：在新加坡服点 → `ali.venusface.com/workspace`，
+  在阿里/其他入口点 → `main.venusface.com/workspace`，悬停显示「切换线路」。
+  常量和站点判断：`chat-workbench.tsx` 的 `MALAYSIA/ALI_WORKSPACE_URL` + `getCurrentWorkspaceSite`。
+  （此前依次是：切换收起 → 刷新页面 → 现在的切换线路。）
 - **「首次进工作流自动收起」已整套删除**（`applyWorkflowFirstSessionCollapse` + sessionStorage 标记 + 相关 helper）。
 - ⚠️ **没做持久化**，刷新回常规态。→ 见 `06-memo-tasks.md` 的 **M028**（用户没拍板）。
 

@@ -2,6 +2,306 @@
 
 > 本批 CHANGELOG 从 2026-07-21 交接文档重建开始记。**此前的全部历史流水**（约 580KB，含 2026-06 起到 07-21 每一次改动/部署细节）在 `historical-handover-docs-last-used-2026-07-21/CHANGELOG.md`，遇到需要历史上下文的难题再翻。
 
+## 2026-08-02（第三十三次会话）🔍 **审计上两批（v65+v66）+ 修 1 个真问题 + 两服部署 `v1.0.0.67`（四方同步）**
+
+> 🗣️ 用户指令：「测试服的两批是其它 AI 做的，你审计一下，如果有问题就修复，没问题后部署到正式服去。」
+> 结果：**上两批整体干净，揪出 1 个真问题并修掉**；bump v66→v67 → 测试服 → 巡检 → 正式服 → 巡检。
+> `tsc` 全绿、`npm test` 15/15、eslint 97 problems（与上批一致）。
+
+### 一、⛔ 唯一的真问题：轮询门控把「多标签页接管」这道保险一起关了（已修）
+
+v66 给 3 条轮询加了 `document.visibilityState === "hidden"` 就 `return`。其中
+**`/api/auth/workspace-instance`（2 秒）不只是心跳** —— 它同时是
+「同账号在别的标签页打开 → 本页 `window.location.replace("/")` 自我下线」的**唯一判定**
+（`chat-workbench.tsx:2950`）。完全停掉的后果：
+
+- 用户在 A 标签页开着工作台，切到 B 标签页（同账号）→ B 抢走 claim；
+- **A 在后台永远不知道自己失效了**，而它的自动保存定时器照跑 → **拿旧状态覆盖 B 的编辑**。
+- 改之前 A 会在 2 秒内自我下线 → 这是 v66 引入的**新数据风险**。
+
+✅ 修法：隐藏时**降频到 30 秒**而不是完全停（`hiddenTickAt` 节流）。省请求收益基本保留
+（空闲标签页每分钟 30 → 2 个请求），下线判定最多晚 30 秒。
+⭐ **实测证据（二值）**：测试服开两个标签页 → B 置前（A 变 hidden）→ 等 45 秒 →
+**A 的 URL 自己变成 `/`**（v66 那版不会）。
+⭐ 另两条轮询（`/api/auth/me` 5s、`pollMediaSaveStatus` 12s）判定为**可以停**：
+会话失效有 focus 补检查；成品图落库是服务端在生成成功那刻做的（`finalizeImageJobAsset`），不依赖前端轮询。
+
+### 二、审计手法（下次照抄，都是"没有解释空间"的做法）
+
+| 审什么 | 怎么审（不是"看着像对"） |
+|---|---|
+| 拆文件保真性 | 脚本按行比对原 `chat-workbench.tsx` 头部 vs 新 `chat-workbench-core.tsx`：**405 行新增里 383 行只是加了 `export` 前缀**，其余 22 行是重新生成的 import/转出；631 行删除逐条读过 |
+| 选区引擎收敛 | 把工作流那 6 个函数与 `mention-text.ts` 新版**逐字符比**：4 个完全一致，2 个只差注释 + 把内联 `nodeTextLength` 提成模块级 `getMentionAwareNodeTextLength` → 语义相同 |
+| "两处 mention 结构一样"这个前提 | 去读两边的 `renderEditorContent` / `renderWorkflowEditorContent`：都是 `dataset.mention="true"` + `contentEditable="false"` → 前提为真 |
+| "死代码"是不是真死 | ⭐ **抄出判据逐项验**：`onPreviewMedia` 去读 `ReferencedTextContent` 函数体，确认它**从来没调用过**这个回调（所以删掉不丢功能）；`createWorkflowItem(items)` 的 `items` 在函数体里没出现；`requestImmediateWorkspaceSave` 另有一处直接写 ref |
+| proxy 迁移 | 按**随包文档** `node_modules/next/dist/docs/01-app/03-api-reference/03-file-conventions/proxy.md` 核对文件名/导出名；两服各验 3 个用例：普通路由有头、**嵌套 `/api/auth/session` 有头**、被排除的 `/api/upload-file` **没有头** |
+| eslint 基线 | 自己重跑 = **97 problems**，与上批声称一致，unused-vars 已清零 |
+
+⭐ **纠正一处工具坑**：PowerShell 的 `>` 重定向写出的是 **UTF-16LE**，node 用 `utf8` 读回来
+每个字符夹着 `\0` → 正则全部匹配不到，一度误判"原文件里没有 `ChatWorkbench`"。
+**要在 node 里比对 git 内容，直接 `execSync('git show ...').toString('utf8')`，别经 PS 落盘。**
+
+### 三、顺手修的 1 处过期注释
+
+`next.config.ts` 里 `proxyClientMaxBodySize` 那段注释仍写「已走 src/middleware.ts 的排除名单」→
+改成 `src/proxy.ts`（文件已在 v66 改名，注释漏了）。
+
+### 四、审计中发现但**有意不改**的（留给以后，别当 bug 报）
+
+- **后台「在线用户」= 这条心跳** → 用户把标签页切到后台超过阈值会显示成离线。合理（"在线"本就该指在看），但确实是行为变化。
+- v66 删掉了工作流文本节点的富文本渲染整套（`WorkflowFormattedText` / `renderWorkflowInlineFormatting` /
+  `sanitizeWorkflowTextOutputForDisplay` / `extractWorkflowTextContent`）和 `appendWorkflowDocumentContext` +
+  `WORKFLOW_TEXT_OUTPUT_INSTRUCTIONS`。**确实是当前没接线的死代码**（`TextDisplayCard` 只渲染纯文本），
+  删了不影响功能 —— 但那是 **M030「文档解析」的预备代码**，以后要做得重写。
+- `src/app/api/video/route.ts` 删掉的 `MAX_BYTEPLUS_REFERENCE_REVIEW_ATTEMPTS`：**在 v66 之前就已经没人用**
+  （`parseBytePlusReviewError().attempts` 只用于拼错误文案），所以删除不改变行为；
+  但"BytePlus 参考图送审重试到底有没有上限"这个问题**本来就存在**，属于既有问题不是本批引入。
+
+### 五、部署（两服，无 Prisma 迁移、无 compose/nginx 改动）
+
+- **测试服**：bump v66→v67 → tgz（`chat-workbench.tsx` + `app-version.ts` + `next.config.ts` 三个文件）→
+  `sudo tar -xzf -C /opt/flashmuse-staging/app` → build → `sync-ali.sh --stack=staging --with-generated` →
+  `.env` 写 `PUBLISHED_APP_VERSION=v1.0.0.67` + force-recreate。
+  巡检 6 项全过：登录 ✓ / 对话历史 ✓ / 工作流点节点不崩 ✓ / 资产库 31 张缩略图全加载 ✓ /
+  **真跑生图 ✓（新建 `工作流_09`，橘猫 2848x1600，扣 3 积分）** / 后台 `/admin` 0 console error ✓。
+  外加**多标签页接管专项**（见第一节）。
+- **正式服**：带标签库备份（`--label pre-deploy-v67`，本机+异地阿里 OK）→ 代码备份
+  `app-backups/20260803-005744-presync-v64` → staging→prod 整份 rsync（⛔ 不 bump）→ build
+  → `docker cp .next/static` + rsync 到阿里**正式**镜像 → `.env` 发版本信号 + force-recreate。
+  ⭐ **rsync `--delete` 确认把 `src/middleware.ts` 清掉了**（脚本里做了 `test -e` 断言）；compose 两份 diff 一致。
+  四域名全 200、抽样静态 chunk 200、**阿里那台上的 `tiantangqiyuan` 也 200（别的项目没被影响）**。
+  巡检 6 项全过（含真跑生图：新建 `工作流_11`，橘猫，扣 3 积分；后台 0 error、版本号显示 v1.0.0.67）。
+
+
+
+- **部署**：bump v65→v66 → tgz（src+package+eslint.config+tests）→ staging build →
+  `sync-ali.sh --stack=staging --with-generated` → `.env` 写 `PUBLISHED_APP_VERSION=v1.0.0.66` + force-recreate。
+  无新迁移、无 compose/nginx 改动。
+- **proxy 迁移端到端验证（比本地更硬）**：`x-app-version: v1.0.0.66` 在 `/api/models` ✓、
+  嵌套 `/api/auth/session` ✓；被排除的 `/api/upload-file` **无此头** ✓（matcher 整段匹配按设计工作）。
+  编译产物里 proxy 打进 `middleware.js` 引的 chunk（manifest 结构 Next 16 已改，以功能验证为准）。
+  `/api/health` = `{"ok":true,"version":"v1.0.0.66"}`，外网 `8080` 200。
+- **上号巡检（`12424740@qq.com`）6 项全过**：登录 ✓ / 对话模式历史渲染 ✓ /
+  工作流画布点节点不崩（0 console error）✓ / 资产库缩略图 ✓ /
+  **真跑生图 ✓（新建 `工作流_08`，出图 `image_1_w8`「戴红围巾的柴犬」，Seedream 4.5）**/
+  后台 `/admin`（lookxun）渲染正常 + **console 0 error** ✓。
+- **@提及专项（本批行为微调点）**：对话流输入框 `@` 弹窗分类+计数正常、懒加载列表正常；
+  插入后是 `data-mention` 原子蓝 span（`contentEditable=false`），**光标落在 mention 外**；
+  退格**整体删除** mention ✓。
+- ⏸️ 未测（低险，逻辑逐字节同原副本）：参考视频尺寸校验的实际上传、后台标签页轮询门控（headless 测不了）。
+- **留痕（测试服 `12424740@qq.com`，按规矩不删）**：`工作流_08` + 里面 1 个图片节点 `image_1_w8`（柴犬，扣 3 积分）。
+
+## 2026-08-02（第三十二次会话）🧹 **审计清仓批：死代码/ESLint 机械清理 + 常量收敛 + middleware→proxy 迁移 + 轮询门控 + @选区引擎收敛 + 4.1 文档补记（全本地，未部署未 commit）**
+
+> ⚠️ **当前状态：测试服 = `v1.0.0.65`；正式服 = `v1.0.0.64` 未动；本地全部改动（含上一批）未 commit、未 push。**
+> `npx tsc --noEmit` 全绿；`npm test` 15/15 过；eslint **222 → 97 problems**
+> （unused-vars 89→0、unescaped-entities 32→0、prefer-const/unused-expressions 清零；
+> 剩 97 = 21 any + ~60 react-hooks 深坑 + 6 no-img-element 等非机械项，留给以后专项）。
+> 🗣️ 用户指令：「1到7全做掉吧」= 死代码清理 / 常量收敛 / ESLint 机械清理 / proxy 迁移 /
+> 轮询门控 / @选区引擎收敛 / M010 评估。1.1 积分根治、1.9 消息双份、原子切换+零停机 = 用户拍板**先放着**。
+
+### 一、4.1 资产生成子系统补记（文档，消除"第四个生图入口无人知道"）
+
+- `02-architecture-and-data.md` 新增「资产库的生成子系统」一节：入口（资产库四类生成按钮）、
+  身份标识（`metadata.creditSource` 四个 `*_image_generation`）、`asset-image.` 端点前缀、
+  强制提示词规则位置（chat-workbench-core，按模型三套文案）、落库分类、账单/后台识别、任务恢复。
+- 4.6 跨境对比文档归档失败：桌面原件已不存在，08 已标注。
+
+### 二、3.6 死代码清理
+
+- 删 `src/components/workflow-tldraw-minimal-canvas.tsx`（无人 import）、`src/app/dev/tldraw-test/`（3 文件调试路由）。
+- 删 chat-workbench-core 5 个死常量/死函数（mentionAssetTypes/isMentionGroupAsset/mentionGroupToAssetCountKey/mentionAssetTypeLabels/MentionAssetGroupType）。
+- ⚠️ **纠正审计两处错判**：`EmailVerificationCode` 表**是活的**（auth/admin 验证码全在用它，08 写"零读零写"是错的）；
+  `User.generatedImageCount/generatedVideoCount`/`legacyAssetJson` 不删 —— 项目 34 个迁移零破坏性语句，
+  第一次 DROP COLUMN 要用户拍板，不动。
+- ⏸️ `tldraw.css` 全局引入（layout.tsx）**没动**：挪走会改变全站按钮字号表现，没有浏览器实测不敢动，留给有测试的批次。
+
+### 三、视频参考「纯尺寸」校验收敛（第三批手抄常量消灭）
+
+- `media-upload-validation.ts` 新增导出 **`validateReferenceVideoDimensions()`**（300/6000/0.4/2.5/409600/8295044 唯一权威）。
+- 删掉 chat-workbench-core 的 `validateReferenceVideoDimensions` 本地副本（改为转出口径不变）
+  和 workflow-inner 的 `validateWorkflowReferenceVideoDimensions` 本地副本（改为别名导入）。
+
+### 四、middleware → proxy 迁移（Next 16 改名）+ matcher 整段匹配
+
+- `src/middleware.ts` → **`src/proxy.ts`**，函数 `middleware` → `proxy`（依据 `node_modules/next/dist/docs/.../proxy.md`）。
+- matcher 排除名单从**前缀匹配**换成**整段匹配**：`(?!(?:upload-file|asset-upload-temp|upload-image)(?:$|/))`，
+  不再误伤将来撞前缀的新路由。用 `next/dist/compiled/path-to-regexp` 本地编译验了 **11 个用例全过**
+  （含 `/api/auth/session` 嵌套、`/api/upload-filex` 撞前缀）。
+- ⏸️ 编译产物 `middleware-manifest.json` 的最终核对等下次 build 时做（本批按铁律不 build）。
+
+### 五、空闲标签页轮询门控（3.4 的一项）
+
+- 3 个定时轮询加 `document.visibilityState === "hidden"` 跳过：`/api/auth/workspace-instance`（2s）、
+  `/api/auth/me`（5s）、`pollMediaSaveStatus`（12s）。回到前台时前两个有现成 focus 监听立刻补一次，
+  第三个下一个 tick（≤12s）自然补上。**空闲标签页从每分钟 ~30 个请求降到 0。**
+
+### 六、⭐ 打包 9 第二步（第一块）：@提及 contenteditable 选区引擎收敛
+
+- `mention-text.ts` 新增「contenteditable 选区引擎」一节：`getEditableText` / `appendEditorText` /
+  `getSelectionTextOffset` / `getSelectionTextRange` / `setSelectionTextOffset` / `getAtQueryAtCursor(ForReferences)`。
+- ⭐ **采用工作流那份（mention 原子化：光标绝不落进 @文件名 span 内部）为权威** ——
+  两处编辑器渲染的 mention span 结构完全一致，对话流那份是缺原子化的漂移旧版，这次对齐过来。
+  **对话流输入框在 @文件名 附近的光标行为会因此向工作流看齐（这正是收敛目的）。**
+- chat-workbench-core 删本地副本改为转出；workflow-inner 删 ~230 行本地副本改为别名导入。
+
+### 七、ESLint 机械清理（222 → 97）
+
+- `eslint.config.mjs` 加 `_` 前缀豁免（`argsIgnorePattern/varsIgnorePattern/...: "^_"`）——
+  项目里 `const { _canvas, ...rest } = row` 是故意省略写法，不是死代码；不带前缀的照样报错。
+- 删 ~60 处真未用：死函数（`submitBytePlusAsset`/`refreshBytePlusAsset`/`AssetUploadDialog`/
+  `WorkflowFormattedText`/`WorkflowSettingsMenuV2`/`WorkflowModelMenu`/`WorkflowSettingsMenu`/`WorkflowDurationMenu`/
+  `convertImageFileToJpeg`/`uploadJsonWithProgress`/`preloadFetchUrl`/`getWorkspaceMediaItems` 等）、
+  死状态（`isSubmittingBytePlusAsset`/`bytePlusAssetError`/`mentionLoadingMore`/`generatedListDialog` 等）、
+  死导入、死 prop（`onPreviewMedia` 从 ReferencedTextContent/MediaPromptBlock/UserMessageContent 链路摘掉）、
+  2 处 `let`→`const`（pollData 改声明点）、1 处三元表达式语句改 if/else。
+- privacy/terms 两页 JSX 文本里的 `"` 换成 `&quot;`（只改报错行、先断言行内无属性引号）。
+- ⭐ 连带收获：预览弹窗那条 BytePlus 送审链路（submit/refresh + 状态 + 错误）**整条是死代码**——
+  按钮早就不渲染了，函数还留着。已整条删除，功能无变化。
+
+### 八、M010（tmp/ 脚本清理）评估结论：不搬
+
+- `tmp/` 27 个脚本全是 2026-06 那批**一次性事故排查脚本**（按具体用户 ID/事故命名），
+  没有"稳定可复用工具"够格升进 `scripts/`（能复用的早已在 scripts/）。保持原样当历史档案，M010 可关。
+
+## 2026-08-02（第三十一次会话）🧩 **拍板 9+10 完成（拆 chat-workbench + 2 个测试）+ 证书核实 + 阿里 /generated/ 加固 + 2 个小功能；测试服 `v1.0.0.65` 已部署+上号实测通过**
+
+> ⚠️ **当前状态：测试服 = `v1.0.0.65`（已部署+实测）；正式服 = `v1.0.0.64` 未动；本地全部改动未 commit、未 push。**
+> `npx tsc --noEmit` 全绿；eslint **226 problems（106 errors/120 warnings）—— errors 与基线一致、
+> warnings 比基线少 4 条**；`npm test` 15/15 过。
+> 🗣️ 用户指令：「1234 都做掉吧」= 拆文件（拍板9）+ 加测试（拍板10）+ 证书核实 + 阿里加固；
+> 之后「全部部署到测试服去，上号测试一下」。
+
+### 一、⭐⭐ 拍板 9 第一步：`chat-workbench.tsx` 18013 → **10835 行**（-40%）
+
+- 组件 `ChatWorkbench()` 起点（7597 行）之前的**全部模块级纯代码**（583 个顶层声明：
+  410 函数、101 const、72 type/interface，其中 392 个被组件引用、191 个内部自用）
+  原样搬进新文件 **`src/lib/chat/chat-workbench-core.tsx`**（7498 行）。
+- ⭐ **机械拆分、逐字节保真**：body 与 tail 经脚本比对 **0 差异行**（工具 `.runtime/split-chat-workbench.mjs`
+  + `verify-split2.mjs`；原件备份 `.runtime/chat-workbench.backup.tsx`）。导入按"两边各自实际用到"精确生成，
+  类型用 `type X` 标注。一次过 tsc。
+- ⛔ **这只是第一步（物理搬出）**：42 对孪生函数（20 对已漂移）的消灭是后续批次，别在本批顺手做。
+- 外面对它的唯一引用是 `chat-workbench-client.tsx` 的 `dynamic(import ChatWorkbench)`，不受影响。
+
+### 二、⭐ 拍板 10：测试落地（vitest，`npm test`）
+
+- 新增 `vitest.config.mts`（`@` alias → `src`，node 环境）+ devDep `vitest`；`package.json` 加 `test` 脚本。
+- **`tests/persistable-contract.test.ts`（契约测试，最值钱）**：深度遍历
+  `getPersistableSessions` / `getPersistableWorkflowItems` 的输出，断言**任何层级**都不出现
+  `uploadProgress / uploadPreviewUrl / uploadStatus / promptLoading / pendingRequest`
+  （值非 undefined 才算出现，因为 undefined 键 JSON 落库时会被丢弃），且没有 `blob:` 地址。
+  这一个测试永久消灭"临时字段落库卡死"那一整类 bug（已犯过三次）。
+- **`tests/pure-functions.test.ts`**：排序/标题/时间格式化/空会话/工作流编号规范化等 15 个用例。
+- ⭐ 写测试时自己踩的一个坑：剥离函数返回的是 `{...entry, uploadProgress: undefined}`（键还在、值 undefined），
+  契约测试第一版把"键存在"当失败 → 误报。判据必须对齐"JSON 序列化后会不会真落库"。
+
+### 三、✅ 2.6 证书续期核实（服务器只读）：**本来就配好了，不用改**
+
+`/root/.acme.sh/main.venusface.com_ecc/main.venusface.com.conf` 里 `Le_ReloadCmd`
+base64 解码 = **`docker restart flashmuse-flashmuse-nginx-1`** → 续期后会重载容器内 nginx，链路完整。
+证书有效期 2026-07-11 ~ 2026-10-09，下次续期 2026-09-10。⛔ 这条待办关闭。
+
+### 四、✅ 阿里正式 `flashmuse-static-ip` 的 `/generated/` 加固（最后一个安全缺口补上）
+
+- 新脚本 **`deploy/ali/ali-harden-generated-static.py`**（精确替换+计数断言，照 keepalive 模板）
+  + **`.sh`**（备份→跑→`nginx -t`→失败自动回滚→reload→实测）。**已实跑一次成功**：
+  计数 (2,2) 全中、`tiantangqiyuan` 零变动、nginx -t 过、reload 完。
+- **实测证据**：临时造的 `.html` → `Content-Disposition: attachment` + nosniff（测完即删）；
+  真实 `.jpg` → 只有 nosniff、无 attachment；ali/static/tiantangqiyuan 全 200。
+  备份在阿里 `/root/nginx-backups/flashmuse-static-ip.20260802-210053.bak`。
+- 小坑：脚本第一版的 nosniff 残留断言**数算错了**（预期写成 ≥8，实际精确 =6），被断言拦下没误改 ——
+  断言机制正常工作。
+- ⭐ 至此「洞③ XSS 加固」四入口（腾讯正式/测试×2/阿里正式）全部补齐，05 里的已知缺口关闭。
+
+### 五、本批还含前一批的 2 个小功能改动（用户先提的，一并未部署）
+
+1. **工作台/首页 logo = 切换线路**（`chat-workbench.tsx` 用现成 `getCurrentWorkspaceSite` +
+   `ALI/MALAYSIA_WORKSPACE_URL`；首页补 `title="切换线路"`）。原来是"刷新页面"。
+2. **工作流视频节点选中即播、取消选中即停**（`WorkflowInlineVideo` 加 `selected` 属性 + effect
+   `play()/pause()`；自动播放策略被拒时静默回落，不报错）。
+
+### 六、⭐ 测试服实测抓到并已修的一个真 bug：视频「选中播放」时灵时不灵
+
+- **现象**：第一版实现部署后实测，选中视频节点**有时播、有时不播**（约一半概率）。
+- **根因**：浏览器对 `<video controls>` 有「**点视频本体切换播放/暂停**」的 UA 原生行为，
+  用户点节点选中 = 同一次点击里，我的 effect `play()` 和浏览器的原生「暂停」**赛跑**，谁后谁赢。
+- **修法**：`play()` 包进 `requestAnimationFrame` 延迟一帧（稳赢那次点击的原生切换）；
+  之后用户再点视频本体手动暂停不受影响（`selected` 不再变、effect 不重跑）。
+- **复测**：连续 5 轮「选中→取消」100% 确定（选中→时间前进、取消→时间冻结）。
+- ⭐ **教训**：给 `<video controls>` 加「程序化播放」时，永远要考虑 UA 的点击切换行为；
+  测自动播放要**连测多轮**，一次通过不算数（第一次实测就是"碰巧过了"的假阴性）。
+
+### 七、测试服部署 v65（命令级留档 + 2 个网络抖动）
+
+1. `node scripts/bump-version.mjs` → v1.0.0.65；tsc 过。
+2. tgz（package.json + package-lock.json + vitest.config.mts + tests + src + deploy）→
+   `/opt/flashmuse-staging/app`。
+3. `docker compose up -d --build staging-app`：**第一次 `npm ci` 挂在 sharp 下载 libvips
+   （`socket hang up`，新加坡→GitHub 网络抖动）→ 重跑成功**。这类失败重跑即可，不是代码问题。
+4. `deploy/sync-ali.sh --stack=staging --with-generated`：⚠️ 先踩了一次 **CRLF**
+   （Windows tgz 带 CR → `set: pipefail: invalid option`），`find deploy -name '*.sh' -exec sed -i 's/\r$//'`
+   后成功；**第一次 rsync 又被跨境断连（`Connection closed by 101.37.129.164 port 22`）→ 重跑成功**。
+5. `.env` 置 `PUBLISHED_APP_VERSION=v1.0.0.65` + force-recreate。
+6. 修视频 bug 后又走了一遍：单文件 tgz → build → sync-ali → force-recreate（版本号不变）。
+
+**上号实测（`12424740@qq.com`，全过）**：登录 ✓ 对话模式 ✓ **logo 悬停「切换线路」+ 点击跳
+`main.venusface.com/workspace`** ✓ **视频节点 5 轮选中播放/取消暂停全确定** ✓ 点节点不崩 ✓
+资产库 31 缩略图 0 失败 ✓ **新建 `工作流_07` 真跑生图 → `image_1_w7`（金毛犬宇航员）、-3 积分** ✓
+/admin 登录页 200 ✓ 控制台 0 error（部署窗口一条 502 心跳，已知现象）。
+
+**测试服本次痕迹**（别当用户数据）：`工作流_07`（含 `image_1_w7`，扣 3 积分，96,261→96,258）；
+`工作流_04` 的视频被测过几轮播放/暂停（播放进度有变化）。
+
+### 八、没做 / 待办变化
+
+- ✅ 拍板 9（第一步）、拍板 10、2.6 证书核实、阿里 /generated/ 加固 —— 全部划掉。
+- ⛔ **本地改动未 commit、未 push**（GitHub 仍 v64 的 `6b4e385`）—— 等用户一句话。
+  正式服部署按铁律也不动，等用户明确说。
+- 部署时注意：**package.json 新增了 vitest devDep**（`npm ci` 会装；对生产镜像无运行时影响）。
+- 下一批候选：42 对孪生函数收敛（拍板 9 第二步）、1.1 生成前占额度、1.9 消息双份、告警拨测、
+  M032 复现、`_next/static` 原子切换。
+
+## 2026-08-02（第三十次会话）🔐 **待办 1 完成：正式服数据库密码轮换 + git 全历史洗密码（两服照常 v64，未发版）**
+
+> 🗣️ 用户指令：「把 1 做了吧」+ 确认「仓库没有别人用，放心洗」。
+> ⚠️ 本次**纯运维操作，没改任何代码、没发版**；两服版本仍是 `v1.0.0.64`。
+
+### 一、正式服 DB 密码轮换（先备份）
+
+1. 带标签备份：`flashmuse-db-backup.sh --stack prod --label pre-pw-rotation`（5.2M，本机+异地 ✅）。
+2. `ALTER USER flashmuse WITH PASSWORD '<新串>'`（40 位随机；⛔ **新密码不落任何文档/git**，只在 `/opt/flashmuse/.env`）。
+3. 同步改 `/opt/flashmuse/.env`（`FLASHMUSE_DB_PASSWORD`）和 `data/.env.local`（DATABASE_URL），旧串 0 残留。
+4. `docker compose up -d`（db+app 重建）→ 全部 healthy。
+5. **验证**：走 TCP 连容器 IP（`scram-sha-256` 那条）——新密码 `SELECT` 成功、**旧密码 `FATAL: password authentication failed`**；
+   四域名 main/api/ali/static + 阿里 8080 全 200，`x-app-version: v1.0.0.64` 不变。
+
+### 二、⭐ 踩到的坑：pg_hba `trust` 让密码验证失真
+
+db 容器的 `pg_hba.conf` 里 **local 和 127.0.0.1 是 `trust`** → 容器内 `docker exec psql` 直连**任何密码都能进**，
+第一次验证误判"旧密码还能连、轮换失败"。⭐ **验密码必须走 TCP**（`psql -h <容器IP>`），才走 `scram-sha-256`。
+
+### 三、git 全历史洗密码（用户确认无别人用仓库）
+
+- 本机没有 python / git-filter-repo → 用 **Git for Windows 自带的 sh + GNU sed** 跑
+  `git filter-branch --tree-filter`（128 个 commit，约 2.5 分钟），把 2 个真密码串换成占位符：
+  正式库旧密码 → `REMOVED_PROD_DB_PASSWORD`、旧测试库密码 → `REMOVED_STAGING_DB_PASSWORD`。
+  涉及文件：两份 compose + `handover/03`、`handover/CHANGELOG` + 两份历史归档（h21）。
+- `flashmuse_dev_password`（本地开发占位符）**有意不洗** —— 不是秘密，洗了反而要改开发文档。
+- 清 `refs/original` + reflog expire + `gc --prune=now` 后，**全历史 0 命中**（洗之前分别是 135 / 124 处）。
+- 强推：`main 2e6e24d → 6b4e385 (forced update)`。⛔ **所有旧 commit hash 作废**。
+- 洗前全量 bundle 备份：`C:\Users\ASUS\AppData\Local\Temp\opencode\pre-scrub-backup.bundle`。
+- ⚠️ GitHub 侧被顶掉的旧 commit 按 hash 短期内可能仍可访问（平台缓存）——但密码已轮换，拿到也连不上库。
+
+### 四、顺手修的一个遗留
+
+staging 的 `data/.env.local` 里 DATABASE_URL 还写着**旧的正式库密码**（当年 cp 正式服做基底留下的；
+compose env 优先所以一直无害，且旧密码已失效）。已替换成 staging 自己的密码，原件备份在服务器 `/root/`。
+
+### 五、没做 / 待办变化
+
+- ✅ **待办 1（密码轮换 + 洗历史）整体完成**，从 `05-next-actions.md` 划掉。
+- 其余待办不变：拍板 9+10（拆 chat-workbench + 加测试）、acme.sh reloadcmd 核实、M032 等。
+
 ## 2026-08-02（第二十九次会话）🔍 **对上一批（审计 1~2 档）做独立复核，抓到 5 个问题并修掉 → v1.0.0.64 两服都已部署+实测**
 
 > ⚠️ **当前状态：正式服 = 测试服 = 本地 = `v1.0.0.64`（都已部署+上号实测）；GitHub 仍是 v62，本地改动未 commit（等用户拍板）。**

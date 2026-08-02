@@ -70,19 +70,6 @@ function mediaCategoryToLegacyType(category: string, mediaType: string) {
   return "other";
 }
 
-function normalizePreviewMeta(value: Prisma.JsonValue | null, media: { mediaType: string; model: string | null; ratio: string | null; resolution: string | null; imageSize: string | null; videoDuration: string | null; width: number | null; height: number | null }) {
-  if (isRecord(value)) return value;
-  if (!media.model && !media.ratio && !media.resolution && !media.imageSize && !media.videoDuration && !media.width && !media.height) return undefined;
-  return {
-    modelLabel: media.model || "-",
-    ratio: media.width && media.height ? `${media.width}:${media.height}` : media.ratio || "-",
-    sizeText: media.width && media.height ? `${media.width} × ${media.height}` : media.imageSize || "-",
-    resolution: media.resolution || media.imageSize || "-",
-    duration: media.videoDuration || undefined,
-    mode: media.mediaType === "video" ? "video" : "image",
-  };
-}
-
 export async function GET(request: Request) {
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: "未登录" }, { status: 401 });

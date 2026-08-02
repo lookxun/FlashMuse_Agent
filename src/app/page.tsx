@@ -2,7 +2,6 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 import { RiAccountCircleLine, RiArrowUpLine, RiCornerDownLeftLine, RiLogoutBoxRLine, RiSettingsLine, RiShieldUserLine, RiVipDiamondLine } from "react-icons/ri";
 import { useBodyScrollLock } from "@/components/use-body-scroll-lock";
 import { IS_TEST_SERVER, versionLabel } from "@/lib/app-version";
@@ -85,7 +84,6 @@ function getCurrentHomeSite(hostname: string): HomeSite {
 }
 
 export default function Home() {
-  const router = useRouter();
   const [isLoginOpen, setIsLoginOpen] = useState(false);
   const [activeHeroIndex, setActiveHeroIndex] = useState(0);
   const [isHeroVideoReady, setIsHeroVideoReady] = useState(false);
@@ -473,7 +471,7 @@ export default function Home() {
         style={{ transform: isLoginOpen ? "translateX(-8vw)" : "translateX(0)", filter: isLoginOpen ? "blur(8px)" : undefined, transition: "transform 300ms ease-out, filter 300ms ease-out" }}
       >
       <header className="flex items-center justify-between px-6 py-5 sm:px-10 lg:px-14">
-        <button type="button" onClick={() => window.location.assign(logoTargetUrl)} className="flex items-center gap-2.5 text-left" aria-label={logoTargetLabel}>
+        <button type="button" onClick={() => window.location.assign(logoTargetUrl)} className="flex items-center gap-2.5 text-left" aria-label={logoTargetLabel} title="切换线路">
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src={staticAssetUrl("/home-assets/logo.png")} alt="闪念 FlashMuse" className="h-[50px] w-[50px] object-contain drop-shadow-[0_0_18px_rgba(116,166,255,0.38)]" />
           <span className="flex items-end gap-2">
