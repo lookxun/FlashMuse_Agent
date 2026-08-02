@@ -4,6 +4,17 @@
 This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code. Heed deprecation notices.
 <!-- END:nextjs-agent-rules -->
 
+# 铁律：说"压缩/瘦身能省多少时间"之前，先看同样大小的样本耗时方差（2026-08-02 加，我当场被数据打回）
+
+我看到"上传 2.4MB 要 145 秒"就推断"体积砍 80%、时间也砍 80%" —— **对这批数据是错的**。
+翻日志才发现：**同样 2.40MB 可以是 3.5s（694KB/s）也可以是 145.1s（17KB/s），差 40 倍；
+0.13MB 的小文件也能卡 12.1s（11KB/s）**。→ 瓶颈是**丢包/线路抖动**，不是带宽。
+- ⭐ **判据**：把同一尺寸档位的样本排开看方差。**方差几十倍 = 丢包受限**（压缩只能缩小"坏运气窗口"，
+  治不了根；对症药是**分片 + 单片重传**）；**方差很小 = 带宽受限**（这时候压缩才按比例见效）。
+- ⭐ 顺带：**先看"有多少比例真的慢"再决定值不值得做** —— 本次 93% 的上传其实 10 秒内就完了，
+  只有 7% 掉坑，那么"对 93% 无感知"的方案就该降优先级。
+- ⛔ 别把"最坏的那一条"当成常态去设计方案。
+
 # 铁律：给轮询"降频/加门控"之前，先问它除了心跳还兼着什么判定（2026-08-02 加）
 
 上一批给 3 条定时轮询加了「标签页 `hidden` 就 `return`」，其中 `/api/auth/workspace-instance`（2 秒那条）

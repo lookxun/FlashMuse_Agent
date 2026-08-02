@@ -212,6 +212,13 @@
 
 ## 上传链路
 
+> ⭐⭐ **想知道「上传为什么慢 / 进度条卡住是在干什么」→ 直接看 `06-memo-tasks.md` 的 M034**，
+> 那里有 2026-08-02 的正式服实测数据（分段耗时 + 吞吐方差 + origin 分布）和三条优化方案（M033/M034/M015）。
+> 三条结论先记住：① **进度条 60~70% 之后全是假动画**（定时器慢爬，见 `src/lib/upload-progress.ts`）；
+> ② **服务端处理只占总耗时不到 1%**（sharp 转码约 100ms、PATCH 约 10ms）；
+> ③ **慢的是跨境 body 传输，且病因是丢包不是体积**（同样 2.40MB 可以 3.5s 也可以 145.1s）。
+> ⛔ **「秒回预检」目前只接了 `/api/upload-file`（视频/音频/文档），图片走的 `asset-upload-temp` 没有**（M033）。
+
 - **图片** → `POST /api/asset-upload-temp`(multipart, field `image`)存临时区返 token → `PATCH`({token}) commit 到 `/generated/users/<uid>/upload_image/<hash>.jpg`。服务端 ffmpeg 统一转 JPG。校验唯一权威 `src/lib/image-upload-validation.ts`（只 JPG/JPEG/PNG/WebP、原始单图 ≤10MB）。
 - **视频/音频/文档** → `POST /api/upload-file`(multipart, field `file`)。服务端 `saveUploadedFileBufferAsset` 写 `/generated/users/<uid>/files/<hash>.<ext>` + MediaAsset/UserAssetState。校验/探测：`src/lib/media-upload-validation.ts` + `src/lib/media-upload-probe.ts`(ffmpeg 真实属性)。视频上传即时生成 `.poster.jpg`。
 - **命名唯一权威** `src/lib/upload-name.ts`（`resolveUploadName`：contentHash 命中复用旧名；否则去扩展名+sanitize+全局唯一 base/base_2）。三条上传接口都返回权威 `name`，前端只显示服务端返回名。
