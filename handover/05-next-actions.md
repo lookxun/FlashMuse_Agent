@@ -2,45 +2,42 @@
 
 > 历史 END-OF-SESSION 记录都在 `historical-handover-docs-last-used-2026-07-21/05-next-actions.md`（很长）。这里只留当前有效待办。
 
-## ✅ 当前状态（2026-08-02 第二十九次会话末）：**两服都是 `v1.0.0.64` 并已实测；GitHub 仍 v62、本地未 commit**
+## ✅ 当前状态（2026-08-02 第二十九次会话末）：**四方同步 `v1.0.0.64`**（正式服 = 测试服 = 本地 = GitHub）
 
-上一批（审计 1~2 档）已复核完并修掉 5 个问题（含一个会打挂正式服 443 的），两服都部署+上号巡检通过。
-细节见 CHANGELOG 顶条。
+上一批（审计 1~2 档）已复核完并修掉 5 个问题（含一个会打挂正式服 443 的），两服都部署+上号巡检通过，
+已 commit + push（`3c1fc47`）。**无待部署、无未推、无待应用迁移。** 细节见 CHANGELOG 顶条。
 
-### 🎯 待办 1（最优先，就一句话的事）：**问用户 commit + push**
+### 🎯 待办 1（最优先，需用户拍板）：**数据库密码轮换 + git 历史洗密码**（两件一起做）
 
-本地一大批改动未提交。提交后四方同步（正式=测试=本地=GitHub=v64）才算恢复。
-
-### 🎯 待办 2：**数据库密码轮换 + git 历史洗密码**（需用户拍板，两件一起做）
-
-本次只把密码从 compose 挪进了不进 git 的 `/opt/flashmuse/.env`，**串还是老的、历史里还留着**。
-顺序：`ALTER USER` → 改两服 `.env` → `up -d` → 洗 git 历史（`filter-repo`）→ 强推。
+本次只把密码从 compose 挪进了不进 git 的 `/opt/flashmuse/.env`，**串还是老的、历史里还留着**
+（而且刚才那个 commit 之前的历史里一直都有）。
+顺序：`ALTER USER` → 改两服 `.env` → `up -d` → 洗 git 历史（`git filter-repo`）→ 强推。
 ⛔ 洗历史会改写全部 commit hash，动手前先确认没有别人在用这个仓库。
 
-### 🎯 待办 3：**拍板 9+10 批次**（用户已批，未开工）
+### 🎯 待办 2：**拍板 9+10 批次**（用户已批，未开工）
 
 - 拆 `chat-workbench.tsx`：先把第 1~7,627 行（约 330 个纯函数 + 约 60 个无 hook 小组件）搬进 `src/lib/chat/*`（零风险、机械操作），再逐步消灭与工作流文件的 42 对孪生函数（20 对已漂移）。
 - 加 2 个测试：纯函数单测 +「getPersistableSessions/getPersistableWorkflowItems 输出不含临时字段」契约测试（后者永久消灭 2.2 那一整类 bug）。
 
-### 🎯 待办 4：acme.sh 续期后有没有 reload 容器内 nginx（10 分钟，仍未核实）
+### 🎯 待办 3：acme.sh 续期后有没有 reload 容器内 nginx（10 分钟，仍未核实）
 
 `/root/.acme.sh` 的 domain conf 里没读到 `Le_ReloadCmd`。证书到 2026-10-09（68 天），
 不急但**到期没 reload 就是全站 https 挂**。核实方式：看 `acme.sh --list` / domain conf，
 需要就补 `--install-cert --reloadcmd "docker exec flashmuse-flashmuse-nginx-1 nginx -s reload"`。
 
-### 🎯 待办 5：M032 工作流节点传参考图偶发"静默挂不上"（⛔ 根因未知，**严谨复现之前不许动代码**）
+### 🎯 待办 4：M032 工作流节点传参考图偶发"静默挂不上"（⛔ 根因未知，**严谨复现之前不许动代码**）
 
 完整定义在 `06-memo-tasks.md` 的 M032。两个归因已被证伪，先复现（看 tip 原文判分支）再谈修法。
 
-### 🎯 待办 6：Next 16 middleware→proxy 迁移（🟡 不紧急，单独一批）
+### 🎯 待办 5：Next 16 middleware→proxy 迁移（🟡 不紧急，单独一批）
 
 含 matcher 排除名单前缀匹配→整段匹配的评估、`/api/workspace-state` 的 32MB body 上限远期风险。
 
-### 🎯 待办 7：红字（⛔ 别自己开工、别跑归档脚本）
+### 🎯 待办 6：红字（⛔ 别自己开工、别跑归档脚本）
 
 🗣️ 用户交代等红字攒多了再排查。看实时数字用 `/admin?tab=failures`。
 
-### 🎯 待办 8：小项备忘
+### 🎯 待办 7：小项备忘
 
 - 1.1 根治："生成前占额度/预扣"（上一批只做了原子扣费止血）。
 - 1.9 消息双份存储：需数据迁移演练，单独一批。
