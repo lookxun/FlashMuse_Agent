@@ -3,12 +3,13 @@ import { resolve4, resolve6, resolveMx } from "dns/promises";
 import { promisify } from "util";
 import { cookies, headers } from "next/headers";
 import { prisma } from "@/lib/prisma";
+import { getAuthSecret } from "@/lib/auth-secret";
 
 const scrypt = promisify(scryptCallback);
 
 export const authCookieName = "flashmuse-session";
 const sessionMaxAgeSeconds = 24 * 60 * 60;
-const authSecret = process.env.AUTH_SECRET || "flashmuse-local-dev-secret-change-me";
+const authSecret = getAuthSecret();
 const forceInsecureAuthCookie = process.env.FORCE_INSECURE_AUTH_COOKIE === "true";
 const authCookieDomain = process.env.AUTH_COOKIE_DOMAIN?.trim() || undefined;
 

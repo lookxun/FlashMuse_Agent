@@ -1,5 +1,6 @@
-import { appendFile, mkdir } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { appendDiagnosticsJsonl } from "@/lib/diagnostics-log-rotate";
 
 type VideoDiagnosticReference = {
   index: number;
@@ -79,7 +80,7 @@ export function summarizeVideoReference(url: string, index: number, role?: strin
 export async function appendVideoDiagnosticsLog(entry: VideoDiagnosticEntry) {
   try {
     await mkdir(dirname(LOG_PATH), { recursive: true });
-    await appendFile(
+    await appendDiagnosticsJsonl(
       LOG_PATH,
       `${JSON.stringify({
         time: new Date().toISOString(),
@@ -100,7 +101,6 @@ export async function appendVideoDiagnosticsLog(entry: VideoDiagnosticEntry) {
         error: getErrorDetails(entry.error),
         extra: entry.extra,
       })}\n`,
-      "utf8",
     );
   } catch {
     // Diagnostics must never block generation requests.

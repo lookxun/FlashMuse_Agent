@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/prisma";
 import { bytePlusImageGenerationModels, bytePlusVideoGenerationModels, imageGenerationModels, videoGenerationModels } from "@/lib/models";
 import { FAILURE_REASON_SQL } from "@/lib/admin-failure-triage";
-import { getOnlineSessionWhere } from "@/lib/online-users";
+import { ONLINE_WINDOW_MS } from "@/lib/online-users";
 
 /**
  * 运营概览（概览页）真实数据聚合。
@@ -104,7 +104,9 @@ export async function getAdminOverviewData(): Promise<AdminOverviewData> {
   const days30 = recentDays(30);
   const sevenDaysAgo = addDays(todayStart, -6);
   const thirtyDaysAgo = addDays(todayStart, -29);
-  // ⭐ 「在线」判定已抽到 src/lib/online-users.ts（用户管理页也用同一份），这里不再自己算 onlineSince。
+  // ⭐ 「在线」判定口径与 src/lib/online-users.ts 完全一致（activeWorkspaceSeenAt + 未过期 + 未禁用），
+  //   只是这里用 SQL 在库里算 COUNT(DISTINCT)，不再把 Session 行拉回 Node（2026-08-02 审计 1.3）。
+  const onlineSince = new Date(now.getTime() - ONLINE_WINDOW_MS);
   const active30Since = new Date(now.getTime() - 30 * 60_000);
 
 
@@ -116,12 +118,7 @@ export async function getAdminOverviewData(): Promise<AdminOverviewData> {
     conversationToday,
     workflowTotal,
     workflowToday,
-    creditLedgers,
-    onlineSessions,
-    active30Sessions,
-    dauSessions,
-    wauSessions,
-    mauSessions,
+    sessionStatRows,
   ] = await Promise.all([
     prisma.user.count(),
     prisma.user.count({ where: { createdAt: { gte: todayStart } } }),
@@ -130,13 +127,19 @@ export async function getAdminOverviewData(): Promise<AdminOverviewData> {
     prisma.workspaceSession.count({ where: { deletedAt: null, createdAt: { gte: todayStart } } }),
     prisma.workspaceWorkflow.count({ where: { deletedAt: null } }),
     prisma.workspaceWorkflow.count({ where: { deletedAt: null, createdAt: { gte: todayStart } } }),
-    prisma.creditLedger.findMany({ select: { userId: true, direction: true, kind: true, label: true, model: true, credits: true, usd: true, cny: true, imageCount: true, videoCount: true, createdAt: true, metadata: true, requestId: true } }),
-    prisma.session.findMany({ where: getOnlineSessionWhere(now), select: { userId: true } }),
-    prisma.session.findMany({ where: { lastSeenAt: { gte: active30Since }, expiresAt: { gt: now }, user: { is: { disabled: false } } }, select: { userId: true } }),
-    prisma.session.findMany({ where: { lastSeenAt: { gte: todayStart } }, select: { userId: true } }),
-    prisma.session.findMany({ where: { lastSeenAt: { gte: sevenDaysAgo } }, select: { userId: true } }),
-    prisma.session.findMany({ where: { lastSeenAt: { gte: thirtyDaysAgo } }, select: { userId: true } }),
+    // 一条 SQL 出 dau/wau/mau/online/active30 + 今日活跃新老（旧实现是 5 次 Session 全表 findMany 拉回 JS 数）
+    prisma.$queryRaw<Array<{ dau: bigint; wau: bigint; mau: bigint; online: bigint; active30: bigint; todaynew: bigint; todayold: bigint }>>`
+      SELECT
+        COUNT(DISTINCT s."userId") FILTER (WHERE s."lastSeenAt" >= ${todayStart})::bigint AS dau,
+        COUNT(DISTINCT s."userId") FILTER (WHERE s."lastSeenAt" >= ${sevenDaysAgo})::bigint AS wau,
+        COUNT(DISTINCT s."userId") FILTER (WHERE s."lastSeenAt" >= ${thirtyDaysAgo})::bigint AS mau,
+        COUNT(DISTINCT s."userId") FILTER (WHERE s."activeWorkspaceSeenAt" >= ${onlineSince} AND s."expiresAt" > ${now} AND NOT u."disabled")::bigint AS online,
+        COUNT(DISTINCT s."userId") FILTER (WHERE s."lastSeenAt" >= ${active30Since} AND s."expiresAt" > ${now} AND NOT u."disabled")::bigint AS active30,
+        COUNT(DISTINCT s."userId") FILTER (WHERE s."lastSeenAt" >= ${todayStart} AND u."createdAt" >= ${todayStart})::bigint AS todaynew,
+        COUNT(DISTINCT s."userId") FILTER (WHERE s."lastSeenAt" >= ${todayStart} AND u."createdAt" < ${todayStart})::bigint AS todayold
+      FROM "Session" s JOIN "User" u ON u.id = s."userId"`,
   ]);
+  const sessionStats = sessionStatRows[0];
 
   // ---- 生成媒体计数（MediaAsset） ----
   const mediaCountsRows = await prisma.$queryRaw<Array<{ mediatype: string; bucket: string; today: boolean; count: bigint }>>`
@@ -187,59 +190,80 @@ export async function getAdminOverviewData(): Promise<AdminOverviewData> {
   const imageTrend: TrendPoint[] = days30.map((day) => ({ label: dayLabel(day), conversation: imageTrendMap.get(dayKey(day))?.conversation ?? 0, workflow: imageTrendMap.get(dayKey(day))?.workflow ?? 0 }));
   const videoTrend: TrendPoint[] = days30.map((day) => ({ label: dayLabel(day), conversation: videoTrendMap.get(dayKey(day))?.conversation ?? 0, workflow: videoTrendMap.get(dayKey(day))?.workflow ?? 0 }));
 
-  // ---- 积分账本聚合 ----
-  const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
-  const metaStr = (m: unknown, k: string) => (isRecord(m) && typeof m[k] === "string" ? (m[k] as string).trim() : "");
-  const metaBool = (m: unknown, k: string) => isRecord(m) && m[k] === true;
-  const creditSourceOf = (m: unknown) => metaStr(m, "creditSource");
+  // ---- 积分账本聚合（2026-08-02 审计 1.3：全部改在 SQL 里 GROUP BY，不再把整张 CreditLedger 拉进内存） ----
+  const [creditTotalRows, creditModelRows, creditUserRows, creditFeatureRows, creditChatModeRows, creditAnomalyRows] = await Promise.all([
+    prisma.$queryRaw<Array<{ consumedcredits: bigint; consumedusd: number | null; consumedcny: number | null; todayconsumed: bigint; granted: bigint; signup: bigint; adminadjust: bigint }>>`
+      SELECT
+        COALESCE(SUM("credits") FILTER (WHERE "direction" = 'consume'), 0)::bigint AS consumedcredits,
+        COALESCE(SUM("usd") FILTER (WHERE "direction" = 'consume'), 0) AS consumedusd,
+        COALESCE(SUM("cny") FILTER (WHERE "direction" = 'consume'), 0) AS consumedcny,
+        COALESCE(SUM("credits") FILTER (WHERE "direction" = 'consume' AND "createdAt" >= ${todayStart}), 0)::bigint AS todayconsumed,
+        COALESCE(SUM("credits") FILTER (WHERE "direction" = 'increase'), 0)::bigint AS granted,
+        COALESCE(SUM("credits") FILTER (WHERE "direction" = 'increase' AND "kind" = 'signup'), 0)::bigint AS signup,
+        COALESCE(SUM("credits") FILTER (WHERE "direction" = 'increase' AND "kind" = 'admin_adjust'), 0)::bigint AS adminadjust
+      FROM "CreditLedger"`,
+    prisma.$queryRaw<Array<{ kind: string; model: string; calls: bigint; cost: number | null }>>`
+      SELECT "kind", "model", COUNT(*)::bigint AS calls, COALESCE(SUM("usd") FILTER (WHERE "usd" > 0), 0) AS cost
+      FROM "CreditLedger" WHERE "direction" = 'consume' AND "model" IS NOT NULL AND "model" <> ''
+      GROUP BY 1, 2`,
+    prisma.$queryRaw<Array<{ userid: string; credits: bigint }>>`
+      SELECT "userId" AS userid, SUM("credits")::bigint AS credits
+      FROM "CreditLedger" WHERE "direction" = 'consume' GROUP BY 1`,
+    // 功能使用（按次）：分类口径与旧 JS 循环逐条一致（creditSource 来自 metadata->>'creditSource'）
+    prisma.$queryRaw<Array<{ feature: string; count: bigint }>>`
+      SELECT CASE
+          WHEN COALESCE("metadata"->>'creditSource', '') LIKE 'workflow\_%' ESCAPE '\' THEN '工作流'
+          WHEN COALESCE("metadata"->>'creditSource', '') IN ('image_prompt_reverse', 'prompt_optimization') THEN '反推 / 优化'
+          WHEN "kind" = 'image' THEN '图片生成'
+          WHEN "kind" = 'video' THEN '视频生成'
+          ELSE '对话 / 规划'
+        END AS feature, COUNT(*)::bigint AS count
+      FROM "CreditLedger" WHERE "direction" = 'consume' GROUP BY 1`,
+    // 对话生成模式（仅对话流，非工作流、非资产、非工具）：WHERE 口径与旧 JS 的 if 条件逐条一致
+    prisma.$queryRaw<Array<{ mode: string; count: bigint }>>`
+      SELECT CASE
+          WHEN "kind" = 'image' THEN '图片生成'
+          WHEN "kind" = 'video' THEN '视频生成'
+          WHEN "label" = 'Agent 规划' OR "requestId" LIKE '%:plan' THEN 'Agent 规划'
+          ELSE '普通对话'
+        END AS mode, COUNT(*)::bigint AS count
+      FROM "CreditLedger"
+      WHERE "direction" = 'consume'
+        AND COALESCE("metadata"->>'creditSource', '') NOT LIKE 'workflow\_%' ESCAPE '\'
+        AND COALESCE("metadata"->>'creditSource', '') NOT IN ('image_prompt_reverse', 'prompt_optimization', 'character_image_generation', 'scene_image_generation', 'prop_image_generation', 'shot_image_generation')
+      GROUP BY 1`,
+    // 计费异常：① chargeDisabled ② （未 disabled 的）image/video 零扣费 —— 与旧 JS 的 if/else-if 口径一致
+    prisma.$queryRaw<Array<{ disabled: bigint; zerocost: bigint }>>`
+      SELECT
+        COUNT(*) FILTER (WHERE "metadata"->>'creditChargeDisabled' = 'true')::bigint AS disabled,
+        COUNT(*) FILTER (WHERE "kind" IN ('image', 'video') AND "credits" = 0 AND "usd" = 0 AND "cny" = 0 AND COALESCE("metadata"->>'creditChargeDisabled', '') <> 'true')::bigint AS zerocost
+      FROM "CreditLedger" WHERE "direction" = 'consume'`,
+  ]);
 
-  let consumedCredits = 0, consumedUsd = 0, consumedCny = 0, todayConsumed = 0;
-  let grantedCredits = 0, signupCredits = 0, adminAdjustCredits = 0;
+  const creditTotals = creditTotalRows[0];
+  const consumedCredits = num(creditTotals?.consumedcredits);
+  const consumedUsd = num(creditTotals?.consumedusd);
+  const consumedCny = num(creditTotals?.consumedcny);
+  const todayConsumed = num(creditTotals?.todayconsumed);
+  const grantedCredits = num(creditTotals?.granted);
+  const signupCredits = num(creditTotals?.signup);
+  const adminAdjustCredits = num(creditTotals?.adminadjust);
+
   const modelCallMap = new Map<string, number>();
   const modelCostMap = new Map<string, number>();
-  const featureMap = new Map<string, number>();
-  const chatModeMap = new Map<string, number>();
-  const userConsumeMap = new Map<string, number>();
-  let anomalyZeroCost = 0, anomalyChargeDisabled = 0;
   const costModelTypeMap = new Map<string, "image" | "video">();
-
-  for (const ledger of creditLedgers) {
-    if (ledger.direction === "increase") {
-      grantedCredits += ledger.credits;
-      if (ledger.kind === "signup") signupCredits += ledger.credits;
-      if (ledger.kind === "admin_adjust") adminAdjustCredits += ledger.credits;
-      continue;
-    }
-    // consume
-    consumedCredits += ledger.credits;
-    consumedUsd += ledger.usd;
-    consumedCny += ledger.cny;
-    if (ledger.createdAt >= todayStart) todayConsumed += ledger.credits;
-    userConsumeMap.set(ledger.userId, (userConsumeMap.get(ledger.userId) ?? 0) + ledger.credits);
-
-    const source = creditSourceOf(ledger.metadata);
-    if (ledger.model) {
-      const label = ledger.kind === "video" ? getModelLabel("video", ledger.model) : ledger.kind === "image" ? getModelLabel("image", ledger.model) : ledger.model;
-      modelCallMap.set(label, (modelCallMap.get(label) ?? 0) + 1);
-      if (ledger.usd > 0) modelCostMap.set(label, (modelCostMap.get(label) ?? 0) + ledger.usd);
-      if (ledger.kind === "video" || ledger.kind === "image") costModelTypeMap.set(label, ledger.kind);
-    }
-    // 功能使用（按次）
-    const feature = source.startsWith("workflow_") ? "工作流"
-      : source === "image_prompt_reverse" || source === "prompt_optimization" ? "反推 / 优化"
-      : ledger.kind === "image" ? "图片生成"
-      : ledger.kind === "video" ? "视频生成"
-      : "对话 / 规划";
-    featureMap.set(feature, (featureMap.get(feature) ?? 0) + 1);
-    // 对话生成模式（仅对话流，非工作流、非资产、非工具）
-    if (!source.startsWith("workflow_") && source !== "image_prompt_reverse" && source !== "prompt_optimization" && source !== "character_image_generation" && source !== "scene_image_generation" && source !== "prop_image_generation" && source !== "shot_image_generation") {
-      const mode = ledger.kind === "image" ? "图片生成" : ledger.kind === "video" ? "视频生成" : (ledger.label === "Agent 规划" || ledger.requestId?.endsWith(":plan")) ? "Agent 规划" : "普通对话";
-      chatModeMap.set(mode, (chatModeMap.get(mode) ?? 0) + 1);
-    }
-    // 计费异常
-    if (metaBool(ledger.metadata, "creditChargeDisabled")) anomalyChargeDisabled += 1;
-    else if ((ledger.kind === "image" || ledger.kind === "video") && ledger.credits === 0 && ledger.usd === 0 && ledger.cny === 0) anomalyZeroCost += 1;
+  for (const row of creditModelRows) {
+    const label = row.kind === "video" ? getModelLabel("video", row.model) : row.kind === "image" ? getModelLabel("image", row.model) : row.model;
+    modelCallMap.set(label, (modelCallMap.get(label) ?? 0) + num(row.calls));
+    const cost = num(row.cost);
+    if (cost > 0) modelCostMap.set(label, (modelCostMap.get(label) ?? 0) + cost);
+    if (row.kind === "video" || row.kind === "image") costModelTypeMap.set(label, row.kind);
   }
+  const featureMap = new Map<string, number>(creditFeatureRows.map((row) => [row.feature, num(row.count)]));
+  const chatModeMap = new Map<string, number>(creditChatModeRows.map((row) => [row.mode, num(row.count)]));
+  const userConsumeMap = new Map<string, number>(creditUserRows.map((row) => [row.userid, num(row.credits)]));
+  const anomalyChargeDisabled = num(creditAnomalyRows[0]?.disabled);
+  const anomalyZeroCost = num(creditAnomalyRows[0]?.zerocost);
 
   // ---- 生成事件聚合（新表） ----
   const genByKindStatus = await safeRows(() => prisma.$queryRaw<Array<{ kind: string; status: string; count: bigint }>>`
@@ -333,19 +357,22 @@ export async function getAdminOverviewData(): Promise<AdminOverviewData> {
     return { label: retentionLabelMap[d], value: pct(retained, cohort), note: `${retained}/${cohort}` };
   });
 
-  // ---- 漏斗 ----
-  const [funnelWorkbench, funnelGeneratedRows, funnelWorkflow] = await Promise.all([
-    prisma.session.findMany({ select: { userId: true }, distinct: ["userId"] }),
-    prisma.$queryRaw<Array<{ userid: string; count: bigint }>>`
-      SELECT "userId" AS userid, COUNT(*)::bigint AS count FROM "MediaAsset"
-      WHERE "archivedAt" IS NULL AND "mediaType" IN ('image','video') AND COALESCE("sourceKind",'') NOT LIKE '%upload%'
-      GROUP BY 1`,
-    prisma.workspaceWorkflow.findMany({ where: { deletedAt: null }, select: { userId: true }, distinct: ["userId"] }),
+  // ---- 漏斗（2026-08-02：COUNT(DISTINCT) 在库里算，不再拉 Session/WorkspaceWorkflow 的 userId 列表回 Node） ----
+  const [funnelWorkbenchRows, funnelGeneratedAggRows, funnelWorkflowRows] = await Promise.all([
+    prisma.$queryRaw<Array<{ count: bigint }>>`SELECT COUNT(DISTINCT "userId")::bigint AS count FROM "Session"`,
+    prisma.$queryRaw<Array<{ generated: bigint; multi: bigint }>>`
+      SELECT COUNT(*)::bigint AS generated, COUNT(*) FILTER (WHERE cnt >= 3)::bigint AS multi
+      FROM (
+        SELECT "userId", COUNT(*) AS cnt FROM "MediaAsset"
+        WHERE "archivedAt" IS NULL AND "mediaType" IN ('image','video') AND COALESCE("sourceKind",'') NOT LIKE '%upload%'
+        GROUP BY 1
+      ) t`,
+    prisma.$queryRaw<Array<{ count: bigint }>>`SELECT COUNT(DISTINCT "userId")::bigint AS count FROM "WorkspaceWorkflow" WHERE "deletedAt" IS NULL`,
   ]);
-  const enteredWorkbench = new Set(funnelWorkbench.map((s) => s.userId)).size;
-  const generatedUsers = funnelGeneratedRows.length;
-  const multiGeneratedUsers = funnelGeneratedRows.filter((row) => num(row.count) >= 3).length;
-  const workflowUsers = funnelWorkflow.length;
+  const enteredWorkbench = num(funnelWorkbenchRows[0]?.count);
+  const generatedUsers = num(funnelGeneratedAggRows[0]?.generated);
+  const multiGeneratedUsers = num(funnelGeneratedAggRows[0]?.multi);
+  const workflowUsers = num(funnelWorkflowRows[0]?.count);
   const funnel = [
     { label: "注册用户", value: totalUsers },
     { label: "进入工作台", value: enteredWorkbench },
@@ -407,16 +434,15 @@ export async function getAdminOverviewData(): Promise<AdminOverviewData> {
     { label: "纯文本生成", value: pct(refPlain, refTotal), tone: TONES[5] },
   ] : [];
 
-  const dau = new Set(dauSessions.map((s) => s.userId)).size;
-  const wau = new Set(wauSessions.map((s) => s.userId)).size;
-  const mau = new Set(mauSessions.map((s) => s.userId)).size;
-  const online = new Set(onlineSessions.map((s) => s.userId)).size;
-  const active30 = new Set(active30Sessions.map((s) => s.userId)).size;
+  const dau = num(sessionStats?.dau);
+  const wau = num(sessionStats?.wau);
+  const mau = num(sessionStats?.mau);
+  const online = num(sessionStats?.online);
+  const active30 = num(sessionStats?.active30);
 
-  // 今日活跃新老用户
-  const todayActiveUserRows = await prisma.session.findMany({ where: { lastSeenAt: { gte: todayStart } }, select: { userId: true, user: { select: { createdAt: true } } }, distinct: ["userId"] });
-  let todayNew = 0, todayOld = 0;
-  for (const row of todayActiveUserRows) { if (row.user.createdAt >= todayStart) todayNew += 1; else todayOld += 1; }
+  // 今日活跃新老用户（同一条 sessionStats SQL 已算出，不再单独拉一次 Session）
+  const todayNew = num(sessionStats?.todaynew);
+  const todayOld = num(sessionStats?.todayold);
   const todayActiveTotal = todayNew + todayOld;
   const newVsOld: ShareItem[] = todayActiveTotal > 0 ? [
     { label: "新用户", value: pct(todayNew, todayActiveTotal), tone: TONES[1] },

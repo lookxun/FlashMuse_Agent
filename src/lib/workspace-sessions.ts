@@ -113,6 +113,11 @@ function getMessageVideoUrls(message: Record<string, unknown>) {
 }
 
 async function syncWorkspaceMessageMediaAssets(userId: string, sessionId: string, messages: Record<string, unknown>[]) {
+  // 2026-08-02 审计 1.8：先把全部消息解析成待同步项，再按 6 路并发写库
+  // （旧写法是嵌套 for + 顺序 await，每个媒体项 3~6 次串行往返：30 条消息 × 4 张图 ≈ 500 次）。
+  type PendingItem = { url: string; mediaType: "image" | "video"; category: string; sourceKind: string; sourcePrompt?: string; sourceDetail?: string; promptSource: string; name?: string; posterUrl?: string; width?: number; height?: number; videoDuration?: string };
+  const pending: Array<{ item: PendingItem; message: Record<string, unknown>; messageId: string | undefined; createdAt: Date; meta?: Record<string, unknown>; settings?: Record<string, unknown>; mediaSystemNames?: Record<string, unknown> }> = [];
+
   for (const message of messages) {
     const role = getMessageRole(message);
     const messageId = getMessageId(message);
@@ -120,7 +125,7 @@ async function syncWorkspaceMessageMediaAssets(userId: string, sessionId: string
     const meta = isRecord(message.generationMeta) ? message.generationMeta : undefined;
     const settings = isRecord(meta?.settings) ? meta.settings : undefined;
     const mediaSystemNames = isRecord(message.mediaSystemNames) ? message.mediaSystemNames : undefined;
-    const items: Array<{ url: string; mediaType: "image" | "video"; category: string; sourceKind: string; sourcePrompt?: string; sourceDetail?: string; promptSource: string; name?: string; posterUrl?: string; width?: number; height?: number; videoDuration?: string }> = [];
+    const items: PendingItem[] = [];
 
     if (role === "user") {
       for (const url of getMessageImageUrls(message).filter((item) => /\/generated\/(?:users\/[^/]+\/)?upload_image\//.test(normalizeMediaUrl(item)))) {
@@ -159,28 +164,57 @@ async function syncWorkspaceMessageMediaAssets(userId: string, sessionId: string
       }
     }
 
-    for (const item of items) {
+    for (const item of items) pending.push({ item, message, messageId, createdAt, meta, settings, mediaSystemNames });
+  }
+
+  // 同一 url 在多条消息里重复出现时只处理第一次：后续 upsert 的 update 本来就是空操作，跳过不改终态，
+  // 且避免并发 upsert 撞同一个唯一键（P2002）。
+  const seenUrls = new Set<string>();
+  const dedupedPending = pending.filter(({ item }) => {
+    if (seenUrls.has(item.url)) return false;
+    seenUrls.add(item.url);
+    return true;
+  });
+
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(6, dedupedPending.length) }, async () => {
+    while (cursor < dedupedPending.length) {
+      const { item, message, messageId, createdAt, meta, settings, mediaSystemNames } = dedupedPending[cursor];
+      cursor += 1;
       const resolved = resolvePersistableMediaAssetUrl(userId, item.url, { posterUrl: item.posterUrl });
       if (!resolved) continue;
       const normalizedUrl = resolved.normalizedUrl;
       const systemName = getString(mediaSystemNames?.[item.url]) || item.name;
-      const media = await prisma.mediaAsset.upsert({
-        where: { userId_normalizedUrl: { userId, normalizedUrl } },
-        create: { userId, mediaType: item.mediaType || mediaTypeFromUrl(normalizedUrl), url: resolved.url, normalizedUrl, originalUrl: resolved.originalUrl, posterUrl: resolved.posterUrl || undefined, thumbnailUrl: resolved.thumbnailUrl || undefined, sourceKind: item.sourceKind, sourceDetail: item.sourceDetail, sourcePrompt: item.sourcePrompt, promptSource: item.promptSource, model: getString(meta?.model) || undefined, ratio: getString(settings?.ratio) || undefined, resolution: getString(settings?.resolution) || undefined, imageSize: getString(settings?.imageSize || settings?.size) || undefined, videoDuration: item.videoDuration || undefined, generationSettings: settings as Prisma.InputJsonValue | undefined, width: item.width, height: item.height, systemName: systemName || undefined, initialName: systemName || undefined, initialCategory: item.category, conversationId: sessionId, messageId, workspaceKind: "conversation", workspaceId: sessionId, requestId: getString(message.requestId) || undefined, firstSeenAt: createdAt },
-        // 出生即冻结：这是"兜底"路径，只在权威写入者（生成 worker / 上传接口）漏建时才补建一条；
-        // 记录已存在则绝不覆盖内容（历史 bug：这里曾每次保存对话流都把参数/归类/终生ID 全覆盖）。
-        update: {},
-        select: { id: true },
-      });
+      let media: { id: string } | null = null;
+      try {
+        media = await prisma.mediaAsset.upsert({
+          where: { userId_normalizedUrl: { userId, normalizedUrl } },
+          create: { userId, mediaType: item.mediaType || mediaTypeFromUrl(normalizedUrl), url: resolved.url, normalizedUrl, originalUrl: resolved.originalUrl, posterUrl: resolved.posterUrl || undefined, thumbnailUrl: resolved.thumbnailUrl || undefined, sourceKind: item.sourceKind, sourceDetail: item.sourceDetail, sourcePrompt: item.sourcePrompt, promptSource: item.promptSource, model: getString(meta?.model) || undefined, ratio: getString(settings?.ratio) || undefined, resolution: getString(settings?.resolution) || undefined, imageSize: getString(settings?.imageSize || settings?.size) || undefined, videoDuration: item.videoDuration || undefined, generationSettings: settings as Prisma.InputJsonValue | undefined, width: item.width, height: item.height, systemName: systemName || undefined, initialName: systemName || undefined, initialCategory: item.category, conversationId: sessionId, messageId, workspaceKind: "conversation", workspaceId: sessionId, requestId: getString(message.requestId) || undefined, firstSeenAt: createdAt },
+          // 出生即冻结：这是"兜底"路径，只在权威写入者（生成 worker / 上传接口）漏建时才补建一条；
+          // 记录已存在则绝不覆盖内容（历史 bug：这里曾每次保存对话流都把参数/归类/终生ID 全覆盖）。
+          update: {},
+          select: { id: true },
+        });
+      } catch {
+        // 并发撞唯一键（不同字符串归一化成同一 normalizedUrl）→ 行已在，直接读。
+        media = await prisma.mediaAsset.findUnique({ where: { userId_normalizedUrl: { userId, normalizedUrl } }, select: { id: true } });
+      }
+      if (!media) continue;
 
-      await prisma.userAssetState.upsert({
-        where: { userId_mediaAssetId: { userId, mediaAssetId: media.id } },
-        create: { userId, mediaAssetId: media.id, currentName: systemName || undefined, currentCategory: item.category, originalCategory: item.category },
-        update: { hiddenAt: null, hiddenReason: null },
-      });
+      try {
+        await prisma.userAssetState.upsert({
+          where: { userId_mediaAssetId: { userId, mediaAssetId: media.id } },
+          create: { userId, mediaAssetId: media.id, currentName: systemName || undefined, currentCategory: item.category, originalCategory: item.category },
+          update: { hiddenAt: null, hiddenReason: null },
+        });
+      } catch {
+        // 并发撞键 → 行已在，update 分支只是 un-hide，重试一次即可。
+        await prisma.userAssetState.update({ where: { userId_mediaAssetId: { userId, mediaAssetId: media.id } }, data: { hiddenAt: null, hiddenReason: null } }).catch(() => undefined);
+      }
       await canonicalizeSavedMediaUrl(userId, resolved.url);
     }
-  }
+  });
+  await Promise.all(workers);
 }
 
 function getSessionSummary(session: Record<string, unknown>): Prisma.InputJsonValue {

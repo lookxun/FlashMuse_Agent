@@ -25,7 +25,7 @@
 - `flashmuse-staging.conf` → 腾讯 `/opt/flashmuse-staging/data/nginx/flashmuse-staging.conf`。容器内 nginx，服务 /generated、/home-assets，其余反代 staging-app:3000。
 - `flashmuse-test-8080.conf` → 阿里 `/etc/nginx/sites-enabled/flashmuse-test-8080`。listen 8080，静态从 `/var/www/flashmuse-static-test/` 读，其余反代腾讯 119.28.116.16:5001。
 - `flashmuse-staging-static-ssl.conf` → 阿里 `/etc/nginx/sites-enabled/flashmuse-staging-static-ssl`。listen 443 SSL（server_name staging-static.venusface.com），与 8080 同行为 + 挂 Let's Encrypt 证书 + 80→443 跳转。
-- `sync-ali-test.sh` → 腾讯 `/opt/flashmuse-staging/sync-ali-test.sh`。把测试服 `_next/static`+`home-assets`+`generated` 同步到阿里测试镜像。每次部署测试服后必跑（否则 chunk 404）。
+- ~~`sync-ali-test.sh`~~ **2026-08-02 起统一为仓库根 `deploy/sync-ali.sh`**（服务器上路径 = `/opt/flashmuse*/app/deploy/sync-ali.sh`；`--stack staging|prod`，带 flock/超时/partial-dir/dry-run；取代了 sync-ali-test.sh、scripts/sync-flashmuse-next-static.sh 和正式服手写的 /tmp/syncali.sh）。部署测试服后必跑 `sudo bash /opt/flashmuse-staging/app/deploy/sync-ali.sh --stack staging`（否则 chunk 404）。⚠️ 新脚本**不再同步 generated**（正式服 generated 走应用 ali-sync；测试服需要时手动 rsync）。
 - `make-staging-env.sh` → 从正式服 `.env.local` 派生测试服 `.env.local`（改 cookie/同步目录/地址/加 NEXT_PUBLIC_IS_TEST）。仅首次搭建或需重建 env 时用。
 
 ## 首次搭建 / 重建步骤（摘要）
@@ -35,7 +35,7 @@
 4. 跑 `make-staging-env.sh` 生成 `data/.env.local`。
 5. `docker compose up -d staging-db` → 导数据（可选）→ `docker compose up -d --build staging-app staging-nginx`。
 6. 阿里：放 `flashmuse-test-8080.conf`，`mkdir -p /var/www/flashmuse-static-test/{_next/static,home-assets,generated}`，`nginx -t && systemctl reload nginx`。
-7. `bash sync-ali-test.sh`。
+7. `bash deploy/sync-ali.sh --stack staging`。
 8. 腾讯放行 5001、阿里放行 8080（云控制台安全组）。
 
 ## 清空测试库（重新注册用）

@@ -101,44 +101,85 @@ async function reserveJobNames(tx: Prisma.TransactionClient, input: { userId: st
   const scope = assetFlow ? `asset:${input.userId}` : input.flow === "workflow" && input.workflowId ? `workflow:${input.userId}:${input.workflowId}:${input.kind}` : `conversation:${input.userId}:${input.conversationId ?? "d0"}:${input.kind}`;
   // The caller keeps this lock until the job row containing the reservation is inserted.
   await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${scope}))`;
-  const [assets, jobs, workflow] = await Promise.all([
-    tx.mediaAsset.findMany({ where: { userId: input.userId }, select: { systemName: true, initialName: true } }),
+  const [jobs, workflow] = await Promise.all([
     tx.$queryRaw<Array<{ reservedNames: string[] | null }>>`SELECT "reservedNames" FROM "GenerationJob" WHERE "userId" = ${input.userId} AND "status" IN ('queued', 'running')`,
-    input.flow === "workflow" && input.workflowId ? tx.workspaceWorkflow.findUnique({ where: { userId_workflowId: { userId: input.userId, workflowId: input.workflowId } }, select: { workflowCode: true, title: true } }) : null,
+    input.flow === "workflow" && input.workflowId ? tx.workspaceWorkflow.findUnique({ where: { userId_workflowId: { userId: input.userId, workflowId: input.workflowId } }, select: { workflowCode: true, title: true, nextImageNumber: true, nextVideoNumber: true } }) : null,
   ]);
-  const used = new Set<string>();
-  for (const asset of assets) for (const name of [asset.systemName, asset.initialName]) if (name) used.add(name);
-  for (const job of jobs) for (const name of job.reservedNames ?? []) used.add(name);
+  const usedByJobs = new Set<string>();
+  for (const job of jobs) for (const name of job.reservedNames ?? []) usedByJobs.add(name);
   let code: string;
+  let numberHint = 1;
   if (input.flow === "workflow") {
     code = deriveWorkflowCode(workflow?.workflowCode ?? null, workflow?.title ?? null);
+    numberHint = input.kind === "video" ? (workflow?.nextVideoNumber ?? 1) : (workflow?.nextImageNumber ?? 1);
   } else {
     // 对话流：用会话稳定编号 conversationCode（image_序号_d编号）。优先取调用方传入，
     // 缺失时回退读 WorkspaceSession.summaryJson.conversationCode，都没有才 d0。
     code = input.conversationCode?.trim() || "";
-    if (!code && input.conversationId) {
-      const session = await tx.workspaceSession.findUnique({
-        where: { userId_sessionId: { userId: input.userId, sessionId: input.conversationId } },
-        select: { summaryJson: true },
-      });
-      const summaryCode = session && typeof session.summaryJson === "object" && session.summaryJson
-        ? (session.summaryJson as Record<string, unknown>).conversationCode
-        : undefined;
+    // 会话行总是读一次：既要兜底 conversationCode，也要取计数器起点提示。
+    const session = !assetFlow && input.conversationId
+      ? await tx.workspaceSession.findUnique({
+          where: { userId_sessionId: { userId: input.userId, sessionId: input.conversationId } },
+          select: { summaryJson: true },
+        })
+      : null;
+    const summaryJson = session && typeof session.summaryJson === "object" && session.summaryJson
+      ? (session.summaryJson as Record<string, unknown>)
+      : undefined;
+    if (!code) {
+      const summaryCode = summaryJson?.conversationCode;
       if (typeof summaryCode === "string" && summaryCode.trim()) code = summaryCode.trim();
     }
     if (!code) code = "d0";
+    // 计数器只当"起点提示"用（历史教训：不能只信它，重试/失败会让它漂移）——
+    // 真正的防撞靠下面的定点存在性检查。
+    const summaryCounter = input.kind === "video" ? summaryJson?.nextVideoNumber : summaryJson?.nextImageNumber;
+    if (typeof summaryCounter === "number" && Number.isFinite(summaryCounter)) numberHint = Math.max(1, Math.floor(summaryCounter));
   }
   const suffix = assetNameSuffix(input.creditSource);
   const prefix = assetFlow ? "asset" : input.kind;
-  const names: string[] = [];
-  let number = 1;
-  while (names.length < input.count) {
-    const name = assetFlow ? `asset_${number}_${suffix}` : `${prefix}_${number}_${code}`;
-    if (!used.has(name)) {
-      names.push(name);
-      used.add(name);
+
+  // ⭐ 2026-08-02 审计 1.2：不再全表扫该用户所有 MediaAsset 来起名（每次生成搬 N 行、还占着 advisory 锁）。
+  //   新做法 = 「计数器起点提示 + 候选名定点存在性检查」（走 (userId, systemName) 索引，每批只查几个候选）。
+  //   历史教训「不能只信计数器」由存在性检查兜底：提示偏了就跳过已占用的号，绝不重名。
+  //   ⛔ asset 流（资产库角色图，低频）没有服务端计数器，仍走原来的全量扫描（量小，不值得为它加计数器）。
+  if (assetFlow) {
+    const assets = await tx.mediaAsset.findMany({ where: { userId: input.userId }, select: { systemName: true, initialName: true } });
+    const used = new Set<string>(usedByJobs);
+    for (const asset of assets) for (const name of [asset.systemName, asset.initialName]) if (name) used.add(name);
+    const names: string[] = [];
+    let number = 1;
+    while (names.length < input.count) {
+      const name = `asset_${number}_${suffix}`;
+      if (!used.has(name)) {
+        names.push(name);
+        used.add(name);
+      }
+      number += 1;
     }
-    number += 1;
+    return names;
+  }
+
+  const buildName = (n: number) => `${prefix}_${n}_${code}`;
+  const names: string[] = [];
+  let number = Math.max(1, numberHint);
+  while (names.length < input.count) {
+    const batchSize = Math.max(8, (input.count - names.length) * 2);
+    const candidates: string[] = [];
+    for (let i = 0; i < batchSize; i += 1) candidates.push(buildName(number + i));
+    const [bySystemName, byInitialName] = await Promise.all([
+      tx.mediaAsset.findMany({ where: { userId: input.userId, systemName: { in: candidates } }, select: { systemName: true } }),
+      tx.mediaAsset.findMany({ where: { userId: input.userId, initialName: { in: candidates } }, select: { initialName: true } }),
+    ]);
+    const taken = new Set<string>(usedByJobs);
+    for (const row of bySystemName) if (row.systemName) taken.add(row.systemName);
+    for (const row of byInitialName) if (row.initialName) taken.add(row.initialName);
+    for (const name of names) taken.add(name);
+    for (const candidate of candidates) {
+      number += 1;
+      if (names.length >= input.count) break;
+      if (!taken.has(candidate)) names.push(candidate);
+    }
   }
   return names;
 }

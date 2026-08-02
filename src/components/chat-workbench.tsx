@@ -7,7 +7,8 @@ import { IMAGE_UPLOAD_ACCEPT, validateImageUploadFile } from "@/lib/image-upload
 import { IS_TEST_SERVER, versionLabel } from "@/lib/app-version";
 import { MEDIA_DURATION_EPSILON_SECONDS, validateMediaUploadFile, validateMediaUploadMetadata, validateReferenceMediaDurationRange as validateMediaDuration } from "@/lib/media-upload-validation";
 import { computeFileContentHashHex, precheckUploadedFileDedup } from "@/lib/upload-content-hash";
-import { isRecentUploadOrigin, markRecentUploadOrigin } from "@/lib/recent-upload-origin";
+import { markRecentUploadOrigin } from "@/lib/recent-upload-origin";
+import { defaultProductionUploadApiBaseUrl, getStaticMediaUrl, shouldUseStaticAssetBaseUrl, toLocalGeneratedUrl, uploadApiBaseUrl } from "@/lib/static-media-url";
 import {
   RiAddLine,
   RiAddLargeLine,
@@ -703,10 +704,6 @@ const ENABLE_BYTEPLUS_ASSET_REVIEW = process.env.NEXT_PUBLIC_ENABLE_BYTEPLUS_ASS
 const legacyMediaUrlReplacements = new Map([
   ["/generated/videos/1780454968504-21fb484e-7894-45cb-b730-63c475ee71f2.mp4", "/generated/videos/1780454887939-f010e856-7f46-4fdc-9290-8dd58bd22d85.mp4"],
 ]);
-const staticAssetBaseUrl = (process.env.NEXT_PUBLIC_STATIC_BASE_URL ?? "").replace(/\/$/, "");
-const uploadApiBaseUrl = (process.env.NEXT_PUBLIC_UPLOAD_BASE_URL ?? "").replace(/\/$/, "");
-const primaryAppBaseUrl = (process.env.NEXT_PUBLIC_PRIMARY_BASE_URL ?? "").replace(/\/$/, "");
-const defaultProductionUploadApiBaseUrl = "https://api.venusface.com";
 const MALAYSIA_WORKSPACE_URL = "https://main.venusface.com/workspace";
 const ALI_WORKSPACE_URL = "https://ali.venusface.com/workspace";
 const mediaThumbnailVersion = "thumb256-20260606";
@@ -752,38 +749,8 @@ async function fetchJsonWithRetry<T>(url: string, init?: RequestInit, attempts =
   throw lastError instanceof Error ? lastError : new Error("请求失败");
 }
 
-function toLocalGeneratedUrl(url: string) {
-  if (/^https?:\/\/(101\.47\.19\.109|101\.37\.129\.164|main\.venusface\.com|api\.venusface\.com|ali\.venusface\.com|static\.venusface\.com)\/generated\//i.test(url)) {
-    return url.replace(/^https?:\/\/(101\.47\.19\.109|101\.37\.129\.164|main\.venusface\.com|api\.venusface\.com|ali\.venusface\.com|static\.venusface\.com)/i, "");
-  }
-  return url;
-}
-
 function getDownloadUrl(url: string) {
   return toLocalGeneratedUrl(url);
-}
-
-function withMediaVersion(url: string, version?: string) {
-  if (!version) return url;
-  return `${url}${url.includes("?") ? "&" : "?"}v=${version}`;
-}
-
-function shouldUseStaticAssetBaseUrl() {
-  if (!staticAssetBaseUrl || typeof window === "undefined") return Boolean(staticAssetBaseUrl);
-
-  try {
-    const currentHost = window.location.host;
-    const currentHostname = window.location.hostname;
-    const staticHost = new URL(staticAssetBaseUrl).host;
-    const uploadHost = uploadApiBaseUrl ? new URL(uploadApiBaseUrl).host : "";
-    const primaryHost = primaryAppBaseUrl ? new URL(primaryAppBaseUrl).host : "";
-    if (currentHostname === "main.venusface.com" || currentHostname === "api.venusface.com" || currentHostname === "101.47.19.109") return false;
-    if (currentHost === staticHost || currentHost === uploadHost || currentHost === primaryHost) return false;
-  } catch {
-    return Boolean(staticAssetBaseUrl);
-  }
-
-  return true;
 }
 
 function getUploadApiBaseUrl() {
@@ -804,19 +771,6 @@ function getUploadApiBaseUrl() {
 function getUploadApiUrl(path: string) {
   const baseUrl = getUploadApiBaseUrl();
   return baseUrl ? `${baseUrl}${path}` : path;
-}
-
-function getStaticMediaUrl(url: string | undefined, version?: string) {
-  if (!url) return url;
-  const normalizedUrl = toLocalGeneratedUrl(url);
-  // 本会话刚上传的媒体：阿里镜像可能还没同步好，一律读腾讯主源，保证成功即可播放/看封面。刷新后走正常读取。
-  if (normalizedUrl.startsWith("/generated/") && isRecentUploadOrigin(normalizedUrl)) {
-    const isLocalDev = typeof window !== "undefined" && (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1");
-    const originBase = isLocalDev ? "" : (uploadApiBaseUrl || defaultProductionUploadApiBaseUrl);
-    return withMediaVersion(`${originBase}${normalizedUrl}`, version);
-  }
-  if (!shouldUseStaticAssetBaseUrl() || !normalizedUrl.startsWith("/generated/")) return withMediaVersion(normalizedUrl, version);
-  return withMediaVersion(`${staticAssetBaseUrl}${normalizedUrl}`, version);
 }
 
 function stripErrorCodePrefix(value: string) {
@@ -3579,12 +3533,27 @@ function sortByUpdatedAtDesc<T extends { updatedAt?: number }>(items: T[]) {
   return [...items].sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0));
 }
 
+// 落库边界：上传/读取未完成的文件条目**整条不落库**，已完成条目的临时字段（uploadProgress /
+// uploadStatus / progress / error）必须剥掉 —— 否则上传中刷新会把"卡在 47%"存进数据库、
+// 刷新后永久卡在上传中（和 promptLoading 是同一个坑，2026-08-02 审计 2.2）。
+function getPersistableUploadedFileEntry(entry: UploadedFileEntry): UploadedFileEntry | null {
+  if (typeof entry === "string") return entry;
+  if (entry.uploadStatus && entry.uploadStatus !== "ready") return null;
+  if (entry.status === "reading") return null;
+  const url = entry.url && /^(blob:|data:)/.test(entry.url) ? undefined : entry.url;
+  const posterUrl = entry.posterUrl && /^(blob:|data:)/.test(entry.posterUrl) ? undefined : entry.posterUrl;
+  return { ...entry, url, posterUrl, uploadStatus: undefined, uploadProgress: undefined, progress: undefined, error: undefined };
+}
+
 function getPersistableSessions(sessions: WorkSession[]) {
   return keepSingleEmptySession(sessions)
     .slice(0, MAX_PERSISTED_SESSIONS)
     .map((session) => ({
       ...session,
       uploadedImages: undefined,
+      uploadedFiles: session.uploadedFiles
+        ?.map(getPersistableUploadedFileEntry)
+        .filter((entry): entry is UploadedFileEntry => entry !== null),
       pendingRequest: undefined,
       pendingRequests: getSessionPendingRequests(session).map(getPersistablePendingRequest),
       messages: session.messages.map((message) => {
@@ -7719,6 +7688,10 @@ export function ChatWorkbench() {
   const [workspaceLoadStatus, setWorkspaceLoadStatus] = useState<WorkspaceLoadStatus>("loading");
   const [workspaceLoadRetryKey, setWorkspaceLoadRetryKey] = useState(0);
   const [workflowItems, setWorkflowItems] = useState<WorkflowItem[]>([]);
+  // ⭐ workflowItems 的同步镜像：给"要先读到最新值、再在 setState 之外做副作用"的场景用
+  //   （2026-08-02 审计 2.3：updateWorkflowCanvas 曾在 setState updater 里 setNextWorkflowNumber +
+  //   发 fetch PUT，React 重跑 updater 会重复自增编号/重复发请求）。
+  const workflowItemsRef = useRef<WorkflowItem[]>([]);
   const [activeWorkflowId, setActiveWorkflowId] = useState("");
   const [workflowVisibleItemCount, setWorkflowVisibleItemCount] = useState(WORKFLOW_INITIAL_ITEM_COUNT);
   // ⭐ 工作流画布按需加载：非活跃工作流下发的是骨架版（canvasTrimmed），切到它时补拉完整画布。
@@ -9658,6 +9631,10 @@ export function ChatWorkbench() {
   }, [sessions]);
 
   useEffect(() => {
+    workflowItemsRef.current = workflowItems;
+  }, [workflowItems]);
+
+  useEffect(() => {
     if (!activeSessionId) return;
     const activeIndex = sessions.findIndex((session) => session.id === activeSessionId);
     if (activeIndex < historyVisibleSessionCount) return;
@@ -10391,7 +10368,9 @@ export function ChatWorkbench() {
       nextWorkflowNumber,
       activePanel,
       assetFilter,
-      assetScrollTopByFilter,
+      // ⛔ assetScrollTopByFilter 不进 PUT 载荷（2026-08-02 审计 2.4）：滚动位置一变就整体重写
+      //   几百 KB 的 UserWorkspaceState.state（TOAST 列、WAL 放大），是全系统最大的写放大来源。
+      //   滚动位置只保留在本机（setStoredWorkspaceUiState），不再跨设备恢复。
       workflowItems: getPersistableWorkflowItems(normalizeWorkflowCodesAndMediaNumbers(workflowItems)),
       activeWorkflowId,
       activeSessionId,
@@ -10422,7 +10401,9 @@ export function ChatWorkbench() {
     return () => {
       if (workspaceSaveTimerRef.current !== null) window.clearTimeout(workspaceSaveTimerRef.current);
     };
-  }, [activePanel, activeSessionId, activeWorkflowId, agentModelTier, assetFilter, assetGenerateJobs, assetScrollTopByFilter, assets, assetsLoadStatus, feedbackLogs, intentMemoryRules, isLoaded, mode, nextConversationNumber, nextWorkflowNumber, selectedDurations, selectedGeneralModels, selectedGenerationModels, selectedImageCounts, selectedRatios, selectedResolutions, sessions, workflowItems, workspaceLoadStatus, workspaceStorageMode]);
+    // ⛔ 依赖里不许再放 assets / assetScrollTopByFilter：assets 不在载荷里（变了白发一次全量 PUT），
+    //   assetScrollTopByFilter 是资产库滚动位置（滚一下整体重写几百 KB）。见载荷处的注释。
+  }, [activePanel, activeSessionId, activeWorkflowId, agentModelTier, assetFilter, assetGenerateJobs, assetsLoadStatus, feedbackLogs, intentMemoryRules, isLoaded, mode, nextConversationNumber, nextWorkflowNumber, selectedDurations, selectedGeneralModels, selectedGenerationModels, selectedImageCounts, selectedRatios, selectedResolutions, sessions, workflowItems, workspaceLoadStatus, workspaceStorageMode]);
 
   useEffect(() => {
     if (!isLoaded || workspaceStorageMode !== "user") return;
@@ -11579,49 +11560,63 @@ export function ChatWorkbench() {
   }, []);
 
   const updateWorkflowCanvas = useCallback((workflowId: string, canvas: WorkflowCanvasState, meta?: { userInitiated?: boolean }) => {
-    setWorkflowItems((current) => {
-      const target = current.find((item) => item.id === workflowId);
-      if (!target) return current;
-      let title = target.title;
-      let workflowCode = getWorkflowCode(target);
-      let nextWorkflowNumberForPayload = nextWorkflowNumber;
-      if (isUntitledWorkflow(target) && hasWorkflowAction(canvas)) {
-        const result = getNextWorkflowTitleFromNumber(current, nextWorkflowNumber);
-        title = result.title;
-        workflowCode = `w${getWorkflowNumberFromTitle(result.title)}`;
-        nextWorkflowNumberForPayload = result.nextWorkflowNumber;
-        setNextWorkflowNumber(result.nextWorkflowNumber);
-      }
-      const textChanged = getWorkflowTextSnapshot(target.canvas) !== getWorkflowTextSnapshot(canvas);
-      // ⭐⭐ 置顶规则（2026-07-30 按用户要求定稿）：「画面真的变了」且「变化是用户造成的」才置顶。
-      //  · 内容变了没有 → meaningfulChanged
-      //  · 是用户造成的吗 → meta.userInitiated（画布在源头标记：按下鼠标/键盘、点菜单按钮、生成回填都算 true；
-      //    打开工作流时 normalizeState 的归一化写回是 false）
-      //  · 兜底 → mediaChanged：成品媒体地址变了（新生成出图/出视频）一律算变化，即使标记没打上。
-      // ⛔ 别再走"往 stripKeys 里加字段"那条老路：剔不完，而且会把改比例/换模型这类真操作也屏蔽掉。
-      // meta 缺省时按 true（兼容其它调用方，宁可多置顶也不要漏掉用户的真操作）。
-      const meaningfulChanged = getWorkflowMeaningfulSnapshot(target.canvas) !== getWorkflowMeaningfulSnapshot(canvas);
-      const mediaChanged = getWorkflowMediaSnapshot(target.canvas) !== getWorkflowMediaSnapshot(canvas);
-      const shouldBumpToTop = meaningfulChanged && (meta?.userInitiated !== false || mediaChanged);
-      const next = current.map((item) => item.id === workflowId ? { ...item, workflowCode, title, canvas: { ...canvas, generatedMediaCounts: canvas.generatedMediaCounts ?? item.canvas?.generatedMediaCounts, countedGeneratedUrls: canvas.countedGeneratedUrls ?? item.canvas?.countedGeneratedUrls }, updatedAt: shouldBumpToTop ? Date.now() : (item.updatedAt ?? Date.now()) } : item);
-      if (textChanged && workspaceStorageMode === "user") {
-        if (workflowTextSaveTimerRef.current !== null) window.clearTimeout(workflowTextSaveTimerRef.current);
+    // ⛔ 从 ref 读当前值、在 setState 之外做全部副作用（编号自增、防抖 PUT）：
+    //   React 可能重跑 setState 的 updater，副作用写在 updater 里会重复执行（2026-08-02 审计 2.3）。
+    const current = workflowItemsRef.current;
+    const target = current.find((item) => item.id === workflowId);
+    if (!target) return;
+    let title = target.title;
+    let workflowCode = getWorkflowCode(target);
+    let nextWorkflowNumberForPayload = nextWorkflowNumber;
+    if (isUntitledWorkflow(target) && hasWorkflowAction(canvas)) {
+      const result = getNextWorkflowTitleFromNumber(current, nextWorkflowNumber);
+      title = result.title;
+      workflowCode = `w${getWorkflowNumberFromTitle(result.title)}`;
+      nextWorkflowNumberForPayload = result.nextWorkflowNumber;
+    }
+    const textChanged = getWorkflowTextSnapshot(target.canvas) !== getWorkflowTextSnapshot(canvas);
+    // ⭐⭐ 置顶规则（2026-07-30 按用户要求定稿）：「画面真的变了」且「变化是用户造成的」才置顶。
+    //  · 内容变了没有 → meaningfulChanged
+    //  · 是用户造成的吗 → meta.userInitiated（画布在源头标记：按下鼠标/键盘、点菜单按钮、生成回填都算 true；
+    //    打开工作流时 normalizeState 的归一化写回是 false）
+    //  · 兜底 → mediaChanged：成品媒体地址变了（新生成出图/出视频）一律算变化，即使标记没打上。
+    // ⛔ 别再走"往 stripKeys 里加字段"那条老路：剔不完，而且会把改比例/换模型这类真操作也屏蔽掉。
+    // meta 缺省时按 true（兼容其它调用方，宁可多置顶也不要漏掉用户的真操作）。
+    const meaningfulChanged = getWorkflowMeaningfulSnapshot(target.canvas) !== getWorkflowMeaningfulSnapshot(canvas);
+    const mediaChanged = getWorkflowMediaSnapshot(target.canvas) !== getWorkflowMediaSnapshot(canvas);
+    const shouldBumpToTop = meaningfulChanged && (meta?.userInitiated !== false || mediaChanged);
+    if (nextWorkflowNumberForPayload !== nextWorkflowNumber) setNextWorkflowNumber(nextWorkflowNumberForPayload);
+    // ⭐⭐ 2026-08-02 审计复核修正：**映射仍然放在 updater 里**（用 prev，不是用 ref 算好的整份数组）。
+    //   原因：`workflowItemsRef` 只在 effect 里同步，如果同一 tick 内先有别处 `setWorkflowItems(fn)`
+    //   排队（例如生成回填 applyImageNodeResult），再调到这里，用 ref 算出的整份 next 会**把那次更新覆盖掉**
+    //   （成品图静默丢失）。放在 updater 里只改目标那一项，就能和排队中的更新自然叠加。
+    //   ⛔ 而"编号自增 / 发 PUT"这类副作用**绝不能**写回 updater（updater 可能重跑），仍留在外面。
+    const mapItem = (item: WorkflowItem) => item.id === workflowId
+      ? { ...item, workflowCode, title, canvas: { ...canvas, generatedMediaCounts: canvas.generatedMediaCounts ?? item.canvas?.generatedMediaCounts, countedGeneratedUrls: canvas.countedGeneratedUrls ?? item.canvas?.countedGeneratedUrls }, updatedAt: shouldBumpToTop ? Date.now() : (item.updatedAt ?? Date.now()) }
+      : item;
+    workflowItemsRef.current = current.map(mapItem);
+    setWorkflowItems((prev) => {
+      const next = prev.map(mapItem);
+      workflowItemsRef.current = next;
+      return next;
+    });
+    if (textChanged && workspaceStorageMode === "user") {
+      if (workflowTextSaveTimerRef.current !== null) window.clearTimeout(workflowTextSaveTimerRef.current);
+      workflowTextSaveTimerRef.current = window.setTimeout(() => {
+        // ⭐ 载荷在真正要发的那一刻从 ref 现取（此时已是最新提交值），不用 250ms 前算好的快照。
         const payload: WorkspaceStatePayload = {
-          workflowItems: getPersistableWorkflowItems(normalizeWorkflowCodesAndMediaNumbers(next)),
+          workflowItems: getPersistableWorkflowItems(normalizeWorkflowCodesAndMediaNumbers(workflowItemsRef.current)),
           activePanel: "workflow",
           activeWorkflowId: workflowId,
           nextWorkflowNumber: nextWorkflowNumberForPayload,
         };
-        workflowTextSaveTimerRef.current = window.setTimeout(() => {
-          fetch("/api/workspace-state", {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload),
-          }).catch(() => console.warn("工作流文本保存失败"));
-        }, 250);
-      }
-      return next;
-    });
+        fetch("/api/workspace-state", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        }).catch(() => console.warn("工作流文本保存失败"));
+      }, 250);
+    }
   }, [nextWorkflowNumber, workspaceStorageMode]);
 
   const pinSession = (sessionId: string) => {

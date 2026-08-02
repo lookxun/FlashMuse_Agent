@@ -163,7 +163,7 @@ sudo /opt/flashmuse/scripts/flashmuse-db-backup.sh --stack prod --label pre-depl
 ## 测试服（staging）
 
 - **入口**：`http://101.37.129.164:8080/`（阿里，IP）或 `https://staging-static.venusface.com/`（阿里 DNS + Let's Encrypt 443）；后台 `/admin`。
-- **架构**：腾讯 `/opt/flashmuse-staging/` 独立 Docker 栈（容器 `flashmuse-staging-staging-{app,db,nginx}-1`，宿主 5001）+ 阿里 `/var/www/flashmuse-static-test/` 独立镜像（nginx 8080）+ 独立 ali-sync（`sync-ali-test.sh`）。测试库独立、`staging-db`，`psql -U flashmuse -d flashmuse`。
+- **架构**：腾讯 `/opt/flashmuse-staging/` 独立 Docker 栈（容器 `flashmuse-staging-staging-{app,db,nginx}-1`，宿主 5001）+ 阿里 `/var/www/flashmuse-static-test/` 独立镜像（nginx 8080）+ 独立 ali-sync（2026-08-02 起统一为 `deploy/sync-ali.sh --stack=staging`）。测试库独立、`staging-db`，`psql -U flashmuse -d flashmuse`。
 - **测试账号（明文；密码都 `dragonstar`；登录页选"密码登录"→填邮箱点"提交邮箱"→填密码）**：
   - ⭐⭐ **`12424740@qq.com`（主测试号，普通用户 ID_535317）—— 一切测试只用它**（本地/测试服/正式服都有这个号）。
   - `lookxun@163.com`（白名单/管理员 ID_176407）、`176107103@qq.com`（白名单）——
@@ -172,12 +172,38 @@ sudo /opt/flashmuse/scripts/flashmuse-db-backup.sh --stack prod --label pre-depl
 - 测试服 env 差异（`/opt/flashmuse-staging/data/.env.local`）：`NEXT_PUBLIC_IS_TEST=true`（build arg，显示测试服标识）、`FORCE_INSECURE_AUTH_COOKIE=true`、`NEXT_PUBLIC_PRIMARY_BASE_URL`+`NEXT_PUBLIC_UPLOAD_BASE_URL`=`https://staging-static.venusface.com`、`ALI_SYNC_DEST_ROOT=/var/www/flashmuse-static-test/generated`。⚠️ 拼参考图 URL 的 base 优先用 `NEXT_PUBLIC_PRIMARY_BASE_URL`。
 
 ### 测试服部署流程（"部署掉"走这个）
+
+> ⭐⭐ **2026-08-02（v63 批）起本流程有 5 处变化，先看这一节再照老步骤走**：
+>
+> 1. **compose 文件不在 tgz 覆盖范围**：源码解到 `/opt/flashmuse-staging/app/`，而 compose 在
+>    `/opt/flashmuse-staging/docker-compose.yml`（引用 `./app` 为 build context）——
+>    **改了 compose 的批次必须单独 `sudo cp app/deploy/staging/docker-compose.yml /opt/flashmuse-staging/`**
+>    （正式服同理：`app/docker-compose.yml` → `/opt/flashmuse/`）。v63 第一次忘 cp，app 拿旧密码连库 P1000。
+> 2. **数据库密码已从 compose 挪到 `.env`**（不进 git）：compose 里是 `${FLASHMUSE_DB_PASSWORD:?}` /
+>    `${FLASHMUSE_STAGING_DB_PASSWORD:?}`，**服务器上 `/opt/flashmuse/.env` 与 `/opt/flashmuse-staging/.env`
+>    必须有对应变量**（compose 自动读项目目录 `.env`）。v63 测试服已换新密码（ALTER USER + .env）。
+>    ⛔ 换密码的顺序：先 `ALTER USER` → 写 `.env` → `docker compose up -d`。
+> 3. **Dockerfile 改非 root（node uid 1000）运行**：部署前必须
+>    `sudo chown -R 1000:1000 data/{generated,runtime,home-assets}` + `chown 1000:1000 data/.env.local`
+>    （⛔ pgdata 不动，那是 postgres 容器自己的）。healthcheck 用 **curl**（bookworm-slim 没有 wget）。
+> 4. **阿里同步脚本统一为 `deploy/sync-ali.sh`**（在 `/opt/flashmuse*/app/deploy/` 下，
+>    替代了 sync-ali-test.sh / sync-flashmuse-next-static.sh / 手写 /tmp/syncali.sh）：
+>    测试服 `sudo bash /opt/flashmuse-staging/app/deploy/sync-ali.sh --stack=staging --with-generated`；
+>    正式服 `--stack=prod`（⛔ 不带 --with-generated，21GB 走应用 ali-sync）。
+>    ⚠️ scp/tar 上去的 shell 脚本先 `sed -i 's/\r$//'`（Windows 行尾，`set: pipefail: invalid option` 就是这事）。
+> 5. ⭐ **阿里 nginx 的备份文件别放 `/etc/nginx/sites-enabled/`**（`.bak` 也会被 include →
+>    `duplicate upstream` 整台起不来），备份放 `/root/`。
+>
+> 另：`PUBLISHED_APP_VERSION` 现在从 `.env` 读（compose 里 `${PUBLISHED_APP_VERSION:-}`），
+> 发版本信号 = 往 `.env` 追加/改 `PUBLISHED_APP_VERSION=vX` + `up -d --force-recreate staging-app`。
+> 还有 `GET /api/health`（无登录、查库）可给 compose healthcheck / 外部拨测用。
+
 1. 本地 `node scripts/bump-version.mjs`（版本号+1，改中文源码用 edit 工具）；`npx tsc --noEmit` 通过。
 2. 打**改动源码** tgz（含 `src/lib/app-version.ts`），scp 到腾讯 `/tmp` → `sudo tar -xzf -C /opt/flashmuse-staging/app`。
 3. `cd /opt/flashmuse-staging && nohup sudo docker compose up -d --build staging-app > /tmp/sb.log 2>&1 &`（**后台+轮询 `tail /tmp/sb.log` 防 120s 工具超时**，build~2.5min；entrypoint 自动 migrate deploy）。此时 compose 里 `PUBLISHED_APP_VERSION` 仍是上一版（或空）→ 新版本提示条**不会**中途误弹。
-4. `sudo bash /opt/flashmuse-staging/sync-ali-test.sh`（同步 `_next/static`+`home-assets`+`generated` 到阿里测试镜像，否则 chunk 404）。
-5. ⭐ **发布版本信号（提示条门控，静态同步完成后才做）**：sed 改 `/opt/flashmuse-staging/docker-compose.yml` 的 `PUBLISHED_APP_VERSION: "vX"` 为本次新版 + `sudo docker compose up -d --force-recreate staging-app`（复用镜像、快）。这样"提示条弹出=静态已就绪"，用户点刷新必正常、不白屏。（sed 含引号→写 .sh scp + `sed -i 's/\r$//'` 再 bash。）
-6. 验证：`curl -D - http://127.0.0.1:5001/api/models | grep x-app-version`（=新版）+ `curl http://127.0.0.1:5001/`（版本号变了）+ 外网 `http://101.37.129.164:8080/` 200。
+4. `sudo bash /opt/flashmuse-staging/app/deploy/sync-ali.sh --stack=staging --with-generated`（同步 `_next/static`+`home-assets`+`generated` 到阿里测试镜像，否则 chunk 404）。
+5. ⭐ **发布版本信号（提示条门控，静态同步完成后才做）**：往 `/opt/flashmuse-staging/.env` 追加/改 `PUBLISHED_APP_VERSION=vX` + `sudo docker compose up -d --force-recreate staging-app`（复用镜像、快）。这样"提示条弹出=静态已就绪"，用户点刷新必正常、不白屏。
+6. 验证：`curl -D - http://127.0.0.1:5001/api/models | grep x-app-version`（=新版）+ `curl http://127.0.0.1:5001/api/health`（`{"ok":true,...}`）+ 外网 `http://101.37.129.164:8080/` 200。
 7. ⭐⭐ **必做：上号跑一遍上面「部署铁律」里的最小巡检 6 项**。崩了立刻修，别往正式服推。
 
 ## 正式服（腾讯）部署流程（仅当用户明确说"部署正式服"）

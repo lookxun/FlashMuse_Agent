@@ -1,14 +1,28 @@
-name: flashmuse-staging
+﻿name: flashmuse-staging
+# 日志上限 / 内存上限 / healthcheck / 密码从 .env 读 / 连接池参数 —— 与正式服 docker-compose.yml 同批（2026-08-02）。
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "3"
+
 services:
   staging-db:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
       POSTGRES_USER: flashmuse
-      POSTGRES_PASSWORD: "REMOVED_STAGING_DB_PASSWORD"
+      POSTGRES_PASSWORD: "${FLASHMUSE_STAGING_DB_PASSWORD:?FLASHMUSE_STAGING_DB_PASSWORD 未配置（写在 /opt/flashmuse-staging/.env）}"
       POSTGRES_DB: flashmuse
     volumes:
       - /opt/flashmuse-staging/data/pgdata:/var/lib/postgresql/data
+    mem_limit: 1g
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flashmuse -d flashmuse"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     networks: [staging]
 
   staging-app:
@@ -19,11 +33,13 @@ services:
         NEXT_PUBLIC_IS_TEST: "true"
         NEXT_PUBLIC_UPLOAD_BASE_URL: "https://staging-static.venusface.com"
     restart: unless-stopped
-    depends_on: [staging-db]
+    depends_on:
+      staging-db:
+        condition: service_healthy
     environment:
       NODE_ENV: production
       PORT: "3000"
-      DATABASE_URL: "postgresql://flashmuse:REMOVED_STAGING_DB_PASSWORD@staging-db:5432/flashmuse?schema=public"
+      DATABASE_URL: "postgresql://flashmuse:${FLASHMUSE_STAGING_DB_PASSWORD}@staging-db:5432/flashmuse?schema=public&connection_limit=25&pool_timeout=20"
       # 已发布版本号（前端新版本提示条据此判定）。部署最后一步（静态同步完成后）才 set 成新版 + force-recreate，
       # 空/未设时不发版本头 → 部署中途不会误弹。见 handover/03-deploy-and-servers.md。
       PUBLISHED_APP_VERSION: "${PUBLISHED_APP_VERSION:-}"
@@ -34,18 +50,30 @@ services:
       - /opt/flashmuse-staging/data/home-assets:/app/public/home-assets
     expose:
       - "3000"
+    mem_limit: 3g
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null http://127.0.0.1:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
     networks: [staging]
 
   staging-nginx:
     image: nginx:alpine
     restart: unless-stopped
-    depends_on: [staging-app]
+    depends_on:
+      staging-app:
+        condition: service_healthy
     volumes:
       - /opt/flashmuse-staging/data/nginx/flashmuse-staging.conf:/etc/nginx/conf.d/default.conf:ro
       - /opt/flashmuse-staging/data/generated:/srv/generated:ro
       - /opt/flashmuse-staging/data/home-assets:/srv/home-assets:ro
     ports:
       - "5001:80"
+    mem_limit: 256m
+    logging: *default-logging
     networks: [staging]
 
 networks:

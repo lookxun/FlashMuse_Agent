@@ -7,6 +7,12 @@ import { resolveUnlockLimitsForUser } from "@/lib/account-features";
 
 export async function POST(request: Request) {
   try {
+    // 2026-08-02 审计 2.8a：原来不要求登录，任何人可以循环调用、用我们的 key 白烧 LLM 费用。
+    const user = await getCurrentUser();
+    if (!user) {
+      return NextResponse.json({ error: "登录状态已失效，请重新登录后再试。" }, { status: 401 });
+    }
+
     const body = (await request.json()) as {
       model?: string;
       messages?: Array<{ role: "user" | "assistant"; content: string; images?: string[] }>;
@@ -18,7 +24,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "参数不完整" }, { status: 400 });
     }
 
-    const result = await classifyOpenRouterIntent({ model, messages: body.messages, unlockLimits: await resolveUnlockLimitsForUser((await getCurrentUser())?.id) });
+    const result = await classifyOpenRouterIntent({ model, messages: body.messages, unlockLimits: await resolveUnlockLimitsForUser(user.id) });
 
     return NextResponse.json(result);
   } catch (error) {

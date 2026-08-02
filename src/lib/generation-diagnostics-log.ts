@@ -1,6 +1,7 @@
-import { appendFile, mkdir } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { dirname, join } from "node:path";
+import { appendDiagnosticsJsonl } from "@/lib/diagnostics-log-rotate";
 
 type GenerationDiagnosticReference = {
   index: number;
@@ -105,7 +106,7 @@ export async function appendGenerationDiagnosticsLog(entry: GenerationDiagnostic
   try {
     const prompt = entry.prompt;
     await mkdir(dirname(LOG_PATH), { recursive: true });
-    await appendFile(
+    await appendDiagnosticsJsonl(
       LOG_PATH,
       `${JSON.stringify({
         time: new Date().toISOString(),
@@ -130,7 +131,6 @@ export async function appendGenerationDiagnosticsLog(entry: GenerationDiagnostic
         upstream: safeValue(entry.upstream, 1800),
         extra: safeValue(entry.extra, 1800),
       })}\n`,
-      "utf8",
     );
   } catch {
     // Diagnostics must never block generation requests.

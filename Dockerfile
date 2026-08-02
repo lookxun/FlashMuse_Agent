@@ -10,9 +10,10 @@ RUN apt-get update \
 WORKDIR /app
 
 # Install deps first for layer caching. patches/ must exist before postinstall (patch-package / tldraw license patch)
+# ⭐ npm ci（不是 npm install）：严格按 lock 装，CI/部署可复现（2026-08-02 审计 2.7i）
 COPY package.json package-lock.json* ./
 COPY patches ./patches
-RUN npm install --no-audit --no-fund
+RUN npm ci --no-audit --no-fund
 
 # App source (see .dockerignore: node_modules/.next/.git/.runtime/public/generated/.env* excluded)
 COPY . .
@@ -36,4 +37,9 @@ RUN npm run build
 ENV NODE_ENV=production
 ENV PORT=3000
 EXPOSE 3000
+# 非 root 运行（2026-08-02 审计 2.7i）。⚠️ 部署前提：宿主机挂载目录要 chown 给 uid 1000
+#   （/opt/flashmuse*/data/{generated,runtime,home-assets}，pgdata 除外），否则容器写不了盘。
+#   步骤写在 handover/03-deploy-and-servers.md。
+RUN chown -R node:node /app
+USER node
 ENTRYPOINT ["sh","/app/docker-entrypoint.sh"]

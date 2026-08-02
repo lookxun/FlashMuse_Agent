@@ -1,6 +1,7 @@
 import { createUserSession, isValidEmail, jsonError, normalizeEmail, verifyPassword } from "@/lib/auth";
 import { getLoginAuditData } from "@/lib/login-audit";
 import { prisma } from "@/lib/prisma";
+import { getClientIp, rateLimitAllow } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 
@@ -15,6 +16,12 @@ export async function POST(request: Request) {
 
   if (!password) {
     return jsonError("请输入密码");
+  }
+
+  // 限流（2026-08-02 审计 2.8c）：原来是无限次密码尝试，且 scrypt 是 CPU 放大器。
+  // 同一邮箱 10 分钟 10 次、同一 IP 10 分钟 30 次。
+  if (!rateLimitAllow(`login-pwd:email:${email}`, 10, 10 * 60_000) || !rateLimitAllow(`login-pwd:ip:${getClientIp(request)}`, 30, 10 * 60_000)) {
+    return jsonError("尝试太频繁，请 10 分钟后再试");
   }
 
   const user = await prisma.user.findUnique({ where: { email } });

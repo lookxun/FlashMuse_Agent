@@ -2,10 +2,12 @@ import { createHmac, timingSafeEqual } from "crypto";
 import { cookies, headers } from "next/headers";
 import { isAdminEmail } from "@/lib/admin";
 import { normalizeEmail } from "@/lib/auth";
+import { getAuthSecret } from "@/lib/auth-secret";
+import { prisma } from "@/lib/prisma";
 
 export const adminCookieName = "flashmuse-admin-session";
 const adminSessionMaxAgeSeconds = 24 * 60 * 60;
-const authSecret = process.env.AUTH_SECRET || "flashmuse-local-dev-secret-change-me";
+const authSecret = getAuthSecret();
 const forceInsecureAuthCookie = process.env.FORCE_INSECURE_AUTH_COOKIE === "true";
 const authCookieDomain = process.env.AUTH_COOKIE_DOMAIN?.trim() || undefined;
 
@@ -112,7 +114,12 @@ export async function getCurrentAdminEmail() {
 
   for (const token of tokens) {
     const email = readValidAdminEmail(token);
-    if (email) return email;
+    if (!email) continue;
+    // 2026-08-02 审计 2.8e：管理员会话是自签无状态 cookie，原来不查 User.disabled ——
+    // 账号被禁用后管理员 cookie 还能用满 24h。这里补上（普通用户路径 auth.ts 本来就有这个检查）。
+    const user = await prisma.user.findUnique({ where: { email }, select: { disabled: true } }).catch(() => null);
+    if (user?.disabled) continue;
+    return email;
   }
 
   return null;

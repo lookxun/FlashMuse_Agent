@@ -2,6 +2,168 @@
 
 > 本批 CHANGELOG 从 2026-07-21 交接文档重建开始记。**此前的全部历史流水**（约 580KB，含 2026-06 起到 07-21 每一次改动/部署细节）在 `historical-handover-docs-last-used-2026-07-21/CHANGELOG.md`，遇到需要历史上下文的难题再翻。
 
+## 2026-08-02（第二十九次会话）🔍 **对上一批（审计 1~2 档）做独立复核，抓到 5 个问题并修掉 → v1.0.0.64 两服都已部署+实测**
+
+> ⚠️ **当前状态：正式服 = 测试服 = 本地 = `v1.0.0.64`（都已部署+上号实测）；GitHub 仍是 v62，本地改动未 commit（等用户拍板）。**
+> 🗣️ 用户指令原话意思：「上一批第一二档是别的 AI 做的、已上测试服，你全部审计核对一下，有问题就改，没问题直接部署正式服，最后正式服上号看一下不要崩了。」
+
+### 一、⭐⭐ 复核抓到的 5 个问题（都改了；**第 1 个会让正式服 443 全站挂掉**）
+
+| # | 问题 | 严重性 | 为什么上一批没发现 |
+|---|---|---|---|
+| A | **`docker-compose.yml` 把 443 证书写成 `/etc/letsencrypt`** —— 这台机器上**没有这个目录**（acme.sh 装的是 `/opt/flashmuse/data/letsencrypt`）→ 会挂一个空目录进 nginx → 找不到证书起不来 → **main/api 两个域名 443 全挂** | 🔴 | **测试服没有 443 server 块**，所以测试服怎么测都测不出来；而仓库那份 compose 一直和服务器漂移（服务器早就有 443 + data/letsencrypt，仓库没有），上一批"补齐"时按想象写了 /etc |
+| B | **限流把全部国内用户算成一个客户端** —— 国内用户全部经阿里回源，到腾讯 `$remote_addr` 只有阿里那一个 IP，而 conf 里**没有 `set_real_ip_from`** → `limit_req_zone $binary_remote_addr` 一起计数，几个人同时用就一起 429。另外 `location /` **也代理 `_next/static`**，冷启动一页几十个请求，burst=60 会把真实用户打成白屏 | 🟠 | 单人测试永远碰不到。**实测证据**：突发 100 个请求，改前会 429 一片，改后全 200 |
+| C | **`byteplus-assets` 新加的归属校验把「手动送审→刷新状态」堵死** —— POST 送审**从来不落库** `bytePlusAssetId`（只存在前端 state），而新的 GET 要求 `UserAssetState.bytePlusAssetId` 能查到 → 用户点「刷新审核状态」永远 404「素材不存在」 | 🟠 | 加校验时只看了"能不能挡住越权"，没回头看"我们自己的合法调用还过不过得去" |
+| D | **`upsertWorkspaceWorkflows` 收窄取数范围后，「客户端回传自动空工作流」那道兜底被削弱** —— 收窄成只查 incoming 后，「带着全新 id 的空工作流 PUT 上来」（正是这道兜底要挡的场景）会穿过去，库里凭空多一条空工作流 | 🟡 | 收窄时只核对了"三道防线还在不在"，漏了同一段里那个 `existingActionCount` 兜底的语义 |
+| E | **`updateWorkflowCanvas` 改成从 ref 读整份数组再 `setWorkflowItems(next)`** —— `workflowItemsRef` 只在 effect 里同步，同一 tick 内若已有别处 `setWorkflowItems(fn)` 排队（如生成回填），这里会把它**整份覆盖掉 = 成品图静默丢失** | 🟡 | 2.3 那条修的方向是对的（副作用必须移出 updater），但**把映射也搬出来了**；正确做法是"副作用移出、映射留在 updater 里" |
+
+**修法要点**：
+- A → compose 改回 `/opt/flashmuse/data/letsencrypt`，并在注释里写清"这台机器没有 /etc/letsencrypt"。
+- B → 腾讯正式 + 腾讯测试两份 conf 都加 `set_real_ip_from 101.37.129.164; real_ip_header X-Real-IP;`，
+  限流放宽到 `50r/s` + `burst=200`。⭐ 顺手**删掉阿里侧两份 staging conf 的 limit_req** ——
+  正式服的国内入口（阿里 `flashmuse-static-ip`）压根没有限流，测试服多一层就会"测出来的不作数"（违反两服一致铁律）。
+- C → POST 成功后按 `normalizedUrl` 落库（口径与视频链路 `patchWorkspaceBytePlusAssets` 完全一致）。
+- D → incoming 范围内数不出内容时，再花一条**不搬 canvasJson 的** SQL（`jsonb_array_length`）问"范围外还有没有有内容的工作流"，把原口径补回来。
+- E → 映射放回 updater（`prev.map`），副作用（编号自增、防抖 PUT）仍在外面；PUT 载荷在**真正要发的那一刻**从 ref 现取。
+
+### 二、复核过但**判定没问题 / 有意保留**的（别再当问题捡起来）
+
+- `chargeCredits` 的 `SELECT ... FOR UPDATE` + 相对 decrement：正确。`credits` 是 `Int`、`::bigint` 转换无损；`chargedCredits` 在锁内算的，扣不成负数。
+- 后台全部新 SQL：**在正式库直接跑过一遍**（口径与旧 JS 循环逐条比对）：feature 分类的 `LIKE 'workflow\_%' ESCAPE '\'` 正确、`metadata->>'creditChargeDisabled' = 'true'` 与 `metaBool` 等价、在线判定与 `online-users.ts` 三条判据一字不差、`NOT u."disabled"`（该列非空）安全。
+- `reserveJobNames` 的"计数器当提示 + 候选名定点检查"：计数器偏低只是多跑几批，不会重名；`usedByJobs`（在飞任务）仍并进 `taken`。
+- 消息媒体 6 路并发：`cursor` 在第一个 `await` 之前同步自增，不会有两个 worker 取到同一项；dedup 按 url，与旧串行语义等价；P2002 兜底正确。
+- 迁移 SQL：7 条纯新增索引，索引名与 Prisma 默认命名一致（不会产生 drift），最长 59 字符（< 63 上限）。⛔ 这份文件**已在测试服 applied**，绝不能再改（Prisma 会校验 checksum）。
+- 两份 compose 开头带 UTF-8 BOM：Docker Compose 能吃（测试服已跑通），**有意不动**。
+- admin `media-url` 的开放重定向：仅管理员可用，有意保留（已有注释）。
+- 失败排查页 `LIMIT 5000`：超过 5000 条待排查时统计会少算，当前正式服才几十条，接受。
+- ⭐ 新发现的一个"其实是无害"的事实：`nginx/flashmuse.conf` 里「80 端口对 main/api 域名 301 跳 443」这条**在线上实际不生效** —— 宿主机 80 端口不是 flashmuse 的（容器是 `5000:80`），外网 `http://main.venusface.com` 压根不到我们这儿。规则留着无害。
+
+### 三、部署与实测
+
+- **测试服 v64**：源码 tgz → 3 份 nginx（腾讯容器 + 阿里 8080 + 阿里 staging-static，各自备份到 `/root/`）→ build → `deploy/sync-ali.sh --stack=staging --with-generated` → `.env` 置 `PUBLISHED_APP_VERSION=v1.0.0.64` + force-recreate。
+  实测：登录 ✓ 对话模式 ✓ 工作流切换（按需补拉）✓ **新建 `工作流_06` 真跑生图 → `image_1_w6`、扣 3 分** ✓ 刷新后持久化 ✓ 资产库 ✓ **控制台 0 error** ✓；**突发 80 请求全 200（限流修正生效）**；阿里 `tiantangqiyuan` 等别的项目仍 200。
+- **正式服 v64**：备份（DB 带标签 `pre-deploy-v64` 8.2MB 本机+异地 / app 目录 / compose）→ rsync staging→prod → 新建 `/opt/flashmuse/.env`（`FLASHMUSE_DB_PASSWORD` 沿用现有那串 + `PUBLISHED_APP_VERSION`）→ **compose 单独 cp** → `chown -R 1000:1000 data/{generated,runtime,home-assets}` + `.env.local`（pgdata 不动）→ build（迁移 `20260802000000_query_hot_path_indexes` entrypoint 自动 applied）→ 推 `nginx/flashmuse.conf` + `nginx -t` + reload + 按新 compose 重建 nginx → `sync-ali.sh --stack=prod`（⛔ 不带 --with-generated）→ 置版本信号 + force-recreate。
+  验证：**四域名 main/api/ali/static 全 200**、三条路径 `x-app-version: v1.0.0.64`、`/api/health` ok、3 容器 healthy、内存上限 3g/1g/256m 生效、日志 json-file 50m×3 生效、**突发 100 请求全 200**、app 日志无报错、**别的三个项目全部照常**。
+  上号巡检 6 项全过：登录 ✓ 对话模式 ✓ **点工作流节点不崩（快捷菜单正常弹出）** ✓ 资产库缩略图全正常 ✓ **新建 `工作流_10` 真跑生图 → `image_1_w10`、扣 3 分、已进资产库** ✓ **控制台 0 error / 0 warning** ✓。
+- **数据保留 cron 已挂**：`/etc/cron.d/flashmuse-cleanup`（每天 **05:10**，备份 03:30 之后；⛔ 没碰 root crontab，条数改前改后都是 2）。
+  并**手动跑过一次 `--apply`**：GenerationEvent 3646 / GenerationJob 3056 / UploadEvent 1336 已清（先 dry-run 看过数字，且 20 分钟前刚做过带标签备份）。
+- **2.6 证书核实**：`main.venusface.com` 有效期到 **2026-10-09**（还有 68 天），acme.sh 续期 cron 在（`38 1,7,13,19`）。
+  ⚠️ **仍未核实**：acme.sh 的 `reloadcmd` 有没有 reload **容器内** nginx（`/root/.acme.sh` 的 domain conf 里没读到 Le_ReloadCmd）→ 续期后可能容器里还是旧证书，**留成待办**。
+
+### 四、⭐ 本次部署的命令级留档 + 3 个操作坑（下个 AI 照这个走）
+
+**正式服这次比平时多的 4 步（第一次做，以后每次改 compose/Dockerfile 都要）**：
+
+1. **新建 `/opt/flashmuse/.env`**（`chmod 600`，⛔ 不进 git）：两个变量 `FLASHMUSE_DB_PASSWORD` + `PUBLISHED_APP_VERSION`。
+   ⭐ 顺序：先写 `.env` → 再 `cp` compose → 再 `up -d`（compose 里是 `${FLASHMUSE_DB_PASSWORD:?}`，缺了会直接报错，不会静默用空密码）。
+2. **compose 单独 `cp`**：`sudo cp /opt/flashmuse/app/docker-compose.yml /opt/flashmuse/`（tgz/rsync 只覆盖 `app/`，compose 在它外面）。
+   改完必须 `docker compose config | grep -E 'letsencrypt|443|PASSWORD|mem_limit'` **看展开后的真实值**。
+3. **`chown -R 1000:1000 data/{generated,runtime,home-assets}` + `data/.env.local`**（⛔ pgdata 不动）。
+   ⭐ 这台机器上 **uid/gid 1000 = `ubuntu:netdev`**，所以 `ls` 出来显示的是 `ubuntu netdev` 而不是数字，属正常。
+   `.env.local` 本来就是 664 ubuntu → 容器（node uid 1000）读得到，不用改权限只要改归属。
+4. **发布版本信号改成改 `.env`**：`sed -i 's/^PUBLISHED_APP_VERSION=.*/PUBLISHED_APP_VERSION=vXX/' /opt/flashmuse/.env`
+   + `docker compose up -d --force-recreate flashmuse-app`（**以前是 sed 改 compose 那行，现在不是了**）。
+   ⭐ 静态同步完成之前**别置新版**，否则用户点刷新会白屏。
+
+**nginx 部署顺序**（正式服）：先 `cp` conf 到 `data/nginx/` → `docker exec ... nginx -t` → `nginx -s reload`
+→ **再** `docker compose up -d flashmuse-nginx`（这一步是为了让新 compose 的 mem_limit/logging/healthcheck 生效，会重建容器）。
+⚠️ nginx 服务 `depends_on: flashmuse-app: service_healthy` → app 必须先 healthy，否则 nginx 起不来。
+
+**3 个操作坑**：
+
+1. ⛔⛔ **从 Windows 打 tgz 上服务器，文本文件会带 CRLF** → 服务器上 `diff 旧 新` 会显示**整个文件都变了**，
+   于是"只允许出现 `>` 行"这条判据**当场失效**（看不出到底哪几行真的改了）。
+   ⭐ 姿势：conf/脚本传上去后先 `sed -i 's/\r$//'`，**再** diff、再 `nginx -t`、再 reload。
+   （本次 nginx 带着 CRLF 也能 `-t` 通过并正常服务，但为干净起见还是统一成 LF 后重新 reload 了一次。）
+2. ⛔ **别指望脚本里 `if diff a b | grep -q '^< '; then exit 1; fi` 这种守卫** ——
+   本次它**没有按预期触发**（原因未查清，可能是 pipefail/子 shell 的交互）。
+   ⭐ 判据：**把 diff 打出来人肉看一眼**，别把"没退出"当成"没有 `<` 行"。
+3. ⛔ **PowerShell `Set-Content -Encoding UTF8` 会给文件加 BOM**（本次给 `nginx/flashmuse.conf` 加上了，
+   已用 `UTF8Encoding($false)` 重写去掉）。改带中文的文件**一律用 edit 工具**，别用 `Set-Content`。
+   ⭐ 另外：PS5.1 的 `Get-Content` / `Select-String` **显示** UTF-8 中文会花屏，
+   那是**控制台解码问题、不是文件坏了** —— 本次我一度误判"文件是 mojibake"，
+   用 `[System.IO.File]::ReadAllText` 数 `U+FFFD` 个数（0 个）才确认文件是好的。**要看中文内容就用 read 工具。**
+
+### 五、痕迹与账目（别当用户数据）
+
+- 测试服 `12424740@qq.com`：`工作流_06`（`image_1_w6` 雪地柴犬），-3 积分。
+- 正式服 `12424740@qq.com`：`工作流_10`（`image_1_w10` 雪地柴犬），-3 积分。按交代全留着。
+
+### 六、没做 / 待用户拍板
+
+- ⛔ **本地改动未 commit、未 push**（GitHub 仍 v62）—— 按铁律"没让 commit 就不 commit"，等用户一句话。
+  ✅ **已于本会话末按用户指令 commit + push**（见本条目最后一行 commit hash）。
+- ⛔ **数据库密码本次没轮换**（沿用原串，只是从 compose 挪进了不进 git 的 `.env`）；**git 历史洗密码也没做**。
+  这两件是一个整体（不洗历史，轮换的意义有限），建议一起做，需用户拍板。
+- 拍板 9（拆 `chat-workbench.tsx`）+ 拍板 10（加 2 个测试）—— 下一批。
+- acme.sh reloadcmd 核实；阿里正式 `flashmuse-static-ip` 的 `/generated/` 加固（仍是缺口）。
+
+## 2026-08-02（第二十八次会话）🚀 **审计 1~2 档全做：测试服 v1.0.0.63 已部署并实测通过（正式服未动、未 commit）**
+
+> ⚠️ **当前状态：测试服 = `v1.0.0.63`（已部署+实测）；正式服 = `v1.0.0.62` 未动；本地改动未 commit、未 push。**
+> 用户拍板记录：拍板表 3=密码挪出 git 且**历史可以洗**、4=媒体不另备份（两服各有一份就算备份）、5=数据保留 **1 周**、
+> 6/7/8/9/10 都做、11 跨境不动、12 继续押后；**第 1 档 + 第 2 档全做**。
+> ⛔ 拆 `chat-workbench.tsx`（拍板 9）和加测试（拍板 10）**还没做**，属下一批。
+
+### 一、做了什么（全部本地代码，tsc 全绿，eslint 230=106/124 与基线零新增）
+
+**前端真 bug（审计 2.1~2.4）**
+- 2.1 工作流画布 `getStaticMediaUrl` 空函数 → 收敛进新公共模块 **`src/lib/static-media-url.ts`**（对话流/工作流共用，含静态域名、刚上传回主源、`?v=` 缓存破除）。
+- 2.2 上传进度落库 → `getPersistableSessions` 里 `uploadedFiles`：未传完（uploadStatus≠ready / status=reading）整条不落库，传完的剥 uploadProgress/uploadStatus/progress/error + blob:/data: url。
+- 2.3 `updateWorkflowCanvas` 曾在 setState updater 里 `setNextWorkflowNumber` + 发 fetch PUT → 新增 **`workflowItemsRef`**（同步镜像 + effect 同步），副作用全部挪到 updater 外。
+- 2.4 全量 PUT 载荷/依赖去掉 `assets`（不在载荷里，变了白发）和 `assetScrollTopByFilter`（滚一下资产库整体重写几百 KB state = 全系统最大写放大）。滚动位置只留本机 localStorage，不再跨设备恢复。
+
+**漏钱 / 数据量（1 档）**
+- 1.1 积分并发：`chargeCredits` 改 **`SELECT ... FOR UPDATE` 行锁 + 相对 decrement**（原来 tx 内读余额写绝对值，READ COMMITTED 下并发少扣；textCreditRemainder 同病同治）。⚠️ **未根治**：余额 1 分同时发 N 个请求仍全放行（检查在前扣费在后），根治要"生成前占额度"，下批再议。
+- 1.2 `reserveJobNames` 不再全表扫该用户所有 MediaAsset：**计数器当起点提示 + 候选名定点存在性检查**（工作流读 `WorkspaceWorkflow.nextImage/VideoNumber`、对话流读 `summaryJson` 计数器，都只当"提示"，防撞靠定点 IN 查询走新索引；asset 流低频保留原扫描）。
+- 1.3 后台概览：整本 CreditLedger 拉内存 → **全部 SQL 聚合**（totals/按模型/按用户/功能/对话模式/异常 6 条 + DAU/WAU/MAU/在线/今日新老 1 条）；失败排查页 pendingRows 加 LIMIT 5000、top 用户只查 10 人。
+- 1.4 `upsertWorkspaceWorkflows` 只查本次 payload 里的 workflowId（软删防线原样保留）。
+- 1.5 新迁移 **`20260802000000_query_hot_path_indexes`**：UserAssetState(mediaAssetId)、MediaAsset(userId+systemName/url/firstSeenAt)、Session(lastSeenAt)、CreditLedger 两条、GenerationJob requestId text_pattern_ops（这条 schema 表达不了只在 SQL 里，本地 migrate dev 若报 drift 属预期）。
+- 1.7 会话列表分页下沉 DB（skip/take）。**资产分页保持 JS**（要靠 existsSync 判文件在不在，库里做不了）。
+- 1.8 消息媒体同步顺序 await → **6 路并发**（+按 url 去重 + P2002 兜底）；`readMediaSaveJobs` 按 mtime+size 缓存，不再每媒体项全量读+解析。
+- 1.9（消息双份存储）**没做**：要先迁移老数据+演练，单独一批。
+
+**运维（2.5/2.7）**
+- 两份 compose：日志 json-file 50m×3 上限、内存上限（app 3g / db 1g / nginx 256m）、healthcheck（**用 curl 不用 wget**，bookworm-slim 没有 wget，踩过）、db 密码改从 `.env` 读（`FLASHMUSE_DB_PASSWORD`/`FLASHMUSE_STAGING_DB_PASSWORD`）、`DATABASE_URL` 补 `connection_limit=25&pool_timeout=20`（M023 落地）、depends_on 改 service_healthy。
+- 新增 **`GET /api/health`**（无登录，查库 SELECT 1，挂了就 503）。
+- 三个诊断日志（generation/video/upload）统一走新 **`src/lib/diagnostics-log-rotate.ts`**：超 20MB 轮转成 `.1`。
+- Dockerfile：`npm ci` + **非 root（node uid 1000）运行** → 部署前必须 `chown -R 1000:1000` 数据目录（pgdata 除外）。
+- 删除 pm2 时代废脚本 `scripts/deploy-flashmuse-production.sh`、`scripts/sync-flashmuse-next-static.sh`、`deploy/staging/sync-ali-test.sh`；三份阿里同步合并为 **`deploy/sync-ali.sh --stack=staging|prod [--with-generated] [--dry-run]`**（带 flock/超时/partial-dir；staging 必须带 `--with-generated`，prod 不要带）。`backfill-prompt-mentions.js` 补 `--apply` 保护。`.env.example` 补齐。
+- 数据保留：**`scripts/cleanup-old-data.mjs`**（默认 dry-run，`--apply` 真删）：GenerationEvent（7 天前且成功/已归档）、GenerationJob（7 天前且已结束）、UploadEvent（7 天前）。⛔ 不碰 WorkspaceMessage/CreditLedger/回收站。⚠️ 代价：7 天前的 job 删了之后，老资产的「使用提示词/后台弹窗」参考图回溯会变少（MediaAsset.sourcePrompt 不受影响）。**尚未挂 cron**，正式服部署时挂。
+
+**安全（2.8）**
+- `/api/intent`、`/api/upload-avatar` 加强制登录（401）；avatar 加 15MB dataURL 上限。
+- 新 **`src/lib/rate-limit.ts`**：send-code（同邮箱 60s 1 封 + 同 IP 30/天）、login-password（同邮箱 10 次/10min + 同 IP 30 次/10min）。验证码 `Math.random` → crypto `randomInt`（两处 send-code）。
+- **`src/lib/auth-secret.ts`**：生产没配 `AUTH_SECRET` 直接抛错（原来三处都有公开默认值兜底，忘配就能被自签管理员 cookie）。⭐ **构建期例外**：`NEXT_PHASE=phase-production-build` 时放行（next build 收集页面数据会 evaluate 路由模块，而 secret 运行时才有；第一次部署就踩了这个，build 挂在 /api/agent-plan）。
+- 管理员会话补查 `User.disabled`；后台 system-settings GET 的 API key 改掩码（`****末4位`，POST 收到 `****` 开头 = 未改）。
+- `byteplus-assets?id=` 加归属校验（查 UserAssetState.bytePlusAssetId）。
+- 3 个上传路由 CORS 白名单去掉已退役马来 IP `101.47.19.109`。
+- nginx（正式 `nginx/flashmuse.conf` + 测试 3 份）：API 限流 `limit_req 20r/s burst=60 nodelay`（zone 名带项目前缀）；正式 80 端口**只对 main/api 域名** 301 跳 443（IP:5000 巡检不受影响）；443 加 HSTS/X-Frame-Options/Referrer-Policy + `ssl_session_cache`。
+- ⚠️ admin media-url 的开放重定向**有意保留**（仅管理员、回调的正是管理员自己要预览的地址，改 404 会让未本地化媒体无法预览；已加注释说明）。
+- ⛔ 阿里正式 `flashmuse-static-ip` 仍未碰（混着别的项目）。
+
+### 二、部署过程踩的 4 个坑（下次照此避）
+
+1. **`/opt/flashmuse-staging/docker-compose.yml` 不在 tgz 覆盖范围**：源码解到 `/opt/flashmuse-staging/app/`，compose 文件要**单独 cp**（它引用 `./app` 为 build context）。第一次忘 cp → 老 compose 里旧密码明文，新密码怎么都对不上（P1000）。
+2. **auth-secret 生产断言把 build 搞挂**：见上，已加构建期例外。
+3. **healthcheck 用 wget 镜子里没有** → unhealthy 连锁把 nginx 也拦在 depends_on。改 curl。
+4. ⭐ **阿里 nginx 备份别放 sites-enabled**：`.bak` 文件也会被 include → `duplicate upstream` 起不来。备份放 `/root/`。
+   （另：scp 上去的 shell 脚本记得 `sed -i 's/\r$//'`；PowerShell `Set-Content` 又踩了一次中文乱码，已用 Write 工具重写两份 compose。）
+
+### 三、测试服实测（v63，全过）
+
+- 部署事实：staging DB 密码已换新（ALTER USER，`/opt/flashmuse-staging/.env` 两个变量）；迁移 `20260802000000_query_hot_path_indexes` entrypoint 自动应用成功；3 容器 healthy；`/api/health` 200；两入口 `x-app-version: v1.0.0.63`；阿里同步跑通（flock 版新脚本）。
+- 后台新 SQL 全部在 staging 库真跑过（语法+口径正确）。
+- `12424740@qq.com` 实测：登录 ✓、对话模式 ✓、工作流点画布/节点不崩 ✓、**新建 `工作流_05` 真跑生图** → `image_1_w5`、-3 积分 ✓；**新建对话真跑生图**（水墨剑客）→ `image_1_d6`、-3 积分 ✓（命名计数器两路径都对）；上传 `up-r3.png` 挂 `@up-r3` ✓；刷新后工作区完整恢复、图正常显示 ✓；资产库 ✓；控制台 0 error（仅 1 条 502 = 部署重启窗口，属已知现象）。
+- 接口实测：send-code 第一次 ok、第二次「验证码发送太频繁」✓（**给 12424740@qq.com 真发了一封验证码邮件**，无害）；intent/upload-avatar 无登录 401 ✓；/admin 登录页 200 ✓（后台页面本身没验——需要 lookxun 的邮箱验证码，没打扰用户；SQL 已直接验过）。
+- **本批测试服痕迹**：`工作流_05`（image_1_w5 熊猫水墨）、1 个新对话（image_1_d6 剑客水墨）、up-r3.png，共扣 6 积分。按交代全留着。
+
+### 四、没做 / 下一批
+
+- 拍板 9（拆 chat-workbench 18k 行）+ 拍板 10（2 个测试 + lint 门禁）—— 单独一批。
+- 1.1 的"生成前占额度"根治、1.9 消息双份、_next/static 原子切换、零停机部署、告警（建议免费外部拨测打 /api/health）、2.6 证书续期核实（**正式服部署时花 10 分钟做**：`openssl s_client` 看剩余天数 + acme.sh 的 reloadcmd 有没有 reload 容器内 nginx）。
+- 正式服部署清单与测试服一致（compose 单独 cp、`.env` 两个变量、chown、cleanup cron、2.6 核实）。**git 历史洗密码**还没做（含在正式服部署那批一起做更稳）。
+
 ## 2026-08-02（第二十七次会话）🚀 **3 个安全洞上正式服（v61）+ Next 10MB body 截断修复（v62）· 两服四方同步**
 
 > ✅ **四方同步恢复：正式服 = 测试服 = 本地 = GitHub = `v1.0.0.62`**，四域名全 200，工作区干净、无未推。

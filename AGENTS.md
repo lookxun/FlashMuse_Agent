@@ -4,6 +4,74 @@
 This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code. Heed deprecation notices.
 <!-- END:nextjs-agent-rules -->
 
+# 铁律：改 compose / 挂载路径 / 端口之前，先把**服务器上那份**打印出来逐行比（2026-08-02 加，差一步打挂正式服 443）
+
+2026-08-02 复核上一批时抓到：仓库的 `docker-compose.yml` 把 443 证书写成
+`- /etc/letsencrypt:/etc/letsencrypt:ro`，而**这台机器上根本没有 `/etc/letsencrypt`**
+（acme.sh 装在 `/opt/flashmuse/data/letsencrypt`）→ Docker 会**默默创建一个空目录**挂进去 →
+nginx 找不到证书起不来 → **main/api 两个域名 443 全挂**。
+
+- ⛔⛔ **仓库里的 compose 长期和服务器漂移**（服务器早就有 443 端口和 data/letsencrypt，仓库那份还是旧的）。
+  "补齐仓库"时**照想象写**就会造出这种炸弹。
+- ⭐ **姿势**：改 compose 前 `sudo cat /opt/flashmuse/docker-compose.yml` 打出来逐行比；
+  改完 `docker compose config` 看**展开后的真实路径/端口/密码**，再 `up -d`。
+- ⭐ **判据**：凡是 `- /宿主机路径:/容器路径` 里的宿主机路径，都要 `ls` 一遍确认**真的存在**。
+  Docker 对不存在的路径不报错，只会给你一个空目录。
+- ⛔ **别指望测试服能替你测出来**：测试服**没有 443 server 块**，这个洞在测试服怎么点都是好的。
+  → 通用结论：**两服有差异的那部分（本项目 = 443/证书/入口 conf），测试服天然覆盖不到，必须在正式服上单独核对。**
+
+# 铁律：加接口限流之前，先想清楚"到这一层时 `$remote_addr` 是谁"（2026-08-02 加）
+
+上一批给腾讯 nginx 加了 `limit_req_zone $binary_remote_addr ... rate=20r/s` + `burst=60`，两个真坑：
+
+- ⛔⛔ **国内用户全部经阿里回源，到腾讯这一层 `$remote_addr` 只有阿里那一个 IP**
+  → 等于把**全部国内用户算成一个客户端**共用 20r/s，几个人同时用就一起 429。
+  ⭐ 修法：`set_real_ip_from 101.37.129.164; real_ip_header X-Real-IP;`
+  （**只信阿里那一跳**，直连的客户端伪造 X-Real-IP 无效）。
+- ⛔ **`location /` 也代理 `_next/static`**（腾讯侧没有本地静态镜像）→ 冷启动一个页面瞬间几十个请求，
+  `burst=60` 会把**真实用户**打成 429 白屏。限流是拦"每秒成百上千"的滥用，别跟正常用户较劲 → 50r/s + burst 200。
+- ⭐ **验证方式（二值、没有解释空间）**：`for i in $(seq 1 100); do curl ... & done; wait`
+  —— 全 200 才算过；顺便 `docker logs <nginx>` 看日志里记的是**真实客户端 IP** 还是阿里的 IP。
+- ⭐ **两服限流层数必须一样**：阿里正式那份 `flashmuse-static-ip`（混着别的项目、没碰）没有限流，
+  所以**阿里测试那两份的 limit_req 要删掉** —— 否则"测试服 429 但正式服不会" = 测出来的不作数。
+
+# 铁律：给接口加"归属校验"时，回头确认**我们自己的合法调用**还过不过得去（2026-08-02 加）
+
+上一批给 `GET /api/byteplus-assets?id=` 加了「查 `UserAssetState.bytePlusAssetId` 才放行」，
+但 **POST 送审那条路从来不落库这个 id**（只存在前端 state）→ 用户点「刷新审核状态」
+永远拿到 404「素材不存在」，**手动审核功能直接废掉**。
+
+- ⭐ **姿势**：加校验后，把"这个字段是谁写进去的"grep 一遍
+  （`grep bytePlusAssetId` 一眼看出只有视频链路的自动送审在写）。
+  校验依赖的数据没人写 = 校验必然拒绝所有人。
+- ⭐ 同源问题也要防：**权限收紧类改动**（加登录、加归属、加白名单、加限流）
+  一律要列出"现有调用方有哪几处"，逐处确认还能通。
+
+# 铁律：把副作用从 setState updater 里移出去时，**映射本身要留在 updater 里**（2026-08-02 加）
+
+上一批为修"在 updater 里发 fetch/自增编号"（React 可能重跑 updater），把
+`setWorkflowItems(prev => ...)` 改成了「从 `ref` 读整份数组 → 算出 `next` → `setWorkflowItems(next)`」。
+⛔ 这引入了新 bug：`ref` 只在 effect 里同步，**同一 tick 内若已有别处 `setWorkflowItems(fn)` 排队**
+（例如生成回填），这里的整份 `next` 会把它**覆盖掉 = 成品图静默丢失**。
+
+- ⭐ 正确切法：**纯映射留在 updater**（`prev.map(...)`，可重跑、可叠加）；
+  **不可重复执行的副作用**（编号自增、发 PUT、埋点）放到 updater 外面。
+- ⭐ 需要"最新整份数据"去发请求时，**在真正要发的那一刻从 ref 现取**，不要提前算好快照。
+
+# 铁律：从 Windows 往服务器送文本文件，先 `sed -i 's/\r$//'` 再 diff（2026-08-02 加）
+
+Windows 打的 tgz 里文本文件带 CRLF → 服务器上 `diff 服务器那份 新那份` 会显示**整个文件都变了**，
+于是「只允许出现 `>` 行、出现 `<` 就停手」这条判据**当场失效**（看不出到底哪几行真改了）。
+
+- ⭐ 顺序：传上去 → `sed -i 's/\r$//'` → **再** diff → `nginx -t` → reload。
+- ⛔ **别依赖脚本里的 `if diff a b | grep -q '^< '; then exit 1; fi` 守卫**：2026-08-02 它没按预期触发。
+  **把 diff 打出来人肉看一眼**，别把"脚本没退出"当成"没有 `<` 行"。
+- ⛔ PowerShell `Set-Content -Encoding UTF8` **会加 BOM**（给 nginx conf 加过一次）。改带中文的文件一律用 edit 工具。
+- ⚠️ PS5.1 的 `Get-Content` / `Select-String` **显示** UTF-8 中文会花屏 —— 那是**控制台解码问题、不是文件坏了**。
+  2026-08-02 我据此误判过"文件成了 mojibake"，是用 `[System.IO.File]::ReadAllText` 数 `U+FFFD`（0 个）才排除的。
+  **要看中文内容就用 read 工具。**
+
+
 # 铁律：改 Next 配置项之前必须读 `node_modules/next/dist/docs/`，⛔ 不许照运行时错误信息里的名字写（2026-08-02 加）
 
 2026-08-02 修"上传 >10MB 被 500"时，运行时错误信息给的配置名是 `middlewareClientMaxBodySize`（还带文档链接），
@@ -222,6 +290,8 @@ readFileSync(filePath)                                     // ← 直接读
 
 ⛔ 别用 `sed` 全局替换（改不到"缺哪几行"这种结构性问题，也没有断言保护）。
 ⛔ 更别整份覆盖（会删掉别的项目的配置）。
+⛔ **备份文件绝不放 `/etc/nginx/sites-enabled/`**（2026-08-02 踩过）：nginx 会 include 目录下**所有**文件，
+  一个 `.bak` 里的 upstream 就能让整台 `duplicate upstream` 起不来 —— 备份放 `/root/`。
 ⭐ **同一功能有多个入口 conf 时，改一个必须把兄弟们全 grep 一遍** ——
 2026-08-01 就发现 `staging-static` 那份**漏了** 07-30 加给 8080 那份的 `proxy_buffers` + `gzip`
 （走 HTTPS 访问测试服时大响应一直在写磁盘、JSON 从来没压缩过）。这正是"能统一一律统一"。
@@ -489,7 +559,7 @@ nginx 配置在仓库里有副本（`nginx/flashmuse.conf`、`deploy/staging/*.c
 
 - 反例（已踩坑，2026-07-14）：`getBytePlusProviderKey`（模型→BytePlus 端点映射）被复制到 `image/route`、`video/route`、`generation-jobs` 三份，各改各的 → 只修了对话流那份，Agent/通用模式漏修 → 线上 Agent/通用生图/生视频用新模型直接失败。已收敛为唯一实现 `src/lib/byteplus-provider-key.ts`。
 - 判断标准：**理论上"生图在一个地方能用，其它地方都应该能用"**（生视频、上传、进库、读取、命名、扣费、参考图……同理），因为它们本就该走同一套。若出现"对话流可以、工作流/Agent 不行"，几乎一定是某处该统一却分叉了——先找分叉点收敛，别再打局部补丁。
-- 已有的统一入口举例（改相关功能务必复用，勿另起炉灶）：进库 `src/lib/media-asset-record.ts`(`buildMediaAssetRecord`/`classifyAsset`)、生成任务与读取 `src/lib/generation-jobs.ts`、扣费 `src/lib/credits.ts`(`chargeCredits`)、模型→端点键 `src/lib/byteplus-provider-key.ts`、**模型拒绝文案 `src/lib/error-message.ts`(`MODEL_REFUSED_PREFIX` + `isModelRefusedMessage` + `buildModelRefusedMessage`：⭐ 2026-07-29 起「模型拒绝 / 平台安全策略 / 版权限制」**三类合并成唯一一句**「模型因色情/暴力/隐私安全等原因拒绝出图，你可以调整提示词或更换参考图后重试。以下是模型返回的拒绝原因：“…”」，不再按模型分"能不能AI改写"。⛔ 改这句必须同步改三处：`gpt-image-safety-retry.ts` 的**前缀**判定、`admin-failure-triage.ts` 的 `FAILURE_REASON_SQL` 归一化、`error-message.ts` 顶部的幂等保护；`LEGACY_MODEL_REFUSED_MESSAGES` 里的老文案只用于判定/后台归一化，禁止拿来生成新文案)**、**AI 安全改写 `src/lib/gpt-image-safety-retry.ts`(`isGptImageSafetyFailure`/`runPromptSafetyRetry`/`ensureMentionNamesPreserved`：⛔⭐ **2026-07-29 起只有工作流用它** —— 对话流与资产库那两套已按用户拍板整体撤掉（对话流"一条提示词出多图"，每张独立改写会让显示的提示词对不上；且并发多链会互抢 `message.requestId` 导致成功图被静默丢弃，正式服实测 17 张成功只剩 2 张、白烧 197 积分）。⭐ **2026-07-30 用户拍板：对话流的 AI 改写彻底不做了（原 M021 已取消），别把删掉的代码捡回来、也别再提重做。**)**、**参考素材 url 归一化 `src/lib/reference-asset-url.ts`(`normalizeReferenceAssetUrl`/`normalizeReferenceAssetUrls`：进模型/送审前必过。把「给人看的动态缩略图接口地址 `/api/media-thumbnail?url=`」和「自家主机绝对前缀（含已退役马来 IP）」一律还原成文件静态直链 —— 平台是来"上门自取"的，给它动态接口它会现场等我们生成缩略图然后超时。8 处咽喉共用：image/video/byteplus-assets 三个 route 入口 + `generation-jobs.resolveReferenceUrls` + openrouter/openrouter-video/seedance/video-route 的底层拼址，禁止再在别处自己判 `startsWith("/generated/")`)**、参考图 hint `src/lib/reference-hint.ts`、错误文案 `src/lib/error-message.ts`、登录失效跳转 `src/lib/session-expired-redirect.ts`、@提及匹配/删除 `src/lib/mention-text.ts`、上传文件命名 `src/lib/upload-name.ts`(`resolveUploadName`：同图复用名/异名错开_2/去扩展名/改名跟随；对话流·工作流·资产库 图·视频·音频·文档统一走它，前端只显示服务端返回的 `name`，禁止再在前端各写一套取名/版本化逻辑)、音频波形播放器 `src/components/audio-waveform-player.tsx`(`AudioWaveformPlayer`：wavesurfer.js，`variant="node"` 工作流画布音频节点 / `variant="card"` 资产库上传音频方卡；工作流·资产库统一走它，禁止再各写一套音频播放 UI)、视频播放按钮角标 `src/components/video-play-badge.tsx`(`VideoPlayBadge`：全平台所有视频缩略图中间的播放标记，5 档 size；对话流·工作流·资产库·@引用·图层·后台·上传缩略图统一走它)、**媒体时长校验 `src/lib/media-upload-validation.ts`(`MEDIA_DURATION_EPSILON_SECONDS` 唯一容差常量 + `validateReferenceMediaDurationRange` 单条时长校验唯一实现；对话流·工作流·服务端三处共用，禁止再在组件里写本地副本——历史上就是各写一份导致 15.35/15.35/16.01 三个数都错)**、**参考素材总时长 `src/lib/upload-rules.ts`(`validateReferenceTotalDuration`)**、**工作流节点下载 `downloadWorkflowNode()`(`workflow-tldraw-canvas-inner.tsx`，图片/视频/文本通用；右键菜单与快捷菜单共用，禁止再内联写一份)**。
+- 已有的统一入口举例（改相关功能务必复用，勿另起炉灶）：进库 `src/lib/media-asset-record.ts`(`buildMediaAssetRecord`/`classifyAsset`)、生成任务与读取 `src/lib/generation-jobs.ts`、扣费 `src/lib/credits.ts`(`chargeCredits`)、模型→端点键 `src/lib/byteplus-provider-key.ts`、**模型拒绝文案 `src/lib/error-message.ts`(`MODEL_REFUSED_PREFIX` + `isModelRefusedMessage` + `buildModelRefusedMessage`：⭐ 2026-07-29 起「模型拒绝 / 平台安全策略 / 版权限制」**三类合并成唯一一句**「模型因色情/暴力/隐私安全等原因拒绝出图，你可以调整提示词或更换参考图后重试。以下是模型返回的拒绝原因：“…”」，不再按模型分"能不能AI改写"。⛔ 改这句必须同步改三处：`gpt-image-safety-retry.ts` 的**前缀**判定、`admin-failure-triage.ts` 的 `FAILURE_REASON_SQL` 归一化、`error-message.ts` 顶部的幂等保护；`LEGACY_MODEL_REFUSED_MESSAGES` 里的老文案只用于判定/后台归一化，禁止拿来生成新文案)**、**AI 安全改写 `src/lib/gpt-image-safety-retry.ts`(`isGptImageSafetyFailure`/`runPromptSafetyRetry`/`ensureMentionNamesPreserved`：⛔⭐ **2026-07-29 起只有工作流用它** —— 对话流与资产库那两套已按用户拍板整体撤掉（对话流"一条提示词出多图"，每张独立改写会让显示的提示词对不上；且并发多链会互抢 `message.requestId` 导致成功图被静默丢弃，正式服实测 17 张成功只剩 2 张、白烧 197 积分）。⭐ **2026-07-30 用户拍板：对话流的 AI 改写彻底不做了（原 M021 已取消），别把删掉的代码捡回来、也别再提重做。**)**、**参考素材 url 归一化 `src/lib/reference-asset-url.ts`(`normalizeReferenceAssetUrl`/`normalizeReferenceAssetUrls`：进模型/送审前必过。把「给人看的动态缩略图接口地址 `/api/media-thumbnail?url=`」和「自家主机绝对前缀（含已退役马来 IP）」一律还原成文件静态直链 —— 平台是来"上门自取"的，给它动态接口它会现场等我们生成缩略图然后超时。8 处咽喉共用：image/video/byteplus-assets 三个 route 入口 + `generation-jobs.resolveReferenceUrls` + openrouter/openrouter-video/seedance/video-route 的底层拼址，禁止再在别处自己判 `startsWith("/generated/")`)**、参考图 hint `src/lib/reference-hint.ts`、错误文案 `src/lib/error-message.ts`、登录失效跳转 `src/lib/session-expired-redirect.ts`、@提及匹配/删除 `src/lib/mention-text.ts`、上传文件命名 `src/lib/upload-name.ts`(`resolveUploadName`：同图复用名/异名错开_2/去扩展名/改名跟随；对话流·工作流·资产库 图·视频·音频·文档统一走它，前端只显示服务端返回的 `name`，禁止再在前端各写一套取名/版本化逻辑)、音频波形播放器 `src/components/audio-waveform-player.tsx`(`AudioWaveformPlayer`：wavesurfer.js，`variant="node"` 工作流画布音频节点 / `variant="card"` 资产库上传音频方卡；工作流·资产库统一走它，禁止再各写一套音频播放 UI)、视频播放按钮角标 `src/components/video-play-badge.tsx`(`VideoPlayBadge`：全平台所有视频缩略图中间的播放标记，5 档 size；对话流·工作流·资产库·@引用·图层·后台·上传缩略图统一走它)、**媒体时长校验 `src/lib/media-upload-validation.ts`(`MEDIA_DURATION_EPSILON_SECONDS` 唯一容差常量 + `validateReferenceMediaDurationRange` 单条时长校验唯一实现；对话流·工作流·服务端三处共用，禁止再在组件里写本地副本——历史上就是各写一份导致 15.35/15.35/16.01 三个数都错)**、**参考素材总时长 `src/lib/upload-rules.ts`(`validateReferenceTotalDuration`)**、**工作流节点下载 `downloadWorkflowNode()`(`workflow-tldraw-canvas-inner.tsx`，图片/视频/文本通用；右键菜单与快捷菜单共用，禁止再内联写一份)**、**静态媒体地址 `src/lib/static-media-url.ts`(`getStaticMediaUrl`/`toLocalGeneratedUrl`/`shouldUseStaticAssetBaseUrl`：对话流·工作流画布统一走它，禁止再各写一份——工作流画布原来那份是空函数，从没生效过)**、**AUTH_SECRET 读取 `src/lib/auth-secret.ts`(`getAuthSecret`：生产没配直接抛错，禁止再写 `|| "flashmuse-local-dev-secret-change-me"` 兜底)**、**接口限流 `src/lib/rate-limit.ts`(`rateLimitAllow`/`getClientIp`)**、**诊断日志轮转 `src/lib/diagnostics-log-rotate.ts`(`appendDiagnosticsJsonl`：三个 diagnostics-log 统一走它，超 20MB 轮转成 .1)**。
 - ⛔⛔ **往 `WorkflowSelectedNodeOverlay`（工作流选中节点浮层、含图片/视频快捷菜单）里加 Hook 会把整个 tldraw 画布搞崩**（2026-07-29 踩过）：它在 `workflow-tldraw-canvas-inner.tsx:2493` 有 `if (!selected) return null;`，在其**之后**加 `useMemo`/`useState` 等 → **React #310「Rendered more hooks than during the previous render」** → 点任意节点，画布整个变成「Something went wrong / Please refresh your browser」。**加在提前 return 之前，或干脆别用 Hook。**
 - ⛔⛔ **排查对话流失败卡时必读（2026-07-29 踩过、误报过一次）**：失败卡包在 **`<LazyMediaMount height={250}>`**（`chat-workbench.tsx:16531`）里 —— **滚进视口才挂载**，没进视口时 DOM 里根本没有卡；而红字**不在**这个组件里、一直显示。所以**「红字在、卡不在」是正常现象，不是数据丢了**。用 `querySelectorAll('.flashmuse-failed-media-card')` 统计失败卡不可靠，必须先 `scrollIntoView` 再断言。
 - ⛔ **"某条原因高度集中在一个入口"不一定是分叉**（2026-07-29 踩过）：后台「失败排查」页那条设计意图会给假信号 —— 先去看「失败最多的用户」卡，如果也集中在一个人，那是用户行为不是代码分叉（101 条里 76 条是同一个人三天刷出来的）。

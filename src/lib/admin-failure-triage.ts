@@ -211,15 +211,18 @@ export async function getAdminFailureTriageData(): Promise<FailureTriageData> {
 
   // ⭐ 待排查的失败事件全量拉下来在内存里切片：本项目量级只有几百条（正式服 308），
   // 一次查询 + 内存聚合比十几条 group by 更好维护，也不用担心各口径对不上。
+  // ⚠️ 但"几百条"是靠归档习惯维持的假设、不是约束（2026-08-02 审计 1.3）→ 加一个保守上限兜底：
+  // 真攒到 5000 条未归档，页面显示最近 5000 条而不是把 Node 拖垮。
   const pendingRows = await safeRows(() => prisma.$queryRawUnsafe<FailureRow[]>(
     `SELECT "id", "userId", "requestId", "kind", "source", "model", "provider", "moderation", "createdAt",
        ${FAILURE_REASON_SQL} AS reason
      FROM "GenerationEvent"
      WHERE "status" = 'failed' AND "failureReason" IS NOT NULL AND "resolvedAt" IS NULL
-     ORDER BY "createdAt" DESC`,
+     ORDER BY "createdAt" DESC
+     LIMIT 5000`,
   ));
 
-  const [resolvedRows, kindStatusRows, trendRows, modelCallRows, userNameRows] = await Promise.all([
+  const [resolvedRows, kindStatusRows, trendRows, modelCallRows] = await Promise.all([
     safeRows(() => prisma.$queryRawUnsafe<Array<{ reason: string; note: string | null; count: bigint; resolvedat: Date | null; lastat: Date | null }>>(
       `SELECT ${FAILURE_REASON_SQL} AS reason, "resolvedNote" AS note, COUNT(*)::bigint AS count,
          MAX("resolvedAt") AS resolvedat, MAX("createdAt") AS lastat
@@ -240,7 +243,6 @@ export async function getAdminFailureTriageData(): Promise<FailureTriageData> {
     safeRows(() => prisma.$queryRawUnsafe<Array<{ model: string | null; calls: bigint }>>(
       `SELECT "model", COUNT(*)::bigint AS calls FROM "GenerationEvent" WHERE "model" IS NOT NULL GROUP BY 1`,
     )),
-    prisma.user.findMany({ select: { id: true, email: true, nickname: true } }).catch(() => [] as Array<{ id: string; email: string; nickname: string | null }>),
   ]);
 
   const hasData = pendingRows.length > 0 || resolvedRows.length > 0 || kindStatusRows.length > 0;
@@ -383,12 +385,17 @@ export async function getAdminFailureTriageData(): Promise<FailureTriageData> {
 
   const bySource = Array.from(sourceFailMap.entries()).map(([label, item]) => ({ label, total: item.total, fallback: item.fallback })).sort((left, right) => right.total - left.total);
 
+  // 只查 top-10 需要的用户（2026-08-02 审计 1.3：原来是 findMany 全部用户，只为给 top-10 贴名字）
+  const topUserIds = Array.from(userFailMap.entries()).sort((left, right) => right[1].total - left[1].total).slice(0, 10).map(([userId]) => userId);
+  const userNameRows = topUserIds.length > 0
+    ? await prisma.user.findMany({ where: { id: { in: topUserIds } }, select: { id: true, email: true, nickname: true } }).catch(() => [] as Array<{ id: string; email: string; nickname: string | null }>)
+    : [];
   const userNameById = new Map(userNameRows.map((user) => [user.id, user.nickname || user.email]));
-  const topUsers = Array.from(userFailMap.entries()).sort((left, right) => right[1].total - left[1].total).slice(0, 10).map(([userId, item]) => ({
+  const topUsers = topUserIds.map((userId) => ({
     label: userNameById.get(userId) ?? userId,
     userId,
-    total: item.total,
-    topReason: (topEntries(item.reasons, 1)[0]?.label ?? "").slice(0, 40),
+    total: userFailMap.get(userId)?.total ?? 0,
+    topReason: (topEntries(userFailMap.get(userId)?.reasons ?? new Map<string, number>(), 1)[0]?.label ?? "").slice(0, 40),
   }));
 
   const resolved: FailureTriageResolvedReason[] = resolvedRows.map((row) => ({

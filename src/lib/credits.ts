@@ -174,7 +174,13 @@ export async function chargeCredits(userId: string, kind: CreditKind, usage?: Us
   }
 
   return prisma.$transaction(async (tx) => {
-    const user = await tx.user.findUnique({ where: { id: userId }, select: { credits: true, textCreditRemainder: true } });
+    // ⭐ 并发安全（2026-08-02 审计 1.1）：SELECT ... FOR UPDATE 把"读余额 → 算 → 写"在行锁里串行化，
+    //   且扣费用相对 decrement。旧写法是 tx 内 findUnique + 写绝对值 —— Postgres READ COMMITTED 下
+    //   两个并发扣费都读到 credits=100、都写 90 → 少扣一次，静默漏收（textCreditRemainder 同病）。
+    const lockedRows = await tx.$queryRaw<Array<{ credits: number; textCreditRemainder: number }>>`
+      SELECT credits, "textCreditRemainder" FROM "User" WHERE id = ${userId} FOR UPDATE
+    `;
+    const user = lockedRows[0];
     if (!user) return { chargedCredits: 0, expectedCredits: 0, chargedCny: 0, chargedUsd: 0, balance: undefined, skipped: true } satisfies CreditChargeResult;
 
     const previousTextCreditRemainder = Math.max(0, cleanNumber(user.textCreditRemainder));
@@ -183,18 +189,19 @@ export async function chargeCredits(userId: string, kind: CreditKind, usage?: Us
     const nextTextCreditRemainder = kind === "text" && shouldCharge && rawCredits > 0 ? Math.max(0, nextTextCreditRemainderRaw - textExpectedCredits) : previousTextCreditRemainder;
     const expectedCredits = kind === "text" ? textExpectedCredits : immediateExpectedCredits;
     const chargedCredits = Math.min(user.credits, expectedCredits);
-    const nextCredits = Math.max(0, user.credits - chargedCredits);
     const chargedCny = settings.creditsPerCny > 0 ? chargedCredits / settings.creditsPerCny : 0;
     const chargedUsd = settings.usdToCnyRate > 0 ? chargedCny / settings.usdToCnyRate : 0;
 
+    let nextCredits = user.credits;
     if (chargedCredits > 0 || (kind === "text" && shouldCharge && rawCredits > 0)) {
-      await tx.user.update({
-        where: { id: userId },
-        data: {
-          credits: nextCredits,
-          ...(kind === "text" && shouldCharge && rawCredits > 0 ? { textCreditRemainder: nextTextCreditRemainder } : {}),
-        },
-      });
+      const updatedRows = await tx.$queryRaw<Array<{ credits: number }>>`
+        UPDATE "User"
+        SET credits = credits - ${chargedCredits},
+            "textCreditRemainder" = ${kind === "text" && shouldCharge && rawCredits > 0 ? nextTextCreditRemainder : previousTextCreditRemainder}
+        WHERE id = ${userId}
+        RETURNING credits
+      `;
+      nextCredits = updatedRows[0]?.credits ?? Math.max(0, user.credits - chargedCredits);
     }
 
     await tx.creditLedger.create({

@@ -52,5 +52,8 @@ export async function GET(request: Request) {
   const localUrl = variant === "original"
     ? normalizeGeneratedUrl(job?.localUrl ?? "") ?? normalizeGeneratedUrl(job?.posterUrl ?? "") ?? normalizeGeneratedUrl(job?.thumbnailUrl ?? "")
     : normalizeGeneratedUrl(job?.thumbnailUrl ?? "") ?? normalizeGeneratedUrl(job?.posterUrl ?? "") ?? normalizeGeneratedUrl(job?.localUrl ?? "");
+  // ⚠️ 已知低危项（2026-08-02 审计 2.8i，有意保留）：查不到本地副本时会 307 回调用方给的远程 url
+  //   = 开放重定向。但这是**仅管理员可用**的预览接口，回调的正是管理员自己要看的地址；
+  //   改成 404 会让「还没本地化的媒体在后台无法预览」，故保留现状。
   return redirectTo(localUrl || url);
 }

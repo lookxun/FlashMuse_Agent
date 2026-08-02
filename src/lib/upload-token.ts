@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from "crypto";
+import { getAuthSecret } from "@/lib/auth-secret";
 
-const authSecret = process.env.AUTH_SECRET || "flashmuse-local-dev-secret-change-me";
+const authSecret = getAuthSecret();
 const uploadTokenMaxAgeMs = 5 * 60 * 1000;
 
 type UploadTokenPayload = {

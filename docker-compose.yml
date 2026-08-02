@@ -1,14 +1,31 @@
-name: flashmuse
+﻿name: flashmuse
+# 2026-08-02 变更（审计 2.5/2.7）：
+#  ① 数据库密码改从 .env 读（FLASHMUSE_DB_PASSWORD，服务器 /opt/flashmuse/.env，不进 git；原来明文写在这份文件里）；
+#  ② 全部服务加 json-file 日志上限（原来无上限会慢慢填满 /var/lib/docker，拖垮同机的另外两个项目）；
+#  ③ 加内存上限 + healthcheck（/api/health）；④ DATABASE_URL 补连接池参数（M023）。
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "3"
+
 services:
   flashmuse-db:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
       POSTGRES_USER: flashmuse
-      POSTGRES_PASSWORD: "REMOVED_PROD_DB_PASSWORD"
+      POSTGRES_PASSWORD: "${FLASHMUSE_DB_PASSWORD:?FLASHMUSE_DB_PASSWORD 未配置（写在 /opt/flashmuse/.env）}"
       POSTGRES_DB: flashmuse
     volumes:
       - /opt/flashmuse/data/pgdata:/var/lib/postgresql/data
+    mem_limit: 1g
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flashmuse -d flashmuse"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     networks: [flashmuse]
 
   flashmuse-app:
@@ -17,11 +34,16 @@ services:
       args:
         NEXT_PUBLIC_WORKFLOW_MODE_ENABLED: "true"
     restart: unless-stopped
-    depends_on: [flashmuse-db]
+    depends_on:
+      flashmuse-db:
+        condition: service_healthy
     environment:
       NODE_ENV: production
       PORT: "3000"
-      DATABASE_URL: "postgresql://flashmuse:REMOVED_PROD_DB_PASSWORD@flashmuse-db:5432/flashmuse?schema=public"
+      # connection_limit=25（M023）：Prisma 默认按核数给 17，多项目共用机器，显式给 25 + 20s 取池超时。
+      DATABASE_URL: "postgresql://flashmuse:${FLASHMUSE_DB_PASSWORD}@flashmuse-db:5432/flashmuse?schema=public&connection_limit=25&pool_timeout=20"
+      # 已发布版本号（前端新版本提示条据此判定）。部署最后一步才 set 成新版 + force-recreate。
+      PUBLISHED_APP_VERSION: "${PUBLISHED_APP_VERSION:-}"
     volumes:
       - /opt/flashmuse/data/.env.local:/app/.env.local
       - /opt/flashmuse/data/generated:/app/public/generated
@@ -29,6 +51,14 @@ services:
       - /opt/flashmuse/data/home-assets:/app/public/home-assets
     expose:
       - "3000"
+    mem_limit: 3g
+    logging: *default-logging
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS -o /dev/null http://127.0.0.1:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
     networks: [flashmuse]
 
   # nginx 是"完整独立项目"不可缺的一层：Next `next start` 只服务构建时已存在的 public 文件，
@@ -37,13 +67,24 @@ services:
   flashmuse-nginx:
     image: nginx:alpine
     restart: unless-stopped
-    depends_on: [flashmuse-app]
+    depends_on:
+      flashmuse-app:
+        condition: service_healthy
     volumes:
       - /opt/flashmuse/data/nginx/flashmuse.conf:/etc/nginx/conf.d/default.conf:ro
       - /opt/flashmuse/data/generated:/srv/generated:ro
       - /opt/flashmuse/data/home-assets:/srv/home-assets:ro
+      # 443 证书（nginx/flashmuse.conf 的 443 server 块需要）。⭐ 证书续期后必须
+      #   `docker exec flashmuse-flashmuse-nginx-1 nginx -s reload`，否则容器里还是旧证书。
+      # ⛔⛔ 宿主机侧路径必须是 `/opt/flashmuse/data/letsencrypt`（2026-08-02 审计修正）：
+      #   这台机器上**没有** /etc/letsencrypt（证书由 acme.sh 装到 data/letsencrypt 下）。
+      #   写成 /etc/letsencrypt 会挂一个空目录进去 → nginx 找不到证书起不来 → 443 全站挂。
+      - /opt/flashmuse/data/letsencrypt:/etc/letsencrypt:ro
     ports:
       - "5000:80"
+      - "443:443"
+    mem_limit: 256m
+    logging: *default-logging
     networks: [flashmuse]
 
 networks:

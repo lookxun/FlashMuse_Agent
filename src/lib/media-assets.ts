@@ -30,12 +30,20 @@ function normalizeMediaAssetUrlForMatch(value: string | undefined) {
   return typeof value === "string" ? normalizeMediaAssetUrl(value).replace(/^https?:\/\/[^/]+/i, "") : "";
 }
 
+// 2026-08-02 审计 1.8：这个文件原来**每次调用都同步 readFileSync + JSON.parse 整个 jobs 文件**
+// （canonicalizeSavedMediaUrl 在保存对话流时每个媒体项调一次），阻塞事件循环。
+// 改成按 mtime+size 缓存：文件没变就直接用上次解析结果。
+let mediaSaveJobsCache: { mtimeMs: number; size: number; jobs: SavedMediaJob[] } | null = null;
+
 function readMediaSaveJobs(): SavedMediaJob[] {
   const file = ".runtime/media-save-jobs.json";
-  if (!fs.existsSync(file)) return [];
   try {
+    const stat = fs.statSync(file);
+    if (mediaSaveJobsCache && mediaSaveJobsCache.mtimeMs === stat.mtimeMs && mediaSaveJobsCache.size === stat.size) return mediaSaveJobsCache.jobs;
     const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as unknown;
-    return Array.isArray(parsed) ? parsed as SavedMediaJob[] : parsed && typeof parsed === "object" && Array.isArray((parsed as { jobs?: unknown }).jobs) ? (parsed as { jobs: SavedMediaJob[] }).jobs : [];
+    const jobs = Array.isArray(parsed) ? parsed as SavedMediaJob[] : parsed && typeof parsed === "object" && Array.isArray((parsed as { jobs?: unknown }).jobs) ? (parsed as { jobs: SavedMediaJob[] }).jobs : [];
+    mediaSaveJobsCache = { mtimeMs: stat.mtimeMs, size: stat.size, jobs };
+    return jobs;
   } catch {
     return [];
   }

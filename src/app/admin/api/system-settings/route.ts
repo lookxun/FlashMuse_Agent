@@ -5,10 +5,24 @@ import { getAdminSystemSettings, isCompressionQuality, updateAdminSystemSettings
 
 export const runtime = "nodejs";
 
+// 2026-08-02 审计 2.8h：GET 不再把 API key 明文回给浏览器（管理员 cookie 一旦泄露就多丢一层）。
+// 返回掩码（****末4位）；POST 收到以 **** 开头的值 = 「没改，沿用当前」。
+function maskApiKey(key: string) {
+  if (!key) return "";
+  return key.length > 4 ? `****${key.slice(-4)}` : "****";
+}
+function unmaskApiKeyUpdate(value: unknown, current: string) {
+  if (typeof value !== "string") return current;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.startsWith("****")) return current;
+  return trimmed;
+}
+
 export async function GET() {
   const email = await getCurrentAdminEmail();
   if (!email || !isAdminEmail(email)) return NextResponse.json({ error: "无权限" }, { status: 403 });
-  return NextResponse.json({ settings: getAdminSystemSettings() });
+  const settings = getAdminSystemSettings();
+  return NextResponse.json({ settings: { ...settings, openRouterApiKey: maskApiKey(settings.openRouterApiKey), bytePlusApiKey: maskApiKey(settings.bytePlusApiKey) } });
 }
 
 export async function POST(request: Request) {
@@ -18,9 +32,9 @@ export async function POST(request: Request) {
   const body = await request.json().catch(() => ({}));
   // 字段合并式更新：body 里没提供的字段沿用当前设置，避免不同面板的部分更新互相覆盖清空。
   const current = getAdminSystemSettings();
-  const openRouterApiKey = typeof body.openRouterApiKey === "string" ? body.openRouterApiKey.trim() : current.openRouterApiKey;
+  const openRouterApiKey = unmaskApiKeyUpdate(body.openRouterApiKey, current.openRouterApiKey);
   const openRouterApiKeyEnabled = typeof body.openRouterApiKeyEnabled === "boolean" ? body.openRouterApiKeyEnabled : current.openRouterApiKeyEnabled;
-  const bytePlusApiKey = typeof body.bytePlusApiKey === "string" ? body.bytePlusApiKey.trim() : current.bytePlusApiKey;
+  const bytePlusApiKey = unmaskApiKeyUpdate(body.bytePlusApiKey, current.bytePlusApiKey);
   const bytePlusApiKeyEnabled = typeof body.bytePlusApiKeyEnabled === "boolean" ? body.bytePlusApiKeyEnabled : current.bytePlusApiKeyEnabled;
   const bytePlusUnlockLimits = typeof body.bytePlusUnlockLimits === "boolean" ? body.bytePlusUnlockLimits : current.bytePlusUnlockLimits;
   const bytePlusRegion = body.bytePlusRegion === "eu-west-1" ? "eu-west-1" : body.bytePlusRegion === "ap-southeast-1" ? "ap-southeast-1" : current.bytePlusRegion;

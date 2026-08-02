@@ -166,12 +166,16 @@ type WorkspaceSessionListRow = {
 };
 
 async function getOrderedWorkspaceSessionRows(userId: string, offset: number, limit: number) {
+  // 2026-08-02 审计 1.7：分页下沉到数据库（旧写法是把全部 session 行捞回来再 slice）。
+  // ⚠️ 排序必须保持 [updatedAt desc, sessionId desc] 双键：单键 updatedAt 不唯一，skip/take 跨页会错位。
   const rows = await prisma.workspaceSession.findMany({
     where: { userId, deletedAt: null },
     orderBy: [{ updatedAt: "desc" }, { sessionId: "desc" }],
+    skip: offset,
+    take: limit + 1,
     select: { sessionId: true, title: true, updatedAt: true, deletedAt: true, summaryJson: true, usageSummary: true, memorySummary: true },
   });
-  return rows.slice(offset, offset + limit + 1) as WorkspaceSessionListRow[];
+  return rows as WorkspaceSessionListRow[];
 }
 
 function getAssetMergeKey(asset: unknown) {

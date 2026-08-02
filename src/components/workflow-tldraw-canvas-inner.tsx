@@ -23,6 +23,7 @@ import { IMAGE_UPLOAD_ACCEPT, validateImageUploadFile } from "@/lib/image-upload
 import { AUDIO_UPLOAD_ACCEPT, MEDIA_DURATION_EPSILON_SECONDS, validateMediaUploadFile, validateMediaUploadMetadata, validateReferenceMediaDurationRange as validateWorkflowMediaDuration, VIDEO_UPLOAD_ACCEPT } from "@/lib/media-upload-validation";
 import { validateVideoReferenceImagesBeforeSend, videoModelEnforcesReferenceImageSizeRules } from "@/lib/video-reference-image-rules";
 import { computeFileContentHashHex, precheckUploadedFileDedup } from "@/lib/upload-content-hash";
+import { getStaticMediaUrl } from "@/lib/static-media-url";
 
 export type WorkflowNodeKind = "text" | "image" | "video" | "audio";
 
@@ -1772,11 +1773,8 @@ function formatElapsedTime(startedAt?: number, now = Date.now()) {
   return `${Math.floor(elapsedSeconds / 60)}:${String(elapsedSeconds % 60).padStart(2, "0")}`;
 }
 
-function getStaticMediaUrl(url: string | undefined) {
-  if (!url) return undefined;
-  if (/^https?:\/\//i.test(url)) return url;
-  return url;
-}
+// getStaticMediaUrl 统一走 @/lib/static-media-url（2026-08-02 修：这里原本是个空函数，
+// 两个分支都 return url，工作流画布从未应用静态域名 / 刚上传源回退 / 缓存破除）。
 
 // 图片是否含透明像素（真实 alpha 判定）。key = 原始相对 url，每张只检测一次并缓存。
 // 只检测同源本地 /generated 图片（各入口下相对路径都同源，canvas 不会被 CDN 跨域污染）；

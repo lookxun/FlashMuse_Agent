@@ -286,17 +286,44 @@ export async function upsertWorkspaceWorkflows(userId: string, workflowItems: un
   //   existingCanvas → 下面三道防线全部失效（都以 `existingCanvas !== undefined` 为前提）
   //   → 它的画布会被客户端手里的空对象覆盖成 `{}` = **回收站里的画布被真删掉**（本地实测过）。
   //   ⛔ 只有这一处的取数范围能救它，别再加回过滤条件。
+  // ⭐ 2026-08-02 审计 1.4：取数范围从「该用户全部工作流（含 canvasJson 大字段）」收窄成
+  //   「本次 payload 里出现的那些 workflowId」—— 三道防线只需要这些行的 existingCanvas，
+  //   保存从 O(全部工作流) 变成 O(incoming)，且不影响上面的软删防线（payload 里带 deletedAt 的
+  //   那条本身就在 incoming 里，照样查得到）。
+  const incomingWorkflowIds = incoming.map((workflow) => workflow.workflowId);
   const existingRows = await prisma.workspaceWorkflow.findMany({
-    where: { userId },
+    where: { userId, workflowId: { in: incomingWorkflowIds } },
     select: { workflowId: true, canvasJson: true, deletedAt: true },
   });
   const existingCanvasByWorkflowId = new Map(existingRows.map((row) => [row.workflowId, row.canvasJson]));
-  const jobResultsByWorkflowId = await getSucceededWorkflowJobResults(userId, incoming.map((workflow) => workflow.workflowId));
+  const jobResultsByWorkflowId = await getSucceededWorkflowJobResults(userId, incomingWorkflowIds);
   // "库里到底有没有内容"只算未删的行（口径与原来一致，别把回收站里的算进来）。
+  // ⚠️ 收窄后这里只统计 incoming 范围内的行：existingActionCount 用于「客户端回传了一份自动空工作流，
+  //   要不要整体忽略」的兜底判断，看 payload 覆盖的范围已经足够（范围外的工作流这次根本不会被写）。
   const existingActionCount = existingRows.filter((row) => !row.deletedAt).reduce((sum, row) => sum + getCanvasActionCount(row.canvasJson), 0);
   const incomingActionCount = workflowItems.filter(isRecord).reduce((sum, item) => sum + getWorkflowActionCount(item), 0);
   const incomingLooksAutoEmpty = incoming.length <= 1 && incomingActionCount === 0;
-  if (options.activePanel !== "workflow" && incomingLooksAutoEmpty && existingActionCount > 0) return;
+  if (options.activePanel !== "workflow" && incomingLooksAutoEmpty) {
+    // ⭐⭐ 2026-08-02 审计复核补的一刀：收窄取数范围后，这道兜底**只看得见 incoming 里的行**了。
+    //   于是「客户端还没加载工作区，就带着一个全新 id 的空工作流 PUT 上来」这种场景（正是本兜底
+    //   要挡的那一种）会因为 existingActionCount=0 而穿过去 → 库里凭空多一条空工作流，
+    //   出现在用户侧边栏里。所以 incoming 范围内数不出内容时，再花一条**不搬 canvasJson 的**
+    //   SQL 去问「范围外还有没有有内容的工作流」，把原来的口径补回来。
+    let hasContentSomewhere = existingActionCount > 0;
+    if (!hasContentSomewhere) {
+      const contentRows = await prisma.$queryRaw<Array<{ one: number }>>`
+        SELECT 1 AS one FROM "WorkspaceWorkflow"
+        WHERE "userId" = ${userId} AND "deletedAt" IS NULL
+          AND (
+            (jsonb_typeof("canvasJson" -> 'nodes') = 'array' AND jsonb_array_length("canvasJson" -> 'nodes') > 0)
+            OR (jsonb_typeof("canvasJson" -> 'edges') = 'array' AND jsonb_array_length("canvasJson" -> 'edges') > 0)
+          )
+        LIMIT 1
+      `.catch(() => [] as Array<{ one: number }>);
+      hasContentSomewhere = contentRows.length > 0;
+    }
+    if (hasContentSomewhere) return;
+  }
 
   await Promise.all(incoming.map((workflow) => {
     const existingCanvas = existingCanvasByWorkflowId.get(workflow.workflowId);

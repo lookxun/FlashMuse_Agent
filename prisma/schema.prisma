@@ -86,6 +86,8 @@ model CreditLedger {
   @@index([direction, createdAt])
   @@index([conversationId])
   @@index([workspaceKind, workspaceId])
+  @@index([userId, direction, workspaceKind, workspaceId])
+  @@index([userId, direction, conversationId])
   @@unique([requestId, kind])
 }
 
@@ -170,6 +172,9 @@ model MediaAsset {
   @@index([userId, workspaceKind, createdAt])
   @@index([userId, archivedAt])
   @@index([userId, contentHash])
+  @@index([userId, systemName])
+  @@index([userId, url])
+  @@index([userId, firstSeenAt])
 }
 
 model UserAssetState {
@@ -201,6 +206,7 @@ model UserAssetState {
   mediaAsset         MediaAsset @relation(fields: [mediaAssetId], references: [id], onDelete: Cascade)
 
   @@unique([userId, mediaAssetId])
+  @@index([mediaAssetId])
   @@index([userId, currentCategory, deletedAt, sortOrder])
   @@index([userId, deletedAt, updatedAt])
   @@index([userId, hiddenAt])
@@ -410,4 +416,5 @@ model Session {
 
   @@index([userId])
   @@index([expiresAt])
+  @@index([lastSeenAt])
 }

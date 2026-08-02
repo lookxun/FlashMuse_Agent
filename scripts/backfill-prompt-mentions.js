@@ -14,6 +14,9 @@ function extractMentions(text) {
 }
 
 async function main() {
+  // 2026-08-02：补上 --apply 保护（原来是 scripts/ 里唯一没有 dry-run 保护的改数据脚本，直接跑就改库）。
+  const apply = process.argv.includes("--apply");
+  if (!apply) console.log("[dry-run] 只统计、不改库。确认无误后加 --apply 真改。");
   const assets = await prisma.mediaAsset.findMany({
     where: { sourceKind: "asset_generation_image", requestId: { not: null } },
     select: { id: true, systemName: true, sourcePrompt: true, requestId: true, userId: true },
@@ -47,12 +50,12 @@ async function main() {
       next = next.replace(new RegExp(`@${mentions[i].replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w-])`, "g"), `@${correctNames[i]}`);
     }
     if (next !== asset.sourcePrompt) {
-      await prisma.mediaAsset.update({ where: { id: asset.id }, data: { sourcePrompt: next } });
-      console.log(`FIX ${asset.systemName}: [${mentions}] -> [${correctNames}]`);
+      if (apply) await prisma.mediaAsset.update({ where: { id: asset.id }, data: { sourcePrompt: next } });
+      console.log(`${apply ? "FIX" : "WOULD-FIX"} ${asset.systemName}: [${mentions}] -> [${correctNames}]`);
       fixed++;
     }
   }
-  console.log(`\nDONE fixed=${fixed} skipped=${skipped} alreadyOk=${ok} total=${assets.length}`);
+  console.log(`\nDONE${apply ? "" : " (dry-run)"} fixed=${fixed} skipped=${skipped} alreadyOk=${ok} total=${assets.length}`);
   await prisma.$disconnect();
 }
 main().catch((e) => { console.error(e); process.exit(1); });

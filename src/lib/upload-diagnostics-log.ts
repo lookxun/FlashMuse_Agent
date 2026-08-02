@@ -1,5 +1,6 @@
-import { appendFile, mkdir } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { appendDiagnosticsJsonl } from "@/lib/diagnostics-log-rotate";
 
 type UploadDiagnosticEntry = {
   event: string;
@@ -50,7 +51,7 @@ function safeExtra(value: Record<string, unknown> | undefined) {
 export async function appendUploadDiagnosticsLog(entry: UploadDiagnosticEntry) {
   try {
     await mkdir(dirname(LOG_PATH), { recursive: true });
-    await appendFile(
+    await appendDiagnosticsJsonl(
       LOG_PATH,
       `${JSON.stringify({
         time: new Date().toISOString(),
@@ -67,7 +68,6 @@ export async function appendUploadDiagnosticsLog(entry: UploadDiagnosticEntry) {
         error: getErrorDetails(entry.error),
         extra: safeExtra(entry.extra),
       })}\n`,
-      "utf8",
     );
   } catch {
     // Upload diagnostics must never block user uploads.
