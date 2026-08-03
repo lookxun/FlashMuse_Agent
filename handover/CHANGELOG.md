@@ -2,6 +2,410 @@
 
 > 本批 CHANGELOG 从 2026-07-21 交接文档重建开始记。**此前的全部历史流水**（约 580KB，含 2026-06 起到 07-21 每一次改动/部署细节）在 `historical-handover-docs-last-used-2026-07-21/CHANGELOG.md`，遇到需要历史上下文的难题再翻。
 
+## 2026-08-03（第三十七次会话）🆕 **M033 图片秒回预检 + M034 分片上传（单片重传）—— 全部完成 + 部署测试服 v1.0.0.69 + 上号实测全过**
+
+> 🗣️ 用户指令：「M033 → M034 → M015 把这些做了，然后把当前所有内部都部署到测试服」。
+> M015（阿里端压缩）经确认后用户拍板**先只做 M033+M034，M015 等测完再说**（M015 需在共用的阿里生产机新起进程、收益有限、压缩治不了丢包这个真病根）。
+
+### 做了什么
+
+1. **M033 图片补「秒回预检」**：`src/app/api/asset-upload-temp/route.ts` 加 GET 预检 handler
+   （复用既有 `findDedupImage`，`mediaType:"image"`）+ CORS methods 加 `GET`；客户端对话流 `uploadTemporaryAssetImageOnce`
+   / 工作流 `uploadWorkflowImageOnce` 在上传前 `computeFileContentHashHex` + `precheckUploadedFileDedup`，
+   门控 `dedup && !forceReencode`（与服务端 dedup 判重口径一致）。原来图片走 `asset-upload-temp` 没有预检、
+   命中去重也要整包传完才在服务端算哈希（正式服实测 3.9MB 命中仍花 8020ms）——典型"该统一却分叉"。
+
+2. **M034 分片 + 单片重传**（新增 3 文件）：
+   - `src/app/api/upload-chunk/route.ts`：传单片（body=原始字节）落临时片；`?assemble=1` 收齐拼接 + **校验整体哈希**
+     + 重建成等价 multipart 请求 **直接调既有 `upload-file`/`asset-upload-temp` 的 POST**（零逻辑复制，全部校验/去重/落库/命名/阿里同步复用）。
+   - `src/lib/upload-chunks.ts`：分片存取 + `clearUploadChunks`（必清）+ `sweepStaleUploadChunks`（机会性清 6h+ 孤儿，避免只增不减）
+     + uploadId 白名单防穿越 + 单片 4MB / 单上传 250 片上限。
+   - `src/lib/chunked-upload.ts`（客户端统一入口）：`shouldChunkUpload`（>1MB 才分片）+ `uploadFileInChunks`
+     （1MB/片、每片独立 XHR、**失败自动重传只补该片×3**、真实字节进度、assemble 带 `originalContentHash`）。
+     对话流/工作流的图片与文件四处大文件都走它，小文件保持原单发。
+   - `src/proxy.ts` matcher 排除名单加 `upload-chunk`。
+
+### ⭐ 部署 + 上号实测（测试服 v1.0.0.69，含把此前未部署的第三十六次 H3 批也一起带上去了）
+
+- bump v68→v69 → tar `src/` → scp 腾讯 → 解到 `/opt/flashmuse-staging/app` → `up -d --build staging-app`
+  （**`next build` 编译通过，跨路由 import handler 无报错**）→ sync-ali staging → `.env` 清理重复的 `PUBLISHED_APP_VERSION`
+  只留 v69 → force-recreate → x-app-version=v69 / health=v69 / 8080=200。
+- **M034 实测**（HTTPS `staging-static`，7.5MB 噪声图）：GET 预检 miss → 8 片全 200 → `assemble=1` 200（哈希校验过）
+  → PATCH 200；日志 `upload-chunk-assemble-success`（8 片 / 7541512 字节）；**分片目录 0 残留**。UI 进度条走真实字节（80%→100%）。
+- **M033 命中实测**：同一文件第三次上传（前一次工作流上传已建 MediaAsset）→ 预检 GET 返回 `{url,name}` → **零 chunk 请求**。
+- **巡检**：登录 ✓ / 对话模式 ✓ / 工作流画布点节点不崩 ✓ / 资产库 ✓ / **真跑生图成功（橘猫图，积分 96252→96244，−8）** ✓。
+- **顺带验第三十六次 H3 批 UI**：工作流下拉 H3 带 NEW 徽标 ✓、2K only ✓、参考图模式只剩图片槽 ✓、
+  四个参考模式齐全 ✓、**尾帧模式=单槽「尾帧」✓**（待办 flagged 的最高风险点，正常）、侧边栏 NEW 青绿圆角 ✓、logo「AI影游助手」✓。
+- ⚠️ **唯一 console error = 1 次 `workspace-instance` 502**（多标签接管轮询的瞬时上游抖动，与本批无关）。
+- ⚠️ **没做的**：① 正式服（用户只说部署测试服）② 真跑一次 H3 生视频验 `video-job-charged` 扣费日志（约 47 积分 + 10~16 分钟，未拿到 go）③ 后台 `/admin`（需 lookxun 账号，与本批无关）。
+
+### ⚠️ 已知限制（非 bug）
+
+- **HTTP 入口（`:8080`）不是安全上下文 → `crypto.subtle` 不可用 → M033 预检 + M034 的原始哈希都自动跳过**
+  （与既有文档预检同一限制）。M034 分片本身在 HTTP 下仍工作，只是不带哈希校验。生产/HTTPS 入口不受影响。
+
+### 留痕（按规矩不删）
+
+- 测试服 `工作流_11` + 3 个上传图片节点（噪声测试图 m034-test，0 生成积分）；对话「一只橘猫坐在窗台上」+ 1 张生成图（−8 积分）。都在测试号 `12424740@qq.com` 名下。
+
+### 状态
+
+- ⚠️ **测试服 = v1.0.0.69**；正式服 = GitHub = `v1.0.0.67`（`05035da`）；**本地全部（第 34/35/36 三批 + 本批）仍未 commit、未 push**。
+  `tsc` 全绿、`npm test` 15/15、新文件 eslint 0 问题（两个大文件仍是 24 个既有基线错误，本批未新增）。**无 Prisma 迁移、无 compose 改动**（只动了 `src/proxy.ts` matcher）。
+
+## 2026-08-03（第三十六次会话）🆕 **H3 扣费实测坐实（真扣到了）+ 扣费三件套收敛成唯一权威 + H3 接进工作流（顺手收掉参考模式那份分叉）+ NEW 徽标统一**｜⛔ **纯本地，未 commit、未部署**
+
+> 🗣️ 用户指令链：「看交接文档说做到哪了、接下来做啥」→
+> 「2，这个 minimax h3 扣费扣分问题查清楚，不要有问题，然后把这个模型接到工作流里。3 不用做了」→
+> 「NEW 徽标要加，而且工作流模式大分类后面那个 new 也改成相同的样式。做本地」。
+>
+> ⚠️ **本次全程只改本地代码 + 只读式验证**（读服务器日志、只读 GET OpenRouter、只读查本地库），
+> **没测试、没部署、没 commit、没 bump 版本号**（按 `AGENTS.md` 最顶部那条铁律）。
+
+### 一、⭐⭐ H3 扣费：**已用硬证据坐实"真拿到了成本、真扣了分"**（上一任的遗留风险 = 关闭）
+
+上一任担心的是：`OpenRouterVideoTask` 类型里**压根没声明 `cost`**（`openrouter-video.ts:34`），
+若视频轮询不返回 cost → `usd=0` → **扣 0 分 = 白送**，而且失败得毫无声响。**结论：担心不成立。**
+
+- **证据①（上游真的给）**：从本地 `.runtime/generation-diagnostics-log.jsonl` 里 grep 出 08-03 那 5 次 H3 的
+  `video-provider-create-success` 拿到 taskId，直接 `GET https://openrouter.ai/api/v1/videos/{id}`
+  （**只读、不花钱**），返回：
+  ```json
+  {"status":"completed","usage":{"cost":1.95,"is_byok":false}}
+  ```
+  15 秒 2K = **$1.95**（= 15 × $0.13，和官方按秒计价完全吻合）。
+- **证据②（我们真的扣了）**：本地库 `creditLedger` 里那 5 笔（`.env` 有 `DATABASE_URL`，
+  ⛔ 上一任说"本地没 DATABASE_URL"是**只看了 `.env.local`**）：
+  ```
+  minimax/hailuo-3   credits=137   usd=1.95   cny=13.65   × 5 笔
+  ```
+  1.95 × 7（本地汇率）× 10（积分率）= 136.5 → **137 分**。→ **整条按成本扣费链路正确，H3 不需要单独配价格表。**
+- ⭐⭐ **方法论（值得记住，已写进 AGENTS.md）**：验"上游到底给没给某个字段"，
+  **别读类型声明、别读文档、别看 CHANGELOG 里的报价** —— 拿一个**历史已完成任务的 id 去 GET 上游**
+  （幂等、免费、几秒钟），再**回库看账本那一行**。两步都是二值判断，没有解释空间。
+
+### 二、扣费用量三件套收敛成唯一权威 `src/lib/video-usage-cost.ts`（🆕 新文件）
+
+⛔ 收敛前 **`src/app/api/video/route.ts`（前台同步轮询那条路）和 `src/lib/generation-jobs.ts`
+（后台任务队列那条路）各存一份一字不差的 `getUsageMeta` / `withBytePlusVideoUsd` / `withChargedUsage`**
+—— 扣费金额是钱，两份各自演化的后果就是"一条路扣对了、另一条路白送"这类静默漏收。
+
+- 新模块导出：`getVideoUsageMeta`（递归找 `usd/cost/totalCost/total_cost/amount`）、
+  `withVideoUsdFallback`、`withChargedVideoUsage`、`type VideoUsageMeta`。
+- 两处调用点都改成用它；route.ts 里保留 `const getUsageMeta = getVideoUsageMeta` 这样的薄别名，
+  避免动那几十处调用（行为一字不变）。
+- ⭐ **新增兜底定价（只在 `usage.usd` 缺失时生效，给了就一个字不动）**：
+  H3 = `时长 × $0.13 + 参考图张数 × $0.04`（用实测反验过：15 秒 = 1.95 ✔、5 秒 = 0.65 ✔），
+  命中时在 usage 上打 `usdFromFallbackPricing: true` 便于发现。BytePlus 那套按输出 token 的老逻辑原样搬过来。
+- ⭐ **给 `OpenRouterVideoTask` 补上 `usage?: { cost?: number; is_byok?: boolean }` 声明**
+  （附实测注释）—— 就是因为它以前没声明，才让"扣费到底拿不拿得到成本"查不清。
+- ⭐ **补日志 `video-job-charged`**（`generation-jobs.ts` 队列成功分支）：
+  后台队列这条路**扣费成功以前一条日志都没有**（只落库 creditLedger），这正是上一任验不成的原因。
+  现在带 `usage` / `credit` / `usdFromFallbackPricing` 一起留痕。
+
+### 三、MiniMax H3 接进工作流 —— 顺手收掉了「参考模式」那份平行实现
+
+原来 `workflowVideoModels` 里有一句 `filter(model => model.id !== HAILUO3_VIDEO_MODEL_ID)`
+把 H3 排除掉，理由是工作流的参考模式是**另一份只认 BytePlus Seedance 的平行实现**。这次全部收敛：
+
+| 收敛项 | 收敛前（工作流本地副本） | 收敛后（唯一权威） |
+|---|---|---|
+| 参考模式类型 | `WorkflowVideoReferenceMode = "reference"\|"first_frame"\|"first_last_frame"`（**漏了 `last_frame`**，这就是 H3 当时不敢放出来的直接原因） | `upload-rules.ts` 新导出的 **`VideoReferenceMode`**（4 值） |
+| 有没有参考模式 | `isWorkflowBytePlusSeedanceVideoModel`（写死 3 个 BytePlus id） | `upload-rules.supportsVideoReferenceMode` |
+| 参考图裁到几张 | `getWorkflowEffectiveBytePlusVideoReferenceItems`（张数写死 9/1/2） | `upload-rules.getEffectiveVideoReferenceItems` |
+| 裁掉后的提示文案 | `getWorkflowBytePlusVideoReferenceLimitHint` | `upload-rules.getVideoReferenceLimitHint` |
+| 参考模式菜单选项 | 本地 `workflowVideoReferenceModeOptions`（3 项、**没有尾帧模式**、不按模型区分） | 🆕 **`src/lib/video-reference-modes.ts`**（Seedance 3 项 / H3 4 项，对话流+工作流共用） |
+| 必填张数 | 节点里手写三元 `first_last_frame?2:first_frame?1:0` | `getRequiredVideoReferenceImageCount(mode)` |
+
+- 🆕 **`src/lib/video-reference-modes.ts`**：`videoReferenceModeOptions` /
+  `getVideoReferenceModeOptions(modelId)` / `getVideoReferenceModeLabel(modelId, value)` /
+  `getRequiredVideoReferenceImageCount(mode)`。
+  `chat-workbench-core.tsx` 里原来那两个数组 + `getVideoReferenceModeOptions` **已删掉，改成 re-export**
+  （保住 `chat-workbench.tsx` 现有的 import 路径不动）。
+- **工作流节点 UI 补齐「尾帧模式」**：单槽上传按钮「尾帧」、`useSlotUploadLayout` 加 `last_frame`、
+  参考模式菜单多收一个 `modelId` prop（选项/文案按模型走）。
+- **删掉那句 filter**，并在原处留注释说明"⛔ 别再往这里加 filter 排除模型，要控可见性用后台开关"。
+- ⭐ **逐条核过、确认"不用改"的既有逻辑**（都是模型无关的）：
+  分辨率（`getSupportedVideoResolutions` → H3 只有 2K）、6 个比例、时长 5~15（走新滑块）、
+  MiniMax 图标（`getGenerationModelIcon` 认 `minimax/`）、
+  模型可见性（工作流用的就是**对话流那份** `enabledGenerationModelIds.video` → H3 已启用）、
+  服务端 `/api/video`（`isConversationVideoModelEnabled` + `last_frame` 校验 + `frame_images` 组装**早就齐了**）。
+- ⛔ **Agent 仍不接 H3**（用户明确说不接，`system-settings.isAgentVideoModelEnabled` 一字未动）。
+
+### 四、NEW 徽标统一（🗣️ 用户当次要求）
+
+- 🆕 **`src/components/new-badge.tsx`（`NewBadge`）= 唯一权威**：
+  `青绿 #14b8a6 + rounded-[3px] + px-1 py-0.5 + text-[10px] font-semibold + 白字`。
+  ⛔ 收敛前是**两份长相不同的手写 className**：模型下拉青绿小圆角 vs 侧边栏「工作流模式」
+  绿色 `#2fbf4f` **胶囊 `rounded-full`**。🗣️ 用户拍板统一成模型下拉那款。
+- 三处接上：① 对话流视频模型下拉（长相不变）② **侧边栏「工作流模式」（胶囊绿 → 青绿小圆角）**
+  ③ **工作流视频模型下拉（本次新增，H3 现在也有徽标了）**。
+- ⭐ `isNewGenerationModel` 从 `chat-workbench-core.tsx` **挪到 `src/lib/models.ts`**
+  （它是模型元数据，而且工作流也要用 —— ⛔ 不能让工作流去 import 那个上万行的 chat 模块）；
+  chat-core 留 re-export。
+- ⭐ 徽标做成 `<span>` 是**有意的**：tldraw 那条**无 layer** 的 `button { font-size: inherit }`
+  会把写在 `<button>` 上的 Tailwind 字号整条吃掉，而工作流菜单项就是 button（见 AGENTS.md 那条铁律）。
+
+### 五、顺手清掉两个「上一批 H3 留下的死 import」
+
+`git show HEAD:` 对比确认 HEAD 里没有、是那批新加进来又一次都没用的：
+`chat-workbench.tsx` 的 `getSmartVideoResolutionForModel`、`chat-workbench-core.tsx` 的 `HAILUO3_VIDEO_MODEL_ID`。
+
+### 六、改动文件清单
+
+**新增 3 个**：`src/lib/video-usage-cost.ts`、`src/lib/video-reference-modes.ts`、`src/components/new-badge.tsx`
+**修改 7 个**：`src/lib/upload-rules.ts`（导出 `VideoReferenceMode`）、`src/lib/models.ts`（`isNewGenerationModel`）、
+`src/lib/openrouter-video.ts`（`usage` 类型声明）、`src/lib/generation-jobs.ts`、`src/app/api/video/route.ts`、
+`src/lib/chat/chat-workbench-core.tsx`、`src/components/chat-workbench.tsx`、`src/components/workflow-tldraw-canvas-inner.tsx`
+
+**自查**：`npx tsc --noEmit` 全绿；`npm test` **15/15**；
+eslint **`no-unused-vars` 归零**（剩下 44 个 error 全是既有 react-compiler / rules-of-hooks 基线，一个没新增）。
+**无 Prisma 迁移、无 compose/nginx 改动。**
+
+### 七、⚠️ 本次一个像素都没在浏览器看过 —— 必测清单见 `05-next-actions.md` 顶部
+
+
+## 2026-08-03（第三十五次会话）🆕 **H3 耗时/扣费调查 + 两处 UI（logo 改字 + 时长选择器改滑块，对话流与工作流统一）+ 部署测试服 v1.0.0.68 并上号实测通过**｜⚠️ **中途我把 `chat-workbench.tsx` 编码搞坏并完整恢复**
+
+> 🗣️ 用户指令链：「看交接文档说做到哪了」→「minimax h3 生成时间很长，看日志是真的慢还是代码问题」→
+> 「扣费扣积分正常吗？查了没问题就也放到工作流的视频节点去」→「先把两个 UI 改一下，然后再部署测试服」
+> （① logo `AI视频助手`→`AI影游助手` ② 视频时长弹窗改成滑块+数字输入框）→
+> 「支持第一秒的那种，在档位之间加小竖线…5 10 15 这些数字是按钮点了跳到对应时间」→
+> 「5 10 15 按钮鼠标触碰后下面加个灰色底」→「不需要所有模型都显示 15，veo 只支持 4/6/8 后面就别有 10 和 15 的刻度」→
+> 「把后面输入框往后靠一些」→「把工作流里的视频节点选择时间也改成这种滑块弹窗」→
+> 「工作流的滑块不能移动」×3 →「你上号测试一下这个功能」。
+
+### 零、⚠️⚠️ 事故与恢复：我用 PowerShell 批量替换把 `chat-workbench.tsx` 整个文件编码搞坏了
+
+- **怎么坏的**：为了把 `React.useMemo` 批量改成 `useMemo`，我用了
+  `(Get-Content x.tsx -Raw) -replace ... | Set-Content -Encoding utf8 x.tsx`
+  —— **正是 `AGENTS.md` 明令禁止的做法**。PS5.1 的 `Get-Content` 按系统 ANSI（GBK/936）解码 UTF-8 文件
+  → 中文变 mojibake（双重编码），`Set-Content -Encoding utf8` 又**加了 BOM**。
+  当时该文件里还有**未提交的 H3 那一整批改动**，不能直接 `git checkout` 丢掉。
+- **为什么不能"反向转回来"**：把当前串按 GBK 编码写回虽能恢复大部分，但实测**残留 373 行含 U+FFFD**——
+  UTF-8 三字节中文被 GBK 解码时经常把**紧跟其后的那个 ASCII 字符（引号/换行）一起吃掉**，属**不可逆丢失**。
+  ⛔ 所以"逆转"这条路不通，别再试。
+- **实际恢复办法（可复用）**：
+  1. 把损坏文件另存做「代码结构参照」（ASCII 部分完好，只有中文烂了）；
+  2. `git show HEAD:src/components/chat-workbench.tsx` 写回工作区（拿到干净底）；
+  3. 用 **「精确相等行做锚点 + LIS 单调对齐」** 把参照文件和 HEAD 逐块配对
+     （脚本 `C:\Users\ASUS\AppData\Local\Temp\opencode\rebuild.js`）：
+     - 块内行数相等 → 该行**纯 ASCII 就取参照**（= H3 的真实代码改动），**含中文就取 HEAD**（= 未改动行，去乱码）；
+     - 块内行数不等 → 是 H3 真加/删了行（本次 8 处），单独人工处理。
+  4. 结果：H3 的 29 处代码改动（`isBytePlusSeedanceVideoModel`→`supportsVideoReferenceMode` 等）
+     + 8 个新增块全部还原；130 处"看似改动"经核对全是同一行的乱码 vs 干净版，用 HEAD 正确。
+- ⭐⭐ **抓到一处真实丢码**：乱码把「注释行」和「`const` 定义行」**粘成了一行**
+  （`R3727`：`// 时长档位多的模型…单列。    const isMultiColumnDurationMenu = …`）→
+  机械重建时那个 `const` 定义被当成注释的一部分丢了，`tsc` 报 `Cannot find name 'isMultiColumnDurationMenu'` 才暴露。
+  已补回。**扫描"乱码行里粘着代码关键字"的正则只命中这 1 处**，确认没有别的丢码。
+- **恢复后的校验（全绿）**：无 BOM、0 个 U+FFFD、0 个 mojibake 字符、`tsc` 通过、`npm test` 15/15，
+  并逐行核对「与 HEAD 不同的中文行」**只有 17 条**且全是本次该改的（滑块注释/时长标题/logo/H3 尾帧提示）——
+  **没有误伤任何其它内容**。H3 那批的其它 9 个文件没被碰。
+
+### 一、H3 生成耗时调查（纯读日志，零代码）：**是模型真的慢，不是我们的问题**
+
+从 `.runtime/generation-diagnostics-log.jsonl` 里 5 次 H3 生成（全是 **15 秒 / 2K** 的重活儿）拆出三段耗时：
+
+| 任务 | 提交请求 | **模型渲染（到出片）** | 下载成品到服务器 |
+|---|---|---|---|
+| 3fbd9173 | 16.7s | **~15.6 分钟** | 26.7s |
+| 213fa032 | 46.6s（中途 `fetch failed` 自动重试 1 次） | **~11 分钟** | 50.1s |
+| b4bc2baf | 11.5s | **~10.3 分钟** | 43.5s |
+| ba2b09eb | 16.1s | **~13 分钟** | 62.1s |
+| 1828f360 | 9.4s | 日志结束仍 pending | — |
+
+- **大头 100% 在 OpenRouter/MiniMax 渲染那 10~16 分钟**，我们只是每 ~10 秒轮询一次问它好没好，纯等待。
+- 轮询节奏健康（出片后最多多等一个周期 ~10 秒）；提交 9~46s、下载 27~62s 都是**跨境网络**，
+  其中一次 `video-provider-create-fetch-error` 是线路抖动、已自动重试成功，**不是逻辑 bug**。
+- ⭐ 建议（未做，等用户拍板）：给这种超长任务在前端加「预计 10 分钟+」的明确提示，别让用户以为卡死。
+
+### 二、H3 扣费调查：**代码路径通用且正确，但"扣了多少"本地无法验证**（⚠️ 仍是待验项）
+
+- H3 走**通用按成本扣费**：`chargeCredits`（`credits.ts:158`）用 `usage.usd × usdToCnyRate × creditsPerCny`，
+  `usd` 来自 `getUsageMeta` **递归在响应里找 `cost`**。`models.ts:127` 记着「H3 计费走 `usage.cost`，不用配价格表」。
+  → **不需要给 H3 单独配价，代码没问题。**
+- ⚠️ **但我没能证明"真扣了、扣对了"**，两个原因：
+  1. H3 对话流视频走**后台任务队列**（`generation-jobs.ts:1030` 扣费），这条路**扣费成功不写诊断日志**，
+     只落库 `creditLedger` → 日志里能看到出片/存盘，看不到扣了多少分。
+     （日志里那 4 条 `video-route-poll-completed` 带 `credit` 的全是 6~7 月的老 BytePlus 任务。）
+  2. 本地 `.env.local` **没有 `DATABASE_URL`/`AUTH_SECRET`**，查不了 `creditLedger`。
+- 🎯 **遗留风险（下一个 AI 要收尾）**：扣费金额完全依赖 OpenRouter **视频轮询响应里带 `usage.cost`**；
+  `OpenRouterVideoTask` 类型里**压根没声明 `cost` 字段**（`openrouter-video.ts:34`）。
+  若视频接口不返回 cost → `usd=0` → **扣 0 分 = 白送**。
+  ⭐ 验法二选一：① 后台/DB 看那几笔 H3 的 `creditLedger.credits`/`usd` 是否 >0
+  ② 在测试服真跑一次 H3 再查账本。（H3 那批的 CHANGELOG 写着实测 5 秒 $0.65、9 图 $0.81、约 47/140 积分，
+  **但那是直打 OpenRouter 量的，不等于我们的扣费链路真拿到了 cost** —— 别把它当已验证。）
+
+### 三、UI 改动一：工作台 logo 副标题 `AI视频助手` → `AI影游助手`
+
+`chat-workbench.tsx` 唯一一处（全项目 grep 只有它）。测试服实测已生效。
+
+### 四、UI 改动二：视频时长选择器从「按钮列表」改成「滑块 + 数字输入框」，**对话流与工作流共用一份**
+
+- ⭐ **新增唯一权威共享组件 `src/components/video-duration-slider.tsx`（`VideoDurationSlider`）**。
+  对话流 `chat-workbench.tsx` 的 `renderControlMenu`（`isDurationMenu` 分支，弹窗加宽到 `w-[340px]`、
+  标题「选择视频生成时长」）和工作流 `WorkflowDurationMenuSingle` 都 import 它。
+  ⛔ 别再各写一套（"能统一一律统一"）。顺手删掉因此没人用的 `sortWorkflowDurationOptions`。
+- **交互规格（用户逐条提的，都已实测）**：
+  1. **量程按模型自身**：右端 = 该模型最大档（`scaleMax = maxSec`）。Veo 3.1 右端就是 8，
+     **末尾不再有 10/15 空刻度**；Kling O1 到 10；Seedance/H3 到 15。整体长度不变。
+  2. **前段灰色禁用**：小于最小档的区间画深灰（`#cfcfcf`）不可选（Veo 的 0~4、Seedance 的 0~4、H3 的 0~5）。
+  3. **小竖线 = 每个"可选秒"一根**：连续档模型（H3 5~15）在 5-10 之间有 6/7/8/9；
+     离散档模型（Kling 5/10/15）中间就没有。
+  4. **数字刻度是按钮**：点了跳到对应秒；档位少（≤6 档）直接标各档（Veo 标 0/4/6/8），
+     档位多用 `0/5/10/15` 里 ≤ 最大档的那几个；超范围的（如 0）灰显不可点；
+     可点的**悬停加灰底**（`hover:bg-[#f0f0f0]` + 圆角内边距）。
+  5. **右侧数字输入框**：可直接输入（回车/失焦提交）、带上下箭头在合法档之间跳、超范围自动夹紧；
+     与滑块间距 `gap-6`（用户要求"往后靠一些"）。
+  6. **一律吸附到最近的合法档**（🗣️ 用户在三个方案里选的这个）：拖动/输入/点刻度都过 `snap()`。
+     ⚠️ 平局（如 Veo 拖到 7）按实现取**较小档**（6）。
+
+### 五、⭐⭐ 工作流滑块"拖不动"的真因（**我连续归因错 3 次**，第 4 次才对）
+
+**真因**：`workflow-tldraw-canvas-inner.tsx:2795` —— 包着视频节点编辑器的容器上写着
+`onPointerDownCapture={stopCanvasPointer}`，而 `stopCanvasPointer` 就是 `event.stopPropagation()`（2517 行）。
+**React 的捕获阶段是从根往下**，这个**祖先先执行并掐断传播** → 我的滑块
+**压根收不到任何 `pointerdown`（捕获、冒泡都收不到）**。
+→ 这也解释了为什么原来的按钮式菜单没事：按钮用 `onClick`，**click 是另一个事件类型，没被拦**。
+
+**错过的 3 次归因（别再走一遍）**：
+1. ❌ 以为是 tldraw 抢事件 → 在自己的 `onPointerDown/Move/Up` 里加 `stopPropagation`。没用。
+2. ❌ 以为要在捕获阶段拦 → 改成 `onPointerDownCapture/MoveCapture/UpCapture`。没用（祖先更靠前）。
+3. ❌ 以为是 `onChange` 更新节点数据触发 shape 重渲染、track DOM 重建丢了 pointer capture →
+   把 move/up 挂到 `window`。**还是没用**（因为 `pointerdown` 本身就没到）。
+
+**正解**：照本项目**橡皮擦画笔滑块**的成熟做法（同文件 `2735` 行是个原生 `<input type="range">`），
+用**原生 range 作为唯一的拖动承接层**：透明（`opacity-0`）绝对定位覆盖在自定义外观之上，
+自定义的底轨/禁用段/进度/手柄全部 `pointer-events-none` 只负责好看。
+**原生 range 的拖动是浏览器内建默认行为，不受 `stopPropagation` 影响。**
+`min` 固定为 `0`、`max = scaleMax`，让它的坐标系和视觉刻度**完全对齐**；`onChange` 里 clamp+snap。
+⛔ **代码里已写死注释「别改回自己监听 pointer 事件」，别再改回去。**
+
+### 六、部署测试服 `v1.0.0.68` + 上号实测（🗣️ 用户明确要求「上号测试」）
+
+- 流程照 `03`：`bump-version`（v67→v68）→ 打 13 个改动文件 tgz → scp → `docker compose up -d --build staging-app`
+  → `sync-ali.sh --stack=staging --with-generated` → 往 `/opt/flashmuse-staging/.env` 写
+  `PUBLISHED_APP_VERSION=v1.0.0.68` + `force-recreate` → 验证。
+- ⚠️ **踩到工具超时**：`sync-ali.sh` 前台跑会超 120s 被工具掐断，但**服务器上的进程还活着**，
+  再起一次会撞锁报 `another sync for staging is running`。→ 正确姿势：`(nohup ... &)` + 轮询，
+  或者直接 `pgrep -af sync-ali` 确认前一次还在跑就**等它**。本次静态阶段（40 文件）几分钟完成，
+  `generated`（248MB 媒体）慢，但**和 UI 验证无关，可以让它后台继续**。
+  判据：源 `/tmp/sync-ali-static-staging` 与阿里 `_next/static` 的 `find -type f | wc -l` **都是 40** = 静态已一致。
+- 验证：`/api/health` = `{"ok":true,"version":"v1.0.0.68"}`、`x-app-version: v1.0.0.68`、
+  外网 8080 = 200、`https://staging-static.venusface.com/` = 200、页面版本号显示 `v1.0.0.68`。
+
+**上号实测（`12424740@qq.com`，Playwright 真实鼠标 down→move→up，不是直接改 value）**：
+
+| 验证项 | 结果 |
+|---|---|
+| **工作流** Seedance：8秒 → 拖动 | 过程连续 9→10→11→12→13，落 13 秒，**节点按钮同步显示「13秒」** ✅ |
+| **工作流** 拖到最左 | 夹到 `4`（最小档），不会到 0 ✅ |
+| **工作流** 点数字刻度「10」 | 跳到 10 ✅ |
+| **工作流** 上/下箭头 | 10→11→10 ✅ |
+| **工作流** 小竖线 | 12 根，位置 26.67%(=4s)…100%(=15s)，5-10 间有 6/7/8/9 ✅ |
+| **工作流** 切 Veo 3.1 | `max=8`、刻度只有 `0`(灰)/`4`/`6`/`8`（50%/75%/100%）、**无 10/15 空刻度** ✅ |
+| **工作流** Veo 吸附 | 拖 5s→4、7s→6、3s→4；0.98/0.72/0.45 → 8/6/4 ✅ |
+| **对话流** Kling v3.0 Std | `max=15`、小竖线仅 3 根（5/10/15）、拖动 0.98/0.55/0.2 → 15/10/5 ✅ |
+| **对话流** MiniMax H3 | 5~15 连续、11 根小竖线、拖动逐秒变化 6→7→9→11→13 ✅ |
+| logo | 显示「AI影游助手」✅ |
+| 工作流点节点 | **不崩**（React #310 老坑没复发）✅ |
+| 控制台 | **0 error** ✅ |
+
+- ⚠️ **测试脚本坑（差点误判）**：用 `boundingBox()` 后点 `box.x + box.width * 1.0` 是**元素右边界外**，
+  会**漏点**（value 保持不变）→ 我一度以为"拖到最右到不了最大值、原生 range 有 thumb 内缩问题"。
+  用 `0.98`/`0.999` 复验证明映射**全宽正确**（0.999→15、0.95→15、0.5→8、0→夹到 4）。
+  ⭐ **点滑块极值一律用 0.98 这类分数，别用 1.0。**
+
+### 七、留痕（🗣️ 用户交代测试内容不要删）
+
+- **测试服**：新建 `工作流_10` + 1 个视频节点（**没跑生成 → 0 积分消耗**，余额仍 96,252）；1 个空的「新对话」。
+- 一次性截图 `slider-chat-h3.png` 落在项目根目录，**已删**（根目录 png 不在 `.gitignore` 里，会污染 `git status`）。
+
+### 八、本次改动文件清单（在 H3 那批之上新增/修改）
+
+| 文件 | 改了什么 |
+|---|---|
+| `src/components/video-duration-slider.tsx` | 🆕 **新增**：唯一权威 `VideoDurationSlider`（原生 range 承接拖动 + 自定义外观 + 小竖线 + 刻度按钮 + 数字框） |
+| `src/components/chat-workbench.tsx` | logo 改字；`renderControlMenu` 的 duration 分支换成滑块（弹窗 `w-[340px]`、标题「选择视频生成时长」）；import 共享组件。**另：本文件经历编码事故并已完整恢复** |
+| `src/components/workflow-tldraw-canvas-inner.tsx` | `WorkflowDurationMenuSingle` 弹窗换成滑块（`w-[340px]`）；删掉无人使用的 `sortWorkflowDurationOptions`；import 共享组件 |
+| `src/lib/app-version.ts` | v1.0.0.67 → **v1.0.0.68** |
+
+`npx tsc --noEmit` 通过；`npm test` 15/15；`eslint` 新文件 0 error 0 warning
+（⚠️ `workflow-tldraw-canvas-inner.tsx` 那些 `react-hooks/static-components` 报错是**既有**的，不是本次引入）。
+
+---
+
+## 2026-08-03（第三十四次会话）🆕 **接入视频模型 MiniMax H3（`minimax/hailuo-3`，走 OpenRouter，只接对话流）+ 实测尺寸/参考图上限 + Kling/MiniMax 官方图标 + NEW 徽标**
+
+> 🗣️ 用户指令链：「看 minimax 官网和 OpenRouter 的 H3 介绍，把接入参数列出来」→「接 OpenRouter」→
+> 「接本地对话流视频生成，加在 Kling v3.0 上面，加个 2K 档，参考模式参照 seedance 做，agent 不接」→
+> 「先测本地」→「后台默认到 9 张」→「图标改成 minimax 的」→「图标用 lobehub 的 Kling 换三个可灵模型」→
+> 「加尾帧模式」+「加个 NEW，不要胶囊、圆角 3」→「NEW 用偏蓝的绿色」→「工作流那个 NEW 也统一」。
+> ⛔ **全程只改本地代码 + 一次真实联调测试（花约 $5.86 OpenRouter 额度）。未 commit、未部署、未 bump。**
+
+### 一、模型接入（依据全部来自实查，不是猜）
+
+- **模型 = OpenRouter slug `minimax/hailuo-3`**（canonical `minimax/hailuo-03-20260730`，OpenRouter 展示名 `MiniMax: H3`）。
+  ⚠️⚠️ **名字坑**：slug 里带 `hailuo`（沿用海螺 01/02 老命名），但这一代**对外叫 MiniMax H3、不叫海螺**
+  （官方博客明写"抛弃了 Hailuo-02 架构"）→ **界面一律显示 `MiniMax H3`，只有 id 保留 hailuo**。
+  上一代 `minimax/hailuo-2.3` 才是真"海螺"（1080p / 6·10秒 / 无音频 / 只首帧），是另一个模型。
+- **OpenRouter 对 H3 的机器可读声明**（`GET /api/v1/videos/models`）：
+  `resolution 只有 2K`、`aspect_ratio [21:9,16:9,4:3,1:1,3:4,9:16]`、`duration [5..15]`、
+  `frame_images [first_frame,last_frame]`、`generate_audio true`、`seed false`、`supported_sizes null`、
+  计费 `duration_seconds 0.13 + reference_images 0.04`、透传只允许 `aigc_watermark`。
+- ⛔ **参考视频/音频拿不到**：OpenRouter 文档明写「audio/video references 只有 BytePlus Seedance 2.0 会被采纳，
+  其它供应商**静默忽略**」→ H3 官方的 V2V 动作迁移/音色参考走 OpenRouter 用不了，
+  `upload-rules` 那条"非 BytePlus 不许传参考视频音频"正好挡住这个静默失败，**保持不动**。
+- **计费无需配价格表**：走 `usage.cost`（我们 `getUsageMeta` 递归找 `cost`），实测 5 秒固定 $0.65、9 张参考图 $0.81。
+  按 72 积分/美元：5秒≈47 积分、15秒≈140 积分。
+
+### 二、代码改动（10 个文件）
+
+| 文件 | 改了什么 |
+|---|---|
+| `src/lib/models.ts` | `VideoResolution` 加 `"2K"`；新增 `HAILUO3_VIDEO_MODEL_ID` / `HAILUO3_SUPPORTED_DURATION_SECONDS`（5~15）；`videoGenerationModels` 在 **Kling v3.0 Standard 上面**插入 `MiniMax H3`（durations 5~15 全 11 档）；`videoModelRules` 加一条（只 2K、6 比例、默认 2K/16:9）；`hailuo3VideoSizes` **用实测尺寸**；`resolveVideoSettingsForModel` 的「智能比例」不再写死 720p、改成"支持 720p 才用 720p、否则回落默认档"（⭐ **顺带修好一个既有隐性 bug：Kling Video O1 智能比例下原来会显示它菜单里没有的 720p**）；新增 `getSmartVideoResolutionForModel` |
+| `src/lib/openrouter-video.ts` | `getDuration` 加 H3 就近取档（4 秒→5）；新增 `getOpenRouterFrameImages`：首帧/尾帧/首尾帧 → `frame_images[].frame_type`，其余 → `input_references`（**二者互斥**，OpenRouter 文档说同时给时 frame_images 优先） |
+| `src/lib/upload-rules.ts` | 新增 `isHailuo3VideoModel` / `supportsVideoReferenceMode`（= BytePlus Seedance ∪ H3）/ `getVideoReferenceImageMaxCount` / `getEffectiveVideoReferenceItems` / `getVideoReferenceLimitHint`（**唯一权威**）；`videoReferenceMode` 类型加 `last_frame`；H3 参考图**默认 9 张**（首帧 1/尾帧 1/首尾帧 2），单张 8MB，不开视频音频；override key 对 H3 帧模式给一个后台不存在的 key（后台只能调参考图模式的张数，改不动帧模式硬规则） |
+| `src/lib/video-reference-image-rules.ts` | H3 加进尺寸规则集合（依据=官方文档「宽高比 0.4~2.5」，与现有常量一致；边长 256~5760 vs 我们 300~6000 差一点，注释写清） |
+| `src/lib/media-asset-record.ts` | `MODEL_DISPLAY_LABELS` 加 `"minimax/hailuo-3": "MiniMax H3"` |
+| `src/lib/chat/chat-workbench-core.tsx` | 参考模式改成按模型给列表：H3 是**四选**（参考图/首帧/尾帧/首尾帧），BytePlus 仍三选；`getGenerationModelIcon` 加 `minimax/`→MiniMaxIcon、`kwaivgi/`→KlingIcon；新增 `isNewGenerationModel`（目前只 H3） |
+| `src/components/chat-workbench.tsx` | 6 处 `startsWith("byteplus:video.")`/`isBytePlusSeedanceVideoModel` 收敛到 `supportsVideoReferenceMode`；3 处写死 `"720p"` 换 `getSmartVideoResolutionForModel`；时长两列网格判定从"写死 3 个 id"改成"档位>6"；模型下拉 label 后加 **NEW 徽标**（`rounded-[3px]` `bg-[#14b8a6]` 青绿、非胶囊）；直发/重放两条路径补 `last_frame` 最小张数校验 |
+| `src/app/api/video/route.ts` | 首帧/尾帧/首尾帧最小张数校验从"只 BytePlus"扩到 `supportsVideoReferenceMode`；参考图裁剪统一走 `getEffectiveVideoReferenceItems`；`getUploadRuleVideoReferenceMode` 认 `last_frame` |
+| `src/components/workflow-tldraw-canvas-inner.tsx` | ⛔ **H3 暂时从工作流下拉排除**（工作流参考模式是**另一份平行实现**，只认 BytePlus，放进去会是半成品）；`getGenerationModelIcon` 同步加 minimax/kwaivgi；侧边栏「工作流模式」那个 NEW 徽标统一成 `rounded-[3px]`+`#14b8a6`（原来是 `rounded-full`+`#2fbf4f` 绿胶囊） |
+| `src/components/minimax-icon.tsx` / `src/components/kling-icon.tsx` | **新建**。用用户提供的官方 SVG path 内联（`fill-rule`→`fillRule` 等 React 化），单色 `currentColor`、viewBox 24、跟其它图标同规格。⭐ 走的是"抠 path 内联"（跟 BytePlusIcon 一样），**没有装 `@lobehub/icons` 依赖** |
+
+### 三、实测结果（桌面 `minimax-h3-test/`，直打 OpenRouter，共花约 $5.86）
+
+**6 个比例 × 2K 的实际输出尺寸**（已填进 `hailuo3VideoSizes`）：
+
+| 请求 | 实际尺寸 | 备注 |
+|---|---|---|
+| 21:9 | **2944×1248** | 约分 92:39，比正 21:9 略宽 → 标 nonStandard |
+| 16:9 | **2560×1440** | 标准比例**短边固定 1440** |
+| 4:3 | **1920×1440** | |
+| 1:1 | **1440×1440** | |
+| 3:4 | **1440×1920** | |
+| 9:16 | **1440×2560** | |
+
+每段 5 秒固定 $0.65（$0.13/秒），生成 167~235 秒；21:9/9:16 文件最大约 14MB。
+
+**参考图上限 = 9 张**：3 张 ✅、9 张 ✅（$0.81）、**10 张提交即被 400 拒**（`At most 9 image input_references are supported`，同步校验、不扣费）。
+→ 用户拍板"后台默认到 9 张"，已把 `getVideoReferenceImageMaxCount` 融合/参考模式档从 3 改成 9。
+
+### 四、还没做 / 留给后续（不是 bug，是范围）
+
+- **工作流 + Agent 都没接 H3**（用户明确"先接对话流"/"Agent 不接"）。工作流要接得先把它那套平行的参考模式
+  （`isWorkflowBytePlusSeedanceVideoModel` / `getWorkflowEffectiveBytePlusVideoReferenceItems` / `showVideoReferenceModeMenu`）
+  收敛到 `upload-rules.supportsVideoReferenceMode`，再删掉 `workflowVideoModels` 里那个 filter。
+- **供应商图标**：MiniMax/Kling 都是**单色**（跟随灰色 currentColor），做不了官方那个渐变（下拉里要跟其它图标统一）。
+- **2K 尺寸表**已是实测值，不用再测。
+
+### 五、自查
+
+`npx tsc --noEmit` 全绿；`npm test` 15/15；eslint 无新增（仍是既有基线 97/InlineAssistantIcon 那批）。
+
+---
+
 ## 2026-08-02（第三十三次会话·下）🔍 **用户问「上传卡 91% 在干什么」→ 查清根因 + 三条优化方案立项（M033/M034/M015，全部记备忘不做）**
 
 > 🗣️ 用户指令：「把这些方案全记录到备忘任务里下个 ai 再做吧。」

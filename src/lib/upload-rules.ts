@@ -1,5 +1,6 @@
 import { IMAGE_UPLOAD_ACCEPT, IMAGE_UPLOAD_FORMATS } from "@/lib/image-upload-validation";
 import { DOCUMENT_UPLOAD_FORMATS, MEDIA_DURATION_EPSILON_SECONDS } from "@/lib/media-upload-validation";
+import { HAILUO3_VIDEO_MODEL_ID } from "@/lib/models";
 
 export type UploadRuleMode = "agent" | "general" | "image" | "video" | "asset-image";
 export type UploadTransportMode = "local-base64" | "server-url";
@@ -24,11 +25,18 @@ export type UploadRule = {
   audio: UploadKindRule;
 };
 
+/**
+ * 视频「参考模式」的唯一权威类型（对话流 / 工作流 / 服务端共用）。
+ * ⛔ 禁止各处再手写这个联合类型 —— 工作流原来那份漏了 `last_frame`，
+ *    直接导致 Hailuo 3 的尾帧模式在工作流里表达不出来。
+ */
+export type VideoReferenceMode = "reference" | "first_frame" | "last_frame" | "first_last_frame";
+
 export type UploadRuleContext = {
   mode: UploadRuleMode;
   modelId?: string;
   transportMode?: UploadTransportMode;
-  videoReferenceMode?: "reference" | "first_frame" | "first_last_frame";
+  videoReferenceMode?: VideoReferenceMode;
 };
 
 export type UploadRuleCountOverride = {
@@ -88,12 +96,61 @@ function isVeoVideoModel(modelId?: string) {
   return modelId === "google/veo-3.1";
 }
 
+export function isHailuo3VideoModel(modelId?: string) {
+  return modelId === HAILUO3_VIDEO_MODEL_ID;
+}
+
+/**
+ * 该视频模型是否有「参考模式」（融合 / 首帧 / 首尾帧）三选。唯一权威判定，禁止各处自己列 id。
+ * - BytePlus Seedance 2.0 三兄弟：融合模式还支持参考视频/音频。
+ * - Hailuo 3（OpenRouter）：只支持图片类输入（首帧/尾帧由 `frame_images` 表达），
+ *   参考视频/音频**OpenRouter 会静默丢弃**，所以仍由 validateVideoReferenceCombination 拦住。
+ */
+export function supportsVideoReferenceMode(modelId?: string) {
+  return isBytePlusVideoModel(modelId) || isHailuo3VideoModel(modelId);
+}
+
+/**
+ * 「参考模式」下允许的参考图张数 —— 唯一权威。
+ * 首帧 1 张、首尾帧 2 张（两家一致，都是上游硬规则）；
+ * 融合/普通参考：BytePlus Seedance 与 Hailuo 3 都是 9 张
+ * （Hailuo 3 的 9 张上限 2026-08-03 直打 OpenRouter 实测确认：第 10 张提交即被 400 拒）。
+ */
+export function getVideoReferenceImageMaxCount(modelId?: string, mode?: UploadRuleContext["videoReferenceMode"]) {
+  if (mode === "first_last_frame") return 2;
+  if (mode === "first_frame" || mode === "last_frame") return 1;
+  return 9;
+}
+
+/**
+ * 按「参考模式」裁掉多出来的参考图 —— 客户端（对话流）与服务端（/api/video）共用这一份，禁止各写一套。
+ * 没有参考模式的模型（Kling / Veo 等）原样返回，张数由 getUploadRule 的 maxCount 校验。
+ */
+export function getEffectiveVideoReferenceItems<T>(items: T[] | undefined, modelId?: string, mode?: UploadRuleContext["videoReferenceMode"]): T[] {
+  const safeItems = Array.isArray(items) ? items.filter(Boolean) : [];
+  if (!supportsVideoReferenceMode(modelId)) return safeItems;
+  return safeItems.slice(0, getVideoReferenceImageMaxCount(modelId, mode));
+}
+
+/** 参考图被裁掉时给用户看的提示文案（对话流用）。 */
+export function getVideoReferenceLimitHint(modelId?: string, mode?: UploadRuleContext["videoReferenceMode"]) {
+  if (mode === "first_last_frame") return "首尾帧模式只会使用前两张参考图";
+  if (mode === "first_frame") return "首帧模式只会使用第一张参考图";
+  if (mode === "last_frame") return "尾帧模式只会使用第一张参考图";
+  return "普通参考图模式最多使用九张参考图";
+}
+
 export function getUploadRuleOverrideKey(context: UploadRuleContext) {
   if (context.mode === "agent" || context.mode === "general") return "chat";
   if (context.mode === "video" && isBytePlusVideoModel(context.modelId)) {
     if (context.videoReferenceMode === "first_last_frame") return BYTEPLUS_SEEDANCE_UPLOAD_RULE_KEYS.firstLastFrame;
     if (context.videoReferenceMode === "first_frame") return BYTEPLUS_SEEDANCE_UPLOAD_RULE_KEYS.firstFrame;
     return BYTEPLUS_SEEDANCE_UPLOAD_RULE_KEYS.reference;
+  }
+  // Hailuo 3 的首帧/尾帧/首尾帧是上游硬规则（1 张 / 1 张 / 2 张），故意给一个后台面板里不存在的 key
+  // → 后台改的那个数字只作用于**参考图模式**（key 仍是 modelId），改不动帧模式，避免被调成 5 张后必然报错。
+  if (context.mode === "video" && isHailuo3VideoModel(context.modelId) && (context.videoReferenceMode === "first_frame" || context.videoReferenceMode === "last_frame" || context.videoReferenceMode === "first_last_frame")) {
+    return `${HAILUO3_VIDEO_MODEL_ID}:${context.videoReferenceMode}`;
   }
   return context.modelId || context.mode;
 }
@@ -144,7 +201,7 @@ function getBaseUploadRule(context: UploadRuleContext): UploadRule {
 
   if (context.mode === "video") {
     if (isBytePlusVideoModel(context.modelId)) {
-      const imageMaxCount = context.videoReferenceMode === "first_last_frame" ? 2 : context.videoReferenceMode === "first_frame" ? 1 : 9;
+      const imageMaxCount = getVideoReferenceImageMaxCount(context.modelId, context.videoReferenceMode);
       const referenceMediaRule = context.videoReferenceMode === "first_frame" || context.videoReferenceMode === "first_last_frame" ? {} : {
         video: kindRule({ enabled: true, maxCount: 3, maxSizeMb: 200, formats: ["mp4", "mov"], minSeconds: 2, maxSeconds: 15, maxTotalSeconds: 15, requiresServerUrl: true }),
         audio: kindRule({ enabled: true, maxCount: 3, maxSizeMb: 15, formats: ["mp3", "wav"], minSeconds: 2, maxSeconds: 15, maxTotalSeconds: 15, requiresServerUrl: true }),
@@ -152,6 +209,14 @@ function getBaseUploadRule(context: UploadRuleContext): UploadRule {
       return makeRule({
         image: kindRule({ enabled: true, maxCount: imageMaxCount, maxSizeMb: 30, formats: commonImageFormats }),
         ...referenceMediaRule,
+      });
+    }
+
+    // Hailuo 3：跟 Seedance 一样有参考模式（首帧 1 张 / 首尾帧 2 张 / 融合先按 3 张），
+    // 但**不支持参考视频/音频**（OpenRouter 会静默丢弃）→ 只开 image。
+    if (isHailuo3VideoModel(context.modelId)) {
+      return makeRule({
+        image: kindRule({ enabled: true, maxCount: getVideoReferenceImageMaxCount(context.modelId, context.videoReferenceMode), maxSizeMb: 8, formats: commonImageFormats }),
       });
     }
 

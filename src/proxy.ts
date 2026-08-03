@@ -35,5 +35,5 @@ export const config = {
   // ⭐ 负向断言用「整段匹配」（`(?:$|/)`，2026-08-02 从纯前缀匹配改过来）：
   //   只排除 upload-file / asset-upload-temp / upload-image 这三个路由本身及其子路径，
   //   不会误伤将来可能出现的 /api/upload-filex、/api/upload-files 这类撞前缀的新路由。
-  matcher: ["/api/:path((?!(?:upload-file|asset-upload-temp|upload-image)(?:$|/)).*)"],
+  matcher: ["/api/:path((?!(?:upload-file|asset-upload-temp|upload-image|upload-chunk)(?:$|/)).*)"],
 };

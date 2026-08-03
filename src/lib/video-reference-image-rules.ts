@@ -31,6 +31,12 @@ const VIDEO_REFERENCE_IMAGE_RULE_MODELS = new Set([
   "kwaivgi/kling-v3.0-std",
   "kwaivgi/kling-v3.0-pro",
   "kwaivgi/kling-video-o1",
+  // MiniMax H3（Hailuo 3）：依据 = MiniMax 官方 V2 接口文档的 content 输入限制表
+  // 「宽高范围 [256, 5760] px；长宽比（宽/高）[0.4, 2.5]」。
+  // ⚠️ 宽高比与本文件的常量**完全一致**；边长两端各差一点（我们 300~6000 vs 官方 256~5760）——
+  //    即"280px 的小图我们会先拦下"（更严，不会误放过）、"5900px 的大图我们放过、上游才拒"（更松）。
+  //    两个偏差都不值得为它拆一套常量，等真跑到线上失败原文再说。
+  "minimax/hailuo-3",
 ]);
 
 export function videoModelEnforcesReferenceImageSizeRules(modelId?: string) {

@@ -5,11 +5,14 @@ import Image from "next/image";
 import { createPortal } from "react-dom";
 import { IMAGE_UPLOAD_ACCEPT } from "@/lib/image-upload-validation";
 import { computeFileContentHashHex, precheckUploadedFileDedup } from "@/lib/upload-content-hash";
+import { shouldChunkUpload, uploadFileInChunks } from "@/lib/chunked-upload";
 import { markRecentUploadOrigin } from "@/lib/recent-upload-origin";
 import { defaultProductionUploadApiBaseUrl, getStaticMediaUrl, shouldUseStaticAssetBaseUrl, toLocalGeneratedUrl, uploadApiBaseUrl } from "@/lib/static-media-url";
-import { RiAddLargeLine, RiArrowLeftSLine, RiArrowRightSLine, RiArrowDownSLine, RiArrowUpSLine, RiAtLine, RiCheckLine, RiChat3Line, RiChatDeleteFill, RiCheckboxCircleLine, RiCheckboxMultipleBlankLine, RiCloseLine, RiCopperDiamondLine, RiDeleteBinLine, RiEmotionUnhappyFill, RiEmotionSadLine, RiFolderLine, RiBellLine, RiLandscapeLine, RiImage2Line, RiImageCircleLine, RiImageLine, RiMoreLine, RiMusic2Line, RiMultiImageLine, RiOpenaiFill, RiEditBoxLine, RiResetLeftLine, RiRefreshLine, RiResetRightLine, RiShining2Line, RiUpload2Line, RiVipCrown2Line, RiVipDiamondLine, RiVideoLine, RiVideoOnLine, RiVoiceprintLine, RiQuillPenAiLine, RiAccountBoxLine, RiFilmLine, RiInformationLine, RiGitPullRequestLine, RiFilmAiLine, RiGoogleFill, RiImageAddLine, RiImageAiLine, RiDownloadLine, RiTBoxLine, RiTiktokFill, RiTerminalWindowFill } from "react-icons/ri";
+import { RiAddLargeLine, RiArrowLeftSLine, RiArrowRightSLine, RiArrowDownSLine, RiArrowUpSLine, RiAtLine, RiCheckLine, RiChat3Line, RiChatDeleteFill, RiCheckboxCircleLine, RiCheckboxMultipleBlankLine, RiCloseLine, RiCopperDiamondLine, RiDeleteBinLine, RiEmotionUnhappyFill, RiEmotionSadLine, RiFolderLine, RiBellLine, RiLandscapeLine, RiImageLine, RiMoreLine, RiMusic2Line, RiMultiImageLine, RiOpenaiFill, RiEditBoxLine, RiResetLeftLine, RiRefreshLine, RiResetRightLine, RiShining2Line, RiUpload2Line, RiVipCrown2Line, RiVipDiamondLine, RiVideoLine, RiVideoOnLine, RiVoiceprintLine, RiQuillPenAiLine, RiAccountBoxLine, RiFilmLine, RiInformationLine, RiGitPullRequestLine, RiFilmAiLine, RiGoogleFill, RiImageAddLine, RiImageAiLine, RiDownloadLine, RiTBoxLine, RiTiktokFill, RiTerminalWindowFill } from "react-icons/ri";
 import { ADVANCED_CHAT_MODEL, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, classifyImageResolutionByModel, bytePlusVideoGenerationModels, frontendConversationModels, frontendImageGenerationModels, getExpectedImageDimensions, getExpectedVideoDimensions, getImageQualityBadgeLabel, getSupportedImageResolutions, getSupportedVideoRatios, getSupportedVideoResolutions, isNonStandardVideoSize, normalizeImageResolutionForModel, normalizeVideoRatioForModel, normalizeVideoResolutionForModel, videoGenerationModels, GenerationModel, ModelName } from "@/lib/models";
 import { toUserErrorMessage } from "@/lib/error-message";
+import { type VideoReferenceMode } from "@/lib/upload-rules";
+
 import { handleSessionExpiredResponse, SESSION_EXPIRED_SILENT_ERROR } from "@/lib/session-expired-redirect";
 import { buildReferenceHint } from "@/lib/reference-hint";
 import { appendEditorText, getAtQueryAtCursor, getAtQueryAtCursorForReferences, getEditableText, getMentionRangeForDeletion as getSharedMentionRangeForDeletion, getMentionRanges as getSharedMentionRanges, getSelectionTextOffset, getSelectionTextRange, removeMentionName, replaceMentionName, setSelectionTextOffset } from "@/lib/mention-text";
@@ -17,6 +20,9 @@ import { appendEditorText, getAtQueryAtCursor, getAtQueryAtCursorForReferences, 
 export { getAtQueryAtCursor, getSelectionTextOffset, getSelectionTextRange, setSelectionTextOffset };
 import { createUploadProgressTracker } from "@/lib/upload-progress";
 import { BytePlusIcon } from "@/components/byteplus-icon";
+import { MiniMaxIcon } from "@/components/minimax-icon";
+import { KlingIcon } from "@/components/kling-icon";
+
 import { AudioWaveformPlayer } from "@/components/audio-waveform-player";
 import { MentionPickerItem } from "@/components/asset-mention-picker";
 import { VideoUploadThumbnail } from "@/components/video-upload-thumbnail";
@@ -283,30 +289,22 @@ export type PendingGeneration = {
   sourceText?: string;
 };
 
-export type VideoReferenceMode = "reference" | "first_frame" | "first_last_frame";
-
-export const videoReferenceModeOptions: Array<{ value: VideoReferenceMode; label: string; description: string; icon: typeof RiImageLine }> = [
-  { value: "reference", label: "融合模式", description: "支持 1-9 张图片，1-3 个视频，1-3 个音频", icon: RiImageCircleLine },
-  { value: "first_frame", label: "首帧模式", description: "支持 1 张首帧图片", icon: RiImage2Line },
-  { value: "first_last_frame", label: "首尾帧模式", description: "支持 2 张图片：首帧和尾帧", icon: RiMultiImageLine },
-];
+// ⭐ 参考模式的类型 / 选项 / 文案已收敛到唯一权威
+//   `@/lib/upload-rules`（类型）+ `@/lib/video-reference-modes`（选项）。
+//   ⛔ 禁止在本文件里再写一份选项数组 —— 工作流原来那份漏了「尾帧模式」就是这么来的。
+//   这里保留 re-export，是为了不动 chat-workbench.tsx 的现有 import 路径。
+export type { VideoReferenceMode } from "@/lib/upload-rules";
+export { getVideoReferenceModeOptions, videoReferenceModeOptions } from "@/lib/video-reference-modes";
 
 export function isBytePlusSeedanceVideoModel(modelId?: string) {
   return modelId === "byteplus:video.seedance-2-0" || modelId === "byteplus:video.seedance-2-0-fast" || modelId === "byteplus:video.seedance-2-0-mini";
 }
 
-export function getEffectiveBytePlusVideoReferenceItems<T>(items: T[] | undefined, mode?: VideoReferenceMode): T[] {
-  const safeItems = Array.isArray(items) ? items.filter(Boolean) : [];
-  if (mode === "first_last_frame") return safeItems.slice(0, 2);
-  if (mode === "first_frame") return safeItems.slice(0, 1);
-  return safeItems.slice(0, 9);
-}
-
-export function getBytePlusVideoReferenceLimitHint(mode?: VideoReferenceMode) {
-  if (mode === "first_last_frame") return "首尾帧模式只会使用前两张参考图";
-  if (mode === "first_frame") return "首帧模式只会使用第一张参考图";
-  return "普通参考图模式最多使用九张参考图";
-}
+/**
+ * ⭐ 参考图裁剪 / 提示文案的唯一权威在 `upload-rules.ts`
+ * （`getEffectiveVideoReferenceItems` / `getVideoReferenceLimitHint`，客户端与 `/api/video` 共用）。
+ * ⛔ 别在组件里自己 slice，也别在这里再包一层。
+ */
 
 export type WorkMode = "general" | "agent" | "image" | "video";
 
@@ -2097,12 +2095,19 @@ export function getGenerationModelIcon(modelId: string) {
   if (modelId.startsWith("openai/")) return RiOpenaiFill;
   if (modelId.startsWith("google/")) return RiGoogleFill;
   if (modelId.startsWith("bytedance/") || modelId.startsWith("bytedance-seed/")) return RiTiktokFill;
+  if (modelId.startsWith("minimax/")) return MiniMaxIcon;
+  if (modelId.startsWith("kwaivgi/")) return KlingIcon;
   return null;
 }
 
 export function isGoldGenerationModel(modelId: string) {
   return modelId === "openai/gpt-5.4-image-2" || modelId === "bytedance/seedance-2.0" || modelId === "byteplus:video.seedance-2-0";
 }
+
+// ⭐ 「哪些模型标 NEW」是**模型元数据**，唯一权威已挪到 `@/lib/models`
+//   （工作流画布也要用它，不能让 workflow 去 import 这个巨大的 chat 模块）。
+//   这里保留 re-export，只为不动 chat-workbench.tsx 现有的 import 路径。
+export { isNewGenerationModel } from "@/lib/models";
 
 export function isGoldConversationModel(modelId: string) {
   return modelId === "openai/gpt-5.6-terra-pro";
@@ -4228,6 +4233,20 @@ export async function uploadDocumentFileAsset(file: File, options: { conversatio
     const dup = await precheckUploadedFileDedup(getUploadApiUrl("/api/upload-file"), contentHash, token);
     if (dup) { onProgress?.(100); return { url: dup.url, duplicate: true, name: dup.name }; }
   }
+  const fileFields: Record<string, string> = { name: file.name };
+  if (options.mediaKind) fileFields.mediaKind = options.mediaKind;
+  if (options.conversationId) fileFields.conversationId = options.conversationId;
+  if (typeof options.durationSeconds === "number") fileFields.durationSeconds = String(options.durationSeconds);
+  if (options.dimensions) fileFields.dimensions = JSON.stringify(options.dimensions);
+  // M034：大文件走分片上传（丢包只重传单片），小文件保持原单发路径。
+  if (shouldChunkUpload(file)) {
+    const chunked = await uploadFileInChunks<{ url?: string; error?: string; dedup?: boolean; name?: string; posterUrl?: string }>({
+      chunkUrl: getUploadApiUrl("/api/upload-chunk"), file, target: "file", fields: fileFields, originalContentHash: contentHash, token, onProgress,
+    });
+    if (!chunked.url) throw new Error(chunked.error || "文件上传失败");
+    markRecentUploadOrigin(chunked.url, chunked.posterUrl);
+    return { url: chunked.url, duplicate: Boolean(chunked.dedup), name: chunked.name, posterUrl: chunked.posterUrl };
+  }
   const formData = new FormData();
   formData.append("file", file, file.name);
   formData.append("name", file.name);
@@ -4243,13 +4262,32 @@ export async function uploadDocumentFileAsset(file: File, options: { conversatio
 }
 
 async function uploadTemporaryAssetImageOnce(file: File, onProgress?: (progress: number) => void, signal?: AbortSignal, forceReencode = false, dedup = false) {
+  const uploadUrl = getUploadApiUrl("/api/asset-upload-temp");
+  onProgress?.(2);
+  const token = await getDirectUploadToken();
+  const contentHash = await computeFileContentHashHex(file);
+  // 秒回（M033）：仅当调用方要判重、且不是转码重试时，先按内容哈希预检，
+  // 命中"以前传过的同一张图"直接复用旧地址（已是正式 /generated 直链，不需要 token 转正），
+  // 免去把整包图片再跨境传一遍。命中不了/预检失败静默走正常上传。
+  if (dedup && !forceReencode && contentHash) {
+    const dup = await precheckUploadedFileDedup(uploadUrl, contentHash, token);
+    if (dup) { onProgress?.(100); return { duplicate: true as const, url: dup.url, contentHash, name: dup.name }; }
+  }
+  // M034：大图走分片上传（丢包只重传单片），小图保持原单发路径。forceReencode 会改变字节，故重试路径不带原始哈希。
+  if (shouldChunkUpload(file)) {
+    const chunked = await uploadFileInChunks<{ token?: string; error?: string; duplicate?: boolean; url?: string; contentHash?: string; name?: string }>({
+      chunkUrl: getUploadApiUrl("/api/upload-chunk"), file, target: "image",
+      fields: { ...(forceReencode ? { forceReencode: "1" } : {}), ...(dedup ? { dedup: "1" } : {}) },
+      originalContentHash: forceReencode ? undefined : contentHash, token, onProgress, signal,
+    });
+    if (chunked.duplicate && chunked.url) return { duplicate: true as const, url: chunked.url, contentHash: chunked.contentHash, name: chunked.name };
+    if (!chunked.token) throw new Error(chunked.error || "图片上传失败");
+    return { token: chunked.token, contentHash: chunked.contentHash, name: chunked.name };
+  }
   const formData = new FormData();
   formData.append("image", file, file.name);
   if (forceReencode) formData.append("forceReencode", "1");
   if (dedup) formData.append("dedup", "1");
-  const uploadUrl = getUploadApiUrl("/api/asset-upload-temp");
-  onProgress?.(2);
-  const token = await getDirectUploadToken();
   const data = await uploadFormDataWithProgress<{ token?: string; error?: string; duplicate?: boolean; url?: string; contentHash?: string; name?: string }>(uploadUrl, formData, onProgress, token, signal);
   if (data.duplicate && data.url) return { duplicate: true as const, url: data.url, contentHash: data.contentHash, name: data.name };
   if (!data.token) throw new Error(data.error || "图片上传失败");

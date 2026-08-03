@@ -7,7 +7,8 @@ import { createCodedApiError } from "@/lib/error-code";
 import { isTransientServerError } from "@/lib/transient-error";
 import { getBytePlusProviderKey } from "@/lib/byteplus-provider-key";
 import { GENERIC_MEDIA_ERROR_MESSAGE } from "@/lib/error-message";
-import { getBytePlusVideoPricePerMillionUsd, getExpectedImageDimensions } from "@/lib/models";
+import { getExpectedImageDimensions } from "@/lib/models";
+import { getVideoUsageMeta, withChargedVideoUsage, withVideoUsdFallback, type VideoUsageMeta } from "@/lib/video-usage-cost";
 import { recordGenerationEvent } from "@/lib/analytics-events";
 import { appendGenerationDiagnosticsLog, summarizeGeneratedReference } from "@/lib/generation-diagnostics-log";
 import { resolvePersistableMediaAssetUrl } from "@/lib/media-assets";
@@ -573,33 +574,13 @@ function getFiniteNumber(value: unknown) {
   return Number.isFinite(numberValue) ? numberValue : undefined;
 }
 
-function getUsageMeta(value: unknown): Record<string, unknown> | undefined {
-  if (!value || typeof value !== "object") return undefined;
-  const record = value as Record<string, unknown>;
-  const usage = record.usage && typeof record.usage === "object" ? record.usage as Record<string, unknown> : record;
-  const promptTokens = Math.max(0, Math.floor(getFiniteNumber(usage.promptTokens ?? usage.prompt_tokens) ?? 0));
-  const completionTokens = Math.max(0, Math.floor(getFiniteNumber(usage.completionTokens ?? usage.completion_tokens) ?? 0));
-  const totalTokens = Math.max(0, Math.floor(getFiniteNumber(usage.totalTokens ?? usage.total_tokens) ?? promptTokens + completionTokens));
-  const usd = getFiniteNumber(usage.usd ?? usage.cost ?? usage.totalCost ?? usage.total_cost ?? usage.amount);
-  if (totalTokens > 0 || usd !== undefined) return { promptTokens, completionTokens, totalTokens, ...(usd !== undefined ? { usd } : {}) };
-  for (const key of ["data", "result", "task", "content", "payload"]) {
-    const nestedUsage = getUsageMeta(record[key]);
-    if (nestedUsage) return nestedUsage;
-  }
-  return undefined;
-}
+// ⭐ 用量/成本三件套已收敛到唯一权威 `@/lib/video-usage-cost`
+//   （原来本文件和 `api/video/route.ts` 各存一份一字不差的实现 —— 扣费金额是钱，
+//    两份各自演化就会出现"一条路扣对了、另一条路白送"这类静默漏收）。
+//   ⛔ 禁止在本文件里再写一份 getUsageMeta / withXxxUsd。
+const getUsageMeta = getVideoUsageMeta;
+const withChargedUsage = withChargedVideoUsage;
 
-function withBytePlusVideoUsd(usage: Record<string, unknown> | undefined, model: string | null | undefined, settings?: { resolution?: string }, hasVideoInput = false) {
-  if (!usage || usage.usd !== undefined || !model?.startsWith("byteplus:video.")) return usage;
-  const outputTokens = Math.max(0, Number(usage.completionTokens ?? usage.totalTokens ?? 0));
-  const pricePerMillion = getBytePlusVideoPricePerMillionUsd(model, settings?.resolution, hasVideoInput);
-  return { ...usage, usd: (outputTokens / 1_000_000) * pricePerMillion };
-}
-
-function withChargedUsage(usage: Record<string, unknown> | undefined, credit: Awaited<ReturnType<typeof chargeCredits>> | undefined) {
-  if (!credit || credit.skipped) return usage;
-  return { ...(usage ?? {}), usd: credit.chargedUsd, cny: credit.chargedCny };
-}
 
 function normalizeVideoStatus(status: unknown) {
   if (typeof status === "number") {
@@ -1026,9 +1007,18 @@ export async function runVideoJob(job: GenerationJobRow) {
       }
       const deliveredUrl = saveJob.localUrl;
       await upsertVideoManifestEntry({ taskId: providerTaskId, prompt: job.prompt ?? "", localVideoUrl: deliveredUrl, remoteVideoUrl: videoUrl, posterUrl: saveJob.posterUrl });
-      const usage = withBytePlusVideoUsd(getUsageMeta(task) ?? job.usageJson ?? undefined, job.model, job.settingsJson ?? undefined, Array.isArray(job.referenceVideos) && job.referenceVideos.length > 0);
+      const usage = withVideoUsdFallback(getUsageMeta(task) ?? (job.usageJson as VideoUsageMeta | null) ?? undefined, {
+        model: job.model,
+        settings: job.settingsJson ?? undefined,
+        hasVideoInput: Array.isArray(job.referenceVideos) && job.referenceVideos.length > 0,
+        referenceImageCount: Array.isArray(job.referenceImages) ? job.referenceImages.filter(Boolean).length : 0,
+      });
       const credit = await chargeCredits(job.userId, "video", usage, { conversationId: job.conversationId ?? undefined, conversationTitle: job.conversationTitle ?? undefined, requestId: job.requestId, label: "视频生成", model: job.model ?? undefined, videoCount: 1, metadata: { ...(job.metadataJson ?? {}), settings: job.settingsJson, ratio: job.settingsJson?.ratio, resolution: job.settingsJson?.resolution, duration: job.settingsJson?.duration, originalPrompt: job.prompt, mediaUrls: [deliveredUrl], remoteMediaUrls: [videoUrl], posterUrl: saveJob.posterUrl, delivered: true, savedLocal: true, localSaveStatus: "saved", mediaSaveJobId: saveJob.id } });
       await finalizeVideoJobAsset(job, deliveredUrl, saveJob.posterUrl, saveJob.dimensions);
+      // ⭐ 2026-08-03 加：后台队列这条路**扣费成功以前一条日志都没有**，
+      //   只落库 creditLedger → 查"这个模型到底扣了多少 / 上游给没给成本"必须连数据库，
+      //   上一任就是因此没能验成 H3 的扣费。现在把 usd/扣分/是否用了兜底价一起留痕。
+      void appendGenerationDiagnosticsLog({ event: "video-job-charged", requestId: job.requestId, conversationId: job.conversationId ?? undefined, userId: job.userId, mode: "video", model: job.model ?? undefined, provider: job.provider ?? undefined, taskId: providerTaskId, settings: job.settingsJson ?? undefined, extra: { usage, credit, usdFromFallbackPricing: Boolean((usage as { usdFromFallbackPricing?: boolean } | undefined)?.usdFromFallbackPricing) } });
       await markJobSucceeded(job.id, { resultUrls: [deliveredUrl], reservedNames: job.reservedNames ?? [], posterUrl: saveJob.posterUrl, usage: withChargedUsage(usage, credit), credit });
       // ⭐ 与图片同理：工作流画布里那个节点的视频地址直接改成本地地址。
       if (job.workflowId && job.workflowNodeId) {

@@ -4,6 +4,98 @@
 This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code. Heed deprecation notices.
 <!-- END:nextjs-agent-rules -->
 
+# 铁律：上传「秒回预检 / 内容哈希」在 HTTP 测试入口一定失效，验它必须用 HTTPS 入口（2026-08-03 加）
+
+`computeFileContentHashHex` 用的是 `crypto.subtle`，而 **`crypto.subtle` 只在安全上下文（HTTPS 或 localhost）才有**。
+测试服的 **HTTP 入口 `http://101.37.129.164:8080/` 不是安全上下文** → `crypto.subtle` 为 undefined →
+`computeFileContentHashHex` 返回 undefined → **M033 图片秒回预检、M034 分片的整体哈希校验、原有文档秒回预检全部自动跳过**。
+- ⭐ **这是既有设计的软降级、不是 bug**（拿不到哈希就走正常上传）。但会让人以为"预检没写对"。
+- ⭐ **判据**：`page.evaluate(() => window.isSecureContext)` 一句就能确认。要验预检/哈希，
+  一律用 **`https://staging-static.venusface.com/`**（安全上下文），别用 8080。
+- ⭐ 实测：8080 传图看不到 GET 预检、分片也不带 `originalContentHash`；换 HTTPS 立刻两者都出现、预检命中返回 `{url}`。
+- ⚠️ 顺带：**Playwright 上传文件的路径必须在 workspace 根内**（`E:\project\FlashMuse_Agent` 或 `.playwright-mcp`），
+  放 temp 目录会 `File access denied ... outside allowed roots`——先把测试文件 copy 进 `.playwright-mcp` 再传。
+
+# 铁律：验「上游到底给没给这个字段」= 拿历史任务 id 去 GET 上游 + 回库看账本，⛔ 别读类型声明（2026-08-03 加）
+
+上一任把「MiniMax H3 到底扣没扣到钱」当成**查不清的遗留风险**交接出来，理由是
+`OpenRouterVideoTask` 类型里**没声明 `cost`**（`openrouter-video.ts:34`），万一不返回就 `usd=0` = **白送**。
+⭐ 实际两步、几分钟就能坐实，两步都是**二值判断、没有解释空间**：
+
+1. **拿一个历史已完成任务的 id 直接 GET 上游**（幂等、免费、不烧一分钱）——
+   从 `.runtime/generation-diagnostics-log.jsonl` grep `*-create-success` 就有 taskId：
+   `GET https://openrouter.ai/api/v1/videos/{id}` → 真的返回 `{"usage":{"cost":1.95,"is_byok":false}}`。
+2. **回库看账本那一行**：`creditLedger` 里 `usd=1.95 / credits=137`，和 `usd × 汇率 × 积分率` 完全对得上。
+
+- ⛔ **类型声明 / 文档 / 别人写在 CHANGELOG 里的报价，都不是证据**
+  （那份"实测 5 秒 $0.65"是**直打上游**量的，压根不代表我们的链路拿到了 cost）。
+  同源于本文件那条「报根因前先把 `if` 条件抄出来逐项验证」。
+- ⛔ **别信"本地没 `DATABASE_URL` 所以查不了库"** —— 上一任只看了 `.env.local`，
+  **`DATABASE_URL` 在 `.env` 里**。查库前把 `.env` / `.env.local` **两个都看一遍**。
+  （在项目目录里跑 `.mjs` 脚本才 import 得到 `@prisma/client`，放 temp 目录会 `ERR_MODULE_NOT_FOUND`。）
+- ⭐ **顺手要做的两件事**：① 给"金额靠上游某字段"的链路加**兜底定价**
+  （缺字段就按公式算，并打个 `usdFromFallbackPricing` 标记）—— `usd=0` 是**静默白送**，不报错、不进红字；
+  ② 给**只落库不写日志**的那条路补一行诊断日志（本次 `video-job-charged`）——
+  "扣费成功零日志"正是这件事三次交接都验不成的根本原因。
+
+
+
+# 铁律⛔⛔：**绝对禁止用 PowerShell 读写含中文的源码文件**（2026-08-03 加，我把 10800 行的文件整个搞坏过）
+
+2026-08-03 我为了把 `React.useMemo` 批量改成 `useMemo`，用了
+`(Get-Content x.tsx -Raw) -replace ... | Set-Content -Encoding utf8 x.tsx`
+→ **PS5.1 的 `Get-Content` 按系统 ANSI（GBK/936）解码 UTF-8 文件**，中文全变 mojibake（双重编码），
+`Set-Content -Encoding utf8` 又**加了 BOM**。当时那个文件里还有**未提交的一整批改动**，不能 `git checkout` 丢掉。
+
+- ⛔ **禁止的写法**（哪怕只是替换 ASCII 标识符）：`Get-Content|Set-Content`、`Set-Content`、`Out-File`、
+  `-replace` 管道回写、`git show HEAD:x > tmp`（PS 重定向写 UTF-16LE）。
+- ⭐ **正解**：改文件一律用 **edit/write 工具**；要批量替换就用 **node**
+  （`fs.readFileSync(p,'utf8')` → replace → `fs.writeFileSync(p, s)`，node 默认 UTF-8 无 BOM）。
+- ⛔⛔ **"反向转回来"这条路不通**：把 mojibake 串按 GBK 编码写回**不是无损的** ——
+  UTF-8 三字节中文被 GBK 解码时经常**把紧跟其后的 ASCII 字符（引号/换行）一起吃掉**，实测残留 373 行 `U+FFFD`。别试。
+- ⭐ **真能用的恢复手法（留档，下次照抄）**：
+  ① 损坏文件另存做「代码结构参照」（**ASCII 部分完好**，只有中文烂了）；
+  ② `git show HEAD:<path>` 用 **node** 取出干净底写回工作区；
+  ③ 「**精确相等行做锚点 + LIS 单调对齐**」逐块配对：块内行数相等 → **纯 ASCII 行取参照**（= 你的真实代码改动）、
+     **含中文行取 HEAD**（= 未改动行，顺手去乱码）；块内行数不等 → 是真加/删了行，单独人工处理；
+  ④ ⭐⭐ **必须再扫一遍「乱码行里粘着代码关键字」**：乱码会把
+     **注释行和它下一行的 `const` 定义粘成一行**，机械重建时那行代码会被当成注释一起丢掉
+     （本次就丢了 `const isMultiColumnDurationMenu = ...`，靠 `tsc` 才暴露）。
+     正则 `/[\u3040-\u9fff].*\s{2,}(const |let |if \(|return |show|set[A-Z])/` 一扫就出来。
+  ⑤ 验收四件套：**无 BOM + 0 个 `U+FFFD` + 0 个 mojibake 字符 + `tsc`/测试全过**，
+     再**逐行列出「与 HEAD 不同的中文行」人工确认条数和内容都是你本次该改的**。
+- ⚠️ 另外记住：**PS5.1 控制台显示 UTF-8 中文会花屏，那是显示问题不是文件坏了**（看内容用 read 工具）；
+  **`ConvertFrom-Json` 解析含中文的 jsonl 会整行报错** → 分析日志一律用 node。
+
+# 铁律：tldraw 工作流节点里的自定义拖动控件，必须用原生 `<input type="range">`（2026-08-03 加，我连续归因错 3 次）
+
+包着工作流视频/图片节点编辑器的容器上写着 **`onPointerDownCapture={stopCanvasPointer}`**
+（`workflow-tldraw-canvas-inner.tsx:2795`，`stopCanvasPointer` = `event.stopPropagation()`，2517 行）。
+**React 的捕获阶段自根往下**，所以这个**祖先先执行并掐断传播** →
+你在节点内部写的任何 `onPointerDown`/`onPointerDownCapture`（以及后续 move/up）**压根收不到事件**。
+
+- ⭐ **判据**：**`onClick` 能用、pointer 事件全废** = 一定是被祖先的 capture-phase `stopPropagation` 吃了
+  （原来的按钮式菜单一直没事，正是因为 click 是另一个事件类型）。
+- ⭐ **正解**：用**原生 `<input type="range">`** 承接拖动（`opacity-0` 绝对定位覆盖在自定义外观之上，
+  自定义的轨道/进度/手柄全部 `pointer-events-none` 只负责好看）——
+  **原生 range 的拖动是浏览器内建默认行为，不受 `stopPropagation` 影响**。
+  现成实现：`src/components/video-duration-slider.tsx`；更早的先例是橡皮擦画笔大小（同文件 2735 行）。
+  ⭐ `min` 固定 `0`、`max` = 视觉量程最大值，让它的坐标系和视觉刻度**完全对齐**；在 `onChange` 里 clamp + snap。
+- ⛔ **这三种都试过、都没用，别再走一遍**：① 自己的 handler 里加 `stopPropagation`
+  ② 改成 `onPointerDownCapture/MoveCapture/UpCapture` ③ 把 move/up 挂到 `window`
+  （第 ③ 种连"重渲染丢 pointer capture"的假设都是错的 —— `pointerdown` 本身就没到）。
+- ⭐ 这条再次印证下面那条最贵的铁律：**报根因前先去读"我这段代码的祖先容器上挂了什么事件处理器"**，
+  别从现象反推。
+
+# 铁律：Playwright 点滑块/进度条的极值，用 0.98 别用 1.0（2026-08-03 加）
+
+`boundingBox()` 拿到 `{x,w}` 后点 `x + w * 1.0` 是**元素右边界之外** → **漏点**（值一动不动），
+我据此一度误判"原生 range 有 thumb 内缩、拖到最右到不了最大值"。
+⭐ 用 `0.98`/`0.999` 复验才证明映射全宽正确。**极值一律用分数，别用 1.0/0.0 的整边界。**
+⭐ 顺带：验拖动必须**真实 `mouse.down()` → 多次 `mouse.move()` → `mouse.up()`**
+并在过程中读值，⛔ 直接 `fill()`/设 `value` 证明不了"能拖"。
+
+
 # 铁律：说"压缩/瘦身能省多少时间"之前，先看同样大小的样本耗时方差（2026-08-02 加，我当场被数据打回）
 
 我看到"上传 2.4MB 要 145 秒"就推断"体积砍 80%、时间也砍 80%" —— **对这批数据是错的**。
@@ -596,7 +688,7 @@ nginx 配置在仓库里有副本（`nginx/flashmuse.conf`、`deploy/staging/*.c
 
 - 反例（已踩坑，2026-07-14）：`getBytePlusProviderKey`（模型→BytePlus 端点映射）被复制到 `image/route`、`video/route`、`generation-jobs` 三份，各改各的 → 只修了对话流那份，Agent/通用模式漏修 → 线上 Agent/通用生图/生视频用新模型直接失败。已收敛为唯一实现 `src/lib/byteplus-provider-key.ts`。
 - 判断标准：**理论上"生图在一个地方能用，其它地方都应该能用"**（生视频、上传、进库、读取、命名、扣费、参考图……同理），因为它们本就该走同一套。若出现"对话流可以、工作流/Agent 不行"，几乎一定是某处该统一却分叉了——先找分叉点收敛，别再打局部补丁。
-- 已有的统一入口举例（改相关功能务必复用，勿另起炉灶）：进库 `src/lib/media-asset-record.ts`(`buildMediaAssetRecord`/`classifyAsset`)、生成任务与读取 `src/lib/generation-jobs.ts`、扣费 `src/lib/credits.ts`(`chargeCredits`)、模型→端点键 `src/lib/byteplus-provider-key.ts`、**模型拒绝文案 `src/lib/error-message.ts`(`MODEL_REFUSED_PREFIX` + `isModelRefusedMessage` + `buildModelRefusedMessage`：⭐ 2026-07-29 起「模型拒绝 / 平台安全策略 / 版权限制」**三类合并成唯一一句**「模型因色情/暴力/隐私安全等原因拒绝出图，你可以调整提示词或更换参考图后重试。以下是模型返回的拒绝原因：“…”」，不再按模型分"能不能AI改写"。⛔ 改这句必须同步改三处：`gpt-image-safety-retry.ts` 的**前缀**判定、`admin-failure-triage.ts` 的 `FAILURE_REASON_SQL` 归一化、`error-message.ts` 顶部的幂等保护；`LEGACY_MODEL_REFUSED_MESSAGES` 里的老文案只用于判定/后台归一化，禁止拿来生成新文案)**、**AI 安全改写 `src/lib/gpt-image-safety-retry.ts`(`isGptImageSafetyFailure`/`runPromptSafetyRetry`/`ensureMentionNamesPreserved`：⛔⭐ **2026-07-29 起只有工作流用它** —— 对话流与资产库那两套已按用户拍板整体撤掉（对话流"一条提示词出多图"，每张独立改写会让显示的提示词对不上；且并发多链会互抢 `message.requestId` 导致成功图被静默丢弃，正式服实测 17 张成功只剩 2 张、白烧 197 积分）。⭐ **2026-07-30 用户拍板：对话流的 AI 改写彻底不做了（原 M021 已取消），别把删掉的代码捡回来、也别再提重做。**)**、**参考素材 url 归一化 `src/lib/reference-asset-url.ts`(`normalizeReferenceAssetUrl`/`normalizeReferenceAssetUrls`：进模型/送审前必过。把「给人看的动态缩略图接口地址 `/api/media-thumbnail?url=`」和「自家主机绝对前缀（含已退役马来 IP）」一律还原成文件静态直链 —— 平台是来"上门自取"的，给它动态接口它会现场等我们生成缩略图然后超时。8 处咽喉共用：image/video/byteplus-assets 三个 route 入口 + `generation-jobs.resolveReferenceUrls` + openrouter/openrouter-video/seedance/video-route 的底层拼址，禁止再在别处自己判 `startsWith("/generated/")`)**、参考图 hint `src/lib/reference-hint.ts`、错误文案 `src/lib/error-message.ts`、登录失效跳转 `src/lib/session-expired-redirect.ts`、@提及匹配/删除 `src/lib/mention-text.ts`（⭐ 2026-08-02 起也是 **contenteditable 选区引擎的唯一权威**：`getEditableText`/`appendEditorText`/`getSelectionTextOffset`/`getSelectionTextRange`/`setSelectionTextOffset`/`getAtQueryAtCursor(ForReferences)`，对话流输入框与工作流节点输入框共用，采用「mention 原子化」版本——光标绝不落进 @文件名 span 内部；原来两处各存一份且已漂移）、上传文件命名 `src/lib/upload-name.ts`(`resolveUploadName`：同图复用名/异名错开_2/去扩展名/改名跟随；对话流·工作流·资产库 图·视频·音频·文档统一走它，前端只显示服务端返回的 `name`，禁止再在前端各写一套取名/版本化逻辑)、音频波形播放器 `src/components/audio-waveform-player.tsx`(`AudioWaveformPlayer`：wavesurfer.js，`variant="node"` 工作流画布音频节点 / `variant="card"` 资产库上传音频方卡；工作流·资产库统一走它，禁止再各写一套音频播放 UI)、视频播放按钮角标 `src/components/video-play-badge.tsx`(`VideoPlayBadge`：全平台所有视频缩略图中间的播放标记，5 档 size；对话流·工作流·资产库·@引用·图层·后台·上传缩略图统一走它)、**媒体时长校验 `src/lib/media-upload-validation.ts`(`MEDIA_DURATION_EPSILON_SECONDS` 唯一容差常量 + `validateReferenceMediaDurationRange` 单条时长校验唯一实现 + `validateReferenceVideoDimensions` 参考视频纯尺寸校验唯一实现【2026-08-02 收敛，原来 chat-core 和 workflow-inner 各手抄一份 300/6000/0.4/2.5/409600/8295044】；对话流·工作流·服务端三处共用，禁止再在组件里写本地副本——历史上就是各写一份导致 15.35/15.35/16.01 三个数都错)**、**参考素材总时长 `src/lib/upload-rules.ts`(`validateReferenceTotalDuration`)**、**工作流节点下载 `downloadWorkflowNode()`(`workflow-tldraw-canvas-inner.tsx`，图片/视频/文本通用；右键菜单与快捷菜单共用，禁止再内联写一份)**、**静态媒体地址 `src/lib/static-media-url.ts`(`getStaticMediaUrl`/`toLocalGeneratedUrl`/`shouldUseStaticAssetBaseUrl`：对话流·工作流画布统一走它，禁止再各写一份——工作流画布原来那份是空函数，从没生效过)**、**AUTH_SECRET 读取 `src/lib/auth-secret.ts`(`getAuthSecret`：生产没配直接抛错，禁止再写 `|| "flashmuse-local-dev-secret-change-me"` 兜底)**、**接口限流 `src/lib/rate-limit.ts`(`rateLimitAllow`/`getClientIp`)**、**诊断日志轮转 `src/lib/diagnostics-log-rotate.ts`(`appendDiagnosticsJsonl`：三个 diagnostics-log 统一走它，超 20MB 轮转成 .1)**。
+- 已有的统一入口举例（改相关功能务必复用，勿另起炉灶）：进库 `src/lib/media-asset-record.ts`(`buildMediaAssetRecord`/`classifyAsset`)、生成任务与读取 `src/lib/generation-jobs.ts`、扣费 `src/lib/credits.ts`(`chargeCredits`)、**视频用量/成本 `src/lib/video-usage-cost.ts`(`getVideoUsageMeta`/`withVideoUsdFallback`/`withChargedVideoUsage`：2026-08-03 收敛，原来 `api/video/route.ts`（前台同步轮询）和 `generation-jobs.ts`（后台队列）**各存一份一字不差的** getUsageMeta/withBytePlusVideoUsd/withChargedUsage —— 扣费金额是钱，两份各自演化就会"一条路扣对、另一条路白送"。⭐ 里面还有**兜底定价**：上游没给 `usage.usd` 时按公式算并标 `usdFromFallbackPricing`，因为 `usd=0` 是**静默白送**、不报错也不进红字)**、**视频参考模式 `src/lib/upload-rules.ts`(`VideoReferenceMode` 类型 + `supportsVideoReferenceMode`/`getVideoReferenceImageMaxCount`/`getEffectiveVideoReferenceItems`/`getVideoReferenceLimitHint`) + `src/lib/video-reference-modes.ts`(`getVideoReferenceModeOptions`/`getVideoReferenceModeLabel`/`getRequiredVideoReferenceImageCount`：**选项按模型给** —— BytePlus Seedance 3 项、Hailuo 3 四项含尾帧；2026-08-03 收敛，工作流原来那份本地类型**漏了 `last_frame`**，直接导致 H3 一开始不敢在工作流放出来)**、**NEW 徽标 `src/components/new-badge.tsx`(`NewBadge`，配 `models.ts` 的 `isNewGenerationModel`：原来模型下拉是青绿小圆角、侧边栏「工作流模式」是绿色胶囊，同一个东西两种长相，2026-08-03 用户拍板统一)**、模型→端点键 `src/lib/byteplus-provider-key.ts`、**模型拒绝文案 `src/lib/error-message.ts`(`MODEL_REFUSED_PREFIX` + `isModelRefusedMessage` + `buildModelRefusedMessage`：⭐ 2026-07-29 起「模型拒绝 / 平台安全策略 / 版权限制」**三类合并成唯一一句**「模型因色情/暴力/隐私安全等原因拒绝出图，你可以调整提示词或更换参考图后重试。以下是模型返回的拒绝原因：“…”」，不再按模型分"能不能AI改写"。⛔ 改这句必须同步改三处：`gpt-image-safety-retry.ts` 的**前缀**判定、`admin-failure-triage.ts` 的 `FAILURE_REASON_SQL` 归一化、`error-message.ts` 顶部的幂等保护；`LEGACY_MODEL_REFUSED_MESSAGES` 里的老文案只用于判定/后台归一化，禁止拿来生成新文案)**、**AI 安全改写 `src/lib/gpt-image-safety-retry.ts`(`isGptImageSafetyFailure`/`runPromptSafetyRetry`/`ensureMentionNamesPreserved`：⛔⭐ **2026-07-29 起只有工作流用它** —— 对话流与资产库那两套已按用户拍板整体撤掉（对话流"一条提示词出多图"，每张独立改写会让显示的提示词对不上；且并发多链会互抢 `message.requestId` 导致成功图被静默丢弃，正式服实测 17 张成功只剩 2 张、白烧 197 积分）。⭐ **2026-07-30 用户拍板：对话流的 AI 改写彻底不做了（原 M021 已取消），别把删掉的代码捡回来、也别再提重做。**)**、**参考素材 url 归一化 `src/lib/reference-asset-url.ts`(`normalizeReferenceAssetUrl`/`normalizeReferenceAssetUrls`：进模型/送审前必过。把「给人看的动态缩略图接口地址 `/api/media-thumbnail?url=`」和「自家主机绝对前缀（含已退役马来 IP）」一律还原成文件静态直链 —— 平台是来"上门自取"的，给它动态接口它会现场等我们生成缩略图然后超时。8 处咽喉共用：image/video/byteplus-assets 三个 route 入口 + `generation-jobs.resolveReferenceUrls` + openrouter/openrouter-video/seedance/video-route 的底层拼址，禁止再在别处自己判 `startsWith("/generated/")`)**、参考图 hint `src/lib/reference-hint.ts`、错误文案 `src/lib/error-message.ts`、登录失效跳转 `src/lib/session-expired-redirect.ts`、@提及匹配/删除 `src/lib/mention-text.ts`（⭐ 2026-08-02 起也是 **contenteditable 选区引擎的唯一权威**：`getEditableText`/`appendEditorText`/`getSelectionTextOffset`/`getSelectionTextRange`/`setSelectionTextOffset`/`getAtQueryAtCursor(ForReferences)`，对话流输入框与工作流节点输入框共用，采用「mention 原子化」版本——光标绝不落进 @文件名 span 内部；原来两处各存一份且已漂移）、上传文件命名 `src/lib/upload-name.ts`(`resolveUploadName`：同图复用名/异名错开_2/去扩展名/改名跟随；对话流·工作流·资产库 图·视频·音频·文档统一走它，前端只显示服务端返回的 `name`，禁止再在前端各写一套取名/版本化逻辑)、音频波形播放器 `src/components/audio-waveform-player.tsx`(`AudioWaveformPlayer`：wavesurfer.js，`variant="node"` 工作流画布音频节点 / `variant="card"` 资产库上传音频方卡；工作流·资产库统一走它，禁止再各写一套音频播放 UI)、视频播放按钮角标 `src/components/video-play-badge.tsx`(`VideoPlayBadge`：全平台所有视频缩略图中间的播放标记，5 档 size；对话流·工作流·资产库·@引用·图层·后台·上传缩略图统一走它)、**媒体时长校验 `src/lib/media-upload-validation.ts`(`MEDIA_DURATION_EPSILON_SECONDS` 唯一容差常量 + `validateReferenceMediaDurationRange` 单条时长校验唯一实现 + `validateReferenceVideoDimensions` 参考视频纯尺寸校验唯一实现【2026-08-02 收敛，原来 chat-core 和 workflow-inner 各手抄一份 300/6000/0.4/2.5/409600/8295044】；对话流·工作流·服务端三处共用，禁止再在组件里写本地副本——历史上就是各写一份导致 15.35/15.35/16.01 三个数都错)**、**参考素材总时长 `src/lib/upload-rules.ts`(`validateReferenceTotalDuration`)**、**工作流节点下载 `downloadWorkflowNode()`(`workflow-tldraw-canvas-inner.tsx`，图片/视频/文本通用；右键菜单与快捷菜单共用，禁止再内联写一份)**、**静态媒体地址 `src/lib/static-media-url.ts`(`getStaticMediaUrl`/`toLocalGeneratedUrl`/`shouldUseStaticAssetBaseUrl`：对话流·工作流画布统一走它，禁止再各写一份——工作流画布原来那份是空函数，从没生效过)**、**AUTH_SECRET 读取 `src/lib/auth-secret.ts`(`getAuthSecret`：生产没配直接抛错，禁止再写 `|| "flashmuse-local-dev-secret-change-me"` 兜底)**、**接口限流 `src/lib/rate-limit.ts`(`rateLimitAllow`/`getClientIp`)**、**诊断日志轮转 `src/lib/diagnostics-log-rotate.ts`(`appendDiagnosticsJsonl`：三个 diagnostics-log 统一走它，超 20MB 轮转成 .1)**。
 - ⛔⛔ **往 `WorkflowSelectedNodeOverlay`（工作流选中节点浮层、含图片/视频快捷菜单）里加 Hook 会把整个 tldraw 画布搞崩**（2026-07-29 踩过）：它在 `workflow-tldraw-canvas-inner.tsx:2493` 有 `if (!selected) return null;`，在其**之后**加 `useMemo`/`useState` 等 → **React #310「Rendered more hooks than during the previous render」** → 点任意节点，画布整个变成「Something went wrong / Please refresh your browser」。**加在提前 return 之前，或干脆别用 Hook。**
 - ⛔⛔ **排查对话流失败卡时必读（2026-07-29 踩过、误报过一次）**：失败卡包在 **`<LazyMediaMount height={250}>`**（`chat-workbench.tsx:16531`）里 —— **滚进视口才挂载**，没进视口时 DOM 里根本没有卡；而红字**不在**这个组件里、一直显示。所以**「红字在、卡不在」是正常现象，不是数据丢了**。用 `querySelectorAll('.flashmuse-failed-media-card')` 统计失败卡不可靠，必须先 `scrollIntoView` 再断言。
 - ⛔ **"某条原因高度集中在一个入口"不一定是分叉**（2026-07-29 踩过）：后台「失败排查」页那条设计意图会给假信号 —— 先去看「失败最多的用户」卡，如果也集中在一个人，那是用户行为不是代码分叉（101 条里 76 条是同一个人三天刷出来的）。

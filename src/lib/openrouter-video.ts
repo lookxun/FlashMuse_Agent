@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { appendGenerationDiagnosticsLog, summarizeGeneratedReference } from "@/lib/generation-diagnostics-log";
-import { DEFAULT_VIDEO_MODEL, resolveVideoSettingsForModel } from "@/lib/models";
+import { DEFAULT_VIDEO_MODEL, HAILUO3_SUPPORTED_DURATION_SECONDS, HAILUO3_VIDEO_MODEL_ID, resolveVideoSettingsForModel } from "@/lib/models";
 import { getBytePlusBaseUrl, getBytePlusModelForRequest, getConfiguredBytePlusApiKey, getConfiguredOpenRouterApiKey } from "@/lib/system-settings";
 import { normalizeReferenceAssetUrl } from "@/lib/reference-asset-url";
 import { toDataUrlIfLocalPublicAsset } from "@/lib/generated-asset-path";
@@ -39,6 +39,13 @@ export type OpenRouterVideoTask = {
   status?: string;
   unsigned_urls?: string[];
   content?: { video_url?: string; remote_video_url?: string };
+  /**
+   * ⭐ 2026-08-03 实测确认**确实会返回**（以前这里没声明，导致"扣费到底拿不拿得到成本"查不清）：
+   * `GET /api/v1/videos/{id}` 对已完成任务返回 `{"status":"completed","usage":{"cost":1.95,"is_byok":false}}`
+   * （MiniMax H3 15 秒 2K）。整条按成本扣费链路就靠这个 `cost`
+   * （`video-usage-cost.ts` → `chargeCredits`）。⛔ 别删这个字段声明。
+   */
+  usage?: { cost?: number; is_byok?: boolean; [key: string]: unknown };
   error?: { message?: string; code?: string | number } | string;
 };
 
@@ -156,8 +163,35 @@ function getDuration(model: string, value?: string) {
   if (model.startsWith("byteplus:video.")) return Math.min(15, Math.max(4, safeSeconds));
   if (model === "google/veo-3.1") return getClosestDuration(safeSeconds, [4, 6, 8]);
   if (model === "kwaivgi/kling-video-o1") return getClosestDuration(safeSeconds, [5, 10]);
+  // Hailuo 3：OpenRouter 声明 5~15 整秒（官方 4~15，OpenRouter 从 5 起）→ 4 秒必须就近取到 5，否则上游 400。
+  if (model === HAILUO3_VIDEO_MODEL_ID) return getClosestDuration(safeSeconds, HAILUO3_SUPPORTED_DURATION_SECONDS);
 
   return safeSeconds;
+}
+
+/**
+ * OpenRouter 侧支持 `frame_images`（首帧/尾帧）的模型 —— 依据是
+ * `GET /api/v1/videos/models` 的 `supported_frame_images` 字段。
+ * ⛔ 别拿 BytePlus 那套 role 名字去猜：OpenRouter 用的是独立字段 `frame_images[].frame_type`。
+ */
+function supportsOpenRouterFrameImages(model: string) {
+  return model === HAILUO3_VIDEO_MODEL_ID;
+}
+
+/**
+ * 首帧/首尾帧模式 → 组装 OpenRouter 的 `frame_images`；其它情况返回 undefined（走 `input_references`）。
+ * ⭐ OpenRouter 文档：两个字段同时给时 `frame_images` 优先、整个请求按图生视频处理 —— 所以这里二选一，不同时发。
+ */
+function getOpenRouterFrameImages(model: string, images: OpenRouterVideoImage[], mode?: VideoReferenceMode) {
+  if (!supportsOpenRouterFrameImages(model) || images.length === 0) return undefined;
+  if (mode === "first_last_frame") {
+    const [first, last] = images;
+    if (!first || !last) return undefined;
+    return [{ ...first, frame_type: "first_frame" as const }, { ...last, frame_type: "last_frame" as const }];
+  }
+  if (mode === "first_frame") return [{ ...images[0], frame_type: "first_frame" as const }];
+  if (mode === "last_frame") return [{ ...images[0], frame_type: "last_frame" as const }];
+  return undefined;
 }
 
 function toOpenRouterImage(url: string): OpenRouterVideoImage {
@@ -195,10 +229,11 @@ async function getOpenRouterError(response: Response, fallback: string) {
   }
 }
 
-async function postOpenRouterVideoTask(prompt: string, referenceImages: string[] = [], settings?: VideoSettings, model = DEFAULT_VIDEO_MODEL, options: CreateVideoOptions & { requestId?: string } = {}) {
+async function postOpenRouterVideoTask(prompt: string, referenceImages: string[] = [], settings?: VideoSettings, model = DEFAULT_VIDEO_MODEL, options: CreateVideoOptions & { requestId?: string; referenceMode?: VideoReferenceMode } = {}) {
   const apiKey = getRequiredOpenRouterApiKey();
 
   const images = referenceImages.filter(Boolean).map(toOpenRouterImage);
+  const frameImages = getOpenRouterFrameImages(model, images, options.referenceMode);
   const videoSettings = resolveVideoSettingsForModel(model, settings);
   const startedAt = Date.now();
   const body = {
@@ -208,9 +243,11 @@ async function postOpenRouterVideoTask(prompt: string, referenceImages: string[]
     resolution: videoSettings.resolution,
     aspect_ratio: videoSettings.ratio,
     generate_audio: options.generateAudio ?? true,
-    ...(images.length > 0 ? { input_references: images } : {}),
+    // 首帧/首尾帧 → frame_images；其余（含融合/普通参考）→ input_references。二者互斥，不同时发。
+    ...(frameImages ? { frame_images: frameImages } : images.length > 0 ? { input_references: images } : {}),
   };
-  void appendGenerationDiagnosticsLog({ event: "video-provider-create-start", requestId: options.requestId, mode: "video", provider: "openrouter", model, prompt, settings, references: referenceImages.map((url, index) => summarizeGeneratedReference(url, index)), extra: { url: OPENROUTER_VIDEOS_URL, generateAudio: options.generateAudio ?? true, videoSettings } });
+  void appendGenerationDiagnosticsLog({ event: "video-provider-create-start", requestId: options.requestId, mode: "video", provider: "openrouter", model, prompt, settings, references: referenceImages.map((url, index) => summarizeGeneratedReference(url, index)), extra: { url: OPENROUTER_VIDEOS_URL, generateAudio: options.generateAudio ?? true, videoSettings, referenceMode: options.referenceMode, frameImageCount: frameImages?.length ?? 0 } });
+
   let response: Response;
   try {
     response = await fetch(OPENROUTER_VIDEOS_URL, {
@@ -237,12 +274,12 @@ export async function createOpenRouterVideoTask(prompt: string, referenceImages:
   if (getBytePlusVideoModelName(model, options?.bytePlusProviderKey, options?.unlockLimits)) return createBytePlusVideoTask(prompt, referenceImages, settings, model, options?.bytePlusProviderKey, options?.referenceMode, options?.referenceVideos, options?.referenceAudios, options?.requestId, options?.unlockLimits);
 
   try {
-    return await postOpenRouterVideoTask(prompt, referenceImages, settings, model, { generateAudio: true, requestId: options?.requestId });
+    return await postOpenRouterVideoTask(prompt, referenceImages, settings, model, { generateAudio: true, requestId: options?.requestId, referenceMode: options?.referenceMode });
   } catch (error) {
     const message = error instanceof Error ? error.message : "";
     if (/audio|generate_audio|sound|voice/i.test(message)) {
       void appendGenerationDiagnosticsLog({ event: "video-provider-create-retry-without-audio", requestId: options?.requestId, mode: "video", provider: "openrouter", model, prompt, settings, references: referenceImages.map((url, index) => summarizeGeneratedReference(url, index)), error });
-      return postOpenRouterVideoTask(prompt, referenceImages, settings, model, { generateAudio: false, requestId: options?.requestId });
+      return postOpenRouterVideoTask(prompt, referenceImages, settings, model, { generateAudio: false, requestId: options?.requestId, referenceMode: options?.referenceMode });
     }
 
     throw error;

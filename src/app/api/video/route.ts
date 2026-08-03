@@ -1,13 +1,13 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
 import { assertUserCanUseCredits, chargeCredits, isUnauthenticatedError, UNAUTHENTICATED_ERROR_MESSAGE } from "@/lib/credits";
-import { createOpenRouterVideoTask, getBytePlusEffectiveReferenceImages, getOpenRouterVideoTask, type VideoReferenceMode } from "@/lib/openrouter-video";
+import { createOpenRouterVideoTask, getOpenRouterVideoTask, type VideoReferenceMode } from "@/lib/openrouter-video";
 import { createCodedApiError } from "@/lib/error-code";
 import { isTransientServerError } from "@/lib/transient-error";
 import { getBytePlusProviderKey } from "@/lib/byteplus-provider-key";
 import { normalizeReferenceAssetUrl, normalizeReferenceAssetUrls } from "@/lib/reference-asset-url";
 import { GENERIC_MEDIA_ERROR_MESSAGE } from "@/lib/error-message";
-import { getUploadRule, validateReferenceImageCount, validateReferenceTotalDuration, validateVideoReferenceCombination } from "@/lib/upload-rules";
+import { getEffectiveVideoReferenceItems, getUploadRule, supportsVideoReferenceMode, validateReferenceImageCount, validateReferenceTotalDuration, validateVideoReferenceCombination } from "@/lib/upload-rules";
 import { enqueueRemoteAssetSave } from "@/lib/media-save-queue";
 import { getMediaSaveStatuses } from "@/lib/media-save-queue";
 import { upsertVideoManifestEntry } from "@/lib/video-manifest";
@@ -19,63 +19,28 @@ import { appendGenerationDiagnosticsLog, summarizeGeneratedReference } from "@/l
 import { createBytePlusAsset, getBytePlusAsset } from "@/lib/byteplus-assets";
 import { recordGenerationEvent } from "@/lib/analytics-events";
 import { createVideoJob } from "@/lib/generation-jobs";
-import { getBytePlusVideoPricePerMillionUsd, validateVideoDurationWithReferences } from "@/lib/models";
+import { validateVideoDurationWithReferences } from "@/lib/models";
+import { getVideoUsageMeta, withChargedVideoUsage, withVideoUsdFallback, type VideoUsageMeta } from "@/lib/video-usage-cost";
 import { Prisma } from "@prisma/client";
 import { validateMediaUploadMetadata } from "@/lib/media-upload-validation";
 import { validateVideoReferenceImages, videoModelEnforcesReferenceImageSizeRules } from "@/lib/video-reference-image-rules";
 import { saveUploadedImageAsset } from "@/lib/local-assets";
 import { resolveUnlockLimitsForUser } from "@/lib/account-features";
 
-type UsageMeta = {
-  promptTokens?: number;
-  completionTokens?: number;
-  totalTokens?: number;
-  usd?: number;
-};
-
-function withChargedUsage(usage: UsageMeta | undefined, credit: Awaited<ReturnType<typeof chargeCredits>> | undefined) {
-  if (!credit || credit.skipped) return usage;
-  return { ...(usage ?? {}), usd: credit.chargedUsd, cny: credit.chargedCny };
-}
-
-function getFiniteNumber(value: unknown) {
-  const numberValue = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
-  return Number.isFinite(numberValue) ? numberValue : undefined;
-}
-
-function getUsageMeta(value: unknown): UsageMeta | undefined {
-  if (!value || typeof value !== "object") return undefined;
-
-  const record = value as Record<string, unknown>;
-  const usage = record.usage && typeof record.usage === "object" ? record.usage as Record<string, unknown> : record;
-  const promptTokens = Math.max(0, Math.floor(getFiniteNumber(usage.promptTokens ?? usage.prompt_tokens) ?? 0));
-  const completionTokens = Math.max(0, Math.floor(getFiniteNumber(usage.completionTokens ?? usage.completion_tokens) ?? 0));
-  const totalTokens = Math.max(0, Math.floor(getFiniteNumber(usage.totalTokens ?? usage.total_tokens) ?? promptTokens + completionTokens));
-  const usd = getFiniteNumber(usage.usd ?? usage.cost ?? usage.totalCost ?? usage.total_cost ?? usage.amount);
-
-  if (totalTokens > 0 || usd !== undefined) return { promptTokens, completionTokens, totalTokens, usd };
-
-  for (const key of ["data", "result", "task", "content", "payload"]) {
-    const nestedUsage = getUsageMeta(record[key]);
-    if (nestedUsage) return nestedUsage;
-  }
-
-  return undefined;
-}
-
-function withBytePlusVideoUsd(usage: UsageMeta | undefined, model: string | undefined, settings?: { resolution?: string }, hasVideoInput = false) {
-  if (!usage || usage.usd !== undefined || !model?.startsWith("byteplus:video.")) return usage;
-  const outputTokens = Math.max(0, usage.completionTokens ?? usage.totalTokens ?? 0);
-  const pricePerMillion = getBytePlusVideoPricePerMillionUsd(model, settings?.resolution, hasVideoInput);
-  return { ...usage, usd: (outputTokens / 1_000_000) * pricePerMillion };
-}
+// ⭐ 用量/成本三件套已收敛到唯一权威 `@/lib/video-usage-cost`
+//   （原来本文件和 `generation-jobs.ts` 各存一份一字不差的实现 —— 扣费金额是钱，
+//    两份各自演化就会出现"一条路扣对了、另一条路白送"这类静默漏收）。
+//   ⛔ 禁止在本文件里再写一份 getUsageMeta / withXxxUsd。
+type UsageMeta = VideoUsageMeta;
+const getUsageMeta = getVideoUsageMeta;
+const withChargedUsage = withChargedVideoUsage;
 
 function isBytePlusVideoModel(model?: string) {
   return Boolean(model?.startsWith("byteplus:video."));
 }
 
 function getUploadRuleVideoReferenceMode(mode?: VideoReferenceMode) {
-  return mode === "first_last_frame" || mode === "first_frame" ? mode : undefined;
+  return mode === "first_last_frame" || mode === "first_frame" || mode === "last_frame" ? mode : undefined;
 }
 
 function getBytePlusReferenceRole(index: number, mode?: VideoReferenceMode) {
@@ -721,7 +686,12 @@ export async function POST(request: Request) {
 
         await upsertVideoManifestEntry({ taskId, prompt: body.prompt ?? "", localVideoUrl: saveJob?.localUrl ?? videoUrl, remoteVideoUrl: videoUrl, posterUrl: saveJob?.posterUrl });
 
-        const usage = withBytePlusVideoUsd(getUsageMeta(task) ?? body.usage, body.model, body.settings, Array.isArray(body.referenceVideos) && body.referenceVideos.some((url) => typeof url === "string" && url.trim().length > 0));
+        const usage = withVideoUsdFallback(getUsageMeta(task) ?? body.usage, {
+          model: body.model,
+          settings: body.settings,
+          hasVideoInput: Array.isArray(body.referenceVideos) && body.referenceVideos.some((url) => typeof url === "string" && url.trim().length > 0),
+          referenceImageCount: Array.isArray(body.referenceImages) ? body.referenceImages.filter((url) => typeof url === "string" && url.trim().length > 0).length : 0,
+        });
         const credit = user ? await chargeCredits(user.id, "video", usage, { conversationId: body.conversationId, conversationTitle: body.conversationTitle, requestId, label: "视频生成", model: body.model, videoCount: 1, metadata: { ...body.metadata, settings: body.settings, ratio: body.settings?.ratio, resolution: body.settings?.resolution, duration: body.settings?.duration, originalPrompt: body.prompt, mediaUrls: [saveJob?.localUrl ?? videoUrl], remoteMediaUrls: [videoUrl], posterUrl: saveJob?.posterUrl, delivered: true, savedLocal: saveJob?.status === "saved", localSaveStatus: saveJob?.status ?? "pending", mediaSaveJobId: saveJob?.id } }) : undefined;
         void appendGenerationDiagnosticsLog({ event: "video-route-poll-completed", requestId: body.requestId ?? taskId, conversationId: body.conversationId, conversationTitle: body.conversationTitle, userId: user?.id, mode: "video", provider: isBytePlusVideoModel(body.model) ? "byteplus" : "openrouter", model: body.model, taskId, settings: body.settings, prompt: body.prompt, references: [summarizeGeneratedReference(videoUrl, 0, "remote_video")], durationMs: Date.now() - startedAt, extra: { status, saveJob, credit } });
         void recordGenerationEvent({ userId: user?.id, requestId, kind: "video", creditSource: body.metadata?.creditSource, model: body.model, provider: isBytePlusVideoModel(body.model) ? "byteplus" : "openrouter", status: "success" });
@@ -792,8 +762,9 @@ export async function POST(request: Request) {
     if (referenceComboError) return NextResponse.json({ error: referenceComboError }, { status: 400 });
     if (referenceVideos.length > uploadRule.video.maxCount) return NextResponse.json({ error: `当前模型最多支持 ${uploadRule.video.maxCount} 个参考视频` }, { status: 400 });
     if (referenceAudios.length > uploadRule.audio.maxCount) return NextResponse.json({ error: `当前模型最多支持 ${uploadRule.audio.maxCount} 个参考音频` }, { status: 400 });
-    if (isBytePlusVideoModel(body.model) && body.referenceMode === "first_frame" && referenceImages.length < 1) return NextResponse.json({ error: "首帧生视频需要至少一张参考图" }, { status: 400 });
-    if (isBytePlusVideoModel(body.model) && body.referenceMode === "first_last_frame" && referenceImages.length < 2) return NextResponse.json({ error: "首尾帧生视频需要至少两张参考图" }, { status: 400 });
+    if (supportsVideoReferenceMode(body.model) && body.referenceMode === "first_frame" && referenceImages.length < 1) return NextResponse.json({ error: "首帧生视频需要至少一张参考图" }, { status: 400 });
+    if (supportsVideoReferenceMode(body.model) && body.referenceMode === "last_frame" && referenceImages.length < 1) return NextResponse.json({ error: "尾帧生视频需要至少一张参考图" }, { status: 400 });
+    if (supportsVideoReferenceMode(body.model) && body.referenceMode === "first_last_frame" && referenceImages.length < 2) return NextResponse.json({ error: "首尾帧生视频需要至少两张参考图" }, { status: 400 });
     const referenceLimitError = validateReferenceImageCount({ mode: "video", modelId: body.model, transportMode: "local-base64", videoReferenceMode: uploadRuleVideoReferenceMode }, referenceImages.length, uploadRuleOverrides);
     if (referenceLimitError) return NextResponse.json({ error: referenceLimitError }, { status: 400 });
 
@@ -894,7 +865,9 @@ export async function POST(request: Request) {
       ],
       extra: { referenceMode, creditSource, referenceImageCount: referenceImages.length, referenceVideoCount: referenceVideos.length, referenceAudioCount: referenceAudios.length },
     });
-    const effectiveReferenceImages = isBytePlusVideoModel(body.model) ? getBytePlusEffectiveReferenceImages(referenceImages, body.referenceMode) : referenceImages;
+    // 参考图按「参考模式」裁剪（首帧 1 张 / 首尾帧 2 张 / 融合按模型上限）。唯一权威在 upload-rules。
+    // 注意 uploadRuleVideoReferenceMode 只在首帧/首尾帧时有值（融合模式是 undefined），正好符合这里的口径。
+    const effectiveReferenceImages = getEffectiveVideoReferenceItems(referenceImages, body.model, uploadRuleVideoReferenceMode);
     const modelReferenceImages = await resolveBytePlusReviewedReferences(user?.id, body.model, effectiveReferenceImages);
     const modelReferenceVideos = await resolveBytePlusReviewedReferences(user?.id, body.model, referenceVideos);
     const modelReferenceAudios = await resolveBytePlusReviewedReferences(user?.id, body.model, referenceAudios);

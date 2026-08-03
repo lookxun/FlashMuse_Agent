@@ -18,9 +18,10 @@ import { AudioWaveformPlayer } from "@/components/audio-waveform-player";
 import { AssetMentionPicker } from "@/components/asset-mention-picker";
 import { VideoUploadThumbnail } from "@/components/video-upload-thumbnail";
 import { VideoPlayBadge } from "@/components/video-play-badge";
+import { NewBadge } from "@/components/new-badge";
 import { validateVideoReferenceImagesBeforeSend, videoModelEnforcesReferenceImageSizeRules } from "@/lib/video-reference-image-rules";
 import { WorkflowCanvas, WorkflowCanvasState, WorkflowNode } from "@/components/workflow-tldraw-canvas";
-import { getSupportedUploadTypeLabel, getUploadAcceptValue, getUploadKindFromFileName, getUploadRule, getVideoAudioUploadDisabledMessage, validateReferenceTotalDuration, validateVideoReferenceCombination, UploadRuleOverrides } from "@/lib/upload-rules";
+import { getEffectiveVideoReferenceItems, getSupportedUploadTypeLabel, getUploadAcceptValue, getUploadKindFromFileName, getUploadRule, getVideoAudioUploadDisabledMessage, getVideoReferenceLimitHint, supportsVideoReferenceMode, validateReferenceTotalDuration, validateVideoReferenceCombination, UploadRuleOverrides } from "@/lib/upload-rules";
 import {
   HISTORY_INITIAL_SESSION_COUNT,
   HISTORY_LOAD_MORE_COUNT,
@@ -50,10 +51,8 @@ import {
   type MediaFileReference,
   type PendingGeneration,
   type VideoReferenceMode,
-  videoReferenceModeOptions,
-  isBytePlusSeedanceVideoModel,
-  getEffectiveBytePlusVideoReferenceItems,
-  getBytePlusVideoReferenceLimitHint,
+  getVideoReferenceModeOptions,
+
   type WorkMode,
   type UploadedImage,
   type GenerationSettings,
@@ -193,7 +192,9 @@ import {
   isWorkMode,
   mergeValidModeSettings,
   getGenerationModelIcon,
-  isGoldGenerationModel,
+ isGoldGenerationModel,
+  isNewGenerationModel,
+
   isGoldConversationModel,
   ToolButtonLabel,
   IconRenderer,
@@ -414,6 +415,7 @@ import {
   copyImageToClipboard,
   getDownloadName,
 } from "@/lib/chat/chat-workbench-core";
+import { VideoDurationSlider } from "@/components/video-duration-slider";
 
 export function ChatWorkbench() {
   const workspaceInstanceIdRef = useRef(createClientId());
@@ -755,8 +757,8 @@ export function ChatWorkbench() {
   const selectedResolution = mode === "image" ? normalizeImageResolutionForModel(selectedGenerationModels.image, selectedRatios.image === "智能比例" ? "智能比例" : selectedResolutions.image) : mode === "video" ? (selectedRatios.video === "智能比例" ? "720p" : normalizeVideoResolutionForModel(selectedGenerationModels.video, selectedResolutions.video)) : selectedResolutions[mode];
   const selectedImageCount = selectedImageCounts[mode];
   const selectedGenerationModel = mode === "general" ? selectedGeneralModels.chat : mode === "agent" ? selectedModel : selectedGenerationModels[mode];
-  const isSelectedBytePlusSeedanceVideoModel = mode === "video" && isBytePlusSeedanceVideoModel(selectedGenerationModels.video);
-  const currentUploadRule = useMemo(() => getUploadRule({ mode, modelId: selectedGenerationModel, transportMode: "local-base64", videoReferenceMode: mode === "video" && isSelectedBytePlusSeedanceVideoModel ? selectedVideoReferenceMode : undefined }, uploadRuleOverrides), [isSelectedBytePlusSeedanceVideoModel, mode, selectedGenerationModel, selectedVideoReferenceMode, uploadRuleOverrides]);
+  const isSelectedVideoReferenceModeModel = mode === "video" && supportsVideoReferenceMode(selectedGenerationModels.video);
+  const currentUploadRule = useMemo(() => getUploadRule({ mode, modelId: selectedGenerationModel, transportMode: "local-base64", videoReferenceMode: mode === "video" && isSelectedVideoReferenceModeModel ? selectedVideoReferenceMode : undefined }, uploadRuleOverrides), [isSelectedVideoReferenceModeModel, mode, selectedGenerationModel, selectedVideoReferenceMode, uploadRuleOverrides]);
   const currentMaxReferenceImages = currentUploadRule.image.maxCount;
   const uploadAcceptValue = useMemo(() => getUploadAcceptValue(currentUploadRule), [currentUploadRule]);
   const supportedUploadTypeLabel = useMemo(() => getSupportedUploadTypeLabel(currentUploadRule), [currentUploadRule]);
@@ -3613,7 +3615,8 @@ export function ChatWorkbench() {
 
   const renderControlMenu = (name: ControlMenuName, label: string, title: string, options: string[], value: string, onChange: (value: string) => void, icon?: typeof RiImageLine) => {
     const isDurationMenu = name === "duration";
-    const isBytePlusDurationMenu = isDurationMenu && (selectedGenerationModels.video === "byteplus:video.seedance-2-0-fast" || selectedGenerationModels.video === "byteplus:video.seedance-2-0" || selectedGenerationModels.video === "byteplus:video.seedance-2-0-mini");
+    // 时长档位多的模型（BytePlus Seedance 12 档、Hailuo 3 的 11 档）用两列网格排，3~4 档的还是单列。
+    const isMultiColumnDurationMenu = isDurationMenu && options.length > 6;
     const durationMenuRows = Math.ceil(options.length / 2);
     const durationMenuSplitIndex = Math.max(0, options.length - durationMenuRows);
 
@@ -3633,14 +3636,21 @@ export function ChatWorkbench() {
       </button>
 
       {openControlMenu === name ? (
-        <div className="absolute bottom-full left-0 z-[70] mb-2 max-h-[420px] min-w-[180px] overflow-y-auto rounded-[12px] bg-white p-2 shadow-[0_18px_40px_rgba(0,0,0,0.12)]">
-          <div className="px-2 pb-2 text-[12px] font-medium text-[#a0a0a0]">{title}</div>
-          <div className={isBytePlusDurationMenu ? "grid grid-cols-2 gap-1.5" : ""}>
+        <div className={`absolute bottom-full left-0 z-[70] mb-2 max-h-[420px] overflow-y-auto rounded-[12px] bg-white p-2 shadow-[0_18px_40px_rgba(0,0,0,0.12)] ${isDurationMenu ? "w-[340px]" : "min-w-[180px]"}`}>
+          <div className="px-2 pb-2 text-[12px] font-medium text-[#a0a0a0]">{isDurationMenu ? "选择视频生成时长" : title}</div>
+          {isDurationMenu ? (
+            <VideoDurationSlider
+              supportedSeconds={options.map((option) => Number(option.match(/\d+/)?.[0])).filter((n) => Number.isFinite(n))}
+              value={Number(value.match(/\d+/)?.[0]) || 0}
+              onChange={(seconds) => onChange(`${seconds}秒`)}
+            />
+          ) : (
+          <div className={isMultiColumnDurationMenu ? "grid grid-cols-2 gap-1.5" : ""}>
           {options.map((option, index) => (
             <button
               key={option}
               type="button"
-              style={isBytePlusDurationMenu ? { gridRow: durationMenuRows - (index < durationMenuSplitIndex ? index : index - durationMenuSplitIndex), gridColumn: index < durationMenuSplitIndex ? 2 : 1 } : undefined}
+              style={isMultiColumnDurationMenu ? { gridRow: durationMenuRows - (index < durationMenuSplitIndex ? index : index - durationMenuSplitIndex), gridColumn: index < durationMenuSplitIndex ? 2 : 1 } : undefined}
               onClick={() => {
                 onChange(option);
                 setOpenControlMenu("");
@@ -3657,8 +3667,9 @@ export function ChatWorkbench() {
               </span>
               {option === value ? <RiCheckLine className="h-[18px] w-[18px] text-[#111111]" aria-hidden="true" /> : null}
             </button>
-          ))}
+           ))}
           </div>
+          )}
         </div>
       ) : null}
     </div>
@@ -3666,8 +3677,9 @@ export function ChatWorkbench() {
   };
 
   const renderVideoReferenceModeMenu = () => {
-    if (!isSelectedBytePlusSeedanceVideoModel) return null;
-    const selectedOption = videoReferenceModeOptions.find((option) => option.value === selectedVideoReferenceMode) ?? videoReferenceModeOptions[0];
+    if (!isSelectedVideoReferenceModeModel) return null;
+    const referenceModeOptions = getVideoReferenceModeOptions(selectedGenerationModels.video);
+    const selectedOption = referenceModeOptions.find((option) => option.value === selectedVideoReferenceMode) ?? referenceModeOptions[0];
     return (
       <div className="relative" onClick={(event) => event.stopPropagation()}>
         <button
@@ -3686,7 +3698,7 @@ export function ChatWorkbench() {
         {openControlMenu === "videoReferenceMode" ? (
           <div className="absolute bottom-full right-0 z-[70] mb-2 w-[360px] rounded-[14px] bg-white p-2.5 shadow-[0_18px_40px_rgba(0,0,0,0.12)]">
             <div className="px-2 pb-2 text-[12px] font-medium text-[#a0a0a0]">参考模式</div>
-            {videoReferenceModeOptions.map((option) => (
+            {referenceModeOptions.map((option) => (
               <button
                 key={option.value}
                 type="button"
@@ -3767,6 +3779,7 @@ export function ChatWorkbench() {
                     <span className="flex min-w-0 items-center gap-2">
                       {ModelIcon ? <ModelIcon className="h-4.5 w-4.5 shrink-0 text-[#555555]" aria-hidden="true" /> : <AiGenerate3dIcon />}
                       <span className={`min-w-0 truncate text-[13px] ${isGoldModel ? "text-[#b8860b]" : ""}`}>{option.label}</span>
+                      {isNewGenerationModel(option.id) ? <NewBadge /> : null}
                     </span>
                     {modelHint ? <span className="pl-[26px] text-[11px] font-normal leading-tight text-[#a0a0a0]">{modelHint}</span> : null}
                   </span>
@@ -5509,19 +5522,20 @@ export function ChatWorkbench() {
         const agentSettings = getAgentGenerationSettingsFromPlan(plan, sourceText, generationMode, generationModel);
         const agentPromptDetail = generationMode === "image" || generationMode === "video" ? getAgentPromptDetailFromPlan(plan, sourceText, generationMode) : undefined;
         const agentPrompt = joinPromptDetail(agentPromptDetail);
-        const videoReferenceMode = generationMode === "video" && isBytePlusSeedanceVideoModel(generationModel) ? pendingRequest.videoReferenceMode ?? "reference" : undefined;
+        const videoReferenceMode = generationMode === "video" && supportsVideoReferenceMode(generationModel) ? pendingRequest.videoReferenceMode ?? "reference" : undefined;
         if (videoReferenceMode === "first_last_frame" && (pendingRequest.referenceImages?.length ?? 0) < 2) {
           appendSystemMessage(sessionId, { content: "首尾帧生视频需要至少两张参考图，请补充首帧和尾帧图片。", error: "首尾帧生视频需要至少两张参考图，请补充首帧和尾帧图片。", mode: "video" });
           return;
         }
-        const effectiveVideoReferenceImages = generationMode === "video" && generationModel.startsWith("byteplus:video.")
-          ? getEffectiveBytePlusVideoReferenceItems(pendingRequest.referenceImages, videoReferenceMode)
+        const shouldApplyAgentVideoReferenceMode = generationMode === "video" && supportsVideoReferenceMode(generationModel);
+        const effectiveVideoReferenceImages = shouldApplyAgentVideoReferenceMode
+          ? getEffectiveVideoReferenceItems(pendingRequest.referenceImages, generationModel, videoReferenceMode)
           : pendingRequest.referenceImages;
-        const effectiveVideoImageReferences = generationMode === "video" && generationModel.startsWith("byteplus:video.")
-          ? getEffectiveBytePlusVideoReferenceItems(pendingRequest.imageReferences, videoReferenceMode)
+        const effectiveVideoImageReferences = shouldApplyAgentVideoReferenceMode
+          ? getEffectiveVideoReferenceItems(pendingRequest.imageReferences, generationModel, videoReferenceMode)
           : pendingRequest.imageReferences;
-        if (generationMode === "video" && generationModel.startsWith("byteplus:video.") && (pendingRequest.referenceImages?.length ?? 0) > (effectiveVideoReferenceImages?.length ?? 0)) {
-          appendSystemMessage(sessionId, { content: getBytePlusVideoReferenceLimitHint(videoReferenceMode), mode: "video" });
+        if (shouldApplyAgentVideoReferenceMode && (pendingRequest.referenceImages?.length ?? 0) > (effectiveVideoReferenceImages?.length ?? 0)) {
+          appendSystemMessage(sessionId, { content: getVideoReferenceLimitHint(generationModel, videoReferenceMode), mode: "video" });
         }
         const plannedItemPromptDetails = agentPrompt ? getAgentItemPromptDetailsFromPlan(plan, sourceText, generationMode) : undefined;
         const plannedItemPrompts = plannedItemPromptDetails?.map(joinPromptDetail);
@@ -6053,7 +6067,7 @@ export function ChatWorkbench() {
     let enabledModelsForSubmit = enabledGenerationModelIds;
     const availableUploadedImages = isSuggestionSend ? [] : activeUploadedImages;
     const availableUploadedFiles = isSuggestionSend ? [] : activeUploadedFiles;
-    const submitVideoReferenceMode = submitMode === "video" && isBytePlusSeedanceVideoModel(generationModelsForSubmit.video) ? selectedVideoReferenceMode : undefined;
+    const submitVideoReferenceMode = submitMode === "video" && supportsVideoReferenceMode(generationModelsForSubmit.video) ? selectedVideoReferenceMode : undefined;
     const submitUploadRule = getUploadRule({ mode: submitMode, modelId: submitMode === "general" ? generalModelsForSubmit.chat : submitMode === "agent" ? selectedModel : generationModelsForSubmit[submitMode], transportMode: "local-base64", videoReferenceMode: submitVideoReferenceMode }, uploadRuleOverrides);
     if (availableUploadedImages.length > submitUploadRule.image.maxCount) {
       showInputTip(`当前模型最多支持 ${submitUploadRule.image.maxCount} 张参考图，不能上传更多图片`);
@@ -6065,7 +6079,7 @@ export function ChatWorkbench() {
     // 切换模式后当前模型可能整类不支持（如从视频模式切到图片模式，图片模型不支持视频/音频/文件）。
     // 直接提示"当前模型不支持视频/音频/文件"，而不是含糊的"最多支持 0 个文件"。
     if ((uploadedVideoFiles.length > 0 && !submitUploadRule.video.enabled) || (uploadedAudioFiles.length > 0 && !submitUploadRule.audio.enabled)) {
-      showInputTip(getVideoAudioUploadDisabledMessage({ modelId: generationModelsForSubmit.video, videoReferenceMode: submitMode === "video" && isBytePlusSeedanceVideoModel(generationModelsForSubmit.video) ? selectedVideoReferenceMode : undefined }));
+      showInputTip(getVideoAudioUploadDisabledMessage({ modelId: generationModelsForSubmit.video, videoReferenceMode: submitMode === "video" && supportsVideoReferenceMode(generationModelsForSubmit.video) ? selectedVideoReferenceMode : undefined }));
       return;
     }
     if (uploadedDocumentFiles.length > 0 && !submitUploadRule.document.enabled) {
@@ -6224,7 +6238,7 @@ export function ChatWorkbench() {
     const displayImageReferences = (namedImageReferences.length > 0 ? namedImageReferences : referenceImages.map((url, index) => ({ name: `图片${index + 1}`, url }))).slice(0, currentMaxReferenceImages);
     const text = rawTextWithMediaMentions || getImageOnlyPrompt(submitMode);
     const generationMode: WorkMode = submitMode;
-    const directVideoReferenceMode = generationMode === "video" && isBytePlusSeedanceVideoModel(generationModelsForSubmit.video) ? selectedVideoReferenceMode : undefined;
+    const directVideoReferenceMode = generationMode === "video" && supportsVideoReferenceMode(generationModelsForSubmit.video) ? selectedVideoReferenceMode : undefined;
     if (generationMode === "video") {
       const referenceComboError = validateVideoReferenceCombination({ modelId: generationModelsForSubmit.video, referenceMode: directVideoReferenceMode, imageCount: referenceImages.length, videoCount: referenceVideos.length, audioCount: referenceAudios.length });
       if (referenceComboError) {
@@ -6266,6 +6280,11 @@ export function ChatWorkbench() {
     }
     if (directVideoReferenceMode === "first_frame" && referenceImages.length < 1) {
       showInputTip("首帧生视频需要至少一张参考图");
+      setSessionSending(sessionId, false);
+      return;
+    }
+    if (directVideoReferenceMode === "last_frame" && referenceImages.length < 1) {
+      showInputTip("尾帧生视频需要至少一张参考图");
       setSessionSending(sessionId, false);
       return;
     }
@@ -6457,11 +6476,11 @@ export function ChatWorkbench() {
     const isAgentAutoGeneration = false;
     const assetTargetType = normalizedSuggestion?.assetTargetType ?? getAssetTypeFromText(text, generationMode);
     const generationModel = isAgentAutoGeneration ? getAgentGenerationModel(agentModelTier, generationMode, generationModelsForSubmit, { sourceText: text, session: activeSession, feedbackLogs, enabledModels: enabledModelsForSubmit }) : generationMode === "image" ? generationModelsForSubmit.image : generationModelsForSubmit.video;
-    const shouldApplyBytePlusReferenceMode = generationMode === "video" && generationModel.startsWith("byteplus:video.");
-    const effectiveReferenceImages = shouldApplyBytePlusReferenceMode ? getEffectiveBytePlusVideoReferenceItems(referenceImages, directVideoReferenceMode) : referenceImages;
-    const effectiveModelReferenceImages = shouldApplyBytePlusReferenceMode ? getEffectiveBytePlusVideoReferenceItems(modelReferenceImages, directVideoReferenceMode) : modelReferenceImages;
-    const effectiveDisplayImageReferences = shouldApplyBytePlusReferenceMode ? getEffectiveBytePlusVideoReferenceItems(displayImageReferences, directVideoReferenceMode) : displayImageReferences;
-    if (shouldApplyBytePlusReferenceMode && referenceImages.length > effectiveReferenceImages.length) showInputTip(getBytePlusVideoReferenceLimitHint(directVideoReferenceMode));
+    const shouldApplyVideoReferenceMode = generationMode === "video" && supportsVideoReferenceMode(generationModel);
+    const effectiveReferenceImages = shouldApplyVideoReferenceMode ? getEffectiveVideoReferenceItems(referenceImages, generationModel, directVideoReferenceMode) : referenceImages;
+    const effectiveModelReferenceImages = shouldApplyVideoReferenceMode ? getEffectiveVideoReferenceItems(modelReferenceImages, generationModel, directVideoReferenceMode) : modelReferenceImages;
+    const effectiveDisplayImageReferences = shouldApplyVideoReferenceMode ? getEffectiveVideoReferenceItems(displayImageReferences, generationModel, directVideoReferenceMode) : displayImageReferences;
+    if (shouldApplyVideoReferenceMode && referenceImages.length > effectiveReferenceImages.length) showInputTip(getVideoReferenceLimitHint(generationModel, directVideoReferenceMode));
     const agentSettings = isAgentAutoGeneration ? getAgentGenerationSettings(text, generationMode, generationModel) : undefined;
     const generationResolution = agentSettings?.resolution ?? (generationMode === "image" ? normalizeImageResolutionForModel(generationModel, selectedResolutions[modeForSettings]) : generationMode === "video" ? (selectedRatios.video === "智能比例" ? "720p" : normalizeVideoResolutionForModel(generationModel, selectedResolutions.video)) : selectedResolutions[modeForSettings]);
     const generationRatio = agentSettings?.ratio ?? (generationMode === "video" ? (selectedRatios.video === "智能比例" ? "智能比例" : normalizeVideoRatioForModel(generationModel, selectedRatios.video, generationResolution)) : selectedRatios[modeForSettings]);
@@ -6475,7 +6494,7 @@ export function ChatWorkbench() {
       originalPrompt: generationMode === "image" || generationMode === "video" ? text : undefined,
       preserveOriginalInput: false,
       assetTargetType: assetTargetType === "other" ? undefined : assetTargetType,
-      referenceImages: (shouldApplyBytePlusReferenceMode ? effectiveModelReferenceImages : effectiveReferenceImages).length > 0 ? (shouldApplyBytePlusReferenceMode ? effectiveModelReferenceImages : effectiveReferenceImages) : undefined,
+      referenceImages: (shouldApplyVideoReferenceMode ? effectiveModelReferenceImages : effectiveReferenceImages).length > 0 ? (shouldApplyVideoReferenceMode ? effectiveModelReferenceImages : effectiveReferenceImages) : undefined,
       referenceVideos: generationMode === "video" && referenceVideos.length > 0 ? referenceVideos : undefined,
       referenceAudios: generationMode === "video" && referenceAudios.length > 0 ? referenceAudios : undefined,
       videoReferenceMode: directVideoReferenceMode,
@@ -6722,19 +6741,23 @@ export function ChatWorkbench() {
       : agentModelTier === "advanced" ? ADVANCED_CHAT_MODEL : DEFAULT_CHAT_MODEL;
     const replayResolution = generationMode === "image" ? normalizeImageResolutionForModel(replayModel, replaySettings?.resolution ?? selectedResolutions[generationMode]) : generationMode === "video" ? ((replaySettings?.ratio ?? selectedRatios.video) === "智能比例" ? "720p" : normalizeVideoResolutionForModel(replayModel, replaySettings?.resolution ?? selectedResolutions.video)) : replaySettings?.resolution ?? selectedResolutions[generationMode];
     const replayRatio = generationMode === "video" ? ((replaySettings?.ratio ?? selectedRatios.video) === "智能比例" ? "智能比例" : normalizeVideoRatioForModel(replayModel, replaySettings?.ratio ?? selectedRatios.video, replayResolution)) : replaySettings?.ratio ?? selectedRatios[generationMode];
-    const replayVideoReferenceMode = generationMode === "video" && isBytePlusSeedanceVideoModel(replayModel) ? selectedVideoReferenceMode : undefined;
+    const replayVideoReferenceMode = generationMode === "video" && supportsVideoReferenceMode(replayModel) ? selectedVideoReferenceMode : undefined;
     if (replayVideoReferenceMode === "first_frame" && (referenceImages?.length ?? 0) < 1) {
       showInputTip("首帧生视频需要至少一张参考图");
+      return;
+    }
+    if (replayVideoReferenceMode === "last_frame" && (referenceImages?.length ?? 0) < 1) {
+      showInputTip("尾帧生视频需要至少一张参考图");
       return;
     }
     if (replayVideoReferenceMode === "first_last_frame" && (referenceImages?.length ?? 0) < 2) {
       showInputTip("首尾帧生视频需要至少两张参考图");
       return;
     }
-    const shouldApplyReplayBytePlusReferenceMode = generationMode === "video" && replayModel.startsWith("byteplus:video.");
-    const effectiveReplayReferenceImages = shouldApplyReplayBytePlusReferenceMode ? getEffectiveBytePlusVideoReferenceItems(referenceImages, replayVideoReferenceMode) : referenceImages;
-    const effectiveReplayImageReferences = shouldApplyReplayBytePlusReferenceMode ? getEffectiveBytePlusVideoReferenceItems(replayImageReferences, replayVideoReferenceMode) : replayImageReferences;
-    if (shouldApplyReplayBytePlusReferenceMode && (referenceImages?.length ?? 0) > (effectiveReplayReferenceImages?.length ?? 0)) showInputTip(getBytePlusVideoReferenceLimitHint(replayVideoReferenceMode));
+    const shouldApplyReplayVideoReferenceMode = generationMode === "video" && supportsVideoReferenceMode(replayModel);
+    const effectiveReplayReferenceImages = shouldApplyReplayVideoReferenceMode ? getEffectiveVideoReferenceItems(referenceImages, replayModel, replayVideoReferenceMode) : referenceImages;
+    const effectiveReplayImageReferences = shouldApplyReplayVideoReferenceMode ? getEffectiveVideoReferenceItems(replayImageReferences, replayModel, replayVideoReferenceMode) : replayImageReferences;
+    if (shouldApplyReplayVideoReferenceMode && (referenceImages?.length ?? 0) > (effectiveReplayReferenceImages?.length ?? 0)) showInputTip(getVideoReferenceLimitHint(replayModel, replayVideoReferenceMode));
     const pendingRequest: PendingGeneration = {
       id: createClientId(),
       model: replayModel,
@@ -7040,7 +7063,7 @@ export function ChatWorkbench() {
 
       if (kind === "video") {
         if (!currentUploadRule.video.enabled) {
-          tips.add(getVideoAudioUploadDisabledMessage({ modelId: selectedGenerationModel, videoReferenceMode: mode === "video" && isSelectedBytePlusSeedanceVideoModel ? selectedVideoReferenceMode : undefined }));
+          tips.add(getVideoAudioUploadDisabledMessage({ modelId: selectedGenerationModel, videoReferenceMode: mode === "video" && isSelectedVideoReferenceModeModel ? selectedVideoReferenceMode : undefined }));
         } else if (validateMediaUploadFile(file, "video")) {
           tips.add(validateMediaUploadFile(file, "video")!);
         } else if (acceptedVideoCount >= currentUploadRule.video.maxCount) {
@@ -7071,7 +7094,7 @@ export function ChatWorkbench() {
 
       if (kind === "audio") {
         if (!currentUploadRule.audio.enabled) {
-          tips.add(getVideoAudioUploadDisabledMessage({ modelId: selectedGenerationModel, videoReferenceMode: mode === "video" && isSelectedBytePlusSeedanceVideoModel ? selectedVideoReferenceMode : undefined }));
+          tips.add(getVideoAudioUploadDisabledMessage({ modelId: selectedGenerationModel, videoReferenceMode: mode === "video" && isSelectedVideoReferenceModeModel ? selectedVideoReferenceMode : undefined }));
         } else if (validateMediaUploadFile(file, "audio")) {
           tips.add(validateMediaUploadFile(file, "audio")!);
         } else if (acceptedAudioCount >= currentUploadRule.audio.maxCount) {
@@ -7400,7 +7423,7 @@ export function ChatWorkbench() {
       const rule = currentUploadRule[kind];
       setIsAtAssetMenuOpen(false);
       if (!rule.enabled) {
-        showInputTip(getVideoAudioUploadDisabledMessage({ modelId: selectedGenerationModel, videoReferenceMode: mode === "video" && isSelectedBytePlusSeedanceVideoModel ? selectedVideoReferenceMode : undefined }));
+        showInputTip(getVideoAudioUploadDisabledMessage({ modelId: selectedGenerationModel, videoReferenceMode: mode === "video" && isSelectedVideoReferenceModeModel ? selectedVideoReferenceMode : undefined }));
         return;
       }
       const already = activeUploadedFiles.some((file) => typeof file !== "string" && Boolean(file.url) && normalizeMediaUrlForMatch(file.url!) === normalizeMediaUrlForMatch(asset.url));
@@ -8033,7 +8056,7 @@ export function ChatWorkbench() {
               {showWorkspaceIntlBadge ? <span className="pb-[1px] text-[12px] font-medium leading-none text-[#8a8a8a]">Intl.</span> : null}
               {IS_TEST_SERVER ? <span className="pb-[1px] text-[12px] font-semibold leading-none text-[#e0a400]">测试服</span> : null}
             </span>
-            <div className="mt-1 whitespace-nowrap text-xs leading-4 text-[#8a8a8a]">AI视频助手</div>
+            <div className="mt-1 whitespace-nowrap text-xs leading-4 text-[#8a8a8a]">AI影游助手</div>
           </div> : null}
         </button>
         <div className={isSidebarCollapsed ? "mb-3 flex flex-col items-center gap-[5px]" : "mb-[22px] space-y-[5px]"}>
@@ -8044,7 +8067,7 @@ export function ChatWorkbench() {
           </button>
           <button type="button" disabled={!WORKFLOW_MODE_ENABLED} onClick={enterWorkflowPanel} className={!WORKFLOW_MODE_ENABLED ? isSidebarCollapsed ? "relative flex h-10 w-10 cursor-not-allowed items-center justify-center rounded-lg font-medium text-[#b0b0b0]" : "flex h-10 w-full cursor-not-allowed items-center gap-2 rounded-lg px-3 text-left font-medium text-[#b0b0b0]" : isSidebarCollapsed ? activePanel === "workflow" ? "relative flex h-10 w-10 items-center justify-center rounded-lg bg-[#ececec] font-medium text-[#111111]" : "relative flex h-10 w-10 items-center justify-center rounded-lg font-medium text-[#555555] transition hover:bg-[#ececec]" : activePanel === "workflow" ? "flex h-10 w-full items-center gap-2 rounded-lg bg-[#ececec] px-3 text-left font-medium text-[#111111]" : "flex h-10 w-full items-center gap-2 rounded-lg px-3 text-left font-medium text-[#555555] transition hover:bg-[#ececec]"} title={WORKFLOW_MODE_ENABLED ? "工作流模式" : "工作流模式暂未开放"} aria-label={WORKFLOW_MODE_ENABLED ? "工作流模式" : "工作流模式暂未开放"}>
             {activePanel === "workflow" && WORKFLOW_MODE_ENABLED ? <RiGitMergeLine className="h-5 w-5 shrink-0 text-[#111111]" aria-hidden="true" /> : <RiGitPullRequestLine className={!WORKFLOW_MODE_ENABLED ? "h-5 w-5 shrink-0 text-[#b0b0b0]" : "h-5 w-5 shrink-0 text-[#555555]"} aria-hidden="true" />}
-            {!isSidebarCollapsed ? <span className="flex items-center gap-1.5 text-[13px] leading-[1.2]">工作流模式<span className="rounded-full bg-[#2fbf4f] px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white">NEW</span></span> : null}
+            {!isSidebarCollapsed ? <span className="flex items-center gap-1.5 text-[13px] leading-[1.2]">工作流模式<NewBadge /></span> : null}
             {WORKFLOW_MODE_ENABLED && activePanel !== "workflow" && hasAnyWorkflowGenerating ? <span className={isSidebarCollapsed ? "absolute ml-7 mt-7 flex w-4 shrink-0 justify-end" : "ml-auto flex w-7 shrink-0 justify-end"}><HaloPulseIndicator /></span> : null}
             {!isSidebarCollapsed && !WORKFLOW_MODE_ENABLED ? <span className="ml-auto rounded-full bg-white px-2 py-0.5 text-[11px] text-[#9a9a9a] ring-1 ring-[#e3e3e3]">未开放</span> : null}
           </button>

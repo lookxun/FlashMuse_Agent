@@ -47,7 +47,7 @@ export function normalizeImageQuality(value?: string): ImageQuality {
 export type ImageRatio = "智能比例" | "16:9" | "9:16" | "1:1" | "4:3" | "3:4" | "21:9";
 type ConcreteImageRatio = Exclude<ImageRatio, "智能比例">;
 type ImageDimensions = { width: number; height: number };
-export type VideoResolution = "480p" | "720p" | "1080p" | "4K";
+export type VideoResolution = "480p" | "720p" | "1080p" | "2K" | "4K";
 export type VideoRatio = "16:9" | "9:16" | "1:1" | "4:3" | "3:4" | "21:9";
 
 export type ImageModelRule = {
@@ -110,9 +110,44 @@ export const frontendImageGenerationModels: GenerationModel[] = [
   ...imageGenerationModels,
 ] as const;
 
+/**
+ * MiniMax H3（OpenRouter slug `minimax/hailuo-3`）—— 模型 id 的唯一权威常量。
+ *
+ * ⚠️ **名字别搞混**：调用要用的 slug 里带 `hailuo`（OpenRouter 沿用了海螺 01/02 的老命名，
+ * canonical 是 `minimax/hailuo-03-20260730`），但这一代**对外不叫海螺** ——
+ * OpenRouter 页面展示名是 `MiniMax: H3`、MiniMax 官网/官方接口的模型参数都是 `MiniMax-H3`
+ * （官方博客明写"抛弃了 Hailuo-02 架构"）。→ **界面一律显示 `MiniMax H3`，只有 id 里保留 hailuo。**
+ *
+ * ⭐ 接入依据（2026-08-03 查 `GET https://openrouter.ai/api/v1/videos/models`，不是猜的）：
+ * - `supported_resolutions: ["2K"]` —— **只有 2K 一档**（MiniMax 官方还有 768P，OpenRouter 没接）。
+ * - `supported_aspect_ratios: ["21:9","16:9","4:3","1:1","3:4","9:16"]`。
+ * - `supported_durations: [5..15]`（官方是 4~15，OpenRouter 从 5 起）。
+ * - `supported_frame_images: ["first_frame","last_frame"]` → 首帧 / 尾帧 / 首尾帧都支持。
+ * - `generate_audio: true`、`seed: false`、`supported_sizes: null`（所以不能发 `size`）。
+ * - 计费：`duration_seconds 0.13` + `reference_images 0.04`（走 usage.cost，不用配价格表）。
+ *
+ * ⛔ 参考视频 / 参考音频：OpenRouter 文档明写「audio/video references 只有 BytePlus Seedance 2.0 会被采纳，
+ *    其它供应商只用图片、其余**静默忽略**」→ 所以 H3 拿不到官方的 V2V 动作迁移 / 音色参考，
+ *    `upload-rules.ts` 里"非 BytePlus 不许传参考视频音频"那条必须保持不动（它正好挡住了这个静默失败）。
+ */
+export const HAILUO3_VIDEO_MODEL_ID = "minimax/hailuo-3";
+
+/**
+ * 模型下拉里要标「NEW」小徽标的新模型 —— 唯一权威（对话流 + 工作流画布共用）。
+ * 徽标长相见 `src/components/new-badge.tsx`（⛔ 别再各处手写那串 className）。
+ */
+export function isNewGenerationModel(modelId: string) {
+  return modelId === HAILUO3_VIDEO_MODEL_ID;
+}
+
+// H3 在 OpenRouter 上支持 5~15 秒（整秒）。
+export const HAILUO3_SUPPORTED_DURATION_SECONDS = [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
+const hailuo3Durations = HAILUO3_SUPPORTED_DURATION_SECONDS.map((seconds) => `${seconds}秒`);
+
 export const videoGenerationModels: GenerationModel[] = [
   { label: "Seedance 2.0 Fast", id: "bytedance/seedance-2.0-fast", durations: ["5秒", "10秒", "15秒"] },
   { label: "Seedance 2.0", id: "bytedance/seedance-2.0", durations: ["5秒", "10秒", "15秒"] },
+  { label: "MiniMax H3", id: HAILUO3_VIDEO_MODEL_ID, durations: hailuo3Durations },
   { label: "Kling v3.0 Standard", id: "kwaivgi/kling-v3.0-std", durations: ["5秒", "10秒", "15秒"] },
   { label: "Kling v3.0 Pro", id: "kwaivgi/kling-v3.0-pro", durations: ["5秒", "10秒", "15秒"] },
   { label: "Kling Video O1", id: "kwaivgi/kling-video-o1", durations: ["5秒", "10秒"] },
@@ -456,6 +491,24 @@ const veoVideoSizes: VideoModelRule["sizes"] = {
   },
 };
 
+// ⭐ Hailuo 3 的 2K 各比例**实际输出尺寸**（2026-08-03 直打 OpenRouter 实测，见桌面 minimax-h3-test）：
+// 标准比例短边固定 1440；21:9 例外，实测 2944×1248（约分 92:39，比正 21:9=2.333 略宽 → 标 nonStandard）。
+// 我们只把这张表用于界面显示"预计尺寸"，不发 size 给上游。
+const hailuo3VideoSizes: VideoModelRule["sizes"] = {
+  "2K": {
+    "21:9": { width: 2944, height: 1248 },
+    "16:9": { width: 2560, height: 1440 },
+    "4:3": { width: 1920, height: 1440 },
+    "1:1": { width: 1440, height: 1440 },
+    "3:4": { width: 1440, height: 1920 },
+    "9:16": { width: 1440, height: 2560 },
+  },
+};
+
+const hailuo3NonStandardVideoSizes: VideoModelRule["nonStandardSizes"] = {
+  "2K": { "21:9": true },
+};
+
 export const videoModelRules: Record<string, VideoModelRule> = {
   "bytedance/seedance-2.0-fast": {
     resolutions: ["480p", "720p"],
@@ -521,6 +574,14 @@ export const videoModelRules: Record<string, VideoModelRule> = {
     sizes: klingO1VideoSizes,
     nonStandardSizes: klingO1NonStandardVideoSizes,
   },
+  [HAILUO3_VIDEO_MODEL_ID]: {
+    resolutions: ["2K"],
+    ratios: ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
+    defaultResolution: "2K",
+    defaultRatio: "16:9",
+    sizes: hailuo3VideoSizes,
+    nonStandardSizes: hailuo3NonStandardVideoSizes,
+  },
   "google/veo-3.1": {
     resolutions: ["720p", "1080p", "4K"],
     ratios: ["16:9", "9:16"],
@@ -581,8 +642,13 @@ export function normalizeVideoRatioForModel(modelId: string | undefined, ratio?:
 export function resolveVideoSettingsForModel(modelId: string | undefined, settings?: { ratio?: string; resolution?: string }) {
   const rule = getVideoModelRule(modelId);
   if (settings?.ratio === "智能比例") {
-    const size = { width: 1280, height: 720 };
-    return { ratio: "16:9" as const, resolution: "720p" as const, size };
+    // ⭐ 「智能比例」原本写死 720p / 16:9，但那是**只对支持 720p 的模型才成立**的假设：
+    // Hailuo 3 只有 2K 一档，写死 720p 会把上游不认识的分辨率发上去（Kling Video O1 同理，只有 1080p）。
+    // 所以这里改成「支持 720p 就还是 720p（行为不变），不支持就回落到该模型的默认档」。
+    const resolution = rule.resolutions.includes("720p") ? "720p" : rule.defaultResolution;
+    const ratio = rule.ratios.includes("16:9") ? "16:9" : rule.defaultRatio;
+    const size = rule.sizes[resolution]?.[ratio] ?? { width: 1280, height: 720 };
+    return { ratio, resolution, size };
   }
 
   const resolution = normalizeVideoResolutionForModel(modelId, settings?.resolution);
@@ -594,6 +660,14 @@ export function resolveVideoSettingsForModel(modelId: string | undefined, settin
 
 export function getExpectedVideoDimensions(modelId: string | undefined, resolution: string | undefined, ratio: string | undefined) {
   return resolveVideoSettingsForModel(modelId, { ratio, resolution }).size;
+}
+
+/**
+ * 「智能比例」下该模型实际会用的分辨率档。
+ * ⛔ 前端不许再写死 "720p" —— Hailuo 3 只有 2K、Kling Video O1 只有 1080p，写死会显示/记录成错误的档位。
+ */
+export function getSmartVideoResolutionForModel(modelId: string | undefined): VideoResolution {
+  return resolveVideoSettingsForModel(modelId, { ratio: "智能比例" }).resolution;
 }
 
 export function isNonStandardVideoSize(modelId: string | undefined, resolution: string | undefined, ratio: string | undefined) {

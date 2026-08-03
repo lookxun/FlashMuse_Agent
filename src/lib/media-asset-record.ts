@@ -224,6 +224,7 @@ const MODEL_DISPLAY_LABELS: Record<string, string> = {
   "kwaivgi/kling-v3.0-std": "Kling v3.0 Standard",
   "kwaivgi/kling-v3.0-pro": "Kling v3.0 Pro",
   "kwaivgi/kling-video-o1": "Kling Video O1",
+  "minimax/hailuo-3": "MiniMax H3",
 };
 
 /** 把模型 id 变成好看的显示名（modelLabel）。 */

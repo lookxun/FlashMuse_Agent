@@ -206,7 +206,10 @@ sudo /opt/flashmuse/scripts/flashmuse-db-backup.sh --stack prod --label pre-depl
 2. 打**改动源码** tgz（含 `src/lib/app-version.ts`），scp 到腾讯 `/tmp` → `sudo tar -xzf -C /opt/flashmuse-staging/app`。
 3. `cd /opt/flashmuse-staging && nohup sudo docker compose up -d --build staging-app > /tmp/sb.log 2>&1 &`（**后台+轮询 `tail /tmp/sb.log` 防 120s 工具超时**，build~2.5min；entrypoint 自动 migrate deploy）。此时 compose 里 `PUBLISHED_APP_VERSION` 仍是上一版（或空）→ 新版本提示条**不会**中途误弹。
 4. `sudo bash /opt/flashmuse-staging/app/deploy/sync-ali.sh --stack=staging --with-generated`（同步 `_next/static`+`home-assets`+`generated` 到阿里测试镜像，否则 chunk 404）。
+   - ⛔ **这一步可能超过工具 120s（甚至 180s）**：⭐ 用 `nohup ... > /tmp/syncaliXX.log 2>&1 &` 后台跑 + 另起 ssh 轮询 `tail`，**别同步等**。同步等会让本地 ssh 超时断开、把远端进程 SIGHUP 掉，还**留下一个 `/tmp/flashmuse-sync-ali-staging.lock` 死锁**（下次跑会报 `another sync ... is running`）→ 先 `sudo rm -f /tmp/flashmuse-sync-ali-staging.lock` 再重跑。
 5. ⭐ **发布版本信号（提示条门控，静态同步完成后才做）**：往 `/opt/flashmuse-staging/.env` 追加/改 `PUBLISHED_APP_VERSION=vX` + `sudo docker compose up -d --force-recreate staging-app`（复用镜像、快）。这样"提示条弹出=静态已就绪"，用户点刷新必正常、不白屏。
+   - ⛔ **`.env` 是 root 属主**：`grep`/`sed` 都要 `sudo`，否则 `Permission denied`。用 `grep -q ... || echo >> ` 这种「查不到就追加」的写法时，**非 sudo 的 grep 会因权限失败而误触发追加分支** → 每次部署都多写一行。
+   - ⛔ **实测发现 `.env` 里已累积了 4 行 `PUBLISHED_APP_VERSION=`（v66/67/68/69）**：compose 读 `.env` 是**最后一行生效**，所以功能没坏，但很脏。⭐ 正确写法一步到位：`sudo sed -i '/^PUBLISHED_APP_VERSION=/d' .env && echo 'PUBLISHED_APP_VERSION=vX' | sudo tee -a .env`（先删光同名行再追加一行）。改完 `sudo grep -n PUBLISHED_APP_VERSION .env` 确认只剩 1 行。
 6. 验证：`curl -D - http://127.0.0.1:5001/api/models | grep x-app-version`（=新版）+ `curl http://127.0.0.1:5001/api/health`（`{"ok":true,...}`）+ 外网 `http://101.37.129.164:8080/` 200。
 7. ⭐⭐ **必做：上号跑一遍上面「部署铁律」里的最小巡检 6 项**。崩了立刻修，别往正式服推。
 

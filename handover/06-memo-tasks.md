@@ -45,6 +45,21 @@
 > ⭐ 同理适用于任何**共享命名空间**里新增标识符（M 编号、`B_xxx` 错误码、Prisma 迁移名）：
 > **先枚举现存全部取值，再取新值。**
 
+### [ ] M035 工作流 / Agent 接入 MiniMax H3（2026-08-03 记，对话流已上线，这两个是独立后续）
+
+**背景**：2026-08-03 已把 `minimax/hailuo-3`（MiniMax H3）接进**对话流**视频生成（详见 CHANGELOG 第三十四次会话）。
+用户明确"先接对话流、Agent 不接"，所以工作流与 Agent 都**故意留白**，不是漏做。
+
+**工作流怎么接**：H3 现在被 `workflow-tldraw-canvas-inner.tsx` 里 `workflowVideoModels` 的一个 filter 排除了。
+工作流有一套**平行的**参考模式实现（`isWorkflowBytePlusSeedanceVideoModel` /
+`getWorkflowEffectiveBytePlusVideoReferenceItems` / `getWorkflowBytePlusVideoReferenceLimitHint` /
+`showVideoReferenceModeMenu`），只认 BytePlus。要接 H3 得先把这套收敛到
+`upload-rules.supportsVideoReferenceMode` / `getEffectiveVideoReferenceItems` / `getVideoReferenceImageMaxCount`
+（对话流已经用的那套唯一权威），再删掉那个 filter。⭐ 顺便消一对孪生函数（符合拍板 9）。
+
+**Agent 怎么接**：改 `system-settings.ts:isAgentVideoModelEnabled`（现在非 BytePlus 一律 return false）。
+⚠️ 用户目前**明确不接 Agent**，别自作主张开。
+
 ### [ ] M032 工作流节点传参考图偶发"静默挂不上" —— ⛔ **根因未知，严谨复现之前不许动代码**（2026-08-02 记）
 
 **现象（客观描述，不带因果）**：工作流画布里，给图片/视频生成节点点「上传图片 → 从本地上传」选文件，
@@ -570,7 +585,14 @@ M025 = **只把"当前正在用的那一个工作流"发完整，其余工作流
      所以真要做压缩，**做阿里端这条、别做浏览器那条**。
 - 📌 **和 M033 / M034 的关系**：三条是同一个调查的产物。**优先级建议 M033 > M034 > M015 > 方案 C（线路，要花钱）**。
 
-### [ ] M033 ⭐ 图片上传补「秒回预检」（`asset-upload-temp` 缺去重预检，图片仍要整包重传）
+### [x] M033 ⭐ 图片上传补「秒回预检」—— ✅ **2026-08-03 第三十七次会话已完成并部署测试服 v69**
+
+> ✅ **已完成**：`asset-upload-temp` 加 GET 预检 handler（复用既有 `findDedupImage`，带 `mediaType:"image"`）
+> + CORS `Access-Control-Allow-Methods` 加 `GET`；客户端三处图片上传（对话流 `uploadTemporaryAssetImageOnce`、
+> 工作流 `uploadWorkflowImageOnce`）在上传前 `computeFileContentHashHex` + `precheckUploadedFileDedup`，
+> 门控 `dedup && !forceReencode`（与服务端 POST 的 dedup 判重口径一致）。
+> **测试服 HTTPS 实测**：第三次上传同一文件 → 预检 GET 返回 `{url,name}` 命中 → **零 chunk 请求、整包传输全免**。
+> ⚠️ **HTTP 入口（8080）不是安全上下文 → `crypto.subtle` 不可用 → 预检自动跳过**（与既有文档预检同一限制，非 bug）。
 
 > 🗣️ **2026-08-02 用户拍板：本条 + M034 + M015 都记进备忘，下个 AI 再做。**
 > ⭐ **这三条是同一个调查的产物，动手前先看下面 M034 里那份「上传耗时实测数据」**，别重新查一遍。
@@ -592,10 +614,24 @@ M025 = **只把"当前正在用的那一个工作流"发完整，其余工作流
 - **风险**：极小（纯新增一条快路径，命中不了就走原流程）。**收益**：命中即 100% 省掉整包传输。
 - ⭐ 我（第三十三次会话）**建议先做这条**，零风险、当天能完。
 
-### [ ] M034 ⭐⭐ 上传分片 + 单片重传（专治跨境丢包导致的"偶发卡几十秒到 3 分半"）
+### [x] M034 ⭐⭐ 上传分片 + 单片重传 —— ✅ **2026-08-03 第三十七次会话已完成并部署测试服 v69**
 
-> 2026-07-08 就作为候选提出过（`historical-handover-docs-last-used-2026-07-21/CHANGELOG.md:1622` 第③项
-> "大视频断点续传/分片"），**至今零实现**。2026-08-02 用实测数据重新论证后，认为它比压缩更对症。
+> ✅ **已完成**。实现：
+> - 服务端新增 `src/app/api/upload-chunk/route.ts`：POST 传单片（`?uploadId&index&total`，body=原始字节）→
+>   落 `.runtime/upload-chunks/<userId>/<uploadId>/<index>.part`；POST `?assemble=1`（JSON）→ 收齐拼接、
+>   **校验整体哈希**、重建成等价 multipart 请求 **直接调既有 `upload-file`/`asset-upload-temp` 的 POST**
+>   （零逻辑复制：校验/去重/落库/命名/阿里同步全复用；跨路由 import handler 在 `next build` 已验证可编译）。
+> - 服务端 `src/lib/upload-chunks.ts`：分片存取 + `clearUploadChunks`（处理完必清）+ `sweepStaleUploadChunks`
+>   （每次操作机会性清 6 小时以上的孤儿目录，避免"只增不减"）+ uploadId `[A-Za-z0-9_-]` 白名单防路径穿越
+>   + 单片 4MB / 单上传 250 片上限。
+> - 客户端统一入口 `src/lib/chunked-upload.ts`：`shouldChunkUpload`（>1MB 才分片）+ `uploadFileInChunks`
+>   （1MB/片、每片独立 XHR、**失败自动重试 3 次只重传该片**、真实字节进度 2~96、assemble 带 `originalContentHash`）。
+>   对话流 `uploadDocumentFileAsset`/`uploadTemporaryAssetImageOnce`、工作流 `uploadWorkflowFile`/`uploadWorkflowImageOnce`
+>   四处大文件都走它，小文件保持原单发路径。
+> - `src/proxy.ts` matcher 排除名单加了 `upload-chunk`（否则被 Next body 缓冲截断）。
+> - **哈希口径**：分片不改字节，assemble 用拼接结果哈希和客户端原始文件哈希比对；对话流图片 forceReencode 重试路径不带原始哈希。
+> **测试服 HTTPS 实测**（7.5MB 噪声图 → 8 片）：GET 预检 miss → 8 片全 200 → `assemble=1` 200（哈希校验通过）→
+> PATCH 转正 200；`upload-chunk-assemble-success`（8 片 / 7,541,512 字节）；**分片临时目录处理后 0 残留（清理生效）**。
 
 #### ⭐⭐ 2026-08-02 正式服实测数据（下个 AI 直接用，别重新查）
 

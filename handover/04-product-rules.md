@@ -99,6 +99,16 @@
 - 融合模式(`reference`)：图 `reference_image`、视频 `reference_video`、音频 `reference_audio`；首帧(`first_frame`)/首尾帧(`first_last_frame`)只图。三种模式不混。对话流/工作流都有显式参考模式菜单（`referenceMode`），不再从措辞推断。
 - 真人/隐私/版权敏感的输入素材（图/视频/音频）→ 走 auto-review：建 BytePlus 素材(Skip 免审)→ `asset://` 重试（`isBytePlusRecoverableReferenceError`，最多 3 次）。首次进审核 UI 加蓝色系统提示（同 video 请求内去重）。
 
+## MiniMax H3 视频规则（2026-08-03 接入对话流，`minimax/hailuo-3`）
+
+- **走 OpenRouter；只接对话流**（Agent/工作流未接，见 M035）。模型下拉显示 `MiniMax H3`、在 Kling 上面、带官方音浪图标 + 青绿 NEW 徽标。
+- **分辨率只有 2K 一档**（OpenRouter 只开这一档，官方的 768P 没接）。时长 **5~15 秒全 11 档**。
+- **6 个比例的实测输出尺寸**（已固化进 `models.ts`）：21:9→2944×1248（略宽，标 nonStandard）、16:9→2560×1440、4:3→1920×1440、1:1→1440×1440、3:4→1440×1920、9:16→1440×2560（标准比例短边固定 1440）。
+- **参考模式四选**（比 Seedance 多一个尾帧）：参考图模式(`reference`，默认 **9 张**，实测上限就是 9，第 10 张 OpenRouter 提交即 400)、首帧(`first_frame`，1 张)、尾帧(`last_frame`，1 张)、首尾帧(`first_last_frame`，2 张)。首帧/尾帧/首尾帧走 OpenRouter 的 `frame_images[].frame_type`，参考图模式走 `input_references`，二者互斥。
+- ⛔ **不支持参考视频/音频**：OpenRouter 对非 BytePlus 供应商会**静默丢弃** video/audio references（不报错、照收钱但素材没用上）→ `validateVideoReferenceCombination` 里"非 BytePlus 不许传视频音频"那条正好挡住，保持不动。
+- 计费走 `usage.cost`（不配价格表）：实测 5 秒固定 $0.65（≈47 积分）、15 秒 ≈140 积分、参考图另计。
+- ⚠️ **名字**：id 里带 `hailuo` 是 OpenRouter 沿用海螺老命名，但界面一律 `MiniMax H3`（这一代不叫海螺）。上一代 `minimax/hailuo-2.3` 才是真海螺，是另一个模型。
+
 ## 计费
 
 - `CreditLedger` 唯一来源。计费按 provider 返回的 `usage.usd(cost)` → 积分（非按 model id 查价）。图片存盘重排队扣费幂等、只 finalize 扣一次。
@@ -129,10 +139,33 @@
 - 实现细节与禁忌见 `workflow-tldraw-canvas-inner.tsx` 的 `addNodeFromPrompt` 注释
   （尤其 `promptLoading` 是运行时临时字段、**绝不能落库**）。
 
+## ⭐⭐ 视频时长选择器 = 滑块 + 数字输入框（2026-08-03 v68 起，🗣️ 用户逐条指定）
+
+**唯一权威组件 = `src/components/video-duration-slider.tsx`（`VideoDurationSlider`）**，
+**对话流（`chat-workbench.tsx` 的 `renderControlMenu` duration 分支）与工作流视频节点
+（`WorkflowDurationMenuSingle`）共用同一份**。⛔ 别再各写一套。弹窗宽 `w-[340px]`，标题「选择视频生成时长」。
+
+- **量程按模型自身**：滑块右端 = 该模型**最大档**（`scaleMax = maxSec`）。
+  → Veo 3.1 右端就是 8，**末尾不留 10/15 空刻度**；Kling O1 到 10；Seedance/H3 到 15。整体长度不变。
+- **前段灰色禁用**：小于最小档的区间画深灰 `#cfcfcf`、不可选（Veo/Seedance 的 0~4、H3 的 0~5）。
+- **小竖线 = 每个「可选秒」一根**：连续档模型（H3 5~15）在 5–10 之间有 6/7/8/9；
+  离散档模型（Kling 5/10/15）中间就没有。
+- **数字刻度是按钮**：点了跳到对应秒；**可点的悬停加灰底**（`hover:bg-[#f0f0f0]`）；超范围的（如 0）灰显不可点。
+  档位 ≤6 时直接标各档（Veo 标 0/4/6/8），档位多时用 `0/5/10/15` 里 ≤ 最大档的那几个。
+- **右侧数字输入框**：可直接输入（回车/失焦提交）、上下箭头在**合法档之间**跳、超范围自动夹紧；
+  与滑块间距 `gap-6`。
+- **一律吸附到最近的合法档**（🗣️ 用户在三个方案里选的这个）：拖动/输入/点刻度都过 `snap()`。
+  平局（如 Veo 拖到 7）取**较小档**（6）。
+- ⛔⛔ **拖动只能用原生 `<input type="range">`**（透明覆盖，自定义外观全部 `pointer-events-none`）——
+  原因见 `AGENTS.md` 那条铁律：工作流节点的祖先容器有 capture-phase `stopPropagation`，
+  自己写 pointer 事件收不到。**别改回去。**
+
 ## ⭐ 左上角 logo = 切换线路（2026-08-02 v65 起，用户指定）
 
 - 工作台和首页**一致**：在新加坡服点 → 阿里入口，在阿里/其他入口点 → 新加坡服（`main.venusface.com`）。
 - 鼠标悬停显示「**切换线路**」（两处都有 `title`）。
+- ⭐ **副标题文案 = `AI影游助手`**（2026-08-03 v68 起，🗣️ 用户改的；此前是 `AI视频助手`，更早还有过 `AI影片助手`）。
+  全项目只有 `chat-workbench.tsx` 一处硬编码，改的时候 grep 一遍别漏。
 - 历史变迁：切换收起 → 刷新页面 → **切换线路**（别再改回刷新）。
 
 ## ⭐ 工作流视频节点：选中即播、取消选中即停（2026-08-02 v65 起，用户指定）

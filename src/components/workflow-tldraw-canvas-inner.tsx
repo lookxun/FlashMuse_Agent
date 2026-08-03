@@ -2,26 +2,32 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ChangeEvent, type CSSProperties, type DragEvent as ReactDragEvent, type MouseEvent as ReactMouseEvent, type MutableRefObject, type PointerEvent as ReactPointerEvent, type ReactElement, type ReactNode, type SyntheticEvent } from "react";
 import { createPortal } from "react-dom";
+import { VideoDurationSlider } from "@/components/video-duration-slider";
 import { BaseBoxShapeUtil, BindingUtil, CubicBezier2d, HTMLContainer, Mat, Rectangle2d, SVGContainer, SelectionForegroundOverlayUtil, ShapeUtil, T, Tldraw, Vec, createShapeId, defaultBindingUtils, defaultOverlayUtils, defaultShapeUtils, resizeBox, useActions, useEditor, useValue, vecModelValidator, type Editor, type IndexKey, type RecordProps, type TLBinding, type TLComponents, type TLHandle, type TLHandleDragInfo, type TLResizeInfo, type TLShape, type TLShapeId, type TLUiOverrides, type TldrawOptions, type VecModel } from "tldraw";
 import { type IconType } from "react-icons";
-import { RiEraserLine, RiHdLine, RiSparkling2Line, RiAccountBoxLine, RiBellLine, RiAddLine, RiArrowDownSLine, RiArrowUpLine, RiBringForward, RiBringToFront, RiCameraLine, RiCheckLine, RiCheckboxBlankCircleLine, RiCheckboxCircleLine, RiCheckboxMultipleLine, RiClipboardLine, RiCloseLine, RiCursorLine, RiDeleteBinLine, RiDownloadLine, RiEmotionSadLine, RiExportFill, RiExportLine, RiEyeLine, RiEyeOffLine, RiFileCodeLine, RiFileCopy2Line, RiFileCopyLine, RiFileImageLine, RiFileTextLine, RiFilmAiLine, RiFolderOpenLine, RiGalleryView, RiAttachment2, RiFocus3Line, RiGoogleFill, RiHand, RiHistoryLine, RiImage2Line, RiImageAiLine, RiImageCircleLine, RiImageLine, RiInformation2Line, RiLandscapeLine, RiSidebarFoldLine, RiSidebarUnfoldLine, RiLoader4Line, RiLockLine, RiLockUnlockLine, RiMoreLine, RiMultiImageLine, RiNodeTree, RiOpenaiFill, RiResetLeftLine, RiRoadMapLine, RiScissorsCutLine, RiSendBackward, RiSendToBack, RiShining2Line, RiStackLine, RiTBoxLine, RiTextBlock, RiTextSnippet, RiTimeLine, RiTiktokFill, RiUpload2Line, RiVideoLine, RiVideoOnLine, RiVoiceprintLine, RiZoomInLine, RiZoomOutLine } from "react-icons/ri";
+import { RiEraserLine, RiHdLine, RiSparkling2Line, RiAccountBoxLine, RiBellLine, RiAddLine, RiArrowDownSLine, RiArrowUpLine, RiBringForward, RiBringToFront, RiCameraLine, RiCheckLine, RiCheckboxBlankCircleLine, RiCheckboxCircleLine, RiCheckboxMultipleLine, RiClipboardLine, RiCloseLine, RiCursorLine, RiDeleteBinLine, RiDownloadLine, RiEmotionSadLine, RiExportFill, RiExportLine, RiEyeLine, RiEyeOffLine, RiFileCodeLine, RiFileCopy2Line, RiFileCopyLine, RiFileImageLine, RiFileTextLine, RiFilmAiLine, RiFolderOpenLine, RiGalleryView, RiAttachment2, RiFocus3Line, RiGoogleFill, RiHand, RiHistoryLine, RiImageAiLine, RiImageCircleLine, RiImageLine, RiInformation2Line, RiLandscapeLine, RiSidebarFoldLine, RiSidebarUnfoldLine, RiLoader4Line, RiLockLine, RiLockUnlockLine, RiMoreLine, RiMultiImageLine, RiNodeTree, RiOpenaiFill, RiResetLeftLine, RiRoadMapLine, RiScissorsCutLine, RiSendBackward, RiSendToBack, RiShining2Line, RiStackLine, RiTBoxLine, RiTextBlock, RiTextSnippet, RiTimeLine, RiTiktokFill, RiUpload2Line, RiVideoLine, RiVideoOnLine, RiVoiceprintLine, RiZoomInLine, RiZoomOutLine } from "react-icons/ri";
 import { BytePlusIcon } from "@/components/byteplus-icon";
+import { MiniMaxIcon } from "@/components/minimax-icon";
+import { KlingIcon } from "@/components/kling-icon";
 import { AudioWaveformPlayer } from "@/components/audio-waveform-player";
 import { AssetMentionPicker, type MentionPickerCategory, type MentionPickerItem } from "@/components/asset-mention-picker";
 import { VideoUploadThumbnail } from "@/components/video-upload-thumbnail";
 import { VideoPlayBadge } from "@/components/video-play-badge";
-import { DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, DEFAULT_IMAGE_QUALITY, GPT_IMAGE2_MODEL_ID, IMAGE_QUALITY_OPTIONS, IMAGE_QUALITY_LABELS, isGptImage2Model, getImageModelSelectHint, bytePlusVideoGenerationModels, frontendConversationModels, frontendImageGenerationModels, getExpectedImageDimensions, getExpectedVideoDimensions, getSupportedImageResolutions, getSupportedVideoRatios, getSupportedVideoResolutions, normalizeImageResolutionForModel, normalizeVideoRatioForModel, normalizeVideoResolutionForModel, validateVideoDurationWithReferences, videoGenerationModels, type ConversationModel, type GenerationModel, type ImageResolution, type ModelName } from "@/lib/models";
+import { NewBadge } from "@/components/new-badge";
+import { DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, DEFAULT_IMAGE_QUALITY, GPT_IMAGE2_MODEL_ID, IMAGE_QUALITY_OPTIONS, IMAGE_QUALITY_LABELS, isGptImage2Model, isNewGenerationModel, getImageModelSelectHint, bytePlusVideoGenerationModels, frontendConversationModels, frontendImageGenerationModels, getExpectedImageDimensions, getExpectedVideoDimensions, getSupportedImageResolutions, getSupportedVideoRatios, getSupportedVideoResolutions, normalizeImageResolutionForModel, normalizeVideoRatioForModel, normalizeVideoResolutionForModel, validateVideoDurationWithReferences, videoGenerationModels, type ConversationModel, type GenerationModel, type ImageResolution, type ModelName } from "@/lib/models";
 import { GENERIC_MEDIA_ERROR_MESSAGE, toUserErrorMessage } from "@/lib/error-message";
 import { isGptImageSafetyFailure, normalizeAttemptPrompt, runPromptSafetyRetry } from "@/lib/gpt-image-safety-retry";
 import { handleSessionExpiredResponse, SESSION_EXPIRED_SILENT_ERROR } from "@/lib/session-expired-redirect";
 import { buildReferenceHint } from "@/lib/reference-hint";
 import { appendEditorText as appendWorkflowEditorText, getAtQueryAtCursorForReferences as getWorkflowAtQueryAtCursorForReferences, getEditableText as getWorkflowEditableText, getMentionNames as getSharedMentionNames, getMentionRangeForDeletion as getSharedMentionRangeForDeletion, getMentionRanges as getSharedMentionRanges, getSelectionTextOffset as getWorkflowSelectionTextOffset, getSelectionTextRange as getWorkflowSelectionTextRange, removeMentionName, setSelectionTextOffset as setWorkflowSelectionTextOffset } from "@/lib/mention-text";
 import { createUploadProgressTracker } from "@/lib/upload-progress";
-import { getUploadKindFromFileName, getUploadRule, getVideoAudioUploadDisabledMessage, validateReferenceTotalDuration, validateVideoReferenceCombination, type UploadKind, type UploadKindRule, type UploadRule, type UploadRuleOverrides } from "@/lib/upload-rules";
+import { getUploadKindFromFileName, getEffectiveVideoReferenceItems, getUploadRule, getVideoAudioUploadDisabledMessage, getVideoReferenceLimitHint, supportsVideoReferenceMode, validateReferenceTotalDuration, validateVideoReferenceCombination, type UploadKind, type UploadKindRule, type UploadRule, type UploadRuleOverrides, type VideoReferenceMode } from "@/lib/upload-rules";
+import { getRequiredVideoReferenceImageCount, getVideoReferenceModeLabel, getVideoReferenceModeOptions } from "@/lib/video-reference-modes";
 import { IMAGE_UPLOAD_ACCEPT, validateImageUploadFile } from "@/lib/image-upload-validation";
 import { AUDIO_UPLOAD_ACCEPT, MEDIA_DURATION_EPSILON_SECONDS, validateMediaUploadFile, validateMediaUploadMetadata, validateReferenceMediaDurationRange as validateWorkflowMediaDuration, validateReferenceVideoDimensions as validateWorkflowReferenceVideoDimensions, VIDEO_UPLOAD_ACCEPT } from "@/lib/media-upload-validation";
 import { validateVideoReferenceImagesBeforeSend, videoModelEnforcesReferenceImageSizeRules } from "@/lib/video-reference-image-rules";
 import { computeFileContentHashHex, precheckUploadedFileDedup } from "@/lib/upload-content-hash";
+import { shouldChunkUpload, uploadFileInChunks } from "@/lib/chunked-upload";
 import { getStaticMediaUrl } from "@/lib/static-media-url";
 
 export type WorkflowNodeKind = "text" | "image" | "video" | "audio";
@@ -78,7 +84,9 @@ export type WorkflowNodeData = {
   gptImageOptimizationOptimizerModel?: string;
 };
 
-type WorkflowVideoReferenceMode = "reference" | "first_frame" | "first_last_frame";
+// ⭐ 参考模式类型用唯一权威（`upload-rules`）。原来这里手写的联合类型**漏了 `last_frame`**，
+//   这正是 Hailuo 3 一开始不敢在工作流放出来的直接原因。⛔ 别再改回本地联合类型。
+type WorkflowVideoReferenceMode = VideoReferenceMode;
 type WorkflowUploadKind = UploadKind;
 
 type WorkflowUploadItem = {
@@ -368,7 +376,12 @@ const WORKFLOW_CONNECTION_PORT_GAP = 10;
 const WORKFLOW_CONNECTION_PORT_SIZE = 60;
 const imageRatioOptions = ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"];
 const fallbackVideoDurationOptions = ["5秒", "10秒", "15秒"];
+// ⭐ 2026-08-03：MiniMax H3 已接进工作流 —— 原来这里 filter 掉它，是因为工作流的参考模式是
+// **另一份只认 BytePlus Seedance 的平行实现**（少「尾帧模式」、张数自己写死）。
+// 现在那三处已收敛到 `upload-rules.supportsVideoReferenceMode` + `video-reference-modes`，
+// 所以不再排除任何模型。⛔ 别再往这里加 filter 排除模型，要控制可见性请用后台的模型开关。
 const workflowVideoModels = [...videoGenerationModels, ...bytePlusVideoGenerationModels];
+
 const videoPollIntervalMs = 10_000;
 const videoMaxPollAttempts = 90;
 const imagePollIntervalMs = 3_000;
@@ -396,11 +409,8 @@ const DEFAULT_WORKFLOW_VIDEO_MODEL = "byteplus:video.seedance-2-0";
 // 视频快捷编辑的模型候选链：依次 Mini → Fast → 2.0（前一个失败自动换下一个），与图片编辑候选链同思路。
 const WORKFLOW_VIDEO_EDIT_MODEL_CHAIN: ModelName[] = ["byteplus:video.seedance-2-0-mini", "byteplus:video.seedance-2-0-fast", "byteplus:video.seedance-2-0"] as ModelName[];
 const WORKFLOW_NODE_GAP = 160;
-const workflowVideoReferenceModeOptions: Array<{ value: WorkflowVideoReferenceMode; label: string; icon: IconType }> = [
-  { value: "reference", label: "融合模式", icon: RiImageCircleLine },
-  { value: "first_frame", label: "首帧模式", icon: RiImage2Line },
-  { value: "first_last_frame", label: "首尾帧模式", icon: RiMultiImageLine },
-];
+// ⭐ 参考模式选项已收敛到 `@/lib/video-reference-modes`（按模型返回不同列表：
+//   BytePlus Seedance 三项、Hailuo 3 四项含尾帧）。⛔ 禁止在这里再写一份本地数组。
 
 const ratioCardMeta: Record<string, { icon: string; width: string; height: string }> = {
   智能比例: { icon: "spark", width: "16", height: "16" },
@@ -478,10 +488,6 @@ function removeWorkflowUploadReferenceText(prompt: string, referenceName: string
   return removeMentionName(prompt, referenceName);
 }
 
-function sortWorkflowDurationOptions(options: string[]) {
-  return [...options].sort((a, b) => (parseInt(b, 10) || 0) - (parseInt(a, 10) || 0));
-}
-
 function getWorkflowUploadRuleVideoReferenceMode(text: string): WorkflowVideoReferenceMode | undefined {
   const normalized = text.replace(/\s+/g, "");
   if (/首尾帧|首帧.*尾帧|尾帧.*首帧|第一帧.*最后一帧|最后一帧.*第一帧|开头帧.*结尾帧|结尾帧.*开头帧/.test(normalized)) return "first_last_frame";
@@ -490,25 +496,14 @@ function getWorkflowUploadRuleVideoReferenceMode(text: string): WorkflowVideoRef
   return undefined;
 }
 
-function isWorkflowBytePlusSeedanceVideoModel(modelId?: string) {
-  return modelId === "byteplus:video.seedance-2-0" || modelId === "byteplus:video.seedance-2-0-fast" || modelId === "byteplus:video.seedance-2-0-mini";
-}
-
-function getWorkflowVideoReferenceModeLabel(value?: WorkflowVideoReferenceMode) {
-  return workflowVideoReferenceModeOptions.find((option) => option.value === value)?.label ?? "融合模式";
-}
-
-function getWorkflowEffectiveBytePlusVideoReferenceItems<T>(items: T[] | undefined, mode?: WorkflowVideoReferenceMode): T[] {
-  const safeItems = Array.isArray(items) ? items.filter(Boolean) : [];
-  if (mode === "first_last_frame") return safeItems.slice(0, 2);
-  if (mode === "first_frame") return safeItems.slice(0, 1);
-  return safeItems.slice(0, 9);
-}
-
-function getWorkflowBytePlusVideoReferenceLimitHint(mode?: WorkflowVideoReferenceMode) {
-  if (mode === "first_last_frame") return "首尾帧模式只会使用前两张参考图";
-  if (mode === "first_frame") return "首帧模式只会使用第一张参考图";
-  return "融合模式最多使用九张参考图";
+// ⭐ 「这个视频模型有没有参考模式」「参考图裁到几张」「裁掉后的提示文案」三件事
+//   已全部收敛到 `@/lib/upload-rules` 的 supportsVideoReferenceMode /
+//   getEffectiveVideoReferenceItems / getVideoReferenceLimitHint（对话流·工作流·服务端共用）。
+//   ⛔ 原来这里有 isWorkflowBytePlusSeedanceVideoModel /
+//   getWorkflowEffectiveBytePlusVideoReferenceItems / getWorkflowBytePlusVideoReferenceLimitHint
+//   三个只认 BytePlus、张数写死的本地副本，禁止再写回来。
+function getWorkflowVideoReferenceModeLabel(modelId?: string, value?: WorkflowVideoReferenceMode) {
+  return getVideoReferenceModeLabel(modelId, value);
 }
 
 function appendWorkflowReferenceHint(prompt: string, referenceNames: Array<string | undefined>) {
@@ -715,13 +710,31 @@ function uploadWorkflowFormDataWithProgress<T>(url: string, formData: FormData, 
 }
 
 async function uploadWorkflowImageOnce(file: File, onProgress?: (progress: number) => void, forceReencode = false, dedup = false) {
-  const formData = new FormData();
-  formData.append("image", file, file.name);
-  if (forceReencode) formData.append("forceReencode", "1");
-  if (dedup) formData.append("dedup", "1");
   onProgress?.(2);
   const token = await getWorkflowDirectUploadToken();
-  const postData = await uploadWorkflowFormDataWithProgress<{ token?: string; error?: string; duplicate?: boolean; url?: string; contentHash?: string; name?: string }>(getWorkflowUploadApiUrl("/api/asset-upload-temp"), formData, onProgress, token);
+  const contentHash = await computeFileContentHashHex(file);
+  // 秒回（M033）：仅当要判重、且不是转码重试时，先按内容哈希预检，命中"以前传过的同一张图"
+  // 直接复用旧地址（已是正式 /generated 直链），免整包重传。命中不了/失败静默走正常上传。
+  if (dedup && !forceReencode && contentHash) {
+    const dup = await precheckUploadedFileDedup(getWorkflowUploadApiUrl("/api/asset-upload-temp"), contentHash, token);
+    if (dup) { onProgress?.(100); return { url: dup.url, duplicate: true as const, contentHash, name: dup.name }; }
+  }
+  // M034：大图走分片上传（丢包只重传单片），小图保持原单发路径。
+  type ImagePostData = { token?: string; error?: string; duplicate?: boolean; url?: string; contentHash?: string; name?: string };
+  let postData: ImagePostData;
+  if (shouldChunkUpload(file)) {
+    postData = await uploadFileInChunks<ImagePostData>({
+      chunkUrl: getWorkflowUploadApiUrl("/api/upload-chunk"), file, target: "image",
+      fields: { ...(forceReencode ? { forceReencode: "1" } : {}), ...(dedup ? { dedup: "1" } : {}) },
+      originalContentHash: forceReencode ? undefined : contentHash, token, onProgress,
+    });
+  } else {
+    const formData = new FormData();
+    formData.append("image", file, file.name);
+    if (forceReencode) formData.append("forceReencode", "1");
+    if (dedup) formData.append("dedup", "1");
+    postData = await uploadWorkflowFormDataWithProgress<ImagePostData>(getWorkflowUploadApiUrl("/api/asset-upload-temp"), formData, onProgress, token);
+  }
   if (postData.duplicate && postData.url) return { url: postData.url, duplicate: true as const, contentHash: postData.contentHash, name: postData.name };
   if (!postData.token) throw new Error(postData.error || "图片上传失败");
   const patchToken = await getWorkflowDirectUploadToken();
@@ -750,6 +763,17 @@ async function uploadWorkflowFile(file: File, kind: Exclude<WorkflowUploadKind, 
   if (contentHash) {
     const dup = await precheckUploadedFileDedup(getWorkflowUploadApiUrl("/api/upload-file"), contentHash, token);
     if (dup) { onProgress?.(100); return { url: dup.url, duplicate: true, name: dup.name, posterUrl: dup.posterUrl }; }
+  }
+  const fileFields: Record<string, string> = { name: file.name, mediaKind: kind, flow: "workflow", workflowId, workflowNodeId };
+  if (media?.durationSeconds) fileFields.durationSeconds = String(media.durationSeconds);
+  if (media?.dimensions) fileFields.dimensions = JSON.stringify(media.dimensions);
+  // M034：大文件走分片上传（丢包只重传单片），小文件保持原单发路径。
+  if (shouldChunkUpload(file)) {
+    const chunked = await uploadFileInChunks<{ url?: string; error?: string; dedup?: boolean; name?: string; posterUrl?: string }>({
+      chunkUrl: getWorkflowUploadApiUrl("/api/upload-chunk"), file, target: "file", fields: fileFields, originalContentHash: contentHash, token, onProgress,
+    });
+    if (!chunked.url) throw new Error(chunked.error || "文件上传失败");
+    return { url: chunked.url, duplicate: Boolean(chunked.dedup), name: chunked.name, posterUrl: chunked.posterUrl };
   }
   const formData = new FormData();
   formData.append("file", file, file.name);
@@ -875,7 +899,7 @@ function validateWorkflowUploadsForSubmit(node: WorkflowNode, overrides?: Upload
     const kindUploads = uploads.filter((upload) => upload.kind === kind);
     const kindRule = uploadRule[kind];
     if (kindUploads.length === 0) continue;
-    if (!kindRule.enabled) return kind === "image" ? "当前模型不支持上传图片" : kind === "video" || kind === "audio" ? getVideoAudioUploadDisabledMessage({ modelId: node.data.model, videoReferenceMode: node.kind === "video" && isWorkflowBytePlusSeedanceVideoModel(node.data.model) ? (videoReferenceMode ?? node.data.videoReferenceMode ?? "reference") : undefined }) : "当前模型不支持上传文件";
+    if (!kindRule.enabled) return kind === "image" ? "当前模型不支持上传图片" : kind === "video" || kind === "audio" ? getVideoAudioUploadDisabledMessage({ modelId: node.data.model, videoReferenceMode: node.kind === "video" && supportsVideoReferenceMode(node.data.model) ? (videoReferenceMode ?? node.data.videoReferenceMode ?? "reference") : undefined }) : "当前模型不支持上传文件";
     if (kindUploads.length > kindRule.maxCount) return kind === "image" ? `当前模型最多支持 ${kindRule.maxCount} 张参考图，不能上传更多图片` : kind === "video" ? `当前模型最多支持 ${kindRule.maxCount} 个参考视频` : kind === "audio" ? `当前模型最多支持 ${kindRule.maxCount} 个参考音频` : `当前类型最多支持 ${kindRule.maxCount} 个文件`;
     const badFormat = kindUploads.find((upload) => {
       const extension = getWorkflowUploadExtension(upload);
@@ -1021,7 +1045,7 @@ function removeConnectedReferenceNames(nodes: WorkflowNode[], removedEdges: Arra
 function validateWorkflowConnectionUploadRules(source: WorkflowNode, target: WorkflowNode, state: WorkflowCanvasState, overrides?: UploadRuleOverrides) {
   const connectedUploads = getWorkflowConnectedInputUploads(state, target.id, source);
   if (connectedUploads.length === 0) return undefined;
-  return validateWorkflowUploadsForSubmit({ ...target, data: { ...target.data, uploads: mergeWorkflowUploadItems([...(target.data.uploads ?? []), ...connectedUploads]) } }, overrides, target.kind === "video" && isWorkflowBytePlusSeedanceVideoModel(target.data.model) ? target.data.videoReferenceMode ?? "reference" : undefined);
+  return validateWorkflowUploadsForSubmit({ ...target, data: { ...target.data, uploads: mergeWorkflowUploadItems([...(target.data.uploads ?? []), ...connectedUploads]) } }, overrides, target.kind === "video" && supportsVideoReferenceMode(target.data.model) ? target.data.videoReferenceMode ?? "reference" : undefined);
 }
 
 function getWorkflowTextNodeOutput(node: WorkflowNode) {
@@ -4564,7 +4588,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     let lastError: unknown;
     for (const attemptModel of attemptModels) {
       const model = attemptModel;
-      const videoReferenceMode = options?.forceReferenceMode ?? (isWorkflowBytePlusSeedanceVideoModel(model) ? node.data.videoReferenceMode ?? "reference" : getWorkflowUploadRuleVideoReferenceMode(prompt));
+      const videoReferenceMode = options?.forceReferenceMode ?? (supportsVideoReferenceMode(model) ? node.data.videoReferenceMode ?? "reference" : getWorkflowUploadRuleVideoReferenceMode(prompt));
       const connectedUploads = getWorkflowConnectedInputUploads(stateRef.current, node.id);
       const uploadError = validateWorkflowUploadsForSubmit({ ...node, data: { ...node.data, model, uploads: mergeWorkflowUploadItems([...(node.data.uploads ?? []), ...connectedUploads]) } }, uploadRuleOverrides, videoReferenceMode);
       if (uploadError) {
@@ -4578,17 +4602,19 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
       updateNode(node.id, { isRunning: true, error: undefined, videoUrl: undefined, posterUrl: undefined, videoCurrentTime: undefined, visualSize: undefined, startedAt: Date.now(), videoRequestId: requestId, videoPreviewUrl: undefined, videoSavedFlashAt: undefined, ...(candidateModels.length > 0 ? { model, ratio: settings.ratio, resolution } : {}) });
       try {
         const allReferenceImages = [...getReferenceImages(node.id), ...getPromptReferenceUrls(prompt, node, "image")].filter((url, index, array) => array.indexOf(url) === index);
-        const referenceImages = isWorkflowBytePlusSeedanceVideoModel(model) ? getWorkflowEffectiveBytePlusVideoReferenceItems(allReferenceImages, videoReferenceMode) : allReferenceImages;
+        const referenceImages = getEffectiveVideoReferenceItems(allReferenceImages, model, videoReferenceMode);
         const referenceVideos = options?.referenceVideosOverride
           ? options.referenceVideosOverride.filter(Boolean)
           : [...getReferenceMediaUrls(node.id, "video"), ...getPromptReferenceUrls(prompt, node, "video")].filter((url, index, array) => array.indexOf(url) === index);
         const referenceAudios = options?.referenceVideosOverride
           ? []
           : [...getReferenceMediaUrls(node.id, "audio"), ...getPromptReferenceUrls(prompt, node, "audio")].filter((url, index, array) => array.indexOf(url) === index);
-        if (referenceImages.length < allReferenceImages.length) onShowTip?.(getWorkflowBytePlusVideoReferenceLimitHint(videoReferenceMode));
-        if (isWorkflowBytePlusSeedanceVideoModel(model) && videoReferenceMode === "first_frame" && referenceImages.length < 1) throw new Error("首帧生视频需要至少一张参考图");
-        if (isWorkflowBytePlusSeedanceVideoModel(model) && videoReferenceMode === "first_last_frame" && referenceImages.length < 2) throw new Error("首尾帧生视频需要至少两张参考图");
-        const referenceComboError = validateVideoReferenceCombination({ modelId: model, referenceMode: isWorkflowBytePlusSeedanceVideoModel(model) ? videoReferenceMode : undefined, imageCount: referenceImages.length, videoCount: referenceVideos.length, audioCount: referenceAudios.length });
+        if (referenceImages.length < allReferenceImages.length) onShowTip?.(getVideoReferenceLimitHint(model, videoReferenceMode));
+        // 首帧 / 尾帧 1 张、首尾帧 2 张 —— 张数要求走唯一权威，别在这里各写一遍。
+        if (supportsVideoReferenceMode(model) && referenceImages.length < getRequiredVideoReferenceImageCount(videoReferenceMode)) {
+          throw new Error(videoReferenceMode === "first_last_frame" ? "首尾帧生视频需要至少两张参考图" : videoReferenceMode === "last_frame" ? "尾帧生视频需要至少一张参考图" : "首帧生视频需要至少一张参考图");
+        }
+        const referenceComboError = validateVideoReferenceCombination({ modelId: model, referenceMode: supportsVideoReferenceMode(model) ? videoReferenceMode : undefined, imageCount: referenceImages.length, videoCount: referenceVideos.length, audioCount: referenceAudios.length });
         if (referenceComboError) throw new Error(referenceComboError);
         // 参考视频/音频总时长即时校验（连线的上传节点带精确时长；@引用库资产客户端无时长，交服务端权威兜底）。
         const referenceMediaDurationByUrl = new Map<string, number>();
@@ -6154,15 +6180,19 @@ function WorkflowPromptBox({ node, value, placeholder, maxPromptHeight, onChange
   const localTipTimerRef = useRef<number | null>(null);
   const connectedUploads = runtime.getConnectedInputUploads(node.id);
   const connectedTextLength = runtime.getInputTextLength(node.id);
-  const showVideoReferenceModeMenu = node.kind === "video" && isWorkflowBytePlusSeedanceVideoModel(node.data.model);
+  const showVideoReferenceModeMenu = node.kind === "video" && supportsVideoReferenceMode(node.data.model);
   const selectedVideoReferenceMode = node.data.videoReferenceMode ?? "reference";
   const uploadRule = getEffectiveWorkflowUploadRule(node, runtime.uploadRuleOverrides, showVideoReferenceModeMenu ? selectedVideoReferenceMode : undefined);
-  const requiredImageReferenceCount = showVideoReferenceModeMenu ? selectedVideoReferenceMode === "first_last_frame" ? 2 : selectedVideoReferenceMode === "first_frame" ? 1 : 0 : 0;
+  // 张数硬要求走唯一权威（首帧/尾帧 1 张、首尾帧 2 张），⛔ 别在这里再写一遍三元。
+  const requiredImageReferenceCount = showVideoReferenceModeMenu ? getRequiredVideoReferenceImageCount(selectedVideoReferenceMode) : 0;
   const changeVideoReferenceMode = (videoReferenceMode: WorkflowVideoReferenceMode) => {
     runtime.updateNode(node.id, { videoReferenceMode, ...pruneWorkflowUploadsForVideoReferenceMode(node, videoReferenceMode, runtime.uploadRuleOverrides) });
   };
   const uploadButtons: Array<{ label: string; icon: IconType; ariaLabel: string; kind: WorkflowUploadKind; hideCount?: boolean; multiple?: boolean }> = showVideoReferenceModeMenu && selectedVideoReferenceMode === "first_frame"
     ? [{ label: "首帧", icon: RiImageLine, ariaLabel: "上传首帧图片", kind: "image", hideCount: true, multiple: false }]
+    // ⭐ 尾帧模式（只有 Hailuo 3 有）：同样是单槽，只是槽位标签叫「尾帧」。
+    : showVideoReferenceModeMenu && selectedVideoReferenceMode === "last_frame"
+      ? [{ label: "尾帧", icon: RiImageLine, ariaLabel: "上传尾帧图片", kind: "image", hideCount: true, multiple: false }]
     : showVideoReferenceModeMenu && selectedVideoReferenceMode === "first_last_frame"
       ? [
         { label: "首帧", icon: RiImageLine, ariaLabel: "上传首帧图片", kind: "image", hideCount: true, multiple: false },
@@ -6197,7 +6227,7 @@ function WorkflowPromptBox({ node, value, placeholder, maxPromptHeight, onChange
   const currentImageReferenceCount = showVideoReferenceModeMenu ? mergeWorkflowUploadItems([...visibleUploads.filter((upload) => upload.kind === "image"), ...getWorkflowPromptReferenceUrls(value, node, runtime.referenceAssets, "image").map((url) => ({ id: `prompt-image-${url}`, kind: "image" as const, name: url, url, status: "ready" as const }))]).length : 0;
   const canRun = (Boolean(value.trim()) || connectedTextLength > 0) && !inputDisabled && currentImageReferenceCount >= requiredImageReferenceCount;
   const uploadCounts = visibleUploads.reduce<Record<WorkflowUploadKind, number>>((counts, upload) => ({ ...counts, [upload.kind]: counts[upload.kind] + 1 }), { image: 0, document: 0, video: 0, audio: 0 });
-  const useSlotUploadLayout = showVideoReferenceModeMenu && (selectedVideoReferenceMode === "first_frame" || selectedVideoReferenceMode === "first_last_frame");
+  const useSlotUploadLayout = showVideoReferenceModeMenu && (selectedVideoReferenceMode === "first_frame" || selectedVideoReferenceMode === "last_frame" || selectedVideoReferenceMode === "first_last_frame");
   const visibleUploadButtons = useSlotUploadLayout
     ? uploadButtons.slice(Math.min(uploadCounts.image, uploadButtons.length))
     : uploadButtons.filter(({ kind }) => canShowWorkflowUploadButton(kind, visibleUploads, uploadRule));
@@ -6616,7 +6646,7 @@ function WorkflowPromptBox({ node, value, placeholder, maxPromptHeight, onChange
           </div>
           {children}
         </div>
-        {showVideoReferenceModeMenu ? <WorkflowVideoReferenceModeMenu value={selectedVideoReferenceMode} onChange={changeVideoReferenceMode} /> : null}
+        {showVideoReferenceModeMenu ? <WorkflowVideoReferenceModeMenu modelId={node.data.model} value={selectedVideoReferenceMode} onChange={changeVideoReferenceMode} /> : null}
         <button type="button" disabled={!canRun} onClick={runFromPromptBox} className="inline-flex h-9 w-9 shrink-0 items-center justify-center whitespace-nowrap rounded-[10px] bg-[#111111] text-white transition hover:bg-[#000000] disabled:cursor-not-allowed disabled:bg-[#d7d7d7] disabled:text-white" aria-label="生成">
           {running ? <RiLoader4Line className="h-4 w-4 animate-spin" /> : <RiArrowUpLine className="h-4 w-4" />}
         </button>
@@ -6655,7 +6685,7 @@ function WorkflowModelMenuSingle({ value, options, title, onChange, className = 
   const SelectedIcon = getIcon?.(value) ?? getGenerationModelIcon(value);
   const selectedLabel = getModelLabel(options, value);
   const selectedGold = isGoldGenerationModel(value);
-  return <div data-workflow-menu className={`relative min-w-0 ${className}`} onPointerDown={(event) => event.stopPropagation()}><button type="button" onClick={toggle} className={`${workflowToolButtonClassName} ${open ? "yinzao-tool-button-active" : ""} justify-start whitespace-nowrap`}><span className="flex min-w-0 flex-nowrap items-center gap-1.5">{SelectedIcon ? <SelectedIcon className="h-[18px] w-[18px] shrink-0 text-[#777777]" /> : <AiGenerate3dIcon />}<span className={`min-w-0 truncate whitespace-nowrap font-medium ${selectedGold ? "text-[#b8860b]" : "text-[#777777]"}`}>{selectedLabel}</span><RiArrowDownSLine className="h-3.5 w-3.5 shrink-0 text-[#8a8a8a]" /></span></button>{open ? <div className="absolute bottom-full left-0 z-[10000] mb-2 w-[300px] rounded-[12px] bg-white p-2 shadow-[0_18px_40px_rgba(0,0,0,0.12)]"><div className="px-2 pb-2 text-[12px] font-medium text-[#a0a0a0]">{title}</div>{options.map((option) => { const ModelIcon = getIcon?.(option.id) ?? getGenerationModelIcon(option.id); const selected = option.id === value; const gold = isGoldGenerationModel(option.id); const modelHint = getImageModelSelectHint(option.id); return <button key={option.id} type="button" onClick={() => { onChange(option.id as ModelName); setOpen(false); }} className={selected ? `my-[3px] flex w-full items-center justify-between rounded-[8px] bg-[#f5f5f5] px-3 text-left text-[14px] font-medium text-[#111111] ${modelHint ? "py-2" : "h-11"}` : `my-[3px] flex w-full items-center justify-between rounded-[8px] px-3 text-left text-[14px] text-[#555555] hover:bg-[#f7f7f7] ${modelHint ? "py-2" : "h-11"}`}><span className="flex min-w-0 flex-col gap-0.5"><span className="flex min-w-0 items-center gap-2">{ModelIcon ? <ModelIcon className="h-[18px] w-[18px] shrink-0 text-[#777777]" /> : <AiGenerate3dIcon />}<span className={`min-w-0 truncate ${gold ? "text-[#b8860b]" : ""}`}>{option.label}</span></span>{modelHint ? <span className="pl-[26px] text-[11px] font-normal leading-tight text-[#a0a0a0]">{modelHint}</span> : null}</span>{selected ? <RiCheckLine className="h-[18px] w-[18px] shrink-0 text-[#111111]" /> : null}</button>; })}</div> : null}</div>;
+  return <div data-workflow-menu className={`relative min-w-0 ${className}`} onPointerDown={(event) => event.stopPropagation()}><button type="button" onClick={toggle} className={`${workflowToolButtonClassName} ${open ? "yinzao-tool-button-active" : ""} justify-start whitespace-nowrap`}><span className="flex min-w-0 flex-nowrap items-center gap-1.5">{SelectedIcon ? <SelectedIcon className="h-[18px] w-[18px] shrink-0 text-[#777777]" /> : <AiGenerate3dIcon />}<span className={`min-w-0 truncate whitespace-nowrap font-medium ${selectedGold ? "text-[#b8860b]" : "text-[#777777]"}`}>{selectedLabel}</span><RiArrowDownSLine className="h-3.5 w-3.5 shrink-0 text-[#8a8a8a]" /></span></button>{open ? <div className="absolute bottom-full left-0 z-[10000] mb-2 w-[300px] rounded-[12px] bg-white p-2 shadow-[0_18px_40px_rgba(0,0,0,0.12)]"><div className="px-2 pb-2 text-[12px] font-medium text-[#a0a0a0]">{title}</div>{options.map((option) => { const ModelIcon = getIcon?.(option.id) ?? getGenerationModelIcon(option.id); const selected = option.id === value; const gold = isGoldGenerationModel(option.id); const modelHint = getImageModelSelectHint(option.id); return <button key={option.id} type="button" onClick={() => { onChange(option.id as ModelName); setOpen(false); }} className={selected ? `my-[3px] flex w-full items-center justify-between rounded-[8px] bg-[#f5f5f5] px-3 text-left text-[14px] font-medium text-[#111111] ${modelHint ? "py-2" : "h-11"}` : `my-[3px] flex w-full items-center justify-between rounded-[8px] px-3 text-left text-[14px] text-[#555555] hover:bg-[#f7f7f7] ${modelHint ? "py-2" : "h-11"}`}><span className="flex min-w-0 flex-col gap-0.5"><span className="flex min-w-0 items-center gap-2">{ModelIcon ? <ModelIcon className="h-[18px] w-[18px] shrink-0 text-[#777777]" /> : <AiGenerate3dIcon />}<span className={`min-w-0 truncate ${gold ? "text-[#b8860b]" : ""}`}>{option.label}</span>{isNewGenerationModel(option.id) ? <NewBadge /> : null}</span>{modelHint ? <span className="pl-[26px] text-[11px] font-normal leading-tight text-[#a0a0a0]">{modelHint}</span> : null}</span>{selected ? <RiCheckLine className="h-[18px] w-[18px] shrink-0 text-[#111111]" /> : null}</button>; })}</div> : null}</div>;
 }
 
 function WorkflowSettingsMenuSingle({ mode, model, ratio, resolution, ratios, resolutions, onChange, className = "" }: { mode: "image" | "video"; model?: ModelName; ratio: string; resolution: string; ratios: string[]; resolutions: string[]; onChange: (patch: { ratio?: string; resolution?: string }) => void; className?: string }) {
@@ -6665,17 +6695,18 @@ function WorkflowSettingsMenuSingle({ mode, model, ratio, resolution, ratios, re
 }
 
 function WorkflowDurationMenuSingle({ value, options, onChange }: { value: string; options: string[]; onChange: (value: string) => void }) {
-  const { open, setOpen, toggle } = useWorkflowMenuOpen();
-  const sortedOptions = sortWorkflowDurationOptions(options);
-  return <div data-workflow-menu className="relative" onPointerDown={(event) => event.stopPropagation()}><button type="button" onClick={toggle} className={`${workflowToolButtonClassName} ${open ? "yinzao-tool-button-active" : ""}`}><RiTimeLine className="h-[18px] w-[18px] shrink-0 text-[#777777]" /><span className="font-medium text-[#777777]">{value}</span><RiArrowDownSLine className="h-3.5 w-3.5 shrink-0 text-[#8a8a8a]" /></button>{open ? <div className="absolute bottom-full left-0 z-[10000] mb-2 max-h-[420px] min-w-[180px] overflow-y-auto rounded-[12px] bg-white p-2 shadow-[0_18px_40px_rgba(0,0,0,0.12)]"><div className="px-2 pb-2 text-[12px] font-medium text-[#a0a0a0]">视频时长</div>{sortedOptions.map((option) => <button key={option} type="button" onClick={() => { onChange(option); setOpen(false); }} className={option === value ? "flex h-10 w-full items-center justify-between whitespace-nowrap rounded-[8px] bg-[#f5f5f5] px-3 text-left text-[14px] font-medium text-[#111111]" : "flex h-10 w-full items-center justify-between whitespace-nowrap rounded-[8px] px-3 text-left text-[14px] text-[#555555] hover:bg-[#f7f7f7]"}><span className="flex items-center gap-2"><RiTimeLine className="h-[17px] w-[17px] shrink-0 text-[#777777]" /><span>{option}</span></span>{option === value ? <RiCheckLine className="h-[18px] w-[18px] text-[#111111]" /> : null}</button>)}</div> : null}</div>;
+  const { open, toggle } = useWorkflowMenuOpen();
+  const supportedSeconds = options.map((option) => Number(option.match(/\d+/)?.[0])).filter((n) => Number.isFinite(n));
+  return <div data-workflow-menu className="relative" onPointerDown={(event) => event.stopPropagation()}><button type="button" onClick={toggle} className={`${workflowToolButtonClassName} ${open ? "yinzao-tool-button-active" : ""}`}><RiTimeLine className="h-[18px] w-[18px] shrink-0 text-[#777777]" /><span className="font-medium text-[#777777]">{value}</span><RiArrowDownSLine className="h-3.5 w-3.5 shrink-0 text-[#8a8a8a]" /></button>{open ? <div className="absolute bottom-full left-0 z-[10000] mb-2 w-[340px] rounded-[12px] bg-white p-2 shadow-[0_18px_40px_rgba(0,0,0,0.12)]"><div className="px-2 pb-2 text-[12px] font-medium text-[#a0a0a0]">选择视频生成时长</div><VideoDurationSlider supportedSeconds={supportedSeconds} value={Number(value.match(/\d+/)?.[0]) || 0} onChange={(seconds) => { onChange(`${seconds}秒`); }} /></div> : null}</div>;
 }
 
-function WorkflowVideoReferenceModeMenu({ value, onChange }: { value: WorkflowVideoReferenceMode; onChange: (value: WorkflowVideoReferenceMode) => void }) {
+function WorkflowVideoReferenceModeMenu({ modelId, value, onChange }: { modelId?: string; value: WorkflowVideoReferenceMode; onChange: (value: WorkflowVideoReferenceMode) => void }) {
   const { open, setOpen, toggle } = useWorkflowMenuOpen();
-  const SelectedIcon = workflowVideoReferenceModeOptions.find((option) => option.value === value)?.icon ?? RiImageCircleLine;
-  return <div data-workflow-menu className="relative" onPointerDown={(event) => event.stopPropagation()}><button type="button" onClick={toggle} className={`${workflowToolButtonClassName} ${open ? "yinzao-tool-button-active" : ""}`}><SelectedIcon className="h-[18px] w-[18px] shrink-0 text-[#777777]" /><span className="font-medium text-[#777777]">{getWorkflowVideoReferenceModeLabel(value)}</span><RiArrowDownSLine className="h-3.5 w-3.5 shrink-0 text-[#8a8a8a]" /></button>{open ? <div className="absolute bottom-full right-0 z-[10000] mb-2 min-w-[180px] rounded-[12px] bg-white p-2 shadow-[0_18px_40px_rgba(0,0,0,0.12)]"><div className="px-2 pb-2 text-[12px] font-medium text-[#a0a0a0]">参考模式</div>{workflowVideoReferenceModeOptions.map((option) => { const OptionIcon = option.icon; return <button key={option.value} type="button" onClick={() => { onChange(option.value); setOpen(false); }} className={option.value === value ? "flex h-10 w-full items-center justify-between whitespace-nowrap rounded-[8px] bg-[#f5f5f5] px-3 text-left text-[14px] font-medium text-[#111111]" : "flex h-10 w-full items-center justify-between whitespace-nowrap rounded-[8px] px-3 text-left text-[14px] text-[#555555] hover:bg-[#f7f7f7]"}><span className="flex items-center gap-2"><OptionIcon className="h-[18px] w-[18px] shrink-0 text-[#777777]" /><span>{option.label}</span></span>{option.value === value ? <RiCheckLine className="h-[18px] w-[18px] text-[#111111]" /> : null}</button>; })}</div> : null}</div>;
+  const referenceModeOptions = getVideoReferenceModeOptions(modelId);
+  const SelectedIcon = referenceModeOptions.find((option) => option.value === value)?.icon ?? RiImageCircleLine;
+  return <div data-workflow-menu className="relative" onPointerDown={(event) => event.stopPropagation()}><button type="button" onClick={toggle} className={`${workflowToolButtonClassName} ${open ? "yinzao-tool-button-active" : ""}`}><SelectedIcon className="h-[18px] w-[18px] shrink-0 text-[#777777]" /><span className="font-medium text-[#777777]">{getWorkflowVideoReferenceModeLabel(modelId, value)}</span><RiArrowDownSLine className="h-3.5 w-3.5 shrink-0 text-[#8a8a8a]" /></button>{open ? <div className="absolute bottom-full right-0 z-[10000] mb-2 min-w-[180px] rounded-[12px] bg-white p-2 shadow-[0_18px_40px_rgba(0,0,0,0.12)]"><div className="px-2 pb-2 text-[12px] font-medium text-[#a0a0a0]">参考模式</div>{referenceModeOptions.map((option) => { const OptionIcon = option.icon; return <button key={option.value} type="button" onClick={() => { onChange(option.value); setOpen(false); }} className={option.value === value ? "flex h-10 w-full items-center justify-between whitespace-nowrap rounded-[8px] bg-[#f5f5f5] px-3 text-left text-[14px] font-medium text-[#111111]" : "flex h-10 w-full items-center justify-between whitespace-nowrap rounded-[8px] px-3 text-left text-[14px] text-[#555555] hover:bg-[#f7f7f7]"}><span className="flex items-center gap-2"><OptionIcon className="h-[18px] w-[18px] shrink-0 text-[#777777]" /><span>{option.label}</span></span>{option.value === value ? <RiCheckLine className="h-[18px] w-[18px] text-[#111111]" /> : null}</button>; })}</div> : null}</div>;
 }
-function getGenerationModelIcon(modelId: string) { if (modelId.startsWith("byteplus:") || modelId.startsWith("byteplus/") || modelId.startsWith("ep-")) return BytePlusIcon; if (modelId.startsWith("openai/")) return RiOpenaiFill; if (modelId.startsWith("google/")) return RiGoogleFill; if (modelId.startsWith("bytedance/") || modelId.startsWith("bytedance-seed/")) return RiTiktokFill; return null; }
+function getGenerationModelIcon(modelId: string) { if (modelId.startsWith("byteplus:") || modelId.startsWith("byteplus/") || modelId.startsWith("ep-")) return BytePlusIcon; if (modelId.startsWith("openai/")) return RiOpenaiFill; if (modelId.startsWith("google/")) return RiGoogleFill; if (modelId.startsWith("bytedance/") || modelId.startsWith("bytedance-seed/")) return RiTiktokFill; if (modelId.startsWith("minimax/")) return MiniMaxIcon; if (modelId.startsWith("kwaivgi/")) return KlingIcon; return null; }
 function isGoldGenerationModel(modelId: string) { return modelId === "openai/gpt-5.4-image-2" || modelId === "bytedance/seedance-2.0" || modelId === "byteplus:video.seedance-2-0"; }
 function getModelLabel(options: readonly (ConversationModel | GenerationModel)[], value: string) { return options.find((item) => item.id === value)?.label ?? value; }
 function AiGenerate3dIcon({ className = "h-[18px] w-[18px] shrink-0 text-[#777777]" }: { className?: string }) { return <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" className={className}><path d="M15.1416 2.81836L13.1016 3.94824L12 3.31055L4.5 7.65234V7.6582L12 12V20.6895L19.5 16.3467V11.5L21.5 10.3291V17.5L12 23L2.5 17.5V6.5L12 1L15.1416 2.81836ZM18.5293 2.31934C18.7059 1.8935 19.2943 1.89349 19.4707 2.31934L19.7236 2.93066C20.1556 3.97346 20.9615 4.80618 21.9746 5.25684L22.6924 5.57617C23.1026 5.75901 23.1026 6.3562 22.6924 6.53906L21.9326 6.87695C20.9449 7.31624 20.1534 8.11944 19.7139 9.12793L19.4668 9.69336C19.2864 10.1075 18.7137 10.1075 18.5332 9.69336L18.2871 9.12793C17.8476 8.11929 17.0552 7.31628 16.0674 6.87695L15.3076 6.53906C14.8974 6.35622 14.8974 5.75899 15.3076 5.57617L16.0254 5.25684C17.0385 4.80618 17.8445 3.97348 18.2764 2.93066L18.5293 2.31934Z" /></svg>; }

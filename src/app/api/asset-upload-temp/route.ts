@@ -39,7 +39,7 @@ function getCorsHeaders(request: Request) {
   const allowOrigin = allowedUploadOrigins.has(origin) ? origin : "";
   const headers: Record<string, string> = allowOrigin ? {
     "Access-Control-Allow-Origin": allowOrigin,
-    "Access-Control-Allow-Methods": "POST, PATCH, DELETE, OPTIONS",
+    "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
     "Access-Control-Allow-Headers": "Authorization, Content-Type",
   } : {};
   return headers;
@@ -54,6 +54,24 @@ async function getUploadUserId(request: Request) {
 
 export async function OPTIONS(request: Request) {
   return new NextResponse(null, { status: 204, headers: getCorsHeaders(request) });
+}
+
+// 秒回预检（M033）：客户端上传前先带 contentHash（原始字节 SHA-256）来问一次，
+// 命中"以前上传过的同一张图"直接返回旧地址+权威名，免去把整包再跨境传一遍。
+// 与 /api/upload-file 的 GET 预检同构；图片专用故沿用 findDedupImage（带 mediaType:"image"）。
+// 幂等、只读、命中不了就返回 {} 让客户端走正常上传。
+export async function GET(request: Request) {
+  const headers = getCorsHeaders(request);
+  try {
+    const userId = await getUploadUserId(request);
+    if (!userId) return NextResponse.json({}, { status: 200, headers });
+    const contentHash = new URL(request.url).searchParams.get("contentHash")?.trim();
+    if (!contentHash) return NextResponse.json({}, { status: 200, headers });
+    const dup = await findDedupImage(userId, contentHash);
+    return NextResponse.json(dup ? { url: dup.url, name: dup.name } : {}, { headers });
+  } catch {
+    return NextResponse.json({}, { status: 200, headers });
+  }
 }
 
 export async function POST(request: Request) {
