@@ -110,6 +110,26 @@
 **Agent（⛔ 按用户要求不接）**：`system-settings.ts:isAgentVideoModelEnabled` 现在非 BytePlus 一律 `false`。
 要接才改它 —— 🗣️ **用户明确不接 Agent，别自作主张开。** 此条留档。
 
+**⚠️ 唯一遗留：H3 从来没被真正跑过一次（🗣️ 2026-08-05 用户指定"下次测试就跑它"）**
+
+H3 接进来之后，**扣费只用"GET 上游历史任务 + 回库对账本"坐实过，没有走过一次真实的后台队列**。
+所以 `video-job-charged` 这条日志（v69 专门为"扣费成功却零日志"补的）**一次都没被触发过**。
+
+🗣️ **用户 2026-08-05 原话意思**：「下次测试时就跑 h3 生视频，顺带就把第 2 条验证掉。」
+→ ⛔ 不是马上去跑，而是**下次一旦要做测试/巡检，就把这一跑排进去**（顶掉/追加巡检第 5 项的"真跑生视频"）。
+
+- 模型 `minimax/hailuo-3`；约 **47 积分**、**10~16 分钟**（H3 比 Seedance 慢很多，⛔ 别当卡死）。
+- 号 `12424740@qq.com`，**新建**对话或工作流留痕（用户交代测试内容不要删）。
+- **一跑收 4 个二值结果**：
+  1. `.runtime/generation-diagnostics-log.jsonl` 出现 **`video-job-charged`**；
+     回库看 `CreditLedger` 那行 `usd`/`credits` 与上游 `usage.cost` 对得上。
+  2. **不该**出现 `usdFromFallbackPricing`（出现 = 上游这次没给 cost，要单独记）。
+  3. **台账迁移在测试服被触发**（正式服已实测生效，测试服一直没触发过）。
+  4. `.runtime/transfer-diagnostics-log.jsonl` 最新一条的 `kbps`/`concurrency`/`chunks`/`retries`/`via`
+     —— ⛔ `via:"rsync"` = `ALI_SYNC_PULL_BASE_URL` 没配、退回单流（大视频必失败）。
+- ⚠️ 分析 jsonl **一律用 node**（`ConvertFrom-Json` 遇中文整行报错）。
+
+
 ### [ ] M032 工作流节点传参考图偶发"静默挂不上" —— ⛔ **根因未知，严谨复现之前不许动代码**（2026-08-02 记）
 
 **现象（客观描述，不带因果）**：工作流画布里，给图片/视频生成节点点「上传图片 → 从本地上传」选文件，
