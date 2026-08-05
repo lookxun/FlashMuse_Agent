@@ -223,6 +223,21 @@
 - **视频/音频/文档** → `POST /api/upload-file`(multipart, field `file`)。服务端 `saveUploadedFileBufferAsset` 写 `/generated/users/<uid>/files/<hash>.<ext>` + MediaAsset/UserAssetState。校验/探测：`src/lib/media-upload-validation.ts` + `src/lib/media-upload-probe.ts`(ffmpeg 真实属性)。视频上传即时生成 `.poster.jpg`。
 - **命名唯一权威** `src/lib/upload-name.ts`（`resolveUploadName`：contentHash 命中复用旧名；否则去扩展名+sanitize+全局唯一 base/base_2）。三条上传接口都返回权威 `name`，前端只显示服务端返回名。
 - **内容去重**：按原始字节 SHA-256（`src/lib/upload-content-hash.ts`）+ `MediaAsset.contentHash`，命中直接复用不重传。
+- ⭐⭐ **工作流「同一个文件是不是已经在画布上」的判据，唯一实现 = `matchesWorkflowUploadFileName()`**
+  （`workflow-tldraw-canvas-inner.tsx`，2026-08-04 加）。⛔ **别再写 `名字 === file.name`**：
+  `mediaSystemNames` 里存的是**服务端权威名，永远不带扩展名**（`sanitizeUploadBaseName()` 第一步就是
+  `replace(/\.[^.]+$/, "")`；铁证是同文件 `:1891` 拼下载文件名时要自己补 `.${扩展名}`）。
+  历史上两处判据都写成 `=== file.name` → `"少尉" === "少尉.jpg"` 永远 false → **两条"命中已有就直接连线"的分支是死代码**：
+  「已存在，已直接连接」/「已在历史记录中，已恢复并连接」两个提示**用户永远看不到**，同图传两次会**建重复节点**
+  （服务端按 contentHash 去重，不会重复落盘）。⚠️ **仍会漏判且刻意不修**：权威名还会去标点并**截断到 24 字**
+  （`hero-mecha-robot-reference (2).jpg` → `hero-mecha-robot-referen`），按名字比就是不可靠；真正稳的判据是 contentHash。
+- ⭐⭐ **工作流的上传进度回调必须节流**：`throttleUploadProgress()`（`src/lib/upload-progress.ts`，2026-08-04 加），
+  只包在工作流那 4 个上传调用点（对话流不用、保持顺滑）。原因：工作流的 `updateNode(uploadProgress)` →
+  `updateState` **每调一次就把整张画布重算一遍**（导出全画布 + `JSON.stringify` 655KB + 所有节点 `updateShape`
+  + O(边×节点) 连线同步 + 父级 6 次全画布快照），而进度事件一次上传 **70~100 次** →
+  **O(进度次数 × 节点数 × 画布大小)，节点越多越卡**。这就是「工作流上传比对话流慢」的真因
+  （⛔ 不是服务端慢：同一接口，正式服 `asset-upload-temp-post-success` 1597 条 p50 **1073ms**）。
+  ⭐ 根治方案（把进度搬出画布状态）= 备忘 **M037**，还没做。
 - ⭐⭐ **v1.0.0.54 起：`POST` 那一步就会「按体积压缩」**（A1 的真修，`src/lib/local-assets.ts`）：
   原来的 `jpegNeedsReencode()` **只判格式兼容性、完全不看体积** → 手机原图（4MB+）走"原样写盘"分支、
   一个字节没压就发给模型、被 OpenAI 拒。现在**超阈值（2MB）就 sharp 重压到 quality 90**，
@@ -378,6 +393,90 @@
 - **「首次进工作流自动收起」已整套删除**（`applyWorkflowFirstSessionCollapse` + sessionStorage 标记 + 相关 helper）。
 - ⚠️ **没做持久化**，刷新回常规态。→ 见 `06-memo-tasks.md` 的 **M028**（用户没拍板）。
 
+## ⭐⭐ 图片缩略图：唯一实现 + 谁负责同步阿里（2026-08-04 收敛，改这块前必读）
+
+全站 256px 缩略图**只有一个实现**：`src/lib/local-assets.ts` 的
+**`ensureGeneratedImageThumbnail(publicUrl, { syncToAli })`**（返回 `{ thumbnailPublicUrl, thumbnailPath, created }`），
+`createGeneratedImageThumbnail(url)` 是它的薄封装（只回 url，5 个既有调用方零改动）。
+
+**两条生成路径（都走上面那一份）**：
+
+| 路径 | 谁触发 | 同步阿里由谁负责 |
+|---|---|---|
+| **即时生成** | 生成图/视频封面落盘时（`openrouter.ts` / `media-save-queue.ts` 共 5 处） | **调用方**：把 `[localUrl, thumbnailUrl]` **合成一次** `syncGeneratedFilesToAli` 发出去 |
+| **懒生成** | 浏览器请求 `/api/media-thumbnail?url=...`（上传图的缩略图都走这条） | **函数自己**（路由传 `syncToAli: true`） |
+
+- ⛔⛔ **`syncToAli` 必须保持"选项 + 默认 false"**：即时生成那条路的那次合并同步，它的 `ok` 就是
+  `job.aliSynced`，而前端拿 `aliSynced` 判断"能不能从阿里镜像读这张图"（`chat-workbench-core.tsx:763`）。
+  在函数里无条件同步 = 重复传 + 让 `aliSynced` 的语义变模糊。
+- ⛔ **路径穿越校验（`isInsideGeneratedRoot`）和后缀白名单（`SUPPORTED_IMAGE_EXTENSIONS`）刻意留在路由**，
+  没有下沉：只有这条路的入参来自用户，其余调用方传的都是服务端自己刚落盘的地址。下沉会改变既有调用方行为。
+- 📜 **为什么强调**：这两份逻辑历史上是**一字不差的两份副本**（连 `scale=256:256`/`-q:v 5`/timeout 都一样，
+  2026-06-05 先有路由那份、06-08 加即时生成时照抄了一份）。**分叉真的害过一次**：
+  懒生成那份**从来不同步阿里** → 阿里镜像里上传图的缩略图长期一张都没有
+  （2026-08-04 对齐两端时，缺的 75 个文件全是 `image-thumbnails/upload_image/…`）。
+
+## ⭐ 内部台账 `video-manifest`：在 `.runtime/`，不在 `public/`（2026-08-04 迁移）
+
+`src/lib/video-manifest.ts` 的 **`.runtime/video-manifest.json`**（最近 500 条视频的恢复台账）。
+历史位置是 `public/generated/videos/manifest.json` —— 那是**公网无鉴权**目录，实测泄露过全站用户提示词
++ 供应商预签名地址（详见 `AGENTS.md` 那条「内部台账绝不能落在 public/」铁律）。
+
+- **读**：先新位置，没有就回落老位置（历史数据不丢）；**写**：tmp + rename 原子落地；写成功后 `unlink` 老文件。
+- 正式服 2026-08-04 实测已迁移完成（老文件已自动删除，新文件 1,706,585 字节、属主 uid 1000）。
+- 还有一道 nginx 精确 404 兜底（腾讯 2 个 server 块 + 3 份测试服 conf + 阿里正式用幂等脚本）。
+- ⚠️ **阿里侧压根没有这个文件的本地副本**（一直是 `try_files → @generated_proxy` 回源腾讯）。
+- ⭐ `listRecoverableVideos()` 目前**没有任何调用方**（死导出），别以为它在跑。
+
+## ⭐⭐ 腾讯 → 阿里 媒体同步：并发分片（2026-08-04 重写，**改这块必读**）
+
+> 完整实测数据与踩坑写在 `AGENTS.md` 顶部那条铁律「腾讯↔阿里传文件一律走并发分片」。这里只讲结构。
+
+**为什么改**：原来 `ali-sync.ts` 用 `rsync -azR` **单流**推，而这条跨境线**丢包 20~25%**、
+单流只有 **15~30 KB/s** → 18.8MB 视频要 10 分钟以上，而代码里 rsync 超时是 **120 秒 = 一次都不可能成功**。
+线上历史 `aliSynced` **成功 43 / 失败 79**，失败的几乎全是视频（图片小、能挤过去，所以长期没暴露）。
+用户侧表现 = **视频"过了很久都没法看"**（阿里本地没有 → 走跨境回代理拉 20MB → 一直转圈）。
+
+**现在的结构（4 个文件，各有唯一职责，⛔ 别再写第二份）**：
+
+| 文件 | 职责 |
+|---|---|
+| `deploy/ali-parallel-pull.sh` | **阿里侧拉取器，唯一实现**。curl Range 并发拉腾讯 nginx 的 `/generated` |
+| `src/lib/ali-sync.ts` | 应用侧调用（生成媒体后自动同步）。**签名没变**，调用方无需改 |
+| `scripts/backfill-ali-media.sh` | 补历史缺口 / 对齐两端。比对清单 → 只补差异 |
+| `src/lib/transfer-log.ts` | 传输速度日志唯一实现 → `.runtime/transfer-diagnostics-log.jsonl` |
+
+**拉取器的两条路（缺一条就有场景退化成串行）**：
+
+1. **小文件（<=256KB）→ 跨文件并发**：整文件一个任务，941 个小缩略图一把拉完。
+   （只做分片并发的话，小文件每个只有 1 片 = 单流 = 串行）
+2. **大文件（>256KB）→ 分片并发 + 片大小自适应** `clamp(ceil(size/并发数), 256KB, 1MB)`。
+   ⚠️ **固定 1MB 会坑中等文件**：2.72MB 只切 3 片 = 只用到 3 个并发，**实测只有 44 KB/s**。
+
+**必须保留的三道安全措施**（丢包链路上少一道就会产出坏文件）：
+- **逐片校验字节数** —— 丢包时 `curl` 会**提前结束却仍返回成功**；
+- 拼装后**校验整体 md5**（清单里带）；
+- `mv` **原子落地**（同分区），用户绝不会读到半截文件。
+另外：单片失败**只重传该片**（默认 3 次）；目标已存在且大小+md5 一致就**跳过**（所以补数据脚本幂等可重跑）。
+
+**关键 env（⚠️ env 在服务器上、不随代码同步）**：
+- `ALI_SYNC_PULL_BASE_URL` —— **必配**，正式 `http://119.28.116.16:5000/generated`、
+  测试 `http://119.28.116.16:5001/generated`。**没配会静默退回单流 rsync**（故意留的兜底，
+  日志里 `via:"rsync"` 能看出来）。
+- `ALI_SYNC_CONCURRENCY` 默认 **16**（实测最优：4→147 / 8→357 / 16→461 / 32→329 KB/s，
+  ⛔ **别调到 32**）；`ALI_SYNC_CHUNK_BYTES` 默认 1MB（片大小**上限**）。
+
+**⛔ 别按文件逐个建 SSH 连接**：这条链路 SSH 握手实测 **4~12 秒**（丢包让 SYN 只能 RTO 翻倍等）。
+两个调用方都是「**一次握手** + 把『变量赋值行 + 拉取器脚本』拼成 payload 从 stdin 喂给 `ssh ali bash -s`」。
+
+**实测效果**：真实文件 **571~606 KB/s**（单流的 ~38 倍）；补历史 1.11GB / 1245 个文件
+**0 失败**、平均 314.6 KB/s、单文件最快 939 KB/s。
+
+**部署时的静态资源同步**（`deploy/sync-ali.sh`）也改了：`_next/static` / `home-assets` 走
+**分桶并发 rsync（8 桶）**，最后再单流跑一次 `--delete` 对齐。
+⛔⛔ **`--delete` 绝不能放进分桶里** —— 每个桶只看得见自己那份清单，会把别的桶的文件当"多余的"删掉。
+`generated` 则交给 backfill 脚本（分桶只能并发到「文件」粒度，治不了单个大视频）。
+
 ## 跨境链路固有软肋
 
 - 腾讯新加坡（源）↔ 阿里（国内入口）走公网跨境，有丢包/延迟。两台已开 BBR 缓解。这是双服务器方案固有痛点、非 bug。长期优化方向见归档。
@@ -387,6 +486,13 @@
   `proxy_set_header Connection "upgrade"` → **每个请求都重建一次跨境连接**。
   ⭐ **正式服主入口 `main`/`api` 是直连腾讯的、不吃这一跳**（稳定 210ms）；**测试服只有阿里这一个入口**。
   → 完整数据 + 三个方案见 `06-memo-tasks.md` 的 **M027** 和 `03-deploy-and-servers.md` 的入口架构那节。
+- ⭐⭐ **2026-08-04 补充：烂的只是「阿里↔腾讯新加坡」这一对，不是阿里的国际出口**（⛔ 别再归因错）：
+  实测阿里→OpenRouter **3,974 KB/s**、阿里→BytePlus **752 KB/s**，**都 0 丢包**
+  （BytePlus 的 RTT 398ms 比腾讯的 278ms 还高，速度却快 25 倍）→ **真凶是丢包不是延迟**。
+  traceroute 显示阿里→腾讯在第 18 跳一下 **+190ms（明显绕远）**，末段丢包 20~40%。
+  ⭐ 也因此解释了用户问的「为什么切腾讯线就能看、阿里线看不了」：
+  **两条路的跨境段根本不是同一条路** —— 用户家宽（电信）直连腾讯是好路（~60ms、几乎不丢包）。
+
 
 ## 迁移脚本 / 一次性脚本
 

@@ -20,7 +20,7 @@ import { isGptImageSafetyFailure, normalizeAttemptPrompt, runPromptSafetyRetry }
 import { handleSessionExpiredResponse, SESSION_EXPIRED_SILENT_ERROR } from "@/lib/session-expired-redirect";
 import { buildReferenceHint } from "@/lib/reference-hint";
 import { appendEditorText as appendWorkflowEditorText, getAtQueryAtCursorForReferences as getWorkflowAtQueryAtCursorForReferences, getEditableText as getWorkflowEditableText, getMentionNames as getSharedMentionNames, getMentionRangeForDeletion as getSharedMentionRangeForDeletion, getMentionRanges as getSharedMentionRanges, getSelectionTextOffset as getWorkflowSelectionTextOffset, getSelectionTextRange as getWorkflowSelectionTextRange, removeMentionName, setSelectionTextOffset as setWorkflowSelectionTextOffset } from "@/lib/mention-text";
-import { createUploadProgressTracker } from "@/lib/upload-progress";
+import { createUploadProgressTracker, throttleUploadProgress } from "@/lib/upload-progress";
 import { getUploadKindFromFileName, getEffectiveVideoReferenceItems, getUploadRule, getVideoAudioUploadDisabledMessage, getVideoReferenceLimitHint, supportsVideoReferenceMode, validateReferenceTotalDuration, validateVideoReferenceCombination, type UploadKind, type UploadKindRule, type UploadRule, type UploadRuleOverrides, type VideoReferenceMode } from "@/lib/upload-rules";
 import { getRequiredVideoReferenceImageCount, getVideoReferenceModeLabel, getVideoReferenceModeOptions } from "@/lib/video-reference-modes";
 import { IMAGE_UPLOAD_ACCEPT, validateImageUploadFile } from "@/lib/image-upload-validation";
@@ -482,6 +482,29 @@ function getEffectiveWorkflowUploadRule(node: WorkflowNode, overrides?: UploadRu
 
 function sanitizeWorkflowReferenceName(name: string) {
   return name.replace(/\.[^.]+$/, "").replace(/[@\s，。！？；;、]+/g, "").trim() || "上传文件";
+}
+
+/**
+ * 判断"画布上已有的某个媒体名"是不是就是用户刚选的这个文件。
+ *
+ * ⛔⛔ 2026-08-04 修：原来两处判据都是 `存的名字 === file.name`，而**存的名字永远不带扩展名**
+ *   （服务端 `sanitizeUploadBaseName()` 和客户端 `sanitizeWorkflowReferenceName()` 第一步都是
+ *   `replace(/\.[^.]+$/, "")`；铁证是本文件下载文件名要自己补 `.${扩展名}`）。
+ *   → `"少尉" === "少尉.jpg"` 永远 false，**两条"命中已有就直接连线"的分支全是死代码**
+ *     （`findExistingUploadNodeForFile` 和 `uploadFilesAsConnectedNodes` 里的历史资产恢复）：
+ *     ① `xxx 已存在，已直接连接` 和 `已在历史记录中，已恢复并连接` 这两个提示用户永远看不到；
+ *     ② 同一张图在同一个工作流里传两次会**建出两个重复节点**
+ *       （服务端按 contentHash 去重，不会重复落盘，正式服实测重复 MediaAsset = 0 条）。
+ *
+ * ⚠️ 已知仍会漏判（刻意不修，避免误连到别的节点）：服务端的权威名还会**去标点并截断到 24 字**，
+ *   所以 `hero-mecha-robot-reference (2).jpg` 的权威名是 `hero-mecha-robot-referen`，这里对不上。
+ *   真正稳的判据是 contentHash（服务端已经在用），前端要做得等有必要时再说。
+ */
+function matchesWorkflowUploadFileName(storedName: string | undefined, fileName: string) {
+  if (!storedName) return false;
+  if (storedName === fileName) return true;                                   // 无扩展名的文件（保留原行为）
+  if (storedName === fileName.replace(/\.[^.]+$/, "")) return true;           // 只去扩展名
+  return storedName === sanitizeWorkflowReferenceName(fileName);              // 客户端兜底名的口径
 }
 
 function removeWorkflowUploadReferenceText(prompt: string, referenceName: string) {
@@ -3425,6 +3448,8 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     }));
 
     // ③ 只 patch 这一个节点；节点可能已被用户删掉（那就什么都不做）。
+    // ⭐ 参考视频/音频的时长/宽高由后端接口直出（见下面 refs 的 map）；万一后端也没有，
+    //    节点自己的自愈 effect 会在浏览器里补上（见 WorkflowPromptBox 里的 mediaMetadataAttemptedRef 那段）。
     const finish = (uploads: WorkflowUploadItem[] | undefined, promptOverride?: string) => {
       updateState((state) => ({
         ...state,
@@ -3449,12 +3474,22 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
       try {
         const sourceMediaUrl = sourceNode.data.images?.[0] ?? sourceNode.data.videoUrl ?? sourceNode.data.audioUrl ?? "";
         const response = await fetch("/api/workflow-generation-references", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ workflowId, workflowNodeId: sourceNode.id, mediaUrl: sourceMediaUrl }), signal: controller.signal });
-        const data = await readJson<{ references?: Array<{ url?: string; name?: string; kind?: "image" | "video" | "audio" }>; prompt?: string }>(response);
-        const refs = Array.isArray(data.references) ? data.references.filter((ref): ref is { url: string; name?: string; kind: "image" | "video" | "audio" } => Boolean(ref?.url) && (ref?.kind === "image" || ref?.kind === "video" || ref?.kind === "audio")) : [];
+        const data = await readJson<{ references?: Array<{ url?: string; name?: string; kind?: "image" | "video" | "audio"; durationSeconds?: number; width?: number; height?: number }>; prompt?: string }>(response);
+        const refs = Array.isArray(data.references) ? data.references.filter((ref): ref is { url: string; name?: string; kind: "image" | "video" | "audio"; durationSeconds?: number; width?: number; height?: number } => Boolean(ref?.url) && (ref?.kind === "image" || ref?.kind === "video" || ref?.kind === "audio")) : [];
         // 用后端权威 job 里的「用户真实提示词」(输入框+连线文本节点，含 @蓝字，不含 hint) 回填；查不到再回退画布自带。
         const restoredPrompt = typeof data.prompt === "string" && data.prompt.trim() ? data.prompt : undefined;
         if (refs.length > 0 || restoredPrompt) {
-          finish(refs.length > 0 ? refs.map((ref, index) => ({ id: createId("workflow_upload"), kind: ref.kind, name: ref.name ?? `${ref.kind === "image" ? "图片" : ref.kind === "video" ? "视频" : "音频"}${index + 1}`, url: ref.url, status: "ready" as const, progress: 100 })) : undefined, restoredPrompt);
+          // ⭐ 视频/音频参考必须带上后端直出的时长与宽高，否则发送会被「视频时长读取失败」拦死（见 backfillReferenceMediaMetadata）。
+          finish(refs.length > 0 ? refs.map((ref, index) => ({
+            id: createId("workflow_upload"),
+            kind: ref.kind,
+            name: ref.name ?? `${ref.kind === "image" ? "图片" : ref.kind === "video" ? "视频" : "音频"}${index + 1}`,
+            url: ref.url,
+            status: "ready" as const,
+            progress: 100,
+            durationSeconds: typeof ref.durationSeconds === "number" && ref.durationSeconds > 0 ? ref.durationSeconds : undefined,
+            dimensions: ref.kind === "video" && ref.width && ref.height ? { width: ref.width, height: ref.height } : undefined,
+          })) : undefined, restoredPrompt);
           return;
         }
       } catch {
@@ -3510,7 +3545,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
         const nodeId = createId("workflow_node");
         const previewUrl = URL.createObjectURL(file);
         addUploadedNode({ id: nodeId, kind: "image", title: imageTitle, data: { ...getDefaultNodeData("image"), prompt: imageTitle, imageDimensions: {}, ratio: normalizeWorkflowImageRatio(undefined, dimensions), uploadProgress: 1, uploadPreviewUrl: previewUrl } }, targetNodeId, rightOfNode);
-        const uploaded = await uploadWorkflowImage(file, (progress) => updateNode(nodeId, { uploadProgress: Math.min(99, progress) }), true);
+        const uploaded = await uploadWorkflowImage(file, throttleUploadProgress((progress) => updateNode(nodeId, { uploadProgress: Math.min(99, progress) })), true);
         const url = uploaded.url;
         if (uploaded.duplicate) (onDuplicateTip ?? onShowTip)?.("图片已存在，无需重复上传！");
         // 名字一律用服务端权威名（去扩展名 + 全局唯一 + 同图复用同名），兜底才用文件名。
@@ -3533,7 +3568,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
         const nodeId = createId("workflow_node");
         const previewUrl = URL.createObjectURL(file);
         addUploadedNode({ id: nodeId, kind: "video", title: "上传视频", data: { ...defaultData, prompt: "上传视频", videoDimensions: media.dimensions, durationSeconds: media.durationSeconds, ratio: media.dimensions ? getCommonWorkflowRatioLabel(media.dimensions) ?? defaultData.ratio : defaultData.ratio, uploadProgress: 1, uploadPreviewUrl: previewUrl } }, targetNodeId);
-        const uploadedVideo = await uploadWorkflowFile(file, "video", workflowId, nodeId, media, (progress) => updateNode(nodeId, { uploadProgress: Math.min(99, progress) }));
+        const uploadedVideo = await uploadWorkflowFile(file, "video", workflowId, nodeId, media, throttleUploadProgress((progress) => updateNode(nodeId, { uploadProgress: Math.min(99, progress) })));
         const url = uploadedVideo.url;
         if (uploadedVideo.duplicate) (onDuplicateTip ?? onShowTip)?.("视频已存在，无需重复上传！");
         const mediaName = uploadedVideo.name || sanitizeWorkflowReferenceName(file.name);
@@ -3549,7 +3584,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
         if (validationError) return onShowTip?.(validationError);
         const nodeId = createId("workflow_node");
         addUploadedNode({ id: nodeId, kind: "audio", title: "上传音频", data: { ...getDefaultNodeData("audio"), durationSeconds: media.durationSeconds, uploadProgress: 1 } }, targetNodeId);
-        const uploadedAudio = await uploadWorkflowFile(file, "audio", workflowId, nodeId, media, (progress) => updateNode(nodeId, { uploadProgress: Math.min(99, progress) }));
+        const uploadedAudio = await uploadWorkflowFile(file, "audio", workflowId, nodeId, media, throttleUploadProgress((progress) => updateNode(nodeId, { uploadProgress: Math.min(99, progress) })));
         const url = uploadedAudio.url;
         if (uploadedAudio.duplicate) (onDuplicateTip ?? onShowTip)?.("音频已存在，无需重复上传！");
         const mediaName = uploadedAudio.name || sanitizeWorkflowReferenceName(file.name);
@@ -3560,7 +3595,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
       if (file.type === "text/plain" || getWorkflowFileExtension(file) === "txt") {
         const nodeId = createId("workflow_node");
         addUploadedNode({ id: nodeId, kind: "text", title: "上传文本", data: { ...getDefaultNodeData("text"), uploadProgress: 1 } }, targetNodeId);
-        const text = await readWorkflowDocumentText(file, (progress) => updateNode(nodeId, { uploadProgress: Math.min(99, progress) }));
+        const text = await readWorkflowDocumentText(file, throttleUploadProgress((progress) => updateNode(nodeId, { uploadProgress: Math.min(99, progress) })));
         const validationError = validateWorkflowUploadNodeFile(file, "text", undefined, text);
         if (validationError) {
           updateNode(nodeId, { uploadProgress: undefined, error: validationError });
@@ -3627,7 +3662,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     const expectedKind: WorkflowNodeKind = file.type.startsWith("image/") ? "image" : file.type.startsWith("video/") ? "video" : file.type.startsWith("audio/") || ["mp3", "wav"].includes(extension) ? "audio" : "text";
     return stateRef.current.nodes.find((node) => {
       if (node.kind !== expectedKind) return false;
-      return Object.values(node.data.mediaSystemNames ?? {}).some((name) => name === fileName);
+      return Object.values(node.data.mediaSystemNames ?? {}).some((name) => matchesWorkflowUploadFileName(name, fileName));
     });
   }, []);
 
@@ -3727,7 +3762,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
           connectedNodeIds.push(existingNode.id);
           continue;
         }
-        const historicalAsset = workflowAssets.find((asset) => asset.name === file.name && (file.type.startsWith("image/") ? asset.kind === "image" : file.type.startsWith("video/") ? asset.kind === "video" : false));
+        const historicalAsset = workflowAssets.find((asset) => matchesWorkflowUploadFileName(asset.name, file.name) && (file.type.startsWith("image/") ? asset.kind === "image" : file.type.startsWith("video/") ? asset.kind === "video" : false));
         if (historicalAsset) {
           (onDuplicateTip ?? onShowTip)?.(`${file.name} 已在历史记录中，已恢复并连接`);
           const nodeId = restoreWorkflowAssetToCanvas(historicalAsset, undefined, targetNodeId);
@@ -6312,6 +6347,56 @@ function WorkflowPromptBox({ node, value, placeholder, maxPromptHeight, onChange
     uploadsRef.current = nextUploads;
     runtime.updateNode(node.id, { uploads: nextUploads });
   };
+
+  /**
+   * ⛔⛔ 参考视频/音频缺 `durationSeconds`（视频还缺 `dimensions`）会让这个节点**永久发不出去**：
+   * 发送前的 `validateWorkflowUploadsForSubmit` 逐个校验它们，读不到就返回「视频时长读取失败」，
+   * 而用户在界面上没有任何办法把这个值补上（只能删掉素材重新 @ 一次）。
+   *
+   * 2026-08-05 修的线上 bug：工作流「使用提示词」建出的新节点，参考素材是从后端 job 还原的
+   * `{url, name, kind}`，**压根没带时长/宽高** → 两图一视频生成的视频点「使用提示词」后一按发送就报这个。
+   * 现在后端 `/api/workflow-generation-references` 已经直出（`resolveReferenceMediaMetadata`），
+   * 这里是**唯一的兜底自愈**：只要节点上还有缺元数据的视频/音频（含用户画布上早就存坏了的老节点），
+   * 就在浏览器里读一次媒体元数据补上。
+   *
+   * ⭐ 为什么放在这里而不是只在「使用提示词」那条路上补：只有放在节点自己身上，
+   *    **已经存进数据库的坏节点**才能自己好起来。⛔ 别再在别处写第二份补齐逻辑。
+   * ⭐ 每个 upload.id 只尝试一次（`attemptedRef`），读失败也不重试 —— 绝不因为它反复打网络。
+   */
+  const mediaMetadataAttemptedRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const pending = (node.data.uploads ?? []).filter((upload): upload is WorkflowUploadItem & { url: string; kind: "video" | "audio" } =>
+      (upload.kind === "video" || upload.kind === "audio")
+      && upload.status === "ready"
+      && Boolean(upload.url)
+      && !upload.url!.startsWith("blob:")
+      && (!upload.durationSeconds || (upload.kind === "video" && !upload.dimensions))
+      && !mediaMetadataAttemptedRef.current.has(upload.id));
+    if (pending.length === 0) return;
+    pending.forEach((upload) => mediaMetadataAttemptedRef.current.add(upload.id));
+    let cancelled = false;
+    void Promise.all(pending.map(async (upload) => {
+      try {
+        const media = await readWorkflowMediaMetadataFromUrl(getStaticMediaUrl(upload.url) ?? upload.url, upload.kind);
+        if (!media.durationSeconds && !media.dimensions) return undefined;
+        return { id: upload.id, media };
+      } catch {
+        return undefined;
+      }
+    })).then((results) => {
+      if (cancelled) return;
+      const patches = results.filter((result): result is { id: string; media: { durationSeconds?: number; dimensions?: { width: number; height: number } } } => Boolean(result));
+      if (patches.length === 0) return;
+      updateUploads((uploads) => uploads.map((upload) => {
+        const patch = patches.find((entry) => entry.id === upload.id);
+        if (!patch) return upload;
+        return { ...upload, durationSeconds: upload.durationSeconds ?? patch.media.durationSeconds, dimensions: upload.dimensions ?? patch.media.dimensions };
+      }));
+    });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [node.data.uploads]);
+
   const insertAssetReference = (asset: WorkflowReferenceAsset) => {
     if (asset.kind === "video" || asset.kind === "audio") {
       const kind = asset.kind;

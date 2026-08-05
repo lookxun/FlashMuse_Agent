@@ -304,6 +304,46 @@ async function resolveReferenceNames(userId: string, urls: string[]): Promise<Re
   return nameByUrl;
 }
 
+/**
+ * 参考视频/音频的「时长 + 宽高」权威取值（按 url 反查 MediaAsset）。
+ *
+ * ⛔ 为什么必须有这个（2026-08-05 修的线上 bug）：工作流「使用提示词」还原出来的参考素材
+ * 原来只带 `{url, name, kind}`，**没有 durationSeconds / dimensions** —— 而工作流发送前的
+ * `validateWorkflowUploadsForSubmit` 会逐个校验参考视频的时长和尺寸，读不到就返回
+ * 「视频时长读取失败」**把发送永久拦死**（用户只能删掉素材重新 @ 一次）。
+ * 时长/宽高本来就在 MediaAsset 上（上传走 media-upload-probe、生成走 video-poster 都会写），
+ * 所以这里从库里直出，别让前端去猜。
+ *
+ * best-effort：查不到的 url 直接不出现在返回里（前端会在浏览器里再读一次兜底）。
+ * 匹配 `url` 和 `normalizedUrl` 两列，口径与 `resolveReferenceNames` 完全一致。
+ */
+export type ReferenceMediaMetadata = { durationSeconds?: number; width?: number; height?: number };
+export async function resolveReferenceMediaMetadata(userId: string, urls: string[]): Promise<Record<string, ReferenceMediaMetadata>> {
+  const unique = Array.from(new Set(urls.filter((url) => typeof url === "string" && Boolean(url))));
+  if (unique.length === 0) return {};
+  const metaByUrl: Record<string, ReferenceMediaMetadata> = {};
+  try {
+    const rows = await prisma.$queryRaw<Array<{ url: string; normalizedUrl: string; durationSeconds: number | null; width: number | null; height: number | null }>>`
+      SELECT "url", "normalizedUrl", "durationSeconds", "width", "height"
+      FROM "MediaAsset"
+      WHERE "userId" = ${userId} AND ("url" IN (${Prisma.join(unique)}) OR "normalizedUrl" IN (${Prisma.join(unique)}))
+    `;
+    for (const row of rows) {
+      const meta: ReferenceMediaMetadata = {
+        durationSeconds: typeof row.durationSeconds === "number" && row.durationSeconds > 0 ? row.durationSeconds : undefined,
+        width: typeof row.width === "number" && row.width > 0 ? row.width : undefined,
+        height: typeof row.height === "number" && row.height > 0 ? row.height : undefined,
+      };
+      if (meta.durationSeconds === undefined && meta.width === undefined && meta.height === undefined) continue;
+      if (row.url) metaByUrl[row.url] ??= meta;
+      if (row.normalizedUrl) metaByUrl[row.normalizedUrl] ??= meta;
+    }
+  } catch (error) {
+    console.warn("[generation-jobs] resolveReferenceMediaMetadata failed", { error: error instanceof Error ? error.message : String(error) });
+  }
+  return metaByUrl;
+}
+
 /** 建一条排队中的图片任务（幂等：同 requestId 已存在则直接返回原任务）。 */
 export async function createImageJob(input: CreateImageJobInput): Promise<GenerationJobRow> {
   const existing = await getGenerationJobByRequestId(input.requestId);

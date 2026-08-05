@@ -26,16 +26,52 @@ const LEGACY_MODEL_REFUSED_MESSAGES = [
 // 上游原文最多带这么长（红字要能看完，别糊满整屏）。
 const MODEL_REFUSED_DETAIL_MAX_LENGTH = 260;
 
-// ⭐ 平台内容安全检测拒绝「参考素材」的唯一文案（2026-07-29 合并）。
+// ⭐⭐ 平台内容安全检测拒绝「参考素材」的唯一文案（2026-07-29 合并，2026-08-05 改成按素材类型精确对应）。
 //
 // 为什么要合并：以前这一个根因有两句话 ——
 //   ① 精确规则（明确出现 input image/video + real person/copyright/sensitive）说「参考图未能通过平台审核…」
 //   ② 宽松兜底（原文里只要有 sensitive/隐私/真人 字样）说「参考图可能包含真人或隐私敏感信息…」
 // 但 ② 其实就是 ① 漏掉时的兜底，同一件事裂成两种说法，后台也会裂成两条原因。
 //
-// ⭐ 措辞从"参考图"改成"参考素材"：线上真实原文里有 `InputVideoSensitiveContentDetected param: content[3]`
-// —— 被判敏感的是**参考视频**，说"参考图"是错的。参考音频同理。
-const REFERENCE_REVIEW_REJECTED_MESSAGE = "参考素材未能通过平台审核（可能涉及真人、隐私或版权），可以重试，但建议更换参考素材后再重试成功率更高。";
+// ⭐⭐ 2026-08-05 用户拍板：**"是什么没过就显示什么"** —— 上游原文里已经指名是
+// `input image` / `input video` / `input audio`（或 `InputVideoSensitiveContentDetected` 这种带类型的错误码），
+// 所以红字必须直接说**参考图片 / 参考视频 / 参考音频**，别再笼统说"参考素材"让用户猜该换哪个。
+// 只有真的判不出类型时才回落"参考素材"。
+//
+// ⛔⛔ 三条改这句话时必须一起想到的事：
+//   1. **别替平台编原因**（我写过「例如影视剧、动漫、综艺等片段」→ 用户当场否掉：那个被拒的素材实测
+//      是 576×1024/10.3 秒的普通竖屏短片，跟影视剧毫无关系）。拿不到证据就只说"平台判定/检测"。
+//   2. **"重试可能通过"是用户定的口径**，不是我随便写的：平台这个检测会误判、每次重新送审都是重新过一次审。
+//      ⛔ 所以绝不许在链路上做「上次被拒过就不再送审」的缓存优化（我加过、当天撤了，见 video/route.ts 那段注释）。
+//   3. ⭐ 一个根因裂成 4 种措辞 → **后台会炸成 4 行**。已在 `admin-failure-triage.ts` 的
+//      `FAILURE_REASON_SQL` 里加了归一化把它们收回一条。**改这句的措辞必须同步改那条 SQL。**
+export type ReferenceReviewMediaKind = "image" | "video" | "audio" | "unknown";
+
+const REFERENCE_REVIEW_KIND_LABEL: Record<ReferenceReviewMediaKind, string> = {
+  image: "图片",
+  video: "视频",
+  audio: "音频",
+  unknown: "素材",
+};
+
+function buildReferenceReviewRejectedMessage(kind: ReferenceReviewMediaKind) {
+  return `参考${REFERENCE_REVIEW_KIND_LABEL[kind]}没能通过平台的版权检测（可能涉及真人、隐私或版权），重试可能通过，但建议更换参考素材后再重试成功率更高。`;
+}
+
+/**
+ * 从上游原文里判断「是哪一类参考素材没过审」。
+ *
+ * ⚠️ 只认 **input/参考** 侧的说法：`output image/video/audio` 那几路在上面已经各自 return 掉了，
+ * 但万一以后有人调整规则顺序，这里也不能把成品那一路认成参考素材 → 一律要求带 input/参考/reference 语境。
+ * 判不出来就返回 "unknown"（文案回落"参考素材"），⛔ 别瞎猜一个类型，猜错比笼统更糟。
+ */
+function detectReferenceReviewMediaKind(lower: string, text: string): ReferenceReviewMediaKind {
+  // BytePlus 的带类型错误码：InputVideoSensitiveContentDetected / InputImageCopyright 等
+  if (/input\s*video|inputvideo/.test(lower) || /参考视频/.test(text)) return "video";
+  if (/input\s*audio|inputaudio/.test(lower) || /参考音频/.test(text)) return "audio";
+  if (/input\s*image|inputimage/.test(lower) || /参考图片?/.test(text)) return "image";
+  return "unknown";
+}
 
 // ⭐ 成品**图片**被平台判定含敏感内容（`OutputImageSensitiveContentDetected`）。
 // 语义对齐"成品视频/音频被拒交付"那句：问题出在生成结果上，换参考素材没用，重试/改提示词才有用。
@@ -301,17 +337,22 @@ export function toUserErrorMessage(value: unknown, fallback = "请求失败，�
   // ⭐ 归到统一那句「模型拒绝」（AGENTS 铁律：模型拒绝／平台安全策略／版权限制三类合并成唯一一句，
   //    该句already同时提示"调整提示词或更换参考图"，且复用现成文案 → 后台 FAILURE_REASON_SQL 一行都不用改）。
   if (/inputtextsensitive|input text.*(sensitive|敏感)|输入文本.*敏感/.test(lower)) return withErrorCode(buildModelRefusedMessage(text));
+  // ⭐⭐ 2026-08-05 起：**这里不再区分"版权"还是"敏感"**，两者共用同一句（用户口径），
+  // 唯一的区别是把**素材类型**填准（图片/视频/音频）。所以原来那条单独的"input video 版权"精确规则
+  // 已经删掉 —— 它做的事现在由 detectReferenceReviewMediaKind 统一完成，少一条规则少一个抢匹配的坑。
   // 输入/参考素材审核未过（送审被拒或创建阶段直接被拒）。⭐ 与下面那条宽松 sensitive 兜底
   // **共用同一句文案**（2026-07-29 合并）：它们本来就是同一个根因（平台内容安全检测拒绝素材），
   // 只是一条是精确规则、一条是兜底规则，分成两种说法只会让同一件事在后台裂成两条。
-  if (/reference-review-failed/.test(lower) || /input\s+(?:image|video).*(real person|copyright|copyright restrictions|related to copyright|sensitive|privacy|privacyinformation)/.test(lower) || /(input image|reference|asset|素材|参考图|审核).*(copyright|copyright restrictions|related to copyright|版权|真人|隐私|sensitive|privacy)/.test(lower) || /审核图片可能涉及版权限制|参考图.*(版权|真人|隐私)|素材.*(版权|真人|隐私)/.test(text)) return withErrorCode(REFERENCE_REVIEW_REJECTED_MESSAGE);
+  // ⚠️ 这里的 `input` 三类必须写齐 image|video|audio：漏掉 audio 会让「参考音频被版权拒」掉进下面
+  // 那条裸 `copyright` 兜底、被说成"模型拒绝"（2026-08-05 v73 部署前的回归用例抓到，当时只写了 image|video）。
+  if (/reference-review-failed/.test(lower) || /input\s+(?:image|video|audio).*(real person|copyright|copyright restrictions|related to copyright|sensitive|privacy|privacyinformation)/.test(lower) || /(input image|reference|asset|素材|参考图|审核).*(copyright|copyright restrictions|related to copyright|版权|真人|隐私|sensitive|privacy)/.test(lower) || /审核图片可能涉及版权限制|参考图.*(版权|真人|隐私)|素材.*(版权|真人|隐私)/.test(text)) return withErrorCode(buildReferenceReviewRejectedMessage(detectReferenceReviewMediaKind(lower, text)));
   if (/completed with no output|no output|content may have been filtered|content.*filtered|filtered/.test(lower) || /已完成.*没有返回视频|没有返回视频地址/.test(text)) return withErrorCode("输出视频被平台过滤，未返回视频。重新生成有可能会成功。");
   // ⭐ 2026-07-29：原来这里是「生成结果可能涉及版权限制，平台拒绝输出。…」，与"模型拒绝"是一个意思，
   // 按用户要求**合并进统一那句**（并附上上游原文），不再单独存在。
   if (/copyright|copyright restrictions|related to copyright|版权/.test(lower)) return withErrorCode(buildModelRefusedMessage(text));
   // ⭐ 宽松兜底：原文里只要出现敏感/隐私/真人字样就落这里。与上面那条精确规则**共用同一句**
   // （2026-07-29 合并，见上面注释）。⚠️ 成品图片那一路已在前面单独拦掉，不会再被这条错怪。
-  if (/sensitive|privacyinformation|real person|privacy|真人|隐私|敏感/.test(lower)) return withErrorCode(REFERENCE_REVIEW_REJECTED_MESSAGE);
+  if (/sensitive|privacyinformation|real person|privacy|真人|隐私|敏感/.test(lower)) return withErrorCode(buildReferenceReviewRejectedMessage(detectReferenceReviewMediaKind(lower, text)));
   if (/aspect ratio must be between/.test(lower)) return withErrorCode("参考图太窄或太长了，当前视频模型无法使用。请换一张比例更接近常规尺寸（如 16:9、9:16、1:1、4:3）的参考图后重试。");
   // ⭐ 平台返回的不是 JSON 而是 HTML 错误页/网关页（`Unexpected token '<' … is not valid JSON`）：
   // 这是网关/CDN 抖动，不是参数问题。必须放在下面 `not valid` 规则之前，否则会被误报成

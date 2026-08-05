@@ -1,5 +1,29 @@
 # Deploy And Servers（2026-07-21 重建，改代码/部署必读）
 
+## 🖼️ 媒体两端对齐（腾讯 ↔ 阿里）—— 2026-08-04 新增，「用户说图/视频看不了」先查这里
+
+**判据一条命令**（幂等、只读、随时可跑）：
+
+```bash
+sudo bash /opt/flashmuse/app/scripts/backfill-ali-media.sh --stack=prod --dry-run
+```
+
+- 输出「✅ 两端已一致，无需传输」= 媒体没问题，去查别的（前端地址/缓存/权限）。
+- 有「需要传 N 个」= 阿里缺文件 → **去掉 `--dry-run` 重跑即补齐**（幂等，已传好的会跳过）。
+  ⚠️ 全量约 1 小时，**务必后台跑**：`sudo nohup bash ... --stack=prod > /tmp/backfill-prod.log 2>&1 &`
+- 测试服把 `--stack=prod` 换成 `--stack=staging`。
+
+**2026-08-04 首次跑的结果**（供对照）：开跑前缺 **1245 个 / 1.11GB**（视频 135 个占 95% 字节）→
+传成功 1245 / **失败 0**、61 分 55 秒、平均 314.6 KB/s → 复验「需要传 0 个」。
+腾讯 21320 个文件 / 21.20GB，阿里 21545 个 / 21.26GB。
+
+- ⚠️ 脚本会报「**阿里多出 N 个条目**」（腾讯没有、阿里有，疑似压缩前的旧版本，当时 225 个）。
+  **脚本故意不删**，要清理需人工确认。
+- ⭐ **速度日志**：`/opt/flashmuse/data/runtime/transfer-diagnostics-log.jsonl`
+  （`source:"backfill"` = 脚本写的；没这字段 = 应用实时同步写的）。
+- ⛔ **前置条件**：`ALI_SYNC_PULL_BASE_URL` 必须配好（见下面部署注意事项第 6 条），否则退回单流 rsync、大文件必失败。
+- 原理与实测数据 → `02-architecture-and-data.md`「腾讯 → 阿里 媒体同步：并发分片」+ `AGENTS.md` 同名铁律。
+
 ## 🗄️🗄️ 数据库备份（2026-08-02 建立）—— 部署前必看
 
 **完整用法 / 紧急恢复步骤 / 9 条踩过的坑 → `deploy/backup/README.md`。**
@@ -194,9 +218,20 @@ sudo /opt/flashmuse/scripts/flashmuse-db-backup.sh --stack prod --label pre-depl
 >    替代了 sync-ali-test.sh / sync-flashmuse-next-static.sh / 手写 /tmp/syncali.sh）：
 >    测试服 `sudo bash /opt/flashmuse-staging/app/deploy/sync-ali.sh --stack=staging --with-generated`；
 >    正式服 `--stack=prod`（⛔ 不带 --with-generated，21GB 走应用 ali-sync）。
+>    ⭐⭐ **2026-08-04 改为并发**：`_next/static`/`home-assets` **分桶并发 rsync（8 桶）**+ 最后单流 `--delete` 对齐；
+>    `--with-generated` 时 `generated` **转交 `scripts/backfill-ali-media.sh`**（分片并发，能治大视频）。
+>    ⛔⛔ `--delete` 绝不能放进分桶（每桶只见自己的清单，会互删）。
 >    ⚠️ scp/tar 上去的 shell 脚本先 `sed -i 's/\r$//'`（Windows 行尾，`set: pipefail: invalid option` 就是这事）。
 > 5. ⭐ **阿里 nginx 的备份文件别放 `/etc/nginx/sites-enabled/`**（`.bak` 也会被 include →
 >    `duplicate upstream` 整台起不来），备份放 `/root/`。
+> 6. ⭐⭐ **2026-08-04 新增两个必配 env（⚠️ env 在服务器上、不随代码同步，新服务器/重建 env 必须补）**：
+>    - `ALI_SYNC_PULL_BASE_URL` —— 正式 `http://119.28.116.16:5000/generated`、
+>      测试 `http://119.28.116.16:5001/generated`。**没配会静默退回单流 rsync**
+>      （视频必然同步失败，日志里 `via:"rsync"` 可辨认）。
+>    - （可选）`ALI_SYNC_CONCURRENCY` 默认 16（实测最优，⛔ 别调到 32）。
+>    ⭐ 同时**部署时要预置传输日志文件属主**：
+>    `sudo touch data/runtime/transfer-diagnostics-log.jsonl && sudo chown 1000:1000 <该文件>`
+>    —— 否则 root 跑的补数据脚本会先建出 root 属主的文件，**容器里的 app（uid 1000）从此写不进去、还静默无声**。
 >
 > 另：`PUBLISHED_APP_VERSION` 现在从 `.env` 读（compose 里 `${PUBLISHED_APP_VERSION:-}`），
 > 发版本信号 = 往 `.env` 追加/改 `PUBLISHED_APP_VERSION=vX` + `up -d --force-recreate staging-app`。
@@ -251,6 +286,26 @@ sudo /opt/flashmuse/scripts/flashmuse-db-backup.sh --stack prod --label pre-depl
    打完必须 `tar -tzf` grep 一遍**新增目录**是否真在包里（漏了新目录 = 上线当场 404/崩）。
 
 ## 关键踩坑与记忆
+
+- ⛔⛔⛔ **单文件 bind mount 用 `cp` 覆盖 = 换了 inode = 容器里永远还是旧文件**（2026-08-04 v71 踩到，查了三轮）。
+  compose 里 `- /opt/flashmuse/data/nginx/flashmuse.conf:/etc/nginx/conf.d/default.conf:ro` 是**单文件**挂载，
+  Docker 在容器启动那一刻**按 inode 绑定**。你在宿主机 `cp 新文件 目标` → 目标是**新 inode** →
+  容器里看到的还是**创建时那个旧 inode**，而且：
+  **`nginx -t` 通过、`nginx -s reload` 也"成功"、宿主机文件确实已更新** —— 一切看起来都对，**配置就是没生效**。
+  - ⭐ **判据（一行）**：`sudo docker exec <容器> wc -l <挂进去的路径>` 和宿主机 `wc -l` **行数不一致**就是中了；
+    或 `grep -c 你新加的关键字` 在容器里是 0。
+  - ⭐ **正解**：改这类文件用 **`cat 新文件 > 目标文件`**（原地写，保住 inode），别用 `cp`/`mv`/`sed -i`（`sed -i` 也换 inode！）。
+  - ⭐ **已经 `cp` 过了怎么救**：只能 **`docker compose up -d --force-recreate <那个容器>`**（reload 没用）。
+    正式服 nginx 重建约 20 秒不可用，重建前先 `docker compose config` 确认展开后的**证书路径真实存在**
+    （见本文件那条「443 证书路径」铁律，写错会让 443 全站挂）。
+  - ⚠️ **目录挂载没这个问题**（`/srv/generated` 那种），只有**单文件**挂载有。
+- ⛔⛔ **PowerShell 5.1 会吃掉 ssh 命令里的内层双引号 → 多条命令只有第一条发到远端**（2026-08-04 踩到）。
+  `ssh host "cmd1; cmd2; cmd3"` 经 PowerShell 传给 OpenSSH 后内层引号丢失 →
+  **`cmd1` 在远端跑，`cmd2`/`cmd3` 在本地跑**。症状极具误导性：本次一条命令里
+  `whoami` 输出 `root`（远端）紧接着 `id` 输出 `uid=1000(ubuntu)`（本地）——**自相矛盾**；
+  还据此误判过"阿里那把 key 没权限 / `/etc/nginx` 不存在"（其实单条命令跑就完全正常）。
+  - ⭐ **铁律：凡是要在远端跑多条命令，一律写成 `.sh` → `scp` 上去 → `sed -i 's/\r$//'` → `bash` 跑。**
+    单条简单命令才允许内联。`$(...)`/`$?`/`$K` 这类也会在**本地**或**中间那台**被展开，同理别内联。
 
 - ⭐⭐ **在服务器本机自测接口"莫名 401"，先换 Host 再怀疑代码**（2026-08-02 实测）：
   `curl 127.0.0.1:5001/api/auth/me` 带有效 session cookie 返回 `{"user":null}`（未登录），

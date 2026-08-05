@@ -18,6 +18,32 @@ export interface UploadProgressTracker {
   cancel: () => void;
 }
 
+/**
+ * 进度回调节流（2026-08-04 加）。
+ *
+ * ⛔⛔ 为什么需要它：**工作流**的进度回调是 `updateNode(nodeId, { uploadProgress })`，
+ *   而 `updateState` 每调一次要做：从 tldraw 导出整张画布 + `JSON.stringify(整张画布)`
+ *   （重度用户实测 655KB）+ 对**所有**节点 `updateShape` + O(边×节点) 的连线同步 +
+ *   整个画布 React 重渲染，父级还要再算 3 个快照 ×新旧两份 = 6 次全画布遍历。
+ *   而进度事件一次上传约 **70~100 次**（字节阶段按整数变化 + 每 450ms 爬一格的定时器）
+ *   → 上传期间主线程被自己刷爆，表现为"工作流上传比对话流慢/一顿一顿的"，
+ *   且**工作流节点越多越卡**（O(进度次数 × 节点数 × 画布大小)）。
+ *
+ * ⭐ 只在"贵"的调用方用它（工作流画布）。对话流的进度只更新一个小对象，保持原来的顺滑。
+ * ⭐ 100 一定放行（它是收尾值）；其余要么涨够 5%、要么隔了 300ms 才放行。
+ */
+export function throttleUploadProgress(emit: (progress: number) => void, minStep = 5, minIntervalMs = 300) {
+  let lastValue = -1;
+  let lastAt = 0;
+  return (progress: number) => {
+    const now = Date.now();
+    if (progress < 100 && progress - lastValue < minStep && now - lastAt < minIntervalMs) return;
+    lastValue = progress;
+    lastAt = now;
+    emit(progress);
+  };
+}
+
 export function createUploadProgressTracker(onProgress?: (progress: number) => void): UploadProgressTracker {
   // 客户端→Ali 这一段的封顶，每次随机 60~70，让每次上传观感不同。
   const cap = 60 + Math.floor(Math.random() * 11);

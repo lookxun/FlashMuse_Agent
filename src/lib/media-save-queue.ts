@@ -8,6 +8,8 @@ import { getOpenRouterHeaders, getRequiredOpenRouterApiKey } from "@/lib/openrou
 import { upsertVideoManifestEntry } from "@/lib/video-manifest";
 import { appendGenerationDiagnosticsLog, summarizeGeneratedReference } from "@/lib/generation-diagnostics-log";
 import { isRemoteUrlAllowed } from "@/lib/ssrf-guard";
+import { appendTransferLog, computeKbps } from "@/lib/transfer-log";
+import { getGeneratedFileSize } from "@/lib/generated-asset-path";
 
 type MediaSaveType = "image" | "video";
 type MediaSaveStatus = "pending" | "downloading" | "saved" | "failed" | "expired";
@@ -206,6 +208,18 @@ async function processMediaSaveJob(id: string) {
       });
       void appendGenerationDiagnosticsLog({ event: "media-save-download-start", requestId: job.requestId, userId: job.userId, mode: job.type, model: job.model, prompt: job.prompt, references: [summarizeGeneratedReference(job.remoteUrl, 0, "remote_asset")], extra: { id: job.id, type: job.type, attempt: job.attempts, queuedMs: downloadStartedAt - job.createdAt, ...getRemoteUrlDebugInfo(job.remoteUrl) } });
       const localUrl = await saveRemoteAsset(job.remoteUrl, job.type, getRequestInit(job), { userId: job.userId, keepTransparent: job.keepTransparent });
+      // ⭐ 供应商 → 腾讯 的下载速度（🗣️ 用户要求按时间记速度，跨境速度按时段波动大，事后按小时聚合看）。
+      //   ⚠️ 这里量的是「下载 + 落盘编码」整段，图片还包含 sharp 转 JPEG，不是纯网络时间。
+      const downloadedAt = Date.now();
+      const downloadedBytes = getGeneratedFileSize(localUrl);
+      void appendTransferLog({
+        event: "provider-download", ok: true, via: "provider",
+        kind: job.type, path: localUrl,
+        bytes: downloadedBytes, durationMs: downloadedAt - downloadStartedAt,
+        kbps: downloadedBytes !== undefined ? computeKbps(downloadedBytes, downloadedAt - downloadStartedAt) : undefined,
+        requestId: job.requestId, userId: job.userId, model: job.model,
+        extra: { id: job.id, attempts: job.attempts, authProvider: job.authProvider, queuedMs: downloadStartedAt - job.createdAt },
+      });
       if (job.type === "video") await compressGeneratedVideoInPlace(localUrl).catch((error) => {
         console.warn("[media-save] video compress failed", { id: job.id, requestId: job.requestId, localUrl, error: error instanceof Error ? error.message : String(error) });
         return localUrl;
@@ -225,7 +239,7 @@ async function processMediaSaveJob(id: string) {
         console.warn("[media-save] video poster thumbnail create failed", { id: job.id, requestId: job.requestId, model: job.model, posterUrl, error: error instanceof Error ? error.message : String(error) });
         return undefined;
       }) : undefined;
-      const aliSync = await syncGeneratedFilesToAli(job.type === "image" ? [localUrl, thumbnailUrl] : [localUrl, posterUrl, posterThumbnailUrl]);
+      const aliSync = await syncGeneratedFilesToAli(job.type === "image" ? [localUrl, thumbnailUrl] : [localUrl, posterUrl, posterThumbnailUrl], { requestId: job.requestId, userId: job.userId, model: job.model });
       const savedJob = await markJob(job.id, { status: "saved", localUrl, thumbnailUrl, posterUrl, posterThumbnailUrl, dimensions: resolvedDimensions, aliSynced: aliSync.ok, aliSyncedAt: aliSync.ok ? Date.now() : undefined, aliSyncError: aliSync.error, error: undefined, nextRetryAt: undefined });
       const savedAt = Date.now();
 
@@ -419,7 +433,7 @@ export async function getMediaSaveStatuses(remoteUrls: string[], userId?: string
       if (posterThumbnailUrl) job = await markJob(currentJob.id, { posterThumbnailUrl }) ?? { ...currentJob, posterThumbnailUrl };
     }
     if (job && job.status === "saved" && job.aliSynced !== true) {
-      const aliSync = await syncGeneratedFilesToAli(job.type === "image" ? [job.localUrl, job.thumbnailUrl] : [job.localUrl, job.posterUrl, job.posterThumbnailUrl]);
+      const aliSync = await syncGeneratedFilesToAli(job.type === "image" ? [job.localUrl, job.thumbnailUrl] : [job.localUrl, job.posterUrl, job.posterThumbnailUrl], { requestId: job.requestId, userId: job.userId, model: job.model });
       job = await markJob(job.id, { aliSynced: aliSync.ok, aliSyncedAt: aliSync.ok ? Date.now() : job.aliSyncedAt, aliSyncError: aliSync.error }) ?? { ...job, aliSynced: aliSync.ok, aliSyncError: aliSync.error };
     }
     if (job) statuses.push(job);

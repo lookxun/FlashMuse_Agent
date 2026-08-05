@@ -3194,9 +3194,18 @@ export function getWorkflowMeaningfulSnapshot(canvas?: WorkflowCanvasState) {
   // mediaSystemNames/posterUrl. Including any of those made media workflows (工作流_02 / _04) jump to the
   // top on mere open/refresh. Genuine edits still reorder via nodes/edges/text/model/media-url/position.
   const stripKeys = ["visualSize", "videoDimensions", "durationSeconds", "videoCurrentTime", "imageDimensions", "isRunning", "taskId", "videoRequestId", "imageRequestId", "startedAt", "uploadProgress", "error", "mediaSystemNames", "posterUrl"] as const;
+  // 同理，参考素材(uploads)上的 durationSeconds/dimensions 也是**打开工作流就会被自动补齐**的派生字段
+  // （2026-08-05：「使用提示词」还原出来的参考视频没带时长/宽高，节点自愈 effect 会在浏览器里读一次补上）。
+  // 不剥掉的话，仅仅打开一次工作流就会被当成"用户改了内容"顶到列表最前面。
+  const stripUploadDerived = (uploads?: WorkflowNode["data"]["uploads"]) =>
+    uploads?.map((upload) => {
+      const { durationSeconds: _durationSeconds, dimensions: _dimensions, ...rest } = upload;
+      return rest;
+    });
   const stripData = (data?: WorkflowNode["data"]) => {
     const rest: Record<string, unknown> = { ...(data ?? {}) };
     for (const key of stripKeys) delete rest[key];
+    if (rest.uploads) rest.uploads = stripUploadDerived(data?.uploads);
     return rest;
   };
   const stripNode = (node: WorkflowNode) => ({ ...node, data: stripData(node.data) });

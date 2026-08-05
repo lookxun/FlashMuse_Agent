@@ -45,20 +45,70 @@
 > ⭐ 同理适用于任何**共享命名空间**里新增标识符（M 编号、`B_xxx` 错误码、Prisma 迁移名）：
 > **先枚举现存全部取值，再取新值。**
 
-### [ ] M035 工作流 / Agent 接入 MiniMax H3（2026-08-03 记，对话流已上线，这两个是独立后续）
+### [ ] M037 把上传进度 `uploadProgress` 从画布状态里搬出去（2026-08-04 第四十次会话立项，🗣️ 用户说"单独排一次"）
 
-**背景**：2026-08-03 已把 `minimax/hailuo-3`（MiniMax H3）接进**对话流**视频生成（详见 CHANGELOG 第三十四次会话）。
-用户明确"先接对话流、Agent 不接"，所以工作流与 Agent 都**故意留白**，不是漏做。
+**来源**：🗣️ 用户问「工作流上传为什么感觉比对话流慢」。查清了，**不是传得慢、也不是服务端慢**
+（两边走**同一个接口**，正式服日志 `asset-upload-temp-post-success` 1597 条 p50 **1073ms**、
+`patch-success` p50 23ms，是两边共享的），**是上传期间前端把自己刷爆了**：
 
-**工作流怎么接**：H3 现在被 `workflow-tldraw-canvas-inner.tsx` 里 `workflowVideoModels` 的一个 filter 排除了。
-工作流有一套**平行的**参考模式实现（`isWorkflowBytePlusSeedanceVideoModel` /
-`getWorkflowEffectiveBytePlusVideoReferenceItems` / `getWorkflowBytePlusVideoReferenceLimitHint` /
-`showVideoReferenceModeMenu`），只认 BytePlus。要接 H3 得先把这套收敛到
-`upload-rules.supportsVideoReferenceMode` / `getEffectiveVideoReferenceItems` / `getVideoReferenceImageMaxCount`
-（对话流已经用的那套唯一权威），再删掉那个 filter。⭐ 顺便消一对孪生函数（符合拍板 9）。
+- 工作流的进度回调是 `updateNode(nodeId, { uploadProgress })` → `updateState()`，而它**每调一次**要：
+  ① `exportStateFromEditor(editor)` 导出整张画布 ② `stateKey()` = **`JSON.stringify(整张画布)`**
+  （重度用户实测 **655KB**）③ 对**所有**节点 `editor.updateShape`（不是只更新那一个）
+  ④ `syncWorkflowConnectionShapes` = **O(边×节点)** ⑤ `setEditorTick(+1)` 整画布 React 重渲染
+  ⑥ `onChange` 抛给父级 `updateWorkflowCanvas`，父级再算 **3 个快照 × 新旧两份 = 6 次全画布遍历**，
+  并排一次防抖 PUT。
+- 而进度事件一次上传约 **70~100 次**（`upload-progress.ts`：字节阶段按整数变化触发、cap 随机 60~70，
+  之后还有**每 450ms 爬一格**的定时器直到响应回来）。
+- ⭐ **所以是 O(进度次数 × 节点数 × 画布大小)：工作流节点越多越卡。** 对话流那边同一个 `onProgress`
+  只更新一个小对象，没有画布、没有 tldraw、没有 655KB 的 stringify。
 
-**Agent 怎么接**：改 `system-settings.ts:isAgentVideoModelEnabled`（现在非 BytePlus 一律 return false）。
-⚠️ 用户目前**明确不接 Agent**，别自作主张开。
+**本次已做的止血（已上代码）**：`throttleUploadProgress()`（`upload-progress.ts`）——
+100 一定放行，其余要么涨够 5%、要么隔了 300ms 才放行；只在工作流那 4 个调用点用（对话流保持顺滑）。
+→ 把 70~100 次降到 ~20 次。
+
+**以后怎么根治（本条待办）**：把 `uploadProgress` 挪进一个**独立的轻量 state**
+（`Record<nodeId, number>`，或 ref + 只重渲染那一个 shape），**完全不进 `canvasJson`、不触发 `onChange`、
+不触发防抖 PUT**。估计 60~80 行。
+⭐ **白捡的好处**：`uploadProgress` / `uploadPreviewUrl` 这两个"临时态必须在存库边界剥掉"的老坑
+（`AGENTS.md` 有专门一条铁律，历史上真踩过"刷新后永久卡住"）**从根上消失** —— 它们再也不在画布状态里，
+就不可能被存进库。
+⚠️ 要一起想清楚的：节点被删/工作流被切走时那份 map 要清理；上传中切走工作流回来后进度条怎么显示。
+
+### [ ] M036 🗳️ 阿里侧「多出来的」媒体要不要清理（等用户拍板，⛔ 别自己删）
+
+**来源**：2026-08-04 第三十九次会话跑完媒体对齐后，`scripts/backfill-ali-media.sh` 报
+**「阿里多出 225 个条目」**（腾讯没有、阿里有）。脚本**故意只报数不删**。
+
+**推测成因（⚠️ 假设，未逐个验证）**：`compressGeneratedVideoInPlace` 是**原地替换**，
+早期同步过去的是**压缩前**那一份（文件名相同但字节不同），后来腾讯侧被压缩替换、
+而阿里那份没被覆盖 → 也可能是腾讯侧清理过、阿里没跟着删。
+
+**要做的话怎么做（⛔ 删除是不可逆的，务必先只读核对）**：
+1. `--dry-run` 拿到那份"多出来"的清单（脚本里是 `comm -13`，即 `$WORK/extra.list`）；
+2. **逐类看它们是什么**（是不是都在 `videos/`？是不是都能在数据库 `MediaAsset.url` 里找到？）——
+   ⭐ **凡是数据库里还有引用的，绝对不能删**（用户点开就是死链）；
+3. 只删「数据库无引用 + 腾讯侧也没有」的，删前先在阿里侧 `mv` 到暂存目录观察几天，别直接 `rm`。
+
+**为什么不急**：225 个文件对 21GB 来说占比极小，留着只浪费一点磁盘，**删错则是用户看到死链**。
+⭐ 判据：先问用户「阿里磁盘紧不紧张」，不紧张就一直留着。
+
+### [x] M035 工作流 / Agent 接入 MiniMax H3 —— ✅ **工作流已完成（第三十六次会话）；Agent 按用户要求不接**
+
+**背景**：2026-08-03 把 `minimax/hailuo-3`（MiniMax H3）接进**对话流**（第三十四次会话）后，
+第三十六次会话又把它**接进了工作流**，并顺手收掉了工作流那份平行的参考模式实现。
+
+**工作流（✅ 已完成）**：
+- `workflow-tldraw-canvas-inner.tsx:383` 的 `workflowVideoModels = [...videoGenerationModels, ...bytePlusVideoGenerationModels]`
+  **已不再排除 H3**（原来的 filter 已删）。
+- 工作流那套**只认 BytePlus、张数写死的平行实现**（`isWorkflowBytePlusSeedanceVideoModel` /
+  `getWorkflowEffectiveBytePlusVideoReferenceItems` / `getWorkflowBytePlusVideoReferenceLimitHint`）
+  **已收敛到 `upload-rules.supportsVideoReferenceMode` / `getEffectiveVideoReferenceItems` /
+  `getVideoReferenceImageMaxCount`**（对话流·工作流·服务端唯一权威）。
+  见 `:499~504` 的注释（⛔ 禁止再把本地副本写回来）。
+- 测试服 v68/v69 已实测：工作流 H3 的 NEW 徽标 / 2K only / 四参考模式（含尾帧单槽）全过。
+
+**Agent（⛔ 按用户要求不接）**：`system-settings.ts:isAgentVideoModelEnabled` 现在非 BytePlus 一律 `false`。
+要接才改它 —— 🗣️ **用户明确不接 Agent，别自作主张开。** 此条留档。
 
 ### [ ] M032 工作流节点传参考图偶发"静默挂不上" —— ⛔ **根因未知，严谨复现之前不许动代码**（2026-08-02 记）
 
@@ -67,7 +117,7 @@
 看起来就像"静默挂不上"。2026-08-02 在测试服 v61 观察到 1 次（文件名 `ref-r1.jpg`）。
 ⭐ 同一份代码下，全新内容 + 全新文件名的图（`ref2-r1.jpg`、`ref6-r2.jpg`）在测试服和正式服都**正常挂上**。
 
-⛔⛔ **已被证伪的两个归因（都别再往这两个方向改）**：
+⛔⛔ **已被证伪的三个归因（都别再往这三个方向改）**：
 
 1. ~~"服务端 dedup（`duplicate:true`）导致挂不上"~~ —— **错**。
    反例：挂上的 ref2，它的 POST 实际**也返回了 `duplicate:true`**（内容早被传过），照样挂上了。
@@ -75,10 +125,32 @@
    那行判据是 `asset.name === file.name`，而 `asset.name` 是服务端权威名，
    `upload-name.ts:26` 的 `sanitizeUploadBaseName()` **已经去掉扩展名**（`replace(/\.[^.]+$/, "")`）。
    所以 `"ref-r1"` 永远不等于 `"ref-r1.jpg"` —— 对任何带扩展名的文件，**这条分支根本进不去**。
+3. ~~"B 的假设：`findExistingUploadNodeForFile(file)` 命中后只连线不建节点"~~ ——
+   **错，2026-08-04 第四十次会话证伪**。它的判据是 `mediaSystemNames` 里的名字 `=== file.name`，
+   而 `mediaSystemNames` 存的**永远是去扩展名的名字**（服务端 `sanitizeUploadBaseName()`、
+   客户端 `sanitizeWorkflowReferenceName()` 第一步都是 `replace(/\.[^.]+$/, "")`；
+   **铁证**是同文件 `:1891` 下载文件名要自己补 `.${扩展名}`）→ 和第 2 条**同一个原因**，也永远进不去。
+   ⭐ **三次归因错误，三次都是"从现象反推分支"而没有先读判据条件** —— 见 `AGENTS.md` 那条最贵的铁律。
 
-⭐ **B 的假设（未验证，⛔ 不许当结论用）**：更可能真凶是 `:3754` 的 `findExistingUploadNodeForFile(file)` ——
-命中时**不建新节点**、只给已存在的节点连一条边（`:3757`）。若那个已存在节点在视口外/被隐藏，
-用户就以为"什么都没发生"。
+⭐⭐ **2026-08-04 用正式服数据查过一轮：历史上零条"节点建了但图没挂上"**（唯一能留痕的判据）。
+拿 `MediaAsset.workflowNodeId` / `MediaAsset.url` 去比对该工作流的 `canvasJson`（354 条工作流上传）：
+
+| 情况 | 条数 | 说明 |
+|---|---|---|
+| 节点在 + url 在 | 334 | 正常 |
+| 节点不在 + url 还在别处 | 10 | 用户删了上传节点、图还连着生成节点 = 正常 |
+| 节点不在 + url 也不在 | 10 | 用户把节点删了 = 正常 |
+| **节点在 + url 不在** | **0** | ⭐ 这才是"节点建了图没上去"的指纹，**一条都没有** |
+
+顺带：`同一用户同一 contentHash 有多条 MediaAsset` = **0** → **服务端去重完全正常**，没有重复落盘。
+⛔ **注意这个判据的局限**：用户事后删节点会产生和"静默失败"一样的痕迹，所以只有"节点在+url不在=0"这一格是硬结论。
+
+🟡 **剩下两个假设（仍未验证，⛔ 不许据此改代码）**：
+
+1. **新节点被放到视口外**（当前最可能）：从提示词框上传走 `uploadFilesAsConnectedNodes`，它**故意只聚焦目标生成节点、不聚焦新上传的节点**（`selectAndFocusUploadedNodes([targetNodeId], false)`），
+   而新节点放在目标节点**左边**、为了不重叠还会继续往左挪 → 画布放大时完全看不见 = "什么都没发生"。
+2. **前端校验拒掉了**：`return onShowTip?.(validationError)` —— 节点压根不建，只有一个一闪而过的 toast；
+   且 `onShowTip` 万一没传就是**彻底静默**（这个写法本身也值得改成必传/兜底）。
 
 **复现设计（动代码前必须先做）**：
 用**全新内容 + 全新文件名**的图，在**干净的新工作流**里传；若这样也挂不上，才是 attach 链路本身的问题；
@@ -92,7 +164,16 @@
 
 ⛔ **硬约束：在有一次严谨复现之前，不许动这段代码。**
 （本条由 B 定稿：A 连续两次归因错误（先说 dedup、再说 by-name 分支），均被 B 用判据条件证伪。
-教训同源：先读判据，再谈因果。）
+教训同源：先读判据，再谈因果。⭐ 2026-08-04 第四十次会话又证伪了 B 自己的第三个假设，同一个原因。）
+
+⭐⭐ **2026-08-04 顺带修掉的一个"确定的真 bug"（不是 M032，已单独改掉，别混淆）**：
+既然那两条 by-name 分支永远进不去，就意味着：
+① 提示 `xxx 已存在，已直接连接` / `已在历史记录中，已恢复并连接` **用户永远看不到**（写了但触发不了）；
+② 同一张图在同一个工作流里传两次会**建出两个重复节点**（服务端不会重复落盘）。
+→ 已新增 `matchesWorkflowUploadFileName()`（去扩展名 + 客户端兜底名两种口径），两处判据统一走它。
+⚠️ **仍会漏判且刻意不修**：服务端权威名还会去标点并**截断到 24 字**
+（`hero-mecha-robot-reference (2).jpg` → `hero-mecha-robot-referen`），按名字比就是不可靠；
+真正稳的判据是 contentHash（服务端已经在用），前端要做等有必要时再说。
 
 ### [x] M027 阿里入口没有 upstream keepalive，跨境每请求重建连接 —— **2026-08-01 已做完（方案 B，测试服 + 正式服都改了）**
 
@@ -584,6 +665,15 @@ M025 = **只把"当前正在用的那一个工作流"发完整，其余工作流
      （sharp 处理，行为和现有服务端一致），而且**视频也能受益**。
      所以真要做压缩，**做阿里端这条、别做浏览器那条**。
 - 📌 **和 M033 / M034 的关系**：三条是同一个调查的产物。**优先级建议 M033 > M034 > M015 > 方案 C（线路，要花钱）**。
+- ⭐⭐ **2026-08-04 重要更新（M015 的前提变了，重新评估前必读）**：
+  「方案 C = 线路要花钱」这个判断**只对一半**。当天查「视频同步失败」时发现，
+  **跨境慢的真凶是丢包（20~25%）而不是带宽**，而**多流并发是免费解药**：
+  单流 15~30 KB/s → **16 并发 461 KB/s**（真实文件实测 571~606 KB/s，**约 38 倍**）。
+  → 已在 `deploy/ali-parallel-pull.sh` + `ali-sync.ts` 落地（详见 `AGENTS.md` 同名铁律）。
+  ⭐ **所以 M015（阿里端压缩）的收益进一步下降**：传输瓶颈已经用并发解决了，
+  压缩剩下的价值只有「省存储」和「省阿里端出流量」，**不再是"为了传得动"**。
+  🗳️ **要不要做，等用户看传输日志的实际数据后再定**（`transfer-diagnostics-log.jsonl` 已在记速度）。
+  ⛔ 若真要做，仍然只做阿里端、别做浏览器端（上面 9 条理由不变）。
 
 ### [x] M033 ⭐ 图片上传补「秒回预检」—— ✅ **2026-08-03 第三十七次会话已完成并部署测试服 v69**
 

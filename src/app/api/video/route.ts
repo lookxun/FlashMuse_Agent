@@ -349,6 +349,10 @@ async function autoReviewBytePlusVideoReferences(input: { userId: string | undef
     }
 
     if (status === "Failed") {
+      // ⛔⛔ 别在这里加「上次审核被拒过就不再送审、直接抛上次的错」这种"优化"（2026-08-05 我加过、当天撤了）：
+      // 🗣️ 用户明确说平台这个检测**重试是可能通过的**（红字文案写的就是"重试可能通过，但建议更换参考素材"）。
+      // 每次重新送审 = 平台重新过一次审，结论可能不同；把上次的否决缓存下来会**把用户唯一的机会堵死**，
+      // 还会让红字变成骗人的话。代价（每次约 14 秒 + 平台上多一个 Failed 素材）是**故意付的**。
       assetId = "";
       groupId = "";
       status = "";
@@ -568,6 +572,12 @@ export async function POST(request: Request) {
     sourcePrompt?: string;
   } | undefined;
 
+  // ⭐ 提到 try 外面：`const user` 是在 try 里面拿的，catch 看不到它 →
+  // 原来最外层 catch 的 `recordGenerationEvent` **没传 userId**，导致这类"创建阶段失败"
+  // 在库里 `GenerationEvent.userId` 全是空，后台「失败最多的用户」整批统计不到
+  // （2026-08-05 查 B_92 时发现：7 条真实失败一个都认不出是谁，只能靠诊断日志里的 userId 反查）。
+  let currentUserId: string | undefined;
+
   try {
     body = (await request.json()) as {
       prompt?: string;
@@ -769,6 +779,7 @@ export async function POST(request: Request) {
     if (referenceLimitError) return NextResponse.json({ error: referenceLimitError }, { status: 400 });
 
     const user = await getCurrentUser();
+    currentUserId = user?.id;
     await assertUserCanUseCredits(user, "video");
     // 按账号的「解除限制」（后台「帐号功能管理」）。本 handler 下面 5 处创建视频任务共用这一个值，
     // 拿不到用户时回落全局 BYTEPLUS_UNLOCK_LIMITS。
@@ -1174,6 +1185,17 @@ export async function POST(request: Request) {
     // ⭐ 登录状态已失效：回 401，前端会直接跳首页；且**不记 GenerationEvent**（这不是生成失败）。详见 credits.ts 注释。
     if (isUnauthenticatedError(error)) return NextResponse.json({ error: UNAUTHENTICATED_ERROR_MESSAGE }, { status: 401 });
     const referenceImageCount = Array.isArray(body?.referenceImages) ? body.referenceImages.length : 0;
+    const referenceVideoCount = Array.isArray(body?.referenceVideos) ? body.referenceVideos.length : 0;
+    const referenceAudioCount = Array.isArray(body?.referenceAudios) ? body.referenceAudios.length : 0;
+    // ⭐⭐ 失败现场的 references 必须把**参考视频/音频也记上**：这两条日志原来都只映射
+    // `body.referenceImages`，于是"某个参考视频被平台拒了"在现场日志里**看不出是哪个视频**
+    // （2026-08-05 查 B_92 时只能回头翻 `video-route-create-start` 才找到那个 mp4）——
+    // 而这类失败恰恰只有"哪个素材有问题"才是有用信息。角色标签沿用送审那套 reference_video/reference_audio。
+    const failedReferences = [
+      ...(Array.isArray(body?.referenceImages) ? body.referenceImages.map((url, index) => summarizeGeneratedReference(url, index, getBytePlusReferenceRole(index, body?.referenceMode))) : []),
+      ...(Array.isArray(body?.referenceVideos) ? body.referenceVideos.map((url, index) => summarizeGeneratedReference(url, index, "reference_video")) : []),
+      ...(Array.isArray(body?.referenceAudios) ? body.referenceAudios.map((url, index) => summarizeGeneratedReference(url, index, "reference_audio")) : []),
+    ];
     if (referenceImageCount > 0) {
       void appendUploadRuleFeedbackLog({
         source: "video",
@@ -1197,17 +1219,21 @@ export async function POST(request: Request) {
         model: body?.model,
         provider: isBytePlusVideoModel(body?.model) ? "byteplus" : "openrouter",
         referenceMode: body?.referenceMode,
-        referenceCount: referenceImageCount,
+        referenceCount: referenceImageCount + referenceVideoCount + referenceAudioCount,
         settings: body?.settings,
-        references: summarizeVideoReferencesForLog(Array.isArray(body?.referenceImages) ? body.referenceImages : [], body?.referenceMode),
+        references: [
+          ...summarizeVideoReferencesForLog(Array.isArray(body?.referenceImages) ? body.referenceImages : [], body?.referenceMode),
+          ...(Array.isArray(body?.referenceVideos) ? body.referenceVideos.map((url, index) => summarizeVideoReference(url, index, "reference_video")) : []),
+          ...(Array.isArray(body?.referenceAudios) ? body.referenceAudios.map((url, index) => summarizeVideoReference(url, index, "reference_audio")) : []),
+        ],
         error,
       });
     }
     const codedError = await createCodedApiError(error, GENERIC_MEDIA_ERROR_MESSAGE, "video request failed");
-    void appendGenerationDiagnosticsLog({ event: "video-route-failed", requestId: body?.requestId ?? body?.taskId, conversationId: body?.conversationId, conversationTitle: body?.conversationTitle, mode: "video", provider: isBytePlusVideoModel(body?.model) ? "byteplus" : "openrouter", model: body?.model, taskId: body?.taskId, prompt: body?.prompt, settings: body?.settings, references: Array.isArray(body?.referenceImages) ? body.referenceImages.map((url, index) => summarizeGeneratedReference(url, index, getBytePlusReferenceRole(index, body?.referenceMode))) : undefined, durationMs: Date.now() - routeStartedAt, error, extra: { errorCode: codedError.errorCode, userError: codedError.error, referenceImageCount } });
+    void appendGenerationDiagnosticsLog({ event: "video-route-failed", requestId: body?.requestId ?? body?.taskId, conversationId: body?.conversationId, conversationTitle: body?.conversationTitle, userId: currentUserId, mode: "video", provider: isBytePlusVideoModel(body?.model) ? "byteplus" : "openrouter", model: body?.model, taskId: body?.taskId, prompt: body?.prompt, settings: body?.settings, references: failedReferences.length > 0 ? failedReferences : undefined, durationMs: Date.now() - routeStartedAt, error, extra: { errorCode: codedError.errorCode, userError: codedError.error, referenceImageCount, referenceVideoCount, referenceAudioCount } });
     // 仅在创建阶段(无 taskId)记录失败；轮询阶段(有 taskId)多为可恢复的瞬时网络错误，不计入失败率。
     if (body && !body.taskId && body.requestId) {
-      void recordGenerationEvent({ requestId: body.requestId, kind: "video", creditSource: body.metadata?.creditSource, model: body.model, provider: isBytePlusVideoModel(body.model) ? "byteplus" : "openrouter", status: "failed", failureReason: codedError.error, failureCode: codedError.errorCode, referenceImageCount, referenceVideoCount: Array.isArray(body.referenceVideos) ? body.referenceVideos.length : 0, referenceAudioCount: Array.isArray(body.referenceAudios) ? body.referenceAudios.length : 0 });
+      void recordGenerationEvent({ userId: currentUserId, requestId: body.requestId, kind: "video", creditSource: body.metadata?.creditSource, model: body.model, provider: isBytePlusVideoModel(body.model) ? "byteplus" : "openrouter", status: "failed", failureReason: codedError.error, failureCode: codedError.errorCode, referenceImageCount, referenceVideoCount, referenceAudioCount });
     }
     return NextResponse.json(codedError, { status: 500 });
   }

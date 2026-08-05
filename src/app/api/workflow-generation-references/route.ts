@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
-import { buildJobReferenceItems, getWorkflowPromptReferenceRow } from "@/lib/generation-jobs";
+import { buildJobReferenceItems, getWorkflowPromptReferenceRow, resolveReferenceMediaMetadata } from "@/lib/generation-jobs";
 
 export const runtime = "nodejs";
 
@@ -26,9 +26,20 @@ export async function POST(request: Request) {
 
   const references = buildJobReferenceItems(job);
 
+  // ⭐ 参考视频/音频必须带上「时长 + 宽高」：工作流发送前会逐个校验它们，读不到就报
+  // 「视频时长读取失败」把发送拦死（2026-08-05 线上 bug）。只有真的有视频/音频参考时才多查一次库，
+  // 纯参考图的常见情况仍是 1 个往返（这是交互路径，跨境每个往返 ~0.4s）。
+  const mediaUrls = references.filter((item) => item.kind === "video" || item.kind === "audio").map((item) => item.url);
+  const mediaMetaByUrl = mediaUrls.length > 0 ? await resolveReferenceMediaMetadata(user.id, mediaUrls) : {};
+  const referencesWithMedia = references.map((item) => {
+    if (item.kind === "image") return item;
+    const meta = mediaMetaByUrl[item.url];
+    return meta ? { ...item, durationSeconds: meta.durationSeconds, width: meta.width, height: meta.height } : item;
+  });
+
   // 用户真实提示词（不含参考图 hint）：统一存在 extra.cleanPrompt（图片/视频一致）。
   // 老 job 没有 cleanPrompt 就返回 undefined，让前端回退用画布节点自带 prompt（不把带 hint 的 job.prompt 塞进输入框）。
   const cleanPrompt = (typeof job.cleanPrompt === "string" && job.cleanPrompt.trim()) ? job.cleanPrompt : undefined;
 
-  return NextResponse.json({ references, prompt: cleanPrompt, referenceMode: job.referenceMode ?? undefined });
+  return NextResponse.json({ references: referencesWithMedia, prompt: cleanPrompt, referenceMode: job.referenceMode ?? undefined });
 }

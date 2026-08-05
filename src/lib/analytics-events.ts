@@ -20,7 +20,11 @@ function mapCreditSourceToEventSource(creditSource: string | undefined): Generat
 
 function isModerationReason(reason: string | undefined) {
   if (!reason) return false;
-  return /安全|敏感|隐私|审核|未成年|亲密|真人|privacy|sensitive|moderation|policy/i.test(reason);
+  // ⭐ 2026-08-05 补上 `版权|copyright`：**版权限制本来就是平台内容策略拒绝**，而原来这条正则里没有它
+  // → 凡是文案里只提"版权"、不带"审核/敏感/隐私"字样的失败（比如新加的那句
+  // 「参考视频被平台判定可能涉及版权限制…」）会被**静默漏算**成非审核类，后台审核占比偏低。
+  // ⚠️ 只影响此后新写入行的 `moderation` 标记，不动历史数据。
+  return /安全|敏感|隐私|审核|未成年|亲密|真人|版权|privacy|sensitive|moderation|policy|copyright/i.test(reason);
 }
 
 export type RecordGenerationEventInput = {

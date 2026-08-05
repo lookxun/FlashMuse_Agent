@@ -24,6 +24,12 @@ function isPermanentError(message: string): boolean {
   // 是网关抖动、**可重试**。它含 "not valid" 会被下面参数规则误判成永久失败 → 必须先放行。
   if (/unexpected token '<'|is not valid json|unexpected end of json input|<!doctype html/.test(lower)) return false;
   // 审核 / moderation（真人·隐私·敏感·版权）——走送审机制，不属于断线重连
+  //
+  // ⛔⛔ 别据此推出"同一素材不用再送审第二遍"（2026-08-05 我就这么干过、又撤了）：
+  // 这里判 true 只是说**不该由 `isTransientServerError` 那套退避重连去自动重试**，
+  // ⚠️ **不代表"用户手动重试也没用"** —— 🗣️ 用户明确说平台这个检测**重试是可能通过的**
+  // （所以红字文案写的是"重试可能通过，但建议更换参考素材"）。
+  // 每次重新送审 = 平台重新过一次审，结论可能不同；把上次的否决缓存下来会把这个机会堵死。
   if (/real person|privacy|privacyinformation|sensitive|copyright|真人|隐私|敏感|版权/.test(lower)) return true;
   // 参数 / 尺寸 / 比例 / 模型无效
   if (/invalid parameter|invalid option|unsupported size|not a valid model|aspect ratio must be between|not valid/.test(lower)) return true;

@@ -11,6 +11,8 @@ import { appendUploadDiagnosticsLog } from "@/lib/upload-diagnostics-log";
 import { getCompressionQualityPercent, getGenerationCompressionSettings } from "@/lib/system-settings";
 import { IMAGE_UPLOAD_RECOMPRESS_OVER_BYTES, IMAGE_UPLOAD_RECOMPRESS_QUALITY } from "@/lib/image-upload-validation";
 import { safeFetch } from "@/lib/ssrf-guard";
+// ⭐ 腾讯→阿里镜像同步的唯一入口（并发分片）。只被 ensureGeneratedImageThumbnail 的 syncToAli 选项用。
+import { syncGeneratedFilesToAli } from "@/lib/ali-sync";
 
 type AssetType = "image" | "video";
 type SaveAssetOptions = { userId?: string; diagnostics?: { requestId?: string; fileName?: string; fileSize?: number }; keepTransparent?: boolean };
@@ -574,7 +576,26 @@ export function getLocalImageDimensions(publicUrl: string): ImageDimensions | un
   return getImageDimensionsFromBuffer(readFileSync(filePath));
 }
 
-export async function createGeneratedImageThumbnail(publicUrl: string) {
+/**
+ * 生成图/视频封面的「256px 缩略图」——**唯一实现**（2026-08-04 收敛）。
+ *
+ * ⛔ 背景（AGENTS.md 头号铁律的教科书案例）：这段逻辑历史上存在两份一字不差的副本 ——
+ *   `api/media-thumbnail/route.ts`（2026-06-05，浏览器请求时**懒生成**）和本文件
+ *   `createGeneratedImageThumbnail`（2026-06-08，生成图落盘时**即时生成**，是照抄前者加的）。
+ *   分叉已经真的害过一次：调用方各自负责"同步到阿里"，即时生成那条路一直同步了，
+ *   懒生成那条路**从来没同步** → 阿里镜像里上传图的缩略图一张都没有（2026-08-04 对齐两端时发现）。
+ *
+ * ⭐ 为什么 `syncToAli` 是选项而不是无条件做：
+ *   即时生成那 5 个调用方是把 `[localUrl, thumbnailUrl]` **合成一次** `syncGeneratedFilesToAli` 发的，
+ *   而那次调用的 `ok` 就是 `job.aliSynced`，前端拿它判断"能不能从阿里镜像读图"
+ *   （`chat-workbench-core.tsx:763`）。这里再同步一次既浪费、又会让 aliSynced 的语义变模糊
+ *   → 所以默认 `false`，只有懒生成那条路（路由）传 `true`。
+ *
+ * ⚠️ 安全校验刻意**不放进来**：路径穿越校验（`isInsideGeneratedRoot`）和后缀白名单
+ *   （`SUPPORTED_IMAGE_EXTENSIONS`）只有路由需要（入参来自用户），留在路由里；
+ *   本函数的其余调用方入参都是服务端自己刚落盘的地址。这样收敛**不改任何既有行为**。
+ */
+export async function ensureGeneratedImageThumbnail(publicUrl: string, options?: { syncToAli?: boolean }) {
   if (!publicUrl.startsWith("/generated/")) return undefined;
   if (!ffmpegPath) return undefined;
 
@@ -587,7 +608,8 @@ export async function createGeneratedImageThumbnail(publicUrl: string) {
   const thumbnailPublicUrl = userPathMatch ? `/generated/users/${userPathMatch[1]}/image-thumbnails/${generatedRelativePath.replace(/\\/g, "/")}` : `/generated/image-thumbnails/${generatedRelativePath.replace(/\\/g, "/")}`;
   const thumbnailPath = join(process.cwd(), "public", thumbnailPublicUrl.replace(/^\//, ""));
 
-  if (existsSync(thumbnailPath)) return thumbnailPublicUrl;
+  if (existsSync(thumbnailPath)) return { thumbnailPublicUrl, thumbnailPath, created: false };
+
   await mkdir(dirname(thumbnailPath), { recursive: true });
   await execFileAsync(ffmpegPath, [
     "-y",
@@ -605,7 +627,16 @@ export async function createGeneratedImageThumbnail(publicUrl: string) {
     thumbnailPath,
   ], { timeout: 60_000, maxBuffer: 1024 * 1024 });
 
-  return thumbnailPublicUrl;
+  // ⭐ 只在"刚新建"时同步（已存在说明早就同步过了），后台异步、绝不阻塞调用方。
+  if (options?.syncToAli) void syncGeneratedFilesToAli([thumbnailPublicUrl]).catch(() => undefined);
+
+  return { thumbnailPublicUrl, thumbnailPath, created: true };
+}
+
+/** 上面那个的薄封装：只要 url。5 个既有调用方（openrouter / media-save-queue）继续用这个，行为不变。 */
+export async function createGeneratedImageThumbnail(publicUrl: string) {
+  const result = await ensureGeneratedImageThumbnail(publicUrl);
+  return result?.thumbnailPublicUrl;
 }
 
 export async function deleteLocalGeneratedAsset(publicUrl: string) {

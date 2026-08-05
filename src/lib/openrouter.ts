@@ -109,7 +109,7 @@ async function saveImageForDisplay(source: string, meta: { requestId?: string; m
     console.warn("[media-save] inline image thumbnail create failed", { requestId: meta.requestId, model: meta.model, localUrl, error: error instanceof Error ? error.message : String(error) });
     return undefined;
   });
-  const aliSync = await syncGeneratedFilesToAli([localUrl, thumbnailUrl]);
+  const aliSync = await syncGeneratedFilesToAli([localUrl, thumbnailUrl], { requestId: meta.requestId, userId: meta.userId, model: meta.model });
   if (source.startsWith("data:")) {
     console.log("[media-save] saved inline asset", {
       type: "image",
