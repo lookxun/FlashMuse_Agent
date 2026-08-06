@@ -12,6 +12,23 @@ const PERSISTED_CLIENT_EVENTS = new Set([
   "send-time-data-url-fallback",
   "send-time-data-url-fallback-failed",
   "send-time-persist-uploaded-images-failed",
+  // ⭐⭐ 参考图"用户意愿 vs 实际发出去"取证组（2026-08-05 加，纯日志、不改任何行为）。
+  //
+  // 起因：用户 ID_947011 报「把第二张参考图换成裁剪后的新图，点生成还是用了原来那张」。
+  // 我在测试服把 6 个变体全试过（先删后传 / 先传后删 / 不删直传 / 同名不同字节 /
+  // 提示词带 @名 / 直接用他那张透明 PNG）**一个都没复现**，而正式服那次是**零上传**
+  // （磁盘无新文件 + upload-diagnostics 无任何记录）→ **根因至今未确定**。
+  // ⛔ 所以这一轮**只加日志、不动任何逻辑**，等它再发生时一次定案。
+  //
+  // 另外这套也是给 ID_868181 那类「删掉了、发送时又被捞回来」准备的 ——
+  // 那次是音频：`ensureMediaFileMentions` 在提交那一刻把用户删掉的 @音频名拼回提示词最前面
+  //（函数已删除）。图片这边结构一样的地方还活着：`getOrderedExplicitImageReferences`
+  // 会拿提示词里的 @名去**整个资产库**反查，命中的**排在最前面** →
+  // 所以 `send-reference-snapshot` 里的 `assetLibrary` 来源标记是**抓这类问题的关键**。
+  "input-image-dropped-before-upload",
+  "input-image-removed",
+  "copy-prompt-restored",
+  "send-reference-snapshot",
 ]);
 
 export async function POST(request: Request) {

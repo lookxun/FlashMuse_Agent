@@ -59,6 +59,27 @@ function buildReferenceReviewRejectedMessage(kind: ReferenceReviewMediaKind) {
 }
 
 /**
+ * ⭐⭐ 判定「这条文案已经是我们自己映射好的『参考素材没过审』成品」（2026-08-06 加，修正式服 B_123）。
+ *
+ * ⛔ 为什么必须有：`toUserErrorMessage` 在「服务端映射一次 → 客户端再映射一次」的链路上会被跑两遍
+ * （服务端 route 映射后写进 error message，客户端 `chat/chat-workbench-core.tsx` 又 `toUserErrorMessage`
+ * 一次，工作流节点的 catch 还会再来一次）。而这句成品文案里带着「版权」两个字 →
+ * 第二遍会命中下面那条**裸 `copyright|版权` 兜底** → 被重新包成
+ * 「模型…拒绝出图…以下是模型返回的拒绝原因：“参考视频没能通过平台的版权检测…”」
+ * —— **审核视频的问题被拼进了拒绝出图的文案里**，用户被指向完全错误的排查方向（去改提示词）。
+ *
+ * ⭐ 实测（37 种红字全跑一遍二次映射）：只有**参考视频 / 参考音频**这两条会串。
+ * 「参考图片」侥幸没事，是因为精确规则里认「参考图」三个字，而「参考图片」正好含它 —— 纯属巧合。
+ *
+ * ⚠️ 只认「前缀 + 后缀」两头，中间的素材类型可变；⛔ 别拿整句去比（措辞以后还会调）。
+ */
+const REFERENCE_REVIEW_REJECTED_PATTERN = /^参考(?:图片|视频|音频|素材)没能通过平台的版权检测/;
+
+export function isReferenceReviewRejectedMessage(value: string) {
+  return REFERENCE_REVIEW_REJECTED_PATTERN.test(value);
+}
+
+/**
  * 从上游原文里判断「是哪一类参考素材没过审」。
  *
  * ⚠️ 只认 **input/参考** 侧的说法：`output image/video/audio` 那几路在上面已经各自 return 掉了，
@@ -214,7 +235,8 @@ export function toUserErrorMessage(value: unknown, fallback = "请求失败，�
   // ⭐ 幂等保护：如果传进来的已经是我们自己映射好的成品文案，原样返回。
   // 为什么必须有：这个函数在"服务端映射 → 前端再映射一次"的链路上可能被调用两次，而下面兜底的
   // 透传分支会把文案截到 180 字 → 会把我们刚附上的模型拒绝原文砍掉。（2026-07-29 加）
-  if (isModelRefusedMessage(text) || /^模型这次没有出图，只回了一段文字/.test(text)) return withErrorCode(text);
+  // ⚠️ 这里每加一句，都必须是「我们自己映射出来的成品文案」；⛔ 别把上游原文塞进来。
+  if (isModelRefusedMessage(text) || /^模型这次没有出图，只回了一段文字/.test(text) || isReferenceReviewRejectedMessage(text)) return withErrorCode(text);
   if (/system-reminder|operational mode|plan to build|read-only mode|file changes|shell commands/i.test(lower)) return withErrorCode(fallback);
   // ⭐ BytePlus「素材送审」阶段最常见的三类真实失败（以前全落到"服务器繁忙"，用户完全看不懂）：
   // 参考图尺寸不合规 / 平台抓不到我们的素材 / 我们记的审核凭证在平台侧已不存在。

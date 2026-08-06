@@ -2332,6 +2332,21 @@ export function ChatWorkbench() {
     setSessions((current) => current.map((session) => {
       if (session.id !== activeSessionId) return session;
       const nextDraft = removingName ? removeAllMentionNames(session.draftInput ?? "", removingName) : session.draftInput;
+      // ⭐ 纯日志、不改任何行为（2026-08-05 加）：记「用户删掉了哪一张、@名有没有真的被清掉」。
+      // ⛔ 必须有 `mentionStillThere` 这一项：删 @名 和 解析 @名 用的是**两个不对称的正则**
+      //（删的 lookahead `(?=$|[\s，。！？；;、])` 不含 `@`，解析的 `[^@\s…]+` 却把 `@` 当终止符）
+      // → 实测 `@000@A_old` 这种两个 @ 紧挨的写法**一个字都删不掉、却照样被解析出来** →
+      // 发送时会被 `getOrderedExplicitImageReferences` 拿去资产库把老图捞回来（还排最前面）。
+      // 这就是 ID_868181「@音频名永远删不掉、每次都带上老音频」的同一个病理。
+      // ⛔ 这一轮不修它（根因未定，宁可不动），但一旦线上出现 true 就是现场铁证。
+      reportClientDiagnostic("input-image-removed", {
+        removedName: removingName,
+        removedUrlTail: image?.url ? (image.url.split("/").pop() ?? "") : "",
+        mentionStillThere: removingName ? getMentionNames(nextDraft ?? "").includes(removingName) : false,
+        draftBefore: (session.draftInput ?? "").slice(0, 200),
+        draftAfter: (nextDraft ?? "").slice(0, 200),
+        remainingBox: (session.uploadedImages ?? []).filter((item) => item.id !== imageId).map((item) => item.referenceName ?? item.name),
+      });
       return { ...session, draftInput: nextDraft, uploadedImages: (session.uploadedImages ?? []).filter((item) => item.id !== imageId), updatedAt: Date.now() };
     }));
   }, [activeSessionId, activeUploadedImages]);
@@ -6229,6 +6244,44 @@ export function ChatWorkbench() {
     const referenceImages = namedImageReferences.map((reference) => reference.url);
     const referenceVideos = uploadedVideoFiles.map(getUploadedMediaFileUrl).filter(Boolean);
     const referenceAudios = uploadedAudioFiles.map(getUploadedMediaFileUrl).filter(Boolean);
+    // ⭐⭐ 纯日志、不改任何行为（2026-08-05 加）：把「用户意愿」和「实际发出去的」钉在同一行上。
+    //
+    // 为什么必须有它：用户 ID_947011 报「换了第二张参考图，发送出去还是原来那张」，
+    // 我在测试服把 6 个变体全试过都没复现，而正式服那次是**零上传**（磁盘 + 上传日志双证）
+    // → **根因至今未确定**。事后能查到的只有 `GenerationJob.referenceImages`（发了哪几张），
+    // 查不到"框里原本是哪几张、提示词里有哪些 @名、每一张是从哪来的"，所以永远差最后一步。
+    //
+    // ⭐ 最关键的是 `from` 这一段。`getOrderedExplicitImageReferences` 会拿提示词里的 @名
+    // 依次去 **输入框 → 历史会话引用 → 整个资产库** 反查，**命中的排在最前面** ——
+    // 所以一旦看到 `[@/assetLibrary]`，就等于当场抓住「用户已经把这张图删了、
+    // 发送时代码又从资产库把它捞回来还插到最前面」。这正是 ID_868181 那个
+    // 「参考音频 @名永远删不掉、每次都带上老音频」的同一个病理（那次是 `ensureMediaFileMentions`
+    // 在提交那一刻把删掉的 @名拼回提示词，函数已删；图片这条路还活着）。
+    //
+    // ⚠️ `/api/client-error` 把 detail 截断到 2000 字符 → 这里只记文件名末段、不记全 url。
+    // ⚠️ 只在"真的带了参考素材"时才记，纯文字发送不记（否则日志白涨）。
+    if (referenceImages.length > 0 || referenceVideos.length > 0 || referenceAudios.length > 0) {
+      const tailOf = (url: string) => url.split("/").pop() ?? url;
+      const boxUrlKeys = new Set(sendUploadedImages.map((image) => normalizeMediaUrlForMatch(image.url)));
+      const conversationUrlKeys = new Set(activeConversationImageReferences.map((reference) => normalizeMediaUrlForMatch(reference.url)));
+      const assetUrlKeys = new Set(assets.map((asset) => normalizeMediaUrlForMatch(asset.url)));
+      reportClientDiagnostic("send-reference-snapshot", {
+        flow: submitMode,
+        // 提示词原文里解析出的 @名（残留的老图 @名会在这里现形）
+        mentionNames: getMentionNames(rawTextWithMediaMentions),
+        // 发送那一刻输入框里的每一格（用户意愿）
+        box: sendUploadedImages.map((image) => `${getUploadedImageReferenceName(image, sendUploadedImages)}=${tailOf(image.url)}`),
+        // 实际发出去的顺序 + 每张是"@名命中"还是"缩略图补的" + 来源
+        sent: namedImageReferences.map((reference) => {
+          const key = normalizeMediaUrlForMatch(reference.url);
+          const byMention = explicitImageReferences.some((item) => item.url === reference.url);
+          const from = boxUrlKeys.has(key) ? "box" : conversationUrlKeys.has(key) ? "conversation" : assetUrlKeys.has(key) ? "assetLibrary" : "unknown";
+          return `${reference.name}=${tailOf(reference.url)}[${byMention ? "@" : "thumb"}/${from}]`;
+        }),
+        videos: referenceVideos.map(tailOf),
+        audios: referenceAudios.map(tailOf),
+      });
+    }
     const modelReferenceImages = namedImageReferences.map((reference) => {
       const matchedAsset = assets.find((asset) => normalizeMediaUrlForMatch(asset.url) === normalizeMediaUrlForMatch(reference.url));
       if (matchedAsset?.bytePlusAssetStatus === "Active" && matchedAsset.bytePlusAssetId) return `asset://${matchedAsset.bytePlusAssetId}`;
@@ -6691,6 +6744,17 @@ export function ChatWorkbench() {
         .filter((file): file is UploadedDocumentFile => typeof file !== "string" && Boolean(file.url ?? file.storageName))
         .map((file) => ({ ...file, id: createClientId() }));
       setActiveDraftInputWithMentionCards(message.content, { images: restoreImages, files: restoreFiles });
+      // ⭐ 纯日志、不改任何行为（2026-08-05 加）：记「使用提示词到底把哪几张图放回了输入框」。
+      // 用户 ID_947011 的场景就是从这里起步的（还原两张 → 换掉第二张 → 发送带的还是老那张），
+      // 没有这一条就对不上后面 `input-image-removed` / `send-reference-snapshot` 那两条现场。
+      // ⚠️ 同时记提示词原文里的 @名：还原回来的文字里若带着老图的 @名，就是后面被从资产库捞回来的伏笔。
+      reportClientDiagnostic("copy-prompt-restored", {
+        fromMessageId: message.id,
+        restoredImages: restoreImages.map((image) => `${image.referenceName ?? image.name}=${image.url.split("/").pop() ?? ""}`),
+        restoredFiles: restoreFiles.map((file) => file.name),
+        mentionNamesInPrompt: getMentionNames(message.content ?? ""),
+        promptHead: (message.content ?? "").slice(0, 200),
+      });
       requestAnimationFrame(() => editorRef.current?.focus());
       setCopyFeedback({ messageId: message.id, state: "success" });
     } catch {
@@ -7032,6 +7096,29 @@ export function ChatWorkbench() {
 
       if (kind === "image") {
         const validationError = validateImageUploadFile(file);
+        // ⭐ 纯日志、不改任何行为（2026-08-05 加）：任何"用户选了图、但这张图没进输入框"的分支都留痕。
+        // 用户 ID_947011 报「传了新图，发送出去还是老图」，而正式服那次是**零上传** ——
+        // 磁盘没有新文件、upload-diagnostics 也没有任何记录，因为图是被丢在**客户端**的，
+        // 服务端压根不知道发生过。⛔ 没有这条，下次照样只能靠磁盘时间戳倒推、且分不清是哪条分支丢的。
+        const dropReason = !currentUploadRule.image.enabled
+          ? "model-disallows-image"
+          : validationError
+            ? "validation-failed"
+            : acceptedImageCount >= remainingImages
+              ? "reference-image-limit"
+              : undefined;
+        if (dropReason) {
+          reportClientDiagnostic("input-image-dropped-before-upload", {
+            reason: dropReason,
+            fileName: file.name,
+            fileSize: file.size,
+            fileType: file.type,
+            validationError,
+            maxImages,
+            remainingImages,
+            currentImageCount: activeUploadedImages.length,
+          });
+        }
         if (!currentUploadRule.image.enabled) {
           tips.add("当前模型不支持上传图片");
         } else if (validationError) {

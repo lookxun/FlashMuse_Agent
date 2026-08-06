@@ -4,6 +4,105 @@
 This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code. Heed deprecation notices.
 <!-- END:nextjs-agent-rules -->
 
+# 铁律⭐⭐⭐：**没复现 = 不许动行为，只许加日志**（2026-08-06 用户拍板，最高优先级）
+
+🗣️ **用户原话**：「**以后找bug不确定不要乱动代码加日志找到真实原因为止，宁可不动也不乱动。**」
+
+2026-08-06 查用户 ID_947011 报的「换了第二张参考图，发送出去还是原来那张」（对话模式），我**在根因没坐实的情况下改了两轮行为、被要求整批撤回两次**：
+① 把「秒回去重命中」改成"合并掉这一格"并改了提示文案 → 🗣️「**不要去乱改提示啊。提示不要改。**」
+② 把「同名上传」改成"替换掉框里那张同名老图"（方向看着对、还配了 17 条回归）→ 但**测试服 6 个变体全试过都没复现、用户自己也测了一次没复现** → 🗣️「你先把改动全部撤回」。
+
+- ⭐ **判据（一句话）**：**我能在测试服稳定复现吗？** 不能 → **这一轮只许加日志**，把盲区补上、等它下次自己现形。
+- ⭐ **加日志之前先问「现有数据到底缺哪一块」**，别乱撒。本次缺的是"用户意愿 vs 实际发出"的对照，
+  于是只加了 4 条并全部带**来源标记**，一条命令就能定案（见 `05-next-actions.md` 待办 2）。
+- ⛔ **"看着像对的方向"不是依据**：#3/#5 那两个变体确实"没做到用户意愿"，但它们**不是用户报的那个现象**
+  （用户那次是**零上传**）。⭐ **改之前必须先证明"我要改的这条路，正是用户踩的那条路"。**
+- ⭐ **用户的纠正要当硬证据收下**：🗣️「不删旧的传同名，确实应该三个文件」——我曾把这个正确行为当成 bug 去"修"。
+- ⭐ **两条已定位但故意没修的缺陷要写进交接文档待办**（本次是 mention 正则不对称 + `getOrderedExplicitImageReferences` 从资产库捞图），
+  ⛔ 别顺手改掉，也别忘掉。
+
+# 铁律⭐⭐：`toUserErrorMessage` 在链路上会跑**两遍** —— 加了新红字文案就必须同步加进「幂等保护」（2026-08-06 加，正式服 B_123）
+
+`toUserErrorMessage()` 在「**服务端 route 映射一次 → 客户端 `chat/chat-workbench-core.tsx:6168`
+`throw new Error(toUserErrorMessage(text))` 再映射一次 → 工作流节点 catch
+`workflow-tldraw-canvas-inner.tsx:4707` 还会再来一次**」这条链路上**必然被跑多遍**。
+而我们自己的成品中文文案里往往带着**会被下面兜底规则命中的关键词** → 第二遍就被重新包了一层。
+
+- 🔴 **B_123 实例**：上游 `input video may be related to copyright restrictions` →
+  服务端正确映射成「**参考视频**没能通过平台的**版权**检测…」→ 客户端再映射一次，
+  这句话里的「版权」命中 `error-message.ts` 那条**裸 `copyright|版权` 兜底** →
+  变成「模型…**拒绝出图**…以下是模型返回的拒绝原因：“参考视频没能通过平台的版权检测…”」
+  = **审核视频的问题被拼进了拒绝出图的文案里**，把用户指向完全错误的排查方向（去改提示词）。
+- ⭐ **唯一防线 = `error-message.ts` 第 217 行那道「幂等保护」白名单**
+  （`isModelRefusedMessage` / `^模型这次没有出图…` / `isReferenceReviewRejectedMessage`）。
+  ⛔⛔ **每新增/改动一句我们自己的红字文案，都必须问一句「它二次映射还会回到自己吗」**，
+  不会就往那个白名单里加一条。
+- ⭐ **判定函数只认「开头 + 前半句」，⛔ 别拿整句去比** —— 措辞会被用户改
+  （那句 2026-08-05 才刚改过一次）。本次用 `/^参考(?:图片|视频|音频|素材)没能通过平台的版权检测/`。
+- ⭐⭐ **验法（几秒钟、二值、必须做）**：`npx tsx` import 真实模块，把**每一条**红字
+  **连跑 3 遍**，`a === b && b === c` 才算过。本次 37 条里揪出 2 条 BREAK。
+  ⭐ **必须带反向用例**：上游英文原文照样要被映射；「任务失败：参考视频没能通过…」这种
+  **句中假冒**要被重新映射；「参考视频**通过了**版权检测」这种近似句不许被放过。
+- ⛔ **「另一条没坏」不代表规则写对了**：本次「参考**图片**」侥幸没串，**纯属巧合** ——
+  精确规则的第二个分支里认「参考图」三个字，而「参考图片」正好含它。
+  ⭐ 同源判据：**发现"同一类里有的坏有的不坏"，先去证明那个"不坏"是不是巧合**，别当成"规则是对的"。
+- ⚠️ 修这类问题**不用**改 `admin-failure-triage.ts` 的 `FAILURE_REASON_SQL`（没动措辞，只是不再被二次加工）；
+  但**老数据是脏的**（历史被串的那些条记在「模型拒绝」行里），⛔ 不建议回填，要看真实规模请查
+  `.runtime/generation-diagnostics-log.jsonl` 的 `extra.userError`（那里是服务端映射的正确文案）。
+
+# 铁律：判「新镜像到底起来没」看 `/api/health` 的 `version`，⛔ 不看 `x-app-version`（2026-08-06 加）
+
+`x-app-version` 由 `src/proxy.ts` 写，读的是**运行时** `PUBLISHED_APP_VERSION` —— 它是**故意**留到
+「静态已同步到阿里」之后那一步才置成新版的（提示条门控：弹出即代表刷新不会白屏）。
+所以 **`up -d --build` 完成后 `x-app-version` 仍显示旧版是正常的**，2026-08-06 我据此差点误判"build 没生效"。
+
+- ⭐ **正确判据两条**：① `curl /api/health` → `{"ok":true,"version":"vX"}`（这个直接来自 `APP_VERSION`，编译进镜像）
+  ② 容器内 `grep` 构建产物 `/app/.next/server` 找**本次新加的字符串/正则字面量**（命中 = 真编译进去了）。
+- ⭐ 部署最后一步再 `PUBLISHED_APP_VERSION=vX` + `force-recreate`，然后 `x-app-version` 才该等于新版。
+
+# 铁律⛔⛔：`reportClientDiagnostic` 的事件**不在白名单里就等于没加**（2026-08-06 加，第一版就踩了）
+
+`src/lib/chat/chat-workbench-core.tsx` 的 `reportClientDiagnostic()` → `POST /api/client-error`，
+而那个路由**只有在 `PERSISTED_CLIENT_EVENTS` 白名单里的 message 才 `appendUploadDiagnosticsLog` 落盘**，
+**不在名单里的只 `console.error`** —— docker logs 会滚掉，事后一行都查不到 = **等于没加这条日志**。
+
+- ⭐ **加任何客户端诊断，必须同步把事件名加进 `src/app/api/client-error/route.ts` 的 `PERSISTED_CLIENT_EVENTS`。**
+- ⭐ **验收是二值的**：部署后真去触发一次，然后 `grep -c '"client-<事件名>"' .runtime/upload-diagnostics-log.jsonl`
+  必须 > 0。⛔ 别拿"代码里有这行"当通过。
+- ⚠️ `/api/client-error` 把 `stack`（我们塞 detail 的地方）**截断到 2000 字符** → 日志里别记全 url，只记文件名末段。
+- ⚠️ 顺带：**`.runtime/*-diagnostics-log.jsonl` 的属主必须是 uid 1000**（容器里 app 以 node 跑），
+  root 建的文件会让 app 静默写不进去（本文件另有一条铁律记过这个坑）。
+
+# 铁律⭐⭐：查「某个东西到底传上去没有」看**磁盘 mtime + 上传日志**，⛔ 不看 `MediaAsset.createdAt`（2026-08-06 加）
+
+参考图的 `MediaAsset` 行**不是上传那一刻建的**，而是**任务成功时**由 `finalizeImageJobAsset` 之类建的
+→ 它的 `createdAt` 和 `GenerationJob.createdAt` 交错在一起（实测差 7ms ~ 1.7s），**完全不能代表上传时间**。
+2026-08-06 我一开始就被它误导，推出了错误的时间线。
+
+- ⭐ **正确的三方互证**：① `ls --time-style=full-iso` 看 `generated/users/<id>/upload_image/` 的 **mtime**
+  ② `.runtime/upload-diagnostics-log.jsonl`（一次正常上传会留 **7 条**：post-start / file-received /
+  reencode / buffer-saved / post-success / patch-start / patch-success）③ `GenerationJob.referenceImages`（发了哪几张）。
+- ⭐⭐ **"零上传"是个非常强的判据**：磁盘没有新文件 **且** 上传日志一条都没有 → 这次用户**压根没传成功过**，
+  问题一定在客户端或秒回预检（GET，2026-08-06 之前**零日志**，这就是当时查不下去的根本原因）。
+- ⛔ **别用"客户端算出来的原始字节哈希"去正式服比对用户转发给你的图**：
+  2026-08-06 我按管线复刻算落盘文件名（PNG → `flatten(#ffffff)` → `jpeg({quality,mozjpeg,4:2:0})` →
+  `sha256(重编码字节).slice(0,24)+".jpg"`，quality 有 95/80/60 三档）去全站找，**六个候选全都找不到**。
+  ⭐ **救命判据：先找一张"确定应该存在"的做对照** —— 连"老图"都找不到，就说明用户转发过来的图
+  **被压过、不是上传原件**（实测 470×520 / 534×541 vs 线上 2400×1088），样本不可信，**立刻停止推论**。
+
+# 铁律：改错误映射/删除逻辑之类的东西，先看「删」和「读」的正则是不是**对称**的（2026-08-06 加）
+
+`src/lib/mention-text.ts` 实测：`removeMentionName` 的 lookahead `(?=$|[\s，。！？；;、])` **不含 `@`**，
+而 `getMentionNames` 的 `[^@\s，。！？；;、]+` **把 `@` 当终止符** →
+`"@000@A_old 把图2放进图1"` 删「000」**一个字都删不掉**，而发送时**照样解析出 `["000","A_old"]`**。
+→ 用户删了缩略图、@名还在，发送时 `getOrderedExplicitImageReferences` 就从**整个资产库**把老图捞回来（还排最前面）。
+
+- ⭐ **判据**：凡是"写入用一个正则、读取用另一个正则"的地方，**把两个字符类抄出来逐字符比**。
+- ⚠️ **注释可能在骗你**：那行注释写的是「可紧贴中文、可相邻」，**注释声称支持、正则做不到**
+  （同源于本文件「标签准备好 ≠ 规则到得了」那条）。
+- ⭐ 验法：`npx tsx` 直接 import 真实模块跑 7 个用例（含反向：`@000_2` 不许被删「000」误伤），几秒钟。
+
+
 # 铁律⭐⭐：把一个分类「细化成 N 个分支」时，必须给**每个分支各自的进入条件**造用例（2026-08-05 加）
 
 上一轮把「参考素材没过审」按 图片/视频/音频 细化，标签表 `REFERENCE_REVIEW_KIND_LABEL` 三类都写了，

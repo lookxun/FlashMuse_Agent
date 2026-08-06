@@ -60,16 +60,32 @@ export async function OPTIONS(request: Request) {
 // 命中"以前上传过的同一张图"直接返回旧地址+权威名，免去把整包再跨境传一遍。
 // 与 /api/upload-file 的 GET 预检同构；图片专用故沿用 findDedupImage（带 mediaType:"image"）。
 // 幂等、只读、命中不了就返回 {} 让客户端走正常上传。
+//
+// ⛔⛔ 必须写诊断日志（2026-08-05 加）：查用户 ID_947011 报的「换了参考图还是老图」时，
+// 这条 GET 是**全链路唯一零日志的分支**（POST 那条路写 7 条），而它恰恰是真凶所在 ——
+// 命中后客户端不会再发任何 POST，于是正式服上「没有新文件 + 没有任何日志」，
+// 事后完全无法判断"用户到底传没传"。⛔ 别再把这条日志删掉。
 export async function GET(request: Request) {
   const headers = getCorsHeaders(request);
+  const startedAt = Date.now();
+  const requestId = request.headers.get("x-request-id") ?? randomUUID();
   try {
     const userId = await getUploadUserId(request);
     if (!userId) return NextResponse.json({}, { status: 200, headers });
     const contentHash = new URL(request.url).searchParams.get("contentHash")?.trim();
     if (!contentHash) return NextResponse.json({}, { status: 200, headers });
     const dup = await findDedupImage(userId, contentHash);
+    void appendUploadDiagnosticsLog({
+      event: dup ? "asset-upload-temp-precheck-hit" : "asset-upload-temp-precheck-miss",
+      requestId,
+      userId,
+      status: 200,
+      durationMs: Date.now() - startedAt,
+      extra: { contentHash, ...(dup ? { url: dup.url, name: dup.name } : {}) },
+    });
     return NextResponse.json(dup ? { url: dup.url, name: dup.name } : {}, { headers });
-  } catch {
+  } catch (error) {
+    void appendUploadDiagnosticsLog({ event: "asset-upload-temp-precheck-failed", requestId, status: 200, durationMs: Date.now() - startedAt, error });
     return NextResponse.json({}, { status: 200, headers });
   }
 }
