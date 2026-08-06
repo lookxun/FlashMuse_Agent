@@ -285,6 +285,27 @@ sudo /opt/flashmuse/scripts/flashmuse-db-backup.sh --stack prod --label pre-depl
    （每行一个，目录直接写目录名），然后 `tar -czf .runtime/vXX.tgz -T .runtime/vXX-files.txt`；
    打完必须 `tar -tzf` grep 一遍**新增目录**是否真在包里（漏了新目录 = 上线当场 404/崩）。
 
+### ⭐ v1.0.0.76（2026-08-06 第四十四次会话）新增的三条部署经验
+
+1. ⭐⭐ **判「新镜像到底起来没」看 `/api/health` 的 `version`，⛔ 不看 `x-app-version`。**
+   `x-app-version` 由 `src/proxy.ts` 写、读的是**运行时** `PUBLISHED_APP_VERSION` —— 它是**故意**留到
+   「静态已同步到阿里」那一步才置成新版的（提示条门控：弹出即代表刷新不会白屏）。
+   所以 **`up -d --build` 完成后 `x-app-version` 仍显示旧版是正常的**，本次我据此差点误判"build 没生效"。
+   正确判据两条：① `curl /api/health` → `{"ok":true,"version":"vX"}`（直接来自编译进镜像的 `APP_VERSION`）
+   ② 容器内 `grep` 构建产物 `/app/.next/server` 找**本次新加的字符串/正则字面量**（命中 = 真编译进去了）。
+2. ⭐ **本次一次干净的最小批部署留档（只改 1~2 个文件时照抄）**：
+   `bump-version` → 清单法打 tgz（**只 2 个文件**）→ scp → `sudo tar -xzf -C /opt/flashmuse-staging/app`
+   → 解完立刻 `grep` 确认版本号 + 新标识符真在服务器源码里 → 后台 build（`chown -R node:node /app`
+   那步单独占 **129s**，总约 3.5 分钟）→ 容器内 grep 构建产物 → `sync-ali.sh --stack=staging`
+   （`_next/static` 40 文件 8 桶并发 + `--delete` 对齐 + `home-assets` 18 文件）→ 置 `PUBLISHED_APP_VERSION`
+   + `force-recreate` → 验 `x-app-version`/`health`/8080/https。
+   正式服：备份（**145M**）→ staging→prod rsync 对齐（**不再 bump**）→ `up -d --build` →
+   **`docker cp` 取 `.next/static` 推阿里正式镜像 `flashmuse-static`（腾讯 40 → 阿里 40，数量必须一致）**
+   → 置 `PUBLISHED_APP_VERSION` + `force-recreate` → 四域名 200。
+3. ⛔ **PowerShell 5.1 没有 heredoc**：`git commit -F - <<'EOF'` 直接语法报错（一堆 `ParserError`）。
+   ⭐ 正解：**用 write 工具把中文 commit message 写进 `.runtime/commit-xx.txt` → `git commit -F 那个文件` → 删掉**。
+   ⛔⛔ 别用 `Set-Content`/`Out-File` 写它（中文会坏，见 `AGENTS.md` 那条铁律）。
+
 ## 关键踩坑与记忆
 
 - ⛔⛔⛔ **单文件 bind mount 用 `cp` 覆盖 = 换了 inode = 容器里永远还是旧文件**（2026-08-04 v71 踩到，查了三轮）。

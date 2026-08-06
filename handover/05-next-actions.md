@@ -2,48 +2,47 @@
 
 > 历史 END-OF-SESSION 记录都在 `historical-handover-docs-last-used-2026-07-21/05-next-actions.md`（很长）。这里只留当前有效待办。
 
-## ✅ 当前状态（2026-08-06 第四十四次会话末）：**两服 `v1.0.0.76`；GitHub 仍 `v1.0.0.74`**
+## ✅ 当前状态（2026-08-06 第四十四次会话末）：**四方同步 `v1.0.0.76`，无待部署、无待提交**
 
 | | 版本 |
 |---|---|
 | 本地 | `v1.0.0.76` |
 | 测试服 | `v1.0.0.76`（部署完成；`x-app-version` + `/api/health` 都是 v76；阿里 8080 与 https 入口 200）|
 | 正式服 | `v1.0.0.76`（部署完成；四域名 main/api/ali/static 全 200；静态 40 文件已同步阿里正式镜像）|
-| GitHub | **`v1.0.0.74`** —— ⛔ 本地攒了 **v75 + v76 两批**未 commit/未 push |
+| GitHub | `v1.0.0.76`（commit **`6c017e2`**，v75 + v76 两批一次性 commit + push）|
 
 **无 Prisma 迁移、无 compose/nginx 改动。** 本次细节见 **`CHANGELOG_2.md` 顶条**（六节，含 37 行红字对照表）。
 
 ⚠️ **本次没上号巡检**（🗣️ 用户明确说「不用测试了。。我来测试」）→ **零积分消耗、零留痕**。
+⭐ **所以"用户侧验收"这一步还悬着**：如果他反馈红字还是歪的，先去 `.runtime/generation-diagnostics-log.jsonl`
+比对 `extra.userError`（服务端映射的正确文案）和他截图里的红字 —— 两者不一致就说明**还有第三处在重复映射**。
 
 ### ✅ 本次会话已完成（不用再做）
 
-**正式服 B_123「审核视频的问题被拼进了拒绝出图的文案里」已修并两服上线。**
-根因 = 同一句红字被 `toUserErrorMessage()` 跑了两遍，第二遍掉进裸 `版权` 兜底；
-修法 = `error-message.ts` 的幂等保护补上 `isReferenceReviewRejectedMessage()`。
-回归 37/37 + 反向 8/8 + `tsc` + `npm test` 15/15 全绿。
+1. **正式服 B_123「审核视频的问题被拼进了拒绝出图的文案里」已修并两服上线 v1.0.0.76。**
+   根因 = 同一句红字被 `toUserErrorMessage()` 跑了两遍，第二遍掉进裸 `版权` 兜底；
+   修法 = `error-message.ts` 的幂等保护补上 `isReferenceReviewRejectedMessage()`。
+   回归 37/37 + 反向 8/8 + `tsc` + `npm test` 15/15 全绿。
+2. **v75 + v76 两批已 commit + push**（`6c017e2`）→ **四方同步恢复**。
+3. **AGENTS.md 新增 2 条铁律**：`toUserErrorMessage` 跑两遍必须同步幂等保护 /
+   判新镜像起来没看 `/api/health` 不看 `x-app-version`。
 
-### 🎯 待办 1（最优先）：**问用户要不要 commit + push**（本地攒了两批）
-
-- **v75 批**（4 条纯日志）：`src/app/api/asset-upload-temp/route.ts`、`src/components/chat-workbench.tsx`、
-  `src/app/api/client-error/route.ts`；
-- **v76 批**（本次修复）：`src/lib/error-message.ts`；
-- 加 `src/lib/app-version.ts` + `AGENTS.md` + `handover/*`。
-⛔ 按铁律没让 commit 就没 commit。
-
-### 🎯 待办 2：⭐ **顺手把"红字二次映射"这类坑一次性防住（可选，要先跟用户确认值不值得做）**
+### 🎯 待办 1（最优先，⭐ 推荐先做这个）：把「红字幂等」固化成自动化测试用例 → **备忘编号 M040**
 
 本次只补了漏掉的那一句。**但根子上的问题是「同一个函数在服务端和客户端各跑一遍」这个链路本身**：
 
 - 调用点：服务端 route 映射后写进 error message → 客户端 `src/lib/chat/chat-workbench-core.tsx:6168`
   `throw new Error(toUserErrorMessage(text))` → 工作流节点 catch `workflow-tldraw-canvas-inner.tsx:4707` 再来一次。
-- ⭐ **现在的防线是"白名单式幂等保护"**（第 217 行列举我们自己的成品文案）——
+- ⭐ **现在的防线是"白名单式幂等保护"**（`error-message.ts` 第 217 行列举我们自己的成品文案）——
   **每加一句新文案就得记得往那里加一条，漏了就串**（本次就是漏了）。
-- 🗳️ **可选的根治方向**（⛔ 影响面大，动前必须问用户）：给映射结果打一个不可见标记 / 或统一约定
-  「已映射过的文案一律带某个固定前缀」→ 第二遍见到就直接原样返回。
-- ⭐ **最低成本的替代方案（推荐先做这个）**：把本次那个回归脚本**固化成 `npm test` 里的一个用例**
-  ——「**任意一条映射结果连跑 3 遍必须完全一致**」。这样以后谁加新文案，漏了幂等保护会**当场被测试抓住**。
+- ⭐⭐ **最低成本、最该做的一件事**：把本次那个回归脚本**固化成 `npm test` 里的一个用例**
+  ——「**任意一条映射结果连跑 3 遍必须完全一致**」。这样以后谁加新文案，漏了幂等保护会**当场被测试抓住**，
+  不用再等用户来报。现在 `npm test` 只有 15 个用例、跑 1.16 秒，加进去成本几乎为零。
+  ⭐ 用例清单直接抄 `CHANGELOG_2.md` 顶条第二节那 37 条 + 8 条反向。
+- 🗳️ **更彻底但影响面大的方向（⛔ 动前必须问用户）**：给映射结果打一个不可见标记 / 统一约定
+  「已映射过的文案一律带某个固定前缀」→ 第二遍见到就直接原样返回，不再靠白名单穷举。
 
-### 🎯 待办 3：⚠️ **后台「失败原因」里的老数据是脏的（已知，⛔ 不建议回填）**
+### 🎯 待办 2：⚠️ **后台「失败原因」里的老数据是脏的（已知，⛔ 不建议回填）**
 
 历史上被串成"拒绝出图"的那些条，`failureReason` 存的是**客户端映射后**的文案 →
 在后台被记在「模型拒绝」那一行里，**混进了本该属于「参考视频/音频没过审」的条数**。
@@ -51,8 +50,10 @@
   （两者最终文案都以同一个前缀开头，只能靠尾巴那段原文里有没有「参考X没能通过」来分）。
 - ⭐ 真要看准确规模，去 `.runtime/generation-diagnostics-log.jsonl` 按 `extra.userError` 统计
   （那里存的是**服务端映射的正确文案**，没被污染）。
+- ⭐ **顺带确认过**：`admin-failure-triage.ts` 的 `FAILURE_REASON_SQL` **不用改** ——
+  本次没动任何文案措辞，只是不再让它被二次加工。
 
-### 🎯 待办 4：**ID_947011 那个 bug 还没结案 —— 等日志说话，⛔ 别再猜、别再改行为**
+### 🎯 待办 3：**ID_947011 那个 bug 还没结案 —— 等日志说话，⛔ 别再猜、别再改行为**
 
 **现在能做的只有一件事：等它再发生，然后一条命令定案：**
 ```bash
@@ -62,7 +63,7 @@ grep -E 'copy-prompt-restored|input-image-removed|precheck-(hit|miss)|send-refer
 按时间排开，看这几个信号分流（完整解释见 `CHANGELOG_2.md` 第 43 次会话那条的第八节）：
 - **`send-reference-snapshot` 的 `sent` 里出现 `[@/assetLibrary]`** → 「用户删了、发送时从资产库把老图捞回来还插最前面」
   （= ID_868181 音频那个病理，`getOrderedExplicitImageReferences` 那条路）。
-- **`input-image-removed` 的 `mentionStillThere:true`** → 删缩略图时 @名没清干净（正则不对称，见下面待办 5）。
+- **`input-image-removed` 的 `mentionStillThere:true`** → 删缩略图时 @名没清干净（正则不对称，见下面待办 4）。
 - **`precheck-hit` 之后没有任何 POST** → 用户这次选的文件字节和以前某张一样，替换实际没发生。
 - **`input-image-dropped-before-upload`** → 图压根没进输入框，`reason` 直接说是哪条分支丢的。
 
@@ -75,7 +76,7 @@ grep -E 'copy-prompt-restored|input-image-removed|precheck-(hit|miss)|send-refer
 ⭐ **验证 `send-reference-snapshot` 在正式服落盘**（唯一还没验的一条，约 15 积分）：
 传一张图 + 发一次生成，然后 grep 那个事件名。不急，代码和另外两条走同一条落盘链路。
 
-### 🎯 待办 5：两条已定位但**故意没修**的真实缺陷（要修必须先跟用户确认口径）
+### 🎯 待办 4：两条已定位但**故意没修**的真实缺陷（要修必须先跟用户确认口径）
 
 1. **删 @名 / 解析 @名 的正则不对称**（`src/lib/mention-text.ts`）：
    `removeMentionName` 的 lookahead `(?=$|[\s，。！？；;、])` **不含 `@`**，而 `getMentionNames` 的
@@ -86,9 +87,10 @@ grep -E 'copy-prompt-restored|input-image-removed|precheck-(hit|miss)|send-refer
    （`chat-workbench.tsx:6210`）。这是 ID_868181 音频 bug 的同构点。
    ⛔ 改它影响面很大（@名的顺序/意图语义），**必须先跟用户确认产品口径**。
 
-### 🎯 待办 6：H3 生视频那一跑（🗣️ 用户 2026-08-05 指定「下次要做测试时」顺带验掉）
+### 🎯 待办 5：H3 生视频那一跑（🗣️ 用户 2026-08-05 指定「下次要做测试时」顺带验掉）
 
 - ⛔ **时机**：**用户说了要测试/部署时**才排进去，不是现在马上跑。
+  ⚠️ 本次（第 44 次）虽然部署了两服，但用户说"我来测试"→ **这一跑还没做**，仍然挂着。
 - 模型 `minimax/hailuo-3`，约 **47 积分**、**10~16 分钟**（H3 比 Seedance 慢很多，别以为卡死）。
 - 一次跑完同时验 4 件事（都是二值）：① `.runtime/generation-diagnostics-log.jsonl` 出现 **`video-job-charged`**
   （v69 专门补的，**从来没被真正触发过一次**）② **不该**出现 `usdFromFallbackPricing`
@@ -96,11 +98,11 @@ grep -E 'copy-prompt-restored|input-image-removed|precheck-(hit|miss)|send-refer
   `kbps`/`concurrency`/`chunks`/`retries`/`via` —— ⛔ `via` 出现 `"rsync"` = `ALI_SYNC_PULL_BASE_URL` 没配、退回单流了。
 - ⚠️ 分析 jsonl **一律用 node**，别用 `ConvertFrom-Json`（含中文会整行报错）。
 
-### 🎯 待办 7：M037 —— 把 `uploadProgress` 搬出画布状态（🗣️ 用户说"单独排一次"）
+### 🎯 待办 6：M037 —— 把 `uploadProgress` 搬出画布状态（🗣️ 用户说"单独排一次"）
 
 根治方案 + 全部实测数字见 `06-memo-tasks.md` 的 **M037**。⭐ 顺带能干掉「临时态必须在存库边界剥掉」这条老坑。
 
-### 🎯 待办 8：观察传输日志、按时段优化；🗳️ M036 / M015（🗣️ 用户都说「先放着」）
+### 🎯 待办 7：观察传输日志、按时段优化；🗳️ M036 / M015（🗣️ 用户都说「先放着」）
 
 - 传输日志攒几天后按小时聚合，再决定要不要按时段调 `ALI_SYNC_CONCURRENCY`（现在 16，实测最优；32 反而更差）。
 - **M032** 工作流传参考图偶发"静默挂不上" —— ⛔ **仍不许动代码**（根因未知）。
