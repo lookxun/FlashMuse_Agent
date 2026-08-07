@@ -97,6 +97,9 @@ const DEFAULT_MODEL_PROVIDER_PREFERENCES: Record<string, "openrouter" | "byteplu
   "agent-video.seedance-2-0-mini": "byteplus",
   "agent-chat.seed-2-0-pro": "byteplus",
   "agent-chat.advanced": "openrouter",
+  // 内容审核语义模型：两个都默认开启，按 GPT-5.6 Terra Pro → Seed 2.0 Pro 顺序兜底。
+  "moderation.priority": "openrouter",
+  "moderation.seed-2-0-pro": "byteplus",
 };
 
 const DEFAULT_BYTEPLUS_MODEL_SELECTIONS: Record<string, string> = {
@@ -124,6 +127,7 @@ const DEFAULT_BYTEPLUS_MODEL_SELECTIONS: Record<string, string> = {
   "agent-video.seedance-2-0": "ep-20260521133841-nn8bg",
   "agent-video.seedance-2-0-mini": "ep-20260713100634-mwp78",
   "agent-chat.seed-2-0-pro": "ep-20260514173614-jbcb4",
+  "moderation.seed-2-0-pro": "ep-20260514173614-jbcb4",
 };
 
 // 图片编辑类（橡皮）模型候选链：按顺序优先级，前一个失败/关闭自动用下一个。默认全部启用。

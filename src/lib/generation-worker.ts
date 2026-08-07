@@ -1,4 +1,5 @@
 import { claimImageJobs, claimVideoJobs, runImageJob, runVideoJob } from "@/lib/generation-jobs";
+import { processContentModerationQueue } from "@/lib/content-moderation";
 
 /**
  * 常驻生成 worker：定时认领并执行图片任务（视频后续接入）。
@@ -42,6 +43,9 @@ async function tick() {
         void runVideoJob(job).finally(() => inFlightVideo.delete(job.id));
       }
     }
+    // ⛔ 不 await：语义审核要打外网模型，await 会让上游一慢就把整个 tick 卡住，
+    // 连带图片/视频任务全都停止认领（processContentModerationQueue 内部自带并发保护）。
+    void processContentModerationQueue(2);
   } catch (error) {
     console.warn("[generation-worker] tick failed", { error: error instanceof Error ? error.message : String(error) });
   } finally {

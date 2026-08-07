@@ -22,14 +22,15 @@ import { getOnlineUserIds } from "@/lib/online-users";
 import { AdminUsersPanel, type AdminUserRow } from "./admin-users-panel";
 import { AdminAccountFeaturesPanel, type AdminAccountFeatureRow } from "./admin-account-features-panel";
 import { AdminGptImageThumbnail } from "./admin-gpt-image-thumbnail";
+import { AdminContentModerationPanel, type ContentModerationEventRow } from "./admin-content-moderation-panel";
 import { getCreditSettings } from "@/lib/credits";
 import { getAdminSystemSettings, getUploadRuleOverrides, isAssetImageModelEnabled, isConversationImageModelEnabled, isConversationVideoModelEnabled } from "@/lib/system-settings";
 import type { IconType } from "react-icons";
-import { RiAlarmWarningLine, RiDashboardLine, RiFileList3Line, RiListSettingsLine, RiServerLine, RiSettingsLine, RiShieldKeyholeLine, RiToggleLine, RiUser3Line, RiVipDiamondLine } from "react-icons/ri";
+import { RiAlarmWarningLine, RiDashboardLine, RiFileList3Line, RiListSettingsLine, RiServerLine, RiSettingsLine, RiShieldCheckLine, RiShieldKeyholeLine, RiToggleLine, RiUser3Line, RiVipDiamondLine } from "react-icons/ri";
 
 export const dynamic = "force-dynamic";
 
-type AdminTab = "overview" | "users" | "account-features" | "credits" | "records" | "failures" | "settings" | "generation" | "upload-rules" | "gpt-image-optimization" | "server";
+type AdminTab = "overview" | "users" | "account-features" | "credits" | "records" | "failures" | "content-moderation" | "settings" | "generation" | "upload-rules" | "gpt-image-optimization" | "server";
 
 const adminNavItems: Array<{ key: AdminTab; label: string; icon: IconType }> = [
   { key: "overview", label: "概览", icon: RiDashboardLine },
@@ -42,12 +43,13 @@ const adminNavItems: Array<{ key: AdminTab; label: string; icon: IconType }> = [
   { key: "generation", label: "系统设置", icon: RiSettingsLine },
   { key: "upload-rules", label: "上传规则", icon: RiListSettingsLine },
   { key: "gpt-image-optimization", label: "GPT生图优化", icon: RiFileList3Line },
+  { key: "content-moderation", label: "内容审核", icon: RiShieldCheckLine },
   { key: "server", label: "服务器信息", icon: RiServerLine },
 ];
 
 function getAdminTab(value: string | string[] | undefined): AdminTab {
   const tab = Array.isArray(value) ? value[0] : value;
-  if (tab === "users" || tab === "account-features" || tab === "credits" || tab === "records" || tab === "failures" || tab === "settings" || tab === "generation" || tab === "upload-rules" || tab === "gpt-image-optimization" || tab === "server") return tab;
+  if (tab === "users" || tab === "account-features" || tab === "credits" || tab === "records" || tab === "failures" || tab === "content-moderation" || tab === "settings" || tab === "generation" || tab === "upload-rules" || tab === "gpt-image-optimization" || tab === "server") return tab;
   return "overview";
 }
 
@@ -431,6 +433,16 @@ export default async function AdminPage({ searchParams }: { searchParams?: Promi
         <AdminFailureTriagePanel data={failureData} />
       </AdminShell>
     );
+  }
+
+  if (activeTab === "content-moderation") {
+    const [groups, terms, rows] = await Promise.all([
+      prisma.$queryRaw<Array<{ id: string; enabled: boolean; termsHidden: boolean; editUnlocked: boolean }>>`SELECT "id", "enabled", "termsHidden", "editUnlocked" FROM "ContentModerationRuleGroup" WHERE "category" = 'sensitive_politics' LIMIT 1`,
+      prisma.$queryRaw<Array<{ value: string }>>`SELECT t."value" FROM "ContentModerationTerm" t INNER JOIN "ContentModerationRuleGroup" g ON g."id" = t."groupId" WHERE g."category" = 'sensitive_politics' ORDER BY t."createdAt" ASC`,
+      prisma.$queryRaw<Array<{ id: string; createdAt: Date; userId: string | null; email: string | null; kind: string; source: string; action: string; status: string; prompt: string; matchedTerm: string | null; semanticReason: string | null }>>`SELECT e."id", e."createdAt", e."userId", u."email", e."kind", e."source", e."action", e."status", e."prompt", e."matchedTerm", e."semanticReason" FROM "ContentModerationEvent" e LEFT JOIN "User" u ON u."id" = e."userId" ORDER BY e."createdAt" DESC LIMIT 300`,
+    ]);
+    const sourceLabels: Record<string, string> = { conversation: "对话流", workflow: "工作流", asset: "资产库", agent: "Agent" };
+    return <AdminShell adminEmail={currentAdminEmail} activeTab={activeTab}><AdminContentModerationPanel initialEnabled={groups[0]?.enabled ?? false} initialHidden={groups[0]?.termsHidden ?? false} initialUnlocked={groups[0]?.editUnlocked ?? false} initialTerms={terms.map((item) => item.value)} events={rows.map((item): ContentModerationEventRow => ({ id: item.id, createdAtLabel: formatDate(item.createdAt), userLabel: item.email ? `${item.email}\n${item.userId ?? "-"}` : item.userId ?? "-", sourceLabel: sourceLabels[item.source] ?? item.source, kindLabel: item.kind === "video" ? "视频" : "图片", action: item.action, status: item.status, prompt: item.prompt, matchedTerm: item.matchedTerm ?? undefined, semanticReason: item.semanticReason ?? undefined }))} /></AdminShell>;
   }
 
   if (activeTab === "server") {

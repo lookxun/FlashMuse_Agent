@@ -4,6 +4,112 @@
 This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code. Heed deprecation notices.
 <!-- END:nextjs-agent-rules -->
 
+# 铁律⭐⭐：`atob()` 不解 UTF-8 —— 中文 base64 必须 `TextDecoder`；且"审核没拦"要先分清「代码没跑」还是「没匹配上」（2026-08-08 加）
+
+2026-08-08 验正式服内容审核，我把词库里的词用 base64 传进浏览器、`atob(b64)` 拿到"词"就发给 `/api/image`
+→ 得到 500 而不是拦截，**差点报"审核在正式服失效"**。真因：**`atob()` 返回 latin1 字节串**，
+UTF-8 中文没被解码 → 我发出去的是乱码，自然不命中词库。
+
+- ⭐ **正解**：`new TextDecoder('utf-8').decode(Uint8Array.from(atob(b64), c => c.charCodeAt(0)))`。
+  改对之后立刻 `400 + CONTENT_POLICY_BLOCKED`。
+- ⭐⭐ **更通用的判据（这条最值钱）**：**"拦截没生效"要先分清两件事** ——
+  ① 审核代码**压根没跑**（异常/条件不满足）② 跑了但**没匹配上**。
+  本项目里 `enforceContentPolicy` 未命中时会写一条 **`semantic_review` 事件** →
+  **那条事件存在就是"代码跑了"的铁证**，于是问题被瞬间缩到"匹配"这一层。
+  ⭐ 找这种"只有某条路径才会产生的副作用"当探针，比读代码猜快得多。
+- ⭐ **最后定案靠"在容器内用真实模块 + 真实数据比对"**（`STORED_EQUALS_RECOMPUTED` / `INCLUDES_STORED` /
+  `FIND_RESULT`）—— 逻辑和数据都证明 HIT，就只剩"我发过去的字符串"这一个变量了。
+- ⚠️ 顺带：**远端命令输出含中文会让 bash 工具返回异常** → 一律 `tr -cd '\40-\176\12'` 只留 ASCII，
+  或把中文字段 **base64 输出**，中文永不过管道。
+- ⚠️ 顺带：**手打生成接口时 model id 别猜** —— 正确的图片模型 id 在 `src/lib/models.ts`
+  （`byteplus:conversation-image.seedream-4-5`），⛔ `/api/models` 返回的是**文本模型**列表。
+  我猜错两次，在正式服白留了 **B_193 / B_194** 两条红字（已写进交接文档提醒别当成用户问题）。
+
+# 铁律：远端脚本"我记得跑过了"不算数 —— 拿服务器上的实际值当判据（2026-08-08 加）
+
+2026-08-08 正式服部署，我以为"备份 + staging→prod 对齐"那个脚本跑成了（输出被工具吞掉、我误读为成功），
+结果一查 **prod 还是 v76、连 build 日志都不存在** —— 白等了一轮。
+
+- ⭐ **判据（二值）**：`grep 'APP_VERSION =' /opt/flashmuse/app/src/lib/app-version.ts` +
+  `ls /tmp/prodbuild*.log`。两者都对上才算这一步真做完了。
+- ⭐ 同源于本文件那条「验新镜像看 `/api/health` 不看 `x-app-version`」：
+  **部署每一步都要有一个"服务器上能查到的实际值"作为完成判据**，⛔ 别用"命令没报错"或"我记得跑过"。
+
+
+
+# 铁律⛔⛔：验证脚本**绝不许删改用户已有的真实数据行**，造用例只用自己的独立命名空间（2026-08-07 加，我真删了用户的词库）
+
+2026-08-07 验「内容审核」时，我为了造干净用例在脚本里
+`DELETE FROM "ContentModerationRuleGroup" WHERE category='sensitive_politics'` ——
+**外键级联把词条一起带走**，用户本地录的 2 个词全没了（🗣️「怎么本地的两个词给我清掉了吗？」）。
+
+- ⭐ **正确姿势**：造用例用**独立 category / 独立 id 前缀**（如 `verify_only_xxx`、`requestId LIKE 'verify-%'`），
+  清理时**只删自己插进去的那几行**，⛔ 绝不按业务主键（category / userId / 类型）整条删。
+- ⭐ **写脚本前先问一句「这张表里有没有用户手工录进去的东西」** —— 配置类（规则、词库、开关、白名单）几乎一定有。
+- ⭐ **删了怎么救**：先去**事件/日志类表**找它的影子（本次 `ContentModerationEvent.matchedTerm` 捞回了一个词）。
+  ⛔ 但「命中即 return」的匹配逻辑意味着**只有被命中过的值才留痕**，其余永久丢失。
+- ⭐ 顺带：**跑完就删临时脚本**（放 `.runtime/`），别留在仓库里被下一个人当成正式测试。
+
+# 铁律：新增一句"红字文案"必须同时验两件事 —— 幂等 + 错误码前缀会不会被贴上（2026-08-07 补充）
+
+除了本文件那条「`toUserErrorMessage` 会跑两遍 → 幂等保护」之外，还有第二个坑：
+**`getApiErrorMessageWithCode`（`chat-workbench-core.tsx:6195`）会把非 `B_` 的 `errorCode` 拼成 `(XXX) 原文`。**
+所以路由里返回 `errorCode: "CONTENT_POLICY_BLOCKED"` 这类自定义码时，要确认用户会不会看到那个英文码。
+
+- ⭐ **判据**：看这条路径是先经 `readJson` 还是先经 `getApiErrorMessageWithCode`。
+  `readJson` 在 `!response.ok` 时**先抛 `toUserErrorMessage(error)`** → 拼码那行走不到（2026-08-07 五条真实路径都是这种）。
+- ⭐ 两件事都要用 `npx tsx` 实跑：① 文案连跑 3 遍相等 ② 带 `(B_9)` 前缀时前缀不丢。
+
+# 铁律⛔⛔：往常驻 worker 的 tick 里加活儿，一律「不 await + 带超时 + 自带并发锁」（2026-08-07 加）
+
+2026-08-07 我把语义审核写成 `await processContentModerationQueue(2)` 放进 `generation-worker.ts` 的 `tick()`，
+而那次 `fetch` **没有超时** → 上游一卡住，`tick` 的 `running` 标志永远是 true →
+**图片和视频任务全都不再被认领 = 全站生成停摆**（自查时抓到，没上线）。
+
+- ⭐ **三件套缺一不可**：① 调用方 `void`（不 await）② 请求 `AbortSignal.timeout(...)`
+  ③ 被调函数内部自己有 `running` 标志（因为不 await 了，外层那把锁保护不到它）。
+- ⭐ **判据**：问「这件事失败/超时，会不会连带影响 tick 里**别的**活儿」。会 → 必须隔离。
+  worker 的 tick 是**全站生成的心跳**，任何寄生在它上面的外网调用都要当成危险品。
+
+# 铁律：审核/统计类要记「用户写的那句话」时用 `sourcePrompt`，⛔ 别用发给模型的 `prompt`（2026-08-07 加）
+
+资产库/工作流发给 `/api/image`、`/api/video` 的 `prompt` 是**拼过的**（规则文本 + 参考图 hint + 用户原话），
+而 `sourcePrompt` 才是用户原话（各条路径本来都在传）。用错的后果有两个，第二个更隐蔽：
+① 后台看到的是一大段系统文本；② **关键词匹配会拿我们自己拼进去的规则文本去比，可能凭空命中**。
+
+# 铁律⭐⭐：**一条链的回调只许改自己那一条** —— 共享数组 state 里，别人的条目一律不许动（2026-08-06 加）
+
+2026-08-06 用户报「资产库角色图片同时生成 5 张，3 成 2 败，**消失了一个失败卡**」。
+根因是**同一族的两处**，都发生在「N 条独立并发链写同一份 `assetGenerateJobs` 数组」上：
+
+- ⛔ **`chat-workbench.tsx:7869` 成功回调里挂着 `.filter(同 type 的其它 failed 全删掉)`**
+  → **任意一张成功就抹掉同类型的所有失败卡**。判据只看 `type`，**不看批次、不看时间**，
+  而它是**唯一一处会主动删除"别人的"条目**的代码。
+- ⛔ **`chat-workbench.tsx:7770` 复用别人的 id**（"上次结果是失败 → 新任务顶用那条失败卡的 jobId"，
+  美其名曰"原地重试"）→ **连续两次失败，第一次的记录被第二次覆盖**，卡数不增、文案被换掉。
+- ⭐ **判据（一句话）**：在一个 `setXxx(prev => …)` 里，凡是**碰到 `job.id !== 当前 id` 的条目**
+  （无论 filter 删、还是复用它的 id 覆盖），都要问一句「**并发时另一条链正指着它，我凭什么动它？**」
+- ⭐ **认知纠偏（我一开始就差点搞错）**：**先去看写入方确认"一次请求到底出几张"** ——
+  资产库 `count` **写死 1**、`/api/image` 上限本来就是 4，所以"同时生成五张" = **连点 5 次 = 5 条独立链**。
+  → 这类"部分成功部分失败"**只可能出在前端 state 合并**，不可能是后端返回结构映射错。
+  （同源于本文件那条「判断某字段会不会有多个要看写入方，别只看 TS 类型」。）
+- ⭐⭐ **配套两道防线，缺一不可**（否则条目会被"静默弄没"或"复活"）：
+  ① **下行合并别只保护"进行中"**：`2538` 那处原来只保 `generating`，
+     刚变 `failed`、**500ms 防抖 PUT 还没落库**的那条会被服务端旧快照**覆盖掉**；
+  ② **反向也要防复活**：用户删掉后若紧接着来一次加载，旧快照又会把它**加回来**
+     → 用一个 `dismissed…IdsRef: Set` 记住"用户主动删掉的 id"，所有合并入口都排除它。
+- ⭐⭐ **零成本造失败卡的验法（下次照抄，⛔ 别再去写必被拒的提示词烧钱）**：
+  Playwright `page.route('**/api/image')` 把 **POST `fulfill({status:500, body:{error:…}})`**
+  —— 它走的正是线上真实失败那条 `catch` 分支，**0 积分**、条数与时序精确可控；
+  ⭐ 但**"成功"那一次必须真跑**（要验的正是"成功回调会不会吃掉失败卡"）。用完 `page.unrouteAll()`。
+  ⭐ 二值判据：`document.querySelectorAll('.flashmuse-failed-media-card').length`；
+  ✕ 是 `button[aria-label="清除失败卡"]`；⚠️ `getByRole('button',{name:'资产库'})` 会撞两个元素，
+  用 `page.locator('button[aria-label="资产库"]').first()`。
+- ⭐ **console 日志能当二值判据**：修前 `[asset-generation] image request failed` 里
+  **`jobId ≠ requestId`**（= 复用了别人的卡），修后**恒等**。加日志时把这类"身份字段"都打出来很值。
+- ⛔ **自测中途改了代码 → 必须重新 bump 完整重推**（本次 v77 → v78），
+  **不许原地覆盖同一个版本号** —— 那会让"测试服 vX ≠ 本地 vX"，直接破坏本项目最核心的判据。
+
 # 铁律⭐⭐⭐：**没复现 = 不许动行为，只许加日志**（2026-08-06 用户拍板，最高优先级）
 
 🗣️ **用户原话**：「**以后找bug不确定不要乱动代码加日志找到真实原因为止，宁可不动也不乱动。**」
@@ -986,7 +1092,7 @@ nginx 配置在仓库里有副本（`nginx/flashmuse.conf`、`deploy/staging/*.c
 
 - 反例（已踩坑，2026-07-14）：`getBytePlusProviderKey`（模型→BytePlus 端点映射）被复制到 `image/route`、`video/route`、`generation-jobs` 三份，各改各的 → 只修了对话流那份，Agent/通用模式漏修 → 线上 Agent/通用生图/生视频用新模型直接失败。已收敛为唯一实现 `src/lib/byteplus-provider-key.ts`。
 - 判断标准：**理论上"生图在一个地方能用，其它地方都应该能用"**（生视频、上传、进库、读取、命名、扣费、参考图……同理），因为它们本就该走同一套。若出现"对话流可以、工作流/Agent 不行"，几乎一定是某处该统一却分叉了——先找分叉点收敛，别再打局部补丁。
-- 已有的统一入口举例（改相关功能务必复用，勿另起炉灶）：**图片缩略图生成 `src/lib/local-assets.ts`(`ensureGeneratedImageThumbnail(url, { syncToAli })` 唯一实现 + `createGeneratedImageThumbnail` 薄封装：2026-08-04 收敛，原来 `api/media-thumbnail/route.ts`（浏览器请求时**懒生成**）和 `local-assets.ts`（生成图落盘时**即时生成**）**一字不差存了两份**（连 `scale=256:256`/`-q:v 5`/timeout 都一样）。⭐ 分叉的代价是真实的：懒生成那份**从来不同步阿里** → 阿里镜像里上传图缩略图长期一张都没有。⭐ `syncToAli` 是**选项且默认 false**：即时生成那 5 个调用方是把 `[localUrl, thumbnailUrl]` **合成一次** `syncGeneratedFilesToAli` 发的，那次的 `ok` 就是 `job.aliSynced`（前端拿它判断能不能读阿里镜像），无条件同步会重复传 + 让语义变模糊。⛔ 路径穿越校验和后缀白名单**刻意留在路由**（只有它的入参来自用户），别下沉)**、进库 `src/lib/media-asset-record.ts`(`buildMediaAssetRecord`/`classifyAsset`)、生成任务与读取 `src/lib/generation-jobs.ts`、扣费 `src/lib/credits.ts`(`chargeCredits`)、**腾讯→阿里文件传输 `deploy/ali-parallel-pull.sh`(阿里侧并发分片拉取器，唯一实现) + `src/lib/ali-sync.ts`(应用侧调用) + `scripts/backfill-ali-media.sh`(补历史缺口) + `src/lib/transfer-log.ts`(传输速度日志唯一实现)：2026-08-04 新增，⛔ 别再写第二份分片逻辑、⛔ 别退回单流 rsync，原理与实测数据见本文件「腾讯↔阿里传文件一律走并发分片」那条铁律**、**视频用量/成本 `src/lib/video-usage-cost.ts`(`getVideoUsageMeta`/`withVideoUsdFallback`/`withChargedVideoUsage`：2026-08-03 收敛，原来 `api/video/route.ts`（前台同步轮询）和 `generation-jobs.ts`（后台队列）**各存一份一字不差的** getUsageMeta/withBytePlusVideoUsd/withChargedUsage —— 扣费金额是钱，两份各自演化就会"一条路扣对、另一条路白送"。⭐ 里面还有**兜底定价**：上游没给 `usage.usd` 时按公式算并标 `usdFromFallbackPricing`，因为 `usd=0` 是**静默白送**、不报错也不进红字)**、**视频参考模式 `src/lib/upload-rules.ts`(`VideoReferenceMode` 类型 + `supportsVideoReferenceMode`/`getVideoReferenceImageMaxCount`/`getEffectiveVideoReferenceItems`/`getVideoReferenceLimitHint`) + `src/lib/video-reference-modes.ts`(`getVideoReferenceModeOptions`/`getVideoReferenceModeLabel`/`getRequiredVideoReferenceImageCount`：**选项按模型给** —— BytePlus Seedance 3 项、Hailuo 3 四项含尾帧；2026-08-03 收敛，工作流原来那份本地类型**漏了 `last_frame`**，直接导致 H3 一开始不敢在工作流放出来)**、**NEW 徽标 `src/components/new-badge.tsx`(`NewBadge`，配 `models.ts` 的 `isNewGenerationModel`：原来模型下拉是青绿小圆角、侧边栏「工作流模式」是绿色胶囊，同一个东西两种长相，2026-08-03 用户拍板统一)**、模型→端点键 `src/lib/byteplus-provider-key.ts`、**模型拒绝文案 `src/lib/error-message.ts`(`MODEL_REFUSED_PREFIX` + `isModelRefusedMessage` + `buildModelRefusedMessage`：⭐ 2026-07-29 起「模型拒绝 / 平台安全策略 / 版权限制」**三类合并成唯一一句**「模型因色情/暴力/隐私安全等原因拒绝出图，你可以调整提示词或更换参考图后重试。以下是模型返回的拒绝原因：“…”」，不再按模型分"能不能AI改写"。⛔ 改这句必须同步改三处：`gpt-image-safety-retry.ts` 的**前缀**判定、`admin-failure-triage.ts` 的 `FAILURE_REASON_SQL` 归一化、`error-message.ts` 顶部的幂等保护；`LEGACY_MODEL_REFUSED_MESSAGES` 里的老文案只用于判定/后台归一化，禁止拿来生成新文案)**、**AI 安全改写 `src/lib/gpt-image-safety-retry.ts`(`isGptImageSafetyFailure`/`runPromptSafetyRetry`/`ensureMentionNamesPreserved`：⛔⭐ **2026-07-29 起只有工作流用它** —— 对话流与资产库那两套已按用户拍板整体撤掉（对话流"一条提示词出多图"，每张独立改写会让显示的提示词对不上；且并发多链会互抢 `message.requestId` 导致成功图被静默丢弃，正式服实测 17 张成功只剩 2 张、白烧 197 积分）。⭐ **2026-07-30 用户拍板：对话流的 AI 改写彻底不做了（原 M021 已取消），别把删掉的代码捡回来、也别再提重做。**)**、**参考素材 url 归一化 `src/lib/reference-asset-url.ts`(`normalizeReferenceAssetUrl`/`normalizeReferenceAssetUrls`：进模型/送审前必过。把「给人看的动态缩略图接口地址 `/api/media-thumbnail?url=`」和「自家主机绝对前缀（含已退役马来 IP）」一律还原成文件静态直链 —— 平台是来"上门自取"的，给它动态接口它会现场等我们生成缩略图然后超时。8 处咽喉共用：image/video/byteplus-assets 三个 route 入口 + `generation-jobs.resolveReferenceUrls` + openrouter/openrouter-video/seedance/video-route 的底层拼址，禁止再在别处自己判 `startsWith("/generated/")`)**、参考图 hint `src/lib/reference-hint.ts`、错误文案 `src/lib/error-message.ts`、登录失效跳转 `src/lib/session-expired-redirect.ts`、@提及匹配/删除 `src/lib/mention-text.ts`（⭐ 2026-08-02 起也是 **contenteditable 选区引擎的唯一权威**：`getEditableText`/`appendEditorText`/`getSelectionTextOffset`/`getSelectionTextRange`/`setSelectionTextOffset`/`getAtQueryAtCursor(ForReferences)`，对话流输入框与工作流节点输入框共用，采用「mention 原子化」版本——光标绝不落进 @文件名 span 内部；原来两处各存一份且已漂移）、上传文件命名 `src/lib/upload-name.ts`(`resolveUploadName`：同图复用名/异名错开_2/去扩展名/改名跟随；对话流·工作流·资产库 图·视频·音频·文档统一走它，前端只显示服务端返回的 `name`，禁止再在前端各写一套取名/版本化逻辑)、音频波形播放器 `src/components/audio-waveform-player.tsx`(`AudioWaveformPlayer`：wavesurfer.js，`variant="node"` 工作流画布音频节点 / `variant="card"` 资产库上传音频方卡；工作流·资产库统一走它，禁止再各写一套音频播放 UI)、视频播放按钮角标 `src/components/video-play-badge.tsx`(`VideoPlayBadge`：全平台所有视频缩略图中间的播放标记，5 档 size；对话流·工作流·资产库·@引用·图层·后台·上传缩略图统一走它)、**媒体时长校验 `src/lib/media-upload-validation.ts`(`MEDIA_DURATION_EPSILON_SECONDS` 唯一容差常量 + `validateReferenceMediaDurationRange` 单条时长校验唯一实现 + `validateReferenceVideoDimensions` 参考视频纯尺寸校验唯一实现【2026-08-02 收敛，原来 chat-core 和 workflow-inner 各手抄一份 300/6000/0.4/2.5/409600/8295044】；对话流·工作流·服务端三处共用，禁止再在组件里写本地副本——历史上就是各写一份导致 15.35/15.35/16.01 三个数都错)**、**参考素材总时长 `src/lib/upload-rules.ts`(`validateReferenceTotalDuration`)**、**工作流节点下载 `downloadWorkflowNode()`(`workflow-tldraw-canvas-inner.tsx`，图片/视频/文本通用；右键菜单与快捷菜单共用，禁止再内联写一份)**、**静态媒体地址 `src/lib/static-media-url.ts`(`getStaticMediaUrl`/`toLocalGeneratedUrl`/`shouldUseStaticAssetBaseUrl`：对话流·工作流画布统一走它，禁止再各写一份——工作流画布原来那份是空函数，从没生效过)**、**AUTH_SECRET 读取 `src/lib/auth-secret.ts`(`getAuthSecret`：生产没配直接抛错，禁止再写 `|| "flashmuse-local-dev-secret-change-me"` 兜底)**、**接口限流 `src/lib/rate-limit.ts`(`rateLimitAllow`/`getClientIp`)**、**诊断日志轮转 `src/lib/diagnostics-log-rotate.ts`(`appendDiagnosticsJsonl`：三个 diagnostics-log 统一走它，超 20MB 轮转成 .1)**。
+- 已有的统一入口举例（改相关功能务必复用，勿另起炉灶）：**内容审核 `src/lib/content-moderation.ts`(唯一权威：`CONTENT_POLICY_ERROR_MESSAGE`/`CONTENT_POLICY_ERROR_CODE`/`SENSITIVE_POLITICS_CATEGORY`/`normalizeContentModerationText`/`splitContentModerationTerms`/`findContentPolicyMatch`/`enforceContentPolicy`/`processContentModerationQueue` + `MODERATION_MODEL_CHAIN`：2026-08-07 新增。⭐ 入口只有两处 `/api/image` 与 `/api/video`（覆盖对话流/工作流/资产库/Agent 的生成提示词），⛔ 不管普通聊天/通用模式/Agent 对话/提示词优化/图片反推。⭐ 审核一律喂 `sourcePrompt`（用户原话）。⭐ 语义审核候选链 = `openai/gpt-5.6-terra-pro`(openrouter, key `moderation.priority`) → `byteplus:chat.seed-2-0-pro`(key `moderation.seed-2-0-pro`)，两个默认都开；⛔ 新增模型要三处一起改：`MODERATION_MODEL_CHAIN` + `system-settings` 的两张默认表 + 后台 `admin-system-settings-panel.tsx` 的「内容审核语义模型」那一行。⛔ 这里故意不复用 `openrouter.ts` 的 `getTextProviderConfig`/`postChatCompletion`（那条路没超时、非 200 还回落 curl，对审核太重）)**、图片缩略图生成 `src/lib/local-assets.ts`(`ensureGeneratedImageThumbnail(url, { syncToAli })` 唯一实现 + `createGeneratedImageThumbnail` 薄封装：2026-08-04 收敛，原来 `api/media-thumbnail/route.ts`（浏览器请求时**懒生成**）和 `local-assets.ts`（生成图落盘时**即时生成**）**一字不差存了两份**（连 `scale=256:256`/`-q:v 5`/timeout 都一样）。⭐ 分叉的代价是真实的：懒生成那份**从来不同步阿里** → 阿里镜像里上传图缩略图长期一张都没有。⭐ `syncToAli` 是**选项且默认 false**：即时生成那 5 个调用方是把 `[localUrl, thumbnailUrl]` **合成一次** `syncGeneratedFilesToAli` 发的，那次的 `ok` 就是 `job.aliSynced`（前端拿它判断能不能读阿里镜像），无条件同步会重复传 + 让语义变模糊。⛔ 路径穿越校验和后缀白名单**刻意留在路由**（只有它的入参来自用户），别下沉)**、进库 `src/lib/media-asset-record.ts`(`buildMediaAssetRecord`/`classifyAsset`)、生成任务与读取 `src/lib/generation-jobs.ts`、扣费 `src/lib/credits.ts`(`chargeCredits`)、**腾讯→阿里文件传输 `deploy/ali-parallel-pull.sh`(阿里侧并发分片拉取器，唯一实现) + `src/lib/ali-sync.ts`(应用侧调用) + `scripts/backfill-ali-media.sh`(补历史缺口) + `src/lib/transfer-log.ts`(传输速度日志唯一实现)：2026-08-04 新增，⛔ 别再写第二份分片逻辑、⛔ 别退回单流 rsync，原理与实测数据见本文件「腾讯↔阿里传文件一律走并发分片」那条铁律**、**视频用量/成本 `src/lib/video-usage-cost.ts`(`getVideoUsageMeta`/`withVideoUsdFallback`/`withChargedVideoUsage`：2026-08-03 收敛，原来 `api/video/route.ts`（前台同步轮询）和 `generation-jobs.ts`（后台队列）**各存一份一字不差的** getUsageMeta/withBytePlusVideoUsd/withChargedUsage —— 扣费金额是钱，两份各自演化就会"一条路扣对、另一条路白送"。⭐ 里面还有**兜底定价**：上游没给 `usage.usd` 时按公式算并标 `usdFromFallbackPricing`，因为 `usd=0` 是**静默白送**、不报错也不进红字)**、**视频参考模式 `src/lib/upload-rules.ts`(`VideoReferenceMode` 类型 + `supportsVideoReferenceMode`/`getVideoReferenceImageMaxCount`/`getEffectiveVideoReferenceItems`/`getVideoReferenceLimitHint`) + `src/lib/video-reference-modes.ts`(`getVideoReferenceModeOptions`/`getVideoReferenceModeLabel`/`getRequiredVideoReferenceImageCount`：**选项按模型给** —— BytePlus Seedance 3 项、Hailuo 3 四项含尾帧；2026-08-03 收敛，工作流原来那份本地类型**漏了 `last_frame`**，直接导致 H3 一开始不敢在工作流放出来)**、**NEW 徽标 `src/components/new-badge.tsx`(`NewBadge`，配 `models.ts` 的 `isNewGenerationModel`：原来模型下拉是青绿小圆角、侧边栏「工作流模式」是绿色胶囊，同一个东西两种长相，2026-08-03 用户拍板统一)**、模型→端点键 `src/lib/byteplus-provider-key.ts`、**模型拒绝文案 `src/lib/error-message.ts`(`MODEL_REFUSED_PREFIX` + `isModelRefusedMessage` + `buildModelRefusedMessage`：⭐ 2026-07-29 起「模型拒绝 / 平台安全策略 / 版权限制」**三类合并成唯一一句**「模型因色情/暴力/隐私安全等原因拒绝出图，你可以调整提示词或更换参考图后重试。以下是模型返回的拒绝原因：“…”」，不再按模型分"能不能AI改写"。⛔ 改这句必须同步改三处：`gpt-image-safety-retry.ts` 的**前缀**判定、`admin-failure-triage.ts` 的 `FAILURE_REASON_SQL` 归一化、`error-message.ts` 顶部的幂等保护；`LEGACY_MODEL_REFUSED_MESSAGES` 里的老文案只用于判定/后台归一化，禁止拿来生成新文案)**、**AI 安全改写 `src/lib/gpt-image-safety-retry.ts`(`isGptImageSafetyFailure`/`runPromptSafetyRetry`/`ensureMentionNamesPreserved`：⛔⭐ **2026-07-29 起只有工作流用它** —— 对话流与资产库那两套已按用户拍板整体撤掉（对话流"一条提示词出多图"，每张独立改写会让显示的提示词对不上；且并发多链会互抢 `message.requestId` 导致成功图被静默丢弃，正式服实测 17 张成功只剩 2 张、白烧 197 积分）。⭐ **2026-07-30 用户拍板：对话流的 AI 改写彻底不做了（原 M021 已取消），别把删掉的代码捡回来、也别再提重做。**)**、**参考素材 url 归一化 `src/lib/reference-asset-url.ts`(`normalizeReferenceAssetUrl`/`normalizeReferenceAssetUrls`：进模型/送审前必过。把「给人看的动态缩略图接口地址 `/api/media-thumbnail?url=`」和「自家主机绝对前缀（含已退役马来 IP）」一律还原成文件静态直链 —— 平台是来"上门自取"的，给它动态接口它会现场等我们生成缩略图然后超时。8 处咽喉共用：image/video/byteplus-assets 三个 route 入口 + `generation-jobs.resolveReferenceUrls` + openrouter/openrouter-video/seedance/video-route 的底层拼址，禁止再在别处自己判 `startsWith("/generated/")`)**、参考图 hint `src/lib/reference-hint.ts`、错误文案 `src/lib/error-message.ts`、登录失效跳转 `src/lib/session-expired-redirect.ts`、@提及匹配/删除 `src/lib/mention-text.ts`（⭐ 2026-08-02 起也是 **contenteditable 选区引擎的唯一权威**：`getEditableText`/`appendEditorText`/`getSelectionTextOffset`/`getSelectionTextRange`/`setSelectionTextOffset`/`getAtQueryAtCursor(ForReferences)`，对话流输入框与工作流节点输入框共用，采用「mention 原子化」版本——光标绝不落进 @文件名 span 内部；原来两处各存一份且已漂移）、上传文件命名 `src/lib/upload-name.ts`(`resolveUploadName`：同图复用名/异名错开_2/去扩展名/改名跟随；对话流·工作流·资产库 图·视频·音频·文档统一走它，前端只显示服务端返回的 `name`，禁止再在前端各写一套取名/版本化逻辑)、音频波形播放器 `src/components/audio-waveform-player.tsx`(`AudioWaveformPlayer`：wavesurfer.js，`variant="node"` 工作流画布音频节点 / `variant="card"` 资产库上传音频方卡；工作流·资产库统一走它，禁止再各写一套音频播放 UI)、视频播放按钮角标 `src/components/video-play-badge.tsx`(`VideoPlayBadge`：全平台所有视频缩略图中间的播放标记，5 档 size；对话流·工作流·资产库·@引用·图层·后台·上传缩略图统一走它)、**媒体时长校验 `src/lib/media-upload-validation.ts`(`MEDIA_DURATION_EPSILON_SECONDS` 唯一容差常量 + `validateReferenceMediaDurationRange` 单条时长校验唯一实现 + `validateReferenceVideoDimensions` 参考视频纯尺寸校验唯一实现【2026-08-02 收敛，原来 chat-core 和 workflow-inner 各手抄一份 300/6000/0.4/2.5/409600/8295044】；对话流·工作流·服务端三处共用，禁止再在组件里写本地副本——历史上就是各写一份导致 15.35/15.35/16.01 三个数都错)**、**参考素材总时长 `src/lib/upload-rules.ts`(`validateReferenceTotalDuration`)**、**工作流节点下载 `downloadWorkflowNode()`(`workflow-tldraw-canvas-inner.tsx`，图片/视频/文本通用；右键菜单与快捷菜单共用，禁止再内联写一份)**、**静态媒体地址 `src/lib/static-media-url.ts`(`getStaticMediaUrl`/`toLocalGeneratedUrl`/`shouldUseStaticAssetBaseUrl`：对话流·工作流画布统一走它，禁止再各写一份——工作流画布原来那份是空函数，从没生效过)**、**AUTH_SECRET 读取 `src/lib/auth-secret.ts`(`getAuthSecret`：生产没配直接抛错，禁止再写 `|| "flashmuse-local-dev-secret-change-me"` 兜底)**、**接口限流 `src/lib/rate-limit.ts`(`rateLimitAllow`/`getClientIp`)**、**诊断日志轮转 `src/lib/diagnostics-log-rotate.ts`(`appendDiagnosticsJsonl`：三个 diagnostics-log 统一走它，超 20MB 轮转成 .1)**。
 - ⛔⛔ **往 `WorkflowSelectedNodeOverlay`（工作流选中节点浮层、含图片/视频快捷菜单）里加 Hook 会把整个 tldraw 画布搞崩**（2026-07-29 踩过）：它在 `workflow-tldraw-canvas-inner.tsx:2493` 有 `if (!selected) return null;`，在其**之后**加 `useMemo`/`useState` 等 → **React #310「Rendered more hooks than during the previous render」** → 点任意节点，画布整个变成「Something went wrong / Please refresh your browser」。**加在提前 return 之前，或干脆别用 Hook。**
 - ⛔⛔ **排查对话流失败卡时必读（2026-07-29 踩过、误报过一次）**：失败卡包在 **`<LazyMediaMount height={250}>`**（`chat-workbench.tsx:16531`）里 —— **滚进视口才挂载**，没进视口时 DOM 里根本没有卡；而红字**不在**这个组件里、一直显示。所以**「红字在、卡不在」是正常现象，不是数据丢了**。用 `querySelectorAll('.flashmuse-failed-media-card')` 统计失败卡不可靠，必须先 `scrollIntoView` 再断言。
 - ⛔ **"某条原因高度集中在一个入口"不一定是分叉**（2026-07-29 踩过）：后台「失败排查」页那条设计意图会给假信号 —— 先去看「失败最多的用户」卡，如果也集中在一个人，那是用户行为不是代码分叉（101 条里 76 条是同一个人三天刷出来的）。

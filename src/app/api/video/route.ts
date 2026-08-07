@@ -12,6 +12,7 @@ import { enqueueRemoteAssetSave } from "@/lib/media-save-queue";
 import { getMediaSaveStatuses } from "@/lib/media-save-queue";
 import { upsertVideoManifestEntry } from "@/lib/video-manifest";
 import { getUploadRuleOverrides, isAgentVideoModelEnabled, isConversationVideoModelEnabled } from "@/lib/system-settings";
+import { CONTENT_POLICY_ERROR_CODE, CONTENT_POLICY_ERROR_MESSAGE, enforceContentPolicy } from "@/lib/content-moderation";
 import { prisma } from "@/lib/prisma";
 import { appendUploadRuleFeedbackLog } from "@/lib/upload-rule-feedback-log";
 import { appendVideoDiagnosticsLog, summarizeVideoReference } from "@/lib/video-diagnostics-log";
@@ -570,6 +571,7 @@ export async function POST(request: Request) {
     workflowNodeId?: string;
     itemIndex?: number;
     sourcePrompt?: string;
+    suppressContentModerationRecord?: boolean;
   } | undefined;
 
   // ⭐ 提到 try 外面：`const user` 是在 try 里面拿的，catch 看不到它 →
@@ -601,6 +603,7 @@ export async function POST(request: Request) {
       workflowNodeId?: string;
       itemIndex?: number;
       sourcePrompt?: string;
+      suppressContentModerationRecord?: boolean;
     };
 
     const taskId = body.taskId?.trim();
@@ -781,6 +784,10 @@ export async function POST(request: Request) {
     const user = await getCurrentUser();
     currentUserId = user?.id;
     await assertUserCanUseCredits(user, "video");
+    // ⭐ 审核只看「用户自己写的那句」（sourcePrompt），理由同 /api/image。
+    const moderationPrompt = (typeof body.sourcePrompt === "string" && body.sourcePrompt.trim()) ? body.sourcePrompt.trim() : prompt;
+    const policy = await enforceContentPolicy({ prompt: moderationPrompt, userId: user?.id, requestId, kind: "video", source: creditSource?.startsWith("workflow_") ? "workflow" : creditSource === "agent_video_generation" ? "agent" : "conversation", recordEvent: !body.suppressContentModerationRecord });
+    if (policy.blocked) return NextResponse.json({ error: { message: CONTENT_POLICY_ERROR_MESSAGE }, errorCode: CONTENT_POLICY_ERROR_CODE, status: "failed" }, { status: 400 });
     // 按账号的「解除限制」（后台「帐号功能管理」）。本 handler 下面 5 处创建视频任务共用这一个值，
     // 拿不到用户时回落全局 BYTEPLUS_UNLOCK_LIMITS。
     const unlockLimits = await resolveUnlockLimitsForUser(user?.id);

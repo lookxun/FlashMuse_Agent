@@ -32,6 +32,479 @@
 
 ---
 
+## 2026-08-08（第四十八次会话）：内容审核全套上正式服 —— 两服部署 `v1.0.0.81`（3 个迁移）+ **正式服 586 敏感词同步生效** + 端到端验通 + 后台页 8 项验收 + 四方同步
+
+> 🗣️ **用户指令**：「先把本地新内容全部部署到测试服，然后测试一下有没有问题。。没问题后全部推到正式服。正式服的敏感词也要同步。最后推一次 github」
+> 🗣️ 追加：「正式更新后要上号看一下别崩了」
+>
+> **结果：本地 = 测试服 = 正式服 = GitHub = `v1.0.0.81`，全部完成并验通。**
+
+### 一、⚠️ 起点：本地代码远超测试服 v80，必须先 bump
+
+第 47 次会话把 v80 部署到测试服后**又改了一批代码**（眼睛隐藏 / 页面编辑锁 / 密码 / 2 个新 DB 列），全都没部署。
+按铁律（v80 部署后改了代码，⛔ 不许原地覆盖同版本号）→ **先 `node scripts/bump-version.mjs`（v80 → v81）**，`tsc` exit 0。
+
+### 二、测试服部署 v81
+
+1. **清单法打包 22 个条目**（`.runtime/v81-files.txt` → `v81.tgz`）：schema + **3 个迁移目录** + 内容审核全部文件（`content-moderation.ts` / panel / route / verify route）+ image/video 路由 + chat-workbench 两个 + generation-worker + system-settings + admin page + app-version。
+2. scp → `sudo tar -xzf -C /opt/flashmuse-staging/app` → ⭐ **解包后立刻 grep 确认**：`APP_VERSION = "v1.0.0.81"`、`editUnlocked` 命中、3 个 `content_moderation` 迁移目录都在。
+3. 后台 build（`chown -R node:node /app` 那步单独 115s，总约 2.5 分钟）。
+4. ⭐ **2 个新迁移自动应用**（日志实证）：`Applying migration 20260807120000_content_moderation_terms_hidden` + `...130000_content_moderation_edit_unlocked` + `All migrations have been successfully applied`（36 migrations found）。
+5. `sync-ali.sh --stack=staging --with-generated` → 「✅ 两端已一致，无需传输」。
+6. 发版本信号（`.env` 只剩 1 行 `PUBLISHED_APP_VERSION=v1.0.0.81` + force-recreate）→ `/api/health` = v81、`x-app-version` = v81、8080 = 200。
+
+### 三、正式服部署 v81（严格按 `03` 流程）
+
+| 步骤 | 结果 |
+|---|---|
+| DB pre-deploy 备份（带迁移批次**必做**） | `EXIT=0` |
+| app 目录备份 | **`20260808-072915-presync-v1.0.0.81`**（145M） |
+| staging→prod rsync（⛔ **不再 bump**） | `RSYNC_EXIT=0`；prod 源码 = v81；`MIGRATIONS=36`、`CM_MIGRATIONS=3`、CM_LIB/PANEL/VERIFY 全 yes |
+| build | 容器 healthy、`/api/health` = v81 |
+| **3 个迁移全部应用** | 日志实证 3 条 `Applying migration` + `All migrations...applied`；`NEW_COLS=2`、`CM_TABLES=3` |
+| `.next/static` 推阿里**正式**镜像 | **腾讯 40 = 阿里 40** |
+| 发版本信号 + 四域名 | `x-app-version` = v81、main/api/ali/static **全 200** |
+
+### 四、⭐⭐ 正式服敏感词同步（用户点名要的）
+
+正式服原状：规则组 1 条但 **`TERMS=0`、`enabled=false`**（= 审核等于没开）。测试服有 586 词。
+
+⭐ **做法（守两条铁律）**：
+- ⛔ **中文绝不经 PowerShell** → 整个搬运在服务器内完成：测试库 `\copy (SELECT value, normalized ...) TO '/tmp/terms.tsv'` → `docker cp` → 正式库 `\copy` 进临时表 → INSERT。
+- ⛔ **绝不删用户已有行** → **纯 `INSERT ... ON CONFLICT DO NOTHING` + `UPDATE enabled=true`**，一行都没删。
+
+```
+EXPORTED_LINES=586   BEFORE_TERMS=0  BEFORE_ENABLED=false
+INSERT 0 586         UPDATE 1
+FINAL_TERMS=586      FINAL_ENABLED=true
+```
+
+⭐ 两服组 id 不同（各自独立），所以 INSERT 时用 `CROSS JOIN` 按 `category='sensitive_politics'` 取**正式服自己的** groupId。
+
+### 五、⭐⭐⭐ 本次最值钱的教训：`atob()` 不解 UTF-8 —— 我因此一度误判"内容审核没生效"
+
+第一次端到端测试：我把词库里的词用 base64 传进浏览器，`atob(b64)` 拿到"词"再发给 `/api/image` →
+**得到 500 / B_193，不是预期的拦截**。差点报"审核在正式服失效"。
+
+⭐ **查清过程（全是二值判据，值得照抄）**：
+1. **查诊断日志** → 6 条事件显示请求走到了 `image-provider-request-start` → **说明审核压根没拦、直接打到供应商**。
+2. **查事件表** → `MY_EVENTS=1 / ACTIONS=semantic_review` → ⭐ **审核代码确实跑了**（否则不会有事件），只是**关键词没匹配上**。
+3. **查数据** → `TERMS=586 / MINLEN=1 / MAXLEN=9 / EMPTY=0`、`JOINED_ROWS=586` → 数据没问题。
+4. ⭐⭐ **在容器内用真实模块 + 真实数据比对**（`diagmatch.cjs`）：
+   `STORED_EQUALS_RECOMPUTED=true`、`INCLUDES_STORED=true`、**`FIND_RESULT=HIT`**
+   → **逻辑和数据都对**，问题只可能在"我发过去的字符串"。
+5. **定案**：`atob()` 返回的是 **latin1 字节串**，UTF-8 中文没被解码 → 我发出去的是**乱码**，自然不命中。
+
+⭐ **正解**：`new TextDecoder('utf-8').decode(Uint8Array.from(atob(b64), c => c.charCodeAt(0)))`。
+改对之后**立刻命中**：`400 + CONTENT_POLICY_BLOCKED + 「你输入的内容不符合平台规则，请更换内容后重试！」`。
+
+⭐ **判据沉淀**：**"审核没拦"要先分清"代码没跑"还是"没匹配上"** ——
+`semantic_review` 事件的存在就是"代码跑了"的铁证（因为它只由 `enforceContentPolicy` 产生）。
+
+### 六、正式服端到端验证（全部二值）
+
+| 验证项 | 结果 |
+|---|---|
+| 命中词库 | **400 + `CONTENT_POLICY_BLOCKED`** + 干净中文文案，⭐ **不带 `B_xxx`**（符合用户口径） |
+| 命中时扣费 | **0**（积分未动） |
+| 正常提示词 | **不被误拦**（进到供应商） |
+| 真跑生图 | **200 + 1 张图**，积分 9,726 → **9,723（−3）** |
+| 语义审核异步链路 | 3 条 `semantic_review` **全部处理完**：`flagged 1` / `clear 2`，⭐ **且从不拦截用户** |
+
+⭐ **两次供应商失败（B_193/B_194）也 0 扣费** —— 只有成功那次扣了 3 分，账目完全对得上。
+
+### 七、⭐ 后台内容审核页 8 项验收全过（第 46/47 次会话一直挂着的"没人亲眼验过"，本次一次性验完）
+
+用 `lookxun@163.com` 登后台（唯一允许用管理员号的场合，**只看页面、没在上面生成东西**）：
+
+1. ✅ 菜单「内容审核」在「**服务器信息」正上方**。
+2. ✅ **进页面 = 锁定态**：`.pointer-events-none.select-none` + **opacity 0.45**（淡化+禁用，滚动照常）。
+3. ✅ **词库默认隐藏**：`***，*****，*****，**…` —— ⭐ **只把词的字符变 `*`，中文逗号「，」完整保留**；且 `readOnly=true` 防误改。
+4. ✅ **错密码**：显示「密码错误」、**弹窗不关、仍锁定**。
+5. ✅ **`dragonstar` 解锁成功**：弹窗关闭、淡化层消失、文案变「**已解锁，可编辑**」。
+6. ✅ **解锁后词库仍隐藏**（符合"要另点眼睛"的设计）；点眼睛 → 显示原文、`readOnly=false`、**逗号数 +1 = 586，与库里完全一致**。
+7. ✅ **离开页面自动恢复锁定**：切到「服务器信息」后查库 → **`editUnlocked=false`**（写库成功）。
+8. ✅ `已拦截记录` 表头是「**命中**」、**没有"加入词库"按钮**；`语义审核待确认` **有**「加入词库」；用户列**邮箱第一行 / ID 第二行**。
+
+⭐ 顺带确认第 46 次那个修复真的生效：已拦截记录里显示的是**用户原话**（`sourcePrompt`），不是拼接后的系统提示词。
+⭐ 开关是蓝色 `bg-[#367cee]` = **已开启**，与 `enabled=true` 一致。
+⛔ **全程没点「保存规则」**（避免任何风险碰到那 586 词）。
+
+### 八、巡检 6 项（🗣️ 用户特别要求"别崩了"）
+
+1. ✅ 登录进工作台（页脚 `版本号:v1.0.0.81`，无 `(t)` = 正式服）
+2. ✅ 对话模式：42 条历史列表正常渲染
+3. ✅ 工作流模式：tldraw 画布打开正常，**点节点不崩**（无 React #310 "Something went wrong"）
+4. ✅ 资产库：**33 张缩略图全部加载**（33/33）
+5. ✅ 真跑生图成功
+6. ✅ 后台 `/admin` 能进
+
+⭐ **正常浏览期间 0 console error**。唯一 3 条 error **全是我自己的测试调用**（2 次故意写错 model id + 1 次故意触发拦截）。
+
+### 九、⚠️ 本次留痕（⛔ 下一任别当成用户数据）
+
+- 正式服 `12424740@qq.com`（**ID_636611**）：**−3 积分**（9,726 → 9,723）+ 新增 1 张生成图（对话「v81 正式服巡检」）。
+- 正式服后台：**1 条已拦截记录 + 3 条语义审核记录**（都是我的验证调用）。
+- ⚠️⚠️ **红字 B_193 / B_194 是我 model id 写错造成的**（用了 `byteplus:seedream-4-5`，正确是 `byteplus:conversation-image.seedream-4-5`）
+  → ⛔ **不是用户问题、不是 bug**，排查红字时**请跳过**。
+- 测试服：本次**没跑生成、零积分消耗**。
+- 🧹 已删临时脚本 `.runtime/fill-moderation-local.mjs`。⛔ **本次零删用户数据。**
+
+### 十、踩坑与经验（已同步进 `AGENTS.md` / `03`）
+
+1. ⭐⭐ **`atob()` 不解 UTF-8**（见第五节）——中文 base64 必须 `TextDecoder`。
+2. ⛔ **PowerShell 又吞了 ssh 里的内层引号**（查 `editUnlocked` 那条 psql 直接 ParserError 一片）→ 老实写 `.sh` scp 上去跑。
+3. ⭐ **远端命令输出含中文会让 bash 工具返回异常** → 一律 `tr -cd '\40-\176\12'` 只留 ASCII，或用 base64 输出，中文永不过管道。
+4. ⭐ **"备份+对齐"脚本我第一次误以为跑成了**（输出被工具吞）→ 结果 prod 还是 v76、没有 build 日志。
+   **判据：直接 grep 服务器上的 `APP_VERSION` + `ls` build 日志**，别信"我记得跑过"。
+5. ⭐ **正确的图片模型 id 在 `src/lib/models.ts`**（`byteplus:conversation-image.seedream-4-5`），
+   ⛔ `/api/models` 返回的是**文本模型**列表，别拿它找图片模型。
+
+---
+
+## 2026-08-07（第四十七次会话）：内容审核后台页迭代 —— 词库填库(586)+ 隐藏眼睛开关 + 页面级编辑锁(密码/进库/跨浏览器) + 加入词库改逗号追加；测试服只到 `v1.0.0.80`
+
+> ⚠️ **本节的"未部署 / 未 commit"状态已在第四十八次会话全部解决**（两服已上 `v1.0.0.81`、已 push）。
+> ⛔ 别照这一节判断当前版本状态，看顶条。
+
+> 🗣️ 用户这次一路加需求、边加边改，最终形态见下。接手第一件事：**本地代码已远超测试服 v80**，别以为 v80 = 本地。
+
+### ⚠️⚠️ 版本/环境真相（最重要，先看）
+
+| | 状态 |
+|---|---|
+| 本地代码 | 版本串仍 `v1.0.0.80`，**但带着一大批 v80 之后的新功能（眼睛/锁/密码/两个新 DB 列），全部未 commit、未部署** |
+| 测试服 | `v1.0.0.80`：**只含本会话第 1 件事（后台"保存规则"那行蓝字挪位）**。DB 只有原始列（`id/category/label/enabled/createdAt/updatedAt`），**没有** `termsHidden`/`editUnlocked`；586 词 + `enabled=true` 在（数据行） |
+| 正式服 | 仍 `v1.0.0.76`，无内容审核功能 |
+| 本地 DB | 有 `termsHidden` + `editUnlocked` 两列（本会话两个新迁移已本地执行）；586 词 + `enabled=true` |
+
+⛔⛔ **要部署测试服必须先 `node scripts/bump-version.mjs`（→ v81）**，因为 v80 部署后又改了代码（铁律：改了就必须重新 bump、不许原地覆盖同版本号）。
+⭐ **本会话新增两个 Prisma 迁移**（`20260807120000_content_moderation_terms_hidden`、`20260807130000_content_moderation_edit_unlocked`），部署时 entrypoint 会自动 `migrate deploy`；⛔ 但测试服现在还没有这两列，别在测试服后台去点隐藏/锁（会 500）直到重新部署。
+
+### 本会话按时间顺序做的事
+
+1. **后台"保存规则"蓝字挪位**（唯一已部署到 v80 的改动）：`审核已开启/已关闭` 挪到开关右边；`已保存 N 个匹配项`/`已复制…`/`保存失败` 挪到保存按钮**左侧**，按钮固定右对齐。判据不变：message 含"失败"就红、否则蓝。→ **bump v79→v80、完整部署测试服**（build→sync-ali→发版本信号，`/api/health`+`x-app-version`=v80、8080=200）。
+
+2. **找敏感政治词库并填库**：拉 GitHub `konsheng/Sensitive-lexicon` 的 `Vocabulary/政治类型.txt`(326) + `反动词库.txt`(557)。按"适合生图场景"筛（政治类全留含领导人姓名/谐音变体；反动词库去掉纯拼音/字母数字谐音、聊天动词串罢工/游行/上访、境外媒体软件名）→ 去重 **602 词**，Playwright 登录测试服后台填入 + 保存 + 开开关。
+   - 之后用户要删偏泛词，删掉 16 个（政府/中南海/西藏/藏西/拉萨/阿拉伯/安拉/真主/清真/穆斯林/伊斯兰/解放军/主席画像/改革历程/政治风波/贪污腐败）→ **586 词**，测试服重新保存。
+   - ⭐ 又用脚本 `.runtime/fill-moderation-local.mjs`（复用 `splitContentModerationTerms`+`normalizeContentModerationText`，和后台 POST 同机制）把 586 词写进**本地库**，`enabled=true`。原始/筛后词表在 `C:\Users\ASUS\AppData\Local\Temp\opencode\`（`政治类型.txt`/`反动词库.txt`/`final-terms.txt`(602)/`final-terms2.txt`(586)）。
+
+3. **隐藏眼睛开关**（`admin-content-moderation-panel.tsx`）：词库输入框上方、后来挪到"敏感政治内容"标题**同一行右侧**（`ml-auto`）。开=隐藏：文本 `terms.replace(/[^\n,，]/g,"*")` → 只把词的字符变 `*`、**换行和中英文逗号保留**，且 `readOnly` 防遮蔽下误改；关=原文可编辑。眼睛图标随状态切换（`RiEyeOffLine` 蓝/`RiEyeLine` 灰）。⭐ 进页面**默认隐藏**（`hidden` 初始恒 `true`），要手动点才显示原文。
+
+4. **页面级编辑锁**（取代"每个操作单独弹密码"的中间方案，⛔ 别把中间那版捡回来）：
+   - 顶部"内容审核"标题后加锁开关（`RiLockLine`/`RiLockUnlockLine`）。**锁定态**：整页内容外层 `pointer-events-none select-none opacity-45`（禁用+淡化，**滚动照常**——滚轮不受 pointer-events 影响）；锁开关本身在淡化层**外面**所以可点。
+   - 点开关（锁定时）→ 弹密码框；解锁不需数据变更、锁定不需密码。
+   - **密码固定 `dragonstar`，源码只存 scrypt 哈希不存明文**：常量 `MODERATION_ACTION_PASSWORD_HASH` 在 `route.ts`，`verifyModerationActionPassword()` 用 `verifyPassword`(scrypt) 比对；改口令重新生成一条 scrypt 串替换即可。
+   - **锁状态进库、跨浏览器共享**：新列 `editUnlocked`。解锁走 `POST /admin/api/content-moderation/verify {unlocked:true,password}`（校验密码→写 `editUnlocked=true`）；锁定 `{unlocked:false}`（无密码→写 false）。page.tsx 读 `editUnlocked` 做 `initialUnlocked`。
+   - **离开页面自动恢复锁定**：`useEffect` 卸载清理 + `pagehide` 都发 `{unlocked:false}` 写库（`keepalive:true` 保证导航卸载时也能发出）。→ 所以"进来锁定/切走再回来还是锁定"是靠"离开即写库锁定"实现的，DB 为唯一真相。
+   - 解锁时不自动揭示词库（`hidden` 仍 true，要另点眼睛）；锁定时 `setHidden(true)`。
+
+5. **加入词库改逗号追加**：`copyPromptToTerms` 由换行改成在最后一个词后用中文逗号「，」跟着追加（`${cur.trim()}${cur.trim()?"，":""}${prompt}`）。此操作已回到"直接执行"（由页面锁统一管控，不再单独弹密码）。
+
+### 本会话改动的文件（都未 commit）
+
+- `prisma/schema.prisma`：`ContentModerationRuleGroup` 加 `termsHidden`、`editUnlocked` 两列。
+- `prisma/migrations/20260807120000_content_moderation_terms_hidden/`、`20260807130000_content_moderation_edit_unlocked/`（新迁移，本地已 deploy）。
+- `src/app/admin/admin-content-moderation-panel.tsx`（眼睛/锁/密码弹窗/逗号追加/淡化）。
+- `src/app/admin/api/content-moderation/route.ts`（`verifyModerationActionPassword` + scrypt 口令哈希；POST 加 `termsHidden` 写入，⭐ 但 POST 本身**不再**校验密码——锁是页面级）。
+- `src/app/admin/api/content-moderation/verify/route.ts`（新增：校验密码 + 写 `editUnlocked` 状态）。
+- `src/app/admin/page.tsx`（读 `termsHidden`/`editUnlocked` 传初始值）。
+- `src/lib/app-version.ts`（v80）。
+
+### ⚠️ 已知取舍 / 给下一个 AI 的提醒
+
+- ⚠️ **`prisma generate` 本会话报 EPERM**（query_engine dll 被占用，可能有 node 进程/dev server 占着），但全程用 raw SQL、不依赖生成类型，`tsc --noEmit` 全绿。要干净就关掉占用进程再 `npx prisma generate`。
+- ⚠️ **`initialHidden`（DB `termsHidden`）现在没用于初始显示**（进页面恒隐藏），眼睛开关仍会 POST 存它但对显示无影响——属于半废字段，是否清理待用户定。
+- ⚠️ 锁是**页面级 UX + 共享状态**，服务端 mutation（enabled/terms/hidden 的 POST）仍只靠管理员 cookie，没按 `editUnlocked` 硬拦——够用但不是强隔离。
+- ⭐ 本会话**没删任何用户数据**；测试服后台的 586 词是配置数据（用户要的），别当垃圾清。
+- 🧹 临时脚本 `.runtime/fill-moderation-local.mjs` 跑完可删（按铁律临时脚本别留仓库）。
+
+---
+
+
+
+> 🗣️ **用户起点**：要一套「敏感政治内容」审核 —— 词库命中直接拦截、未命中的做异步语义审核**只记录不拦截**，
+> 后台能看完整提示词、能把疑似内容"加入词库"再人工删改。
+> 🗣️ 中途拍板的几句（都是硬口径，照它办）：
+> - 拦截红字统一「**你输入的内容不符合平台规则，请更换内容后重试！**」，**不带 `B_xxx`**，前端仍用现有失败卡。
+> - 「已拦截记录里点**加入词库**没有意义，他本来就命中了词库里有的词」→ 该按钮只留给语义审核表。
+> - 「同一个失败卡里点的重试**去重**」→ 同一张卡重试不再新增后台拦截记录。
+> - 语义审核用两个模型：「**openrouter 里的 GPT-5.6 Terra Pro 和 bytedance 的 Seed 2.0 Pro，优先 gpt5.6，连不上再做 seed2.0pro**」，
+>   做成**模型开关**放在「反推提示词 / 优化提示词」下面一行、**默认打开**。
+> - 「你最后再查一下，整个新功能有没有什么问题？」→ 自查揪出 3 个真问题（见第五节），**用户说"全部要改"**。
+> - 「可以，你验证一下。没问题就部署到测试服去」
+>
+> **结果：本地 = 测试服 = `v1.0.0.79`；⛔ 正式服仍 `v1.0.0.76`；⛔ 未 commit / 未 push（没让做）。**
+> **有 1 个新 Prisma 迁移 `20260807000000_content_moderation`（3 张新表）。** 无 compose/nginx 改动。`tsc` exit 0。
+
+### 一、这套功能的骨架（新代码的唯一权威在哪）
+
+| 文件 | 作用 |
+|---|---|
+| `src/lib/content-moderation.ts` | ⭐ **唯一权威**：文案常量、归一化、词库匹配、事件落库、语义审核候选链、队列、保留期清理 |
+| `prisma/migrations/20260807000000_content_moderation/` | 3 张表：`ContentModerationRuleGroup` / `ContentModerationTerm` / `ContentModerationEvent` |
+| `src/app/api/image/route.ts` · `src/app/api/video/route.ts` | 各一处 `enforceContentPolicy`，**在鉴权+积分资格校验之后、建 job / 建任务之前** |
+| `src/lib/generation-worker.ts` | 每个 tick `void processContentModerationQueue(2)`（⛔ 不 await，见第五节） |
+| `src/app/admin/page.tsx` + `admin-content-moderation-panel.tsx` + `admin/api/content-moderation/route.ts` | 后台「内容审核」菜单（位置在**服务器信息正上方**）、规则页、记录页、保存接口 |
+| `src/app/admin/admin-system-settings-panel.tsx` + `src/lib/system-settings.ts` | 「模型开关」新增一行**内容审核语义模型** + 两个开关的默认值 |
+
+关键常量（⛔ 改文案必须回头看 `error-message.ts` 的幂等保护，见第四节）：
+- `CONTENT_POLICY_ERROR_MESSAGE = "你输入的内容不符合平台规则，请更换内容后重试！"`
+- `CONTENT_POLICY_ERROR_CODE = "CONTENT_POLICY_BLOCKED"`
+- `SENSITIVE_POLITICS_CATEGORY = "sensitive_politics"`
+
+行为口径：
+- **命中词库 → 直接 400 返回上面那句**，不调模型、不扣积分、不建 job。
+- **未命中 + 总开关开 → 写一条 `semantic_review/pending`**，由 worker 异步跑模型，结果只写 `flagged/clear`，**永不拦截用户**。
+- **总开关关 → 词库不查（`findContentPolicyMatch` 只 join `enabled=true` 的组）、语义队列也不写**，等于整套停用。
+
+### 二、⭐ 拦截红字为什么不会被二次映射弄坏（本项目最容易踩的那条链）
+
+按 `AGENTS.md` 那条铁律（`toUserErrorMessage` 在链路上会跑两遍），新红字必须做幂等回归。**实跑结论：这句话安全，不用进白名单**：
+
+```
+npx tsx 脚本 import 真实 error-message.ts，把文案连跑 3 遍
+"你输入的内容不符合平台规则，请更换内容后重试！"        → a === b === c  ✅
+"(B_9) 你输入的内容不符合平台规则，请更换内容后重试！"  → a === b === c  ✅（错误码前缀也不丢）
+```
+原因：这句话不含 `版权/敏感/隐私/真人/配额/余额不足` 等会被兜底规则抢走的关键词，长度 < 180 字，走末尾原样透传。
+
+⭐ **另一个必须确认的点：错误码前缀会不会被贴上？** 会查 `getApiErrorMessageWithCode`（它会把非 `B_` 的 errorCode 拼成 `(CONTENT_POLICY_BLOCKED) …`），
+**但四条真实路径都先经 `readJson`**，而 `readJson` 在 `!response.ok` 时**先抛 `toUserErrorMessage(error)`** →
+`getApiErrorMessageWithCode` 根本走不到 → 用户看到的就是那一句干净中文，**没有 `B_xxx`、也没有英文错误码**。
+（对话流图片 `chat-workbench.tsx:5725`、对话流视频 `5856`、工作流图片 `workflow-...:4363`、工作流视频 `4688`、资产库 `7852` 全都是这个形状。）
+
+### 三、「同一个失败卡的重试」两层去重（用户明确要求）
+
+1. **不再新增后台拦截记录**：`PendingGeneration` 加了 `suppressContentModerationRecord?: boolean`，
+   `retryFailedMedia()` 里置 `true` → 随请求体传到 `/api/image`、`/api/video` → `enforceContentPolicy({ recordEvent: false })`。
+   ⭐ **仍然照常拦截、照常显示失败卡、照常不扣积分**，只是不再往 `已拦截记录` 里多写一条。
+2. **连点去重**：`retryingFailedMediaKeysRef`（`Set<`sessionId:messageId:failedIndex`>`）在 `retryFailedMedia` 入口挡住重复进入，
+   `finally` 里释放。⛔ 原来只有"数组去重"，那只影响卡片显示，**挡不住已经发出去的重复请求**（会重复扣费）。
+   ⚠️ **工作流节点的重试没做这个去重**（各自新 requestId → 各记一条），本次没动。
+
+### 四、后台两个页面的最终形态（都是用户逐条要求改出来的）
+
+规则区：
+- 开关**缩小后放在「敏感政治内容」标题右边**；⭐⭐ **点击即保存**（原来只改内存 state，必须再点"保存规则"，
+  **刷新就回到旧值** —— 用户报的第一个 bug 就是这个）。失败会自动回滚开关状态并显示原因。
+- 开关单独保存时**不碰词库**（接口靠 `typeof body.terms === "string"` 判断这次要不要重写词条）。
+- 词库文本框字号 12px；**展示统一用中文逗号 `，` 连接**（原来 join `\n`，用户报"用逗号隔开、刷新后又变成换行"）；
+  输入仍同时吃 `，` / `,` / 换行（`splitContentModerationTerms`）。
+- 「保存规则」按钮**右对齐**在文本框右下角。
+
+记录区（两张表，各自独立分页、**每页 10 条**）：
+- `已拦截记录`：表头是「**命中**」，直接显示命中的词；**去掉"已拦截"状态字**、**去掉"加入词库"按钮和整个操作列**。
+- `语义审核待确认`：保留「结果」列（疑似命中 / 正常 / 审核失败 / 待审核）+ `加入词库`（复制完整提示词进编辑框，**不自动保存**）。
+- 用户列：**邮箱第一行、用户 ID 第二行**（不再用 `/` 连接，靠 `\n` + `whitespace-pre-line`）；时间列 `whitespace-nowrap` 保证一行。
+- 侧边栏菜单「内容审核」放在「服务器信息」**正上方**。
+
+### 五、⭐⭐ 自查揪出的 3 个真问题（用户说"全部要改"，已全部修掉）
+
+1. ⛔⛔ **最严重：语义审核会拖死整个生成 worker。**
+   原来是 `await processContentModerationQueue(2)` 且那次 `fetch` **没有超时** →
+   上游一卡住，`tick()` 的 `running` 标志一直是 true → **图片和视频任务全都不再被认领 = 全站生成停摆**。
+   ⭐ 修法三件：① 改成 `void`（不 await）② 请求加 `AbortSignal.timeout(20000)` ③ 队列函数内部自带 `queueRunning` 并发保护。
+2. **后台记录的是拼接后的完整提示词，不是用户写的话。**
+   资产库/工作流发给模型的 `prompt` 前面拼着一大段规则文本 + 参考图 hint →
+   后台「完整提示词」看到的是系统文本，**而且关键词是拿我们自己拼进去的规则文本去匹配的，可能凭空命中**。
+   ⭐ 修法：两个路由都改成 `body.sourcePrompt`（用户原话，各路由本来就在传），拿不到才回落 `prompt`。
+3. **记录会无上限增长 + 每次生成都要多花一次模型钱。**
+   ⭐ 修法：`ContentModerationEvent` **只保留 30 天**（`MODERATION_EVENT_RETENTION_DAYS`，每小时最多清一次）。
+   ⚠️ **"每次生成都送一次语义审核"这件事本身没改**（是设计如此），⭐ 想省钱只能后续做抽样或按用户白名单，属于待办。
+
+### 六、语义审核双模型候选链（用户指定）
+
+```ts
+// src/lib/content-moderation.ts —— MODERATION_MODEL_CHAIN（唯一权威）
+{ providerKey: "moderation.priority",       provider: "openrouter", modelId: "openai/gpt-5.6-terra-pro" }
+{ providerKey: "moderation.seed-2-0-pro",   provider: "byteplus",   modelId: "byteplus:chat.seed-2-0-pro" }
+```
+- 顺序固定：**先 GPT-5.6 Terra Pro，关闭/没密钥就跳过，报错或超时就换 Seed 2.0 Pro**；两个都不行才抛错（记 `error`，最多 3 次尝试）。
+- 开关默认值写在 `system-settings.ts`：`"moderation.priority": "openrouter"` + `"moderation.seed-2-0-pro": "byteplus"` = **两个默认都开**；
+  BytePlus 端点默认 `ep-20260514173614-jbcb4`（Seed 2.0 Pro）。
+- 后台「模型开关」新增一行 **内容审核语义模型**，位置紧跟「反推提示词 / 优化提示词」。两个都关 → 语义审核不执行，**关键词拦截不受影响**。
+- ⛔ **新增模型要三处一起改**：`MODERATION_MODEL_CHAIN` + `system-settings` 两张默认表 + 后台面板那一行。
+- ⭐ 这里**故意没复用 `openrouter.ts` 的 `getTextProviderConfig`/`postChatCompletion`**：后者没有超时、非 200 还会回落 curl（对审核太重），
+  审核只用 `system-settings` 的公开导出自己拼 url/headers/model。
+
+### 七、⭐ 本地真实链路验证（全部二值，全过；只花文本模型的钱，没烧生图积分）
+
+用 `npx tsx` 脚本直连本地库 + 真跑模型：
+
+| 用例 | 结果 |
+|---|---|
+| A 关键词命中（开关开） | `blocked=true`，命中词 = 造的测试词 ✅ |
+| B 失败卡重试（`recordEvent:false`） | 仍 `blocked=true`，**拦截记录条数 14 → 14 没变** ✅ |
+| C 关掉总开关 | `blocked=false` ✅ |
+| D 语义审核真跑（首选 GPT-5.6 Terra Pro） | 政治类 → `flagged`「涉及讽刺国家领导人的敏感政治内容」；柯基犬 → `clear`；均 1 次尝试 ✅ |
+| E 兜底 Seed 2.0 Pro 单独连通 | HTTP 200，返回 `{"flagged":true,...}`，实际 model 名 `seed-2-0-pro-260328` ✅ |
+
+### 八、测试服部署（v1.0.0.79）与巡检
+
+1. `node scripts/bump-version.mjs` → v78 → **v1.0.0.79**；`tsc` exit 0。
+2. tgz 14 个文件 scp 到腾讯 → 解到 `/opt/flashmuse-staging/app` → `up -d --build staging-app`（build ~2.5min，**后台跑 + 轮询 `/tmp/sb79.log`**）。
+3. **迁移自动执行**：容器日志 `Applying migration 20260807000000_content_moderation` + `All migrations have been successfully applied.`；
+   `\dt` 确认 3 张表都在。
+4. ⭐ **"新代码真的进镜像了"用 grep 构建产物证明**（不看 `x-app-version`）：
+   `moderation.seed-2-0-pro`→30 个文件、`gpt-5.6-terra-pro`→36、`suppressContentModerationRecord`→4、拦截文案→9、`内容审核语义模型`→16。
+5. `sync-ali.sh --stack=staging --with-generated` → `_next/static` 40 文件 8 桶并发；generated 两端已一致。
+6. 发版本信号：`.env` 里 `PUBLISHED_APP_VERSION=v1.0.0.79`（先删同名行再追加，只剩 1 行）+ `force-recreate` →
+   `x-app-version: v1.0.0.79`、`/api/health {"ok":true,"version":"v1.0.0.79"}`、8080 = 200、https 入口 = 200。
+7. **上号巡检（`12424740@qq.com`）**：登录 ✅ / 对话模式 ✅ / 工作流画布点开不崩（`hasCrash:false`、canvas 在）✅ / 资产库 ✅ /
+   页脚显示 `版本号(t):v1.0.0.79` ✅ / **console 0 error** ✅ / `POST /admin/api/content-moderation` 未登录 = **403 `{"error":"无权限"}`** ✅ /
+   worker 日志无 `[content-moderation]` 报错 ✅。
+   ⚠️ **后台那两个页面的界面没能亲眼验证**：测试号不是管理员，管理员号是用户自己的（按铁律不动）→ 留给用户看。
+8. ⚠️ **测试服审核数据是空的**（groups/terms/events = 0/0/0）：**必须先在后台录词 + 确认开关打开，关键词拦截才生效**。
+
+### 九、⛔⛔ 我这次犯的错（留档警示）：验证脚本把用户**本地真实的词库删了**
+
+我为了造干净用例，在脚本里 `DELETE FROM "ContentModerationRuleGroup" WHERE category='sensitive_politics'`，
+**外键级联把词条一起带走**，结束清理时又删了一次 → 用户本地录的 2 个词全没了（🗣️ 用户：「怎么本地的两个词给我清掉了吗？」）。
+
+- ⭐ **能捞回一半**：`ContentModerationEvent.matchedTerm` 里留着**曾经命中过**的词 → 查出来是 `毛主席`（命中 13 次）。
+  ⛔ 另一个词捞不回来：匹配命中第一个就 return，它从没被命中过，库里没有任何痕迹。
+- ⭐⭐ **教训（已写进 `AGENTS.md`）**：验证脚本**绝不允许删/改用户已有的真实配置行**。
+  要造用例就用**独立的 category**（如 `verify_only_xxx`），⛔ 别碰 `sensitive_politics` 这条真规则；
+  且**清理只删自己插的那几行**（按自己写入的 id / requestId 前缀删），⛔ 别按业务主键整条删。
+- ⚠️ 正式服零改动；测试服词库本来也是空的，未受影响。
+
+---
+
+## 2026-08-06（第四十五次会话）：修「资产库并发生成时失败卡被吃掉」= **成功回调会删别人的失败卡 + jobId 复用顶掉旧卡**（两个原因），测试服 `v1.0.0.78`
+
+> 🗣️ **用户起点**：「我在正式服资产库角色图片生成里，同时生成了五张图片。。三张成功，两张失败，
+> 但是消失了一个失败卡。帮我查一下是为什么？」
+> 🗣️ **拍板的产品口径**（这一句是本次所有改动的唯一依据，务必照它办）：
+> 「**他们是独立的，如果成功就显示图片。。不成功要显示失败卡不能消失掉。除非用户点右上角X才会删除这个失败卡。**」
+> 🗣️ 然后：「部署到测试服去，自己测试一次」
+>
+> **结果：本地 = 测试服 = `v1.0.0.78`；⛔ 正式服仍 `v1.0.0.76`（本次全程没动）；⛔ 未 commit / 未 push（没让做）。**
+> **代码改动只有一个文件 `src/components/chat-workbench.tsx`（4 处，全在客户端 state 合并层）。**
+> 无 Prisma 迁移、无 compose/nginx 改动。`tsc` exit 0、`npm test` 15/15、eslint 与改动前同为 20 errors/14 warnings（既有问题，我改的行零命中）。
+
+### 一、⭐⭐ 硬证据：正式服那次确实是「5 个独立 job、3 成 2 败」，且 DB 里只剩 1 条失败
+
+**先纠正一个直觉误区**：资产库角色/场景/道具/分镜生成**根本不是"一次请求出 5 张"** ——
+请求体里 `count` **写死 1**（`chat-workbench.tsx:7841` 附近），`settings.imageCount` 也硬编码 `"1张"`；
+而 `/api/image` 服务端上限本来就是 4（`api/image/route.ts:20-21`）→ **一次点击 = 1 个 requestId = 1 个 job = 1 张图**。
+用户"同时生成五张" = **连点 5 次 = 5 条互不相干的链**。所以"部分成功部分失败"这件事
+**不存在于单个响应里，只存在于 5 条链之间** → 这个现象**只可能是前端 state 合并问题**，不可能是后端返回结构映射错。
+
+正式服诊断日志（用户 ID_636611 = 测试号 `12424740@qq.com`，模型 `openai/gpt-5.4-image-2`，3840×2160）：
+
+| 服务端时间 | 结果 | requestId |
+|---|---|---|
+| 09:33:45 | ✅ success | `d97ed895-9c6d-4ed6-803f-33b7d448f1b9` |
+| 09:33:58 | ❌ failed **B_141** | `0efb52fb-179e-4efa-9f46-9cefccf49240` |
+| 09:34:13 | ✅ success | `2a1ef34a-a22e-4f78-92ec-171e690775eb` |
+| 09:34:33 | ❌ failed **B_142** | `d6014c71-8f20-4d46-b7ee-ce38e7937851` |
+| 09:34:43 | ✅ success | `420e4606-4b0c-4015-8b27-23457ae2f7af` |
+
+`GenerationEvent` 5 行对得上；而 `UserWorkspaceState.state->'assetGenerateJobs'` 里
+**只剩 `d6014c71`（B_142）一条**，**B_141 整条没了** → 与用户描述完全一致。
+
+### 二、根因（两个，第二个是自测时才抓到的）
+
+**原因 1（用户报的那个现象，`chat-workbench.tsx:7869-7871`）**：成功回调里挂着一句
+```js
+.filter((job) => !(job.type === jobSnapshot.type && job.result.status === "failed" && job.id !== jobId))
+```
+= **只要任意一张成功，就把「同类型的所有失败卡」全删掉**。条件**只看 type，不看批次、不看时间**，
+而且它是**唯一一处会主动删除"别人的"失败卡**的代码。
+对上时间线：09:33:58 B_141 失败 → 09:34:13 下一张成功 → **顺手把 B_141 抹掉**。
+
+**原因 2（⭐ 部署 v77 后自测才发现，`chat-workbench.tsx:7770`）**：原来写着
+```js
+const jobId = activeAssetGenerateJobId && characterGenerateResult.status === "failed" ? activeAssetGenerateJobId : requestId;
+```
+= 「上次结果是失败 → 复用那条失败卡的 jobId」（原地重试）→ **连续两次失败时，第一次的失败记录被第二次直接顶掉**，
+卡数不增加、错误文案被覆盖。**用户没点 ✕，卡就没了 → 违背口径。**
+⭐⭐ **console 日志是二值判据，一眼分明**：
+- v77（未修）：`jobId: 01f6a208…` / `requestId: ab1518eb…` ← **两者不同 = 复用了旧卡**
+- v78（已修）：三条全是 `jobId === requestId` ← 每次都是新卡
+
+**另外堵掉的两个隐患**（都属于"失败卡会被静默弄没/复活"这一族）：
+- `2538` 资产库加载合并**原来只保护 `generating`** → 刚变 failed、500ms 防抖 PUT 还没落库的那条，
+  一旦此刻发生任何资产库加载（切分类/滚动分页/成功后刷新计数）就被服务端旧快照**覆盖掉**。
+- 反过来：用户点 ✕ 删掉后若紧接着来一次加载，服务端旧快照又会把它**复活**。
+  → 新增 `dismissedAssetGenerateJobIdsRef`（Set），两处合并（`2538` 资产库加载 + `2842` 工作区首次加载）都排除它。
+
+### 三、改动清单（1 个文件，4 处，21 增 10 删）
+
+| 位置 | 改法 |
+|---|---|
+| `7869` 成功回调 | 删掉那句 `.filter(…)`，**只 `map` 自己这一条** |
+| `7770` jobId | `const jobId = requestId;`（⛔ 不再复用失败卡的 id） |
+| `2538` 资产库加载合并 | `generating` **和 `failed` 都保护**；且排除已 ✕ 的 id |
+| `633` / `2842` / `onDismissGenerateJob(8854)` | 新增 `dismissedAssetGenerateJobIdsRef`，✕ 时记下，两处合并都排除 |
+
+⭐ 三处都留了 ⛔ 注释钉住原因，写明"以前是什么、为什么删"，防止下一任又捡回去。
+
+### 四、⭐⭐ 自测方法（零积分造失败卡，下次照抄）
+
+**造真实失败卡不用烧钱、也不用去写必被拒的色情提示词** ——
+用 Playwright `page.route('**/api/image')` 把 **POST 拦下来 fulfill 500**：
+```js
+await page.route('**/api/image', async (route) => {
+  if (route.request().method() === 'POST' && n < 3) { n += 1;
+    await route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'v78 注入失败 #' + n }) }); return; }
+  await route.continue();
+});
+```
+- ⭐ **它走的正是真实失败那条 `catch` 分支**（`submitted.jobId` 为空 → `throw` → 同一个 `setAssetGenerateJobs` upsert），
+  所以测的就是线上代码路径，**不是仿真**；而且可精确控制条数与时序、**0 积分**。
+- ⭐ 用完 `await page.unrouteAll()` 再去真跑成功那一次（成功那次**必须真跑**，因为要验的正是"成功回调会不会吃掉失败卡"）。
+- ⚠️ 失败卡的 DOM 判据：`document.querySelectorAll('.flashmuse-failed-media-card').length`；
+  ✕ 按钮是 `button[aria-label="清除失败卡"]`（**它就是右上角那个 ✕**，不是批量清除按钮，我一开始看 snapshot 误认过）。
+- ⚠️ `getByRole('button', { name: '资产库' })` 会**撞两个元素**（侧边栏 + "从资产库导入"）→ 用 `page.locator('button[aria-label="资产库"]').first()`。
+
+### 五、测试服实测结果（全部二值，v1.0.0.78）
+
+| 验证项 | 结果 |
+|---|---|
+| 造 3 次失败，卡是否各自独立累积 | **2 → 3 → 4 → 5** ✅（v77 同样操作是 **2 → 2**，被顶掉） |
+| ⭐⭐ **真跑成功一次后，5 张失败卡还在吗** | **5 张一张没少** ✅（旧代码会全清零） |
+| 点 ✕ 删一张 | 5 → 4 ✅ |
+| 删完**立刻切分类再切回**（最容易"复活"的窗口） | 仍 4 ✅ |
+| 整页刷新 | 仍 4 ✅（不复活、也不丢） |
+| 连删 3 张 + 刷新 | 3 → 2 → 1，刷新仍 1 ✅ |
+
+**回归巡检**：登录 ✅ / 对话模式不崩、输入框在 ✅ / 工作流画布加载 + 点节点不崩 ✅ / 资产库 ✅ /
+真跑生图 **2 次都成功** ✅ / **console 0 error**（唯一那批 error 全是我注入的 500 + 部署 `force-recreate` 那几秒的 502）。
+⚠️ **后台 `/admin` 那项没做**：测试号不是管理员，而管理员号 `lookxun@163.com` 是用户自己的号，按铁律不动。
+
+### 六、部署过程（⭐ 中途因为改了代码，**重新 bump 完整重推了一遍**）
+
+1. `v76 → v77` bump → 打 tgz（只 2 个文件）→ scp → 解开 → `up -d --build staging-app`（后台 + 轮询）
+   → `/api/health` = v77 → `sync-ali.sh --stack=staging`（40 静态文件）→ `.env` 写 `PUBLISHED_APP_VERSION=v1.0.0.77` + `force-recreate`
+   → `x-app-version: v1.0.0.77` + 阿里 8080 = 200。
+2. **上号自测 → 抓到原因 2 → 改代码**。
+3. ⭐⭐ **因为代码变了，`v77 → v78` 重新 bump 并把上面 6 步完整重跑一遍**，
+   ⛔ **没有原地覆盖 v77** —— 那会让"测试服 v77 ≠ 本地 v77"，直接破坏本项目最核心的判据。
+4. 判"新镜像起来没"全程只看 **`/api/health` 的 `version`**（第一次查时它还是 v77，是 build 还没结束；⛔ 别看 `x-app-version`）。
+
+### 七、⚠️ 留痕（测试服，⛔ 下一任别当成用户数据）
+
+- 积分 **95,994 → 95,975（−19）**：Seedream 4.5 一张（−3）+ GPT-5.4 Image 2 一张 2K（−16）。
+  ⚠️ 刷新页面后模型会**回落到默认 GPT-5.4 Image 2**（贵），想省钱得每次重新选 Seedream。
+- 角色图片 **6 → 8**：新增 `asset_7_role`（深蓝工装快递员）、`asset_8_role`（米色风衣女性）。
+  🗣️ 按用户长期交代「测试内容不要删」→ **没删**。
+- 我注入造出来的 **4 张假失败卡已全部用 ✕ 清掉**；用户原有的 **1 张历史失败卡原样保留**。
+- ⛔ **正式服一个字都没动、一分钱没花**（本次只在正式服上做过**只读**查询：诊断日志 + psql SELECT）。
+
+### 八、⭐ 顺带留档的排查姿势（正式服只读取证）
+
+- 诊断日志字段名是 **`time` 不是 `ts`**（我第一次按 `ts` 过滤得到 0 条，白跑一轮）。
+- 宿主机**没有 node** → 分析 jsonl 要 `sudo docker exec -i flashmuse-flashmuse-app-1 node -e '…'`，
+  容器内路径是 **`/app/.runtime/`**。
+- psql 用户是 **`flashmuse`**（不是 `postgres`），表名是 **`UserWorkspaceState`**（不是 `WorkspaceState`），
+  `User.id` 本身就是 `ID_xxxxxx`（**没有 `displayId` 列**）。
+- ⛔ **含引号的 SQL 别内联进 ssh**（PowerShell 会把引号吃光，报 `syntax error at or near ")"`）→
+  写成 `.sql` 文件 → `scp` → `sed -i 's/\r$//'` → `docker cp` 进容器 → `psql -f`。
+
+---
+
 ## 2026-08-06（第四十四次会话）：修正式服 B_123「审核视频的问题被拼进了拒绝出图的文案里」= **红字被 `toUserErrorMessage` 跑了两遍**，两服 `v1.0.0.76`
 
 > 🗣️ **用户起点**：「你看一下正式服 b123 的红字。。。为什么审核视频的问题拼到了拒绝出图的文案里呢？」

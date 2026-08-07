@@ -631,6 +631,10 @@ export function ChatWorkbench() {
   const [characterGenerateQuality, setCharacterGenerateQuality] = useState<string>(DEFAULT_IMAGE_QUALITY);
   const [characterGenerateResult, setCharacterGenerateResult] = useState<CharacterGenerationResult>({ status: "idle" });
   const [assetGenerateJobs, setAssetGenerateJobs] = useState<AssetGenerateJob[]>([]);
+  // 资产库生成失败卡：⭐ 产品口径（2026-08-06 用户拍板）= 每次生成彼此独立，失败卡只有用户点右上角 ✕ 才消失。
+  // 因此"用户点 ✕ 删掉的 jobId"必须记住：持久化是 500ms 防抖的整体 PUT，删完若立刻发生一次资产库加载
+  // （切分类/滚动分页/生成成功后刷新），服务端旧快照里还带着这条，合并时就会把它"复活"到界面上。
+  const dismissedAssetGenerateJobIdsRef = useRef<Set<string>>(new Set());
   const [activeAssetGenerateJobId, setActiveAssetGenerateJobId] = useState("");
   const [characterImageScale, setCharacterImageScale] = useState(1);
   const [characterImageFitMode, setCharacterImageFitMode] = useState<"fit" | "actual">("fit");
@@ -716,6 +720,7 @@ export function ChatWorkbench() {
   const previewDragStartRef = useRef({ pointerX: 0, pointerY: 0, panX: 0, panY: 0 });
   const activeAssetGenerateJobIdRef = useRef("");
   const assetGenerateJobPollersRef = useRef<Set<string>>(new Set());
+  const retryingFailedMediaKeysRef = useRef<Set<string>>(new Set());
   const runningRequestIdsRef = useRef<Set<string>>(new Set());
   const sendingSessionIdsRef = useRef<Set<string>>(new Set());
   const requestAbortControllersRef = useRef<Map<string, AbortController>>(new Map());
@@ -2533,12 +2538,15 @@ export function ChatWorkbench() {
       setAssetsHasMore(Boolean(state.assetsHasMore));
       setAssetsNextOffset(Math.floor(Number(state.assetsNextOffset ?? nextAssets.length)));
       setAssetRenderLimit((current) => Math.max(current, offset + nextAssets.length, ASSET_RENDER_PAGE_SIZE));
-      // 合并：以服务端持久值为准，但保留内存里仍在"生成中"、服务端响应还没包含的任务（防抖持久化未落库的竞态），
-      // 避免资产库加载把刚点生成、等待卡还在的任务覆盖掉。
+      // 合并：以服务端持久值为准，但保留内存里仍在"生成中"、以及刚刚失败（防抖 PUT 还没落库）的任务，
+      // 避免资产库加载把等待卡/失败卡覆盖掉。⭐ 失败卡只有用户点 ✕ 才消失（2026-08-06 用户拍板），
+      // 所以① 内存里的 failed 也要保护 ② 已被 ✕ 掉的 id 一律不许从服务端旧快照里复活。
       setAssetGenerateJobs((current) => {
-        const nextIds = new Set(nextAssetGenerateJobs.map((job) => job.id));
-        const survivingGenerating = current.filter((job) => job.result.status === "generating" && !nextIds.has(job.id));
-        return [...survivingGenerating, ...nextAssetGenerateJobs];
+        const dismissed = dismissedAssetGenerateJobIdsRef.current;
+        const incoming = nextAssetGenerateJobs.filter((job) => !dismissed.has(job.id));
+        const nextIds = new Set(incoming.map((job) => job.id));
+        const surviving = current.filter((job) => (job.result.status === "generating" || job.result.status === "failed") && !nextIds.has(job.id) && !dismissed.has(job.id));
+        return [...surviving, ...incoming];
       });
       setLoadedAssetFilters((current) => ({ ...current, [filter]: true }));
       setAssetsLoadStatus("loaded");
@@ -2832,7 +2840,8 @@ export function ChatWorkbench() {
             setAssets(extractAssetsFromSessions(nextSessions, savedAssets));
             setAssetsLoadStatus("loaded");
           }
-          if (savedAssetGenerateJobs) setAssetGenerateJobs(savedAssetGenerateJobs);
+          // ⭐ 已被用户 ✕ 掉的失败卡不许从服务端快照里复活（防抖 PUT 可能还没落库）。
+          if (savedAssetGenerateJobs) setAssetGenerateJobs(savedAssetGenerateJobs.filter((job) => !dismissedAssetGenerateJobIdsRef.current.has(job.id)));
         };
 
         try {
@@ -5730,6 +5739,7 @@ export function ChatWorkbench() {
               async: true,
               flow: "conversation",
               sourcePrompt: promptOverride,
+              suppressContentModerationRecord: pendingRequest.suppressContentModerationRecord,
               metadata: pendingRequest.agentGenerated ? { creditSource: "agent_image_generation" } : undefined,
             }),
           }).then((response) => readJson<{ jobId?: string; error?: string; errorCode?: string }>(response));
@@ -5848,7 +5858,7 @@ export function ChatWorkbench() {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             signal: abortController.signal,
-            body: JSON.stringify({ prompt: withReferenceHint(modelVideoPrompt), sourcePrompt: videoPrompt, model: pendingRequest.model, referenceImages: pendingRequest.referenceImages, referenceVideos: pendingRequest.referenceVideos, referenceAudios: pendingRequest.referenceAudios, referenceMode: pendingRequest.videoReferenceMode, settings, conversationId: sessionId, conversationTitle, conversationCode: conversationSession?.conversationCode, requestId: videoRequestId, flow: "conversation", itemIndex, metadata: pendingRequest.agentGenerated ? { creditSource: "agent_video_generation" } : undefined, autoBytePlusAssetReview }),
+            body: JSON.stringify({ prompt: withReferenceHint(modelVideoPrompt), sourcePrompt: videoPrompt, model: pendingRequest.model, referenceImages: pendingRequest.referenceImages, referenceVideos: pendingRequest.referenceVideos, referenceAudios: pendingRequest.referenceAudios, referenceMode: pendingRequest.videoReferenceMode, settings, conversationId: sessionId, conversationTitle, conversationCode: conversationSession?.conversationCode, requestId: videoRequestId, flow: "conversation", itemIndex, suppressContentModerationRecord: pendingRequest.suppressContentModerationRecord, metadata: pendingRequest.agentGenerated ? { creditSource: "agent_video_generation" } : undefined, autoBytePlusAssetReview }),
           });
 
           let taskResponse = await createVideoTask();
@@ -6895,6 +6905,10 @@ export function ChatWorkbench() {
     if (!prompt) return;
 
     const sessionId = activeSession.id;
+    const retryKey = `${sessionId}:${message.id}:${failedIndex}`;
+    if (retryingFailedMediaKeysRef.current.has(retryKey)) return;
+    retryingFailedMediaKeysRef.current.add(retryKey);
+    try {
     const requestId = createClientId();
     const retryStartedAt = Date.now();
     const retryMediaReferences = getUploadedMediaReferences(message.uploadedFiles);
@@ -6918,6 +6932,7 @@ export function ChatWorkbench() {
       agentItemPrompts: meta.mode === "video" ? [prompt] : undefined,
       agentItemPromptDetails: meta.itemPromptDetails?.[targetItemIndex] ? [meta.itemPromptDetails[targetItemIndex]] : undefined,
       retryFailedIndex: failedIndex,
+      suppressContentModerationRecord: true,
       settings: meta.mode === "image" ? { ...meta.settings, imageCount: "1张" } : meta.settings,
       messages: activeSession.messages.filter((item) => item.role !== "system").map((item) => ({ role: item.role === "assistant" ? "assistant" : "user", content: item.content, images: item.images })),
     };
@@ -6979,6 +6994,9 @@ export function ChatWorkbench() {
     );
 
     await runGeneration(sessionId, pendingRequest);
+    } finally {
+      retryingFailedMediaKeysRef.current.delete(retryKey);
+    }
   };
 
   const submitFeedback = useCallback((kind: FeedbackKind, message: Message) => {
@@ -7759,7 +7777,11 @@ export function ChatWorkbench() {
     }
 
     const requestId = createClientId();
-    const jobId = activeAssetGenerateJobId && characterGenerateResult.status === "failed" ? activeAssetGenerateJobId : requestId;
+    // ⛔ 这里以前是「上一次结果是失败 → 复用那条失败卡的 jobId」（原地重试），已于 2026-08-06 去掉：
+    // 那样会让**用户没点 ✕ 的失败卡被下一次生成顶掉**（实测：连续两次失败，第一次的错误信息被第二次覆盖，
+    // 网格里只留一张卡）。⭐ 产品口径 = 每次生成彼此独立、失败卡只有用户点 ✕ 才消失，
+    // 所以每次点生成一律新建一条 job，旧失败卡原样留着。
+    const jobId = requestId;
     const startedAt = Date.now();
     // 以提示词里的 @名为唯一真源：参考图 = 文字里 @到、且有缩略图草稿的资产（按 @名匹配草稿）；
     // 去掉没有缩略图草稿的悬空 @名，保证 sourcePrompt 的每个 @名都精确对应它实际发送的参考图，
@@ -7866,9 +7888,12 @@ export function ChatWorkbench() {
       applyCreditResult(activeSessionIdValue, data.credit);
       if (dimensions && activeAssetGenerateJobIdRef.current === jobId) setCharacterImageNaturalSize(dimensions);
       const succeededResult: CharacterGenerationResult = { status: "succeeded", url, dimensions };
-      setAssetGenerateJobs((current) => current
-        .filter((job) => !(job.type === jobSnapshot.type && job.result.status === "failed" && job.id !== jobId))
-        .map((job) => job.id === jobId ? { ...job, result: succeededResult } : job));
+      // ⛔⛔ 这里以前还挂着一句 .filter(同类型的其它 failed 全删掉) —— 已于 2026-08-06 移除。
+      // 资产库一次点击 = 一个独立 job（请求体 count 恒为 1），用户连点 N 次就是 N 条互不相干的链；
+      // 那句 filter 只看 type、不看批次不看时间，导致"任意一张成功就把别人的失败卡一起抹掉"
+      // （正式服实测：3 成 2 败，B_141 那张失败卡被下一张成功顶掉，用户只看到 1 个失败卡）。
+      // ⭐ 产品口径：失败卡只有用户点 ✕ 才消失。这里只改自己这一条，绝不动别人。
+      setAssetGenerateJobs((current) => current.map((job) => job.id === jobId ? { ...job, result: succeededResult } : job));
       if (activeAssetGenerateJobIdRef.current === jobId) setCharacterGenerateResult(succeededResult);
       addCharacterGeneratedAsset(url, rawPrompt, dimensions, jobSnapshot.type, previewMetaSnapshot, data.reservedNames?.[0] ?? submitted.reservedNames?.[0]);
       notifyGenerationCompleteOnce(requestId, "图片生成已完成");
@@ -8851,7 +8876,7 @@ export function ChatWorkbench() {
                 </div>
               </div>
             ) : (
-            <AssetManagementPanel assets={assets} assetFilter={assetFilter} renderLimit={assetRenderLimit} openAssetActionMenuId={openAssetActionMenuId} isLoadingMore={assetsLoadStatus === "loading" && hasCurrentFilterAssets && assetLoadingReason === "scroll"} now={timerNow} pendingAssetGenerateJobs={assetGenerateJobs} onOpenPendingGenerate={openAssetGenerateJob} onDismissGenerateJob={(jobId) => setAssetGenerateJobs((current) => current.filter((job) => job.id !== jobId))} uploadSlots={visibleAssetUploadSlots} mediaUploadCards={assetMediaUploadCards} onSelectUploadFiles={(files) => void selectAssetUploadFiles(files)} onSelectMediaUploadFiles={(kind, files) => void selectAssetMediaUploadFiles(kind, files)} onRemoveUploadSlot={removeAssetUploadSlot} onRetryUploadSlot={retryAssetUploadSlot} onPreview={(asset) => { setPreviewDocumentFile(null); setPreviewAsset(enrichAssetPreviewMeta(asset)); }} onUseAsset={(asset) => {
+            <AssetManagementPanel assets={assets} assetFilter={assetFilter} renderLimit={assetRenderLimit} openAssetActionMenuId={openAssetActionMenuId} isLoadingMore={assetsLoadStatus === "loading" && hasCurrentFilterAssets && assetLoadingReason === "scroll"} now={timerNow} pendingAssetGenerateJobs={assetGenerateJobs} onOpenPendingGenerate={openAssetGenerateJob} onDismissGenerateJob={(jobId) => { dismissedAssetGenerateJobIdsRef.current.add(jobId); setAssetGenerateJobs((current) => current.filter((job) => job.id !== jobId)); }} uploadSlots={visibleAssetUploadSlots} mediaUploadCards={assetMediaUploadCards} onSelectUploadFiles={(files) => void selectAssetUploadFiles(files)} onSelectMediaUploadFiles={(kind, files) => void selectAssetMediaUploadFiles(kind, files)} onRemoveUploadSlot={removeAssetUploadSlot} onRetryUploadSlot={retryAssetUploadSlot} onPreview={(asset) => { setPreviewDocumentFile(null); setPreviewAsset(enrichAssetPreviewMeta(asset)); }} onUseAsset={(asset) => {
               if (activeUploadedImages.length >= currentMaxReferenceImages && !activeUploadedImages.some((image) => image.url === asset.url)) {
                 showInputTip(`当前模型最多支持 ${currentMaxReferenceImages} 张参考图，不能上传更多图片`);
                 return;

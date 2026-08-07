@@ -285,6 +285,7 @@ export type PendingGeneration = {
   agentItemSettings?: GenerationSettings[];
   selectedMediaModels?: Record<"image" | "video", ModelName>;
   retryFailedIndex?: number;
+  suppressContentModerationRecord?: boolean;
   needsIntentResolution?: boolean;
   sourceText?: string;
 };
@@ -6968,4 +6969,4 @@ export function getDownloadName(asset: AssetItem) {
   const safeExtension = extension && /^[a-z0-9]{2,5}$/i.test(extension) ? extension : isVideoAsset(asset) ? "mp4" : "png";
   return `${asset.name}.${safeExtension}`;
 }
-
+

@@ -342,6 +342,56 @@ model UploadEvent {
   @@index([status, createdAt])
 }
 
+model ContentModerationRuleGroup {
+  id        String   @id @default(cuid())
+  category  String   @unique
+  label     String
+  enabled   Boolean  @default(false)
+  termsHidden Boolean @default(false)
+  editUnlocked Boolean @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  terms     ContentModerationTerm[]
+
+  @@index([enabled])
+}
+
+model ContentModerationTerm {
+  id        String   @id @default(cuid())
+  groupId   String
+  value     String
+  normalized String
+  createdAt DateTime @default(now())
+  group     ContentModerationRuleGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@unique([groupId, normalized])
+  @@index([groupId])
+}
+
+model ContentModerationEvent {
+  id             String   @id @default(cuid())
+  userId         String?
+  requestId      String?
+  kind           String
+  source         String
+  category       String
+  action         String
+  status         String
+  prompt         String
+  matchedTerm    String?
+  semanticReason String?
+  reviewedAt     DateTime?
+  leaseAt        DateTime?
+  attempts       Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([status, createdAt])
+  @@index([category, createdAt])
+  @@index([userId, createdAt])
+  @@index([requestId])
+}
+
 model GenerationJob {
   id                String    @id @default(cuid())
   userId            String

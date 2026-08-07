@@ -1396,3 +1396,21 @@ The request failed because the input video may be related to copyright restricti
   ④ **`output` video … copyright → 仍走"成品被拒交付"那句（最关键的回归点，绝不能被新规则抢走）**
   ⑤ `input text … sensitive` → 仍走"模型拒绝"。本次 5/5 全对。
 
+## 二十、B_141 / B_142「模型拒绝出图」（2026-08-06 第四十五次会话，顺带留档）
+
+> 一句话：**用户侧内容问题（上游原文 `sexu…`），不是我们的 bug，⛔ 不归档**（它从来没落进兜底桶）。
+> 本次是为了查「失败卡消失」才翻到它们，**红字本身完全正确**。
+
+- 现场：用户 ID_636611（= 测试号 `12424740@qq.com`），**资产库角色图片生成**，
+  `openai/gpt-5.4-image-2` / 3840×2160，2026-08-06 09:33~09:34 连点 5 次 → **3 成 2 败**：
+  B_141 = `0efb52fb-179e-4efa-9f46-9cefccf49240`、B_142 = `d6014c71-8f20-4d46-b7ee-ce38e7937851`；
+  事件链 `image-provider-non-ok` → `image-job-failed`，映射成「模型因色情/暴力/隐私安全等原因拒绝出图…」。
+- ⭐⭐ **顺带查出的真 bug 与红字无关，在前端**：成功回调会把同类型的其它失败卡 `filter` 掉、
+  以及 jobId 复用会顶掉上一条失败记录 → 用户「少看到一个失败卡」。已修（测试服 `v1.0.0.78`），
+  细节见 `CHANGELOG_2.md` 第四十五次会话那条 + `AGENTS.md` 顶部那条新铁律。
+- ⭐ **留一个很好用的二值判据**：DB 里 `UserWorkspaceState.state->'assetGenerateJobs'` 存的就是
+  **用户界面上还挂着的资产库生成卡**（只持久化非 succeeded、最多 30 条）→ 拿它和 `GenerationEvent`
+  里 failed 的条数对比，**对不上就说明前端把失败卡弄没了**。
+- ⚠️ 查正式服时的三个坑（都踩过）：诊断日志字段名是 **`time` 不是 `ts`**；宿主机**没有 node**
+  （要 `docker exec -i flashmuse-flashmuse-app-1 node -e`，容器内路径 `/app/.runtime/`）；
+  psql 用户是 **`flashmuse`**、表名是 **`UserWorkspaceState`**、`User.id` 本身就是 `ID_xxxxxx`（**没有 `displayId` 列**）。

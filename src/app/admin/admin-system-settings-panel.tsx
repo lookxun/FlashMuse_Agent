@@ -135,6 +135,16 @@ const modelUsageGroups: ModelUsageGroup[] = [
       { provider: "byteplus", badge: "", modelId: "", providerKey: "prompt.seed-2-0-lite", bytePlusStatic: bytePlusChatModels[0] },
     ],
   },
+  {
+    title: "内容审核语义模型",
+    note: "两个模型都开启时，按 GPT-5.6 Terra Pro → Seed 2.0 Pro 顺序兜底，前一个失败/关闭再用下一个。两个都关闭时语义审核不再执行（关键词拦截不受影响）。",
+    usageLocations: ["内容审核语义审核"],
+    additive: true,
+    models: [
+      { provider: "openrouter", badge: "", modelId: "openai/gpt-5.6-terra-pro", providerKey: "moderation.priority" },
+      { provider: "byteplus", badge: "", modelId: "byteplus:chat.seed-2-0-pro", providerKey: "moderation.seed-2-0-pro", bytePlusStatic: bytePlusChatModels[1] },
+    ],
+  },
 ];
 
 // 工作流图片「编辑功能」快捷菜单：后台规则展示 + 高清/橡皮模型开关。

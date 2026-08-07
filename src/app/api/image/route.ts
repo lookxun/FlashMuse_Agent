@@ -6,6 +6,7 @@ import { createCodedApiError } from "@/lib/error-code";
 import { GENERIC_MEDIA_ERROR_MESSAGE } from "@/lib/error-message";
 import { getExpectedImageDimensions } from "@/lib/models";
 import { getUploadRuleOverrides, isAgentImageModelEnabled, isAssetImageModelEnabled, isConversationImageModelEnabled } from "@/lib/system-settings";
+import { CONTENT_POLICY_ERROR_CODE, CONTENT_POLICY_ERROR_MESSAGE, enforceContentPolicy } from "@/lib/content-moderation";
 import { validateReferenceImageCount } from "@/lib/upload-rules";
 import type { Prisma } from "@prisma/client";
 import { appendUploadRuleFeedbackLog } from "@/lib/upload-rule-feedback-log";
@@ -80,10 +81,10 @@ function withChargedUsage<T extends { usage?: { promptTokens?: number; completio
 }
 
 export async function POST(request: Request) {
-  let body: { prompt?: string; sourcePrompt?: string; model?: string; referenceImages?: string[]; settings?: { ratio?: string; resolution?: string }; count?: number; candidateMode?: "all" | "best"; conversationId?: string; conversationTitle?: string; conversationCode?: string; requestId?: string; metadata?: Prisma.InputJsonValue; async?: boolean; workflowId?: string; workflowNodeId?: string; flow?: "conversation" | "workflow"; transparent?: boolean; bgRemove?: boolean; editFunction?: boolean } | undefined;
+  let body: { prompt?: string; sourcePrompt?: string; model?: string; referenceImages?: string[]; settings?: { ratio?: string; resolution?: string }; count?: number; candidateMode?: "all" | "best"; conversationId?: string; conversationTitle?: string; conversationCode?: string; requestId?: string; metadata?: Prisma.InputJsonValue; async?: boolean; workflowId?: string; workflowNodeId?: string; flow?: "conversation" | "workflow"; transparent?: boolean; bgRemove?: boolean; editFunction?: boolean; suppressContentModerationRecord?: boolean } | undefined;
   const routeStartedAt = Date.now();
   try {
-    body = (await request.json()) as { prompt?: string; sourcePrompt?: string; model?: string; referenceImages?: string[]; settings?: { ratio?: string; resolution?: string }; count?: number; candidateMode?: "all" | "best"; conversationId?: string; conversationTitle?: string; conversationCode?: string; requestId?: string; metadata?: Prisma.InputJsonValue; async?: boolean; workflowId?: string; workflowNodeId?: string; flow?: "conversation" | "workflow"; transparent?: boolean; bgRemove?: boolean; editFunction?: boolean };
+    body = (await request.json()) as { prompt?: string; sourcePrompt?: string; model?: string; referenceImages?: string[]; settings?: { ratio?: string; resolution?: string }; count?: number; candidateMode?: "all" | "best"; conversationId?: string; conversationTitle?: string; conversationCode?: string; requestId?: string; metadata?: Prisma.InputJsonValue; async?: boolean; workflowId?: string; workflowNodeId?: string; flow?: "conversation" | "workflow"; transparent?: boolean; bgRemove?: boolean; editFunction?: boolean; suppressContentModerationRecord?: boolean };
     const prompt = body.prompt?.trim();
 
     if (!prompt) {
@@ -99,6 +100,11 @@ export async function POST(request: Request) {
 
     const user = await getCurrentUser();
     await assertUserCanUseCredits(user, "image", body.metadata);
+    // ⭐ 审核只看「用户自己写的那句」（sourcePrompt）：资产库/工作流发给模型的 prompt 里
+    // 拼了一大段规则文本和参考图说明，用它会让后台看到系统文本、还可能被我们自己的规则文本误命中。
+    const moderationPrompt = (typeof body.sourcePrompt === "string" && body.sourcePrompt.trim()) ? body.sourcePrompt.trim() : prompt;
+    const policy = await enforceContentPolicy({ prompt: moderationPrompt, userId: user?.id, requestId: body.requestId, kind: "image", source: creditSource?.startsWith("workflow_") ? "workflow" : isAssetImageCreditSource(creditSource) ? "asset" : creditSource === "agent_image_generation" ? "agent" : "conversation", recordEvent: !body.suppressContentModerationRecord });
+    if (policy.blocked) return NextResponse.json({ error: CONTENT_POLICY_ERROR_MESSAGE, errorCode: CONTENT_POLICY_ERROR_CODE }, { status: 400 });
 
     // 后端持久任务模式：建 job 立即返回 jobId，由常驻 worker 跑到底（断开/刷新/重启不影响）。
     if (body.async) {
