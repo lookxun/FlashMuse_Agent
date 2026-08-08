@@ -62,7 +62,7 @@ async function isCategoryEnabled(category: string) {
 async function createEvent(input: {
   userId?: string;
   requestId?: string;
-  kind: "image" | "video";
+  kind: "image" | "video" | "chat";
   source: string;
   category: string;
   action: "keyword_block" | "semantic_review";
@@ -81,7 +81,7 @@ async function createEvent(input: {
  * 资产库/工作流会在前面拼一大段规则文本和参考图说明 —— 那样后台看到的是系统文本而不是用户的话，
  * 而且关键词会拿我们自己拼进去的规则文本去匹配，可能凭空命中。
  */
-export async function enforceContentPolicy(input: { prompt: string; userId?: string; requestId?: string; kind: "image" | "video"; source: string; recordEvent?: boolean }) {
+export async function enforceContentPolicy(input: { prompt: string; userId?: string; requestId?: string; kind: "image" | "video" | "chat"; source: string; recordEvent?: boolean }) {
   const match = await findContentPolicyMatch(input.prompt);
   if (match) {
     if (input.recordEvent !== false) await createEvent({ ...input, category: match.category, action: "keyword_block", status: "blocked", matchedTerm: match.value });

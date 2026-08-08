@@ -2,6 +2,7 @@ import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 import { isRecord } from "@/lib/workspace-state-cleanup";
 import { canonicalizeSavedMediaUrl, normalizeMediaAssetUrl, resolvePersistableMediaAssetUrl } from "@/lib/media-assets";
+import { appendUploadDiagnosticsLog } from "@/lib/upload-diagnostics-log";
 
 const UPLOAD_IMAGE_PROMPT_PLACEHOLDER = "上传图片";
 
@@ -247,6 +248,31 @@ export async function upsertWorkspaceSessions(userId: string, sessions: unknown)
       };
       const shouldStoreMessages = session.messagesLoaded !== false;
       const messagesJson = toJsonArray(session.messages);
+
+      // ⭐⭐ 2026-08-08 加的**纯诊断日志**（⛔ 不改任何行为）：这条闸门是「用户消息被静默吞掉」的唯一嫌疑点。
+      //
+      // 背景：2026-08-08 在测试服真走界面发被内容审核拦截的提示词，**出现过一次**
+      // 「界面卡在『加载中...0%』、没有红字、库里那条对话 msgs=0（标题存了、消息一条没存）」。
+      // 而「标题存了 + 消息没存」正是这里 `shouldStoreMessages === false` 时的**精确症状**
+      // （update 分支只写 baseData、跳过 messagesJson）。
+      // ⚠️ 但根因**尚未坐实**：客户端新建会话的 messagesLoaded 是 undefined（`undefined !== false` 成立、本该正常存），
+      // 而那次发送前后网络里也没有会把它置 false 的 GET。3 次复现里只中了 1 次，**改不动代码**
+      // （见 AGENTS.md 顶部铁律：没复现 = 不许动行为，只许加日志）。
+      //
+      // ⭐ 所以只在「**真的跳过存消息**」时记一条 —— 这条日志出现 = 立刻指认是这条闸门吞的；
+      // 一直不出现 = 排除它，去看客户端那三条日志。
+      // ⛔ 只在 `messagesLoaded === false` 且**客户端确实带了消息上来**时才记（否则空会话每次保存都会刷日志）。
+      if (!shouldStoreMessages && Array.isArray(session.messages) && session.messages.length > 0) {
+        void appendUploadDiagnosticsLog({
+          event: "workspace-session-messages-skipped",
+          userId,
+          extra: {
+            sessionId,
+            incomingMessageCount: session.messages.length,
+            titleLength: typeof session.title === "string" ? session.title.length : 0,
+          },
+        });
+      }
 
       const upsertSession = prisma.workspaceSession.upsert({
         where: { userId_sessionId: { userId, sessionId } },

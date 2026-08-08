@@ -1379,6 +1379,32 @@ export function ChatWorkbench() {
   const isActiveSessionLoading = activeSession?.messagesLoaded === false || (activeSession ? loadingSessionIds.has(activeSession.id) : false);
   const activeSessionLoadingStartedAt = activeSession ? loadingSessionStartedAt[activeSession.id] ?? timerNow : timerNow;
   const activeSessionLoadingProgress = isActiveSessionLoading ? Math.min(96, Math.floor(Math.max(0, timerNow - activeSessionLoadingStartedAt) / 180)) : 100;
+  // ⭐⭐ 2026-08-08 加的**纯诊断日志**（⛔ 不改任何行为）：抓「聊天区莫名卡在『加载中...0%』」。
+  //
+  // 背景：2026-08-08 在测试服真走界面发被内容审核拦截的提示词，**出现过一次**卡死：
+  // 整屏「加载中...0%」+ 没有红字 + 库里那条对话 msgs=0（标题存了、消息一条没存）。
+  // 🗣️ 用户一句话推翻了我"初始加载还没好"的假设：**输入框能用、能打字发送，就证明加载早完成了**
+  // → 这个加载态是**发送之后才出现**的，是被发送触发的。
+  // 3 次复现只中 1 次、根因未坐实 → 按 AGENTS.md 顶部铁律只加日志。
+  //
+  // ⭐ 这条要回答的问题是二值的：**是 `messagesLoaded === false` 还是 `loadingSessionIds` 触发的？**
+  // 前者 → 去看服务端 `workspace-session-messages-skipped`（谁把它置 false / 消息是否被闸门吞掉）；
+  // 后者 → 是 `loadSessionDetails` 卡住了（它的 `if (!data.session) return` 会让 messagesLoaded 永远留 false）。
+  // ⛔ 同一条会话只报一次，避免刷屏。
+  const loadingDiagnosticReportedRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!isActiveSessionLoading || !activeSession) return;
+    if (loadingDiagnosticReportedRef.current.has(activeSession.id)) return;
+    loadingDiagnosticReportedRef.current.add(activeSession.id);
+    reportClientDiagnostic("chat-session-stuck-loading", {
+      sessionId: activeSession.id,
+      byMessagesLoadedFalse: activeSession.messagesLoaded === false,
+      byLoadingSessionIds: loadingSessionIds.has(activeSession.id),
+      localMessageCount: Array.isArray(activeSession.messages) ? activeSession.messages.length : null,
+      titleLength: typeof activeSession.title === "string" ? activeSession.title.length : 0,
+      pendingRequestCount: getSessionPendingRequests(activeSession).length,
+    });
+  }, [isActiveSessionLoading, activeSession, loadingSessionIds]);
   const activeIsResolving = activeSession ? resolvingSessionIds.has(activeSession.id) : false;
   const activePendingRequests = getSessionPendingRequests(activeSession);
   const activePendingRequestCount = activePendingRequests.length;
@@ -3185,6 +3211,32 @@ export function ChatWorkbench() {
       feedbackLogs: feedbackLogs.slice(0, MAX_FEEDBACK_LOGS),
     };
     if (assetsLoadStatus === "loaded" || assetGenerateJobs.length > 0) payload.assetGenerateJobs = getPersistableAssetGenerateJobs(assetGenerateJobs);
+
+    // ⭐⭐ 2026-08-08 加的**纯诊断日志**（⛔ 不改任何行为）：抓「即将 PUT 上去的会话形状不对」。
+    //
+    // 这是「发送后消息丢失」那条链的最后一环：服务端 `upsertWorkspaceSessions` 里
+    // `shouldStoreMessages = session.messagesLoaded !== false` —— 一旦我们**发上去的**这份会话带着
+    // `messagesLoaded: false` 但**本地其实有消息**，服务端就只更新标题、把消息整个跳过
+    // （= 2026-08-08 那次「标题存了、msgs=0」的精确症状）。
+    // ⭐ 所以这里在**发出之前**先记一笔"我到底发了什么形状"，和服务端那条日志对账。
+    // ⛔ 只记异常形状（有消息却 messagesLoaded===false），正常保存一律不写。
+    {
+      const suspicious = (Array.isArray(payload.sessions) ? payload.sessions : []).filter(
+        (session): session is WorkSession =>
+          Boolean(session) && (session as WorkSession).messagesLoaded === false && Array.isArray((session as WorkSession).messages) && ((session as WorkSession).messages?.length ?? 0) > 0,
+      );
+      if (suspicious.length > 0) {
+        reportClientDiagnostic("chat-put-session-shape-suspicious", {
+          activeSessionId,
+          count: suspicious.length,
+          sessions: suspicious.slice(0, 3).map((session) => ({
+            id: session.id,
+            messageCount: session.messages?.length ?? 0,
+            titleLength: typeof session.title === "string" ? session.title.length : 0,
+          })),
+        });
+      }
+    }
 
     workspaceSaveTimerRef.current = window.setTimeout(() => {
       fetch("/api/workspace-state", {
@@ -6617,6 +6669,33 @@ export function ChatWorkbench() {
         uploadedFiles: availableUploadedFiles.length > 0 ? availableUploadedFiles : undefined,
         generationMeta: { mode: "video", model: pendingRequest.model, settings: pendingRequest.settings, preserveOriginalInput: pendingRequest.preserveOriginalInput, assetTargetType: pendingRequest.assetTargetType, originalPrompt: pendingRequest.originalPrompt, agentGenerated: pendingRequest.agentGenerated },
       });
+    }
+
+    // ⭐⭐ 2026-08-08 加的**纯诊断日志**（⛔ 不改任何行为）：抓「发送后消息丢失 + 卡在『加载中...0%』」。
+    //
+    // 背景：2026-08-08 测试服真走界面发被内容审核拦截的提示词，**3 次里中了 1 次**：
+    // 整屏「加载中...0%」、无红字、库里那条对话**标题存了但 msgs=0**。
+    // 🗣️ 用户推翻了我"初始加载没好"的假设（输入框能用就说明加载完了）→ 是**发送触发**的。
+    //
+    // ⭐ 这条记「发送这一刻客户端手里到底有几条消息、会话的 messagesLoaded 是什么」——
+    // 它和服务端 `workspace-session-messages-skipped` 配成一对，能把责任切干净：
+    //   · 这里 localMessageCount > 0 且服务端出现 skipped  → **是那条持久化闸门吞的**；
+    //   · 这里 localMessageCount > 0 但服务端没有 skipped → 消息在客户端后来被别的 setState 覆盖了；
+    //   · 这里 localMessageCount === 0                    → 乐观插入压根没成功（往上查 visibleMessages）。
+    // ⛔ 只在"异常形状"时记（messagesLoaded===false 或 一条消息都没有），正常发送不写日志、不刷量。
+    {
+      const sessionAtSend = sessionsRef.current.find((session) => session.id === sessionId);
+      const localMessageCount = Array.isArray(sessionAtSend?.messages) ? sessionAtSend.messages.length : null;
+      if (sessionAtSend && (sessionAtSend.messagesLoaded === false || localMessageCount === 0)) {
+        reportClientDiagnostic("chat-send-suspicious-session-shape", {
+          sessionId,
+          generationMode,
+          messagesLoaded: sessionAtSend.messagesLoaded ?? null,
+          localMessageCount,
+          titleLength: typeof sessionAtSend.title === "string" ? sessionAtSend.title.length : 0,
+          requestId: pendingRequest.id,
+        });
+      }
     }
 
     setSessionSending(sessionId, false);

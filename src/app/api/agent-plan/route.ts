@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
 import { assertUserCanUseCredits, chargeCredits, isUnauthenticatedError, UNAUTHENTICATED_ERROR_MESSAGE } from "@/lib/credits";
 import { planAgentTask } from "@/lib/openrouter";
+import { CONTENT_POLICY_ERROR_CODE, CONTENT_POLICY_ERROR_MESSAGE, enforceContentPolicy } from "@/lib/content-moderation";
 import { DEFAULT_CHAT_MODEL, isModelName } from "@/lib/models";
 import { createCodedApiError } from "@/lib/error-code";
 import { appendGeneralTaskLog } from "@/lib/general-task-log";
@@ -44,6 +45,12 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "通用模式未开通" }, { status: 403 });
     }
     await assertUserCanUseCredits(user, "text");
+
+    // Agent / 通用模式对话也要走内容审核：命中词库直接拦，返回同一句红字（不带 B_xxx）、不调模型、不扣分。
+    // 审核只看用户自己最新那句话（sourcePrompt），别拿拼接后的上下文去匹配。
+    const moderationPrompt = [...body.messages].reverse().find((message) => message.role === "user")?.content ?? "";
+    const policy = await enforceContentPolicy({ prompt: moderationPrompt, userId: user?.id, requestId: body.requestId, kind: "chat", source: body.mode === "general" ? "general" : "agent" });
+    if (policy.blocked) return NextResponse.json({ error: CONTENT_POLICY_ERROR_MESSAGE, errorCode: CONTENT_POLICY_ERROR_CODE }, { status: 400 });
 
     const result = await planAgentTask({ model, messages: body.messages, mode: body.mode === "general" ? "general" : "agent", unlockLimits: await resolveUnlockLimitsForUser(user?.id) });
     if (body.mode === "general") {

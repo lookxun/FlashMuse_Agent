@@ -688,10 +688,9 @@ function normalizeSuggestions(items?: SuggestionInput[]) {
 }
 
 function parseStructuredAgentReply(text: string): Required<Pick<ChatResponse, "content" | "intent" | "suggestions">> {
-  const jsonText = text.match(/\{[\s\S]*\}/)?.[0] ?? text;
+  const data = parseLenientModelJson(text) as StructuredAgentReply | undefined;
 
-  try {
-    const data = JSON.parse(jsonText) as StructuredAgentReply;
+  if (data && typeof data === "object") {
     const intent = data.intent && agentReplyIntents.includes(data.intent) ? data.intent : "chat";
     const content = typeof data.content === "string" && cleanAgentReplyContent(data.content) ? cleanAgentReplyContent(data.content) : cleanAgentReplyContent(text);
 
@@ -700,13 +699,13 @@ function parseStructuredAgentReply(text: string): Required<Pick<ChatResponse, "c
       intent,
       suggestions: normalizeSuggestions(data.suggestions),
     };
-  } catch {
-    return {
-      content: cleanAgentReplyContent(text),
-      intent: "chat",
-      suggestions: normalizeSuggestions(),
-    };
   }
+
+  return {
+    content: cleanAgentReplyContent(text),
+    intent: "chat",
+    suggestions: normalizeSuggestions(),
+  };
 }
 
 async function getModelPrices() {
@@ -927,29 +926,59 @@ export async function rewriteGptImagePromptForSafety(request: { originalPrompt: 
   throw lastError instanceof Error ? lastError : new Error("提示词安全改写失败");
 }
 
-function parseIntentClassification(text: string): IntentClassification {
-  const jsonText = text.match(/\{[\s\S]*\}/)?.[0] ?? text;
-
-  try {
-    const data = JSON.parse(jsonText) as Partial<IntentClassification>;
-    const intent = data.intent === "image" || data.intent === "video" || data.intent === "prompt" || data.intent === "clarify" || data.intent === "agent" ? data.intent : "agent";
-    const confidence = typeof data.confidence === "number" ? Math.min(1, Math.max(0, data.confidence)) : 0;
-
-    return {
-      intent,
-      confidence,
-      reason: typeof data.reason === "string" ? data.reason : "AI 未返回明确原因",
-    };
-  } catch {
-    return { intent: "agent", confidence: 0, reason: "AI 意图分类解析失败" };
+/**
+ * ⭐ 模型经常在 JSON 字符串值里输出**真实换行/制表符**（长回复、剧本、分镜必然如此），
+ * 而 JSON 规范里字符串内不许出现裸控制字符 → `JSON.parse` 直接抛错 → 上层兜底会把
+ * 整段原始 JSON 当正文吐给用户（就是"对话后出现很多代码"那个 bug）。
+ * 这里在字符串上下文内把裸的 \n \r \t 转义后再解析一次。
+ */
+function escapeRawControlCharsInJsonStrings(input: string): string {
+  let out = "";
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < input.length; i += 1) {
+    const ch = input[i];
+    if (escaped) { out += ch; escaped = false; continue; }
+    if (ch === "\\") { out += ch; escaped = true; continue; }
+    if (ch === '"') { inString = !inString; out += ch; continue; }
+    if (inString && (ch === "\n" || ch === "\r" || ch === "\t")) {
+      out += ch === "\n" ? "\\n" : ch === "\r" ? "\\r" : "\\t";
+      continue;
+    }
+    out += ch;
   }
+  return out;
+}
+
+function parseLenientModelJson(text: string): unknown | undefined {
+  const jsonText = text.match(/\{[\s\S]*\}/)?.[0] ?? text;
+  try {
+    return JSON.parse(jsonText);
+  } catch {}
+  try {
+    return JSON.parse(escapeRawControlCharsInJsonStrings(jsonText));
+  } catch {}
+  return undefined;
+}
+
+function parseIntentClassification(text: string): IntentClassification {
+  const data = parseLenientModelJson(text) as Partial<IntentClassification> | undefined;
+  if (!data || typeof data !== "object") return { intent: "agent", confidence: 0, reason: "AI 意图分类解析失败" };
+
+  const intent = data.intent === "image" || data.intent === "video" || data.intent === "prompt" || data.intent === "clarify" || data.intent === "agent" ? data.intent : "agent";
+  const confidence = typeof data.confidence === "number" ? Math.min(1, Math.max(0, data.confidence)) : 0;
+
+  return {
+    intent,
+    confidence,
+    reason: typeof data.reason === "string" ? data.reason : "AI 未返回明确原因",
+  };
 }
 
 function parseAgentPlan(text: string): Omit<AgentPlan, "usage"> {
-  const jsonText = text.match(/\{[\s\S]*\}/)?.[0] ?? text;
+  const data = parseLenientModelJson(text) as Partial<AgentPlan> | undefined;
 
-  try {
-    const data = JSON.parse(jsonText) as Partial<AgentPlan>;
+  if (data && typeof data === "object") {
     const intent = data.intent === "image" || data.intent === "video" || data.intent === "clarify" || data.intent === "chat" ? data.intent : "chat";
     const count = typeof data.count === "number" && Number.isFinite(data.count) ? Math.max(1, Math.floor(data.count)) : undefined;
     const constraints = Array.isArray(data.constraints) ? data.constraints.map((item) => typeof item === "string" ? cleanModelText(item) : "").filter(Boolean).slice(0, 12) : undefined;
@@ -987,14 +1016,14 @@ function parseAgentPlan(text: string): Omit<AgentPlan, "usage"> {
       items,
       suggestions: normalizeSuggestions(data.suggestions),
     };
-  } catch {
-    return {
-      intent: "chat",
-      needsClarification: false,
-      displayText: "我先理解你的需求，再帮你继续推进。",
-      suggestions: normalizeSuggestions(),
-    };
   }
+
+  return {
+    intent: "chat",
+    needsClarification: false,
+    displayText: "我先理解你的需求，再帮你继续推进。",
+    suggestions: normalizeSuggestions(),
+  };
 }
 
 export async function planAgentTask(request: Pick<ChatRequest, "model" | "messages" | "unlockLimits"> & { mode?: "agent" | "general" }): Promise<AgentPlan> {

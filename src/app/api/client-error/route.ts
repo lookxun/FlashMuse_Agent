@@ -29,6 +29,23 @@ const PERSISTED_CLIENT_EVENTS = new Set([
   "input-image-removed",
   "copy-prompt-restored",
   "send-reference-snapshot",
+  // ⭐⭐ 「发送后消息丢失 + 聊天区卡在『加载中...0%』」取证组（2026-08-08 加，纯日志、不改任何行为）。
+  //
+  // 现象（2026-08-08 测试服真走界面发被内容审核拦截的提示词，3 次里中 1 次）：
+  // 整屏「加载中...0%」+ 没有红字 + 库里那条对话**标题存了但 msgs=0**。
+  // 🗣️ 用户一句话推翻了"初始加载没好"的假设：**输入框能用、能打字发送 = 加载早完成了**
+  // → 这个加载态是**发送之后**才出现的。3 次只中 1 次、根因未坐实 → 按铁律只加日志。
+  //
+  // ⭐ 三条客户端 + 一条服务端（`workspace-session-messages-skipped`，在 `workspace-sessions.ts`）
+  //   配成一套，能把责任切干净：
+  //   · send 时有消息 + PUT 时形状异常 + 服务端 skipped → **是那条持久化闸门吞的**；
+  //   · send 时有消息但服务端没 skipped              → 消息在客户端被后续 setState 覆盖了；
+  //   · send 时就 0 条消息                          → 乐观插入压根没成功；
+  //   · stuck-loading 里 byLoadingSessionIds=true    → 是 loadSessionDetails 卡住（它的
+  //     `if (!data.session) return` 会让 messagesLoaded 永远留在 false）。
+  "chat-session-stuck-loading",
+  "chat-send-suspicious-session-shape",
+  "chat-put-session-shape-suspicious",
 ]);
 
 export async function POST(request: Request) {
