@@ -7277,7 +7277,7 @@ export function ChatWorkbench() {
         } else {
           try {
             const media = await readMediaFileMetadata(file, "video");
-            const durationError = validateMediaUploadMetadata("video", { durationSeconds: media.durationSeconds, width: media.dimensions?.width, height: media.dimensions?.height, fps: 24 });
+            const durationError = validateMediaUploadMetadata("video", { durationSeconds: media.durationSeconds, width: media.dimensions?.width, height: media.dimensions?.height, fps: 24 }, { minSeconds: currentUploadRule.video.minSeconds, maxSeconds: currentUploadRule.video.maxSeconds });
             const dimensionError = undefined;
             const nextTotal = acceptedVideoDuration + (media.durationSeconds ?? 0);
             if (durationError) tips.add(durationError);
@@ -7308,7 +7308,7 @@ export function ChatWorkbench() {
         } else {
           try {
             const media = await readMediaFileMetadata(file, "audio");
-            const durationError = validateMediaUploadMetadata("audio", { durationSeconds: media.durationSeconds });
+            const durationError = validateMediaUploadMetadata("audio", { durationSeconds: media.durationSeconds }, { minSeconds: currentUploadRule.audio.minSeconds, maxSeconds: currentUploadRule.audio.maxSeconds });
             const nextTotal = acceptedAudioDuration + (media.durationSeconds ?? 0);
             if (durationError) tips.add(durationError);
             else if (currentUploadRule.audio.maxTotalSeconds !== undefined && nextTotal > currentUploadRule.audio.maxTotalSeconds + MEDIA_DURATION_EPSILON_SECONDS) tips.add(`参考音频总时长不能超过 ${currentUploadRule.audio.maxTotalSeconds} 秒`);
@@ -9878,7 +9878,9 @@ export function ChatWorkbench() {
                   ref={fileInputRef}
                   type="file"
                   accept={uploadAcceptValue}
-                  multiple
+                  // ⭐ 当前规则只允许一共 1 个文件时（视频编辑/延长的 1 个参考视频、首帧模式的 1 张图）
+                  //    就不给 multiple，免得用户一次选好几个再被逐个提示拒掉。
+                  multiple={currentUploadRule.image.maxCount + currentUploadRule.document.maxCount + currentUploadRule.video.maxCount + currentUploadRule.audio.maxCount > 1}
                   disabled={isMainInputDisabled}
                   className="hidden"
                   onChange={(event) => {

@@ -12,7 +12,277 @@
 ---
 
 
+## 第五十六次会话（2026-08-09）：参考素材时长上限改成「按模型」（2.5 = 30 秒 / 2.0 = 15 秒）+ 拦截文案带上区间 —— **v1.0.0.90 两服都已部署**
+
+> | | 版本 |
+> |---|---|
+> | 本地 / 测试服 / 正式服 | `v1.0.0.90`（三方一致）|
+>
+> ⚠️ 本批把上一次会话攒着没上的 **v88 + v89（edit/extend 上传按钮收敛）** 一起带上了正式服。
+> 无 Prisma 迁移（`No pending migrations to apply.`）、无 compose/nginx 改动。
+
+### 一、需求（🗣️ 用户原话要点）
+
+1. 先去**官网查** Seedance 2.5 的参考视频/音频是不是支持到 30 秒，并**实测上游硬上限精确到 0.1 秒**（参考 2.0 的做法）。
+2. 选 2.5 时上传视频要支持到 30 秒；选 2.0 时超限**照样拦**，但黑色提示要改成
+   「**当前模型支持上传2-15秒参考视频/音频**」，2.5 超限也用同款文案（带自己的区间）——
+   **这样用户才知道不同模型支持的时长不一样**。
+3. **资产库上传**和**画布拖拽上传**也要支持到 30.x 秒，不能只有 15 秒。
+4. 做好直接部署测试服，没问题直接部署正式服。
+
+### 二、官网查证（BytePlus 官方文档，已坐实）
+
+`https://docs.byteplus.com/en/docs/ModelArk/2607688`（Dreamina Seedance 2.5 tutorial）原文：
+
+- 参考**视频**：`The duration of a single video is [2, 30] s. Up to 10 reference videos can be input,
+  and the total duration of all videos must not exceed 30s.`
+- 参考**音频**：`The duration of a single audio clip is [2, 30] s. Up to 10 reference audio clips …
+  total duration … must not exceed 30 s.`（单个 ≤15MB）
+- 单请求资产上限 **50 = 30 图 + 10 视频 + 10 音频**（2.0 系是 15 = 9+3+3）。
+- **视频编辑的源视频必须 [4,30] 秒**：`The input video to be edited must be [4, 30] seconds long.
+  Otherwise, an error is returned.`
+
+→ 所以 `upload-rules.ts` 的 `getSeedanceReferenceLimits`（30/10/30）**本来就是对的**。
+
+### 三、上游真实硬上限实测 = **30.2 秒**（和 2.0 的 15.2 同一个 pattern）
+
+在测试服容器里用 `ffmpeg-static` 造了 40 / 30.5 / 30.2 秒三个视频，落到 `public/generated` 用公网 URL
+直打 BytePlus `contents/generations/tasks`：
+
+| 素材时长 | 上游返回 |
+|---|---|
+| 40 秒 | 400 `the parameter video duration (seconds) … must be less than or equal to **30.2** for model dreamina-seedance-2-5 in r2v` |
+| 30.5 秒 | 400 同上 |
+| 30.2 秒 | **200 → 真建了任务** |
+
+→ 我们 `maxSeconds=30` + `MEDIA_DURATION_EPSILON_SECONDS=0.2` = 有效上限 30.2，**正好等于硬上限，不用改容差**。
+
+⛔⛔ **留痕（不是用户数据）**：30.2 那次**被上游接受了 → BytePlus 上真建了一个任务
+`cgt-20260809060339-fcv8w`（model `dreamina-seedance-2-5-260628`）**，`DELETE` 返回 409
+`InvalidAction.RunningTaskDeletion` 删不掉，会跑完并**真花 BytePlus 的钱**（不走我们的积分账本）。
+⭐ 教训已写进 `AGENTS.md`：**探测上游上限只用"必被拒"的值，别用"刚好等于上限"的值。**
+探测用的三个 mp4 已从服务器删掉。
+
+### 四、改了什么（5 个文件）
+
+```
+src/lib/app-version.ts                   # v89 -> v90
+src/lib/media-upload-validation.ts       # 核心：时长区间可传入 + 新文案唯一实现
+src/lib/upload-rules.ts                  # edit/extend 源视频 minSeconds 2 -> 4（官方 [4,30]）
+src/components/chat-workbench.tsx        # 对话流附加视频/音频时传模型区间
+src/app/api/video/route.ts               # 服务端发上游前那道复校也传模型区间（最容易漏的一条）
+```
+
+`media-upload-validation.ts` 三处新增/改动：
+
+1. 新增 **`REFERENCE_CLIP_SECONDS_MIN = 2` / `REFERENCE_CLIP_SECONDS_MAX = 30`**（全平台最宽区间，唯一权威）。
+2. 新增 **`buildReferenceDurationRangeMessage(kindLabel, min, max)`** →
+   `当前模型支持上传${min}-${max}秒参考${kindLabel}`（唯一文案实现）。
+   `validateReferenceMediaDurationRange` 的两句老文案（「时长不能少于 X 秒」/「时长不能超过 X 秒」）**已全部换掉**。
+3. **`validateMediaUploadMetadata(kind, metadata, limits?)`** / `validateMediaUploadBuffer(..., limits?)`
+   多收一个可选区间：**传了就按模型收紧，没传就用 2-30 最宽**。
+
+⭐ **五条通道分别怎么走**（这是本批最关键的账，`AGENTS.md` 已立铁律）：
+
+| 通道 | 传不传模型区间 | 为什么 |
+|---|---|---|
+| 对话流附加视频/音频（`chat-workbench.tsx` 7280/7311） | **传** `currentUploadRule.video/audio.minSeconds/maxSeconds` | 这一刻已经知道用哪个模型 |
+| 对话流 @引用已有资产（7653 `validateMediaDuration`） | 本来就传 `rule` | 无需改，自动拿到新文案 |
+| 工作流发送前校验（`workflow-*.tsx` 938/949/6438/6507） | 本来就传 `uploadRule.video/audio` | 无需改，自动拿到新文案 |
+| 资产库上传（1883）/ 工作流上传节点·拖拽（868/870）/ 服务端 `/api/upload-file` | **不传 → 2-30 最宽** | ⛔ 这三条**压根还没选模型**，收紧就等于 2.5 用户永远传不上 30 秒 |
+| **服务端 `/api/video` 的 `validateOwnedReferences`（829）** | **传**（用同函数里已算好的 `uploadRule`） | ⭐ 最容易漏：它在发给上游之前再校一遍，不改就是"前端放行、点发送被服务端拒" |
+
+### 五、验证
+
+**① 纯函数回归**（`.runtime/verify-duration-rules.ts`，真 import 真实模块，24 条含反向，`ALL PASS`）：
+2.5 = 30/30/10、2.0 = 15/15/3、edit minSeconds=4；30.0 与 30.2 放行、30.5 拦；
+2.0 的 20 秒拦、15.2 放行、1.5 拦；不传区间时 30 放行 / 30.9 拦；
+反向：`durationSeconds=0` 仍报「视频时长读取失败」、30 秒但 200×200 仍报「视频尺寸太小或太大了」。
+`npx tsc --noEmit` 0、`npm test` 15/15。
+
+**② 测试服真走界面（v90）**——⭐ 全部是"界面上真出现了什么"，不是直调接口：
+
+| 用例 | 结果 |
+|---|---|
+| 对话流 2.5 + 30 秒视频 | ✅ 无拦截、`@t30s-video` 挂上、上传成功 |
+| 对话流 2.5 + 25 秒音频 | ✅ 无拦截、chip 挂上 |
+| 对话流 2.0 + 30 秒视频 | ✅ 弹「**当前模型支持上传2-15秒参考视频**」、chip 不挂 |
+| 对话流 2.0 + 25 秒音频 | ✅ 弹「**当前模型支持上传2-15秒参考音频**」 |
+| 资产库上传 **30.2 秒**视频 | ✅ 入库成功，卡片显示 `00:30` |
+| 资产库上传 31 秒视频 | ✅ 弹「**当前模型支持上传2-30秒参考视频**」 |
+| 画布**真拖拽** 30 秒视频（DataTransfer + dragenter/over/drop） | ✅ 无时长拦截，画布真建出「上传视频 t30s-video 1280x720」节点 |
+| 巡检 6 项 | ✅（第一次生图卡「加载中…0%」= **已知老 bug**，第二次正常出图；见待办） |
+
+⭐ 抓"一闪而过的黑色提示"的姿势（下次照抄）：先在页面里挂
+`MutationObserver` 把匹配文案塞进 `window.__tips`，再触发上传，然后读 `window.__tips`
+—— 直接读 `innerText` 会因为提示已淡出而拿到 null（我第一次就这么误判过一次）。
+⚠️ `browser_run_code_unsafe` 里自己 `waitForEvent('filechooser')` 会把 MCP 的 modal 状态卡住、
+**函数返回值拿不到** → 先 `browser_file_upload` 传空数组关掉 modal，再 `browser_evaluate` 读结果。
+
+**③ 正式服真走界面（v90）**：2.5 收下 30 秒视频 ✅；切 2.0 后同一文件被拦并显示
+「当前模型支持上传2-15秒参考视频」✅；资产库正常、工作流画布点节点不崩（14 个 shape）、
+真跑一次生图出图 ✅；四域名 200、`/api/health` = v1.0.0.90、`x-app-version` = v1.0.0.90。
+⛔ 按新铁律**没碰正式服的顶部公告**（当时正式服有一条真实公告在走马灯，原样不动）。
+
+### 六、部署留档
+
+- 测试服：bump → 5 文件 tgz → 解包 grep 版本号 + `REFERENCE_CLIP_SECONDS_MAX` → 后台 build →
+  容器内 grep 构建产物命中「秒参考」→ `sync-ali.sh --stack=staging`（`_next/static` 42 文件）→
+  `PUBLISHED_APP_VERSION=v1.0.0.90` + force-recreate → 8080/https 200。
+- 正式服：**先跑库备份**（`--stack prod --label pre-deploy-v90`，5.9M / 校验通过）→ 备份 `app/`（145M，
+  `app-backups/20260809-061722-presync-v87`）→ staging→prod rsync（不 bump）→ `up -d --build` →
+  `No pending migrations to apply.` → `docker cp .next/static` 推阿里正式镜像（**腾讯 42 / 阿里 42，数量一致**）→
+  `PUBLISHED_APP_VERSION=v1.0.0.90` + force-recreate → 四域名 200。
+
+### 七、遗留（进待办）
+
+1. Seedance 2.5「**视频延长**」仍未真跑端到端（上一次会话就欠着；本批只动了时长校验，没碰它）。
+2. 「间断性卡死」老 bug **在测试服又现形了一次**：第一次发图整屏「加载中…0%」、消息没存、扣了 3 分，
+   刷新后那条对话里什么都没有；紧接着第二次完全正常。诊断日志已在线上，可以去
+   `.runtime/*-diagnostics-log.jsonl` 按那个时间点（2026-08-09 06:1x UTC，测试服 ID_535317）翻。
+3. 正式服 3 条历史 console error（`https://localhost:3000/...poster.jpg` 老脏数据）依旧，非本批引入。
+4. 测试服上留了几条测试痕迹：资产库多了 `t30s-video`（30 秒）/ `t302-video`（30.2 秒）两个上传视频、
+   一个 `t25s-audio`、一个新建的 `工作流_16`（里面一个上传视频节点）、两条 v90 巡检对话；
+   正式服留了一条 v90 巡检对话 + 一个 30 秒上传视频（都在测试号 `12424740@qq.com` 下）。
+
+---
+
+## 第五十五次会话（2026-08-09）：整批上两服（测试服 v86/v87/v88/v89、正式服 v87）+ 修「失败趋势只显示七八天」+ edit/extend 上传按钮按支持能力收敛
+
+> 版本节奏：本次会话 **bump 了 4 次**（v86 → v87 → v88 → v89）。
+> **正式服停在 v87**（第一批），v88/v89 是后来那个 edit/extend 需求，**还没上正式服**。
+>
+> | | 版本 |
+> |---|---|
+> | 本地 / 测试服 | `v1.0.0.89` |
+> | 正式服 | `v1.0.0.87` |
+> | GitHub | `v1.0.0.87`（commit `a1a6e81` + 交接 `acc1981`）|
+
+### 一、把第 50~54 次会话攒的整批改动推上两服
+
+测试服 **v86**（= 第 54 次那两批：Seedance 2.5 去「非标」+ 公告单行走马灯，5 个文件），
+正式服 **v87**（= v82 → v87 一次跨过：Seedance 2.5 全套 + 视频真实参数 + 顶部公告 + 走马灯 + 去非标 + 趋势图修复）。
+
+**正式服部署留档（下次照抄）**：
+1. `sudo /opt/flashmuse/scripts/flashmuse-db-backup.sh --stack prod --label pre-deploy`
+   → 5.9M / 141 对象 / 已过 `xz -t` + `pg_restore --list` 校验 / 异地阿里第 1 次尝试就成功（33 份备份）。
+2. app 备份 `app-backups/20260809-041243-presync-v87`（145M）→ staging→prod rsync（**不再 bump**）。
+3. `up -d --build` → `docker logs` 确认 **5 个公告迁移全部 `Applying` + `All migrations have been successfully applied.`**
+4. `docker cp` 取 `.next/static` 推阿里正式镜像 `flashmuse-static`：**腾讯 42 = 阿里 42**。
+5. 置 `PUBLISHED_APP_VERSION=v1.0.0.87` + `force-recreate` → `/api/health` v87、`x-app-version` v87、**四域名全 200**。
+
+### 二、⭐ 查清并修「失败排查 → 失败趋势（近 30 天）」永远只显示七八天（用户报的）
+
+- ⭐⭐ **根因不是图表坏了，是数据被删了**：`/etc/cron.d/flashmuse-cleanup` 每天 **05:10** 跑
+  `scripts/cleanup-old-data.mjs`，把 **7 天前**的 `GenerationEvent`（已成功 或 已归档）删掉；
+  而那张图统计的是**所有** failed（含已归档）→ 图上永远只可能有七八根柱子，「近 30 天」这个标题从来没成立过。
+- **坐实证据（两条，都没有解释空间）**：
+  ① 正式库 `GenerationEvent` 的 `min(createdAt)` = **2026-07-29**（当天是 08-08），全表 **1170 行 / 11 天**；
+  ② `grep -rh cleanup-old-data /etc/cron.d/` 直接看到那条 cron。
+- **修法**：`GenerationEvent` 单独保留 **31 天**（新常量 `EVENT_RETENTION_DAYS`），
+  `GenerationJob` / `UploadEvent` 仍 7 天；⭐ **未归档的失败事件仍然一条都不删**（那是红字排查材料）。
+  另外图例加一句「运维记录保留 31 天，更早的已按清理策略删除」，不再误导。
+- **验证**：本地 dry-run 待删 GenerationEvent 从一大堆变成 **6 条**；
+  测试服那张图真渲染 **30 根柱**、有数据的 8 天（**07/18~07/30，跨度远超 7 天**）全部显示
+  → 反过来证明图本身能显示 30 天。正式服同样 30 根柱 + 图例生效。
+- ⚠️ **正式服已被删的历史找不回来**，要等约 3 周图才会真正长满 30 天。
+  ⛔ 期间别把「柱子还是不满」当成没修好。
+
+### 三、⭐ 新铁律：正式服的「顶部公告」一律不许测试（用户拍板，已写进 `AGENTS.md`）
+
+公告全站用户都看得到 → 在正式服开测试公告 = 把测试内容推给每个真实用户 + 留假发布记录 + 给
+`AnnouncementDismissal` 写脏数据。**连"开一下马上关"都不许。** 正式服巡检里公告只允许"打开后台页看它不报错"。
+本次正式服巡检严格照办：**公告开关一个字没动。**
+
+### 四、⭐ edit/extend 的上传按钮按「上游到底支持什么」收敛（用户当次要求，测试服 v88/v89）
+
+用户原话意思：工作流视频节点选 2.5 + 视频编辑/视频延长后，**上传按钮要只留支持的**；
+既然只支持 1 个视频，**图片和音频按钮要隐藏、视频按钮上的数字要改成 1**。
+
+- ⭐⭐ **改在唯一权威 `src/lib/upload-rules.ts`**（不是在工作流组件里打补丁）→
+  **对话流 / 工作流 / 服务端一次全好**。新增 `isSingleVideoInputReferenceMode(mode)`；
+  `getVideoReferenceImageMaxCount` 对 edit/extend 返回 **0**；
+  `getBaseUploadRule` 对 edit/extend **提前 return 只开 video、maxCount 1**（image/document/audio 全 disabled）。
+- **顺手查出并修的 4 个同类问题**（用户让"看看还有没有其它类似的问题"）：
+  1. ⛔ **后台能把它放宽**：edit/extend 原来复用「融合模式」的 override key
+     → 后台把融合模式的视频数改成 9，edit/extend 也跟着变 9（上游必拒）。
+     现在给它独立 key `byteplus:video.seedance:edit|extend`（后台面板里不存在 → 改不动），
+     手法同 Hailuo 3 帧模式那条既有先例。
+  2. ⛔ **服务端没兜底**：`openrouter-video.ts` 里 edit/extend 仍会把参考视频切到 `mediaMax=10`、还会带参考音频。
+     现在 `mediaMax = isEditOrExtend ? 1 : …`、`audios` 在 edit/extend 时强制空数组
+     （防直调接口 / 连线绕过前端）。⚠️ `isEditOrExtend` 的声明位置往上挪了（原来在 body 那里）。
+  3. ⛔ **「只准 1 个」的地方原来都能一次多选**：工作流 chip 的 `<input multiple>` 是写死的，
+     首帧/首尾帧/edit/extend 都能一次选好几个再被静默丢掉。现在 `allowMultiple = multiple && maxCount > 1`；
+     对话流那个总的 `fileInputRef` 也改成「四类上限之和 > 1 才 multiple」。
+  4. **数字文案**：`1-{maxCount}` 在 maxCount=1 时会显示「1-1」→ 改成只显示「1」。
+     菜单描述也改成「只支持 1 个参考视频，…」。
+- **验证（硬判据）**：
+  - `npx tsx` 真 import 模块跑规则矩阵 **29/29 全过**，其中 **11 条反向**：
+    2.5 融合仍 30/10/10、2.0 仍 9/3、首帧 1、首尾帧 2、图片模式不受影响、2.0 的 override key 没变。
+  - **真走界面（测试服 v89）**：工作流 2.5 融合 `图片1-30 / 视频1-10 / 音频1-10`
+    → 切「视频编辑」**只剩「视频 1」**、`accept=.mp4/.mov`、`multiple=false`、比例/时长选择器隐藏；
+    「视频延长」同样；「首帧」只有「首帧」单选；「首尾帧」= 首帧+尾帧各单选；
+    **切回融合恢复 30/10/10 且 multiple=true**（反向）。对话流融合收图/视/音 → edit 只 `.mp4,.mov` + 单选。
+  - ⭐⭐ **服务端诊断日志坐实**（最硬）：那次真实请求
+    `referenceMode=edit imageCount=0 videoCount=1 audioCount=0`。
+  - ⭐ 传满 1 个视频后**上传按钮自动消失**（`canShowWorkflowUploadButton` 本来就按 maxCount 判，白捡）。
+
+### 五、✅ 白捡：Seedance 2.5「视频编辑」端到端真跑通（清掉一个老遗留待办）
+
+工作流里从资产库导入 1 个参考视频（`@real-r1`）+ 提示词「把@real-r1 里的画面改成黄昏时分的暖色调」
+→ **真出片**（黄昏暖色调）；节点标题从等待期那句提示切成真实参数
+**`Seedance 2.5 / 16:9 / 720p / 5秒 / 1280x720`**（尺寸时长跟随源视频，符合设计），扣 **97 积分**。
+⚠️ **「视频延长」仍未真跑端到端**（只验了 UI）。
+
+### 六、正式服真跑生成（用户要求"正常测试一下生成别出问题"）
+
+- **生图**：GPT-5.4 Image 2 / 16:9 / 2K → 出图成功（戴围巾的小狐狸），扣 **15 积分**。
+  ⚠️ 2K GPT 生图慢，**等了约 2 分钟**（中途 66% 是正常的，别当成卡死）。
+- **生视频**：**Seedance 2.5** / 4 秒 / 480p → 出片成功，扣 **29 积分**（与测试服完全一致 → 新模型扣费在正式服也对）。
+  ⭐ 顺带确认正式服 2.5 的 480p 16:9 = `854 × 480`、**无「非标」**。
+- 其余巡检：登录 / 对话历史 / 工作流点节点不崩 / 资产库 / 后台「失败排查」「顶部公告」页 **console 0 error**。
+
+### 七、⚠️ 本次发现的两个"不是 bug"的坑（下次别再误判）
+
+1. **正式服 workspace 有 3 条 console error**：老资产的视频封面地址存成
+   `https://localhost:3000/generated/...` → `ERR_SSL_PROTOCOL_ERROR`。
+   **是很早期上传留下的历史脏数据，不是本批引入**（都是同一个用户的老视频 poster）。
+2. **Playwright 点「从资产库导入」会点错**：工作流底部工具栏和上传 chip 的菜单项**同名**，
+   `getByRole('button',{name:'从资产库导入'}).last()` 会点到工具栏那个（弹出的是多选导入弹窗、默认停在「角色图片」）。
+   ⭐ 正确写法：`page.locator('[data-workflow-menu] button').filter({hasText:'从资产库导入'}).first()`
+   —— 走菜单项才会打开 @引用弹窗，且**会按 chip 类型自动停在「上传视频」**（这个功能本来就是对的，我一度误判成 bug）。
+
+### 八、本次改动文件清单
+
+**第一批（v86，第 54 次会话遗留的两批）**：`src/lib/app-version.ts`、`src/lib/models.ts`、
+`src/components/announcement-banner.tsx`、`src/app/admin/admin-announcement-panel.tsx`、`src/app/globals.css`
+
+**第二批（v87，趋势图）**：`src/lib/app-version.ts`、`scripts/cleanup-old-data.mjs`、
+`src/app/admin/admin-failure-triage-panel.tsx`（+ `AGENTS.md` 新铁律）
+
+**第三批（v88，edit/extend）**：`src/lib/app-version.ts`、`src/lib/upload-rules.ts`、
+`src/lib/openrouter-video.ts`、`src/lib/video-reference-modes.ts`、`src/components/workflow-tldraw-canvas-inner.tsx`
+
+**第四批（v89）**：`src/lib/app-version.ts`、`src/components/chat-workbench.tsx`（对话流单选）
+
+⚠️ 全程**无新 Prisma 迁移**（公告那 5 个是上一批的）、**无 compose/nginx 改动**。
+⚠️ **v88/v89 未 commit、未上正式服。**
+
+### 九、留痕（⛔ 别当成用户数据）
+
+- **正式服 `12424740@qq.com`**：新建 1 条对话「v87巡检：一只戴围巾的小狐狸…」含 1 图 + 1 视频，
+  共扣 **44 积分**（余额 9,643）。
+- **测试服 `12424740@qq.com`**：① 1 条对话「v86巡检：一只橘猫…」+ 1 图（扣 3 分）
+  ② 公告发布历史多 1 条（v86 长文案那次）+ `AnnouncementDismissal` 1 行，**公告已关闭**
+  ③ **新建了「工作流_15」**，里面有 1 个视频编辑节点 + 出片（扣 97 分），余额 95,610
+  ④ 中途为验 UI 还建了几条空对话。⛔ **零删用户数据。**
+
+---
+
+
 ## 第五十四次会话（2026-08-09）：全面代码审查（修 5 处，测试服 v84→v85）+ Seedance 2.5 去掉「非标」+ 公告改单行走马灯
+
+> ⭐ 本条的「接手第一件事 = 部署」**已在第五十五次会话完成**（见上一条），此处保留原文作为历史记录。
 
 > 🎯🎯 **接手第一件事 = 部署（用户已明确交代"下一个 AI 要部署掉"）。**
 > ⛔ **本地代码已超过测试服 v85**（v85 部署完之后又改了「非标」和「走马灯」两批）→

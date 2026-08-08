@@ -298,7 +298,10 @@ async function createBytePlusVideoTask(prompt: string, referenceImages: string[]
   if (!bytePlusModel) throw new Error("连接不到模型，请联系管理员！");
 
   const videoSettings = resolveVideoSettingsForModel(model, settings);
-  const mediaMax = isSeedance25VideoModel(model) ? 10 : 3;
+  // 视频编辑/延长（仅 Seedance 2.5）：官方硬规则 —— 比例只能 adaptive（随被编辑视频）、时长只能 -1（随原视频）；
+  // ⭐ 入参也只吃**1 个参考视频**，参考图/参考音频一律不带（前端已隐藏按钮，这里是服务端兜底）。
+  const isEditOrExtend = referenceMode === "edit" || referenceMode === "extend";
+  const mediaMax = isEditOrExtend ? 1 : isSeedance25VideoModel(model) ? 10 : 3;
   const images = getBytePlusEffectiveReferenceImages(referenceImages, referenceMode, model).map((url, index) => ({
     type: "image_url",
     image_url: { url: toDataUrlIfLocalPublicAsset(url) },
@@ -309,13 +312,11 @@ async function createBytePlusVideoTask(prompt: string, referenceImages: string[]
     video_url: { url: toPublicGeneratedAssetUrl(url) },
     role: "reference_video",
   }));
-  const audios: BytePlusAudioReference[] = referenceAudios.filter(Boolean).slice(0, mediaMax).map((url) => ({
+  const audios: BytePlusAudioReference[] = (isEditOrExtend ? [] : referenceAudios.filter(Boolean).slice(0, mediaMax)).map((url) => ({
     type: "audio_url",
     audio_url: { url: toPublicGeneratedAssetUrl(url) },
     role: "reference_audio",
   }));
-  // 视频编辑/延长（仅 Seedance 2.5）：官方硬规则 —— 比例只能 adaptive（随被编辑视频）、时长只能 -1（随原视频）。
-  const isEditOrExtend = referenceMode === "edit" || referenceMode === "extend";
   const body = {
     model: bytePlusModel,
     content: [

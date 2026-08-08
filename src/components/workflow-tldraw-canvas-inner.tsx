@@ -6580,18 +6580,23 @@ function WorkflowPromptBox({ node, value, placeholder, maxPromptHeight, onChange
   // 上传按钮：图片/视频/音频先弹三选菜单；「文件」（文本节点读文档）没有资产库/画布来源，保持原来的直接选文件。
   const renderUploadButton = ({ label, icon: Icon, ariaLabel, kind, hideCount, multiple = true }: (typeof uploadButtons)[number]) => {
     const accept = getWorkflowUploadAccept(uploadRule, kind);
+    const kindMaxCount = uploadRule[kind].maxCount;
+    // ⭐ 只允许 1 个时显示「1」而不是「1-1」（视频编辑/延长的参考视频、首帧模式的参考图都是这种情况），
+    //    同时 file input 不再 multiple，避免用户一次选好几个然后被静默丢掉。
+    const countLabel = kindMaxCount <= 1 ? "1" : `1-${kindMaxCount}`;
+    const allowMultiple = multiple && kindMaxCount > 1;
     const chipClassName = "workflow-upload-chip flex h-[70px] w-[64px] shrink-0 cursor-pointer flex-col items-center justify-center gap-1.5 rounded-[16px] text-[#a7a7a7] transition";
     const chipInner = (
       <>
         <Icon className="h-4.5 w-4.5" aria-hidden="true" />
         <span className="text-[12px] leading-none">{label}</span>
-        {hideCount ? null : <span className="text-[10px] leading-none text-[#b5b5b5]">1-{uploadRule[kind].maxCount}</span>}
+        {hideCount ? null : <span className="text-[10px] leading-none text-[#b5b5b5]">{countLabel}</span>}
       </>
     );
     if (kind === "document") {
       return (
         <label key={label} style={{ backgroundColor: "#ededed" }} className={chipClassName} aria-label={ariaLabel} title={accept}>
-          <input type="file" hidden multiple={multiple} accept={accept} onChange={(event) => { void handleUploadFiles(kind, Array.from(event.target.files ?? [])); event.target.value = ""; }} />
+          <input type="file" hidden multiple={allowMultiple} accept={accept} onChange={(event) => { void handleUploadFiles(kind, Array.from(event.target.files ?? [])); event.target.value = ""; }} />
           {chipInner}
         </label>
       );
@@ -6608,7 +6613,7 @@ function WorkflowPromptBox({ node, value, placeholder, maxPromptHeight, onChange
       //    鼠标穿过那道缝就会触发 mouseleave 把菜单关掉。用内边距把命中区连成一片。
       <div key={label} data-workflow-menu className="relative shrink-0" onPointerDown={(event) => event.stopPropagation()} onMouseEnter={() => { if (uploadMenuKey !== label) { closeWorkflowPopups(); setUploadMenuKey(label); } }} onMouseLeave={() => setUploadMenuKey((current) => current === label ? null : current)}>
         {/* 隐藏 input 放在菜单外面：菜单关掉后它还在，选完文件的 onChange 才不会丢 */}
-        <input ref={(element) => { uploadInputRefs.current[label] = element; }} type="file" hidden multiple={multiple} accept={accept} onChange={(event) => { void handleUploadFiles(kind, Array.from(event.target.files ?? [])); event.target.value = ""; }} />
+        <input ref={(element) => { uploadInputRefs.current[label] = element; }} type="file" hidden multiple={allowMultiple} accept={accept} onChange={(event) => { void handleUploadFiles(kind, Array.from(event.target.files ?? [])); event.target.value = ""; }} />
         <button type="button" onClick={() => { if (uploadMenuKey !== label) { closeWorkflowPopups(); setUploadMenuKey(label); } }} style={{ backgroundColor: "#ededed" }} className={chipClassName} aria-label={ariaLabel} title={ariaLabel}>
           {chipInner}
         </button>

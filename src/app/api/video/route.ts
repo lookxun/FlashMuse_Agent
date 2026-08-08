@@ -826,7 +826,10 @@ export async function POST(request: Request) {
       const totalDurationError = validateReferenceTotalDuration(kind, assets.map((asset) => asset.durationSeconds), body?.model);
       if (totalDurationError) return totalDurationError;
       for (const asset of assets) {
-        const error = validateMediaUploadMetadata(kind, { durationSeconds: asset.durationSeconds ?? undefined, width: asset.width ?? undefined, height: asset.height ?? undefined });
+        // ⭐ 单条时长按模型走（Seedance 2.5 = 2-30 秒、2.0 系 = 2-15 秒）：这里原来不传区间、
+        //   默认写死 15 秒，会把 2.5 的合法 30 秒参考素材在服务端拒掉。
+        const kindRule = kind === "video" ? uploadRule.video : uploadRule.audio;
+        const error = validateMediaUploadMetadata(kind, { durationSeconds: asset.durationSeconds ?? undefined, width: asset.width ?? undefined, height: asset.height ?? undefined }, { minSeconds: kindRule.minSeconds, maxSeconds: kindRule.maxSeconds });
         if (error) return error;
       }
       return undefined;

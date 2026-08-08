@@ -39,8 +39,8 @@ const seedance25ReferenceModeOptions: VideoReferenceModeOption[] = [
   { value: "reference", label: "融合模式", description: "支持 1-30 张图片，1-10 个视频，1-10 个音频（音频可单独使用）", icon: RiImageCircleLine },
   { value: "first_frame", label: "首帧模式", description: "支持 1 张首帧图片", icon: RiImage2Line },
   { value: "first_last_frame", label: "首尾帧模式", description: "支持 2 张图片：首帧和尾帧", icon: RiMultiImageLine },
-  { value: "edit", label: "视频编辑", description: "上传参考视频，在提示词里说明如何编辑（如：把@视频1里的人换成…）", icon: RiVideoAiLine },
-  { value: "extend", label: "视频延长", description: "上传参考视频，在提示词里说明如何延长（如：延长@视频1，继续故事）", icon: RiVideoAddLine },
+  { value: "edit", label: "视频编辑", description: "只支持 1 个参考视频，在提示词里说明如何编辑（如：把@视频1里的人换成…）", icon: RiVideoAiLine },
+  { value: "extend", label: "视频延长", description: "只支持 1 个参考视频，在提示词里说明如何延长（如：延长@视频1，继续故事）", icon: RiVideoAddLine },
 ];
 
 /** 按模型给参考模式菜单选项 —— 唯一权威。 */

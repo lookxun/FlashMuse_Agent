@@ -13,15 +13,37 @@ function extensionOf(name: string | undefined | null) { return (name ?? "").spli
 
 // 参考视频/音频「单条时长」允许的读取抖动容差（秒）。唯一权威，禁止再各处复制。
 // 实测 BytePlus Seedance 2.0 三个模型 r2v 的参考视频真实上限 = 15.2 秒（API 直接报 "must be less than or equal to 15.2"）。
-// 我们对外仍按 maxSeconds=15 宣传，容差取 0.2 → 有效上限 15 + 0.2 = 15.2，正好等于真实硬上限；
+// 我们对外按 maxSeconds 宣传整数（2.0 = 15、2.5 = 30），容差取 0.2 → 有效上限 maxSeconds + 0.2，
+// 正好等于 2.0 那个实测硬上限（2.5 同样按 30 + 0.2 = 30.2 放行，官方文档只写 [2,30] 整数区间）。
 // 对话流 / 工作流 / 服务端三处必须共用这一个常量与下面的 validateReferenceMediaDurationRange，保持完全一致。
 export const MEDIA_DURATION_EPSILON_SECONDS = 0.2;
+
+// 参考视频/音频「单条时长」的全平台最小/最大值（唯一权威）。
+// 最大值 = 目前所有模型里最宽的那个 —— Seedance 2.5（官方文档 2026-08 明确：单条参考视频/音频 [2,30] 秒、
+// 最多各 10 个、总时长各 ≤30 秒；Seedance 2.0 系仍是 [2,15] / 3 个 / 总 15 秒）。
+// ⭐ 这两个数只给「不知道用哪个模型」的通道兜底：资产库上传、工作流上传节点、服务端 /api/upload-file。
+//    真正按模型收紧的地方是 upload-rules.ts 的 minSeconds/maxSeconds（对话流附加、工作流发送前校验都读它）。
+// ⛔ 别把这里改回 15：那会让 2.5 用户压根传不上 30 秒素材（历史 bug：服务端写死 15，规则层写 30 全白费）。
+export const REFERENCE_CLIP_SECONDS_MIN = 2;
+export const REFERENCE_CLIP_SECONDS_MAX = 30;
+
+/**
+ * 参考视频/音频时长越界时的统一文案（唯一权威）。
+ * ⭐ 必须把区间写进文案里 —— 不同模型区间不同（2.0 是 2-15、2.5 是 2-30），
+ *    只说「时长不能超过 15 秒」用户会以为是全站限制、不知道换个模型就能传。
+ */
+export function buildReferenceDurationRangeMessage(kindLabel: string, minSeconds: number, maxSeconds: number) {
+  return `当前模型支持上传${minSeconds}-${maxSeconds}秒参考${kindLabel}`;
+}
 
 // 单条时长范围校验（对话流客户端、工作流客户端共用；服务端 validateMediaUploadMetadata 也按同一容差判定）。
 export function validateReferenceMediaDurationRange(kindLabel: string, durationSeconds: number | undefined, rule: { minSeconds?: number; maxSeconds?: number }) {
   if (!Number.isFinite(durationSeconds ?? Number.NaN) || !durationSeconds) return `${kindLabel}时长读取失败`;
-  if (rule.minSeconds !== undefined && durationSeconds < rule.minSeconds - MEDIA_DURATION_EPSILON_SECONDS) return `${kindLabel}时长不能少于 ${rule.minSeconds} 秒`;
-  if (rule.maxSeconds !== undefined && durationSeconds > rule.maxSeconds + MEDIA_DURATION_EPSILON_SECONDS) return `${kindLabel}时长不能超过 ${rule.maxSeconds} 秒`;
+  const minSeconds = rule.minSeconds ?? REFERENCE_CLIP_SECONDS_MIN;
+  const maxSeconds = rule.maxSeconds ?? REFERENCE_CLIP_SECONDS_MAX;
+  if (durationSeconds < minSeconds - MEDIA_DURATION_EPSILON_SECONDS || durationSeconds > maxSeconds + MEDIA_DURATION_EPSILON_SECONDS) {
+    return buildReferenceDurationRangeMessage(kindLabel, minSeconds, maxSeconds);
+  }
   return undefined;
 }
 
@@ -36,11 +58,14 @@ export function validateMediaUploadFile(file: Pick<File, "name" | "type" | "size
   return undefined;
 }
 
-export function validateMediaUploadMetadata(kind: UploadMediaKind, metadata: MediaUploadMetadata) {
+export function validateMediaUploadMetadata(kind: UploadMediaKind, metadata: MediaUploadMetadata, limits?: { minSeconds?: number; maxSeconds?: number }) {
   const label = kind === "video" ? "视频" : "音频";
   if (!Number.isFinite(metadata.durationSeconds) || !metadata.durationSeconds) return `${label}时长读取失败`;
-  // 实测真实上限 15.2 秒（=15 + MEDIA_DURATION_EPSILON_SECONDS）；下限 2 秒同容差。三处统一走这个容差。
-  if (metadata.durationSeconds < 2 - MEDIA_DURATION_EPSILON_SECONDS || metadata.durationSeconds > 15 + MEDIA_DURATION_EPSILON_SECONDS) return `${label}时长需在 2 到 15 秒之间`;
+  // ⭐ 时长区间按模型走（对话流传 upload-rules 里那份 min/max）；不传就用全平台最宽区间 2-30 秒
+  //    —— 资产库上传、工作流上传节点、服务端 /api/upload-file 都不知道会配哪个模型，只能按最宽放行，
+  //    真正的按模型收紧发生在「把素材附加给某个模型」那一步。
+  const durationError = validateReferenceMediaDurationRange(label, metadata.durationSeconds, limits ?? {});
+  if (durationError) return durationError;
   if (kind === "audio") return undefined;
   const { width, height, fps } = metadata;
   if (!width || !height) return "视频尺寸读取失败";
@@ -54,9 +79,9 @@ export function validateMediaUploadMetadata(kind: UploadMediaKind, metadata: Med
   return undefined;
 }
 
-export function validateMediaUploadBuffer(buffer: Uint8Array, file: Pick<File, "name" | "type" | "size">, kind: UploadMediaKind, metadata: MediaUploadMetadata) {
+export function validateMediaUploadBuffer(buffer: Uint8Array, file: Pick<File, "name" | "type" | "size">, kind: UploadMediaKind, metadata: MediaUploadMetadata, limits?: { minSeconds?: number; maxSeconds?: number }) {
   // File 的 name/type 是原型 getter，禁止用 {...file} 展开（会丢失），必须显式取字段。
-  return validateMediaUploadFile({ name: file.name, type: file.type, size: buffer.byteLength }, kind) ?? validateMediaUploadMetadata(kind, metadata);
+  return validateMediaUploadFile({ name: file.name, type: file.type, size: buffer.byteLength }, kind) ?? validateMediaUploadMetadata(kind, metadata, limits);
 }
 
 /**

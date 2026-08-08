@@ -4,6 +4,35 @@
 This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code. Heed deprecation notices.
 <!-- END:nextjs-agent-rules -->
 
+# 铁律⭐⭐：参考素材「时长上限」是**按模型**的 —— 规则层放宽了不算数，四条通道要各自对上（2026-08-09 加）
+
+2026-08-09 用户要求「2.5 支持 30 秒参考视频/音频」。`upload-rules.ts` 的
+`getSeedanceReferenceLimits`（2.5 = 30 秒 / 10 个 / 总 30 秒）**早就写对了**，但真传 30 秒还是被拦 ——
+因为 **`media-upload-validation.ts` 的 `validateMediaUploadMetadata` 里写死 `> 15 + EPS`**，
+而它是**服务端 `/api/upload-file` + 对话流 + 资产库 + 工作流上传节点**共用的那一层 → 规则层白改。
+
+- ⭐ **正解 = 让那个函数收一个可选的 `{minSeconds,maxSeconds}`**，
+  **知道模型的通道传模型区间、不知道模型的通道用全平台最宽区间**
+  （`REFERENCE_CLIP_SECONDS_MIN/MAX = 2/30`，唯一权威）。
+  ⛔ 别把服务端 upload-file 也按某个模型收紧 —— 资产库/画布上传节点**压根还没选模型**，
+  收紧就等于"2.5 用户永远传不上 30 秒素材"。真正的按模型收紧发生在**「把素材附加给某个模型」那一步**。
+- ⭐⭐ **必须逐条数清有几条通道**（这次是 5 处 `validateMediaUploadMetadata` + 2 处
+  `validateReferenceMediaDurationRange`）：① 对话流附加（传模型区间）② 资产库上传（最宽）
+  ③ 工作流上传节点/拖拽（最宽）④ 服务端 `/api/upload-file`（最宽）
+  ⑤ **服务端 `/api/video` 的 `validateOwnedReferences`（必须传模型区间）** ——
+  ⑤ 最容易漏，它在**发给上游之前**再校一遍，漏了就是"前端放行、点发送被服务端拒"。
+- ⭐ **文案必须把区间写进去**（🗣️ 用户原话：这样用户才知道不同模型支持不同时长）：
+  唯一实现 `buildReferenceDurationRangeMessage` → 「当前模型支持上传2-15秒参考视频」/「…2-30秒参考音频」。
+  ⛔ 别再写「时长不能超过 15 秒」这种不带模型信息的话。
+- ⭐ **上游真实硬上限 = 我们宣传的整数 + 0.2 容差**，两代都验过：
+  2.0 是 **15.2**、2.5 实测是 **30.2**（`must be less than or equal to 30.2 for model
+  dreamina-seedance-2-5 in r2v`）→ 现有 `MEDIA_DURATION_EPSILON_SECONDS = 0.2` 正好对齐，不用改。
+- ⭐⭐ **探测上游硬上限的姿势（免费）**：造一个**明显超限**的素材（40 秒）直打上游 →
+  400 的错误文案里**上游会把精确上限告诉你**。⛔⛔ **但别拿"刚好等于上限"的值去探** ——
+  2026-08-09 我用 30.2 秒探，**上游接受了 → 真建了任务、真花了 BytePlus 的钱**（`cgt-20260809060339-fcv8w`，
+  running 状态删不掉）。**探测只用必被拒的值。**
+- ⭐ edit/extend 的源视频官方要求 **[4,30]**（不是 [2,30]）→ `minSeconds: 4`，提前用大白话拦住。
+
 # 铁律⭐⭐：解析「模型返回的 JSON」一律要容错裸控制字符 —— 长回复里的真实换行会让 `JSON.parse` 必挂（2026-08-09 加，正式服「对话后出现很多代码」根因）
 
 2026-08-09 用户报正式服 Agent 模式「对话后出现很多代码」。去正式服拉那条对话的消息坐实：
@@ -514,6 +543,26 @@ BytePlus 那边是**预签名 url**（实测 206 + `Accept-Ranges: bytes`），�
 - ⭐ **后台预览宽度 = 铺满右侧内容区**（🗣️ 用户 2026-08-09 明确要求）。
   ⛔ **别再改成"按视口宽度呈现"** —— 我试过，后台页在窄屏下有横向滚动、内容区比视口更宽
   （实测视口 900 时内容区 1244），限制成视口宽会**铺不满、露出灰底**，被用户当场否掉。
+
+# 铁律⭐⭐：「某个模式支持传什么、传几个」只改 `upload-rules.ts`，⛔ 别在组件里判（2026-08-09 加）
+
+2026-08-09 用户要求「2.5 选视频编辑/延长后，不支持的上传按钮要取消、视频数字改成 1」。
+⭐ **正解是改 `src/lib/upload-rules.ts` 的 `getBaseUploadRule`（唯一权威）** ——
+工作流的 `canShowWorkflowUploadButton` 本来就按 `rule[kind].enabled` / `maxCount` 决定按钮显不显示，
+对话流的 accept、`getSupportedUploadTypeLabel`、拖拽校验、`pruneWorkflowUploadsForRule`（切模式自动剪掉多余上传并从提示词删 @名）
+**全都读同一份 rule** → 改一处，三条路（对话流/工作流/服务端）一起生效，一行组件代码都不用动。
+
+- ⭐ **配套三件事，缺一就有漏**：
+  ① **`getUploadRuleOverrideKey` 要给"上游硬规则"的模式一个后台面板里不存在的 key**
+     （沿用 Hailuo 3 帧模式的先例）—— 否则后台把「融合模式」的数量调大，会把 edit/extend 一起放宽、必被上游拒；
+  ② **服务端必须自己再兜一遍**（`openrouter-video.ts` 里 `mediaMax` / `audios`）——
+     前端隐藏了按钮，但直调接口、工作流连线进来的上游节点媒体都绕得过；
+  ③ **`<input type="file">` 的 `multiple` 要跟着 maxCount 走**（只准 1 个就别 multiple），
+     否则用户一次选好几个再被逐个提示拒掉。
+- ⭐ **数字文案**：`1-{maxCount}` 在 maxCount=1 时显示「1-1」很怪 → 只显示「1」。
+- ⭐ **验法（几秒钟、二值）**：`npx tsx` 真 import `upload-rules.ts` 跑规则矩阵，
+  ⛔ **必须带反向用例**（本次 29 条里 11 条反向：融合仍 30/10/10、2.0 仍 9/3、首帧 1、首尾帧 2、图片模式不受影响）。
+  再加一条最硬的：**去服务端诊断日志看那次真实请求的 `imageCount/videoCount/audioCount`**。
 
 # 铁律⛔⛔：**正式服的「顶部公告」一律不许测试**（2026-08-09 用户拍板）
 

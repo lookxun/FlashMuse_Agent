@@ -128,9 +128,17 @@ export function supportsVideoReferenceMode(modelId?: string) {
  * （Hailuo 3 的 9 张上限 2026-08-03 直打 OpenRouter 实测确认：第 10 张提交即被 400 拒）。
  */
 export function getVideoReferenceImageMaxCount(modelId?: string, mode?: UploadRuleContext["videoReferenceMode"]) {
+  // ⭐⭐ 视频编辑 / 视频延长（仅 Seedance 2.5）：入参只有**1 个参考视频**，
+  // 参考图和参考音频上游压根不用 → 张数 0，配合 getBaseUploadRule 里把 image/audio 整个关掉。
+  if (mode === "edit" || mode === "extend") return 0;
   if (mode === "first_last_frame") return 2;
   if (mode === "first_frame" || mode === "last_frame") return 1;
   return getSeedanceReferenceLimits(modelId).image;
+}
+
+/** 视频编辑 / 视频延长这两个模式只接受 1 个参考视频（⛔ 别改成多个，上游只吃一个）。 */
+export function isSingleVideoInputReferenceMode(mode?: UploadRuleContext["videoReferenceMode"]) {
+  return mode === "edit" || mode === "extend";
 }
 
 /**
@@ -154,6 +162,9 @@ export function getVideoReferenceLimitHint(modelId?: string, mode?: UploadRuleCo
 export function getUploadRuleOverrideKey(context: UploadRuleContext) {
   if (context.mode === "agent" || context.mode === "general") return "chat";
   if (context.mode === "video" && isBytePlusVideoModel(context.modelId)) {
+    // ⭐ edit/extend 的「1 个参考视频」是上游硬规则 → 故意给一个后台面板里不存在的 key，
+    // 免得后台把「融合模式」的视频数量调成 3 之后，把 edit/extend 也一起放宽（那样必然被上游拒）。
+    if (isSingleVideoInputReferenceMode(context.videoReferenceMode)) return `byteplus:video.seedance:${context.videoReferenceMode}`;
     if (context.videoReferenceMode === "first_last_frame") return BYTEPLUS_SEEDANCE_UPLOAD_RULE_KEYS.firstLastFrame;
     if (context.videoReferenceMode === "first_frame") return BYTEPLUS_SEEDANCE_UPLOAD_RULE_KEYS.firstFrame;
     return BYTEPLUS_SEEDANCE_UPLOAD_RULE_KEYS.reference;
@@ -214,6 +225,15 @@ function getBaseUploadRule(context: UploadRuleContext): UploadRule {
     if (isBytePlusVideoModel(context.modelId)) {
       const imageMaxCount = getVideoReferenceImageMaxCount(context.modelId, context.videoReferenceMode);
       const lim = getSeedanceReferenceLimits(context.modelId);
+      // ⭐⭐ 视频编辑 / 视频延长：**只开「参考视频」且只允许 1 个**，图片/音频按钮整个隐藏
+      // （2026-08-09 用户拍板；上游 edit/extend 只吃一个 reference_video，多传/传图传音都没意义）。
+      if (isSingleVideoInputReferenceMode(context.videoReferenceMode)) {
+        // ⭐ 被编辑/延长的源视频官方要求 [4,30] 秒（文档原文："The input video to be edited must be
+        //   [4, 30] seconds long. Otherwise, an error is returned."）→ 下限 4 不是 2，提前用大白话拦住。
+        return makeRule({
+          video: kindRule({ enabled: true, maxCount: 1, maxSizeMb: 200, formats: ["mp4", "mov"], minSeconds: 4, maxSeconds: lim.clipSeconds, maxTotalSeconds: lim.totalSeconds, requiresServerUrl: true }),
+        });
+      }
       const referenceMediaRule = context.videoReferenceMode === "first_frame" || context.videoReferenceMode === "first_last_frame" ? {} : {
         video: kindRule({ enabled: true, maxCount: lim.mediaCount, maxSizeMb: 200, formats: ["mp4", "mov"], minSeconds: 2, maxSeconds: lim.clipSeconds, maxTotalSeconds: lim.totalSeconds, requiresServerUrl: true }),
         audio: kindRule({ enabled: true, maxCount: lim.mediaCount, maxSizeMb: 15, formats: ["mp3", "wav"], minSeconds: 2, maxSeconds: lim.clipSeconds, maxTotalSeconds: lim.totalSeconds, requiresServerUrl: true }),
