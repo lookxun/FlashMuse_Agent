@@ -30,6 +30,15 @@ export const BYTEPLUS_AGENT_IMAGE_MODEL_KEYS: Record<string, string> = {
 export const BYTEPLUS_AGENT_VIDEO_MODEL_KEYS: Record<string, string> = {
   "byteplus:video.seedance-2-0-fast": "agent-video.seedance-2-0-fast",
   "byteplus:video.seedance-2-0": "agent-video.seedance-2-0",
+  // ⭐ 2026-08-09 补：Agent 自动生视频也给 Seedance 2.5 一个后台开关。
+  // ⛔ 故意**不**往 DEFAULT_MODEL_PROVIDER_PREFERENCES 里写 "agent-video.seedance-2-5"
+  //    → 缺省值不是 "byteplus" ⇒ isBytePlusPreferenceEnabled 为 false ⇒ 后台开关默认「关」，
+  //    Agent 高级档仍旧用 2.0（默认行为一字不变、不会偷偷把用户的钱花在更贵的 2.5 上）；
+  //    管理员在后台打开后，`getAgentGenerationModel` 的高级档候选链才会优先取 2.5。
+  "byteplus:video.seedance-2-5": "agent-video.seedance-2-5",
+  // ⚠️ `agent-video.seedance-2-0-mini` 在偏好表和端点表里都有，但**故意不在这里**
+  //    → 它是历史遗留的半份配置（死配置）。往这里加会让 Mini 立刻对 Agent 生效（偏好表里默认是 byteplus），
+  //    属于行为变更，要加得先跟用户确认。
 };
 
 const ENV_PATH = join(process.cwd(), ".env.local");
@@ -129,6 +138,8 @@ const DEFAULT_BYTEPLUS_MODEL_SELECTIONS: Record<string, string> = {
   "agent-video.seedance-2-0-fast": "ep-20260521134040-vf2jf",
   "agent-video.seedance-2-0": "ep-20260521133841-nn8bg",
   "agent-video.seedance-2-0-mini": "ep-20260713100634-mwp78",
+  // ⭐ 2026-08-09 补：Agent 自动生视频的 Seedance 2.5 端点（与对话流那条同一个端点）。
+  "agent-video.seedance-2-5": "ep-20260807153703-h48pt",
   "agent-chat.seed-2-0-pro": "ep-20260514173614-jbcb4",
   "moderation.seed-2-0-pro": "ep-20260514173614-jbcb4",
 };
@@ -153,12 +164,15 @@ export const HD_FUNCTION_MODEL_CHAIN: string[] = [
 ];
 export const HD_FUNCTION_KEYS = ["hd"] as const;
 
-// 工作流「视频编辑功能」的模型候选链：依次 Mini → Fast → 2.0（前一个失败/关闭自动用下一个）。
+// 工作流「视频编辑功能」的模型候选链：依次 Mini → Fast → 2.0 → 2.5（前一个失败/关闭自动用下一个）。
 // 与前端 workflow-tldraw-canvas-inner 的 WORKFLOW_VIDEO_EDIT_MODEL_CHAIN 保持一致，新增模型只改这两处配置表。
+// ⭐ 2.5 放在**最后一位**（2026-08-09 加）：前三个都被后台关掉才会用到它 → 默认行为一字不变，
+//    只是给后台多一个可选项（2.5 更贵，⛔ 别把它挪到首位，那等于悄悄涨价）。
 export const VIDEO_EDIT_FUNCTION_MODEL_CHAIN: string[] = [
   "byteplus:video.seedance-2-0-mini",
   "byteplus:video.seedance-2-0-fast",
   "byteplus:video.seedance-2-0",
+  "byteplus:video.seedance-2-5",
 ];
 export const VIDEO_EDIT_FUNCTION_KEYS = ["video_quick"] as const;
 

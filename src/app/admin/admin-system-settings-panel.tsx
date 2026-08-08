@@ -124,6 +124,9 @@ const modelUsageGroups: ModelUsageGroup[] = [
       { badge: "", modelId: "", subheading: "自动生成视频" },
       { provider: "byteplus", badge: "普通", modelId: "byteplus:video.seedance-2-0-fast", providerKey: "agent-video.seedance-2-0-fast", bytePlusStatic: bytePlusVideoModels[1] },
       { provider: "byteplus", badge: "高级", modelId: "byteplus:video.seedance-2-0", providerKey: "agent-video.seedance-2-0", bytePlusStatic: bytePlusVideoModels[2] },
+      // ⭐ 2026-08-09 补：Agent 自动生视频的 Seedance 2.5 开关。**默认关**（偏好表里故意没有这个 key）；
+      //    打开后 Agent「高级」档会优先用 2.5（见 chat-workbench-core 的 getAgentGenerationModel）。
+      { provider: "byteplus", badge: "高级", modelId: "byteplus:video.seedance-2-5", providerKey: "agent-video.seedance-2-5", bytePlusStatic: bytePlusVideoModels[3] },
     ],
   },
   {
@@ -179,10 +182,12 @@ const VIDEO_EDIT_MODEL_CHAIN: Array<{ modelId: string; tier: string }> = [
   { modelId: "byteplus:video.seedance-2-0-mini", tier: "首选" },
   { modelId: "byteplus:video.seedance-2-0-fast", tier: "次选" },
   { modelId: "byteplus:video.seedance-2-0", tier: "三选" },
+  // ⭐ 2.5 放最后一位（2026-08-09 加）：前三个都关掉才会用它，默认行为不变。⛔ 别挪到首位（更贵）。
+  { modelId: "byteplus:video.seedance-2-5", tier: "四选" },
 ];
 
 const videoEditFunctionRows: Array<{ key: string; name: string; rule: string; chain: boolean }> = [
-  { key: "video_quick", name: "快捷编辑", rule: "用「源视频当参考视频 + 你输入的提示词」以融合模式重新生成一段视频。参数一律按源视频的真实尺寸/真实时长反推（比例取最接近的一档、分辨率取总像素最接近的一档、时长取最接近的「N秒」档），因此上传视频也能贴合原视频而不是用节点默认值。⚠️ 分辨率优先决定模型：需要 1080p 时只有 Seedance 2.0 支持，直接用它、不再依次尝试；480p/720p 三个模型都支持，才走下方候选链依次兜底。", chain: true },
+  { key: "video_quick", name: "快捷编辑", rule: "用「源视频当参考视频 + 你输入的提示词」以融合模式重新生成一段视频。参数一律按源视频的真实尺寸/真实时长反推（比例取最接近的一档、分辨率取总像素最接近的一档、时长取最接近的「N秒」档），因此上传视频也能贴合原视频而不是用节点默认值。⚠️ 分辨率优先决定模型：需要 1080p 时只有 Seedance 2.0 支持（2.5 只有 480p/720p），直接用它、不再依次尝试；480p/720p 才走下方候选链依次兜底。", chain: true },
   { key: "video_download", name: "下载", rule: "下载该视频原文件（mp4），文件名用资产系统名。与右键菜单的下载共用同一份实现，纯前端、不调模型。", chain: false },
 ];
 
@@ -513,12 +518,12 @@ export function AdminSystemSettingsPanel({ settings, adminEmailCount }: { settin
       <section className="mt-8 min-w-[1180px] overflow-hidden rounded-[10px] border border-[#eeeeee] bg-white text-[13px] shadow-[0_10px_28px_rgba(0,0,0,0.04)]">
         <div className="border-b border-[#eeeeee] bg-[#fafafa] px-5 py-3 text-[12px] text-[#777777]">
           <span className="font-medium text-[#555555]">工作流 · 视频编辑功能</span>
-          <span className="ml-2">选中工作流视频节点后顶部快捷菜单里的编辑功能。快捷编辑走「首选→次选→三选」模型候选链，前一个失败或关闭自动用下一个；全部关闭时回落到完整候选链以免不可用。需要 1080p 时只有 Seedance 2.0 支持，会直接用它而不走候选链。</span>
+          <span className="ml-2">选中工作流视频节点后顶部快捷菜单里的编辑功能。快捷编辑走「首选→次选→三选→四选」模型候选链，前一个失败或关闭自动用下一个；全部关闭时回落到完整候选链以免不可用。需要 1080p 时只有 Seedance 2.0 支持（2.5 只有 480p/720p），会直接用它而不走候选链。</span>
         </div>
         <div className="grid grid-cols-[140px_1fr_470px] border-b border-[#eeeeee] bg-[#fafafa] text-[12px] text-[#777777]">
           <div className="px-5 py-3 font-medium">功能</div>
           <div className="px-5 py-3 font-medium">规则说明</div>
-          <div className="px-5 py-3 font-medium">使用模型（首选 / 次选 / 三选）</div>
+          <div className="px-5 py-3 font-medium">使用模型（首选 / 次选 / 三选 / 四选）</div>
         </div>
         {videoEditFunctionRows.map((row) => (
           <div key={row.key} className="grid grid-cols-[140px_1fr_470px] border-b border-[#f2f2f2] last:border-b-0">

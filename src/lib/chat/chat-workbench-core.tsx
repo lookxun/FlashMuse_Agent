@@ -1703,7 +1703,9 @@ export function getAgentGenerationModel(agentTier: AgentModelTier, generationMod
 
   if (generationMode === "video") {
     if (agentTier === "normal") return getPreferredAvailableGenerationModel("video", ["byteplus:video.seedance-2-0-fast"], options?.enabledModels, options?.fallbackModels);
-    return getPreferredAvailableGenerationModel("video", ["byteplus:video.seedance-2-0"], options?.enabledModels, options?.fallbackModels);
+    // ⭐ 高级档：后台把「Agent 自动生成视频 · Seedance 2.5」开关打开后才会优先用 2.5
+    // （`getPreferredAvailableGenerationModel` 取第一个"已启用"的），**默认那个开关是关的 → 仍旧是 2.0**。
+    return getPreferredAvailableGenerationModel("video", ["byteplus:video.seedance-2-5", "byteplus:video.seedance-2-0"], options?.enabledModels, options?.fallbackModels);
   }
 
   return agentTier === "advanced" ? "openai/gpt-5.6-terra-pro" : "byteplus:chat.seed-2-0-pro";

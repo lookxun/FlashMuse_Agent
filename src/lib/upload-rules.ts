@@ -1,6 +1,6 @@
 import { IMAGE_UPLOAD_ACCEPT, IMAGE_UPLOAD_FORMATS } from "@/lib/image-upload-validation";
 import { DOCUMENT_UPLOAD_FORMATS, MEDIA_DURATION_EPSILON_SECONDS } from "@/lib/media-upload-validation";
-import { HAILUO3_VIDEO_MODEL_ID } from "@/lib/models";
+import { HAILUO3_VIDEO_MODEL_ID, SEEDANCE_25_VIDEO_MODEL_ID } from "@/lib/models";
 
 export type UploadRuleMode = "agent" | "general" | "image" | "video" | "asset-image";
 export type UploadTransportMode = "local-base64" | "server-url";
@@ -47,11 +47,28 @@ export type UploadRuleCountOverride = {
 
 export type UploadRuleOverrides = Record<string, Partial<Record<UploadKind, UploadRuleCountOverride>>>;
 
+// ⭐ 后台「上传规则」面板可配置的 Seedance 参考模式 key。
+// ⛔⛔ 2.0 系与 2.5 **必须各用一套 key**（2026-08-09 修）：原来只有下面这一组不带版本号的 key，
+//    2.0/Fast/Mini 与 2.5 共用同一条 override → 管理员在后台碰一下开关，
+//    就会把 2.5 的「30 图 / 10 视频 / 10 音频」按 2.0 的 fallback 静默砍成 9/3/3，
+//    而后台上完全看不出来。⭐ 老 key 保留原样（不带版本号）= 已写进 env 的 2.0 配置不用迁移。
 export const BYTEPLUS_SEEDANCE_UPLOAD_RULE_KEYS = {
   reference: "byteplus:video.seedance:reference",
   firstFrame: "byteplus:video.seedance:first_frame",
   firstLastFrame: "byteplus:video.seedance:first_last_frame",
 } as const;
+
+/** Seedance 2.5 专属的上传规则 override key（与 2.0 系完全独立）。 */
+export const BYTEPLUS_SEEDANCE_25_UPLOAD_RULE_KEYS = {
+  reference: "byteplus:video.seedance-2-5:reference",
+  firstFrame: "byteplus:video.seedance-2-5:first_frame",
+  firstLastFrame: "byteplus:video.seedance-2-5:first_last_frame",
+} as const;
+
+/** 按模型取该代 Seedance 的三个参考模式 key —— 唯一权威，后台面板与 getUploadRuleOverrideKey 共用。 */
+export function getSeedanceUploadRuleKeys(modelId?: string) {
+  return isSeedance25VideoModel(modelId) ? BYTEPLUS_SEEDANCE_25_UPLOAD_RULE_KEYS : BYTEPLUS_SEEDANCE_UPLOAD_RULE_KEYS;
+}
 
 // ⭐ 图片格式白名单只有一个来源：image-upload-validation.ts 的 IMAGE_UPLOAD_FORMATS
 // （为什么不用 BytePlus 官网那份更宽的列表、以后想放开 heic 要先做什么，见那个文件顶部注释）。
@@ -92,7 +109,7 @@ function isBytePlusVideoModel(modelId?: string) {
 // Seedance 2.5 参考能力更强（官方文档 + 实测）：融合模式 30 图 / 10 视频 / 10 音频、单条与总时长各 30 秒、音频可单独。
 // 其余 BytePlus（2.0 系）仍是 9 图 / 3 视频 / 3 音频、15 秒。唯一权威，禁止各处再写死这些数。
 export function isSeedance25VideoModel(modelId?: string) {
-  return modelId === "byteplus:video.seedance-2-5";
+  return modelId === SEEDANCE_25_VIDEO_MODEL_ID;
 }
 export function getSeedanceReferenceLimits(modelId?: string) {
   const is25 = isSeedance25VideoModel(modelId);
@@ -165,9 +182,12 @@ export function getUploadRuleOverrideKey(context: UploadRuleContext) {
     // ⭐ edit/extend 的「1 个参考视频」是上游硬规则 → 故意给一个后台面板里不存在的 key，
     // 免得后台把「融合模式」的视频数量调成 3 之后，把 edit/extend 也一起放宽（那样必然被上游拒）。
     if (isSingleVideoInputReferenceMode(context.videoReferenceMode)) return `byteplus:video.seedance:${context.videoReferenceMode}`;
-    if (context.videoReferenceMode === "first_last_frame") return BYTEPLUS_SEEDANCE_UPLOAD_RULE_KEYS.firstLastFrame;
-    if (context.videoReferenceMode === "first_frame") return BYTEPLUS_SEEDANCE_UPLOAD_RULE_KEYS.firstFrame;
-    return BYTEPLUS_SEEDANCE_UPLOAD_RULE_KEYS.reference;
+    // ⭐ 2.0 系与 2.5 各一套 key（2.5 是 30 图 / 10 视频 / 10 音频，和 2.0 的 9/3/3 差很远，
+    //    共用一条 override 会让后台一次点击就把 2.5 砍到 2.0 的量）。
+    const keys = getSeedanceUploadRuleKeys(context.modelId);
+    if (context.videoReferenceMode === "first_last_frame") return keys.firstLastFrame;
+    if (context.videoReferenceMode === "first_frame") return keys.firstFrame;
+    return keys.reference;
   }
   // Hailuo 3 的首帧/尾帧/首尾帧是上游硬规则（1 张 / 1 张 / 2 张），故意给一个后台面板里不存在的 key
   // → 后台改的那个数字只作用于**参考图模式**（key 仍是 modelId），改不动帧模式，避免被调成 5 张后必然报错。

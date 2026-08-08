@@ -1,8 +1,8 @@
 "use client";
 
 import { useMemo, useState, useTransition } from "react";
-import { ADVANCED_CHAT_MODEL, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, frontendImageGenerationModels, videoGenerationModels, type GenerationModel } from "@/lib/models";
-import { BYTEPLUS_SEEDANCE_UPLOAD_RULE_KEYS, getUploadRule, getUploadRuleOverrideKey, type UploadKind, type UploadKindRule, type UploadRule, type UploadRuleOverrides } from "@/lib/upload-rules";
+import { ADVANCED_CHAT_MODEL, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, frontendImageGenerationModels, SEEDANCE_25_VIDEO_MODEL_ID, videoGenerationModels, type GenerationModel } from "@/lib/models";
+import { BYTEPLUS_SEEDANCE_25_UPLOAD_RULE_KEYS, BYTEPLUS_SEEDANCE_UPLOAD_RULE_KEYS, getUploadRule, getUploadRuleOverrideKey, type UploadKind, type UploadKindRule, type UploadRule, type UploadRuleOverrides } from "@/lib/upload-rules";
 
 type EditableUploadRuleRow = {
   key: string;
@@ -38,9 +38,14 @@ function getEditableUploadRuleRows(enabledImageModelIds: string[], enabledVideoM
   const openRouterVideoRows = videoGenerationModels.filter((model) => videoEnabled.has(model.id)).map((model) => makeModelRow(model, "视频模型", { mode: "video", modelId: model.id, transportMode: "local-base64" }));
   const bytePlusImageRows = frontendImageGenerationModels.filter((model) => model.id.startsWith("byteplus:") && imageEnabled.has(model.id)).map((model) => makeModelRow(model, "图片模型", { mode: "image", modelId: model.id, transportMode: "local-base64" }));
   const bytePlusVideoRows: EditableUploadRuleRow[] = [
+    // ⭐ 2.0 系与 2.5 是**两组独立 key**（getSeedanceUploadRuleKeys），所以这里必须各列 3 行；
+    //    每一行的 context.modelId 必须写对应那一代的模型 id，否则 fallback 数字（面板上显示的默认值）会取错。
     { key: BYTEPLUS_SEEDANCE_UPLOAD_RULE_KEYS.reference, providerType: "BytePlus · 视频模型", modelName: "Seedance 2.0 / Fast / Mini · 融合模式", context: { mode: "video", modelId: "byteplus:video.seedance-2-0", transportMode: "local-base64", videoReferenceMode: "reference" } },
     { key: BYTEPLUS_SEEDANCE_UPLOAD_RULE_KEYS.firstFrame, providerType: "BytePlus · 视频模型", modelName: "Seedance 2.0 / Fast / Mini · 首帧模式", context: { mode: "video", modelId: "byteplus:video.seedance-2-0", transportMode: "local-base64", videoReferenceMode: "first_frame" } },
     { key: BYTEPLUS_SEEDANCE_UPLOAD_RULE_KEYS.firstLastFrame, providerType: "BytePlus · 视频模型", modelName: "Seedance 2.0 / Fast / Mini · 首尾帧模式", context: { mode: "video", modelId: "byteplus:video.seedance-2-0", transportMode: "local-base64", videoReferenceMode: "first_last_frame" } },
+    { key: BYTEPLUS_SEEDANCE_25_UPLOAD_RULE_KEYS.reference, providerType: "BytePlus · 视频模型", modelName: "Seedance 2.5 · 融合模式", context: { mode: "video", modelId: SEEDANCE_25_VIDEO_MODEL_ID, transportMode: "local-base64", videoReferenceMode: "reference" } },
+    { key: BYTEPLUS_SEEDANCE_25_UPLOAD_RULE_KEYS.firstFrame, providerType: "BytePlus · 视频模型", modelName: "Seedance 2.5 · 首帧模式", context: { mode: "video", modelId: SEEDANCE_25_VIDEO_MODEL_ID, transportMode: "local-base64", videoReferenceMode: "first_frame" } },
+    { key: BYTEPLUS_SEEDANCE_25_UPLOAD_RULE_KEYS.firstLastFrame, providerType: "BytePlus · 视频模型", modelName: "Seedance 2.5 · 首尾帧模式", context: { mode: "video", modelId: SEEDANCE_25_VIDEO_MODEL_ID, transportMode: "local-base64", videoReferenceMode: "first_last_frame" } },
   ];
   return [
     {
@@ -89,6 +94,7 @@ type UploadRuleRow = {
 const bytePlusImageReferenceRuleText = "图片参考完整规则：jpg/jpeg/png/webp/bmp/tiff/tif/gif/heic/heif；单张≤30MB；上传图片和 @资产引用合并计数；按用户显式 @ 顺序传入，并去重。";
 const bytePlusImageOfficialLimitText = "火山官方 URL 参考图上限为 14 张；当前前端本地 Base64 入口为控制请求体，限制为 6 张。";
 const seedanceImageReferenceRuleText = "图片参考完整规则：jpg/jpeg/png/webp/bmp/tiff/tif/gif/heic/heif；融合模式最多 9 张，按 reference_image 传入；首帧模式只用 1 张 first_frame；首尾帧模式用 2 张 first_frame/last_frame；三种模式互斥，只有融合模式支持参考视频/音频。";
+const seedance25ImageReferenceRuleText = "图片参考完整规则：jpg/jpeg/png/webp/bmp/tiff/tif/gif/heic/heif；融合模式最多 30 张，按 reference_image 传入；首帧模式只用 1 张 first_frame；首尾帧模式用 2 张 first_frame/last_frame；视频编辑 / 视频延长两个模式不吃参考图；只有融合模式支持参考视频/音频。";
 
 const uploadRuleRows: UploadRuleRow[] = [
   {
@@ -146,6 +152,17 @@ const uploadRuleRows: UploadRuleRow[] = [
       image: seedanceImageReferenceRuleText,
       video: "视频参考完整规则：mp4/mov；最多 3 个；单个 2-15 秒、≤200MB；总时长≤15秒；宽高比 0.4-2.5；宽高 300-6000px；总像素 409600-8295044。",
       audio: "音频参考完整规则：mp3/wav；最多 3 个；单个 2-15 秒、≤15MB；总时长≤15秒；不能单独输入，必须同时有参考图片或参考视频。",
+    },
+  },
+  {
+    scene: "对话流视频",
+    model: "BytePlus Seedance 2.5",
+    rule: getUploadRule({ mode: "video", modelId: SEEDANCE_25_VIDEO_MODEL_ID, transportMode: "server-url" }),
+    note: "Seedance 2.5 的参考能力比 2.0 系强很多，上传规则与 2.0 系完全独立（后台数量开关也是分开的两组）。融合模式支持图片、视频、音频参考上传；首帧/首尾帧只支持图片；另有「视频编辑」「视频延长」两个模式，只吃 1 个参考视频（源视频必须 4-30 秒），图片/音频按钮整个隐藏。参考视频/音频按服务器公网 URL 传入模型。",
+    details: {
+      image: seedance25ImageReferenceRuleText,
+      video: "视频参考完整规则：mp4/mov；最多 10 个；单个 2-30 秒、≤200MB；总时长≤30秒；宽高比 0.4-2.5；宽高 300-6000px；总像素 409600-8295044。上游实测硬上限 30.2 秒（我们按 30 秒 + 0.2 秒读取容差放行）。",
+      audio: "音频参考完整规则：mp3/wav；最多 10 个；单个 2-30 秒、≤15MB；总时长≤30秒；⭐ 2.5 支持纯音频参考（可以不带图片/视频单独输入，这一点和 2.0 系相反）。",
     },
   },
 ];

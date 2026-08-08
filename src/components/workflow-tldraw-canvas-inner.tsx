@@ -407,8 +407,10 @@ type WorkflowVideoJobStatus = WorkflowImageJobStatus & { posterUrl?: string; pro
 const MAX_WORKFLOW_PROMPT_LENGTH = 2000;
 const DEFAULT_WORKFLOW_IMAGE_MODEL = "byteplus:conversation-image.seedream-4-5";
 const DEFAULT_WORKFLOW_VIDEO_MODEL = "byteplus:video.seedance-2-0";
-// 视频快捷编辑的模型候选链：依次 Mini → Fast → 2.0（前一个失败自动换下一个），与图片编辑候选链同思路。
-const WORKFLOW_VIDEO_EDIT_MODEL_CHAIN: ModelName[] = ["byteplus:video.seedance-2-0-mini", "byteplus:video.seedance-2-0-fast", "byteplus:video.seedance-2-0"] as ModelName[];
+// 视频快捷编辑的模型候选链：依次 Mini → Fast → 2.0 → 2.5（前一个失败自动换下一个），与图片编辑候选链同思路。
+// ⛔ 必须与 system-settings 的 VIDEO_EDIT_FUNCTION_MODEL_CHAIN、后台面板的 VIDEO_EDIT_MODEL_CHAIN 三处完全一致。
+// ⭐ 2.5 在最后一位：前三个都被后台关掉才会用到它（默认行为不变，2.5 更贵）。
+const WORKFLOW_VIDEO_EDIT_MODEL_CHAIN: ModelName[] = ["byteplus:video.seedance-2-0-mini", "byteplus:video.seedance-2-0-fast", "byteplus:video.seedance-2-0", "byteplus:video.seedance-2-5"] as ModelName[];
 const WORKFLOW_NODE_GAP = 160;
 // ⭐ 参考模式选项已收敛到 `@/lib/video-reference-modes`（按模型返回不同列表：
 //   BytePlus Seedance 三项、Hailuo 3 四项含尾帧）。⛔ 禁止在这里再写一份本地数组。

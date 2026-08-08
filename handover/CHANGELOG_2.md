@@ -12,6 +12,117 @@
 ---
 
 
+## 第五十七次会话（2026-08-09）：后台补齐 Seedance 2.5（上传规则独立开关 + Agent 视频开关 + 快捷编辑链）+ 视频延长端到端验通 —— **测试服 `v1.0.0.92`**
+
+> | | 版本 |
+> |---|---|
+> | 本地 / 测试服 | `v1.0.0.92`（本次 bump 两次：v91 主改动 → v92 补一处后台文案）|
+> | 正式服 | `v1.0.0.90`（本批**还没上正式服**）|
+>
+> 无 Prisma 迁移、无 compose/nginx 改动。
+
+### 一、需求
+
+🗣️「后台上传规则里要加上 2.5 的开关。全部再查一下参考一下 2.0，后台还有没有相关 2.5 的内容没有加上的全加上」+「做好直接部署测试服，然后把剩下的待办能做的就做」。
+
+### 二、审计结果：后台 2.5 的覆盖情况（逐层查过）
+
+**已覆盖（无需动）**：模型下拉表、视频模型规则表（分辨率/比例/尺寸）、定价、`byteplus-provider-key`、
+对话流/工作流的模型开关（`video.seedance-2-5`）、端点表（`ep-20260807153703-h48pt`）、
+后台「模型开关」页「视频生成」组、后台失败排查/概览的模型标签、`media-asset-record` 标签、NEW 徽标。
+
+**缺失（本批补齐）**：① 后台「上传规则」面板两张表全都只有 2.0 ② 上传规则 override key 不带版本号
+③ Agent 自动生视频没有 2.5 ④ 工作流「视频快捷编辑」候选链没有 2.5。
+
+### 三、⭐⭐ 最重要的那个 bug：上传规则 override key 原来 2.0 和 2.5 **共用一条**
+
+`BYTEPLUS_SEEDANCE_UPLOAD_RULE_KEYS` 三个 key 是 `byteplus:video.seedance:reference` 这种**不带版本号**的，
+`getUploadRuleOverrideKey` 对 2.0/Fast/Mini 和 2.5 统统返回同一个 → 后果是**可证明的真伤害**：
+
+- 面板那 3 行硬编码写死 `modelId: "byteplus:video.seedance-2-0"` → fallback 显示 9 张 / 3 视频 / 3 音频；
+- 管理员**碰一下开关或输入框就 `saveNow`** → 把 `{enabled:true, maxCount:9}` 写进那个共用 key；
+- `applyUploadRuleOverrides` 对 2.5 也生效 → **2.5 的 30 图 / 10 视频 / 10 音频被静默砍成 9/3/3**，
+  后台上完全看不出来（面板里压根没有 2.5 的行）。
+
+**修法**：
+- `upload-rules.ts` 新增 `BYTEPLUS_SEEDANCE_25_UPLOAD_RULE_KEYS`（`byteplus:video.seedance-2-5:reference` 等）
+  + `getSeedanceUploadRuleKeys(modelId)`（唯一权威，面板与 `getUploadRuleOverrideKey` 共用）；
+  ⭐ **老 key 一个字没改** → `.env.local` 里已有的 2.0 配置不用迁移、继续生效。
+- `getUploadRuleOverrideKey` 的 BytePlus 视频分支改成先按模型取 key 组。
+  ⛔ `edit`/`extend` 那两个「面板里故意不存在的 key」保持原样（上游硬规则，不许被后台放宽）。
+- 后台面板可编辑表从 3 行扩成 **6 行**（2.0 系 3 行 + 2.5 3 行），2.5 行的 `context.modelId`
+  用新增的 `SEEDANCE_25_VIDEO_MODEL_ID`（`models.ts` 唯一权威，`isSeedance25VideoModel` 也改成用它）。
+- 只读表补一行「BytePlus Seedance 2.5」，文案按 2.5 写：融合 30 张 / 视频音频各 10 个 / 单条 2-30 秒 /
+  总 30 秒 / **音频可单独输入（和 2.0 相反）** / edit·extend 只吃 1 个参考视频且源视频 4-30 秒。
+
+### 四、Agent 自动生视频的 2.5 开关（默认关，行为不变）
+
+- `BYTEPLUS_AGENT_VIDEO_MODEL_KEYS` 加 `"byteplus:video.seedance-2-5": "agent-video.seedance-2-5"`；
+  `DEFAULT_BYTEPLUS_MODEL_SELECTIONS` 加对应端点；后台「模型开关 → Agent → 自动生成视频」多一行开关。
+- ⭐⭐ **故意不往 `DEFAULT_MODEL_PROVIDER_PREFERENCES` 里写这个 key** → 缺省值不是 `"byteplus"`，
+  `isBytePlusPreferenceEnabled` 为 false ⇒ **后台开关默认「关」**，Agent 高级档仍旧用 2.0
+  ⇒ **默认行为一字不变、不会悄悄把用户的钱花在更贵的 2.5 上**。真机确认 `aria-pressed=false`。
+- `getAgentGenerationModel` 高级档候选链改成 `["…2-5", "…2-0"]`（取第一个"已启用"的）→ 开关打开才用 2.5。
+- ⚠️ 顺带记录一个**没动**的既有不一致：`agent-video.seedance-2-0-mini` 在偏好表和端点表里都有，
+  但**不在 KEYS 表里** = 死配置。往 KEYS 里加会让 Mini 立刻对 Agent 生效（偏好表默认 byteplus）=
+  行为变更 → 已在代码里写注释钉住，要加得先问用户。
+
+### 五、工作流「视频快捷编辑」候选链加 2.5（放最后一位）
+
+`VIDEO_EDIT_FUNCTION_MODEL_CHAIN` + 后台展示副本 `VIDEO_EDIT_MODEL_CHAIN` + 前端
+`WORKFLOW_VIDEO_EDIT_MODEL_CHAIN` **三处必须同改**（本批三处都改了）。
+⭐ 2.5 在**第四位**：前三个都被后台关掉才轮到它 → 默认行为不变（2.5 更贵，⛔ 别挪到首位）。
+配套文案：「首选→次选→三选」→「首选→次选→三选→四选」两处 + 1080p 那句补「（2.5 只有 480p/720p）」。
+
+### 六、验证
+
+**① 纯函数回归**（`.runtime/verify-admin-25.ts`，24 条，`ALL PASS`）——最关键的两条是**双向隔离**：
+给老 key 写 override → 2.0 变 9/3/3 而 **2.5 仍是 30/10/10**；给新 key 写 override →
+**2.5 变 12 而 2.0 仍是 9**。另含：三兄弟都仍用老 key、edit/extend key 不变、链里 2.5 在最后一位。
+`tsc` 0、`npm test` 15/15。
+
+**② 测试服后台真走界面（v92）**：
+- 「上传规则」页 6 行都在，且**默认数字各自正确**：2.0 融合 = `9/3/3`、**2.5 融合 = `30/10/10`**、2.5 首尾帧 = `2`；
+- 「模型开关」页 Agent「自动生成视频」多出「高级 Seedance 2.5」，**开关 `aria-pressed=false`（默认关）**；
+- 快捷编辑链出现「四选 BytePlus Seedance 2.5」（`aria-pressed=true`，但在最后一位）；
+- 「视频生成」组的 2.5 仍是 `true`（对话流/工作流照常可用）。
+⭐ 三个 2.5 开关的状态一次性核对（true / false / true），正是"默认行为不变"的硬证据。
+
+### 七、顺手清掉的两条老待办
+
+**① Seedance 2.5「视频延长」端到端验通（欠了两次会话）**
+测试服真跑：2.5 + 视频延长 + 30 秒参考视频 + 「延长@t30s-video，继续这段画面的故事」→
+**真出片**，参数条 `Seedance 2.5 | 16:9 | 1280×720 HD | 30秒`，无红字，扣 **581 积分**，
+服务端日志 `byteplus-create-success → video-provider-poll-success ×N → media-save-download-saved → video-job-charged`。
+⚠️ **但用 30 秒源视频测「变长」是选错素材**（上限就是 30，模型不可能延长到 30 以上）→ 又用
+**8 秒源视频**跑了第二次想验语义，**这次被上游拒了**：
+`(B_2) 参考图已过审、视频也已生成，但成品视频/音频因版权或敏感内容被平台拒绝交付`
+—— ⭐ 原因几乎肯定是**素材本身**：我的源视频是 ffmpeg `testsrc2` 彩色测试图 + `sine` 正弦音，
+正弦音很容易被平台判成"音乐/版权"。**失败不扣积分（94,442 前后没变），这一点是对的。**
+⭐⭐ 所以结论要分清两句：**「视频延长」功能端到端已验通（真出片）**，
+但**"输出比源视频长"这个语义仍未验到** → 下次要用**一段真实拍摄的短视频**（8~10 秒）再跑一次，
+⛔ 别再用 ffmpeg 合成的测试图案（会被上游内容审核拒）。
+⚠️ 顺带记录：那次失败卡的参数条显示「5秒」= 拿不到真实值时回落到请求档（默认时长档），既有行为、不是新 bug。
+⭐ 顺带看到上游还有一条错误会自动重试：`byteplus-create-human-reference-error`
+（`input video may contain real person`）→ 走自动送审后重新 create 成功。
+
+**② 正式服 3 条 `https://localhost:3000/...poster.jpg` 死链 —— 定性是错的，不是脏数据**
+在正式库把 **public schema 全部 202 个 text/varchar/json/jsonb 列**逐列 `LIKE '%localhost:3000%'` 扫了一遍：
+**`HITS: NONE`**（`MediaAsset.url/posterUrl/thumbnailUrl/normalizedUrl` 四列也单独查过，全 0）。
+→ ⛔ **交接文档原来写的「老资产 poster 地址存成 localhost:3000」不成立，别再照它写清库脚本**。
+那 3 条 error 只可能是**运行时拼出来的**（源码里 `localhost:3000` 只出现在 OpenRouter 的
+`HTTP-Referer` 和几处 CORS 白名单里）。下次真在正式服前台复现到它，先把**出现它的页面 + userId +
+那张图的完整 url** 记下来再查。
+
+### 八、遗留
+
+1. **本批（v91/v92）还没上正式服、没 commit。**
+2. Agent 的 `agent-video.seedance-2-0-mini` 死配置（要不要接，等用户拍板）。
+3. ⭐⭐ **「间断性卡死」老 bug 这次被日志抓到现形了**（详见下一节待办，`05-next-actions.md` 有完整证据链）。
+4. 「失败趋势近 30 天」等数据长满（约 3 周）。
+
+---
+
 ## 第五十六次会话（2026-08-09）：参考素材时长上限改成「按模型」（2.5 = 30 秒 / 2.0 = 15 秒）+ 拦截文案带上区间 —— **v1.0.0.90 两服都已部署**
 
 > | | 版本 |

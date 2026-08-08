@@ -4,6 +4,58 @@
 This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code. Heed deprecation notices.
 <!-- END:nextjs-agent-rules -->
 
+# 铁律⭐⭐：后台「按模型」的配置 key **必须带版本号** —— 同系列不同代共用一个 key = 静默把新模型砍回老模型的量（2026-08-09 加）
+
+`BYTEPLUS_SEEDANCE_UPLOAD_RULE_KEYS` 当初写成 `byteplus:video.seedance:reference`（**不带版本号**），
+于是 Seedance **2.0/Fast/Mini 与 2.5 共用同一条 override**。2.5 上线后这就变成真伤害：
+后台「上传规则」面板那 3 行硬编码 `modelId: "byteplus:video.seedance-2-0"` → 显示的默认值是 9/3/3；
+**管理员碰一下开关或输入框就 `saveNow`** → `{maxCount:9}` 写进共用 key →
+`applyUploadRuleOverrides` 对 2.5 也生效 → **2.5 的 30 图/10 视频/10 音频被静默砍成 9/3/3**，
+而面板里压根没有 2.5 的行，**后台上完全看不出来**。
+
+- ⭐ **判据（一句话）**：一个 override/开关 key 会被**几个模型**命中？>1 且它们的**能力上限不一样** → 必须拆。
+  拆的时候**老 key 一个字都别改**（`.env.local` 里已有的老配置就不用迁移），只给新代加一组新 key，
+  再抽一个 `getXxxKeys(modelId)` 当唯一权威给「面板」和「运行时」共用。
+- ⭐⭐ **回归必须写成"双向隔离"两条**：给老 key 写 override → 老模型变、**新模型不变**；
+  给新 key 写 override → 新模型变、**老模型不变**。只测一个方向证明不了隔离。
+- ⛔ **后台面板里"某个模型压根没有那一行"是最危险的形态** —— 它不是"少个功能"，
+  而是"这个模型被另一行的配置暗中支配、且没人能发现"。
+  ⭐ 所以补后台时**判据不是"页面能打开"，而是"每个模型都有自己的行、且行里的默认数字是它自己的"**
+  （本次真机核对：2.0 融合 = 9/3/3、2.5 融合 = 30/10/10）。
+- ⭐ **顺带的姿势**：后台面板的行清单如果是**硬编码数组**，那"新增模型要手工加行"就是个必漏点；
+  排查时先搞清楚它是硬编码还是从模型表生成（本项目 BytePlus 视频那几行是硬编码，
+  而名为 `openRouterVideoRows` 的自动生成那行**只含 OpenRouter 模型**，BytePlus 视频永远不会自动出现）。
+
+# 铁律⭐：给「自动选模型」的候选链加新模型，放**最后一位** + 开关默认关，别动默认行为（2026-08-09 加）
+
+同一批里给 Agent 自动生视频和工作流「视频快捷编辑」接 Seedance 2.5。这两件事都会花用户的钱，
+而 2.5 比 2.0 贵 → **默认行为一个字都不许变**：
+
+- **候选链**（`getPreferredAvailableGenerationModel` / `VIDEO_EDIT_FUNCTION_MODEL_CHAIN` 这类"取第一个已启用的"）：
+  新模型放**最后一位** → 前面几个都被后台关掉才轮到它。⛔ 别放首位（等于悄悄涨价）。
+- **开关**：`isBytePlusPreferenceEnabled` 只在偏好表里的值**等于 `"byteplus"`** 时才 true
+  → **故意不往 `DEFAULT_MODEL_PROVIDER_PREFERENCES` 里写那个 key**，开关就默认「关」，
+  管理员想用再开。⭐ 这比"加个开关默认开"安全得多。
+- ⭐ **验收判据是"开关的真实状态"**：真机 `aria-pressed` 逐个核对
+  （本次三个 2.5 开关：视频生成 = true、Agent = **false**、快捷编辑四选 = true）。
+- ⛔ **只加配置表不接候选链 = 死配置**（本项目 `agent-video.seedance-2-0-mini` 就是这样躺了很久：
+  偏好表和端点表都有它，KEYS 表里没有 → 那两条配置从来没生效）。
+  补后台时**要么两头都接上、要么写注释钉住"故意不接"**，别留半份。
+
+# 铁律：验「视频延长」必须用**短**源视频；验「某个上限」别用刚好等于上限的素材（2026-08-09 加）
+
+我拿 **30 秒**源视频去验 Seedance 2.5 的「视频延长」，真出片了，但**"变长"这条压根不可能成立**
+—— 2.5 的输出上限就是 30 秒。⭐ 换 8 秒源视频重跑才验得到语义。
+⭐ 通用判据：**验"会不会变大/变长/变多"的功能，输入必须离上限足够远**；
+同理（本文件另有一条）**探测上游硬上限只用必被拒的值**，别用刚好等于上限的值（那次会真建任务真花钱）。
+
+# 铁律⭐⭐：后台管理页只能用白名单号登，而白名单在 **env `ADMIN_EMAILS`** 里（2026-08-09 加）
+
+测试服 `ADMIN_EMAILS=lookxun@163.com,176107103@qq.com` —— **主测试号 `12424740@qq.com` 不在里面**，
+用它登 `/admin` 是进不去的。⭐ 登后台只能用 `lookxun@163.com`（密码同 `dragonstar`），
+这也是本项目唯一允许用那个号的场合（⛔ 它是用户自己的号，**只许看后台页面，禁止在前台做任何生成**）。
+⭐ 不确定时先 `sudo grep -E '^ADMIN_EMAILS' <那台的 .env.local>` 查一眼，别瞎试密码。
+
 # 铁律⭐⭐：参考素材「时长上限」是**按模型**的 —— 规则层放宽了不算数，四条通道要各自对上（2026-08-09 加）
 
 2026-08-09 用户要求「2.5 支持 30 秒参考视频/音频」。`upload-rules.ts` 的

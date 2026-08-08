@@ -133,11 +133,17 @@ export const frontendImageGenerationModels: GenerationModel[] = [
 export const HAILUO3_VIDEO_MODEL_ID = "minimax/hailuo-3";
 
 /**
+ * BytePlus Seedance 2.5 的模型 id —— 唯一权威。
+ * ⛔ 别再在别处手写这个字符串（`upload-rules.ts` 的 `isSeedance25VideoModel`、后台上传规则面板都用它）。
+ */
+export const SEEDANCE_25_VIDEO_MODEL_ID = "byteplus:video.seedance-2-5";
+
+/**
  * 模型下拉里要标「NEW」小徽标的新模型 —— 唯一权威（对话流 + 工作流画布共用）。
  * 徽标长相见 `src/components/new-badge.tsx`（⛔ 别再各处手写那串 className）。
  */
 export function isNewGenerationModel(modelId: string) {
-  return modelId === HAILUO3_VIDEO_MODEL_ID || modelId === "byteplus:video.seedance-2-5";
+  return modelId === HAILUO3_VIDEO_MODEL_ID || modelId === SEEDANCE_25_VIDEO_MODEL_ID;
 }
 
 // H3 在 OpenRouter 上支持 5~15 秒（整秒）。

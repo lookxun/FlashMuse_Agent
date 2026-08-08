@@ -2,7 +2,103 @@
 
 > 历史 END-OF-SESSION 记录都在 `historical-handover-docs-last-used-2026-07-21/05-next-actions.md`（很长）。这里只留当前有效待办。
 
-## ✅ 当前状态（2026-08-09 第五十六次会话末）：**测试服 = 正式服 = `v1.0.0.90`**
+## ✅ 当前状态（2026-08-09 第五十七次会话末）：**测试服 `v1.0.0.92`、正式服 `v1.0.0.90`**
+
+| | 版本 / 状态 |
+|---|---|
+| 本地 = 测试服 | `v1.0.0.92`；`tsc` 0、`npm test` 15/15 |
+| 正式服 / GitHub | `v1.0.0.90` |
+| ⚠️ 未提交 / 未上正式服 | **v91 + v92（后台补齐 Seedance 2.5）** |
+
+⭐ 本次 = 后台补齐 Seedance 2.5（上传规则独立 override key + Agent 视频开关 + 快捷编辑链四选）。
+细节在 `CHANGELOG_2.md` 顶条（八节）。
+
+---
+
+## 🎯🎯🎯 待办 1（最优先）：v91 + v92 上正式服 + commit
+
+改动 8 个文件，**无迁移、无 compose/nginx 改动**：
+
+```
+src/lib/app-version.ts
+src/lib/models.ts                                 # 新增 SEEDANCE_25_VIDEO_MODEL_ID
+src/lib/upload-rules.ts                           # 2.5 独立 override key（核心）
+src/lib/system-settings.ts                        # Agent 2.5 开关 + 端点 + 快捷编辑链加 2.5
+src/lib/chat/chat-workbench-core.tsx              # Agent 高级档候选链 [2.5, 2.0]
+src/components/workflow-tldraw-canvas-inner.tsx   # 快捷编辑链副本
+src/app/admin/admin-upload-rules-panel.tsx        # 6 行可编辑 + 2.5 只读行
+src/app/admin/admin-system-settings-panel.tsx     # Agent 2.5 行 + 四选文案
+```
+
+⭐ 上正式服后**必须去后台核对三个 2.5 开关的状态**（这是"默认行为不变"的判据）：
+「视频生成」组 = 开、「Agent 自动生成视频」= **关**、快捷编辑链「四选」= 开（但在最后一位）。
+⭐ 再核对「上传规则」页 2.5 融合那行默认是 **30 / 10 / 10**（2.0 那行仍 9 / 3 / 3）。
+⛔ 公告那几项跳过（正式服禁测公告）。
+
+## 🎯🎯 待办 2：「间断性卡死」bug —— **证据链已完整，可以开始定位代码了**
+
+2026-08-09 在测试服 `upload-diagnostics-log.jsonl` 里第一次抓到全套现形（那 4 条诊断日志起作用了）：
+
+```
+client-chat-send-suspicious-session-shape
+  {"sessionId":"54ccae5d-…","generationMode":"image","messagesLoaded":false,
+   "localMessageCount":1,"titleLength":3,"requestId":"9222941f-bd71-4bdd-ad16-dc3ddaf35cf9"}
+
+client-chat-session-stuck-loading
+  {"sessionId":"54ccae5d-…","byMessagesLoadedFalse":true,"byLoadingSessionIds":false,
+   "localMessageCount":0,"titleLength":3,"pendingRequestCount":0}
+
+client-chat-put-session-shape-suspicious  ×25
+  {"activeSessionId":"54ccae5d-…","count":1,"sessions":[{"messageCount":1~2,"titleLength":19}]}
+```
+
+而服务端 `generation-diagnostics-log.jsonl` 里同一个 requestId 是 **`image-job-success`**
+（图真的生成成功、真的扣了积分），只是前端永远停在「加载中…0%」、消息一条没存。
+
+⭐⭐ **最硬的那条线索是 `byLoadingSessionIds:false` + `pendingRequestCount:0`** ——
+它说明这个会话**既没加载完（messagesLoaded=false）、又不在"正在加载"的集合里、也没有在飞的请求**
+= **死锁态：没有任何人会再把 messagesLoaded 置成 true**。
+→ 下一步该做的是**静态定位**：去读加载消息那段代码，找出「哪条路径会让会话被移出 loading 集合
+但没把 messagesLoaded 置 true」（例如 abort / 提前 return / 竞态里被覆盖）。
+⭐ 这一步是纯读代码就能定案的，⛔ 定位到之前仍然只许加日志、不许改行为。
+⭐ 修好之后**顺带要治的第二个伤**：这个状态下的自动保存会用 `messageCount:1` 的空快照去 PUT
+（25 条 `put-session-shape-suspicious` 就是它），**这才是"消息没存"的直接原因**。
+
+## 🎯 待办 3：Agent 的 `agent-video.seedance-2-0-mini` 死配置（等用户拍板）
+
+它在 `DEFAULT_MODEL_PROVIDER_PREFERENCES` 和 `DEFAULT_BYTEPLUS_MODEL_SELECTIONS` 里都有，
+但**不在 `BYTEPLUS_AGENT_VIDEO_MODEL_KEYS` 里** → 那两条配置目前完全不生效。
+⛔ 往 KEYS 里加会让 Mini **立刻**对 Agent 生效（偏好表里默认是 byteplus）= 行为变更，所以没动，
+已在代码里写注释钉住。要不要接，问用户。
+
+## 🎯 待办 4：「失败趋势（近 30 天）」等数据长出来
+
+保留期已 31 天，但正式服已被删的历史找不回来 → 约 3 周后才会长满。
+判据是**图能渲染 30 根柱 + 图例写着「保留 31 天」**，⛔ 别把"柱子不满 30 天"当成没修好。
+
+## ~~🎯 待办：正式服 3 条 localhost:3000 死链~~ ✅ 已核查，**原定性是错的**
+
+正式库 public schema **全部 202 个 text/varchar/json/jsonb 列**逐列扫 `%localhost:3000%` →
+**零命中**（`MediaAsset` 四个 url 列也单独查过，全 0）。
+⛔ **不是脏数据，别再照交接文档写清库脚本。** 源码里 `localhost:3000` 只出现在 OpenRouter 的
+`HTTP-Referer` 和几处 CORS 白名单 → 那 3 条 error 是运行时拼出来的。
+⭐ 下次真在正式服前台复现到它，先记下**出现它的页面 + userId + 完整 url** 再查。
+
+## 🎯 待办 5：「视频延长」的**语义**（输出比源视频长）仍未验到
+
+功能端到端已验通（30 秒源视频真出片、扣 581 分、无红字），但"变长"没验到：
+- 30 秒源视频 → 输出上限就是 30，不可能变长（选错素材）；
+- 8 秒源视频那次被上游**成品审核**拒了（`(B_2) …成品视频/音频因版权或敏感内容被平台拒绝交付`，不扣分）
+  —— 因为我用的是 ffmpeg `testsrc2` 测试图案 + `sine` 正弦音，正弦音容易被判成音乐/版权。
+⭐ 下次用**一段真实拍摄的 8~10 秒短视频**再跑一次即可，⛔ 别再用合成测试素材。
+
+## 🎯 待办 6：老待办原样保留
+
+M040、M037、M032 等 —— 见下方各节。
+
+---
+
+## ⏪ 上一状态（2026-08-09 第五十六次会话末）：**测试服 = 正式服 = `v1.0.0.90`**
 
 | | 版本 / 状态 |
 |---|---|
