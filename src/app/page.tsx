@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { RiAccountCircleLine, RiArrowUpLine, RiCornerDownLeftLine, RiLogoutBoxRLine, RiSettingsLine, RiShieldUserLine, RiVipDiamondLine } from "react-icons/ri";
 import { useBodyScrollLock } from "@/components/use-body-scroll-lock";
+import { AnnouncementBanner } from "@/components/announcement-banner";
 import { IS_TEST_SERVER, versionLabel } from "@/lib/app-version";
 
 const homeAssetVersion = "home-lite-carousel-20260605";
@@ -433,7 +434,9 @@ export default function Home() {
   };
 
   return (
-    <main className="relative min-h-screen overflow-hidden bg-black text-white" style={{ minHeight: "100vh", backgroundColor: "#000000", color: "#ffffff" }}>
+    <main className="relative flex min-h-screen flex-col overflow-hidden bg-black text-white" style={{ minHeight: "100vh", backgroundColor: "#000000", color: "#ffffff" }}>
+      <AnnouncementBanner canDismiss={isAuthLoaded && !!currentUser} />
+      <div className="relative min-h-0 flex-1 overflow-hidden">
       <div
         className="absolute inset-0 transition-transform duration-300 ease-out"
         style={{ transform: isLoginOpen ? "translateX(-8vw)" : "translateX(0)", filter: isLoginOpen ? "blur(8px)" : undefined, transition: "transform 300ms ease-out, filter 300ms ease-out" }}
@@ -467,7 +470,7 @@ export default function Home() {
       </div>
 
       <div
-        className="relative z-10 min-h-screen transition-transform duration-300 ease-out"
+        className="relative z-10 h-full transition-transform duration-300 ease-out"
         style={{ transform: isLoginOpen ? "translateX(-8vw)" : "translateX(0)", filter: isLoginOpen ? "blur(8px)" : undefined, transition: "transform 300ms ease-out, filter 300ms ease-out" }}
       >
       <header className="flex items-center justify-between px-6 py-5 sm:px-10 lg:px-14">
@@ -659,6 +662,7 @@ export default function Home() {
         <span>|</span>
         <span>{versionLabel()}</span>
       </footer>
+      </div>
 
       {isLoginOpen ? (
         <div className="fixed inset-0 z-[11000] overscroll-contain bg-black/18" onMouseDown={closeLoginPanel}>

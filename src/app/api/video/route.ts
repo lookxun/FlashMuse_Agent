@@ -778,6 +778,7 @@ export async function POST(request: Request) {
     if (supportsVideoReferenceMode(body.model) && body.referenceMode === "first_frame" && referenceImages.length < 1) return NextResponse.json({ error: "首帧生视频需要至少一张参考图" }, { status: 400 });
     if (supportsVideoReferenceMode(body.model) && body.referenceMode === "last_frame" && referenceImages.length < 1) return NextResponse.json({ error: "尾帧生视频需要至少一张参考图" }, { status: 400 });
     if (supportsVideoReferenceMode(body.model) && body.referenceMode === "first_last_frame" && referenceImages.length < 2) return NextResponse.json({ error: "首尾帧生视频需要至少两张参考图" }, { status: 400 });
+    if ((body.referenceMode === "edit" || body.referenceMode === "extend") && referenceVideos.length < 1) return NextResponse.json({ error: `${body.referenceMode === "edit" ? "视频编辑" : "视频延长"}需要至少一个参考视频` }, { status: 400 });
     const referenceLimitError = validateReferenceImageCount({ mode: "video", modelId: body.model, transportMode: "local-base64", videoReferenceMode: uploadRuleVideoReferenceMode }, referenceImages.length, uploadRuleOverrides);
     if (referenceLimitError) return NextResponse.json({ error: referenceLimitError }, { status: 400 });
 
@@ -822,7 +823,7 @@ export async function POST(request: Request) {
         const ownedAssetCount = await prisma.userAssetState.count({ where: { userId: user.id, deletedAt: null, hiddenAt: null, bytePlusAssetId: { in: assetIds }, mediaAsset: { mediaType: kind, archivedAt: null } } });
         if (ownedAssetCount !== assetIds.length) return `参考${kind === "video" ? "视频" : "音频"}必须来自当前账号已上传的资产`;
       }
-      const totalDurationError = validateReferenceTotalDuration(kind, assets.map((asset) => asset.durationSeconds));
+      const totalDurationError = validateReferenceTotalDuration(kind, assets.map((asset) => asset.durationSeconds), body?.model);
       if (totalDurationError) return totalDurationError;
       for (const asset of assets) {
         const error = validateMediaUploadMetadata(kind, { durationSeconds: asset.durationSeconds ?? undefined, width: asset.width ?? undefined, height: asset.height ?? undefined });

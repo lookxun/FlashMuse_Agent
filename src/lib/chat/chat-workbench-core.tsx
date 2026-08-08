@@ -55,6 +55,9 @@ export type Message = {
   imageReferences?: ImageReference[];
   uploadedFiles?: UploadedFileEntry[];
   videoDimensions?: ImageDimensions;
+  // 生成出来的真实视频时长（秒）。服务端落地时从产物读到并随 job 结果下发；显示时长优先用它、
+  // 读不到才回落请求档 settings.duration（尤其 Seedance 2.5 编辑/延长的真实时长≠请求档）。
+  videoDurationSeconds?: number;
   videoUrl?: string;
   videos?: string[];
   videoPrompts?: Record<string, string>;
@@ -298,7 +301,7 @@ export type { VideoReferenceMode } from "@/lib/upload-rules";
 export { getVideoReferenceModeOptions, videoReferenceModeOptions } from "@/lib/video-reference-modes";
 
 export function isBytePlusSeedanceVideoModel(modelId?: string) {
-  return modelId === "byteplus:video.seedance-2-0" || modelId === "byteplus:video.seedance-2-0-fast" || modelId === "byteplus:video.seedance-2-0-mini";
+  return modelId === "byteplus:video.seedance-2-0" || modelId === "byteplus:video.seedance-2-0-fast" || modelId === "byteplus:video.seedance-2-0-mini" || modelId === "byteplus:video.seedance-2-5";
 }
 
 /**
@@ -344,6 +347,9 @@ type MessageGenerationMeta = {
   agentGenerated?: boolean;
   itemPrompts?: string[];
   itemPromptDetails?: PromptDetail[];
+  // 视频参考模式（仅视频）。edit/extend 时等待卡上方的参数条会显示"生成后自动获取参数"的说明，
+  // 因为这两个模式的比例/时长被后端强制成 adaptive/-1、真实输出跟随源视频，出片前显示请求档会误导。
+  videoReferenceMode?: VideoReferenceMode;
 };
 
 export type ControlMenuName = "model" | "generalChatModel" | "generalImageModel" | "generalVideoModel" | "characterModel" | "characterRatio" | "characterResolution" | "characterQuality" | "characterStyle" | "imageSettings" | "style" | "duration" | "imageCount" | "videoReferenceMode";
@@ -2102,7 +2108,8 @@ export function getGenerationModelIcon(modelId: string) {
 }
 
 export function isGoldGenerationModel(modelId: string) {
-  return modelId === "openai/gpt-5.4-image-2" || modelId === "bytedance/seedance-2.0" || modelId === "byteplus:video.seedance-2-0";
+  // ⭐ 2026-08：金色改到 Seedance 2.5，原来的 Seedance 2.0（含 OpenRouter 版）不再金色。
+  return modelId === "openai/gpt-5.4-image-2" || modelId === "byteplus:video.seedance-2-5";
 }
 
 // ⭐ 「哪些模型标 NEW」是**模型元数据**，唯一权威已挪到 `@/lib/models`
@@ -2508,7 +2515,7 @@ export function getPreviewMediaMeta(message: Message, imageUrl?: string): Previe
   const settings = meta?.settings;
   const ratio = settings?.ratio ?? "智能比例";
   const resolution = settings?.resolution ?? (mode === "video" ? "720p" : "1K");
-  const duration = mode === "video" ? settings?.duration?.trim() : "";
+  const duration = mode === "video" ? (typeof message.videoDurationSeconds === "number" && message.videoDurationSeconds > 0 ? `${Math.round(message.videoDurationSeconds)}秒` : settings?.duration?.trim()) : "";
   const actualDimensions = getMessageMediaDimensions(message, imageUrl);
   const dimensions = getDisplayDimensions(ratio, resolution, mode, meta?.model);
   const nonStandardSize = mode === "video" && ratio !== "智能比例" && isNonStandardVideoSize(meta?.model, resolution, ratio);
@@ -2687,7 +2694,7 @@ export function MediaPromptBlock({ message, references, mediaReferences, onUsePr
   const settings = meta?.settings;
   const ratio = settings?.ratio ?? "智能比例";
   const resolution = settings?.resolution ?? (mode === "video" ? "720p" : "1K");
-  const duration = mode === "video" ? settings?.duration?.trim() : "";
+  const duration = mode === "video" ? (typeof message.videoDurationSeconds === "number" && message.videoDurationSeconds > 0 ? `${Math.round(message.videoDurationSeconds)}秒` : settings?.duration?.trim()) : "";
   const actualDimensions = getMessageMediaDimensions(message, displayImageUrl);
   const dimensions = getDisplayDimensions(ratio, resolution, mode, meta?.model);
   const nonStandardSize = mode === "video" && ratio !== "智能比例" && isNonStandardVideoSize(meta?.model, resolution, ratio);
@@ -2776,6 +2783,14 @@ export function MediaPromptBlock({ message, references, mediaReferences, onUsePr
         ) : null}
       </div>
       <div className="mt-0 flex flex-wrap items-center gap-2 text-[12px] leading-5 text-[#9a9a9a]">
+        {mode === "video" && (meta?.videoReferenceMode === "edit" || meta?.videoReferenceMode === "extend") && !actualDimensions ? (
+          <>
+            <span className="truncate">{modelLabel}</span>
+            <span className="text-[#d0d0d0]">|</span>
+            <span>生成后自动获取参数，标准尺寸视频参数会跟随源视频</span>
+          </>
+        ) : (
+        <>
         <span className="truncate">{modelLabel}</span>
         <span className="text-[#d0d0d0]">|</span>
         <span>{displayRatio}</span>
@@ -2797,6 +2812,8 @@ export function MediaPromptBlock({ message, references, mediaReferences, onUsePr
             <span>{duration}</span>
           </>
         ) : null}
+        </>
+        )}
       </div>
     </div>
   );

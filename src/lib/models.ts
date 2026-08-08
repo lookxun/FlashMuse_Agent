@@ -137,7 +137,7 @@ export const HAILUO3_VIDEO_MODEL_ID = "minimax/hailuo-3";
  * 徽标长相见 `src/components/new-badge.tsx`（⛔ 别再各处手写那串 className）。
  */
 export function isNewGenerationModel(modelId: string) {
-  return modelId === HAILUO3_VIDEO_MODEL_ID;
+  return modelId === HAILUO3_VIDEO_MODEL_ID || modelId === "byteplus:video.seedance-2-5";
 }
 
 // H3 在 OpenRouter 上支持 5~15 秒（整秒）。
@@ -155,6 +155,9 @@ export const videoGenerationModels: GenerationModel[] = [
 ] as const;
 
 const bytePlusSeedanceDurations = ["4秒", "5秒", "6秒", "7秒", "8秒", "9秒", "10秒", "11秒", "12秒", "13秒", "14秒", "15秒"];
+
+// Seedance 2.5 实测支持 4~30 秒（整数）。
+const bytePlusSeedance25Durations = Array.from({ length: 27 }, (_, i) => `${i + 4}秒`);
 
 /**
  * ⭐ 「带参考图时」被上游收窄的可用时长 —— 唯一权威表。
@@ -196,6 +199,10 @@ export const bytePlusVideoGenerationModels: GenerationModel[] = [
   { label: "Seedance 2.0 Mini", id: "byteplus:video.seedance-2-0-mini", durations: bytePlusSeedanceDurations },
   { label: "Seedance 2.0 Fast", id: "byteplus:video.seedance-2-0-fast", durations: bytePlusSeedanceDurations },
   { label: "Seedance 2.0", id: "byteplus:video.seedance-2-0", durations: bytePlusSeedanceDurations },
+  // ⭐ Seedance 2.5（2026-08 火山新模型，端点 ep-20260807153703-h48pt → dreamina-seedance-2-5-260628）。放最下面 + 金色 + NEW。
+  // ✅ 参数已 2026-08-08 直打火山接口实测确认（不是猜的）：分辨率仅 480p/720p（1080p/2K/4K 均被拒，i2v 亦然）；
+  //    比例全 6 种；时长 4~30 秒整数（1/2/3 非法、30 封顶、31+ 非法）。⚠️ 美元单价接口不返回（usage 只给 token），未接真实价。
+  { label: "Seedance 2.5", id: "byteplus:video.seedance-2-5", durations: bytePlusSeedance25Durations },
 ] as const;
 
 export const DEFAULT_IMAGE_MODEL = imageGenerationModels[0].id;
@@ -452,6 +459,26 @@ const seedanceNonStandardVideoSizes: VideoModelRule["nonStandardSizes"] = {
   "1080p": { "21:9": true, "4:3": true, "1:1": true, "3:4": true },
 };
 
+// ⭐ Seedance 2.5 官方精确像素表（2026-08 火山文档，与直打接口实测一致：480p 9:16=480×854、720p 16:9=1280×720）。
+const seedance25VideoSizes: VideoModelRule["sizes"] = {
+  "480p": {
+    "21:9": { width: 992, height: 432 },
+    "16:9": { width: 854, height: 480 },
+    "4:3": { width: 752, height: 560 },
+    "1:1": { width: 640, height: 640 },
+    "3:4": { width: 560, height: 752 },
+    "9:16": { width: 480, height: 854 },
+  },
+  "720p": {
+    "21:9": { width: 1470, height: 630 },
+    "16:9": { width: 1280, height: 720 },
+    "4:3": { width: 1112, height: 834 },
+    "1:1": { width: 960, height: 960 },
+    "3:4": { width: 834, height: 1112 },
+    "9:16": { width: 720, height: 1280 },
+  },
+};
+
 const klingVideoSizes: VideoModelRule["sizes"] = {
   "720p": {
     "16:9": { width: 1280, height: 720 },
@@ -542,6 +569,18 @@ export const videoModelRules: Record<string, VideoModelRule> = {
     sizes: seedanceVideoSizes,
     nonStandardSizes: seedanceNonStandardVideoSizes,
   },
+  // ⭐ Seedance 2.5（端点 ep-20260807153703-h48pt）：官方文档 + 直打接口实测确认，仅 480p/720p、6 种比例、4~30 秒。
+  // 像素用 2.5 官方精确表 seedance25VideoSizes（不再借用 Fast 表）。
+  // ⛔ 故意**不配 nonStandardSizes**（2026-08-09 用户拍板）：2.5 官方对 480p/720p × 6 种比例都给了精确像素表，
+  //    全都是官方标准尺寸 → 一个都不该标「（非标）」。原来沿用 2.0 Fast 那张表会把最常用的 480p 16:9(854×480)
+  //    也标成非标，属于显示错误。
+  "byteplus:video.seedance-2-5": {
+    resolutions: ["480p", "720p"],
+    ratios: ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
+    defaultResolution: "720p",
+    defaultRatio: "16:9",
+    sizes: seedance25VideoSizes,
+  },
   "byteplus:video.seedance-2-0-mini": {
     resolutions: ["480p", "720p"],
     ratios: ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
@@ -598,6 +637,9 @@ export const fallbackVideoModelRule: VideoModelRule = videoModelRules[DEFAULT_VI
 export function getBytePlusVideoPricePerMillionUsd(modelId: string | null | undefined, resolution: string | undefined, hasVideoInput: boolean) {
   if (modelId === "byteplus:video.seedance-2-0-fast") return hasVideoInput ? 3.3 : 5.6;
   if (modelId === "byteplus:video.seedance-2-0-mini") return hasVideoInput ? 2.1 : 3.5;
+  // Seedance 2.5（仅 480p/720p）：火山官网 2026-08 定价页实测确认，无参考视频 $10.70/M、有参考视频 $6.40/M。
+  // 实测反验：720p/5秒=108900 token × 10.70/1e6 = $1.165，与官网定价示例「720p 5秒=1.156/视频」吻合。
+  if (modelId === "byteplus:video.seedance-2-5") return hasVideoInput ? 6.40 : 10.70;
   // Seedance 2.0（完整版）：480p/720p 与 1080p / 4K 分档。
   if (resolution === "4K") return hasVideoInput ? 2.4 : 4.0;
   if (resolution === "1080p") return hasVideoInput ? 4.7 : 7.7;

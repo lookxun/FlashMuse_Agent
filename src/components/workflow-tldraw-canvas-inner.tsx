@@ -29,6 +29,7 @@ import { validateVideoReferenceImagesBeforeSend, videoModelEnforcesReferenceImag
 import { computeFileContentHashHex, precheckUploadedFileDedup } from "@/lib/upload-content-hash";
 import { shouldChunkUpload, uploadFileInChunks } from "@/lib/chunked-upload";
 import { getStaticMediaUrl } from "@/lib/static-media-url";
+import { getCommonRatioLabel as getSharedCommonRatioLabel, getVideoResolutionFromDimensions } from "@/lib/media-asset-record";
 
 export type WorkflowNodeKind = "text" | "image" | "video" | "audio";
 
@@ -396,7 +397,7 @@ type WorkflowImageJobStatus = {
   workflowNodeId?: string;
   resultUrls?: string[];
   reservedNames?: string[];
-  resultDimensions?: Record<string, { width: number; height: number }>;
+  resultDimensions?: Record<string, { width: number; height: number; durationSeconds?: number }>;
   usage?: UsageMeta;
   credit?: CreditResult;
   error?: string;
@@ -1267,7 +1268,7 @@ function getWorkflowUploadFileName(node: WorkflowNode) {
   return "";
 }
 
-function getWorkflowNodeParamParts(node: WorkflowNode) {
+function getWorkflowNodeParamParts(node: WorkflowNode): { modelLabel: string; ratio: string; resolution: string; duration: string; sizeText: string; note?: string } {
   const currentSize = getWorkflowNodeVisualSize(node);
   const sizeText = currentSize.w && currentSize.h ? `${Math.round(currentSize.w)}x${Math.round(currentSize.h)}` : "";
   if (node.title === "上传图片" || node.title === "上传视频" || node.title === "上传文本" || node.title === WORKFLOW_VIDEO_FRAME_NODE_TITLE) return { modelLabel: "", ratio: "", resolution: "", duration: "", sizeText };
@@ -1280,7 +1281,16 @@ function getWorkflowNodeParamParts(node: WorkflowNode) {
   const durationText = node.kind === "video"
     ? (typeof node.data.durationSeconds === "number" && node.data.durationSeconds > 0 ? `${Math.round(node.data.durationSeconds)}秒` : node.data.duration ?? "")
     : "";
-  return { modelLabel, ratio: node.data.ratio ?? "", resolution: node.data.resolution ?? "", duration: durationText, sizeText };
+  // ⭐ 比例/分辨率同理：视频节点一律优先用「生成出来的真实视频尺寸」反推，读不到才回落请求档 node.data.ratio/resolution。
+  //   （真实尺寸由服务端落地时下发 videoDimensions，或播放时 onLoadedMetadata 自愈。）
+  const realVideoDims = node.kind === "video" && node.data.videoDimensions?.width && node.data.videoDimensions.height ? node.data.videoDimensions : undefined;
+  // ⭐ Seedance 2.5「视频编辑/延长」：请求档(比例/时长)被强制成 adaptive/-1、真实输出跟随源视频，
+  //   所以生成出真实视频之前显示请求档是假的、会误导 → 等待期间改显示这句说明，出片后再显示真实参数。
+  const isVideoEditOrExtend = node.kind === "video" && (node.data.videoReferenceMode === "edit" || node.data.videoReferenceMode === "extend");
+  if (isVideoEditOrExtend && !realVideoDims) return { modelLabel, ratio: "", resolution: "", duration: "", sizeText: "", note: "生成后自动获取参数，标准尺寸视频参数会跟随源视频" };
+  const ratioText = realVideoDims ? getSharedCommonRatioLabel(realVideoDims.width, realVideoDims.height) : (node.data.ratio ?? "");
+  const resolutionText = realVideoDims ? (getVideoResolutionFromDimensions(realVideoDims.width, realVideoDims.height) ?? node.data.resolution ?? "") : (node.data.resolution ?? "");
+  return { modelLabel, ratio: ratioText, resolution: resolutionText, duration: durationText, sizeText };
 }
 
 function estimateParamTextWidth(text: string) {
@@ -1292,6 +1302,8 @@ function estimateTitleTextWidth(text: string) {
 }
 
 function buildWorkflowParamLabel(parts: ReturnType<typeof getWorkflowNodeParamParts>, maxWidth: number) {
+  // ⭐ edit/extend 等待期间的说明文案：整段显示（不参与比例/分辨率的宽度截断逻辑）。
+  if (parts.note) return parts.modelLabel ? `${parts.modelLabel}| ${parts.note}` : parts.note;
   const candidates = [
     [parts.modelLabel, parts.ratio, parts.resolution, parts.duration, parts.sizeText],
     [parts.ratio, parts.resolution, parts.duration, parts.sizeText],
@@ -4658,9 +4670,9 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
           if (source.data.audioUrl && typeof source.data.durationSeconds === "number") referenceMediaDurationByUrl.set(source.data.audioUrl, source.data.durationSeconds);
         }
         for (const [url, seconds] of Object.entries(options?.referenceVideoDurations ?? {})) if (typeof seconds === "number") referenceMediaDurationByUrl.set(url, seconds);
-        const videoTotalDurationError = validateReferenceTotalDuration("video", referenceVideos.map((url) => referenceMediaDurationByUrl.get(url)));
+        const videoTotalDurationError = validateReferenceTotalDuration("video", referenceVideos.map((url) => referenceMediaDurationByUrl.get(url)), model);
         if (videoTotalDurationError) throw new Error(videoTotalDurationError);
-        const audioTotalDurationError = validateReferenceTotalDuration("audio", referenceAudios.map((url) => referenceMediaDurationByUrl.get(url)));
+        const audioTotalDurationError = validateReferenceTotalDuration("audio", referenceAudios.map((url) => referenceMediaDurationByUrl.get(url)), model);
         if (audioTotalDurationError) throw new Error(audioTotalDurationError);
         const modelPrompt = appendWorkflowReferenceHint(prompt, getReferenceImageNames(node, referenceImages));
         const referenceImageNameByUrl = new Map<string, string>();
@@ -4908,7 +4920,8 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     const videoUrl = job.resultUrls?.find(Boolean);
     if (!videoUrl) return false;
     const prompt = node.data.prompt?.trim() ?? job.prompt ?? "";
-    updateNode(node.id, { prompt, videoUrl, posterUrl: job.posterUrl, videoCurrentTime: 0, visualSize: undefined, isRunning: false, error: undefined, taskId: undefined, videoRequestId: undefined, videoPreviewUrl: undefined, videoSavedFlashAt: Date.now(), mediaSystemNames: job.reservedNames?.[0] ? { ...(node.data.mediaSystemNames ?? {}), [videoUrl]: job.reservedNames[0] } : node.data.mediaSystemNames });
+    const jobDim = job.resultDimensions?.[videoUrl];
+    updateNode(node.id, { prompt, videoUrl, posterUrl: job.posterUrl, videoCurrentTime: 0, visualSize: undefined, isRunning: false, error: undefined, taskId: undefined, videoRequestId: undefined, videoPreviewUrl: undefined, videoSavedFlashAt: Date.now(), videoDimensions: jobDim?.width && jobDim.height ? { width: jobDim.width, height: jobDim.height } : node.data.videoDimensions, durationSeconds: typeof jobDim?.durationSeconds === "number" && jobDim.durationSeconds > 0 ? jobDim.durationSeconds : node.data.durationSeconds, mediaSystemNames: job.reservedNames?.[0] ? { ...(node.data.mediaSystemNames ?? {}), [videoUrl]: job.reservedNames[0] } : node.data.mediaSystemNames });
     updateState((state) => ({ ...state, edges: state.edges.filter((edge) => edge.target !== node.id) }));
     onGeneratedMedia?.({ nodeId: node.id, kind: "video", urls: [videoUrl], reservedNames: job.reservedNames, posterUrl: job.posterUrl, sourcePrompt: prompt, model, ratio: settings.ratio, resolution: settings.resolution, duration: settings.duration });
     onCredit?.({ ...job.credit, usage: job.usage });
@@ -6792,7 +6805,7 @@ function WorkflowVideoReferenceModeMenu({ modelId, value, onChange }: { modelId?
   return <div data-workflow-menu className="relative" onPointerDown={(event) => event.stopPropagation()}><button type="button" onClick={toggle} className={`${workflowToolButtonClassName} ${open ? "yinzao-tool-button-active" : ""}`}><SelectedIcon className="h-[18px] w-[18px] shrink-0 text-[#777777]" /><span className="font-medium text-[#777777]">{getWorkflowVideoReferenceModeLabel(modelId, value)}</span><RiArrowDownSLine className="h-3.5 w-3.5 shrink-0 text-[#8a8a8a]" /></button>{open ? <div className="absolute bottom-full right-0 z-[10000] mb-2 min-w-[180px] rounded-[12px] bg-white p-2 shadow-[0_18px_40px_rgba(0,0,0,0.12)]"><div className="px-2 pb-2 text-[12px] font-medium text-[#a0a0a0]">参考模式</div>{referenceModeOptions.map((option) => { const OptionIcon = option.icon; return <button key={option.value} type="button" onClick={() => { onChange(option.value); setOpen(false); }} className={option.value === value ? "flex h-10 w-full items-center justify-between whitespace-nowrap rounded-[8px] bg-[#f5f5f5] px-3 text-left text-[14px] font-medium text-[#111111]" : "flex h-10 w-full items-center justify-between whitespace-nowrap rounded-[8px] px-3 text-left text-[14px] text-[#555555] hover:bg-[#f7f7f7]"}><span className="flex items-center gap-2"><OptionIcon className="h-[18px] w-[18px] shrink-0 text-[#777777]" /><span>{option.label}</span></span>{option.value === value ? <RiCheckLine className="h-[18px] w-[18px] text-[#111111]" /> : null}</button>; })}</div> : null}</div>;
 }
 function getGenerationModelIcon(modelId: string) { if (modelId.startsWith("byteplus:") || modelId.startsWith("byteplus/") || modelId.startsWith("ep-")) return BytePlusIcon; if (modelId.startsWith("openai/")) return RiOpenaiFill; if (modelId.startsWith("google/")) return RiGoogleFill; if (modelId.startsWith("bytedance/") || modelId.startsWith("bytedance-seed/")) return RiTiktokFill; if (modelId.startsWith("minimax/")) return MiniMaxIcon; if (modelId.startsWith("kwaivgi/")) return KlingIcon; return null; }
-function isGoldGenerationModel(modelId: string) { return modelId === "openai/gpt-5.4-image-2" || modelId === "bytedance/seedance-2.0" || modelId === "byteplus:video.seedance-2-0"; }
+function isGoldGenerationModel(modelId: string) { return modelId === "openai/gpt-5.4-image-2" || modelId === "byteplus:video.seedance-2-5"; }
 function getModelLabel(options: readonly (ConversationModel | GenerationModel)[], value: string) { return options.find((item) => item.id === value)?.label ?? value; }
 function AiGenerate3dIcon({ className = "h-[18px] w-[18px] shrink-0 text-[#777777]" }: { className?: string }) { return <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" className={className}><path d="M15.1416 2.81836L13.1016 3.94824L12 3.31055L4.5 7.65234V7.6582L12 12V20.6895L19.5 16.3467V11.5L21.5 10.3291V17.5L12 23L2.5 17.5V6.5L12 1L15.1416 2.81836ZM18.5293 2.31934C18.7059 1.8935 19.2943 1.89349 19.4707 2.31934L19.7236 2.93066C20.1556 3.97346 20.9615 4.80618 21.9746 5.25684L22.6924 5.57617C23.1026 5.75901 23.1026 6.3562 22.6924 6.53906L21.9326 6.87695C20.9449 7.31624 20.1534 8.11944 19.7139 9.12793L19.4668 9.69336C19.2864 10.1075 18.7137 10.1075 18.5332 9.69336L18.2871 9.12793C17.8476 8.11929 17.0552 7.31628 16.0674 6.87695L15.3076 6.53906C14.8974 6.35622 14.8974 5.75899 15.3076 5.57617L16.0254 5.25684C17.0385 4.80618 17.8445 3.97348 18.2764 2.93066L18.5293 2.31934Z" /></svg>; }
 function RatioOptionIcon({ option }: { option: string }) { const meta = ratioCardMeta[option] ?? ratioCardMeta["1:1"]; if (meta.icon === "spark") return <RiShining2Line className="h-[18px] w-[18px] shrink-0 text-[#777777]" />; return <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true" className="shrink-0 text-[#777777]"><rect x={(18 - Number(meta.width)) / 2} y={(18 - Number(meta.height)) / 2} width={meta.width} height={meta.height} rx="2.2" stroke="currentColor" strokeWidth="1.4" /></svg>; }
@@ -6804,4 +6817,4 @@ function WorkflowImageQualityMenuSingle({ value, onChange, className = "" }: { v
 }
 
 function ImageNodeEditor({ node, modelOptions, promptMaxHeight, onChange, onRun }: { node: WorkflowNode; modelOptions: WorkflowModelOptions; promptMaxHeight?: number; onChange: (nodeId: string, patch: Partial<WorkflowNodeData>) => void; onRun: () => void }) { const model = modelOptions.imageModels.some((item) => item.id === node.data.model) ? node.data.model ?? DEFAULT_IMAGE_MODEL : (modelOptions.imageModels[0]?.id as ModelName | undefined) ?? DEFAULT_IMAGE_MODEL; const supportedResolutions = getSupportedImageResolutions(model); const ratio = imageRatioOptions.includes(node.data.ratio ?? "") ? node.data.ratio as string : "16:9"; return <div className="space-y-2"><WorkflowPromptBox node={node} value={node.data.prompt ?? ""} placeholder="输入提示词，也可以连接文本节点" maxPromptHeight={promptMaxHeight} onChange={(value) => onChange(node.id, { prompt: value })} running={node.data.isRunning} onRun={onRun}><WorkflowModelMenuSingle value={model} options={modelOptions.imageModels} title="选择模型" onChange={(value) => onChange(node.id, { model: value, ratio, resolution: normalizeImageResolutionForModel(value, node.data.resolution), ...pruneWorkflowUploadsForModel(node, value) })} className="w-[190px] shrink-0" /><WorkflowSettingsMenuSingle mode="image" model={model} ratio={ratio} resolution={node.data.resolution ?? supportedResolutions[0]} ratios={imageRatioOptions} resolutions={supportedResolutions} onChange={(patch) => onChange(node.id, patch)} className="shrink-0" />{isGptImage2Model(model) ? <WorkflowImageQualityMenuSingle value={node.data.quality ?? DEFAULT_IMAGE_QUALITY} onChange={(quality) => onChange(node.id, { quality })} className="shrink-0" /> : null}</WorkflowPromptBox></div>; }
-function VideoNodeEditor({ node, modelOptions, promptMaxHeight, onChange, onRun }: { node: WorkflowNode; modelOptions: WorkflowModelOptions; promptMaxHeight?: number; onChange: (nodeId: string, patch: Partial<WorkflowNodeData>) => void; onRun: () => void }) { const model = modelOptions.videoModels.some((item) => item.id === node.data.model) ? node.data.model ?? DEFAULT_VIDEO_MODEL : (modelOptions.videoModels[0]?.id as ModelName | undefined) ?? DEFAULT_VIDEO_MODEL; const supportedResolutions = getSupportedVideoResolutions(model); const resolution = normalizeVideoResolutionForModel(model, node.data.resolution); const supportedRatios = getSupportedVideoRatios(model, resolution); const ratio = (supportedRatios as readonly string[]).includes(node.data.ratio ?? "") ? node.data.ratio as string : supportedRatios[0]; const durationOptions = modelOptions.videoModels.find((item) => item.id === model)?.durations ?? fallbackVideoDurationOptions; return <div className="space-y-2"><WorkflowPromptBox node={node} value={node.data.prompt ?? ""} placeholder="输入提示词，也可以连接文本节点" maxPromptHeight={promptMaxHeight} onChange={(value) => onChange(node.id, { prompt: value })} running={node.data.isRunning} onRun={onRun}><WorkflowModelMenuSingle value={model} options={modelOptions.videoModels} title="选择模型" onChange={(value) => { const nextResolution = normalizeVideoResolutionForModel(value, node.data.resolution); onChange(node.id, { model: value, resolution: nextResolution, ratio: normalizeVideoRatioForModel(value, ratio, nextResolution), duration: value === DEFAULT_WORKFLOW_VIDEO_MODEL ? "8秒" : modelOptions.videoModels.find((item) => item.id === value)?.durations?.[0] ?? "5秒" }); }} className="w-[190px] shrink-0" /><WorkflowSettingsMenuSingle mode="video" model={model} ratio={ratio} resolution={resolution} ratios={supportedRatios} resolutions={supportedResolutions} onChange={(patch) => onChange(node.id, patch)} className="shrink-0" /><WorkflowDurationMenuSingle value={node.data.duration ?? durationOptions[0]} options={durationOptions} onChange={(value) => onChange(node.id, { duration: value })} /></WorkflowPromptBox></div>; }
+function VideoNodeEditor({ node, modelOptions, promptMaxHeight, onChange, onRun }: { node: WorkflowNode; modelOptions: WorkflowModelOptions; promptMaxHeight?: number; onChange: (nodeId: string, patch: Partial<WorkflowNodeData>) => void; onRun: () => void }) { const model = modelOptions.videoModels.some((item) => item.id === node.data.model) ? node.data.model ?? DEFAULT_VIDEO_MODEL : (modelOptions.videoModels[0]?.id as ModelName | undefined) ?? DEFAULT_VIDEO_MODEL; const supportedResolutions = getSupportedVideoResolutions(model); const resolution = normalizeVideoResolutionForModel(model, node.data.resolution); const supportedRatios = getSupportedVideoRatios(model, resolution); const ratio = (supportedRatios as readonly string[]).includes(node.data.ratio ?? "") ? node.data.ratio as string : supportedRatios[0]; const durationOptions = modelOptions.videoModels.find((item) => item.id === model)?.durations ?? fallbackVideoDurationOptions; const isVideoEditOrExtend = supportsVideoReferenceMode(model) && (node.data.videoReferenceMode === "edit" || node.data.videoReferenceMode === "extend"); return <div className="space-y-2"><WorkflowPromptBox node={node} value={node.data.prompt ?? ""} placeholder="输入提示词，也可以连接文本节点" maxPromptHeight={promptMaxHeight} onChange={(value) => onChange(node.id, { prompt: value })} running={node.data.isRunning} onRun={onRun}><WorkflowModelMenuSingle value={model} options={modelOptions.videoModels} title="选择模型" onChange={(value) => { const nextResolution = normalizeVideoResolutionForModel(value, node.data.resolution); onChange(node.id, { model: value, resolution: nextResolution, ratio: normalizeVideoRatioForModel(value, ratio, nextResolution), duration: value === DEFAULT_WORKFLOW_VIDEO_MODEL ? "8秒" : modelOptions.videoModels.find((item) => item.id === value)?.durations?.[0] ?? "5秒" }); }} className="w-[190px] shrink-0" />{isVideoEditOrExtend ? null : <WorkflowSettingsMenuSingle mode="video" model={model} ratio={ratio} resolution={resolution} ratios={supportedRatios} resolutions={supportedResolutions} onChange={(patch) => onChange(node.id, patch)} className="shrink-0" />}{isVideoEditOrExtend ? null : <WorkflowDurationMenuSingle value={node.data.duration ?? durationOptions[0]} options={durationOptions} onChange={(value) => onChange(node.id, { duration: value })} />}</WorkflowPromptBox></div>; }

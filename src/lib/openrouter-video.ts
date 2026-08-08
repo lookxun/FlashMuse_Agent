@@ -5,6 +5,7 @@ import { DEFAULT_VIDEO_MODEL, HAILUO3_SUPPORTED_DURATION_SECONDS, HAILUO3_VIDEO_
 import { getBytePlusBaseUrl, getBytePlusModelForRequest, getConfiguredBytePlusApiKey, getConfiguredOpenRouterApiKey } from "@/lib/system-settings";
 import { normalizeReferenceAssetUrl } from "@/lib/reference-asset-url";
 import { toDataUrlIfLocalPublicAsset } from "@/lib/generated-asset-path";
+import { isSeedance25VideoModel } from "@/lib/upload-rules";
 
 type VideoSettings = {
   ratio?: string;
@@ -12,7 +13,7 @@ type VideoSettings = {
   duration?: string;
 };
 
-export type VideoReferenceMode = "reference" | "first_frame" | "last_frame" | "first_last_frame";
+export type VideoReferenceMode = "reference" | "first_frame" | "last_frame" | "first_last_frame" | "edit" | "extend";
 
 type OpenRouterVideoImage = {
   type: "image_url";
@@ -61,6 +62,7 @@ function getBytePlusVideoModelName(modelId?: string, providerKey?: string, unloc
   if (modelId === "byteplus:video.seedance-2-0-fast") return getBytePlusModelForRequest(providerKey ?? "video.seedance-2-0-fast", unlock);
   if (modelId === "byteplus:video.seedance-2-0-mini") return getBytePlusModelForRequest(providerKey ?? "video.seedance-2-0-mini", unlock);
   if (modelId === "byteplus:video.seedance-2-0") return getBytePlusModelForRequest(providerKey ?? "video.seedance-2-0", unlock);
+  if (modelId === "byteplus:video.seedance-2-5") return getBytePlusModelForRequest(providerKey ?? "video.seedance-2-5", unlock);
   return undefined;
 }
 
@@ -160,6 +162,8 @@ function getDuration(model: string, value?: string) {
   const seconds = Number(value?.match(/\d+/)?.[0]);
   const safeSeconds = Number.isFinite(seconds) && seconds > 0 ? seconds : 5;
 
+  // Seedance 2.5 实测支持 4~30 秒；其余 BytePlus（2.0 系）仍 4~15 秒。
+  if (model === "byteplus:video.seedance-2-5") return Math.min(30, Math.max(4, safeSeconds));
   if (model.startsWith("byteplus:video.")) return Math.min(15, Math.max(4, safeSeconds));
   if (model === "google/veo-3.1") return getClosestDuration(safeSeconds, [4, 6, 8]);
   if (model === "kwaivgi/kling-video-o1") return getClosestDuration(safeSeconds, [5, 10]);
@@ -210,11 +214,11 @@ function getBytePlusReferenceRole(index: number, mode?: VideoReferenceMode) {
   return "reference_image";
 }
 
-export function getBytePlusEffectiveReferenceImages(referenceImages: string[] = [], mode?: VideoReferenceMode) {
+export function getBytePlusEffectiveReferenceImages(referenceImages: string[] = [], mode?: VideoReferenceMode, modelId?: string) {
   const images = referenceImages.filter(Boolean);
   if (mode === "first_last_frame") return images.slice(0, 2);
   if (mode === "first_frame") return images.slice(0, 1);
-  return images.slice(0, 9);
+  return images.slice(0, isSeedance25VideoModel(modelId) ? 30 : 9);
 }
 
 async function getOpenRouterError(response: Response, fallback: string) {
@@ -294,21 +298,24 @@ async function createBytePlusVideoTask(prompt: string, referenceImages: string[]
   if (!bytePlusModel) throw new Error("连接不到模型，请联系管理员！");
 
   const videoSettings = resolveVideoSettingsForModel(model, settings);
-  const images = getBytePlusEffectiveReferenceImages(referenceImages, referenceMode).map((url, index) => ({
+  const mediaMax = isSeedance25VideoModel(model) ? 10 : 3;
+  const images = getBytePlusEffectiveReferenceImages(referenceImages, referenceMode, model).map((url, index) => ({
     type: "image_url",
     image_url: { url: toDataUrlIfLocalPublicAsset(url) },
     role: getBytePlusReferenceRole(index, referenceMode),
   }));
-  const videos: BytePlusVideoReference[] = referenceVideos.filter(Boolean).slice(0, 3).map((url) => ({
+  const videos: BytePlusVideoReference[] = referenceVideos.filter(Boolean).slice(0, mediaMax).map((url) => ({
     type: "video_url",
     video_url: { url: toPublicGeneratedAssetUrl(url) },
     role: "reference_video",
   }));
-  const audios: BytePlusAudioReference[] = referenceAudios.filter(Boolean).slice(0, 3).map((url) => ({
+  const audios: BytePlusAudioReference[] = referenceAudios.filter(Boolean).slice(0, mediaMax).map((url) => ({
     type: "audio_url",
     audio_url: { url: toPublicGeneratedAssetUrl(url) },
     role: "reference_audio",
   }));
+  // 视频编辑/延长（仅 Seedance 2.5）：官方硬规则 —— 比例只能 adaptive（随被编辑视频）、时长只能 -1（随原视频）。
+  const isEditOrExtend = referenceMode === "edit" || referenceMode === "extend";
   const body = {
     model: bytePlusModel,
     content: [
@@ -318,8 +325,8 @@ async function createBytePlusVideoTask(prompt: string, referenceImages: string[]
       ...audios,
     ],
     resolution: videoSettings.resolution,
-    ratio: videoSettings.ratio,
-    duration: getDuration(model, settings?.duration),
+    ratio: isEditOrExtend ? "adaptive" : videoSettings.ratio,
+    duration: isEditOrExtend ? -1 : getDuration(model, settings?.duration),
     generate_audio: true,
     watermark: false,
   };

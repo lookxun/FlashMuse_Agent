@@ -213,6 +213,7 @@ const MODEL_DISPLAY_LABELS: Record<string, string> = {
   "byteplus:video.seedance-2-0-fast": "Seedance 2.0 Fast",
   "byteplus:video.seedance-2-0": "Seedance 2.0",
   "byteplus:video.seedance-2-0-mini": "Seedance 2.0 Mini",
+  "byteplus:video.seedance-2-5": "Seedance 2.5",
   "bytedance-seed/seedream-4.5": "Seedream 4.5",
   "google/gemini-3.1-flash-image-preview": "Gemini 3.1 Flash",
   "google/gemini-3-pro-image-preview": "Gemini 3 Pro",
@@ -256,6 +257,20 @@ export function getResolutionFromDimensions(width: number | null | undefined, he
   return "1K";
 }
 
+/**
+ * 由宽高反推视频分辨率档（480p/720p/1080p/4K）。服务端安全的唯一权威实现。
+ * 阈值与 chat-workbench-core 的同名客户端函数一致（视频档按边长分，不按总像素）。
+ */
+export function getVideoResolutionFromDimensions(width: number | null | undefined, height: number | null | undefined): string | undefined {
+  if (!width || !height) return undefined;
+  const maxSide = Math.max(width, height);
+  const minSide = Math.min(width, height);
+  if (maxSide >= 3500 || minSide >= 2000) return "4K";
+  if (minSide >= 1000 || maxSide >= 1900) return "1080p";
+  if (minSide <= 500 || maxSide <= 800) return "480p";
+  return "720p";
+}
+
 /** 显示用的参数卡（现算，不存库）。 */
 export interface AssetPreviewMeta {
   modelLabel: string; // 模型显示名
@@ -292,7 +307,7 @@ export function toAssetPreviewMeta(media: MediaAssetDisplayColumns): AssetPrevie
     modelLabel: getMediaModelDisplayName(media.model),
     ratio: media.width && media.height ? getCommonRatioLabel(media.width, media.height) : media.ratio || "-",
     sizeText: media.width && media.height ? `${media.width} × ${media.height}` : media.imageSize || "-",
-    resolution: media.resolution || media.imageSize || getResolutionFromDimensions(media.width, media.height) || "-",
+    resolution: (mode === "video" ? (getVideoResolutionFromDimensions(media.width, media.height) ?? media.resolution) : (media.resolution || media.imageSize || getResolutionFromDimensions(media.width, media.height))) || "-",
     duration: mode === "video" ? duration : undefined,
     mode,
   };

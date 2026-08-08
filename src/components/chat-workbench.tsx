@@ -763,6 +763,8 @@ export function ChatWorkbench() {
   const selectedImageCount = selectedImageCounts[mode];
   const selectedGenerationModel = mode === "general" ? selectedGeneralModels.chat : mode === "agent" ? selectedModel : selectedGenerationModels[mode];
   const isSelectedVideoReferenceModeModel = mode === "video" && supportsVideoReferenceMode(selectedGenerationModels.video);
+  // 视频编辑/延长（仅 Seedance 2.5）：比例=adaptive、时长=-1 由后端强制，用户选了也不生效 → 隐藏这两个选择器，避免误导。
+  const isVideoEditOrExtendMode = isSelectedVideoReferenceModeModel && (selectedVideoReferenceMode === "edit" || selectedVideoReferenceMode === "extend");
   const currentUploadRule = useMemo(() => getUploadRule({ mode, modelId: selectedGenerationModel, transportMode: "local-base64", videoReferenceMode: mode === "video" && isSelectedVideoReferenceModeModel ? selectedVideoReferenceMode : undefined }, uploadRuleOverrides), [isSelectedVideoReferenceModeModel, mode, selectedGenerationModel, selectedVideoReferenceMode, uploadRuleOverrides]);
   const currentMaxReferenceImages = currentUploadRule.image.maxCount;
   const uploadAcceptValue = useMemo(() => getUploadAcceptValue(currentUploadRule), [currentUploadRule]);
@@ -1286,7 +1288,7 @@ export function ChatWorkbench() {
   const previewDisplayMeta = previewAsset ? enrichAssetPreviewMeta(previewAsset).previewMeta : undefined;
   const previewIsUploadedAsset = previewAsset ? isUploadedAsset(previewAsset) : false;
   const isPreviewDownloadReady = Boolean(previewAsset?.url);
-  const previewSourceLabel = previewAsset && !previewDisplayMeta ? previewAsset.promptSource === "upload" || isUploadPromptPlaceholder(previewAsset.sourcePrompt) ? UPLOAD_IMAGE_PROMPT_PLACEHOLDER : "" : "";
+  const previewSourceLabel = previewAsset && !previewDisplayMeta ? previewAsset.promptSource === "upload" || isUploadPromptPlaceholder(previewAsset.sourcePrompt) ? (isVideoAsset(previewAsset) ? "上传视频" : isAudioAsset(previewAsset) ? "上传音频" : UPLOAD_IMAGE_PROMPT_PLACEHOLDER) : "" : "";
   const previewHasReversedUploadPrompt = Boolean(previewAsset?.sourcePrompt.trim()) && previewAsset?.promptSource === "reverse" && previewIsUploadedAsset;
   const previewHasUsablePrompt = Boolean(previewAsset?.sourcePrompt.trim()) && !isUploadPromptPlaceholder(previewAsset?.sourcePrompt) && (!previewIsUploadedAsset || previewHasReversedUploadPrompt);
   const previewPromptText = previewHasUsablePrompt ? previewAsset?.sourcePrompt.trim() ?? "" : "";
@@ -3080,8 +3082,10 @@ export function ChatWorkbench() {
     const checkAuth = async () => {
       try {
         const response = await fetch("/api/auth/me", { cache: "no-store" });
-        const data = (await response.json().catch(() => ({}))) as { user?: CurrentUserProfile | null };
+        const data = (await response.json().catch(() => ({}))) as { user?: CurrentUserProfile | null; announcement?: { enabled: boolean; content?: string; version?: string } };
         if (cancelled) return;
+        // 把公告广播给顶部横幅（AnnouncementBanner 监听此事件），实现不刷新自动更新。
+        if (data.announcement) window.dispatchEvent(new CustomEvent("flashmuse-announcement", { detail: data.announcement }));
         if (response.status === 401 || (response.ok && !data.user?.email)) {
           window.location.replace("/");
           return;
@@ -3784,7 +3788,7 @@ export function ChatWorkbench() {
                 }}
                 className={option.value === selectedVideoReferenceMode ? "flex min-h-[58px] w-full items-center justify-between rounded-[10px] bg-[#f5f5f5] px-3 py-2 text-left text-[14px] font-medium text-[#111111]" : "flex min-h-[58px] w-full items-center justify-between rounded-[10px] px-3 py-2 text-left text-[14px] text-[#555555] hover:bg-[#f7f7f7]"}
               >
-                <span className="flex min-w-0 items-start gap-2"><IconRenderer icon={option.icon} /><span className="min-w-0"><span className="block whitespace-nowrap">{option.label}</span><span className="mt-1 block whitespace-nowrap text-[12px] font-normal leading-4 text-[#999999]">{option.description}</span></span></span>
+                <span className="flex min-w-0 items-start gap-2"><IconRenderer icon={option.icon} /><span className="min-w-0"><span className="block whitespace-nowrap">{option.label}</span><span className="mt-1 block whitespace-normal break-words text-[12px] font-normal leading-4 text-[#999999]">{option.description}</span></span></span>
                 {option.value === selectedVideoReferenceMode ? <RiCheckLine className="h-[18px] w-[18px] text-[#111111]" aria-hidden="true" /> : null}
               </button>
             ))}
@@ -4879,7 +4883,7 @@ export function ChatWorkbench() {
     );
   }, []);
 
-  const appendVideoToAssistantMessage = useCallback((sessionId: string, requestId: string, videoUrl: string, prompt: string, mediaSystemName?: string, posterUrl?: string, promptDetail?: PromptDetail) => {
+  const appendVideoToAssistantMessage = useCallback((sessionId: string, requestId: string, videoUrl: string, prompt: string, mediaSystemName?: string, posterUrl?: string, promptDetail?: PromptDetail, realDimensions?: { width: number; height: number; durationSeconds?: number }) => {
     setSessions((current) =>
       current.map((session) =>
         session.id === sessionId
@@ -4899,6 +4903,9 @@ export function ChatWorkbench() {
                       videoPreviewUrls: message.videoPreviewUrls?.length ? message.videoPreviewUrls.slice(1) : message.videoPreviewUrls,
                       videoSavedFlashAt: { ...(message.videoSavedFlashAt ?? {}), [videoUrl]: Date.now() },
                       mediaSystemNames: mediaSystemName ? { ...(message.mediaSystemNames ?? {}), [videoUrl]: mediaSystemName } : message.mediaSystemNames,
+                      // ⭐ 服务端落地时下发的「真实视频尺寸/时长」，让卡片立刻显示真实比例/分辨率/时长（不用等播放自愈）。
+                      videoDimensions: realDimensions?.width && realDimensions.height ? { width: realDimensions.width, height: realDimensions.height } : message.videoDimensions,
+                      videoDurationSeconds: typeof realDimensions?.durationSeconds === "number" && realDimensions.durationSeconds > 0 ? realDimensions.durationSeconds : message.videoDurationSeconds,
                       pendingVideoCount: Math.max(0, (message.pendingVideoCount ?? (message.retryingFailedVideoIndexes?.length ? 0 : 1)) - 1),
                       failedVideoCount: message.retryingFailedVideoIndexes?.length ? Math.max(0, (message.failedVideoCount ?? 1) - 1) : message.failedVideoCount,
                       error: (() => {
@@ -5457,7 +5464,7 @@ export function ChatWorkbench() {
   // (pendingVideoCount > 0) but the backend job already finished, align it to the job result / failure and
   // keep polling while it runs — so a closed/refreshed browser never leaves a permanent waiting card.
   useEffect(() => {
-    type ConversationVideoJobStatus = { requestId: string; status: string; resultUrls?: string[]; reservedNames?: string[]; posterUrl?: string; usage?: UsageMeta; credit?: CreditMeta; error?: string; errorCode?: string; extra?: { preview?: { videoUrl?: string } } };
+    type ConversationVideoJobStatus = { requestId: string; status: string; resultUrls?: string[]; reservedNames?: string[]; resultDimensions?: Record<string, { width: number; height: number; durationSeconds?: number }>; posterUrl?: string; usage?: UsageMeta; credit?: CreditMeta; error?: string; errorCode?: string; extra?: { preview?: { videoUrl?: string } } };
     const jobsToCheck = sessions.flatMap((session) => session.messages.flatMap((message) => {
       if (message.role !== "assistant" || message.mode !== "video" || !message.requestId || (message.pendingVideoCount ?? 0) <= 0) return [];
       // Skip requests that are still being polled by the foreground generator (createAndPollVideo);
@@ -5506,7 +5513,7 @@ export function ChatWorkbench() {
             addSessionUsage(pending.sessionId, job.usage);
             applyCreditResult(pending.sessionId, job.credit);
             const mediaSystemNames = job.reservedNames?.[0] ? { [videoUrl]: job.reservedNames[0] } : reserveMediaSystemNames(pending.sessionId, "video", [videoUrl]);
-            appendVideoToAssistantMessage(pending.sessionId, pending.message.requestId ?? "", videoUrl, pending.message.content, mediaSystemNames[videoUrl], job.posterUrl);
+            appendVideoToAssistantMessage(pending.sessionId, pending.message.requestId ?? "", videoUrl, pending.message.content, mediaSystemNames[videoUrl], job.posterUrl, undefined, job.resultDimensions?.[videoUrl]);
             addGeneratedAssets(pending.sessionId, "video", pending.message.content, [videoUrl], undefined, undefined, pending.message.content, mediaSystemNames, job.posterUrl ? { [videoUrl]: job.posterUrl } : {}, {});
             addSessionGeneratedMediaCount(pending.sessionId, 0, 1);
           }
@@ -5976,7 +5983,7 @@ export function ChatWorkbench() {
             continue;
           }
 
-          const statusData = await readJson<{ jobs?: Array<{ status?: string; resultUrls?: string[]; reservedNames?: string[]; posterUrl?: string; error?: string; errorCode?: string; usage?: UsageMeta; credit?: CreditMeta; extra?: { preview?: { videoUrl?: string } } }> }>(pollResponse);
+          const statusData = await readJson<{ jobs?: Array<{ status?: string; resultUrls?: string[]; reservedNames?: string[]; resultDimensions?: Record<string, { width: number; height: number; durationSeconds?: number }>; posterUrl?: string; error?: string; errorCode?: string; usage?: UsageMeta; credit?: CreditMeta; extra?: { preview?: { videoUrl?: string } } }> }>(pollResponse);
           const job = statusData.jobs?.[0];
           const pollData: {
             status?: string;
@@ -6029,7 +6036,7 @@ export function ChatWorkbench() {
             }
 
             const mediaSystemNames = pollData.reservedNames?.[0] ? { [pollData.content.video_url]: pollData.reservedNames[0] } : reserveMediaSystemNames(sessionId, "video", [pollData.content.video_url]);
-            appendVideoToAssistantMessage(sessionId, pendingRequest.id, pollData.content.video_url, videoPrompt, mediaSystemNames[pollData.content.video_url], pollData.content.poster_url, promptDetail);
+            appendVideoToAssistantMessage(sessionId, pendingRequest.id, pollData.content.video_url, videoPrompt, mediaSystemNames[pollData.content.video_url], pollData.content.poster_url, promptDetail, job?.resultDimensions?.[pollData.content.video_url]);
             addGeneratedAssets(sessionId, pendingRequest.mode, videoPrompt, [pollData.content.video_url], undefined, pendingRequest.assetTargetType, pendingRequest.messages.map((message) => message.content).join("\n"), mediaSystemNames, pollData.content.poster_url ? { [pollData.content.video_url]: pollData.content.poster_url } : {}, promptDetail ? { [pollData.content.video_url]: promptDetail } : {});
             addSessionGeneratedMediaCount(sessionId, 0, 1);
             notifyGenerationCompleteOnce(pendingRequest.id, "视频生成已完成");
@@ -6145,6 +6152,11 @@ export function ChatWorkbench() {
     const availableUploadedImages = isSuggestionSend ? [] : activeUploadedImages;
     const availableUploadedFiles = isSuggestionSend ? [] : activeUploadedFiles;
     const submitVideoReferenceMode = submitMode === "video" && supportsVideoReferenceMode(generationModelsForSubmit.video) ? selectedVideoReferenceMode : undefined;
+    // 图片/视频生成：必须有提示词才能发（rawText 含 @ 文本，所以有 @ 时它非空、不会被拦）。
+    if ((submitMode === "image" || submitMode === "video") && !rawText) {
+      showInputTip("请输入提示词！");
+      return;
+    }
     const submitUploadRule = getUploadRule({ mode: submitMode, modelId: submitMode === "general" ? generalModelsForSubmit.chat : submitMode === "agent" ? selectedModel : generationModelsForSubmit[submitMode], transportMode: "local-base64", videoReferenceMode: submitVideoReferenceMode }, uploadRuleOverrides);
     if (availableUploadedImages.length > submitUploadRule.image.maxCount) {
       showInputTip(`当前模型最多支持 ${submitUploadRule.image.maxCount} 张参考图，不能上传更多图片`);
@@ -6175,12 +6187,20 @@ export function ChatWorkbench() {
       showInputTip(`当前模型最多支持 ${submitUploadRule.document.maxCount} 个文件`);
       return;
     }
-    const videoTotalDurationError = validateReferenceTotalDuration("video", uploadedVideoFiles.map((file) => getUploadedMediaDuration(file)));
+    // 视频编辑/延长（仅 Seedance 2.5）：必须有参考视频（提示词已在上面统一拦过）。
+    if (submitVideoReferenceMode === "edit" || submitVideoReferenceMode === "extend") {
+      const modeLabel = submitVideoReferenceMode === "edit" ? "视频编辑" : "视频延长";
+      if (uploadedVideoFiles.length < 1) {
+        showInputTip(`当前是${modeLabel}模式，必须上传一个视频`);
+        return;
+      }
+    }
+    const videoTotalDurationError = validateReferenceTotalDuration("video", uploadedVideoFiles.map((file) => getUploadedMediaDuration(file)), generationModelsForSubmit.video);
     if (videoTotalDurationError) {
       showInputTip(videoTotalDurationError);
       return;
     }
-    const audioTotalDurationError = validateReferenceTotalDuration("audio", uploadedAudioFiles.map((file) => getUploadedMediaDuration(file)));
+    const audioTotalDurationError = validateReferenceTotalDuration("audio", uploadedAudioFiles.map((file) => getUploadedMediaDuration(file)), generationModelsForSubmit.video);
     if (audioTotalDurationError) {
       showInputTip(audioTotalDurationError);
       return;
@@ -6667,7 +6687,7 @@ export function ChatWorkbench() {
         requestId: pendingRequest.id,
         imageReferences: pendingRequest.imageReferences,
         uploadedFiles: availableUploadedFiles.length > 0 ? availableUploadedFiles : undefined,
-        generationMeta: { mode: "video", model: pendingRequest.model, settings: pendingRequest.settings, preserveOriginalInput: pendingRequest.preserveOriginalInput, assetTargetType: pendingRequest.assetTargetType, originalPrompt: pendingRequest.originalPrompt, agentGenerated: pendingRequest.agentGenerated },
+        generationMeta: { mode: "video", model: pendingRequest.model, settings: pendingRequest.settings, preserveOriginalInput: pendingRequest.preserveOriginalInput, assetTargetType: pendingRequest.assetTargetType, originalPrompt: pendingRequest.originalPrompt, agentGenerated: pendingRequest.agentGenerated, videoReferenceMode: pendingRequest.videoReferenceMode },
       });
     }
 
@@ -6966,7 +6986,7 @@ export function ChatWorkbench() {
         requestId: pendingRequest.id,
         imageReferences: pendingRequest.imageReferences,
         uploadedFiles: replayUploadedFiles.length > 0 ? replayUploadedFiles : undefined,
-        generationMeta: generationMode === "image" || generationMode === "video" ? { mode: generationMode, model: pendingRequest.model, settings: pendingRequest.settings, preserveOriginalInput: pendingRequest.preserveOriginalInput, assetTargetType: pendingRequest.assetTargetType, originalPrompt: pendingRequest.originalPrompt, agentGenerated: pendingRequest.agentGenerated, itemPrompts: pendingRequest.agentItemPrompts, itemPromptDetails: pendingRequest.agentItemPromptDetails } : undefined,
+        generationMeta: generationMode === "image" || generationMode === "video" ? { mode: generationMode, model: pendingRequest.model, settings: pendingRequest.settings, preserveOriginalInput: pendingRequest.preserveOriginalInput, assetTargetType: pendingRequest.assetTargetType, originalPrompt: pendingRequest.originalPrompt, agentGenerated: pendingRequest.agentGenerated, itemPrompts: pendingRequest.agentItemPrompts, itemPromptDetails: pendingRequest.agentItemPromptDetails, videoReferenceMode: pendingRequest.videoReferenceMode } : undefined,
       });
     }
     void runGeneration(sessionId, pendingRequest);
@@ -9989,9 +10009,9 @@ export function ChatWorkbench() {
                 {mode !== "agent" && mode !== "general" ? (
                   <>
                     {renderModelMenu()}
-                    {renderImageSettingsMenu()}
+                    {!isVideoEditOrExtendMode ? renderImageSettingsMenu() : null}
                     {mode === "image" ? renderControlMenu("imageCount", selectedImageCount, "同时生成数量", imageCountOptions, selectedImageCount, (value) => setSelectedImageCounts((current) => ({ ...current, [mode]: value })), RiImageAddLine) : null}
-                    {mode === "video" ? renderControlMenu("duration", selectedVideoDuration, "视频时长", currentDurationOptions, selectedVideoDuration, (value) => setSelectedDurations((current) => ({ ...current, video: value })), RiTimeLine) : null}
+                    {mode === "video" && !isVideoEditOrExtendMode ? renderControlMenu("duration", selectedVideoDuration, "视频时长", currentDurationOptions, selectedVideoDuration, (value) => setSelectedDurations((current) => ({ ...current, video: value })), RiTimeLine) : null}
                     {mode === "video" ? renderVideoReferenceModeMenu() : null}
                   </>
                 ) : null}

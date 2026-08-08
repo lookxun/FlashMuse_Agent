@@ -27,6 +27,7 @@ const VIDEO_REFERENCE_IMAGE_RULE_MODELS = new Set([
   "byteplus:video.seedance-2-0",
   "byteplus:video.seedance-2-0-fast",
   "byteplus:video.seedance-2-0-mini",
+  "byteplus:video.seedance-2-5",
   // 快手 Kling：官方要求图片分辨率不小于 300×300px、宽高比 1:2.5~2.5:1；不合规时原文 `Image pixel is invalid`
   "kwaivgi/kling-v3.0-std",
   "kwaivgi/kling-v3.0-pro",

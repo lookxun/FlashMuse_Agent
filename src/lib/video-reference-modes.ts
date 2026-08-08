@@ -1,6 +1,6 @@
-import { RiImage2Line, RiImageCircleLine, RiMultiImageLine } from "react-icons/ri";
+import { RiImage2Line, RiImageCircleLine, RiMultiImageLine, RiVideoAiLine, RiVideoAddLine } from "react-icons/ri";
 import type { IconType } from "react-icons";
-import { isHailuo3VideoModel, type VideoReferenceMode } from "@/lib/upload-rules";
+import { isHailuo3VideoModel, isSeedance25VideoModel, type VideoReferenceMode } from "@/lib/upload-rules";
 
 /**
  * 视频「参考模式」菜单选项的唯一权威（2026-08-03 收敛）。
@@ -34,9 +34,19 @@ const hailuo3ReferenceModeOptions: VideoReferenceModeOption[] = [
   { value: "first_last_frame", label: "首尾帧模式", description: "支持 2 张图片：首帧和尾帧", icon: RiMultiImageLine },
 ];
 
+// Seedance 2.5：参考上限更高（30 图 / 10 视频 / 10 音频）、音频可单独使用。
+const seedance25ReferenceModeOptions: VideoReferenceModeOption[] = [
+  { value: "reference", label: "融合模式", description: "支持 1-30 张图片，1-10 个视频，1-10 个音频（音频可单独使用）", icon: RiImageCircleLine },
+  { value: "first_frame", label: "首帧模式", description: "支持 1 张首帧图片", icon: RiImage2Line },
+  { value: "first_last_frame", label: "首尾帧模式", description: "支持 2 张图片：首帧和尾帧", icon: RiMultiImageLine },
+  { value: "edit", label: "视频编辑", description: "上传参考视频，在提示词里说明如何编辑（如：把@视频1里的人换成…）", icon: RiVideoAiLine },
+  { value: "extend", label: "视频延长", description: "上传参考视频，在提示词里说明如何延长（如：延长@视频1，继续故事）", icon: RiVideoAddLine },
+];
+
 /** 按模型给参考模式菜单选项 —— 唯一权威。 */
 export function getVideoReferenceModeOptions(modelId?: string): VideoReferenceModeOption[] {
   if (isHailuo3VideoModel(modelId)) return hailuo3ReferenceModeOptions;
+  if (isSeedance25VideoModel(modelId)) return seedance25ReferenceModeOptions;
   return videoReferenceModeOptions;
 }
 

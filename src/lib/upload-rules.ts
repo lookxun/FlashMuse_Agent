@@ -30,7 +30,8 @@ export type UploadRule = {
  * ⛔ 禁止各处再手写这个联合类型 —— 工作流原来那份漏了 `last_frame`，
  *    直接导致 Hailuo 3 的尾帧模式在工作流里表达不出来。
  */
-export type VideoReferenceMode = "reference" | "first_frame" | "last_frame" | "first_last_frame";
+// edit/extend 仅 Seedance 2.5 支持：靠 reference_video + 提示词触发词，强制 ratio=adaptive、duration=-1（见 openrouter-video）。
+export type VideoReferenceMode = "reference" | "first_frame" | "last_frame" | "first_last_frame" | "edit" | "extend";
 
 export type UploadRuleContext = {
   mode: UploadRuleMode;
@@ -85,7 +86,17 @@ function isBytePlusImageModel(modelId?: string) {
 }
 
 function isBytePlusVideoModel(modelId?: string) {
-  return modelId === "byteplus:video.seedance-2-0-fast" || modelId === "byteplus:video.seedance-2-0" || modelId === "byteplus:video.seedance-2-0-mini";
+  return modelId === "byteplus:video.seedance-2-0-fast" || modelId === "byteplus:video.seedance-2-0" || modelId === "byteplus:video.seedance-2-0-mini" || modelId === "byteplus:video.seedance-2-5";
+}
+
+// Seedance 2.5 参考能力更强（官方文档 + 实测）：融合模式 30 图 / 10 视频 / 10 音频、单条与总时长各 30 秒、音频可单独。
+// 其余 BytePlus（2.0 系）仍是 9 图 / 3 视频 / 3 音频、15 秒。唯一权威，禁止各处再写死这些数。
+export function isSeedance25VideoModel(modelId?: string) {
+  return modelId === "byteplus:video.seedance-2-5";
+}
+export function getSeedanceReferenceLimits(modelId?: string) {
+  const is25 = isSeedance25VideoModel(modelId);
+  return { image: is25 ? 30 : 9, mediaCount: is25 ? 10 : 3, clipSeconds: is25 ? 30 : 15, totalSeconds: is25 ? 30 : 15 };
 }
 
 function isKlingVideoModel(modelId?: string) {
@@ -119,7 +130,7 @@ export function supportsVideoReferenceMode(modelId?: string) {
 export function getVideoReferenceImageMaxCount(modelId?: string, mode?: UploadRuleContext["videoReferenceMode"]) {
   if (mode === "first_last_frame") return 2;
   if (mode === "first_frame" || mode === "last_frame") return 1;
-  return 9;
+  return getSeedanceReferenceLimits(modelId).image;
 }
 
 /**
@@ -137,7 +148,7 @@ export function getVideoReferenceLimitHint(modelId?: string, mode?: UploadRuleCo
   if (mode === "first_last_frame") return "首尾帧模式只会使用前两张参考图";
   if (mode === "first_frame") return "首帧模式只会使用第一张参考图";
   if (mode === "last_frame") return "尾帧模式只会使用第一张参考图";
-  return "普通参考图模式最多使用九张参考图";
+  return `普通参考图模式最多使用${getSeedanceReferenceLimits(modelId).image}张参考图`;
 }
 
 export function getUploadRuleOverrideKey(context: UploadRuleContext) {
@@ -202,9 +213,10 @@ function getBaseUploadRule(context: UploadRuleContext): UploadRule {
   if (context.mode === "video") {
     if (isBytePlusVideoModel(context.modelId)) {
       const imageMaxCount = getVideoReferenceImageMaxCount(context.modelId, context.videoReferenceMode);
+      const lim = getSeedanceReferenceLimits(context.modelId);
       const referenceMediaRule = context.videoReferenceMode === "first_frame" || context.videoReferenceMode === "first_last_frame" ? {} : {
-        video: kindRule({ enabled: true, maxCount: 3, maxSizeMb: 200, formats: ["mp4", "mov"], minSeconds: 2, maxSeconds: 15, maxTotalSeconds: 15, requiresServerUrl: true }),
-        audio: kindRule({ enabled: true, maxCount: 3, maxSizeMb: 15, formats: ["mp3", "wav"], minSeconds: 2, maxSeconds: 15, maxTotalSeconds: 15, requiresServerUrl: true }),
+        video: kindRule({ enabled: true, maxCount: lim.mediaCount, maxSizeMb: 200, formats: ["mp4", "mov"], minSeconds: 2, maxSeconds: lim.clipSeconds, maxTotalSeconds: lim.totalSeconds, requiresServerUrl: true }),
+        audio: kindRule({ enabled: true, maxCount: lim.mediaCount, maxSizeMb: 15, formats: ["mp3", "wav"], minSeconds: 2, maxSeconds: lim.clipSeconds, maxTotalSeconds: lim.totalSeconds, requiresServerUrl: true }),
       };
       return makeRule({
         image: kindRule({ enabled: true, maxCount: imageMaxCount, maxSizeMb: 30, formats: commonImageFormats }),
@@ -306,7 +318,7 @@ export function validateVideoReferenceCombination(input: {
   if (!isFusionMode) {
     return hasVideoOrAudio ? VIDEO_REFERENCE_MESSAGES.onlyFusionSupportsVideoAudio : undefined;
   }
-  if (input.audioCount > 0 && input.imageCount === 0 && input.videoCount === 0) {
+  if (input.audioCount > 0 && input.imageCount === 0 && input.videoCount === 0 && !isSeedance25VideoModel(input.modelId)) {
     return VIDEO_REFERENCE_MESSAGES.audioNeedsImageOrVideo;
   }
   return undefined;
@@ -326,13 +338,14 @@ export function sumReferenceDurations(durations: Array<number | null | undefined
   return Math.round(total * 10) / 10;
 }
 
-export function validateReferenceTotalDuration(kind: "video" | "audio", durations: Array<number | null | undefined>): string | undefined {
+export function validateReferenceTotalDuration(kind: "video" | "audio", durations: Array<number | null | undefined>, modelId?: string): string | undefined {
   const total = sumReferenceDurations(durations);
-  // 容差走统一的 MEDIA_DURATION_EPSILON_SECONDS(0.2) → 有效上限 15.2，正好等于实测 BytePlus r2v 的真实硬上限。
-  // 必须带容差：我们自己生成的「15秒」视频实际是 15.1 秒，严格 >15 会把它当参考视频时被自己拦死（历史 bug）。
-  if (total > REFERENCE_TOTAL_SECONDS_LIMIT + MEDIA_DURATION_EPSILON_SECONDS) {
+  const limit = getSeedanceReferenceLimits(modelId).totalSeconds;
+  // 容差走统一的 MEDIA_DURATION_EPSILON_SECONDS(0.2) → 有效上限 limit+0.2，正好等于实测 BytePlus r2v 的真实硬上限。
+  // 必须带容差：我们自己生成的「15秒」视频实际是 15.1 秒，严格 >limit 会把它当参考视频时被自己拦死（历史 bug）。
+  if (total > limit + MEDIA_DURATION_EPSILON_SECONDS) {
     const label = kind === "video" ? "视频" : "音频";
-    return `当前${label}加起来是 ${formatSecondsOneDecimal(total)} 秒，超过${label}参考总时长上限 ${REFERENCE_TOTAL_SECONDS_LIMIT} 秒，请减少数量或更换更短的${label}`;
+    return `当前${label}加起来是 ${formatSecondsOneDecimal(total)} 秒，超过${label}参考总时长上限 ${limit} 秒，请减少数量或更换更短的${label}`;
   }
   return undefined;
 }

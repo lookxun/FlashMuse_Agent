@@ -12,7 +12,7 @@ import { getVideoUsageMeta, withChargedVideoUsage, withVideoUsdFallback, type Vi
 import { recordGenerationEvent } from "@/lib/analytics-events";
 import { appendGenerationDiagnosticsLog, summarizeGeneratedReference } from "@/lib/generation-diagnostics-log";
 import { resolvePersistableMediaAssetUrl } from "@/lib/media-assets";
-import { buildMediaAssetRecord, buildUserAssetStateRecord, classifyAsset, type AssetGenerationKind } from "@/lib/media-asset-record";
+import { buildMediaAssetRecord, buildUserAssetStateRecord, classifyAsset, getCommonRatioLabel, getVideoResolutionFromDimensions, type AssetGenerationKind } from "@/lib/media-asset-record";
 import { getOpenRouterVideoTask } from "@/lib/openrouter-video";
 import { enqueueRemoteAssetSave, waitForMediaSaveJob } from "@/lib/media-save-queue";
 import { upsertVideoManifestEntry } from "@/lib/video-manifest";
@@ -72,7 +72,7 @@ export type GenerationJobRow = {
   providerTaskId: string | null;
   reservedNames: string[] | null;
   resultUrls: string[] | null;
-  resultDimensions: Record<string, { width: number; height: number }> | null;
+  resultDimensions: Record<string, { width: number; height: number; durationSeconds?: number }> | null;
   posterUrl: string | null;
   usageJson: Record<string, unknown> | null;
   creditJson: Record<string, unknown> | null;
@@ -592,7 +592,7 @@ function mergeImageCreditMetadata(metadata: Prisma.InputJsonValue | undefined, e
   return metadata && typeof metadata === "object" && !Array.isArray(metadata) ? { ...metadata, ...extra } : extra;
 }
 
-async function markJobSucceeded(id: string, patch: { resultUrls: string[]; reservedNames?: string[]; resultDimensions?: Record<string, { width: number; height: number }>; posterUrl?: string; usage?: unknown; credit?: unknown }) {
+async function markJobSucceeded(id: string, patch: { resultUrls: string[]; reservedNames?: string[]; resultDimensions?: Record<string, { width: number; height: number; durationSeconds?: number }>; posterUrl?: string; usage?: unknown; credit?: unknown }) {
   await prisma.$executeRaw`
     UPDATE "GenerationJob" SET
       "status" = 'succeeded', "resultUrls" = ${jsonParam(patch.resultUrls)}::jsonb, "reservedNames" = ${jsonParam(patch.reservedNames)}::jsonb, "resultDimensions" = ${jsonParam(patch.resultDimensions)}::jsonb,
@@ -961,6 +961,16 @@ async function finalizeVideoJobAsset(job: GenerationJobRow, videoUrl: string, po
   if (!resolved) return;
   const name = job.reservedNames?.[0];
   if (!name) throw new Error(`Missing video name reservation for ${job.requestId}`);
+  // ⭐ 参数一律以「生成出来的真实视频」为准（宽高/时长由 ffmpeg 读到），存进 ratio/resolution/videoDuration
+  //   三个字符串列 —— 这样对话流卡片 / 工作流节点 / 资产库到处显示的都是真实参数，而不是用户请求时选的档。
+  //   尤其 Seedance 2.5 的「视频编辑/延长」：请求档被强制成 adaptive/-1，真实输出跟随源视频，
+  //   只有用真实值反推才不会显示错。读不到真实宽高/时长时才回落请求档 settings。
+  const realRatio = dimensions?.width && dimensions.height ? getCommonRatioLabel(dimensions.width, dimensions.height) : undefined;
+  const realResolution = getVideoResolutionFromDimensions(dimensions?.width, dimensions?.height);
+  const realDuration = dimensions?.durationSeconds && dimensions.durationSeconds > 0 ? `${Math.round(dimensions.durationSeconds)}秒` : undefined;
+  const storeRatio = realRatio ?? settings?.ratio;
+  const storeResolution = realResolution ?? settings?.resolution;
+  const storeDuration = realDuration ?? settings?.duration;
   await prisma.$transaction(async (tx) => {
     const media = await tx.mediaAsset.upsert({
       where: { userId_normalizedUrl: { userId: job.userId, normalizedUrl: resolved.normalizedUrl } },
@@ -968,7 +978,7 @@ async function finalizeVideoJobAsset(job: GenerationJobRow, videoUrl: string, po
         userId: job.userId, origin: "generated", flow, mediaType: "video",
         url: resolved.url, normalizedUrl: resolved.normalizedUrl, originalUrl: resolved.originalUrl,
         posterUrl, thumbnailUrl: posterUrl, name, sourcePrompt,
-        model: job.model ?? undefined, ratio: settings?.ratio, resolution: settings?.resolution, videoDuration: settings?.duration,
+        model: job.model ?? undefined, ratio: storeRatio, resolution: storeResolution, videoDuration: storeDuration,
         generationSettings: (settings ?? undefined) as Prisma.InputJsonValue | undefined,
         width: dimensions?.width, height: dimensions?.height, durationSeconds: dimensions?.durationSeconds,
         conversationId: job.conversationId ?? undefined, messageId: job.messageId ?? undefined,
@@ -981,9 +991,9 @@ async function finalizeVideoJobAsset(job: GenerationJobRow, videoUrl: string, po
         posterUrl: posterUrl ?? undefined,
         thumbnailUrl: posterUrl ?? undefined,
         model: job.model ?? undefined,
-        ratio: settings?.ratio ?? undefined,
-        resolution: settings?.resolution ?? undefined,
-        videoDuration: settings?.duration ?? undefined,
+        ratio: storeRatio ?? undefined,
+        resolution: storeResolution ?? undefined,
+        videoDuration: storeDuration ?? undefined,
         generationSettings: (settings ?? undefined) as Prisma.InputJsonValue | undefined,
         width: dimensions?.width ?? undefined,
         height: dimensions?.height ?? undefined,
@@ -1059,10 +1069,10 @@ export async function runVideoJob(job: GenerationJobRow) {
       //   只落库 creditLedger → 查"这个模型到底扣了多少 / 上游给没给成本"必须连数据库，
       //   上一任就是因此没能验成 H3 的扣费。现在把 usd/扣分/是否用了兜底价一起留痕。
       void appendGenerationDiagnosticsLog({ event: "video-job-charged", requestId: job.requestId, conversationId: job.conversationId ?? undefined, userId: job.userId, mode: "video", model: job.model ?? undefined, provider: job.provider ?? undefined, taskId: providerTaskId, settings: job.settingsJson ?? undefined, extra: { usage, credit, usdFromFallbackPricing: Boolean((usage as { usdFromFallbackPricing?: boolean } | undefined)?.usdFromFallbackPricing) } });
-      await markJobSucceeded(job.id, { resultUrls: [deliveredUrl], reservedNames: job.reservedNames ?? [], posterUrl: saveJob.posterUrl, usage: withChargedUsage(usage, credit), credit });
+      await markJobSucceeded(job.id, { resultUrls: [deliveredUrl], reservedNames: job.reservedNames ?? [], resultDimensions: saveJob.dimensions?.width && saveJob.dimensions.height ? { [deliveredUrl]: { width: saveJob.dimensions.width, height: saveJob.dimensions.height, durationSeconds: saveJob.dimensions.durationSeconds } } : undefined, posterUrl: saveJob.posterUrl, usage: withChargedUsage(usage, credit), credit });
       // ⭐ 与图片同理：工作流画布里那个节点的视频地址直接改成本地地址。
       if (job.workflowId && job.workflowNodeId) {
-        await applyWorkflowJobResultToCanvas({ userId: job.userId, workflowId: job.workflowId, workflowNodeId: job.workflowNodeId, kind: "video", urls: [deliveredUrl], reservedNames: job.reservedNames ?? [], posterUrl: saveJob.posterUrl });
+        await applyWorkflowJobResultToCanvas({ userId: job.userId, workflowId: job.workflowId, workflowNodeId: job.workflowNodeId, kind: "video", urls: [deliveredUrl], reservedNames: job.reservedNames ?? [], posterUrl: saveJob.posterUrl, dimensions: saveJob.dimensions?.width && saveJob.dimensions.height ? { [deliveredUrl]: { width: saveJob.dimensions.width, height: saveJob.dimensions.height, durationSeconds: saveJob.dimensions.durationSeconds } } : undefined });
       }
       void recordGenerationEvent({ userId: job.userId, requestId: job.requestId, kind: "video", creditSource: job.creditSource ?? undefined, model: job.model ?? undefined, provider: job.provider ?? undefined, status: "success" });
       return;

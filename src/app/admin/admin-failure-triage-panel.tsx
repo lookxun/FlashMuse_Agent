@@ -133,7 +133,7 @@ function FailureTrend({ trend }: { trend: FailureTriageData["trend"] }) {
       <div className="mt-3 flex items-center gap-4 text-[12px] text-[#888888]">
         <span className="flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-full bg-[#e05656]" />图片失败</span>
         <span className="flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-full bg-[#f0a020]" />视频失败</span>
-        <span className="text-[#bbbbbb]">（含已归档，看的是「真实发生过多少次」）</span>
+        <span className="text-[#bbbbbb]">（含已归档，看的是「真实发生过多少次」；运维记录保留 31 天，更早的已按清理策略删除）</span>
       </div>
     </>
   );

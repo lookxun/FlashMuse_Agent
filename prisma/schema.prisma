@@ -392,6 +392,42 @@ model ContentModerationEvent {
   @@index([requestId])
 }
 
+// 顶部公告横幅：全局只有一条（用固定 key 单行 upsert，照内容审核那套范式）。
+// content 为空或 enabled=false 时前端不显示。version 由内容 hash 在读取接口现算，
+// 用户点 × 关闭后按 version 记进 localStorage，后台改文案后 version 变化会重新弹给所有人。
+model Announcement {
+  id           String   @id @default(cuid())
+  key          String   @unique @default("global")
+  content      String   @default("")
+  enabled      Boolean  @default(false)
+  currentRunId String?
+  updatedAt    DateTime @updatedAt
+}
+
+// 记录"某用户关闭了某个 version 的公告"，按 (userId, version) 去重。
+// 后台统计当前公告 version 的关闭人数用；改文案后 version 变，旧记录不再计入。
+model AnnouncementDismissal {
+  id        String   @id @default(cuid())
+  userId    String
+  version   String
+  createdAt DateTime @default(now())
+
+  @@unique([userId, version])
+  @@index([version])
+}
+
+// 公告发布历史：每次"开启开关"记一条（createdAt = 开启时刻，不去重）。
+// 后台历史表用它 + 按 version 关联 AnnouncementDismissal 统计各条公告的关闭数量。
+model AnnouncementHistory {
+  id        String   @id @default(cuid())
+  version   String
+  content   String
+  createdAt DateTime @default(now())
+
+  @@index([version])
+  @@index([createdAt])
+}
+
 model GenerationJob {
   id                String    @id @default(cuid())
   userId            String

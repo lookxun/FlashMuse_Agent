@@ -15,6 +15,7 @@ const extraModelLabels: Record<string, string> = {
   "byteplus:video.seedance-2-0-fast": "BytePlus Seedance 2.0 Fast",
   "byteplus:video.seedance-2-0": "BytePlus Seedance 2.0",
   "byteplus:video.seedance-2-0-mini": "BytePlus Seedance 2.0 Mini",
+  "byteplus:video.seedance-2-5": "BytePlus Seedance 2.5",
 };
 
 function getModelLabel(id: string) {
@@ -61,6 +62,7 @@ const bytePlusVideoModels = [
   { label: "Seedance 2.0 Mini", endpointId: "ep-20260713100634-mwp78" },
   { label: "Seedance 2.0 Fast", endpointId: "ep-20260521134040-vf2jf" },
   { label: "Seedance 2.0", endpointId: "ep-20260521133841-nn8bg" },
+  { label: "Seedance 2.5", endpointId: "ep-20260807153703-h48pt" },
 ];
 
 function getOpenRouterOnlyProviderKey(groupTitle: string, item: ModelUsageItem) {
@@ -92,6 +94,7 @@ const modelUsageGroups: ModelUsageGroup[] = [
       { provider: "byteplus", badge: "", modelId: "byteplus:video.seedance-2-0-mini", providerKey: "video.seedance-2-0-mini", bytePlusStatic: bytePlusVideoModels[0] },
       { provider: "byteplus", badge: "", modelId: "byteplus:video.seedance-2-0-fast", providerKey: "video.seedance-2-0-fast", bytePlusStatic: bytePlusVideoModels[1] },
       { provider: "byteplus", badge: "", modelId: "byteplus:video.seedance-2-0", providerKey: "video.seedance-2-0", bytePlusStatic: bytePlusVideoModels[2] },
+      { provider: "byteplus", badge: "", modelId: "byteplus:video.seedance-2-5", providerKey: "video.seedance-2-5", bytePlusStatic: bytePlusVideoModels[3] },
     ],
   },
   {

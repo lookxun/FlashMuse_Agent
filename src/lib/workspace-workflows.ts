@@ -195,6 +195,11 @@ function mergeWorkflowCanvasMedia(existingCanvas: unknown, incomingCanvas: Prism
     if (job?.kind === "video" && job.urls.length > 0 && isRemoteUrl(nextData.videoUrl)) {
       nextData.videoUrl = job.urls[0];
       if (job.posterUrl) nextData.posterUrl = job.posterUrl;
+      const dim = isRecord(job.dimensions) ? job.dimensions[job.urls[0]] : undefined;
+      if (isRecord(dim) && typeof dim.width === "number" && typeof dim.height === "number") {
+        nextData.videoDimensions = { width: dim.width, height: dim.height };
+        if (typeof dim.durationSeconds === "number" && dim.durationSeconds > 0) nextData.durationSeconds = dim.durationSeconds;
+      }
     }
 
     // Restore generated media that the client payload is missing (empty array counts as missing).
@@ -500,7 +505,7 @@ export async function applyWorkflowJobResultToCanvas(input: {
   urls: string[];
   reservedNames?: string[];
   posterUrl?: string;
-  dimensions?: Record<string, { width: number; height: number }>;
+  dimensions?: Record<string, { width: number; height: number; durationSeconds?: number }>;
 }) {
   const localUrls = input.urls.filter((url) => url && !/^https?:\/\//i.test(url));
   if (localUrls.length === 0) return false;
@@ -545,6 +550,13 @@ export async function applyWorkflowJobResultToCanvas(input: {
       } else {
         data.videoUrl = localUrls[0];
         if (input.posterUrl) data.posterUrl = input.posterUrl;
+        // ⭐ 把真实宽高/时长一起落进节点，让节点标题的比例/分辨率/时长立刻显示真实值
+        //   （不用等浏览器播放一次去 onLoadedMetadata 自愈）。
+        const dim = input.dimensions?.[localUrls[0]];
+        if (dim?.width && dim.height) {
+          data.videoDimensions = { width: dim.width, height: dim.height };
+          if (typeof dim.durationSeconds === "number" && dim.durationSeconds > 0) data.durationSeconds = dim.durationSeconds;
+        }
       }
       // 结果已经落地 → 清掉等待态，否则会留一张永久转圈的等待卡。
       delete data.isRunning;

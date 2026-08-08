@@ -20,6 +20,7 @@ export const BYTEPLUS_CONVERSATION_VIDEO_MODEL_KEYS: Record<string, string> = {
   "byteplus:video.seedance-2-0-fast": "video.seedance-2-0-fast",
   "byteplus:video.seedance-2-0": "video.seedance-2-0",
   "byteplus:video.seedance-2-0-mini": "video.seedance-2-0-mini",
+  "byteplus:video.seedance-2-5": "video.seedance-2-5",
 };
 
 export const BYTEPLUS_AGENT_IMAGE_MODEL_KEYS: Record<string, string> = {
@@ -88,6 +89,7 @@ const DEFAULT_MODEL_PROVIDER_PREFERENCES: Record<string, "openrouter" | "byteplu
   "video.seedance-2-0-fast": "byteplus",
   "video.seedance-2-0": "byteplus",
   "video.seedance-2-0-mini": "byteplus",
+  "video.seedance-2-5": "byteplus",
   "agent-image.seedream-4-5": "byteplus",
   "agent-image.seedream-5-0": "byteplus",
   "agent-image.seedream-5-0-pro": "byteplus",
@@ -120,6 +122,7 @@ const DEFAULT_BYTEPLUS_MODEL_SELECTIONS: Record<string, string> = {
   "video.seedance-2-0-fast": "ep-20260521134040-vf2jf",
   "video.seedance-2-0": "ep-20260521133841-nn8bg",
   "video.seedance-2-0-mini": "ep-20260713100634-mwp78",
+  "video.seedance-2-5": "ep-20260807153703-h48pt",
   "agent-image.seedream-4-5": "ep-20260514174622-n9qfb",
   "agent-image.seedream-5-0": "ep-20260514142211-p2wdk",
   "agent-image.seedream-5-0-pro": "ep-20260713101732-q5zvf",
@@ -169,6 +172,7 @@ const BYTEPLUS_ENDPOINT_MODEL_NAMES: Record<string, string> = {
   "ep-20260521133841-nn8bg": "dreamina-seedance-2-0-260128",
   "ep-20260521134040-vf2jf": "dreamina-seedance-2-0-fast-260128",
   "ep-20260713100634-mwp78": "dreamina-seedance-2-0-mini-260615",
+  "ep-20260807153703-h48pt": "dreamina-seedance-2-5-260628",
   "ep-20260514175234-9ssvl": "glm-4-7-251222",
   "ep-20260514175425-cd8jn": "seed-1-8-251228",
   "ep-20260518173102-9mtk6": "seed-2-0-lite-260428",

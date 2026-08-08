@@ -38,6 +38,7 @@ export function getBytePlusProviderKey(modelId: string | null | undefined, sourc
   // 视频（byteplus:video.*）
   if (modelId.startsWith("byteplus:video.")) {
     const prefix = isAgentVideoSource(source) ? "agent-video" : "video";
+    if (modelId.endsWith("seedance-2-5")) return `${prefix}.seedance-2-5`;
     if (modelId.endsWith("seedance-2-0-fast")) return `${prefix}.seedance-2-0-fast`;
     if (modelId.endsWith("seedance-2-0-mini")) return `${prefix}.seedance-2-0-mini`;
     if (modelId.endsWith("seedance-2-0")) return `${prefix}.seedance-2-0`;

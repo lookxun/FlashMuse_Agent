@@ -44,9 +44,9 @@ export function validateMediaUploadMetadata(kind: UploadMediaKind, metadata: Med
   if (kind === "audio") return undefined;
   const { width, height, fps } = metadata;
   if (!width || !height) return "视频尺寸读取失败";
-  if (width < 300 || width > 6000 || height < 300 || height > 6000) return "视频宽高需在 300 到 6000 像素之间";
-  if (width * height < 409600 || width * height > 8295044) return "视频总像素需在 409600 到 8295044 之间";
-  if (width / height < 0.4 || width / height > 2.5) return "视频宽高比需在 0.4 到 2.5 之间";
+  if (width < 300 || width > 6000 || height < 300 || height > 6000) return "视频尺寸太小或太大了，请换一个视频";
+  if (width * height < 409600 || width * height > 8295044) return "视频尺寸太小或太大了，请换一个视频";
+  if (width / height < 0.4 || width / height > 2.5) return "视频画面太宽或太窄了，请换一个视频";
   // Browsers do not expose encoded FPS. Server probes supply it when available.
   if (fps !== undefined && (!Number.isFinite(fps) || fps < 24 || fps > 60)) return "视频帧率需在 24 到 60 FPS 之间";
   if (metadata.videoCodec && !/^(h264|hevc|h265)$/i.test(metadata.videoCodec)) return "视频编码仅支持 H.264 或 H.265";
@@ -68,10 +68,10 @@ export function validateMediaUploadBuffer(buffer: Uint8Array, file: Pick<File, "
 export function validateReferenceVideoDimensions(dimensions?: { width?: number; height?: number }) {
   if (!dimensions?.width || !dimensions.height) return "视频尺寸读取失败";
   const ratio = dimensions.width / dimensions.height;
-  if (ratio < 0.4 || ratio > 2.5) return "视频宽高比需在 0.4 到 2.5 之间";
-  if (dimensions.width < 300 || dimensions.width > 6000 || dimensions.height < 300 || dimensions.height > 6000) return "视频宽高需在 300 到 6000 像素之间";
+  if (ratio < 0.4 || ratio > 2.5) return "视频画面太宽或太窄了，请换一个视频";
+  if (dimensions.width < 300 || dimensions.width > 6000 || dimensions.height < 300 || dimensions.height > 6000) return "视频尺寸太小或太大了，请换一个视频";
   const pixels = dimensions.width * dimensions.height;
-  if (pixels < 409600 || pixels > 8295044) return "视频总像素需在 409600 到 8295044 之间";
+  if (pixels < 409600 || pixels > 8295044) return "视频尺寸太小或太大了，请换一个视频";
   return undefined;
 }
 

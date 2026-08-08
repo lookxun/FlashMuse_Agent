@@ -23,14 +23,15 @@ import { AdminUsersPanel, type AdminUserRow } from "./admin-users-panel";
 import { AdminAccountFeaturesPanel, type AdminAccountFeatureRow } from "./admin-account-features-panel";
 import { AdminGptImageThumbnail } from "./admin-gpt-image-thumbnail";
 import { AdminContentModerationPanel, type ContentModerationEventRow } from "./admin-content-moderation-panel";
+import { AdminAnnouncementPanel } from "./admin-announcement-panel";
 import { getCreditSettings } from "@/lib/credits";
 import { getAdminSystemSettings, getUploadRuleOverrides, isAssetImageModelEnabled, isConversationImageModelEnabled, isConversationVideoModelEnabled } from "@/lib/system-settings";
 import type { IconType } from "react-icons";
-import { RiAlarmWarningLine, RiDashboardLine, RiFileList3Line, RiListSettingsLine, RiServerLine, RiSettingsLine, RiShieldCheckLine, RiShieldKeyholeLine, RiToggleLine, RiUser3Line, RiVipDiamondLine } from "react-icons/ri";
+import { RiAlarmWarningLine, RiDashboardLine, RiFileList3Line, RiListSettingsLine, RiMegaphoneLine, RiServerLine, RiSettingsLine, RiShieldCheckLine, RiShieldKeyholeLine, RiToggleLine, RiUser3Line, RiVipDiamondLine } from "react-icons/ri";
 
 export const dynamic = "force-dynamic";
 
-type AdminTab = "overview" | "users" | "account-features" | "credits" | "records" | "failures" | "content-moderation" | "settings" | "generation" | "upload-rules" | "gpt-image-optimization" | "server";
+type AdminTab = "overview" | "users" | "account-features" | "credits" | "records" | "failures" | "content-moderation" | "announcement" | "settings" | "generation" | "upload-rules" | "gpt-image-optimization" | "server";
 
 const adminNavItems: Array<{ key: AdminTab; label: string; icon: IconType }> = [
   { key: "overview", label: "概览", icon: RiDashboardLine },
@@ -44,12 +45,13 @@ const adminNavItems: Array<{ key: AdminTab; label: string; icon: IconType }> = [
   { key: "upload-rules", label: "上传规则", icon: RiListSettingsLine },
   { key: "gpt-image-optimization", label: "GPT生图优化", icon: RiFileList3Line },
   { key: "content-moderation", label: "内容审核", icon: RiShieldCheckLine },
+  { key: "announcement", label: "顶部公告", icon: RiMegaphoneLine },
   { key: "server", label: "服务器信息", icon: RiServerLine },
 ];
 
 function getAdminTab(value: string | string[] | undefined): AdminTab {
   const tab = Array.isArray(value) ? value[0] : value;
-  if (tab === "users" || tab === "account-features" || tab === "credits" || tab === "records" || tab === "failures" || tab === "content-moderation" || tab === "settings" || tab === "generation" || tab === "upload-rules" || tab === "gpt-image-optimization" || tab === "server") return tab;
+  if (tab === "users" || tab === "account-features" || tab === "credits" || tab === "records" || tab === "failures" || tab === "content-moderation" || tab === "announcement" || tab === "settings" || tab === "generation" || tab === "upload-rules" || tab === "gpt-image-optimization" || tab === "server") return tab;
   return "overview";
 }
 
@@ -449,6 +451,29 @@ export default async function AdminPage({ searchParams }: { searchParams?: Promi
     return (
       <AdminShell adminEmail={currentAdminEmail} activeTab={activeTab}>
         <AdminServerInfoPanel />
+      </AdminShell>
+    );
+  }
+
+  if (activeTab === "announcement") {
+    const rows = await prisma.$queryRaw<Array<{ content: string; enabled: boolean; currentRunId: string | null }>>`SELECT "content", "enabled", "currentRunId" FROM "Announcement" WHERE "key" = 'global' LIMIT 1`.catch(() => [] as Array<{ content: string; enabled: boolean; currentRunId: string | null }>);
+    const content = rows[0]?.content ?? "";
+    const runId = rows[0]?.currentRunId ?? "";
+    const dismissRows = runId
+      ? await prisma.$queryRaw<Array<{ count: bigint }>>`SELECT COUNT(*)::bigint AS count FROM "AnnouncementDismissal" WHERE "version" = ${runId}`.catch(() => [] as Array<{ count: bigint }>)
+      : [];
+    const dismissedCount = Number(dismissRows[0]?.count ?? 0);
+    const historyRows = await prisma.$queryRaw<Array<{ version: string; content: string; createdAt: Date; dismissed: bigint }>>`
+      SELECT h."version", h."content", h."createdAt", COALESCE(d."cnt", 0)::bigint AS dismissed
+      FROM "AnnouncementHistory" h
+      LEFT JOIN (SELECT "version", COUNT(*) AS cnt FROM "AnnouncementDismissal" GROUP BY "version") d ON d."version" = h."version"
+      ORDER BY h."createdAt" DESC
+      LIMIT 200
+    `.catch(() => [] as Array<{ version: string; content: string; createdAt: Date; dismissed: bigint }>);
+    const history = historyRows.map((item) => ({ version: item.version, content: item.content, createdAtLabel: formatDate(item.createdAt), dismissed: Number(item.dismissed) }));
+    return (
+      <AdminShell adminEmail={currentAdminEmail} activeTab={activeTab}>
+        <AdminAnnouncementPanel initialEnabled={rows[0]?.enabled ?? false} initialContent={content} dismissedCount={dismissedCount} history={history} />
       </AdminShell>
     );
   }

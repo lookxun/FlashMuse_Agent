@@ -1083,3 +1083,45 @@ html[data-flashmuse-theme="dark"] .flashmuse-preview-modal .flashmuse-preview-th
     transform: none;
   }
 }
+
+/*
+ * 顶部公告横幅布局修正：主工作台根节点(.flashmuse-workspace-root)及其 aside/main
+ * 写死了 h-screen(100vh)，横幅加在它上面会让总高超过一屏、外层滚动把横幅顶走。
+ * workspace 外层用 flex + h-screen + overflow-hidden 固定视口高度，这里让工作台
+ * 填满"视口减去横幅"的剩余空间(height:100%)而不是死磕 100vh。无公告时剩余空间=整屏，行为不变。
+ */
+.flashmuse-has-announcement .flashmuse-workspace-root,
+.flashmuse-has-announcement .flashmuse-sidebar,
+.flashmuse-has-announcement .flashmuse-main {
+  height: 100% !important;
+  min-height: 0 !important;
+}
+
+/*
+ * 顶部公告走马灯：一行放不下时从右往左匀速滚动、首尾空几格、循环相接。
+ * 位移量 --flashmuse-marquee-shift = -(文案宽度 + 间隔)，正好等于一份副本的长度，
+ * 所以走完一圈时第二份副本刚好落到第一份的起点 → 视觉上完全无缝（组件里渲染了两份）。
+ * 时长由组件按"恒定速度"算出来（长公告不会滚得更快）。
+ * ⛔ 别改成 translateX(-100%)：那样位移量取决于容器宽度，接缝会错开。
+ */
+@keyframes flashmuse-announcement-marquee {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(var(--flashmuse-marquee-shift, -100%));
+  }
+}
+
+.flashmuse-announcement-marquee {
+  animation-name: flashmuse-announcement-marquee;
+  animation-timing-function: linear;
+  animation-iteration-count: infinite;
+}
+
+/* 用户在系统里开了"减少动态效果"时不滚动（可访问性），退回静态左对齐显示。 */
+@media (prefers-reduced-motion: reduce) {
+  .flashmuse-announcement-marquee {
+    animation: none;
+  }
+}
