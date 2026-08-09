@@ -3,6 +3,7 @@
 import dynamic from "next/dynamic";
 import type { ModelName } from "@/lib/models";
 import type { UploadRuleOverrides } from "@/lib/upload-rules";
+import type { PromptLengthOverrides } from "@/lib/prompt-length";
 import type { WorkflowCanvasState, WorkflowNode, WorkflowNodeData, WorkflowEdge, WorkflowNodeKind } from "@/components/workflow-tldraw-canvas-inner";
 
 export type { WorkflowCanvasState, WorkflowNode, WorkflowNodeData, WorkflowEdge, WorkflowNodeKind };
@@ -40,6 +41,7 @@ type WorkflowCanvasProps = {
   enabledImageModelIds?: string[];
   enabledVideoModelIds?: string[];
   uploadRuleOverrides?: UploadRuleOverrides;
+  promptLengthOverrides?: PromptLengthOverrides;
   editModelToggles?: Record<string, boolean>;
   leftSidebarVisible?: boolean;
   leftSidebarToggleLabel?: string;

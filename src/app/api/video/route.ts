@@ -12,6 +12,7 @@ import { enqueueRemoteAssetSave } from "@/lib/media-save-queue";
 import { getMediaSaveStatuses } from "@/lib/media-save-queue";
 import { upsertVideoManifestEntry } from "@/lib/video-manifest";
 import { getUploadRuleOverrides, isAgentVideoModelEnabled, isConversationVideoModelEnabled } from "@/lib/system-settings";
+import { logPromptLengthOverLimit } from "@/lib/prompt-length-server";
 import { CONTENT_POLICY_ERROR_CODE, CONTENT_POLICY_ERROR_MESSAGE, enforceContentPolicy } from "@/lib/content-moderation";
 import { prisma } from "@/lib/prisma";
 import { appendUploadRuleFeedbackLog } from "@/lib/upload-rule-feedback-log";
@@ -789,6 +790,15 @@ export async function POST(request: Request) {
     const moderationPrompt = (typeof body.sourcePrompt === "string" && body.sourcePrompt.trim()) ? body.sourcePrompt.trim() : prompt;
     const policy = await enforceContentPolicy({ prompt: moderationPrompt, userId: user?.id, requestId, kind: "video", source: creditSource?.startsWith("workflow_") ? "workflow" : creditSource === "agent_video_generation" ? "agent" : "conversation", recordEvent: !body.suppressContentModerationRecord });
     if (policy.blocked) return NextResponse.json({ error: { message: CONTENT_POLICY_ERROR_MESSAGE }, errorCode: CONTENT_POLICY_ERROR_CODE, status: "failed" }, { status: 400 });
+    // ⭐ 提示词超字数：**只记日志、不拦**（用户拍板先观察）。唯一实现 lib/prompt-length-server.ts。
+    logPromptLengthOverLimit({
+      context: { mode: "video", modelId: body.model },
+      sourcePrompt: moderationPrompt,
+      requestId,
+      userId: user?.id,
+      model: body.model,
+      creditSource,
+    });
     // 按账号的「解除限制」（后台「帐号功能管理」）。本 handler 下面 5 处创建视频任务共用这一个值，
     // 拿不到用户时回落全局 BYTEPLUS_UNLOCK_LIMITS。
     const unlockLimits = await resolveUnlockLimitsForUser(user?.id);

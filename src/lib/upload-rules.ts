@@ -102,9 +102,17 @@ function isBytePlusImageModel(modelId?: string) {
   return modelId === "byteplus:conversation-image.seedream-4-5" || modelId === "byteplus:conversation-image.seedream-5-0" || modelId === "byteplus:conversation-image.seedream-5-0-pro";
 }
 
-function isBytePlusVideoModel(modelId?: string) {
+export function isBytePlusVideoModel(modelId?: string) {
   return modelId === "byteplus:video.seedance-2-0-fast" || modelId === "byteplus:video.seedance-2-0" || modelId === "byteplus:video.seedance-2-0-mini" || modelId === "byteplus:video.seedance-2-5";
 }
+
+/** BytePlus Seedance **2.0 系**（2.0 / Fast / Mini）—— 同一代、能力一致，后台按一行配置。⛔ 不含 2.5。 */
+export function isSeedance20FamilyVideoModel(modelId?: string) {
+  return isBytePlusVideoModel(modelId) && !isSeedance25VideoModel(modelId);
+}
+
+/** 后台面板里代表 2.0 系那一行的模型 id（唯一权威，⛔ 别在别处写这个字符串）。 */
+export const SEEDANCE_20_FAMILY_MODEL_ID = "byteplus:video.seedance-2-0";
 
 // Seedance 2.5 参考能力更强（官方文档 + 实测）：融合模式 30 图 / 10 视频 / 10 音频、单条与总时长各 30 秒、音频可单独。
 // 其余 BytePlus（2.0 系）仍是 9 图 / 3 视频 / 3 音频、15 秒。唯一权威，禁止各处再写死这些数。

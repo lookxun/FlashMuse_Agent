@@ -25,7 +25,7 @@ import { AdminGptImageThumbnail } from "./admin-gpt-image-thumbnail";
 import { AdminContentModerationPanel, type ContentModerationEventRow } from "./admin-content-moderation-panel";
 import { AdminAnnouncementPanel } from "./admin-announcement-panel";
 import { getCreditSettings } from "@/lib/credits";
-import { getAdminSystemSettings, getUploadRuleOverrides, isAssetImageModelEnabled, isConversationImageModelEnabled, isConversationVideoModelEnabled } from "@/lib/system-settings";
+import { getAdminSystemSettings, getPromptLengthOverrides, getUploadRuleOverrides, isAssetImageModelEnabled, isConversationImageModelEnabled, isConversationVideoModelEnabled } from "@/lib/system-settings";
 import type { IconType } from "react-icons";
 import { RiAlarmWarningLine, RiDashboardLine, RiFileList3Line, RiListSettingsLine, RiMegaphoneLine, RiServerLine, RiSettingsLine, RiShieldCheckLine, RiShieldKeyholeLine, RiToggleLine, RiUser3Line, RiVipDiamondLine } from "react-icons/ri";
 
@@ -400,6 +400,7 @@ export default async function AdminPage({ searchParams }: { searchParams?: Promi
       <AdminShell adminEmail={currentAdminEmail} activeTab={activeTab}>
         <AdminUploadRulesPanel
           initialUploadRuleOverrides={getUploadRuleOverrides()}
+          initialPromptLengthOverrides={getPromptLengthOverrides()}
           enabledImageModelIds={frontendImageGenerationModels.filter((model) => isConversationImageModelEnabled(model.id) || isAssetImageModelEnabled(model.id)).map((model) => model.id)}
           enabledVideoModelIds={videoGenerationModels.filter((model) => isConversationVideoModelEnabled(model.id)).map((model) => model.id)}
         />

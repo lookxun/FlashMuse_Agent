@@ -142,6 +142,38 @@
 | 模型启用/供应商偏好 | `MODEL_PROVIDER_PREFERENCES` | `DEFAULT_MODEL_PROVIDER_PREFERENCES` + `isBytePlusPreferenceEnabled` / `isConversationVideoModelEnabled` / `isAgentVideoModelEnabled` | 模型开关 |
 | BytePlus 端点 | `BYTEPLUS_MODEL_SELECTIONS` | `DEFAULT_BYTEPLUS_MODEL_SELECTIONS` + `BYTEPLUS_ENDPOINT_MODEL_NAMES` | 模型开关 |
 | 编辑功能候选链开关 | `EDIT_MODEL_TOGGLES` | `EDIT_/HD_/VIDEO_EDIT_FUNCTION_MODEL_CHAIN` + `DEFAULT_EDIT_MODEL_TOGGLES` | 模型开关 |
+| **提示词字数上限**（2026-08-09 新增）| `.env.local` 的 **`PROMPT_LENGTH_OVERRIDES`** | **`src/lib/prompt-length.ts`**：`getPromptLengthOverrideKey` / `getDefaultPromptMaxLength` / `getPromptMaxLength` | 上传规则（「文字」列）|
+
+### ⭐ 提示词字数上限那条链（2026-08-09 新增，改它之前把这 4 点看完）
+
+1. **和上传数量是两套 override，粒度不同**：上传数量的 key 是「模型 + 参考模式」，
+   字数的 key **只有模型**（`getPromptLengthOverrideKey` **故意不看 `videoReferenceMode`**）——
+   这正是用户要求的「**一个模型只要一个开关**，其它模式跟随」。
+   ⛔ 想合成一个 map 就做不出这个语义。
+2. **2.0 / Fast / Mini 共用一条**（同代同能力，走 `isSeedance20FamilyVideoModel` + `SEEDANCE_20_FAMILY_MODEL_ID`），
+   ⛔ **2.5 独立**（守住上面那条"key 必须带版本号"的坑）。
+3. **默认值按模型给**：`MODEL_DEFAULT_PROMPT_MAX_LENGTH` = 2.0 系 **3500** / 2.5 **14500** / 其余 **2000**。
+   ⭐⭐ **后台面板显示的默认值必须走 `getDefaultPromptMaxLength`** —— 面板显示 2000 而实际生效 14500 的话，
+   管理员碰一下开关就把 2.5 静默砍到 2000（与"共用 key"同款伤害）。
+   ⭐ 开关关掉 = 回落到**该模型自己的默认值**，⛔ 不是回落到 2000、也不是"不限字数"。
+4. **下发链路**：`/admin/api/upload-rules`（GET/POST，**两份 override 各自可选**，
+   ⛔ 没传的不许当 `{}` 写回，否则改一半清空另一半）→ `/api/model-availability` 顺带下发 →
+   `chat-workbench.tsx` 存 state → 作为 prop 传进工作流画布 → 工作流用
+   `getWorkflowNodePromptMaxLength(node, overrides)`（⭐ **普通函数不是 Hook**，
+   因为 `WorkflowSelectedNodeOverlay` 有提前 return，加 Hook 会 React #310 崩画布）。
+   ⚠️ 工作流的口径是「**输入框 + 连接的文本节点合计**」，不是只算输入框。
+5. ⭐⭐ **前端拿到这个上限之后的行为（2026-08-09 第五十九次会话定型，⛔ 别改回去）= 「超字数不删字」**：
+   - **任何输入路径都不许 `slice(0, maxLength)`**（打字/粘贴/插 @名/光标定位全部不截断），
+     只保留 `PROMPT_MAX_LENGTH_CEILING = 99999` 的**安全网**（防粘 50 万字把 contenteditable 和草稿存库搞崩）；
+     ⭐ 快捷编辑 `<textarea>` 的**原生 `maxLength` 也去掉了**（它会让粘贴被浏览器静默砍）。
+   - 超限的表达只有三样：**计数器变红**（`PromptLengthCounterRow`，输入框里独立一行、居右灰字 11px）、
+     **发送/生成按钮灰掉 + 黑底提示框**「当前模型提示词只支持XXXX字！」（`BlackHoverTooltip`）、
+     **真按下去时红字拦住**（`sendMessage` / `generateCharacterImage` / `submitQuickEdit` / 工作流 `runFromPromptBox` 各一道）。
+   - **服务端只记日志不拦**：`src/lib/prompt-length-server.ts` 的 `logPromptLengthOverLimit()`，
+     `/api/image` + `/api/video` 共用，喂 **`sourcePrompt`（用户原话）**，事件 `prompt-length-over-limit`。
+     ⭐ 判据 `grep -c '"prompt-length-over-limit"'`，观察够了再决定要不要开真拦截。
+   - ⚠️ `MAX_DRAFT_INPUT_LENGTH = 2000`（chat-workbench-core）现在**只剩注释在引用**，已不是任何地方的上限。
+
 
 ⛔⛔ **三个必踩的坑（都真发生过）**：
 

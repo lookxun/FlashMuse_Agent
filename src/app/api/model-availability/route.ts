@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { bytePlusVideoGenerationModels, frontendConversationModels, frontendImageGenerationModels, videoGenerationModels } from "@/lib/models";
-import { getAdminSystemSettings, getUploadRuleOverrides, isAgentImageModelEnabled, isAgentVideoModelEnabled, isAssetImageModelEnabled, isConversationImageModelEnabled, isConversationVideoModelEnabled, isGeneralTextModelEnabled, isTextModelEnabled } from "@/lib/system-settings";
+import { getAdminSystemSettings, getPromptLengthOverrides, getUploadRuleOverrides, isAgentImageModelEnabled, isAgentVideoModelEnabled, isAssetImageModelEnabled, isConversationImageModelEnabled, isConversationVideoModelEnabled, isGeneralTextModelEnabled, isTextModelEnabled } from "@/lib/system-settings";
 
 export const runtime = "nodejs";
 
@@ -19,6 +19,8 @@ export async function GET() {
     agentImageModels: frontendImageGenerationModels.filter((model) => isAgentImageModelEnabled(model.id)).map((model) => model.id),
     agentVideoModels: [...videoGenerationModels, ...bytePlusVideoGenerationModels].filter((model) => isAgentVideoModelEnabled(model.id)).map((model) => model.id),
     uploadRuleOverrides: getUploadRuleOverrides(),
+    // 提示词字数上限（按模型）。⭐ 和 uploadRuleOverrides 搭同一趟车下发，不新增请求。
+    promptLengthOverrides: getPromptLengthOverrides(),
     editModelToggles: getAdminSystemSettings().editModelToggles,
   });
 }

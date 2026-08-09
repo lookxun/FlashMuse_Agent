@@ -2,7 +2,248 @@
 
 > 历史 END-OF-SESSION 记录都在 `historical-handover-docs-last-used-2026-07-21/05-next-actions.md`（很长）。这里只留当前有效待办。
 
-## ✅ 当前状态（2026-08-09 第五十七次会话末）：**测试服 `v1.0.0.92`、正式服 `v1.0.0.90`**
+## ✅ 当前状态（2026-08-09 第五十九次会话末）：**本地 = 测试服 `v1.0.0.94`（未提交）；正式服 `v1.0.0.90`**
+
+| | 版本 / 状态 |
+|---|---|
+| 本地 = 测试服 | **`v1.0.0.94`** —— 本次**整批推**，「版本号一样 = 代码一样」这条约定**已修复** |
+| 正式服 / GitHub | `v1.0.0.90` —— **v91 / v92 / v93 / v94 全都没上正式服** |
+| ⚠️ 未提交 | 本地这一整批（含 v91~v94 的全部改动）**还没 commit** |
+
+⭐ 本次 = **提示词「超字数不删字」全套改造**（细节在 `CHANGELOG_2.md` 顶条五节）：
+① 去掉 5 类静默截断，只留 99999 安全网；② 计数器**独立占一行、居右、11px 灰字**（对话流/工作流加高一行，资产库不加高）；
+③ 5 个按钮超限灰掉 + **通用黑底提示框**「当前模型提示词只支持XXXX字！」；④ 发送入口 4 处兜底；
+⑤ 服务端 `/api/image`+`/api/video` **只记日志不拦**（`prompt-length-over-limit`）；
+⑥ 顺带把 `BlackHoverTooltip` 收敛成 `src/components/black-hover-tooltip.tsx`（唯一实现，core 里再导出）。
+
+⛔⛔ **本次按用户要求「不要测试」→ 测试服一次界面都没走过**，只验了活着
+（`/api/health` = v94、`x-app-version` = v94、`/api/announcement` 带 no-store、外网 8080 = 200）。
+
+---
+
+## 🎯🎯🎯 待办 1（最优先）：真走界面验 v94 这一批
+
+⭐ `AGENTS.md` 铁律：**只测纯函数/接口不作数**。4 个落点 × 5 件事：
+
+| 落点 | 要验 |
+|---|---|
+| 对话流输入框 | ① 计数器只在有内容时出现、始终占一行不跳高 ② 超限数字变红 ③ **粘贴长文一个字都不丢** ④ 发送键灰掉 ⑤ hover 出黑底「当前模型提示词只支持XXXX字！」 |
+| 资产库生成框 | 同上；⭐ 额外确认**卡片总高没变**（只是输入区往下移一行）；失败卡上的「重新生成」也要灰 |
+| 工作流节点 | 同上；⭐ 计数器显示的是**合计**（输入框 + 连接的文本节点）；回车超限有红字 |
+| 图片/视频快捷编辑 | 同上；⭐ 重点验**粘贴**（原生 `maxLength` 已去掉，以前粘贴会被浏览器静默砍） |
+
+⭐ 顺带核对：切换模型时上限跟着变（2.0 系 3500 / 2.5 = 14500 / 其余 2000）；后台「上传规则 → 文字」列改数字后前台生效。
+⚠️ 测试号一律 `12424740@qq.com` / `dragonstar`；入口 `http://101.37.129.164:8080/`。
+
+## 🎯🎯 待办 2：commit + v91~v94 整批上正式服（正式服目前还带着公告缓存 bug）
+
+- ⚠️ 顺序：**先做完待办 1 → 用户拍板 → 再上正式服**（⛔ 别把一次界面都没测过的代码推正式服）。
+- 无 Prisma 迁移、无 compose/nginx 改动。
+- ⭐ 上正式服后必须核对：`curl -sI https://main.venusface.com/api/announcement` **有 Cache-Control**；
+  后台「上传规则」页 2.0 那行 9/3/3、2.5 那行 30/10/10、**「文字」列 2.5 显示 14500**；
+  三个 2.5 开关（视频生成=开、**Agent=关**、快捷编辑四选=开）。
+- ⚠️ **要提醒用户强刷一次（Ctrl+F5）** —— 他链路上那份旧公告副本可能还没过期。
+- ⛔ 公告相关的功能测试全部跳过（正式服禁测公告）。
+
+## 🎯🎯 待办 3：「间断性卡死」bug —— **证据链已完整，可以开始静态定位了**
+
+见下方「上一状态」那一节里的完整证据（三条 client 诊断事件 + 服务端同 requestId 是 `image-job-success`）。
+⭐⭐ 最硬的线索 = `byLoadingSessionIds:false` + `pendingRequestCount:0`（**死锁态**）。
+→ 下一步是**纯读代码的静态定位**：找出「哪条路径会让会话被移出 loading 集合但没把 `messagesLoaded` 置 true」。
+⛔ 定位到之前仍然只许加日志、不许改行为。
+
+## 🎯 待办 4：观察 `prompt-length-over-limit` 的真实规模，再决定要不要开服务端拦截
+
+- 判据一行：`grep -c '"prompt-length-over-limit"' .runtime/generation-diagnostics-log.jsonl`（两服都看）。
+- 用户当时选的是「先只记日志观察几天」；量很小 = 可以考虑真拦，量大 = 说明某个模型默认值配小了，先调默认值。
+
+## 🎯 待办 5：老待办原样保留
+
+Agent 的 `agent-video.seedance-2-0-mini` 死配置（等用户拍板）、「视频延长」变长语义未验到（要一段**真实拍摄**的 8~10 秒短片）、
+「失败趋势（近 30 天）」等数据自然长满（约 3 周）、M040 / M037 / M032 等 —— 见下方各节。
+
+## ✅ 本次已查清、用户拍板「不用改」的事（⛔ 别再重复排查）
+
+**对话流视频卡「一直显示资产保存中」** —— **不是 bug，是本地环境**：
+BytePlus 出片成功，但**本地跨境下载超时失败 12 次**（`This operation was aborted`），
+且**本地 dev server 10:25 就停了**（worker 只跑在 app 进程里）→ job 冻在 `running/attempts=300`。
+⭐ 机制、线上为什么不会这样、以及"本地不用改库、起 dev 就会自愈"的完整结论写在 `CHANGELOG_2.md` 顶条第四节。
+⭐ 存盘队列在 **`.runtime/media-save-jobs.json`**（不在数据库），本地 203 条里只有这 1 条失败。
+
+---
+
+## ⏪ 上一状态（2026-08-09 第五十八次会话末）：**本地 `v1.0.0.93` + 未提交改动；测试服 `v1.0.0.93`（只有一半）；正式服 `v1.0.0.90`**
+
+| | 版本 / 状态 |
+|---|---|
+| 本地 | `v1.0.0.93` + **一批未提交改动**（按模型字数 + 图标收敛 + 表格改列）；`tsc` 0、`npm test` 15/15 |
+| 测试服 | `v1.0.0.93`，**只含 `src/proxy.ts` 的 no-store 修复**（部署时只 scp 了 proxy.ts + app-version.ts）|
+| 正式服 / GitHub | `v1.0.0.90` —— **v91 / v92 / v93 全都没上正式服** |
+
+⛔⛔ **注意：本地 v93 ≠ 测试服 v93**，本次破坏了「版本号一样 = 代码一样」这条核心约定。
+⭐ **下次部署前必须先 `node scripts/bump-version.mjs`（→ v94）**，⛔ 别再往 v93 上叠代码。
+
+⭐ 本次干了三件事，细节在 `CHANGELOG_2.md` 顶条（八节）：
+① **修掉正式服公告「刷新就变回旧文案」** —— 根因是 `/api/announcement`、`/api/auth/me` 的响应
+**一个 `Cache-Control` 都没有**，被用户链路上的透明代理缓存了（已在 `src/proxy.ts` 统一加 no-store，
+新立铁律在 `AGENTS.md` 最顶部）；
+② **提示词字数上限做成「按模型可配」**（后台「上传规则」页新增「文字」列，2.0 系默认 3500、2.5 默认 14500）；
+③ 顺手把**存了三份且已漂移**的「模型 → 图标」映射收敛成 `src/components/model-icon.tsx`。
+
+---
+
+## ✅【已完成，2026-08-09 第五十九次会话做掉了】原待办 1：前端「字数拦截」改造
+
+> ⛔⛔ **别再照下面这份计划动手** —— 已经全部实现并部署测试服 v1.0.0.94。
+> ⭐ 实际做法与用户后来追加的口径（计数器**独立占一行**而不是浮在右上角、
+> 黑底提示框文案「当前模型提示词只支持XXXX字！」、服务端**只记日志不拦**）见
+> `CHANGELOG_2.md` 顶条第一~二节，以及上面的「待办 1：真走界面验 v94 这一批」。
+> ⭐ 下面这一段**只作为历史留档**（记录当时是怎么把行号查好、准备怎么改的）。
+> ⚠️ 与最终实现的两处差异：① Q1 用户选的是**加高一行**（不是留白 76px 也不是半透明浮层）；
+> ② `getPromptLengthTipText` / `getWorkflowPromptLengthTipText` 最终是**删掉**而不是改口吻。
+
+## 🗄️（历史留档）原待办 1 的实施计划：前端「字数拦截」改造
+
+🗣️ **用户已拍板的三条口径（⛔ 别再自己发明方案）**：
+1. **学即梦：不删字** —— 打字/粘贴都允许超出上限，字**全留在框里**让用户自己删；超了报错并**拦住发送**；
+2. **要计数器**，但**只在用户输入（框里有内容）时才显示**；位置 **输入框内右上角**、**灰字**、**字号比正文小一点**；
+3. **超限时发送/生成按钮灰掉禁用 + 悬浮（title）说明原因**。
+
+⭐ **参考对象即梦的实测数据**（我未登录实测出来的，可直接引用，⛔ 别再花时间重测）：
+上限 20000；**不截断**（粘 25000 字全留）；**完全没有计数器**；超限弹**顶部居中 toast**
+「文字描述超过了 20000 字符」约 3 秒消失；**发送按钮不禁用**；输入框固定 96px 高 + 自己滚动。
+⚠️ 即梦 `/ai-tool/generate` 要登录、**没测到**，那里可能另有表现 → 可问用户。
+
+### 🗳️ 先问用户这两个问题（⛔ 上一轮已经问了但会话结束，没拿到答复）
+
+- **Q1 计数器留白**：计数器浮在「输入框内右上角」会压到第一行文字（我们的文字从左上开始且会换行）。
+  - **A（上一轮我推荐的）**：给编辑区留一条固定右侧留白（对话流约 76px、工作流节点约 60px），
+    计数器浮在留白里 → 永不重叠、不跳动；代价是输入区窄 76px。
+  - **B**：不留白，计数器半透明浮在文字上 → 不占宽度，但长文第一行会被盖住一点。
+- **Q2 服务端要不要拦**：前端不截断后，超限文本**真的可能到达后端**（切模型后草稿超限、程序化提交、直调接口）。
+  - ① 直接拦（`/api/image`、`/api/video` 按 `getPromptMaxLength` 校验 `sourcePrompt`，超了返回明确红字）
+  - ② 先只记诊断日志不拦，观察几天再开
+  - ③ 不动
+
+### 实施计划（行号都已查好，直接按这个改）
+
+**① 文案与判定收敛到 `src/lib/prompt-length.ts`（唯一权威，⛔ 别在组件里写）**
+新增/改写：`isPromptOverLimit(text, maxLength)`（按 `Array.from` 数字符）、
+`formatPromptCounter(used, maxLength)` → `"1234 / 3500"`、
+`getPromptOverLimitTipText(used, maxLength)` → 「提示词已超过 3500 字（当前 3712 字），请删减后再发送」、
+`getWorkflowPromptOverLimitTipText(...)` → 「输入框和连接文本合计已超过 N 字…请删减后再生成」。
+⭐ 现有的 `getPromptLengthTipText` / `getWorkflowPromptLengthTipText` 是"已截断"口吻，要改成"已超出"。
+
+**② 去掉 5 处静默截断**（保留一个 `PROMPT_MAX_LENGTH_CEILING = 99999` 的**安全网**，
+超过它才硬截断 —— 防止粘 50 万字把 contenteditable 和"草稿存库"搞崩）
+
+| 文件 | 位置 | 改法 |
+|---|---|---|
+| `src/lib/chat/chat-workbench-core.tsx` | `PlainMentionEditor.commitInput`（约 L5378）| 不再 `slice(0,maxLength)`，只在超 99999 时截断；超限仍调 `onLimit()`（`showInputTip` 自带去重，不会刷屏）|
+| `src/components/chat-workbench.tsx` | `setActiveDraftInput` / `setActiveDraftInputWithMentionCards`（约 L2071-2079）| 去掉 slice |
+| 同上 | `addActiveUploadedImages`（约 L2314）/ `addActiveUploadedMediaReference`（约 L2359）| 去掉 slice（插 @名 绝不能删用户的字）|
+| 同上 | `insertAssetReference`（约 L7705）/ `insertCharacterReferenceText`（约 L7718）+ 4 处 `focusEditorAt(Math.min(max, …))` | 去掉上限钳制，光标按真实长度定位 |
+| `src/components/workflow-tldraw-canvas-inner.tsx` | `WorkflowMentionEditor.commitInput`（约 L6083）+ `insertReferenceText`（约 L6367）| 同上 |
+| 同上 | 快捷编辑 `<textarea maxLength=…>`（约 L2731）| **去掉原生 `maxLength`**（它会让粘贴被浏览器静默砍掉）→ 受控 + 超限报错 |
+
+**③ 计数器：新增 `src/components/prompt-length-counter.tsx`（三处共用，⛔ 别各写一份）**
+- 显示时机：**框里有内容才渲染**（空的时候完全不出现）；超限时**强制显示**且数字变红 `text-red-500`。
+- 样式：`absolute right-3 top-2 z-20 pointer-events-none text-[11px] text-[#aaaaaa]`
+  （项目里现有的计数类文本是 `text-[12px] text-[#888]`，见 `chat-workbench.tsx:9225`「已选 N 项」，再降一档）。
+- 落点：对话流 **`chat-workbench.tsx:9832` 那个 `<div className="relative">`**（已有 relative；
+  ⚠️ 里面已有 placeholder `absolute left-2 top-1 z-20` 和 @资产选择器 `absolute bottom-full left-2 z-50`，
+  放右上角不冲突但 z-index 要 ≥ 20）；资产库生成框同理；
+  工作流放 **`WorkflowMentionEditor` 内部约 L6129 的 `<div className="relative">`**（贴编辑区，别贴整张卡片）。
+- ⭐ 工作流显示的是**合计**（输入框 + 连接的文本节点），因为限制本身是合计。
+
+**④ 按钮灰掉 + title**
+
+| 按钮 | 位置 | 改法 |
+|---|---|---|
+| 对话流发送 | `chat-workbench.tsx:10030`（disabled 表达式在 **L10033**）| 追加 `\|\| isPromptOverLimit`；**新加 `title`**（现在只有 `aria-label`，没有 title）|
+| 资产库生成图片 | `chat-workbench.tsx:10280`（disabled = `!characterGeneratePrompt.trim() \|\| isCharacterGenerateInputDisabled`）| 同上；⚠️ 另有一个预览区中央的次级触发在 **L10123**（**目前无 disabled**，也要一起处理）|
+| 工作流节点运行 | `workflow-tldraw-canvas-inner.tsx:6779`（`disabled={!canRun}`）；`canRun` 定义在 **L6302** | `canRun` 追加 `&& !overLimit`；按钮加 title |
+| 快捷编辑发送 | 约 L2731 附近 | 同上 |
+
+**⑤ 发送入口再兜一道**（防回车 / 程序化调用绕过按钮）
+- `sendMessage`（`chat-workbench.tsx:6150`）：在「请输入提示词！」那条守卫（**L6163**）**之后**插一条超限守卫 → `showInputTip` + return。
+  ⚠️ 注意 `rawText` 为空那条守卫**只对 image/video 生效**，agent/general 靠按钮 disabled 拦。
+- `generateCharacterImage`（`chat-workbench.tsx:7873`）：同样加一条。
+- `runFromPromptBox`（`workflow-tldraw-canvas-inner.tsx:6321`，第一句就是 `if (!canRun) return;`）：靠 `canRun` 覆盖；
+  ⭐ 工作流原有的「连线时拦」（约 L4103/L4120/L4147/L4176/L4226）和「跑之前校验」（约 L4403/L4548/L4652）**原样保留**当兜底。
+
+**⑥ 验证**
+1. 扩写 `.runtime/verify-prompt-length.ts`：加 `isPromptOverLimit` / `formatPromptCounter` / 三句文案，
+   边界必测「**正好等于上限不算超限**、超 1 字算、emoji 算 1 个字、安全网 99999」。
+2. `tsc` + `npm test` + 改动文件 eslint 零新增。
+3. ⭐⭐ **必须真走界面**（`AGENTS.md` 铁律）：bump → 部署测试服 → 在
+   **对话流 / 资产库生成 / 工作流节点 / 图片视频快捷编辑** 这 4 处各验 5 件事 ——
+   计数器出现时机、超限变红、**粘贴长文不丢字**、发送键灰掉、hover 有说明。
+   ⛔ 只测纯函数/接口不作数。
+
+## 🎯🎯 待办 2：v91 + v92 + v93 上正式服（正式服目前还带着公告 bug）
+
+⚠️ 顺序：**先把待办 1 做完（或用户明确说先只上缓存修复）→ bump → 部署测试服 → 再上正式服**。
+⛔ 别直接把本地这批未提交代码推正式服（它一次界面都没测过）。
+
+- 这批包含：v91/v92（后台补齐 Seedance 2.5）+ v93（API no-store 修复）+ 本地未提交的字数/图标改动。
+- 无 Prisma 迁移、无 compose/nginx 改动。
+- ⭐ 上正式服后必须核对：`curl -sI https://main.venusface.com/api/announcement` **有 Cache-Control**；
+  后台「上传规则」页 2.0 那行 9/3/3、2.5 那行 30/10/10；三个 2.5 开关（视频生成=开、**Agent=关**、快捷编辑四选=开）。
+- ⚠️ **要提醒用户强刷一次（Ctrl+F5）** —— 他链路上那份旧公告副本可能还没过期。
+- ⛔ 公告相关的功能测试全部跳过（正式服禁测公告）。
+
+## 🎯🎯 待办 3：「间断性卡死」bug —— **证据链已完整，可以开始静态定位了**
+
+2026-08-09 在测试服 `upload-diagnostics-log.jsonl` 里第一次抓到全套现形：
+
+```
+client-chat-send-suspicious-session-shape
+  {"sessionId":"54ccae5d-…","generationMode":"image","messagesLoaded":false,
+   "localMessageCount":1,"titleLength":3,"requestId":"9222941f-bd71-4bdd-ad16-dc3ddaf35cf9"}
+
+client-chat-session-stuck-loading
+  {"sessionId":"54ccae5d-…","byMessagesLoadedFalse":true,"byLoadingSessionIds":false,
+   "localMessageCount":0,"titleLength":3,"pendingRequestCount":0}
+
+client-chat-put-session-shape-suspicious  ×25
+  {"activeSessionId":"54ccae5d-…","count":1,"sessions":[{"messageCount":1~2,"titleLength":19}]}
+```
+
+而服务端 `generation-diagnostics-log.jsonl` 里同一个 requestId 是 **`image-job-success`**（图真的生成成功、真的扣了积分），
+只是前端永远停在「加载中…0%」、消息一条没存。
+
+⭐⭐ **最硬的线索是 `byLoadingSessionIds:false` + `pendingRequestCount:0`** ——
+这个会话**既没加载完、又不在"正在加载"集合里、也没有在飞的请求** = **死锁态**。
+→ 下一步是**纯读代码的静态定位**：找出「哪条路径会让会话被移出 loading 集合但没把 `messagesLoaded` 置 true」
+（abort / 提前 return / 竞态覆盖）。⛔ 定位到之前仍然只许加日志、不许改行为。
+⭐ 修好后**顺带要治第二个伤**：这个状态下的自动保存会用 `messageCount:1` 的空快照去 PUT
+（25 条 `put-session-shape-suspicious` 就是它），**这才是"消息没存"的直接原因**。
+
+## 🎯 待办 4：Agent 的 `agent-video.seedance-2-0-mini` 死配置（等用户拍板）
+
+它在 `DEFAULT_MODEL_PROVIDER_PREFERENCES` 和 `DEFAULT_BYTEPLUS_MODEL_SELECTIONS` 里都有，
+但**不在 `BYTEPLUS_AGENT_VIDEO_MODEL_KEYS` 里** → 那两条配置目前完全不生效。
+⛔ 往 KEYS 里加会让 Mini **立刻**对 Agent 生效（偏好表里默认 byteplus）= 行为变更，所以没动，代码里已写注释钉住。
+
+## 🎯 待办 5：「视频延长」的**语义**（输出比源视频长）仍未验到
+
+功能端到端已验通（30 秒源视频真出片、扣 581 分、无红字），但"变长"没验到：
+30 秒源视频本身就是上限（选错素材）；8 秒那次用 ffmpeg `testsrc2` + `sine` 合成素材，被上游**成品审核**拒了。
+⭐ 下次用**一段真实拍摄的 8~10 秒短视频**再跑一次，⛔ 别再用合成测试素材。
+
+## 🎯 待办 6：「失败趋势（近 30 天）」等数据长出来
+
+保留期已 31 天，但正式服已被删的历史找不回来 → 约 3 周后才会长满。
+判据是**图能渲染 30 根柱 + 图例写着「保留 31 天」**，⛔ 别把"柱子不满 30 天"当成没修好。
+
+## 🎯 待办 7：老待办原样保留
+
+M040、M037、M032 等 —— 见下方各节。
+
+---
+
+## ⏪ 上一状态（2026-08-09 第五十七次会话末）：**测试服 `v1.0.0.92`、正式服 `v1.0.0.90`**
 
 | | 版本 / 状态 |
 |---|---|

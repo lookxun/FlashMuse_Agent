@@ -2,21 +2,27 @@
 
 import { useMemo, useState, useTransition } from "react";
 import { ADVANCED_CHAT_MODEL, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, frontendImageGenerationModels, SEEDANCE_25_VIDEO_MODEL_ID, videoGenerationModels, type GenerationModel } from "@/lib/models";
+import { DEFAULT_PROMPT_MAX_LENGTH, getDefaultPromptMaxLength, getPromptLengthOverrideKey, normalizePromptMaxLength, PROMPT_MAX_LENGTH_CEILING, type PromptLengthOverrides } from "@/lib/prompt-length";
+import { AiAgentLineIcon, ModelIcon } from "@/components/model-icon";
 import { BYTEPLUS_SEEDANCE_25_UPLOAD_RULE_KEYS, BYTEPLUS_SEEDANCE_UPLOAD_RULE_KEYS, getUploadRule, getUploadRuleOverrideKey, type UploadKind, type UploadKindRule, type UploadRule, type UploadRuleOverrides } from "@/lib/upload-rules";
 
 type EditableUploadRuleRow = {
   key: string;
-  providerType: string;
   modelName: string;
   context: Parameters<typeof getUploadRule>[0];
 };
 
+// ⭐ 列顺序：提示词「文字」必须排在「文件」**前面**（2026-08-09 用户指定）。
 const editableUploadKinds: Array<{ key: UploadKind; label: string }> = [
   { key: "document", label: "文件" },
   { key: "image", label: "图片" },
   { key: "video", label: "视频" },
   { key: "audio", label: "音频" },
 ];
+
+// ⭐ 2026-08-09 用户要求：删掉原来的第一列「提供商 + 模型类型」（表太宽），
+//    供应商信息改由「模型名称」前面的图标表达（图标映射唯一实现：@/components/model-icon）。
+const editableTableGridClass = "grid grid-cols-[340px_170px_150px_150px_150px_150px]";
 
 function SettingSwitch({ checked, disabled, onChange, ariaLabel }: { checked: boolean; disabled?: boolean; onChange: (checked: boolean) => void; ariaLabel: string }) {
   return (
@@ -26,31 +32,25 @@ function SettingSwitch({ checked, disabled, onChange, ariaLabel }: { checked: bo
   );
 }
 
-function getProviderLabel(modelId: string) {
-  if (modelId.startsWith("byteplus:")) return "BytePlus";
-  return "OpenRouter";
-}
-
 function getEditableUploadRuleRows(enabledImageModelIds: string[], enabledVideoModelIds: string[]): EditableUploadRuleRow[] {
   const imageEnabled = new Set(enabledImageModelIds);
   const videoEnabled = new Set(enabledVideoModelIds);
-  const openRouterImageRows = frontendImageGenerationModels.filter((model) => !model.id.startsWith("byteplus:") && imageEnabled.has(model.id)).map((model) => makeModelRow(model, "图片模型", { mode: "image", modelId: model.id, transportMode: "local-base64" }));
-  const openRouterVideoRows = videoGenerationModels.filter((model) => videoEnabled.has(model.id)).map((model) => makeModelRow(model, "视频模型", { mode: "video", modelId: model.id, transportMode: "local-base64" }));
-  const bytePlusImageRows = frontendImageGenerationModels.filter((model) => model.id.startsWith("byteplus:") && imageEnabled.has(model.id)).map((model) => makeModelRow(model, "图片模型", { mode: "image", modelId: model.id, transportMode: "local-base64" }));
+  const openRouterImageRows = frontendImageGenerationModels.filter((model) => !model.id.startsWith("byteplus:") && imageEnabled.has(model.id)).map((model) => makeModelRow(model, { mode: "image", modelId: model.id, transportMode: "local-base64" }));
+  const openRouterVideoRows = videoGenerationModels.filter((model) => videoEnabled.has(model.id)).map((model) => makeModelRow(model, { mode: "video", modelId: model.id, transportMode: "local-base64" }));
+  const bytePlusImageRows = frontendImageGenerationModels.filter((model) => model.id.startsWith("byteplus:") && imageEnabled.has(model.id)).map((model) => makeModelRow(model, { mode: "image", modelId: model.id, transportMode: "local-base64" }));
   const bytePlusVideoRows: EditableUploadRuleRow[] = [
     // ⭐ 2.0 系与 2.5 是**两组独立 key**（getSeedanceUploadRuleKeys），所以这里必须各列 3 行；
     //    每一行的 context.modelId 必须写对应那一代的模型 id，否则 fallback 数字（面板上显示的默认值）会取错。
-    { key: BYTEPLUS_SEEDANCE_UPLOAD_RULE_KEYS.reference, providerType: "BytePlus · 视频模型", modelName: "Seedance 2.0 / Fast / Mini · 融合模式", context: { mode: "video", modelId: "byteplus:video.seedance-2-0", transportMode: "local-base64", videoReferenceMode: "reference" } },
-    { key: BYTEPLUS_SEEDANCE_UPLOAD_RULE_KEYS.firstFrame, providerType: "BytePlus · 视频模型", modelName: "Seedance 2.0 / Fast / Mini · 首帧模式", context: { mode: "video", modelId: "byteplus:video.seedance-2-0", transportMode: "local-base64", videoReferenceMode: "first_frame" } },
-    { key: BYTEPLUS_SEEDANCE_UPLOAD_RULE_KEYS.firstLastFrame, providerType: "BytePlus · 视频模型", modelName: "Seedance 2.0 / Fast / Mini · 首尾帧模式", context: { mode: "video", modelId: "byteplus:video.seedance-2-0", transportMode: "local-base64", videoReferenceMode: "first_last_frame" } },
-    { key: BYTEPLUS_SEEDANCE_25_UPLOAD_RULE_KEYS.reference, providerType: "BytePlus · 视频模型", modelName: "Seedance 2.5 · 融合模式", context: { mode: "video", modelId: SEEDANCE_25_VIDEO_MODEL_ID, transportMode: "local-base64", videoReferenceMode: "reference" } },
-    { key: BYTEPLUS_SEEDANCE_25_UPLOAD_RULE_KEYS.firstFrame, providerType: "BytePlus · 视频模型", modelName: "Seedance 2.5 · 首帧模式", context: { mode: "video", modelId: SEEDANCE_25_VIDEO_MODEL_ID, transportMode: "local-base64", videoReferenceMode: "first_frame" } },
-    { key: BYTEPLUS_SEEDANCE_25_UPLOAD_RULE_KEYS.firstLastFrame, providerType: "BytePlus · 视频模型", modelName: "Seedance 2.5 · 首尾帧模式", context: { mode: "video", modelId: SEEDANCE_25_VIDEO_MODEL_ID, transportMode: "local-base64", videoReferenceMode: "first_last_frame" } },
+    { key: BYTEPLUS_SEEDANCE_UPLOAD_RULE_KEYS.reference, modelName: "Seedance 2.0 / Fast / Mini · 融合模式", context: { mode: "video", modelId: "byteplus:video.seedance-2-0", transportMode: "local-base64", videoReferenceMode: "reference" } },
+    { key: BYTEPLUS_SEEDANCE_UPLOAD_RULE_KEYS.firstFrame, modelName: "Seedance 2.0 / Fast / Mini · 首帧模式", context: { mode: "video", modelId: "byteplus:video.seedance-2-0", transportMode: "local-base64", videoReferenceMode: "first_frame" } },
+    { key: BYTEPLUS_SEEDANCE_UPLOAD_RULE_KEYS.firstLastFrame, modelName: "Seedance 2.0 / Fast / Mini · 首尾帧模式", context: { mode: "video", modelId: "byteplus:video.seedance-2-0", transportMode: "local-base64", videoReferenceMode: "first_last_frame" } },
+    { key: BYTEPLUS_SEEDANCE_25_UPLOAD_RULE_KEYS.reference, modelName: "Seedance 2.5 · 融合模式", context: { mode: "video", modelId: SEEDANCE_25_VIDEO_MODEL_ID, transportMode: "local-base64", videoReferenceMode: "reference" } },
+    { key: BYTEPLUS_SEEDANCE_25_UPLOAD_RULE_KEYS.firstFrame, modelName: "Seedance 2.5 · 首帧模式", context: { mode: "video", modelId: SEEDANCE_25_VIDEO_MODEL_ID, transportMode: "local-base64", videoReferenceMode: "first_frame" } },
+    { key: BYTEPLUS_SEEDANCE_25_UPLOAD_RULE_KEYS.firstLastFrame, modelName: "Seedance 2.5 · 首尾帧模式", context: { mode: "video", modelId: SEEDANCE_25_VIDEO_MODEL_ID, transportMode: "local-base64", videoReferenceMode: "first_last_frame" } },
   ];
   return [
     {
       key: "chat",
-      providerType: "统一 · 对话模型",
       modelName: `全部对话模型（${DEFAULT_CHAT_MODEL} / ${ADVANCED_CHAT_MODEL} 等）`,
       context: { mode: "general", modelId: DEFAULT_CHAT_MODEL, transportMode: "local-base64" },
     },
@@ -61,10 +61,9 @@ function getEditableUploadRuleRows(enabledImageModelIds: string[], enabledVideoM
   ];
 }
 
-function makeModelRow(model: GenerationModel, modelType: "图片模型" | "视频模型", context: EditableUploadRuleRow["context"]): EditableUploadRuleRow {
+function makeModelRow(model: GenerationModel, context: EditableUploadRuleRow["context"]): EditableUploadRuleRow {
   return {
     key: getUploadRuleOverrideKey(context),
-    providerType: `${getProviderLabel(model.id)} · ${modelType}`,
     modelName: model.label,
     context,
   };
@@ -80,6 +79,44 @@ function getKindDraft(overrides: UploadRuleOverrides, row: EditableUploadRuleRow
 
 function normalizeCount(value: number) {
   return Math.max(0, Math.min(99, Math.floor(Number.isFinite(value) ? value : 0)));
+}
+
+function getPromptDraft(overrides: PromptLengthOverrides, promptKey: string, defaultMaxLength: number) {
+  const override = overrides[promptKey];
+  // ⭐ 没配过 = 「该模型的默认值 + 开关开着」（Seedance 2.0 系 3500、2.5 是 14500、其余 2000），
+  //    和运行时 getPromptMaxLength 的默认完全一致。
+  //    ⛔ 这里绝不能写死 2000 —— 面板显示 2000 而实际生效 14500，管理员一保存就把 2.5 砍到 2000。
+  return {
+    enabled: override?.enabled ?? true,
+    maxLength: override?.maxLength ?? defaultMaxLength,
+  };
+}
+
+/**
+ * 「文字」列的单元格。⭐ **一个模型只有一个开关**：
+ * 同一个模型的多个参考模式行（Seedance 融合 / 首帧 / 首尾帧）只有**第一行**给出输入框，
+ * 其余行显示「跟随上面」——运行时它们本来就取同一个 key，不存在配不到的问题。
+ */
+function EditablePromptLengthCell({ promptKey, owner, defaultMaxLength, draft, disabled, ariaPrefix, onChange }: { promptKey: string; owner: boolean; defaultMaxLength: number; draft: PromptLengthOverrides; disabled?: boolean; ariaPrefix: string; onChange: (promptKey: string, patch: { enabled?: boolean; maxLength?: number }, saveNow?: boolean) => void }) {
+  if (!owner) return <div className="px-4 py-3 text-[#999999]">跟随上面</div>;
+  const value = getPromptDraft(draft, promptKey, defaultMaxLength);
+  return (
+    <div className="flex items-center gap-2 px-4 py-3">
+      <input
+        type="text"
+        inputMode="numeric"
+        value={String(value.maxLength)}
+        disabled={value.enabled || disabled}
+        onChange={(event) => {
+          const next = event.target.value.replace(/\D/g, "").slice(0, 5);
+          onChange(promptKey, { maxLength: next ? normalizePromptMaxLength(Number(next)) : 1 });
+        }}
+        onBlur={() => onChange(promptKey, { enabled: value.enabled, maxLength: value.maxLength }, true)}
+        className="h-8 w-[80px] rounded-[8px] border border-[#e5e5e5] bg-white px-2 text-center text-[13px] text-[#222222] outline-none transition focus:border-[#367cee] disabled:bg-[#f3f3f3] disabled:text-[#999999]"
+      />
+      <SettingSwitch checked={value.enabled} disabled={disabled} onChange={(checked) => onChange(promptKey, { enabled: checked, maxLength: value.maxLength }, true)} ariaLabel={`${ariaPrefix}-提示词字数开关`} />
+    </div>
+  );
 }
 
 type UploadRuleRow = {
@@ -210,20 +247,35 @@ function EditableUploadRuleCell({ row, kind, fallback, draft, disabled, onChange
   );
 }
 
-export function AdminUploadRulesPanel({ initialUploadRuleOverrides = {}, enabledImageModelIds = [], enabledVideoModelIds = [] }: { initialUploadRuleOverrides?: UploadRuleOverrides; enabledImageModelIds?: string[]; enabledVideoModelIds?: string[] }) {
+export function AdminUploadRulesPanel({ initialUploadRuleOverrides = {}, initialPromptLengthOverrides = {}, enabledImageModelIds = [], enabledVideoModelIds = [] }: { initialUploadRuleOverrides?: UploadRuleOverrides; initialPromptLengthOverrides?: PromptLengthOverrides; enabledImageModelIds?: string[]; enabledVideoModelIds?: string[] }) {
   const rows = useMemo(() => getEditableUploadRuleRows(enabledImageModelIds, enabledVideoModelIds), [enabledImageModelIds, enabledVideoModelIds]);
+  // ⭐ 每一行算出它的「文字」key，并标出这个 key 的**第一行**（只有它显示输入框，其余行「跟随上面」）。
+  const promptRowMeta = useMemo(() => {
+    const seen = new Set<string>();
+    return rows.map((row) => {
+      const context = { mode: row.context.mode, modelId: row.context.modelId };
+      const promptKey = getPromptLengthOverrideKey(context);
+      const owner = !seen.has(promptKey);
+      seen.add(promptKey);
+      return { promptKey, owner, defaultMaxLength: getDefaultPromptMaxLength(context) };
+    });
+  }, [rows]);
   const [draft, setDraft] = useState<UploadRuleOverrides>(initialUploadRuleOverrides);
+  const [promptDraft, setPromptDraft] = useState<PromptLengthOverrides>(initialPromptLengthOverrides);
   const [message, setMessage] = useState("");
   const [isPending, startTransition] = useTransition();
 
-  const saveRules = (nextDraft: UploadRuleOverrides) => {
+  // ⛔ 只把"本次真的改了的那一半"发上去（接口对没带的字段保持原样），
+  //    否则改文字会把上传数量整份清空、反之亦然。
+  const save = (payload: { uploadRuleOverrides?: UploadRuleOverrides; promptLengthOverrides?: PromptLengthOverrides }) => {
     setMessage("");
     startTransition(async () => {
       try {
-        const response = await fetch("/admin/api/upload-rules", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ uploadRuleOverrides: nextDraft }) });
-        const data = (await response.json().catch(() => ({}))) as { error?: string; uploadRuleOverrides?: UploadRuleOverrides };
+        const response = await fetch("/admin/api/upload-rules", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+        const data = (await response.json().catch(() => ({}))) as { error?: string; uploadRuleOverrides?: UploadRuleOverrides; promptLengthOverrides?: PromptLengthOverrides };
         if (!response.ok || !data.uploadRuleOverrides) throw new Error(data.error || "保存失败");
         setDraft(data.uploadRuleOverrides);
+        if (data.promptLengthOverrides) setPromptDraft(data.promptLengthOverrides);
         setMessage("已保存");
       } catch (error) {
         setMessage(error instanceof Error ? error.message : "保存失败");
@@ -243,7 +295,21 @@ export function AdminUploadRulesPanel({ initialUploadRuleOverrides = {}, enabled
       },
     };
     setDraft(nextDraft);
-    if (saveNow) saveRules(nextDraft);
+    if (saveNow) save({ uploadRuleOverrides: nextDraft });
+  };
+
+  const updatePromptCell = (promptKey: string, patch: { enabled?: boolean; maxLength?: number }, saveNow = false) => {
+    const meta = promptRowMeta.find((item) => item.promptKey === promptKey);
+    const current = getPromptDraft(promptDraft, promptKey, meta?.defaultMaxLength ?? DEFAULT_PROMPT_MAX_LENGTH);
+    const nextPromptDraft: PromptLengthOverrides = {
+      ...promptDraft,
+      [promptKey]: {
+        enabled: patch.enabled ?? current.enabled,
+        maxLength: normalizePromptMaxLength(patch.maxLength ?? current.maxLength),
+      },
+    };
+    setPromptDraft(nextPromptDraft);
+    if (saveNow) save({ promptLengthOverrides: nextPromptDraft });
   };
 
   return (
@@ -253,25 +319,33 @@ export function AdminUploadRulesPanel({ initialUploadRuleOverrides = {}, enabled
         <div className="text-[13px] text-[#777777]">对话流生成和资产库生成共用同一套规则</div>
       </div>
 
-      <section className="mb-8 min-w-[1180px] overflow-hidden rounded-[10px] border border-[#eeeeee] bg-white text-[13px] shadow-[0_10px_28px_rgba(0,0,0,0.04)]">
+      <section className="mb-8 min-w-[1110px] overflow-hidden rounded-[10px] border border-[#eeeeee] bg-white text-[13px] shadow-[0_10px_28px_rgba(0,0,0,0.04)]">
         <div className="flex items-center justify-between gap-4 border-b border-[#eeeeee] bg-[#fafafa] px-5 py-4">
           <div>
-            <div className="text-[15px] font-medium text-[#222222]">模型上传数量配置</div>
-            <div className="mt-1 text-[12px] leading-5 text-[#888888]">这里优先于下方兜底规则。关闭开关后可修改数量，打开后启用该数量。</div>
+            <div className="text-[15px] font-medium text-[#222222]">模型上传数量 + 提示词字数配置</div>
+            <div className="mt-1 text-[12px] leading-5 text-[#888888]">这里优先于下方兜底规则。关闭开关后可修改数值，打开后启用该数值。「文字」= 提示词最多多少字（默认按模型给：Seedance 2.0 系 3500、Seedance 2.5 是 14500、其余 {DEFAULT_PROMPT_MAX_LENGTH}，最大 {PROMPT_MAX_LENGTH_CEILING}），一个模型只有一个，同一模型的多个参考模式共用（后面几行显示「跟随上面」）。</div>
           </div>
           <div className={`text-[12px] ${message.includes("失败") ? "text-red-500" : "text-[#367cee]"}`}>{isPending ? "保存中..." : message}</div>
         </div>
-        <div className="grid grid-cols-[210px_320px_150px_150px_150px_150px] border-b border-[#eeeeee] bg-[#fafafa] text-[12px] font-medium text-[#777777]">
-          <div className="px-4 py-3">提供商 + 模型类型</div>
+        <div className={`${editableTableGridClass} border-b border-[#eeeeee] bg-[#fafafa] text-[12px] font-medium text-[#777777]`}>
           <div className="px-4 py-3">模型名称</div>
+          <div className="px-4 py-3">文字</div>
           {editableUploadKinds.map((kind) => <div key={kind.key} className="px-4 py-3">{kind.label}</div>)}
         </div>
-        {rows.map((row) => {
+        {rows.map((row, index) => {
           const fallback = getUploadRule(row.context);
+          const promptMeta = promptRowMeta[index];
           return (
-            <div key={row.key} className="grid grid-cols-[210px_320px_150px_150px_150px_150px] border-b border-[#f2f2f2] text-[12px] leading-5 text-[#444444] last:border-b-0">
-              <div className="px-4 py-3 font-medium text-[#222222]">{row.providerType}</div>
-              <div className="break-words px-4 py-3 text-[#333333]">{row.modelName}</div>
+            <div key={row.key} className={`${editableTableGridClass} border-b border-[#f2f2f2] text-[12px] leading-5 text-[#444444] last:border-b-0`}>
+              {/* 供应商靠图标表达（原来那一列文字已按用户要求删掉）。图标映射唯一实现见 @/components/model-icon。
+                  ⭐「全部对话模型」那行不是某个具体供应商，用 Agent 图标（和前台"通用模式"同一个图标）。 */}
+              <div className="flex items-start gap-2 break-words px-4 py-3 text-[#333333]">
+                <span className="mt-[2px] shrink-0">
+                  {row.key === "chat" ? <AiAgentLineIcon className="h-4 w-4 shrink-0 text-[#555555]" /> : <ModelIcon modelId={row.context.modelId ?? ""} />}
+                </span>
+                <span className="min-w-0 break-words">{row.modelName}</span>
+              </div>
+              <EditablePromptLengthCell promptKey={promptMeta.promptKey} owner={promptMeta.owner} defaultMaxLength={promptMeta.defaultMaxLength} draft={promptDraft} disabled={isPending} ariaPrefix={row.modelName} onChange={updatePromptCell} />
               {editableUploadKinds.map((kind) => <EditableUploadRuleCell key={kind.key} row={row} kind={kind.key} fallback={fallback[kind.key]} draft={draft} disabled={isPending} onChange={updateCell} />)}
             </div>
           );

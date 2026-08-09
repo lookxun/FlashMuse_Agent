@@ -1,5 +1,28 @@
-import { NextResponse } from "next/server";
+import { NextResponse, type NextRequest } from "next/server";
 import { APP_VERSION } from "@/lib/app-version";
+
+// ⭐⭐ 唯一权威：「哪些 /api 接口**可以**被缓存」。除了这里列出的，其余全部强制 no-store。
+//
+// 为什么必须在这里统一加（2026-08-09 正式服真实事故）：
+// 顶部公告文案改了以后，用户刷新时**在新旧两个版本之间来回跳**，甚至过几秒自动变回旧文案。
+// 根因不是数据库、不是我们的代码逻辑 —— 而是 `/api/announcement` 和 `/api/auth/me` 的响应
+// **一个 Cache-Control 都没有**（也没有 Expires / Last-Modified）。
+// 按 RFC 9111，这种 200 GET 响应允许任何共享缓存**自行用启发式过期决定缓存多久** →
+// 用户侧的运营商 / 公司网关透明代理就存了一份很旧的副本。
+// ⛔ 代码里 `fetch(url, { cache: "no-store" })` **治不了这个** —— 那只约束浏览器自己的 HTTP 缓存，
+//    中间代理只看**响应头**。所以防线必须在服务端响应头上。
+// ⭐ 判据（二值）：`curl -sI <接口>` 看有没有 Cache-Control。没有 = 允许被别人随便缓存。
+// ⛔ 在数据中心 / 干净浏览器里**永远复现不出来**（那条链路上没有透明缓存）→
+//    别因为"我这边测 20/20 都对"就认为没问题。
+const CACHEABLE_API_PATHS = [
+  // 缩略图是内容寻址的（url 变了才会变），阿里正式那份 nginx 故意缓存它 30 天，
+  // 且路由自己会返回 `public, max-age=31536000, immutable` —— ⛔ 绝不能被下面的 no-store 覆盖。
+  "/api/media-thumbnail",
+];
+
+function isCacheableApiPath(pathname: string) {
+  return CACHEABLE_API_PATHS.some((base) => pathname === base || pathname.startsWith(`${base}/`));
+}
 
 // 给所有 /api/* 响应带上「已发布版本号」响应头。前端（version-update-notifier）搭在已有请求流量上
 // 读取此头，与自己 bundle 里打死的版本对比，服务端更高就弹「发现新版本」提示条。
@@ -11,11 +34,19 @@ import { APP_VERSION } from "@/lib/app-version";
 // 保证「提示条弹出时 = 静态资源已就绪 = 刷新必正常」。
 // 本地开发（非 production）没有该变量时回退到 APP_VERSION，方便即时看到效果。
 // （Next 16 已把 middleware 文件约定改名 proxy，本文件即原 middleware.ts，2026-08-02 迁移。）
-export function proxy() {
+export function proxy(request: NextRequest) {
   const response = NextResponse.next();
   const published = process.env.PUBLISHED_APP_VERSION?.trim();
   const advertise = published || (process.env.NODE_ENV !== "production" ? APP_VERSION : "");
   if (advertise) response.headers.set("x-app-version", advertise);
+
+  // 除白名单外，所有 /api 响应一律禁止任何缓存（浏览器 + 中间代理）。
+  // `Pragma` / `Expires` 是给只认 HTTP/1.0 的老代理看的，一起给，成本为零。
+  if (!isCacheableApiPath(request.nextUrl.pathname)) {
+    response.headers.set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+    response.headers.set("Pragma", "no-cache");
+    response.headers.set("Expires", "0");
+  }
   return response;
 }
 

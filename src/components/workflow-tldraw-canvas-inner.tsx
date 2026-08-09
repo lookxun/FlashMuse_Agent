@@ -7,8 +7,6 @@ import { BaseBoxShapeUtil, BindingUtil, CubicBezier2d, HTMLContainer, Mat, Recta
 import { type IconType } from "react-icons";
 import { RiEraserLine, RiHdLine, RiSparkling2Line, RiAccountBoxLine, RiBellLine, RiAddLine, RiArrowDownSLine, RiArrowUpLine, RiBringForward, RiBringToFront, RiCameraLine, RiCheckLine, RiCheckboxBlankCircleLine, RiCheckboxCircleLine, RiCheckboxMultipleLine, RiClipboardLine, RiCloseLine, RiCursorLine, RiDeleteBinLine, RiDownloadLine, RiEmotionSadLine, RiExportFill, RiExportLine, RiEyeLine, RiEyeOffLine, RiFileCodeLine, RiFileCopy2Line, RiFileCopyLine, RiFileImageLine, RiFileTextLine, RiFilmAiLine, RiFolderOpenLine, RiGalleryView, RiAttachment2, RiFocus3Line, RiGoogleFill, RiHand, RiHistoryLine, RiImageAiLine, RiImageCircleLine, RiImageLine, RiInformation2Line, RiLandscapeLine, RiSidebarFoldLine, RiSidebarUnfoldLine, RiLoader4Line, RiLockLine, RiLockUnlockLine, RiMoreLine, RiMultiImageLine, RiNodeTree, RiOpenaiFill, RiResetLeftLine, RiRoadMapLine, RiScissorsCutLine, RiSendBackward, RiSendToBack, RiShining2Line, RiStackLine, RiTBoxLine, RiTextBlock, RiTextSnippet, RiTimeLine, RiTiktokFill, RiUpload2Line, RiVideoLine, RiVideoOnLine, RiVoiceprintLine, RiZoomInLine, RiZoomOutLine } from "react-icons/ri";
 import { BytePlusIcon } from "@/components/byteplus-icon";
-import { MiniMaxIcon } from "@/components/minimax-icon";
-import { KlingIcon } from "@/components/kling-icon";
 import { AudioWaveformPlayer } from "@/components/audio-waveform-player";
 import { AssetMentionPicker, type MentionPickerCategory, type MentionPickerItem } from "@/components/asset-mention-picker";
 import { VideoUploadThumbnail } from "@/components/video-upload-thumbnail";
@@ -22,6 +20,10 @@ import { buildReferenceHint } from "@/lib/reference-hint";
 import { appendEditorText as appendWorkflowEditorText, getAtQueryAtCursorForReferences as getWorkflowAtQueryAtCursorForReferences, getEditableText as getWorkflowEditableText, getMentionNames as getSharedMentionNames, getMentionRangeForDeletion as getSharedMentionRangeForDeletion, getMentionRanges as getSharedMentionRanges, getSelectionTextOffset as getWorkflowSelectionTextOffset, getSelectionTextRange as getWorkflowSelectionTextRange, removeMentionName, setSelectionTextOffset as setWorkflowSelectionTextOffset } from "@/lib/mention-text";
 import { createUploadProgressTracker, throttleUploadProgress } from "@/lib/upload-progress";
 import { getUploadKindFromFileName, getEffectiveVideoReferenceItems, getUploadRule, getVideoAudioUploadDisabledMessage, getVideoReferenceLimitHint, supportsVideoReferenceMode, validateReferenceTotalDuration, validateVideoReferenceCombination, type UploadKind, type UploadKindRule, type UploadRule, type UploadRuleOverrides, type VideoReferenceMode } from "@/lib/upload-rules";
+import { countPromptLength, getPromptCeilingTipText, getPromptMaxLength, getPromptLimitTooltipText, getWorkflowPromptOverLimitTipText, PROMPT_MAX_LENGTH_CEILING, type PromptLengthOverrides } from "@/lib/prompt-length";
+import { PromptLengthCounterRow } from "@/components/prompt-length-counter";
+import { BlackHoverTooltip } from "@/components/black-hover-tooltip";
+import { AiGenerate3dIcon, getGenerationModelIcon } from "@/components/model-icon";
 import { getRequiredVideoReferenceImageCount, getVideoReferenceModeLabel, getVideoReferenceModeOptions } from "@/lib/video-reference-modes";
 import { IMAGE_UPLOAD_ACCEPT, validateImageUploadFile } from "@/lib/image-upload-validation";
 import { AUDIO_UPLOAD_ACCEPT, MEDIA_DURATION_EPSILON_SECONDS, validateMediaUploadFile, validateMediaUploadMetadata, validateReferenceMediaDurationRange as validateWorkflowMediaDuration, validateReferenceVideoDimensions as validateWorkflowReferenceVideoDimensions, VIDEO_UPLOAD_ACCEPT } from "@/lib/media-upload-validation";
@@ -196,6 +198,7 @@ type WorkflowCanvasProps = {
   enabledImageModelIds?: string[];
   enabledVideoModelIds?: string[];
   uploadRuleOverrides?: UploadRuleOverrides;
+  promptLengthOverrides?: PromptLengthOverrides;
   editModelToggles?: Record<string, boolean>;
   leftSidebarVisible?: boolean;
   leftSidebarToggleLabel?: string;
@@ -404,7 +407,6 @@ type WorkflowImageJobStatus = {
   errorCode?: string;
 };
 type WorkflowVideoJobStatus = WorkflowImageJobStatus & { posterUrl?: string; providerTaskId?: string };
-const MAX_WORKFLOW_PROMPT_LENGTH = 2000;
 const DEFAULT_WORKFLOW_IMAGE_MODEL = "byteplus:conversation-image.seedream-4-5";
 const DEFAULT_WORKFLOW_VIDEO_MODEL = "byteplus:video.seedance-2-0";
 // 视频快捷编辑的模型候选链：依次 Mini → Fast → 2.0 → 2.5（前一个失败自动换下一个），与图片编辑候选链同思路。
@@ -1078,7 +1080,17 @@ function getWorkflowTextNodeOutput(node: WorkflowNode) {
   return node.kind === "text" ? node.data.text?.trim() || node.data.prompt?.trim() || node.data.outputText?.trim() || "" : "";
 }
 
-function validateWorkflowConnectionTextLimit(source: WorkflowNode, target: WorkflowNode, state: WorkflowCanvasState) {
+/**
+ * 该节点当前生效的提示词字数上限（后台「上传规则 → 文字」列按模型配置）。
+ * ⭐ 视频节点按视频模型取、其余按图片模型取；key 只看模型不看参考模式（见 lib/prompt-length）。
+ * ⭐ 是**普通函数不是 Hook** —— 因为 WorkflowSelectedNodeOverlay 里有提前 return，
+ *   在它之后加 Hook 会触发 React #310 把整个画布搞崩（见 AGENTS.md）。
+ */
+function getWorkflowNodePromptMaxLength(node: WorkflowNode, overrides?: PromptLengthOverrides) {
+  return getPromptMaxLength({ mode: node.kind === "video" ? "video" : "image", modelId: node.data.model }, overrides);
+}
+
+function validateWorkflowConnectionTextLimit(source: WorkflowNode, target: WorkflowNode, state: WorkflowCanvasState, promptLengthOverrides?: PromptLengthOverrides) {
   if (source.kind !== "text") return undefined;
   const existingText = state.edges
     .filter((edge) => edge.target === target.id)
@@ -1088,7 +1100,8 @@ function validateWorkflowConnectionTextLimit(source: WorkflowNode, target: Workf
     .filter(Boolean)
     .join("\n\n");
   const combinedPrompt = [target.data.prompt?.trim() ?? "", existingText, getWorkflowTextNodeOutput(source)].filter(Boolean).join("\n\n").trim();
-  return Array.from(combinedPrompt).length > MAX_WORKFLOW_PROMPT_LENGTH ? `连接后提示词超过 ${MAX_WORKFLOW_PROMPT_LENGTH} 字，请缩短文本节点或输入框内容` : undefined;
+  const maxLength = getWorkflowNodePromptMaxLength(target, promptLengthOverrides);
+  return Array.from(combinedPrompt).length > maxLength ? `连接后提示词超过 ${maxLength} 字，请缩短文本节点或输入框内容` : undefined;
 }
 
 function getShapeId(nodeId: string) {
@@ -2158,6 +2171,7 @@ type WorkflowRuntime = {
   referenceFilterNextOffset?: Record<string, number>;
   onLoadMoreReferenceAssets?: (groupType: string, loadedCount: number) => void;
   uploadRuleOverrides?: UploadRuleOverrides;
+  promptLengthOverrides?: PromptLengthOverrides;
   editModelToggles?: Record<string, boolean>;
   getConnectedInputUploads: (nodeId: string) => WorkflowUploadItem[];
   // 「从当前画布选择」弹窗的数据源：当前画布上所有节点里的图片/视频/音频（按 url 去重）。
@@ -2581,10 +2595,17 @@ function WorkflowSelectedNodeOverlay() {
   const showMediaQuickMenu = (node.kind === "image" || isVideoQuickMenuNode) && hasWorkflowNodeResult(node) && !node.data.isRunning;
   // 上传进来的素材节点没有"生成用的提示词"→ 快捷菜单里的「使用提示词」置灰（判定与右键菜单一致）。
   const isUploadedMediaNode = isWorkflowUploadLikeTitle(node.title);
+  // 快捷编辑的字数上限与节点一致（同一个模型）。⭐ 超限不删字：原生 maxLength 已去掉
+  //   （它会让粘贴被浏览器静默砍掉），改成计数器变红 + 发送键灰掉 + submitQuickEdit 拦住。
+  // ⛔ 这里**故意不用 useMemo**（本组件上面有提前 return，加 Hook 会触发 React #310 把画布搞崩）。
+  const quickEditPromptMaxLength = getWorkflowNodePromptMaxLength(node, runtime.promptLengthOverrides);
+  const quickEditPromptLength = countPromptLength(quickEditText);
+  const isQuickEditOverLimit = quickEditPromptLength > quickEditPromptMaxLength;
   // 快捷编辑派发：图片走 createImageEditNode（贴源图参数），视频走 createVideoEditNode（贴源视频参数+融合模式+模型候选链）。
   const submitQuickEdit = (text: string) => {
     const value = text.trim();
     if (!value) return;
+    if (isQuickEditOverLimit) return;
     if (isVideoQuickMenuNode) runtime.createVideoEditNode(node, { prompt: value });
     else runtime.createImageEditNode(node, { prompt: value, matchSourceImage: true });
     setQuickEditOpen(false);
@@ -2709,11 +2730,13 @@ function WorkflowSelectedNodeOverlay() {
           onClick={stopCanvasPointer}
           onWheel={stopCanvasPointer}
         >
-          <div className="flex items-end gap-2 rounded-[16px] border-2 border-[#f1f2f2] bg-white/78 px-3 py-2 shadow-none backdrop-blur-[18px] transition focus-within:border-white/70 focus-within:shadow-[0_10px_32px_rgba(0,0,0,0.12)]">
+          <div className="rounded-[16px] border-2 border-[#f1f2f2] bg-white/78 px-3 py-2 shadow-none backdrop-blur-[18px] transition focus-within:border-white/70 focus-within:shadow-[0_10px_32px_rgba(0,0,0,0.12)]">
+          {/* ⭐ 计数器独立占一行、居右（快捷编辑框也加高一行） */}
+          <PromptLengthCounterRow used={quickEditPromptLength} maxLength={quickEditPromptMaxLength} />
+          <div className="flex items-end gap-2">
             <textarea
               ref={quickEditRef}
               value={quickEditText}
-              maxLength={MAX_WORKFLOW_PROMPT_LENGTH}
               rows={1}
               placeholder={isVideoQuickMenuNode ? "描述你想怎么修改这段视频…" : "描述你想怎么修改这张图…"}
               className="workflow-prompt-textarea max-h-[66px] min-h-[24px] flex-1 resize-none self-center bg-transparent text-[14px] leading-6 text-[#1f2937] outline-none placeholder:text-[#b3b3b3]"
@@ -2730,14 +2753,17 @@ function WorkflowSelectedNodeOverlay() {
                 }
               }}
             />
+            <BlackHoverTooltip label={isQuickEditOverLimit ? getPromptLimitTooltipText(quickEditPromptMaxLength) : ""} className="shrink-0">
             <button
               type="button"
-              disabled={!quickEditText.trim()}
+              disabled={!quickEditText.trim() || isQuickEditOverLimit}
               onClick={() => submitQuickEdit(quickEditText)}
               className="inline-flex h-9 w-9 shrink-0 items-center justify-center whitespace-nowrap rounded-[10px] bg-[#111111] text-white transition hover:bg-[#000000] disabled:cursor-not-allowed disabled:bg-[#d7d7d7] disabled:text-white"
             >
               <RiArrowUpLine className="h-4 w-4" />
             </button>
+            </BlackHoverTooltip>
+          </div>
           </div>
         </div>
       ) : null}
@@ -3010,7 +3036,7 @@ function WorkflowCustomContextMenu({ menu, onClose, onAddNode, onUploadNode, onI
   );
 }
 
-export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onCredit, onGeneratedMedia, onPreviewMedia, onShowTip, onUploadedAsset, getImageDisplayUrl, getVideoPosterDisplayUrl, enabledTextModelIds, textModelProviders = {}, enabledImageModelIds, enabledVideoModelIds, uploadRuleOverrides, editModelToggles, leftSidebarVisible = true, leftSidebarToggleLabel, onToggleLeftSidebar, workflowAssets = [], referenceAssets = [], referenceAssetsLoadStatus = "idle", referenceAssetCounts, onLoadReferenceAssets, onLoadReferenceFilter, referenceFilterLoading, referenceFilterNextOffset, onLoadMoreReferenceAssets, onExternalFilesDrop, onOpenAssetImport, assetsToImport, onAssetsImported }: WorkflowCanvasProps) {
+export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onCredit, onGeneratedMedia, onPreviewMedia, onShowTip, onUploadedAsset, getImageDisplayUrl, getVideoPosterDisplayUrl, enabledTextModelIds, textModelProviders = {}, enabledImageModelIds, enabledVideoModelIds, uploadRuleOverrides, promptLengthOverrides, editModelToggles, leftSidebarVisible = true, leftSidebarToggleLabel, onToggleLeftSidebar, workflowAssets = [], referenceAssets = [], referenceAssetsLoadStatus = "idle", referenceAssetCounts, onLoadReferenceAssets, onLoadReferenceFilter, referenceFilterLoading, referenceFilterNextOffset, onLoadMoreReferenceAssets, onExternalFilesDrop, onOpenAssetImport, assetsToImport, onAssetsImported }: WorkflowCanvasProps) {
   const editorRef = useRef<Editor | null>(null);
   const stateRef = useRef(normalizeState(value));
   const loadedWorkflowIdRef = useRef(workflowId);
@@ -4083,7 +4109,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     const current = stateRef.current;
     const source = current.nodes.find((node) => node.id === connectingFrom);
     const target = current.nodes.find((node) => node.id === targetId);
-    const error = getWorkflowConnectionError(source, target, current.edges) || (source && target ? validateWorkflowConnectionTextLimit(source, target, current) || validateWorkflowConnectionUploadRules(source, target, current, uploadRuleOverrides) : undefined);
+    const error = getWorkflowConnectionError(source, target, current.edges) || (source && target ? validateWorkflowConnectionTextLimit(source, target, current, promptLengthOverrides) || validateWorkflowConnectionUploadRules(source, target, current, uploadRuleOverrides) : undefined);
     if (error) {
       onShowTip?.(error);
       return;
@@ -4091,7 +4117,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     updateState((state) => ({ ...state, edges: [...state.edges, { id: createId("workflow_edge"), source: connectingFrom, target: targetId }] }));
     setConnectingFrom("");
     setConnectionPointer(undefined);
-  }, [connectingFrom, onShowTip, updateState, uploadRuleOverrides]);
+  }, [connectingFrom, onShowTip, updateState, uploadRuleOverrides, promptLengthOverrides]);
 
   // 「从当前画布选择」用：直接把画布上那个媒体节点连到当前节点（等价于用户手动拉一根线）。
   // ⭐ 校验完全复用手动连线那一套（getWorkflowConnectionError + 文本/上传规则），禁止另写一套判断。
@@ -4102,11 +4128,11 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     const target = current.nodes.find((node) => node.id === targetNodeId);
     if (!source || !target) return "找不到要连接的节点";
     if (current.edges.some((edge) => edge.source === sourceNodeId && edge.target === targetNodeId)) return undefined;
-    const error = getWorkflowConnectionError(source, target, current.edges) || validateWorkflowConnectionTextLimit(source, target, current) || validateWorkflowConnectionUploadRules(source, target, current, uploadRuleOverrides);
+    const error = getWorkflowConnectionError(source, target, current.edges) || validateWorkflowConnectionTextLimit(source, target, current, promptLengthOverrides) || validateWorkflowConnectionUploadRules(source, target, current, uploadRuleOverrides);
     if (error) return error;
     updateState((state) => ({ ...state, edges: [...state.edges, { id: createId("workflow_edge"), source: sourceNodeId, target: targetNodeId }] }));
     return undefined;
-  }, [updateState, uploadRuleOverrides]);
+  }, [updateState, uploadRuleOverrides, promptLengthOverrides]);
 
   const beginConnectionDrag = useCallback((nodeId: string, event: ReactPointerEvent) => {
     const current = stateRef.current;
@@ -4127,7 +4153,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
         const latest = stateRef.current;
         const latestSource = latest.nodes.find((node) => node.id === nodeId);
         const latestTarget = latest.nodes.find((node) => node.id === targetNodeId);
-        const error = getWorkflowConnectionError(latestSource, latestTarget, latest.edges) || (latestSource && latestTarget ? validateWorkflowConnectionTextLimit(latestSource, latestTarget, latest) || validateWorkflowConnectionUploadRules(latestSource, latestTarget, latest, uploadRuleOverrides) : undefined);
+        const error = getWorkflowConnectionError(latestSource, latestTarget, latest.edges) || (latestSource && latestTarget ? validateWorkflowConnectionTextLimit(latestSource, latestTarget, latest, promptLengthOverrides) || validateWorkflowConnectionUploadRules(latestSource, latestTarget, latest, uploadRuleOverrides) : undefined);
         if (error) onShowTip?.(error);
         else updateState((state) => ({ ...state, edges: [...state.edges, { id: createId("workflow_edge"), source: nodeId, target: targetNodeId }] }));
       }
@@ -4135,7 +4161,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     };
     window.addEventListener("pointermove", handlePointerMove, true);
     window.addEventListener("pointerup", handlePointerUp, true);
-  }, [onShowTip, updateState, uploadRuleOverrides]);
+  }, [onShowTip, updateState, uploadRuleOverrides, promptLengthOverrides]);
 
   const beginInputConnectionDrag = useCallback((nodeId: string, event: ReactPointerEvent) => {
     const current = stateRef.current;
@@ -4156,7 +4182,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
         const latest = stateRef.current;
         const latestSource = latest.nodes.find((node) => node.id === sourceNodeId);
         const latestTarget = latest.nodes.find((node) => node.id === nodeId);
-        const error = getWorkflowConnectionError(latestSource, latestTarget, latest.edges) || (latestSource && latestTarget ? validateWorkflowConnectionTextLimit(latestSource, latestTarget, latest) || validateWorkflowConnectionUploadRules(latestSource, latestTarget, latest, uploadRuleOverrides) : undefined);
+        const error = getWorkflowConnectionError(latestSource, latestTarget, latest.edges) || (latestSource && latestTarget ? validateWorkflowConnectionTextLimit(latestSource, latestTarget, latest, promptLengthOverrides) || validateWorkflowConnectionUploadRules(latestSource, latestTarget, latest, uploadRuleOverrides) : undefined);
         if (error) onShowTip?.(error);
         else updateState((state) => ({ ...state, edges: [...state.edges, { id: createId("workflow_edge"), source: sourceNodeId, target: nodeId }] }));
       }
@@ -4165,7 +4191,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     };
     window.addEventListener("pointermove", handlePointerMove, true);
     window.addEventListener("pointerup", handlePointerUp, true);
-  }, [onShowTip, updateState, uploadRuleOverrides]);
+  }, [onShowTip, updateState, uploadRuleOverrides, promptLengthOverrides]);
 
   const showMultiConnectTips = useCallback((messages: string[]) => {
     messages.forEach((message) => onShowTip?.(message));
@@ -4206,7 +4232,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
         // duplicate / cycle / self are silently skipped
         continue;
       }
-      const textError = validateWorkflowConnectionTextLimit(source, target, stateForCheck);
+      const textError = validateWorkflowConnectionTextLimit(source, target, stateForCheck, promptLengthOverrides);
       if (textError) {
         countRejected = true;
         continue;
@@ -4227,7 +4253,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     if (countRejected) messages.push("超出目标可接收的数量，已随机舍弃多余的连接");
     if (newEdges.length === 0 && messages.length === 0) messages.push("没有可连接到该节点的选中节点");
     showMultiConnectTips(messages);
-  }, [onShowTip, showMultiConnectTips, updateState, uploadRuleOverrides]);
+  }, [onShowTip, showMultiConnectTips, updateState, uploadRuleOverrides, promptLengthOverrides]);
 
   const beginMultiConnectionDrag = useCallback((sourceIds: string[], event: ReactPointerEvent) => {
     const current = stateRef.current;
@@ -4383,7 +4409,8 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     const upstreamPrompt = getInputText(node.id);
     const ownPrompt = node.data.prompt?.trim() ?? "";
     const prompt = [ownPrompt, upstreamPrompt].filter(Boolean).join("\n\n").trim();
-    if (Array.from(prompt).length > MAX_WORKFLOW_PROMPT_LENGTH) return updateNode(node.id, { error: `提示词超过 ${MAX_WORKFLOW_PROMPT_LENGTH} 字，请缩短输入框或连接的文本节点内容。` });
+    const nodePromptMaxLength = getWorkflowNodePromptMaxLength(node, promptLengthOverrides);
+    if (Array.from(prompt).length > nodePromptMaxLength) return updateNode(node.id, { error: `提示词超过 ${nodePromptMaxLength} 字，请缩短输入框或连接的文本节点内容。` });
     if (!prompt) return updateNode(node.id, { error: "请先输入提示词，或连接一个文本节点。" });
     const model = getEnabledImageModel(node.data.model);
     const connectedUploads = getWorkflowConnectedInputUploads(stateRef.current, node.id);
@@ -4401,7 +4428,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     } catch (error) {
       updateNode(node.id, { isRunning: false, error: toUserErrorMessage(error, GENERIC_MEDIA_ERROR_MESSAGE), imageRequestId: undefined });
     }
-  }, [generateImageForNode, getEnabledImageModel, getInputText, getPromptReferenceUrls, getReferenceImages, onShowTip, updateNode, uploadRuleOverrides]);
+  }, [generateImageForNode, getEnabledImageModel, getInputText, getPromptReferenceUrls, getReferenceImages, onShowTip, updateNode, uploadRuleOverrides, promptLengthOverrides]);
 
   // 图片编辑类功能（快捷编辑/去背景/放大/编辑元素/橡皮）统一入口：在源图片节点右侧新建一个图片节点，
   // 把源图当参考图 + 指令走现有 img2img 链路直接跑等待卡，成功后显示图。绝不覆盖源节点。
@@ -4527,7 +4554,8 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     const originalOwnPrompt = node.data.gptImageOptimizationOriginalPrompt?.trim() || node.data.prompt?.trim() || "";
     if (!originalOwnPrompt) return updateNode(node.id, { error: "缺少原提示词，无法进行安全改写。" });
     const originalPromptWithContext = [originalOwnPrompt, upstreamPrompt].filter(Boolean).join("\n\n").trim();
-    if (Array.from(originalPromptWithContext).length > MAX_WORKFLOW_PROMPT_LENGTH) return updateNode(node.id, { error: `提示词超过 ${MAX_WORKFLOW_PROMPT_LENGTH} 字，请缩短输入框或连接的文本节点内容。` });
+    const nodePromptMaxLength = getWorkflowNodePromptMaxLength(node, promptLengthOverrides);
+    if (Array.from(originalPromptWithContext).length > nodePromptMaxLength) return updateNode(node.id, { error: `提示词超过 ${nodePromptMaxLength} 字，请缩短输入框或连接的文本节点内容。` });
     const model = getEnabledImageModel(node.data.model);
     const imageRatio = imageRatioOptions.includes(node.data.ratio ?? "") ? node.data.ratio ?? "16:9" : "16:9";
     const settings = { ratio: imageRatio, resolution: node.data.resolution ?? normalizeImageResolutionForModel(model, getSupportedImageResolutions(model)[0]), ...(isGptImage2Model(model) ? { quality: node.data.quality ?? DEFAULT_IMAGE_QUALITY } : {}) };
@@ -4573,7 +4601,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     } finally {
       optimizingImageNodesRef.current.delete(node.id);
     }
-  }, [generateImageForNode, getEnabledImageModel, getInputText, getPromptReferenceUrls, getReferenceImages, onCredit, updateNode, uploadRuleOverrides, workflowId, workflowTitle]);
+  }, [generateImageForNode, getEnabledImageModel, getInputText, getPromptReferenceUrls, getReferenceImages, onCredit, updateNode, uploadRuleOverrides, promptLengthOverrides, workflowId, workflowTitle]);
 
   const pollVideoNode = useCallback(async (node: WorkflowNode, taskId: string, prompt: string, model: ModelName, settings: { ratio?: string; resolution?: string; duration?: string }, requestId: string, initialUsage?: UsageMeta) => {
     let usage = initialUsage;
@@ -4630,7 +4658,8 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     const upstreamPrompt = getInputText(node.id);
     const ownPrompt = node.data.prompt?.trim() ?? "";
     const prompt = [ownPrompt, upstreamPrompt].filter(Boolean).join("\n\n").trim();
-    if (Array.from(prompt).length > MAX_WORKFLOW_PROMPT_LENGTH) return updateNode(node.id, { error: `提示词超过 ${MAX_WORKFLOW_PROMPT_LENGTH} 字，请缩短输入框或连接的文本节点内容。` });
+    const nodePromptMaxLength = getWorkflowNodePromptMaxLength(node, promptLengthOverrides);
+    if (Array.from(prompt).length > nodePromptMaxLength) return updateNode(node.id, { error: `提示词超过 ${nodePromptMaxLength} 字，请缩短输入框或连接的文本节点内容。` });
     if (!prompt) return updateNode(node.id, { error: "请先输入视频提示词，或连接一个文本/图片节点。" });
     const candidateModels = (options?.modelCandidates ?? []).filter((candidate) => videoModels.some((item) => item.id === candidate));
     const attemptModels: ModelName[] = candidateModels.length > 0 ? candidateModels : [getEnabledVideoModel(node.data.model)];
@@ -4719,7 +4748,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
       }
     }
     updateNode(node.id, { isRunning: false, error: toUserErrorMessage(lastError, GENERIC_MEDIA_ERROR_MESSAGE), taskId: undefined, videoRequestId: undefined });
-  }, [getEnabledVideoModel, getInputText, getPromptReferenceUrls, getReferenceImages, getReferenceImageNames, getReferenceMediaUrls, getIncomingNodes, referenceAssets, onShowTip, pollVideoNode, updateNode, uploadRuleOverrides, videoModels, workflowId, workflowTitle]);
+  }, [getEnabledVideoModel, getInputText, getPromptReferenceUrls, getReferenceImages, getReferenceImageNames, getReferenceMediaUrls, getIncomingNodes, referenceAssets, onShowTip, pollVideoNode, updateNode, uploadRuleOverrides, promptLengthOverrides, videoModels, workflowId, workflowTitle]);
 
   // 视频快捷编辑：新建一个视频节点，用「源视频当参考视频 + 用户提示词」以融合模式重新生成。
   // 参数完全沿用源视频（比例/分辨率/时长）；模型候选链依次 Mini → Fast → 2.0（前一个失败自动换下一个）。
@@ -5119,7 +5148,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     importingAssetsRef.current = false;
   }, [assetsToImport, restoreWorkflowAssetToCanvas, updateState, onAssetsImported]);
 
-  const runtime = useMemo<WorkflowRuntime>(() => ({ selectedNodeId, connectingFrom, connectingTo, multiConnectSources, connectionPointer, modelOptions, workflowTitle, updateNode, deleteNode, disconnectNodes, connectTo, setConnectingFrom, beginConnectionDrag, beginInputConnectionDrag, beginMultiConnectionDrag, runImageNode: (node) => void runImageNode(node), createImageEditNode, createVideoEditNode, createVideoFrameImageNode: (node, frame) => void createVideoFrameImageNode(node, frame), addNodeFromPrompt, createImageElementSplitNodes, runGptImageOptimizationRetry: (node, maxAttempts) => void runGptImageOptimizationRetry(node, maxAttempts), runVideoNode: (node) => void runVideoNode(node), onGeneratedMedia, onShowTip, markNodeAction, onPreviewMedia, getImageDisplayUrl, getVideoPosterDisplayUrl, referenceAssets, referenceAssetsLoadStatus, referenceAssetCounts, onLoadReferenceAssets, onLoadReferenceFilter, referenceFilterLoading, referenceFilterNextOffset, onLoadMoreReferenceAssets, uploadRuleOverrides, editModelToggles, getConnectedInputUploads, getCanvasMediaAssets, connectNodeAsInput, getInputTextLength, uploadFilesAsConnectedNodes }), [beginConnectionDrag, beginInputConnectionDrag, beginMultiConnectionDrag, connectTo, connectingFrom, connectingTo, multiConnectSources, connectionPointer, deleteNode, disconnectNodes, getCanvasMediaAssets, connectNodeAsInput, getConnectedInputUploads, getImageDisplayUrl, getInputTextLength, getVideoPosterDisplayUrl, markNodeAction, modelOptions, onGeneratedMedia, onLoadReferenceAssets, onLoadReferenceFilter, referenceFilterLoading, referenceFilterNextOffset, onLoadMoreReferenceAssets, onPreviewMedia, onShowTip, referenceAssets, referenceAssetsLoadStatus, referenceAssetCounts, runGptImageOptimizationRetry, runImageNode, createImageEditNode, createVideoEditNode, createVideoFrameImageNode, createImageElementSplitNodes, addNodeFromPrompt, runVideoNode, selectedNodeId, updateNode, uploadFilesAsConnectedNodes, uploadRuleOverrides, editModelToggles, workflowTitle]);
+  const runtime = useMemo<WorkflowRuntime>(() => ({ selectedNodeId, connectingFrom, connectingTo, multiConnectSources, connectionPointer, modelOptions, workflowTitle, updateNode, deleteNode, disconnectNodes, connectTo, setConnectingFrom, beginConnectionDrag, beginInputConnectionDrag, beginMultiConnectionDrag, runImageNode: (node) => void runImageNode(node), createImageEditNode, createVideoEditNode, createVideoFrameImageNode: (node, frame) => void createVideoFrameImageNode(node, frame), addNodeFromPrompt, createImageElementSplitNodes, runGptImageOptimizationRetry: (node, maxAttempts) => void runGptImageOptimizationRetry(node, maxAttempts), runVideoNode: (node) => void runVideoNode(node), onGeneratedMedia, onShowTip, markNodeAction, onPreviewMedia, getImageDisplayUrl, getVideoPosterDisplayUrl, referenceAssets, referenceAssetsLoadStatus, referenceAssetCounts, onLoadReferenceAssets, onLoadReferenceFilter, referenceFilterLoading, referenceFilterNextOffset, onLoadMoreReferenceAssets, uploadRuleOverrides, promptLengthOverrides, editModelToggles, getConnectedInputUploads, getCanvasMediaAssets, connectNodeAsInput, getInputTextLength, uploadFilesAsConnectedNodes }), [beginConnectionDrag, beginInputConnectionDrag, beginMultiConnectionDrag, connectTo, connectingFrom, connectingTo, multiConnectSources, connectionPointer, deleteNode, disconnectNodes, getCanvasMediaAssets, connectNodeAsInput, getConnectedInputUploads, getImageDisplayUrl, getInputTextLength, getVideoPosterDisplayUrl, markNodeAction, modelOptions, onGeneratedMedia, onLoadReferenceAssets, onLoadReferenceFilter, referenceFilterLoading, referenceFilterNextOffset, onLoadMoreReferenceAssets, onPreviewMedia, onShowTip, referenceAssets, referenceAssetsLoadStatus, referenceAssetCounts, runGptImageOptimizationRetry, runImageNode, createImageEditNode, createVideoEditNode, createVideoFrameImageNode, createImageElementSplitNodes, addNodeFromPrompt, runVideoNode, selectedNodeId, updateNode, uploadFilesAsConnectedNodes, uploadRuleOverrides, promptLengthOverrides, editModelToggles, workflowTitle]);
 
   return (
     <WorkflowRuntimeContext.Provider value={runtime}>
@@ -6024,7 +6053,7 @@ function WorkflowUploadIcon({ kind }: { kind: WorkflowUploadKind }) {
   return <RiImageLine className="h-5 w-5" aria-hidden="true" />;
 }
 
-function WorkflowMentionEditor({ value, placeholder, running, loadingLabel, maxHeight = 500, maxLength = MAX_WORKFLOW_PROMPT_LENGTH, validReferences, focusRequest, externalEditorRef, onChange, onRun, onPasteImages, onLimit, onCursorChange, onAtTrigger, onAtClose }: { value: string; placeholder: string; running?: boolean; loadingLabel?: string; maxHeight?: number; maxLength?: number; validReferences: Set<string>; focusRequest?: { offset: number; key: number }; externalEditorRef?: MutableRefObject<HTMLDivElement | null>; onChange: (value: string) => void; onRun: () => void; onPasteImages: (files: File[]) => void; onLimit: () => void; onCursorChange: (offset: number) => void; onAtTrigger: (query: { index: number; query: string; cursor: number }) => void; onAtClose: () => void }) {
+function WorkflowMentionEditor({ value, placeholder, running, loadingLabel, maxHeight = 500, validReferences, focusRequest, externalEditorRef, onChange, onRun, onPasteImages, onLimit, onCursorChange, onAtTrigger, onAtClose }: { value: string; placeholder: string; running?: boolean; loadingLabel?: string; maxHeight?: number; validReferences: Set<string>; focusRequest?: { offset: number; key: number }; externalEditorRef?: MutableRefObject<HTMLDivElement | null>; onChange: (value: string) => void; onRun: () => void; onPasteImages: (files: File[]) => void; onLimit: () => void; onCursorChange: (offset: number) => void; onAtTrigger: (query: { index: number; query: string; cursor: number }) => void; onAtClose: () => void }) {
   const editorRef = useRef<HTMLDivElement | null>(null);
   const setEditorRef = useCallback((el: HTMLDivElement | null) => {
     editorRef.current = el;
@@ -6059,7 +6088,9 @@ function WorkflowMentionEditor({ value, placeholder, running, loadingLabel, maxH
 
   const commitInput = useCallback((rawValue: string, caretOffset: number, options?: { syncDom?: boolean }) => {
     if (running) return;
-    const nextValue = Array.from(rawValue).slice(0, maxLength).join("");
+    // ⭐⭐ 超字数**不删字**（2026-08-09 用户拍板）：这里只留 99999 安全网，
+    //    真正的超限表达 = 计数器变红 + 生成键灰掉 + runFromPromptBox 拦截。
+    const nextValue = Array.from(rawValue).slice(0, PROMPT_MAX_LENGTH_CEILING).join("");
     const nextCaretOffset = Math.min(caretOffset, nextValue.length);
     if (rawValue !== nextValue) onLimit();
     onCursorChange(nextCaretOffset);
@@ -6068,7 +6099,7 @@ function WorkflowMentionEditor({ value, placeholder, running, loadingLabel, maxH
     if (atQuery) onAtTrigger(atQuery);
     else onAtClose();
     if (options?.syncDom || rawValue !== nextValue) syncEditor(nextValue, nextCaretOffset);
-  }, [maxLength, onAtClose, onAtTrigger, onChange, onCursorChange, onLimit, running, syncEditor, validReferences]);
+  }, [onAtClose, onAtTrigger, onChange, onCursorChange, onLimit, running, syncEditor, validReferences]);
 
   useEffect(() => {
     const element = editorRef.current;
@@ -6230,6 +6261,12 @@ function WorkflowPromptBox({ node, value, placeholder, maxPromptHeight, onChange
   const localTipTimerRef = useRef<number | null>(null);
   const connectedUploads = runtime.getConnectedInputUploads(node.id);
   const connectedTextLength = runtime.getInputTextLength(node.id);
+  // ⭐ 这个节点的提示词字数上限（后台「上传规则 → 文字」列按模型配置）。
+  //    ⭐⭐ 2026-08-09 起**超限不删字**：合计超了只做「计数器变红 + 生成键灰掉 + 拦住生成」。
+  const nodePromptMaxLength = getWorkflowNodePromptMaxLength(node, runtime.promptLengthOverrides);
+  const promptTotalLength = countPromptLength(value) + connectedTextLength;
+  const isPromptTotalOverLimit = promptTotalLength > nodePromptMaxLength;
+  const promptOverLimitTip = isPromptTotalOverLimit ? getWorkflowPromptOverLimitTipText(promptTotalLength, nodePromptMaxLength) : "";
   const showVideoReferenceModeMenu = node.kind === "video" && supportsVideoReferenceMode(node.data.model);
   const selectedVideoReferenceMode = node.data.videoReferenceMode ?? "reference";
   const uploadRule = getEffectiveWorkflowUploadRule(node, runtime.uploadRuleOverrides, showVideoReferenceModeMenu ? selectedVideoReferenceMode : undefined);
@@ -6275,7 +6312,7 @@ function WorkflowPromptBox({ node, value, placeholder, maxPromptHeight, onChange
   }, [visibleUploads, runtime.referenceAssets]);
   const getVisibleUploadReferenceName = useCallback((upload: WorkflowUploadItem) => uploadReferenceNameById.get(upload.id) ?? getWorkflowUploadReferenceName(upload), [uploadReferenceNameById]);
   const currentImageReferenceCount = showVideoReferenceModeMenu ? mergeWorkflowUploadItems([...visibleUploads.filter((upload) => upload.kind === "image"), ...getWorkflowPromptReferenceUrls(value, node, runtime.referenceAssets, "image").map((url) => ({ id: `prompt-image-${url}`, kind: "image" as const, name: url, url, status: "ready" as const }))]).length : 0;
-  const canRun = (Boolean(value.trim()) || connectedTextLength > 0) && !inputDisabled && currentImageReferenceCount >= requiredImageReferenceCount;
+  const canRun = (Boolean(value.trim()) || connectedTextLength > 0) && !inputDisabled && currentImageReferenceCount >= requiredImageReferenceCount && !isPromptTotalOverLimit;
   const uploadCounts = visibleUploads.reduce<Record<WorkflowUploadKind, number>>((counts, upload) => ({ ...counts, [upload.kind]: counts[upload.kind] + 1 }), { image: 0, document: 0, video: 0, audio: 0 });
   const useSlotUploadLayout = showVideoReferenceModeMenu && (selectedVideoReferenceMode === "first_frame" || selectedVideoReferenceMode === "last_frame" || selectedVideoReferenceMode === "first_last_frame");
   const visibleUploadButtons = useSlotUploadLayout
@@ -6295,6 +6332,11 @@ function WorkflowPromptBox({ node, value, placeholder, maxPromptHeight, onChange
   };
 
   const runFromPromptBox = () => {
+    // 回车发送也走这里：超字数时给一句明确的红字（按钮那边已经灰掉 + 黑底提示了）。
+    if (isPromptTotalOverLimit) {
+      showLocalTip(promptOverLimitTip);
+      return;
+    }
     if (!canRun) return;
     const uploadError = validateWorkflowUploadsForSubmit({ ...node, data: { ...node.data, uploads: mergeWorkflowUploadItems([...(node.data.uploads ?? []), ...connectedUploads]) } }, runtime.uploadRuleOverrides, showVideoReferenceModeMenu ? selectedVideoReferenceMode : undefined);
     if (uploadError) {
@@ -6346,10 +6388,10 @@ function WorkflowPromptBox({ node, value, placeholder, maxPromptHeight, onChange
     const selection = getCurrentWorkflowSelection();
     const cursor = activeAtQuery ? activeAtQuery.index : selection.start;
     const insertEnd = activeAtQuery ? activeAtQuery.cursor : selection.end;
-    const maxOwnPromptLength = Math.max(0, MAX_WORKFLOW_PROMPT_LENGTH - connectedTextLength);
+    const maxOwnPromptLength = PROMPT_MAX_LENGTH_CEILING;
     const rawNext = `${value.slice(0, cursor)}${referenceText}${value.slice(insertEnd)}`;
     const nextValue = Array.from(rawNext).slice(0, maxOwnPromptLength).join("");
-    if (nextValue.length < rawNext.length) showLocalTip("输入框和连接文本合计最多2000字");
+    if (nextValue.length < rawNext.length) showLocalTip(getPromptCeilingTipText());
     const nextOffset = Math.min(maxOwnPromptLength, cursor + referenceText.length);
     suppressAtTriggerUntilRef.current = Date.now() + 500;
     onChange(nextValue);
@@ -6710,7 +6752,9 @@ function WorkflowPromptBox({ node, value, placeholder, maxPromptHeight, onChange
         })}
         {useSlotUploadLayout ? visibleUploadButtons.map(renderUploadButton) : null}
       </div>
-      <WorkflowMentionEditor value={value} placeholder={placeholder} running={inputDisabled} loadingLabel={promptLoading ? "正在加载中..." : undefined} maxHeight={maxPromptHeight} maxLength={Math.max(0, MAX_WORKFLOW_PROMPT_LENGTH - connectedTextLength)} validReferences={validReferenceNames} externalEditorRef={editorElementRef} onChange={onChange} onRun={runFromPromptBox} onPasteImages={(files) => { void handleUploadFiles("image", files); }} onLimit={() => showLocalTip("输入框和连接文本合计最多2000字")} onCursorChange={setCursorOffset} onAtTrigger={(query) => { if (Date.now() < suppressAtTriggerUntilRef.current) return; runtime.onLoadReferenceFilter?.(referenceGroupType, 0); setActiveAtQuery(query); setIsReferenceMenuOpen(true); }} onAtClose={() => { setActiveAtQuery(null); setIsReferenceMenuOpen(false); }} />
+      {/* ⭐ 计数器独立占一行、居右（工作流节点也加高一行）；显示的是**合计**，因为限制本身是合计 */}
+      <PromptLengthCounterRow used={promptTotalLength} maxLength={nodePromptMaxLength} />
+      <WorkflowMentionEditor value={value} placeholder={placeholder} running={inputDisabled} loadingLabel={promptLoading ? "正在加载中..." : undefined} maxHeight={maxPromptHeight} validReferences={validReferenceNames} externalEditorRef={editorElementRef} onChange={onChange} onRun={runFromPromptBox} onPasteImages={(files) => { void handleUploadFiles("image", files); }} onLimit={() => showLocalTip(getPromptCeilingTipText())} onCursorChange={setCursorOffset} onAtTrigger={(query) => { if (Date.now() < suppressAtTriggerUntilRef.current) return; runtime.onLoadReferenceFilter?.(referenceGroupType, 0); setActiveAtQuery(query); setIsReferenceMenuOpen(true); }} onAtClose={() => { setActiveAtQuery(null); setIsReferenceMenuOpen(false); }} />
       <div className="mt-3 flex min-w-0 flex-nowrap items-center justify-between gap-3 pb-0.5">
         <div className="flex min-w-0 flex-1 flex-nowrap items-center gap-2 text-[12px]">
           <div data-workflow-menu className="relative shrink-0" onPointerDown={(event) => event.stopPropagation()}>
@@ -6752,9 +6796,12 @@ function WorkflowPromptBox({ node, value, placeholder, maxPromptHeight, onChange
           {children}
         </div>
         {showVideoReferenceModeMenu ? <WorkflowVideoReferenceModeMenu modelId={node.data.model} value={selectedVideoReferenceMode} onChange={changeVideoReferenceMode} /> : null}
+        {/* ⭐ 超字数灰掉时用**通用黑底提示框**，⛔ 别用原生 title */}
+        <BlackHoverTooltip label={isPromptTotalOverLimit ? getPromptLimitTooltipText(nodePromptMaxLength) : ""} className="shrink-0">
         <button type="button" disabled={!canRun} onClick={runFromPromptBox} className="inline-flex h-9 w-9 shrink-0 items-center justify-center whitespace-nowrap rounded-[10px] bg-[#111111] text-white transition hover:bg-[#000000] disabled:cursor-not-allowed disabled:bg-[#d7d7d7] disabled:text-white" aria-label="生成">
           {running ? <RiLoader4Line className="h-4 w-4 animate-spin" /> : <RiArrowUpLine className="h-4 w-4" />}
         </button>
+        </BlackHoverTooltip>
       </div>
     </div>
   );
@@ -6811,10 +6858,8 @@ function WorkflowVideoReferenceModeMenu({ modelId, value, onChange }: { modelId?
   const SelectedIcon = referenceModeOptions.find((option) => option.value === value)?.icon ?? RiImageCircleLine;
   return <div data-workflow-menu className="relative" onPointerDown={(event) => event.stopPropagation()}><button type="button" onClick={toggle} className={`${workflowToolButtonClassName} ${open ? "yinzao-tool-button-active" : ""}`}><SelectedIcon className="h-[18px] w-[18px] shrink-0 text-[#777777]" /><span className="font-medium text-[#777777]">{getWorkflowVideoReferenceModeLabel(modelId, value)}</span><RiArrowDownSLine className="h-3.5 w-3.5 shrink-0 text-[#8a8a8a]" /></button>{open ? <div className="absolute bottom-full right-0 z-[10000] mb-2 min-w-[180px] rounded-[12px] bg-white p-2 shadow-[0_18px_40px_rgba(0,0,0,0.12)]"><div className="px-2 pb-2 text-[12px] font-medium text-[#a0a0a0]">参考模式</div>{referenceModeOptions.map((option) => { const OptionIcon = option.icon; return <button key={option.value} type="button" onClick={() => { onChange(option.value); setOpen(false); }} className={option.value === value ? "flex h-10 w-full items-center justify-between whitespace-nowrap rounded-[8px] bg-[#f5f5f5] px-3 text-left text-[14px] font-medium text-[#111111]" : "flex h-10 w-full items-center justify-between whitespace-nowrap rounded-[8px] px-3 text-left text-[14px] text-[#555555] hover:bg-[#f7f7f7]"}><span className="flex items-center gap-2"><OptionIcon className="h-[18px] w-[18px] shrink-0 text-[#777777]" /><span>{option.label}</span></span>{option.value === value ? <RiCheckLine className="h-[18px] w-[18px] text-[#111111]" /> : null}</button>; })}</div> : null}</div>;
 }
-function getGenerationModelIcon(modelId: string) { if (modelId.startsWith("byteplus:") || modelId.startsWith("byteplus/") || modelId.startsWith("ep-")) return BytePlusIcon; if (modelId.startsWith("openai/")) return RiOpenaiFill; if (modelId.startsWith("google/")) return RiGoogleFill; if (modelId.startsWith("bytedance/") || modelId.startsWith("bytedance-seed/")) return RiTiktokFill; if (modelId.startsWith("minimax/")) return MiniMaxIcon; if (modelId.startsWith("kwaivgi/")) return KlingIcon; return null; }
 function isGoldGenerationModel(modelId: string) { return modelId === "openai/gpt-5.4-image-2" || modelId === "byteplus:video.seedance-2-5"; }
 function getModelLabel(options: readonly (ConversationModel | GenerationModel)[], value: string) { return options.find((item) => item.id === value)?.label ?? value; }
-function AiGenerate3dIcon({ className = "h-[18px] w-[18px] shrink-0 text-[#777777]" }: { className?: string }) { return <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" className={className}><path d="M15.1416 2.81836L13.1016 3.94824L12 3.31055L4.5 7.65234V7.6582L12 12V20.6895L19.5 16.3467V11.5L21.5 10.3291V17.5L12 23L2.5 17.5V6.5L12 1L15.1416 2.81836ZM18.5293 2.31934C18.7059 1.8935 19.2943 1.89349 19.4707 2.31934L19.7236 2.93066C20.1556 3.97346 20.9615 4.80618 21.9746 5.25684L22.6924 5.57617C23.1026 5.75901 23.1026 6.3562 22.6924 6.53906L21.9326 6.87695C20.9449 7.31624 20.1534 8.11944 19.7139 9.12793L19.4668 9.69336C19.2864 10.1075 18.7137 10.1075 18.5332 9.69336L18.2871 9.12793C17.8476 8.11929 17.0552 7.31628 16.0674 6.87695L15.3076 6.53906C14.8974 6.35622 14.8974 5.75899 15.3076 5.57617L16.0254 5.25684C17.0385 4.80618 17.8445 3.97348 18.2764 2.93066L18.5293 2.31934Z" /></svg>; }
 function RatioOptionIcon({ option }: { option: string }) { const meta = ratioCardMeta[option] ?? ratioCardMeta["1:1"]; if (meta.icon === "spark") return <RiShining2Line className="h-[18px] w-[18px] shrink-0 text-[#777777]" />; return <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true" className="shrink-0 text-[#777777]"><rect x={(18 - Number(meta.width)) / 2} y={(18 - Number(meta.height)) / 2} width={meta.width} height={meta.height} rx="2.2" stroke="currentColor" strokeWidth="1.4" /></svg>; }
 function CompactResolutionIcon({ option, mode }: { option?: string; mode: "image" | "video" }) { if (mode === "video") return <span className="inline-flex h-4 min-w-6 items-center justify-center rounded-[3px] bg-[#111111] px-1 text-[9px] font-bold leading-none text-white">{option === "480p" ? "SD" : option === "1080p" ? "FHD" : option === "4K" ? "4K" : "HD"}</span>; return <span className="inline-flex h-4 min-w-5 items-center justify-center rounded-[3px] border border-[#d5d5d5] px-1 text-[9px] font-bold leading-none text-[#777777]">{option ?? "1K"}</span>; }
 function WorkflowImageQualityMenuSingle({ value, onChange, className = "" }: { value: string; onChange: (quality: string) => void; className?: string }) {

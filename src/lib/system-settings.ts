@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { UploadKind, UploadRuleOverrides } from "@/lib/upload-rules";
+import { normalizePromptMaxLength, type PromptLengthOverrides } from "@/lib/prompt-length";
 import { PERMANENT_ADMIN_EMAILS } from "@/lib/permanent-admins";
 
 export const BYTEPLUS_CONVERSATION_IMAGE_MODEL_KEYS: Record<string, string> = {
@@ -423,6 +424,33 @@ function sanitizeUploadRuleOverrides(value: unknown): UploadRuleOverrides {
 
 export function getUploadRuleOverrides() {
   return sanitizeUploadRuleOverrides(getJsonEnvValue<UploadRuleOverrides>("UPLOAD_RULE_OVERRIDES", {}));
+}
+
+// ⭐ 「提示词字数上限」按模型配置（与上传数量是**两套独立** override，粒度不同：
+//    上传数量按「模型+参考模式」，字数只按「模型」—— 因为用户要求"一个模型只要一个开关"）。
+function sanitizePromptLengthOverrides(value: unknown): PromptLengthOverrides {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const result: PromptLengthOverrides = {};
+  for (const [modelKey, rawRule] of Object.entries(value as Record<string, unknown>)) {
+    if (!modelKey || !rawRule || typeof rawRule !== "object" || Array.isArray(rawRule)) continue;
+    const raw = rawRule as Record<string, unknown>;
+    result[modelKey] = {
+      enabled: Boolean(raw.enabled),
+      maxLength: normalizePromptMaxLength(raw.maxLength),
+    };
+  }
+  return result;
+}
+
+export function getPromptLengthOverrides() {
+  return sanitizePromptLengthOverrides(getJsonEnvValue<PromptLengthOverrides>("PROMPT_LENGTH_OVERRIDES", {}));
+}
+
+export async function updatePromptLengthOverrides(overrides: PromptLengthOverrides) {
+  const sanitized = sanitizePromptLengthOverrides(overrides);
+  await writeLocalEnvValues(new Map([["PROMPT_LENGTH_OVERRIDES", formatEnvValue(JSON.stringify(sanitized))]]));
+  process.env.PROMPT_LENGTH_OVERRIDES = JSON.stringify(sanitized);
+  return sanitized;
 }
 
 export async function updateUploadRuleOverrides(overrides: UploadRuleOverrides) {

@@ -4,6 +4,33 @@
 This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code. Heed deprecation notices.
 <!-- END:nextjs-agent-rules -->
 
+# 铁律⭐⭐⭐：所有 GET 接口**必须显式带 `Cache-Control: no-store`** —— 没有这个头，运营商/网关的透明缓存会给用户返旧数据（2026-08-09 正式服真实事故）
+
+2026-08-09 用户报「正式服顶部公告：后台写的是『新增』，前台显示『新建』（10 小时前那一版），**刷新一下新的、再刷新旧的、过几秒自动又变回旧的**」。
+根因**不在数据库、不在我们的逻辑**：`/api/announcement` 和 `/api/auth/me` 的响应
+**一个 `Cache-Control` 都没有**（也没有 `Expires`、没有 `Last-Modified`）。
+按 RFC 9111 §4.2.2，这种 200 GET 响应允许任何共享缓存**自行用启发式过期决定缓存多久**
+→ 用户侧的运营商/公司网关透明代理存了一份很旧的副本。
+
+- ⛔⛔ **代码里的 `fetch(url, { cache: "no-store" })` 治不了这个** —— 那只约束**浏览器自己**的 HTTP 缓存，
+  中间代理只看**响应头**。防线必须在服务端响应头上（我们两个接口的 fetch 早就写了 no-store，照样翻车）。
+- ⭐ **判据（一行、二值）**：`curl -sI <接口>` 看有没有 `Cache-Control`。**没有 = 允许被别人随便缓存**。
+- ⭐⭐ **唯一实现 = `src/proxy.ts`**：对所有 `/api/*` 统一加
+  `Cache-Control: no-store, no-cache, must-revalidate, max-age=0` + `Pragma: no-cache` + `Expires: 0`
+  （后两个是给只认 HTTP/1.0 的老代理看的，成本为零）。
+  ⭐ **白名单 `CACHEABLE_API_PATHS`**：`/api/media-thumbnail` **必须放行**（内容寻址、阿里正式那份 nginx 故意缓存它 30 天、
+  路由自己返回 `immutable`）——⛔ 一刀切给所有 /api 加 no-store 会把缩略图缓存打掉。
+- ⛔⛔⛔ **这个 bug 在数据中心 / 干净浏览器里永远复现不出来**（那条链路上没有透明缓存）：
+  我第一轮从腾讯服务器 curl 20/20 全对、Playwright 干净上下文刷 8/8 全对，据此回答用户"没有出入"——**是错的**。
+  ⭐ 教训：**用户报"时好时坏/刷新就变"，先去 `curl -sI` 数响应头，别急着测"我这边能不能复现"。**
+- ⭐ 顺带一个诊断姿势（当时最迷惑的一步）：DOM 文本 = 旧值、而 **React 的 `memoizedProps` = 新值**，
+  且两个接口的实时返回都是新值 → 这种"三方对不上"几乎一定是**链路上有人给了旧响应**，不是渲染 bug。
+- ⚠️ 影响面不止公告：`/api/auth/me` 被缓存意味着**积分 / 昵称 / 头像也可能显示旧值**，
+  甚至可能与「间断性卡死」那类怪现象有关（未证实，但值得下次排查时想到）。
+- ⚠️ 上完正式服后**用户自己那条链路上的旧副本可能还没过期** → 要提醒他强刷一次（Ctrl+F5）。
+<!-- END:nextjs-agent-rules-anchor-do-not-remove -->
+
+
 # 铁律⭐⭐：后台「按模型」的配置 key **必须带版本号** —— 同系列不同代共用一个 key = 静默把新模型砍回老模型的量（2026-08-09 加）
 
 `BYTEPLUS_SEEDANCE_UPLOAD_RULE_KEYS` 当初写成 `byteplus:video.seedance:reference`（**不带版本号**），
@@ -1286,6 +1313,26 @@ nginx 配置在仓库里有副本（`nginx/flashmuse.conf`、`deploy/staging/*.c
 
 - 反例（已踩坑，2026-07-14）：`getBytePlusProviderKey`（模型→BytePlus 端点映射）被复制到 `image/route`、`video/route`、`generation-jobs` 三份，各改各的 → 只修了对话流那份，Agent/通用模式漏修 → 线上 Agent/通用生图/生视频用新模型直接失败。已收敛为唯一实现 `src/lib/byteplus-provider-key.ts`。
 - 判断标准：**理论上"生图在一个地方能用，其它地方都应该能用"**（生视频、上传、进库、读取、命名、扣费、参考图……同理），因为它们本就该走同一套。若出现"对话流可以、工作流/Agent 不行"，几乎一定是某处该统一却分叉了——先找分叉点收敛，别再打局部补丁。
+- ⭐⭐ **2026-08-09 新增两个唯一权威（改相关功能必须复用）**：
+  - **提示词字数上限 `src/lib/prompt-length.ts`**（`DEFAULT_PROMPT_MAX_LENGTH` / `MODEL_DEFAULT_PROMPT_MAX_LENGTH`（2.0 系 3500、2.5 = 14500、其余 2000）/ `getPromptLengthOverrideKey`（**模型粒度、故意不看参考模式** → 一个模型一个开关）/ `getDefaultPromptMaxLength` / `getPromptMaxLength` / `normalizePromptMaxLength` / `PROMPT_MAX_LENGTH_CEILING=99999`）。
+    后台「上传规则」页的「文字」列配置它（env `PROMPT_LENGTH_OVERRIDES`，与上传数量的 `UPLOAD_RULE_OVERRIDES` **是两套、粒度不同**）。
+    ⛔ 别再写死 2000；⛔ 后台面板显示的默认值必须走 `getDefaultPromptMaxLength`（面板显示 2000 而实际 14500 的话，管理员碰一下开关就把 2.5 静默砍到 2000）。
+  - **模型图标 `src/components/model-icon.tsx`**（`getGenerationModelIcon` / `ModelIcon` / `AiGenerate3dIcon` / `AiAgentLineIcon` / `DeepSeekIcon`）：
+    2026-08-09 收敛，原来**存在三份且已漂移**（工作流那份漏 DeepSeek、后台系统设置那份漏 MiniMax + 可灵）。
+    `chat-workbench-core.tsx` 里**再导出**这几个符号，所以老 import 路径不用改。⛔ 禁止再在别处写 `modelId.startsWith("xxx/")` 判图标。
+  - **提示词计数器 `src/components/prompt-length-counter.tsx`（`PromptLengthCounterRow`）** + **服务端超限日志 `src/lib/prompt-length-server.ts`（`logPromptLengthOverLimit`）**（2026-08-09 新增）。
+    ⭐⭐ **口径（用户逐条拍板，⛔ 别改回去）**：**超字数不删字**（学即梦）——
+    ① 任何输入路径都**不许** `slice(0, maxLength)`，只留 `PROMPT_MAX_LENGTH_CEILING = 99999` 安全网；
+    ② 计数器是**输入框里独立的一行**（居右、灰字 11px、有内容才显示数字但**那一行始终占位**，否则一打字整个框跳高）——
+    **对话流 / 工作流节点加高一行、资产库不加高**；⛔ 不是浮在右上角的绝对定位层（会压住文字，被用户否过）；
+    ③ 超限 = 发送/生成按钮灰掉 + **通用黑底提示框**「当前模型提示词只支持XXXX字！」（⛔ 不用原生 `title`）+ 真按下去时红字拦住；
+    ④ **服务端只记日志不拦**（`/api/image`+`/api/video`，事件 `prompt-length-over-limit`，喂 `sourcePrompt`）——
+    判据 `grep -c '"prompt-length-over-limit"'`，观察够了再决定要不要开拦截。
+    ⚠️ 工作流的计数显示/判定用的是**合计**（输入框 + 连接的文本节点），因为限制本身是合计。
+  - **黑底悬浮提示 `src/components/black-hover-tooltip.tsx`（`BlackHoverTooltip`）**：2026-08-09 从
+    `lib/chat/chat-workbench-core.tsx` 搬出来（**工作流画布不能 import core，会循环依赖**），core 里**再导出**、老路径可用。
+    ⭐ `label` 为空（`""`）时**整个气泡不渲染**，所以条件提示直接写 `label={条件 ? "文案" : ""}`，
+    ⛔ 别再套三元包两份按钮、也别再用原生 `title=`。
 - 已有的统一入口举例（改相关功能务必复用，勿另起炉灶）：**内容审核 `src/lib/content-moderation.ts`(唯一权威：`CONTENT_POLICY_ERROR_MESSAGE`/`CONTENT_POLICY_ERROR_CODE`/`SENSITIVE_POLITICS_CATEGORY`/`normalizeContentModerationText`/`splitContentModerationTerms`/`findContentPolicyMatch`/`enforceContentPolicy`/`processContentModerationQueue` + `MODERATION_MODEL_CHAIN`：2026-08-07 新增。⭐ 入口**三处**：`/api/image`、`/api/video`（覆盖对话流/工作流/资产库/Agent 的**生成**提示词，`kind:"image"/"video"`）、以及 **`/api/agent-plan`（2026-08-09 新增，`kind:"chat"`，覆盖 Agent/通用模式的对话——它是每条 agent/general 消息的必经入口，命中直接返回红字、不调模型不扣分）**。⛔ 仍不管纯 `/api/chat`（提示词优化/反推）与普通聊天。⚠️ `enforceContentPolicy` 的 `kind` 现在是 `"image"|"video"|"chat"`。⭐ 审核一律喂 `sourcePrompt`（用户原话）。⭐ 语义审核候选链 = `openai/gpt-5.6-terra-pro`(openrouter, key `moderation.priority`) → `byteplus:chat.seed-2-0-pro`(key `moderation.seed-2-0-pro`)，两个默认都开；⛔ 新增模型要三处一起改：`MODERATION_MODEL_CHAIN` + `system-settings` 的两张默认表 + 后台 `admin-system-settings-panel.tsx` 的「内容审核语义模型」那一行。⛔ 这里故意不复用 `openrouter.ts` 的 `getTextProviderConfig`/`postChatCompletion`（那条路没超时、非 200 还回落 curl，对审核太重）)**、图片缩略图生成 `src/lib/local-assets.ts`(`ensureGeneratedImageThumbnail(url, { syncToAli })` 唯一实现 + `createGeneratedImageThumbnail` 薄封装：2026-08-04 收敛，原来 `api/media-thumbnail/route.ts`（浏览器请求时**懒生成**）和 `local-assets.ts`（生成图落盘时**即时生成**）**一字不差存了两份**（连 `scale=256:256`/`-q:v 5`/timeout 都一样）。⭐ 分叉的代价是真实的：懒生成那份**从来不同步阿里** → 阿里镜像里上传图缩略图长期一张都没有。⭐ `syncToAli` 是**选项且默认 false**：即时生成那 5 个调用方是把 `[localUrl, thumbnailUrl]` **合成一次** `syncGeneratedFilesToAli` 发的，那次的 `ok` 就是 `job.aliSynced`（前端拿它判断能不能读阿里镜像），无条件同步会重复传 + 让语义变模糊。⛔ 路径穿越校验和后缀白名单**刻意留在路由**（只有它的入参来自用户），别下沉)**、进库 `src/lib/media-asset-record.ts`(`buildMediaAssetRecord`/`classifyAsset`)、生成任务与读取 `src/lib/generation-jobs.ts`、扣费 `src/lib/credits.ts`(`chargeCredits`)、**腾讯→阿里文件传输 `deploy/ali-parallel-pull.sh`(阿里侧并发分片拉取器，唯一实现) + `src/lib/ali-sync.ts`(应用侧调用) + `scripts/backfill-ali-media.sh`(补历史缺口) + `src/lib/transfer-log.ts`(传输速度日志唯一实现)：2026-08-04 新增，⛔ 别再写第二份分片逻辑、⛔ 别退回单流 rsync，原理与实测数据见本文件「腾讯↔阿里传文件一律走并发分片」那条铁律**、**视频用量/成本 `src/lib/video-usage-cost.ts`(`getVideoUsageMeta`/`withVideoUsdFallback`/`withChargedVideoUsage`：2026-08-03 收敛，原来 `api/video/route.ts`（前台同步轮询）和 `generation-jobs.ts`（后台队列）**各存一份一字不差的** getUsageMeta/withBytePlusVideoUsd/withChargedUsage —— 扣费金额是钱，两份各自演化就会"一条路扣对、另一条路白送"。⭐ 里面还有**兜底定价**：上游没给 `usage.usd` 时按公式算并标 `usdFromFallbackPricing`，因为 `usd=0` 是**静默白送**、不报错也不进红字)**、**视频参考模式 `src/lib/upload-rules.ts`(`VideoReferenceMode` 类型 + `supportsVideoReferenceMode`/`getVideoReferenceImageMaxCount`/`getEffectiveVideoReferenceItems`/`getVideoReferenceLimitHint`) + `src/lib/video-reference-modes.ts`(`getVideoReferenceModeOptions`/`getVideoReferenceModeLabel`/`getRequiredVideoReferenceImageCount`：**选项按模型给** —— BytePlus Seedance 3 项、Hailuo 3 四项含尾帧；2026-08-03 收敛，工作流原来那份本地类型**漏了 `last_frame`**，直接导致 H3 一开始不敢在工作流放出来)**、**NEW 徽标 `src/components/new-badge.tsx`(`NewBadge`，配 `models.ts` 的 `isNewGenerationModel`：原来模型下拉是青绿小圆角、侧边栏「工作流模式」是绿色胶囊，同一个东西两种长相，2026-08-03 用户拍板统一)**、模型→端点键 `src/lib/byteplus-provider-key.ts`、**模型拒绝文案 `src/lib/error-message.ts`(`MODEL_REFUSED_PREFIX` + `isModelRefusedMessage` + `buildModelRefusedMessage`：⭐ 2026-07-29 起「模型拒绝 / 平台安全策略 / 版权限制」**三类合并成唯一一句**「模型因色情/暴力/隐私安全等原因拒绝出图，你可以调整提示词或更换参考图后重试。以下是模型返回的拒绝原因：“…”」，不再按模型分"能不能AI改写"。⛔ 改这句必须同步改三处：`gpt-image-safety-retry.ts` 的**前缀**判定、`admin-failure-triage.ts` 的 `FAILURE_REASON_SQL` 归一化、`error-message.ts` 顶部的幂等保护；`LEGACY_MODEL_REFUSED_MESSAGES` 里的老文案只用于判定/后台归一化，禁止拿来生成新文案)**、**AI 安全改写 `src/lib/gpt-image-safety-retry.ts`(`isGptImageSafetyFailure`/`runPromptSafetyRetry`/`ensureMentionNamesPreserved`：⛔⭐ **2026-07-29 起只有工作流用它** —— 对话流与资产库那两套已按用户拍板整体撤掉（对话流"一条提示词出多图"，每张独立改写会让显示的提示词对不上；且并发多链会互抢 `message.requestId` 导致成功图被静默丢弃，正式服实测 17 张成功只剩 2 张、白烧 197 积分）。⭐ **2026-07-30 用户拍板：对话流的 AI 改写彻底不做了（原 M021 已取消），别把删掉的代码捡回来、也别再提重做。**)**、**参考素材 url 归一化 `src/lib/reference-asset-url.ts`(`normalizeReferenceAssetUrl`/`normalizeReferenceAssetUrls`：进模型/送审前必过。把「给人看的动态缩略图接口地址 `/api/media-thumbnail?url=`」和「自家主机绝对前缀（含已退役马来 IP）」一律还原成文件静态直链 —— 平台是来"上门自取"的，给它动态接口它会现场等我们生成缩略图然后超时。8 处咽喉共用：image/video/byteplus-assets 三个 route 入口 + `generation-jobs.resolveReferenceUrls` + openrouter/openrouter-video/seedance/video-route 的底层拼址，禁止再在别处自己判 `startsWith("/generated/")`)**、参考图 hint `src/lib/reference-hint.ts`、错误文案 `src/lib/error-message.ts`、登录失效跳转 `src/lib/session-expired-redirect.ts`、@提及匹配/删除 `src/lib/mention-text.ts`（⭐ 2026-08-02 起也是 **contenteditable 选区引擎的唯一权威**：`getEditableText`/`appendEditorText`/`getSelectionTextOffset`/`getSelectionTextRange`/`setSelectionTextOffset`/`getAtQueryAtCursor(ForReferences)`，对话流输入框与工作流节点输入框共用，采用「mention 原子化」版本——光标绝不落进 @文件名 span 内部；原来两处各存一份且已漂移）、上传文件命名 `src/lib/upload-name.ts`(`resolveUploadName`：同图复用名/异名错开_2/去扩展名/改名跟随；对话流·工作流·资产库 图·视频·音频·文档统一走它，前端只显示服务端返回的 `name`，禁止再在前端各写一套取名/版本化逻辑)、音频波形播放器 `src/components/audio-waveform-player.tsx`(`AudioWaveformPlayer`：wavesurfer.js，`variant="node"` 工作流画布音频节点 / `variant="card"` 资产库上传音频方卡；工作流·资产库统一走它，禁止再各写一套音频播放 UI)、视频播放按钮角标 `src/components/video-play-badge.tsx`(`VideoPlayBadge`：全平台所有视频缩略图中间的播放标记，5 档 size；对话流·工作流·资产库·@引用·图层·后台·上传缩略图统一走它)、**媒体时长校验 `src/lib/media-upload-validation.ts`(`MEDIA_DURATION_EPSILON_SECONDS` 唯一容差常量 + `validateReferenceMediaDurationRange` 单条时长校验唯一实现 + `validateReferenceVideoDimensions` 参考视频纯尺寸校验唯一实现【2026-08-02 收敛，原来 chat-core 和 workflow-inner 各手抄一份 300/6000/0.4/2.5/409600/8295044】；对话流·工作流·服务端三处共用，禁止再在组件里写本地副本——历史上就是各写一份导致 15.35/15.35/16.01 三个数都错)**、**参考素材总时长 `src/lib/upload-rules.ts`(`validateReferenceTotalDuration`)**、**工作流节点下载 `downloadWorkflowNode()`(`workflow-tldraw-canvas-inner.tsx`，图片/视频/文本通用；右键菜单与快捷菜单共用，禁止再内联写一份)**、**静态媒体地址 `src/lib/static-media-url.ts`(`getStaticMediaUrl`/`toLocalGeneratedUrl`/`shouldUseStaticAssetBaseUrl`：对话流·工作流画布统一走它，禁止再各写一份——工作流画布原来那份是空函数，从没生效过)**、**AUTH_SECRET 读取 `src/lib/auth-secret.ts`(`getAuthSecret`：生产没配直接抛错，禁止再写 `|| "flashmuse-local-dev-secret-change-me"` 兜底)**、**接口限流 `src/lib/rate-limit.ts`(`rateLimitAllow`/`getClientIp`)**、**诊断日志轮转 `src/lib/diagnostics-log-rotate.ts`(`appendDiagnosticsJsonl`：三个 diagnostics-log 统一走它，超 20MB 轮转成 .1)**。
 - ⛔⛔ **往 `WorkflowSelectedNodeOverlay`（工作流选中节点浮层、含图片/视频快捷菜单）里加 Hook 会把整个 tldraw 画布搞崩**（2026-07-29 踩过）：它在 `workflow-tldraw-canvas-inner.tsx:2493` 有 `if (!selected) return null;`，在其**之后**加 `useMemo`/`useState` 等 → **React #310「Rendered more hooks than during the previous render」** → 点任意节点，画布整个变成「Something went wrong / Please refresh your browser」。**加在提前 return 之前，或干脆别用 Hook。**
 - ⛔⛔ **排查对话流失败卡时必读（2026-07-29 踩过、误报过一次）**：失败卡包在 **`<LazyMediaMount height={250}>`**（`chat-workbench.tsx:16531`）里 —— **滚进视口才挂载**，没进视口时 DOM 里根本没有卡；而红字**不在**这个组件里、一直显示。所以**「红字在、卡不在」是正常现象，不是数据丢了**。用 `querySelectorAll('.flashmuse-failed-media-card')` 统计失败卡不可靠，必须先 `scrollIntoView` 再断言。

@@ -11,6 +11,7 @@ import { validateReferenceImageCount } from "@/lib/upload-rules";
 import type { Prisma } from "@prisma/client";
 import { appendUploadRuleFeedbackLog } from "@/lib/upload-rule-feedback-log";
 import { appendGenerationDiagnosticsLog, summarizeGeneratedReference } from "@/lib/generation-diagnostics-log";
+import { logPromptLengthOverLimit } from "@/lib/prompt-length-server";
 import { recordGenerationEvent } from "@/lib/analytics-events";
 import { createImageJob } from "@/lib/generation-jobs";
 import { getBytePlusProviderKey } from "@/lib/byteplus-provider-key";
@@ -105,6 +106,16 @@ export async function POST(request: Request) {
     const moderationPrompt = (typeof body.sourcePrompt === "string" && body.sourcePrompt.trim()) ? body.sourcePrompt.trim() : prompt;
     const policy = await enforceContentPolicy({ prompt: moderationPrompt, userId: user?.id, requestId: body.requestId, kind: "image", source: creditSource?.startsWith("workflow_") ? "workflow" : isAssetImageCreditSource(creditSource) ? "asset" : creditSource === "agent_image_generation" ? "agent" : "conversation", recordEvent: !body.suppressContentModerationRecord });
     if (policy.blocked) return NextResponse.json({ error: CONTENT_POLICY_ERROR_MESSAGE, errorCode: CONTENT_POLICY_ERROR_CODE }, { status: 400 });
+    // ⭐ 提示词超字数：**只记日志、不拦**（用户拍板先观察）。唯一实现 lib/prompt-length-server.ts。
+    logPromptLengthOverLimit({
+      context: { mode: isAssetImageCreditSource(creditSource) ? "asset-image" : "image", modelId: body.model },
+      sourcePrompt: moderationPrompt,
+      requestId: body.requestId,
+      userId: user?.id,
+      model: body.model,
+      creditSource,
+      flow: body.flow,
+    });
 
     // 后端持久任务模式：建 job 立即返回 jobId，由常驻 worker 跑到底（断开/刷新/重启不影响）。
     if (body.async) {

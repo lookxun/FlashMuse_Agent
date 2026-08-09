@@ -12,6 +12,264 @@
 ---
 
 
+## 第五十九次会话（2026-08-09）：提示词「超字数不删字」全套改造（计数器独立一行 + 按钮灰掉 + 黑底提示 + 服务端只记日志）+ BlackHoverTooltip 收敛 —— **测试服 `v1.0.0.94`（整批推、未测界面）**
+
+> | | 版本 / 状态 |
+> |---|---|
+> | 本地 = 测试服 | **`v1.0.0.94`**（本次整批推，「版本号一样 = 代码一样」这条约定**已修复**）|
+> | 正式服 / GitHub | `v1.0.0.90` —— **v91 / v92 / v93 / v94 全都没上正式服**；本地这批**仍未 commit** |
+>
+> ⭐ `tsc` 0 错、`npm test` 15/15、纯函数验证 16/16、改动文件 eslint **零新增**（还顺手清掉 3 条历史报警）。
+> ⛔ **本次按用户要求「不要测试」** → 测试服**一次界面都没走过**，只验了"活着"（health / x-app-version / no-store 头 / 外网 200）。
+> 无 Prisma 迁移、无 compose/nginx 改动。
+
+### 一、用户拍板的口径（⛔ 别再自己发明方案，这几条是他一句句定下来的）
+
+1. **学即梦：不删字** —— 打字/粘贴都允许超上限，字**全留在框里**让用户自己删；超了拦住发送。
+2. **计数器的形态（用户画了红框图）**：
+   **在输入框里"加高一行"**，计数器放在那一行、**居右、灰字**，字号和上方「清空输入框」一样（11px）；
+   ⛔ **绝不加宽、绝不压住提示词文字**（这是他第二轮明确纠正的：不是浮在右上角，而是"把输入区域往下移一行"）。
+   ⭐ **对话流 / 工作流节点 = 加高一行**；**资产库不加高**，只把输入区往下移一行（编辑区 `flex-1` 自然缩 22px）。
+3. **超限时发送/生成按钮灰掉**，鼠标碰上去用**通用黑底消息框**（⛔ 不用原生 `title`），
+   文案定死为 **「当前模型提示词只支持XXXX字！」**（只说这个模型支持多少字，⛔ 不报当前字数——计数器上已经有了）。
+4. **服务端先只记日志、不拦**（他选的 Q2 方案②）。
+
+### 二、代码改了什么（唯一权威都收敛好了）
+
+**① `src/lib/prompt-length.ts`（唯一权威，新增 6 个函数）**
+`countPromptLength`（按 Unicode 码点，emoji 算 1 个字）/ `isPromptOverLimit`（**正好等于上限不算超**）/
+`formatPromptCounter`（`"1234 / 3500"`）/ `getPromptOverLimitTipText`（红字：「提示词已超过 3500 字（当前 3712 字），请删减后再发送」）/
+`getWorkflowPromptOverLimitTipText`（「输入框和连接文本合计已超过…」）/ `getPromptLimitTooltipText`（黑底那句）/ `getPromptCeilingTipText`。
+⛔ **删掉了老的 `getPromptLengthTipText` / `getWorkflowPromptLengthTipText`** —— 它们是"已被截断"的口吻，现在压根不截断了。
+
+**② 去掉 5 类静默截断，只留 99999 安全网**（防粘 50 万字把 contenteditable 和"草稿存库"搞崩）
+
+| 位置 | 改法 |
+|---|---|
+| `chat-workbench-core.tsx` `PlainMentionEditor.commitInput` | **`maxLength` prop 整个删掉**，改用 `PROMPT_MAX_LENGTH_CEILING` |
+| `workflow-tldraw-canvas-inner.tsx` `WorkflowMentionEditor.commitInput` | 同上（`MAX_WORKFLOW_PROMPT_LENGTH` 常量也删了） |
+| `chat-workbench.tsx` `setActiveDraftInput` / `…WithMentionCards` / `addActiveUploadedImages` / `addActiveUploadedMediaReference` | 去掉按模型 slice，改安全网 |
+| 3 处 `Math.min(currentPromptMaxLength, …)` + 2 处 `Math.min(assetGeneratePromptMaxLength, …)`（光标定位）| 去掉上限钳制，按真实长度定位 |
+| 资产库 `insertAssetReference` / `insertCharacterReferenceText`、工作流 `insertReferenceText` | 同上 |
+| 工作流**快捷编辑 `<textarea>`** | ⭐ **去掉原生 `maxLength`**（它会让粘贴被浏览器静默砍掉）→ 受控 + 超限报错 |
+
+**③ 计数器 = `src/components/prompt-length-counter.tsx`（`PromptLengthCounterRow`，三处共用）**
+- **这一行始终占位**（`h-[18px]`），**有内容才显示数字** —— ⛔ 别做成"有内容才渲染整行"，那样一打字整个输入框会跳高一行。
+- 超限数字变红 `text-red-500`；样式 `text-[11px] text-[#aaaaaa]`。
+- 落点：对话流在 `chat-workbench.tsx` 编辑区 `<div className="relative">` **之前**；资产库在编辑区 `flex-1` 容器**之前**（所以总高不变）；工作流在 `WorkflowMentionEditor` **之前**；快捷编辑在 textarea 那一行**之上**（外层卡片包了一层）。
+- ⭐ **工作流显示的是「合计」**（输入框 + 连接的文本节点），因为限制本身是合计。
+
+**④ 按钮灰掉 + 黑底提示（5 个按钮）**
+对话流发送（`disabled` 追加 `isActiveInputOverLimit`）、资产库「生成图片」、**资产库失败卡上的「重新生成」**（原来压根没有 disabled）、工作流节点生成（`canRun` 追加 `&& !isPromptTotalOverLimit`）、快捷编辑发送。
+
+**⑤ `BlackHoverTooltip` 收敛成 `src/components/black-hover-tooltip.tsx`（唯一实现）**
+- 原来在 `lib/chat/chat-workbench-core.tsx` 里，**工作流画布不能 import 它**（会绕成循环依赖）→ 搬成独立组件，core 里**再导出**（老 import 路径照旧可用，一处都不用改）。
+- ⭐ 顺带加了一条通用能力：**`label` 为空（`""`）时整个气泡不渲染** —— 否则不超限时 hover 会冒出一个**空黑方块**。调用方从此可以写 `label={条件 ? "文案" : ""}`，不用在外面套三元包两份按钮。
+- ⚠️ 已知取舍：disabled 按钮上 CSS `:hover` 对祖先仍生效（气泡能出来），但 JS 的边缘对齐 `onMouseEnter` 可能不触发 → 退化成居中显示，可接受。
+
+**⑥ 发送入口再兜一道**（防回车 / 建议卡 / 程序化调用绕过按钮）
+`sendMessage`（「请输入提示词！」那条守卫之后）、`generateCharacterImage`、`submitQuickEdit`、工作流 `runFromPromptBox`（**新增一句红字**，原来回车超限是静默 return）。
+
+**⑦ 服务端只记日志：`src/lib/prompt-length-server.ts`（唯一实现）**
+`logPromptLengthOverLimit()` 被 `/api/image` + `/api/video` 共用，喂 **`sourcePrompt`（用户原话）**，
+超了往 `.runtime/generation-diagnostics-log.jsonl` 写一条 **`prompt-length-over-limit`**（`used / maxLength / over / model / creditSource / flow`），**不拦**。
+⭐ **判据（观察几天后再决定要不要开拦截）**：`grep -c '"prompt-length-over-limit"'`。
+
+### 三、部署（测试服 v1.0.0.94，整批推）
+
+1. `node scripts/bump-version.mjs` → v94；
+2. 把 **git status 里全部 20 个 src 改动/新增文件**打 tgz 推 `/opt/flashmuse-staging/app`（⭐ **整批推，修掉了上一轮"本地 v93 ≠ 测试服 v93"那个坑**）；
+3. `docker compose up -d --build staging-app`（后台 + 轮询 `/tmp/sb94.log`，约 3 分钟）；
+4. `sync-ali.sh --stack=staging --with-generated` → `两端已一致`（⚠️ 阿里侧多 1 个历史文件，脚本不删只提示，与本次无关）；
+5. **最后**才 `PUBLISHED_APP_VERSION=v1.0.0.94` + `force-recreate`（`.env` 里同名行先删光再追加，现在只剩 1 行）。
+
+验证到的（只是"活着"，⛔ 不算功能测试）：`/api/health` = v1.0.0.94、`x-app-version` = v1.0.0.94、
+`/api/announcement` 带 `cache-control: no-store...`、外网 `http://101.37.129.164:8080/` 200 且 `/api/health` 也是 v94。
+
+### 四、顺手查清的一件事：本地对话流那条视频「一直显示资产保存中」= **不是 bug**（🗣️ 用户结论：这个不用改）
+
+用户问「本地有条新生成的视频一直显示资产保存中，是不是有问题？线上会不会这样？」——查完是**本地环境问题**：
+
+| 环节 | 实据 |
+|---|---|
+| BytePlus 出片 | **成功**，`cgt-20260809163057-n8kdq`，远程地址有效期到 08-10 08:34 |
+| 本地下载存盘 | **失败 12 次**，错误全是 `This operation was aborted`（`saveRemoteAsset` 的 3 分钟单次下载超时） |
+| `GenerationJob` | 仍 `running`、`attempts=300`、`updatedAt` 停在 **10:25**（= 本地 dev server 那时停了，worker 只跑在 app 进程里） |
+| 消息 JSON | `videoPreviewUrls` 有 1 条 + `pendingVideoCount=1` → 界面就画那张「资产保存中」 |
+
+⭐ **机制**（读代码坐实，下次别再从头查）：供应商一给远程地址就**乐观显示**（`job.extraJson.preview` → `applyVideoPreviewToMessage`），
+后台下载存好后 `appendVideoToAssistantMessage` **撤掉一条 preview** 并打「保存成功」闪现；失败走 `markAssistantVideoFailure` 也撤一条。
+存盘队列**不在数据库**，在 **`.runtime/media-save-jobs.json`**（本地 203 条里**只有这 1 条失败**，其余全 saved）。
+
+⭐ **线上不会长期这样**，三个理由：① 腾讯在新加坡，到 BytePlus 实测 **40 MB/s**（本地跨境才十几 KB/s 级），下载超时几乎不发生；
+② 生产 app 是 docker **常驻**，worker 一直推进 job（lease 过期 10 分钟就会被重新认领）；
+③ 就算一直下不来，**24h 后远程地址过期** → 存盘任务 `expired` → `markJobFailed` → 前端换成**失败红字卡**。
+④ 前端还有恢复兜底：只要 `pendingVideoCount>0`，页面每 3 秒打 `/api/generation-status` 对账（成功补上 / 失败画失败卡）。
+
+⭐ 本地这条**不用手动改库**：`npm run dev` 起回来，worker 会接着轮询，要么下完出片，要么明天 08:34 过期后自动变失败卡。
+⚠️ 唯一的体验短板（🗣️ **用户明确说不用改**）：下载反复失败的这段时间界面只有「资产保存中」一个状态，用户不知道在重试。
+
+### 五、下一个 AI 的注意点
+
+- ⭐⭐ **待办 1 = 真走界面验这一批**（`AGENTS.md` 铁律：只测纯函数/接口不作数）。4 个落点 × 5 件事：
+  计数器出现时机、超限变红、**粘贴长文不丢字**、按钮灰掉、hover 出黑底那句。
+- ⭐ **本地这批还没 commit**；正式服还停在 v90（公告缓存 bug 仍在正式服上）。
+- ⭐ 老的 `MAX_DRAFT_INPUT_LENGTH = 2000`（core 里）现在**只剩注释在引用**，没有任何逻辑用它，别以为它还是上限。
+
+
+## 第五十八次会话（2026-08-09）：修掉正式服公告「刷新就变回旧文案」（根因=API 响应没有 Cache-Control）+ 提示词字数上限按模型可配 + 模型图标收敛 —— **测试服 `v1.0.0.93`（只含缓存修复那一半）**
+
+> | | 版本 |
+> |---|---|
+> | 本地 | `v1.0.0.93` + **一批未提交改动**（按模型字数 + 图标收敛 + 表格改列）|
+> | 测试服 | `v1.0.0.93`（**只含 `src/proxy.ts` 的 no-store 修复 + app-version**，不含后面那批）|
+> | 正式服 / GitHub | `v1.0.0.90`（v91/v92/v93 全都没上正式服）|
+>
+> ⛔⛔ **本次破坏了「版本号一样 = 代码一样」这条核心约定**：本地 v93 ≠ 测试服 v93。
+> ⭐ **下一个 AI 部署前必须先 `node scripts/bump-version.mjs`（→ v94）再推**，别再往 v93 上叠。
+> 无 Prisma 迁移、无 compose/nginx 改动。
+
+### 一、用户报的 bug 与我第一轮的错误结论（⭐ 教训比 bug 本身值钱）
+
+🗣️ 用户问「正式服公告：后台写的字和前端显示的字有没有出入？」
+我查了**数据库 + `/api/announcement` + `/api/auth/me` + 未登录首页**，四处全一致 → 回答「**没有出入**」。
+🗣️ 用户截图打回：前台工作台显示的是「😍**新建**【视频编辑】」，而库里是「😍**新增**【视频编辑】」。
+
+⛔ **我错在只验了"后端返回对不对"，没真登录进工作台看**（正是 `AGENTS.md` 那条
+「验用户能不能看到必须真走界面」铁律，我又踩了一次）。
+真登录后**当场复现**：DOM 文本 = 新建，而 **React 的 `memoizedProps` = 新增**，两个接口实时返回也都是新增。
+⭐ 这种「DOM / React state / 接口 三方对不上」几乎一定是**链路上有人给了旧响应**，不是渲染 bug。
+
+### 二、根因（一条 curl 就能定案）
+
+```
+curl -sI https://main.venusface.com/api/announcement
+→ 200，响应头里 **一个 Cache-Control 都没有**（也没有 Expires / Last-Modified）
+```
+
+按 RFC 9111，这种 200 GET 响应允许任何共享缓存**自己用启发式过期决定缓存多久** →
+用户那条链路上的运营商/网关透明代理存了一份 10 小时前的副本。
+表现完全对得上用户描述：**刷新一下新的、再刷新旧的**（命中/回源交替）、
+**过几秒自动又变回旧的**（工作台每 5 秒轮询 `/api/auth/me`，那次命中旧副本就把横幅改回旧文案）、
+**首页对而工作台错**（首页只用 `/api/announcement`，工作台还叠了 auth/me 的广播）。
+
+- ⛔ 代码里 `fetch(url, { cache: "no-store" })` **治不了** —— 只约束浏览器自己，中间代理只看响应头。
+- ⛔⛔ **在数据中心/干净浏览器永远复现不出来**：我从腾讯 curl 20/20 全对、Playwright 干净上下文刷 8/8 全对。
+- 排查过程中已排除：DB（两条记录都是"新增"）、SSR HTML（curl + 转义形式都搜不到文案）、
+  localStorage/sessionStorage、Service Worker、页面里有脚本持续替换（手动改回"新增"后盯 7 秒没被改回）、
+  多容器/多 upstream（`upstream fm_prod_app` 只有一台；腾讯 nginx 无 proxy_cache）。
+  ⚠️ 顺带查清：`main.venusface.com` **直连腾讯 119.28.116.16**，阿里只服务 `static.venusface.com`；
+  阿里那份 conf 里只有 `location = /`（HTML 缓存 30 分钟）和 `/api/media-thumbnail`（30 天）会缓存。
+
+### 三、修法（唯一入口，已部署测试服 v93）
+
+**`src/proxy.ts`**：对所有 `/api/*` 响应统一加
+`Cache-Control: no-store, no-cache, must-revalidate, max-age=0` + `Pragma: no-cache` + `Expires: 0`
+（后两个给只认 HTTP/1.0 的老代理）。
+⭐ **白名单 `CACHEABLE_API_PATHS = ["/api/media-thumbnail"]`** —— 那个是内容寻址、阿里故意缓存 30 天、
+路由自己返回 `immutable`，⛔ 一刀切会把缩略图缓存打掉。
+⭐ 选 proxy 而不是逐个 route：它对所有 `/api/*` 生效（4 个 multipart 上传路由被 matcher 排除，但它们是 POST，不会被缓存）。
+
+**测试服 v93 实测**：`/api/announcement`、`/api/auth/me`、`/api/models` 三个都带上了 no-store；
+`/api/media-thumbnail` 200 那次**仍是 `public, max-age=31536000, immutable`**（白名单生效）；
+`/api/health` = v93；阿里测试镜像 8080 = 200；真上号巡检 0 console error；
+**真跑一次生成**（Seedance 2.5 视频）→ 出片、视频数 34→35、扣 82 积分、0 失败卡。
+
+⚠️ **上正式服后要提醒用户强刷一次（Ctrl+F5）**：他链路上那份旧副本可能还没过期。
+⚠️ 影响面不止公告：`/api/auth/me` 被缓存意味着**积分/昵称/头像也可能显示旧值**，
+甚至可能与「间断性卡死」那类怪现象有关（未证实，值得下次排查时想到）。
+
+### 四、提示词字数上限「按模型可配」（本地新功能，**没上任何环境、没测过界面**）
+
+🗣️ 用户：「不同模型字数上限不一样，我自己来控制。做到后台上传规则里，文件前加一列『文字』，
+默认全是 2000、开关开着。像 Seedance 2.0 这种好几个模式的不用分开，只要第一个融合模式有字数输入就行，
+其它跟随即可 —— 一个模型只要一个开关。」后又追加：「**2.0 默认改 3500、2.5 默认改 14500**」。
+
+**唯一权威 = 新文件 `src/lib/prompt-length.ts`**：
+- `DEFAULT_PROMPT_MAX_LENGTH = 2000`、`PROMPT_MAX_LENGTH_CEILING = 99999`；
+- `MODEL_DEFAULT_PROMPT_MAX_LENGTH`：**2.0 系 3500 / 2.5 = 14500 / 其余 2000**；
+- `getPromptLengthOverrideKey`：**模型粒度、故意不看 `videoReferenceMode`** → 天然实现"一个模型一个开关、其它模式跟随"；
+  ⭐ **2.0/Fast/Mini 共用一条**（同代同能力，`isSeedance20FamilyVideoModel` + `SEEDANCE_20_FAMILY_MODEL_ID`，两者新加在 `upload-rules.ts`）、
+  ⛔ **2.5 独立**（守住"按模型 key 必须带版本号"那条铁律）；
+- `getDefaultPromptMaxLength` / `getPromptMaxLength` / `normalizePromptMaxLength` / 两句提示文案。
+
+**存储与下发**（照抄上传数量那套管子，不新增请求）：
+- env **`PROMPT_LENGTH_OVERRIDES`**（与 `UPLOAD_RULE_OVERRIDES` **是两套、粒度不同**：数量按「模型+模式」、字数只按「模型」。
+  ⛔ 硬塞一个 map 就做不出"一个模型一个开关"）；
+- `system-settings.ts` 加 `getPromptLengthOverrides` / `updatePromptLengthOverrides`（复用已有的 `writeLocalEnvValues`）；
+- `/admin/api/upload-rules` GET/POST 同时收发两份，⭐ **各自可选**：面板只传改动的那一半，
+  ⛔ 没传的不许当 `{}` 写回（否则改文字会把上传数量整份清空）；
+- `/api/model-availability` 顺带下发 → `chat-workbench.tsx` 存 state → 作为 prop 传进工作流画布。
+
+**前端生效点**（原来全是写死 2000）：对话流输入框、资产库角色/场景/道具/分镜生成框、
+工作流节点提示词框（口径是「输入框 + 连接文本合计」）、工作流"连线时拦"、"点生成前校验"、图片/视频快捷编辑框。
+`PlainMentionEditor` 新增可选 `maxLength` prop；工作流新增 `getWorkflowNodePromptMaxLength(node, overrides)`
+（⭐ **普通函数不是 Hook**，因为 `WorkflowSelectedNodeOverlay` 有提前 return，加 Hook 会 React #310 崩画布）。
+
+**后台面板**（`admin-upload-rules-panel.tsx`）：
+- 第一张表加「文字」列，**排在「文件」前面**；每格 = 输入框 + 开关，交互与右边几列一致（开关开着=启用该值、输入框锁住）；
+- 同一模型的多个模式行只有**第一行**给输入框，其余显示「跟随上面」；
+- ⭐⭐ **面板显示的默认值必须走 `getDefaultPromptMaxLength`**（面板 2000 而实际 14500 → 管理员碰一下开关就把 2.5 砍到 2000）；
+- 按用户要求**删掉第一列「提供商 + 模型类型」**（表宽 1240→1110），供应商改由「模型名称」前的图标表达，
+  「全部对话模型」那行用 **Agent 图标**。
+
+### 五、模型图标收敛（顺手清掉一个真分叉）
+
+改表格时发现「模型 → 图标」映射**存了三份且已漂移**：core 那份最全、
+**工作流那份漏 DeepSeek**、**后台系统设置那份漏 MiniMax 和可灵**（海螺/可灵一直显示兜底图标）；
+`AiGenerate3dIcon` 三份、`DeepSeekIcon` 两份、`AiAgentLineIcon` 原是 core 的私有组件。
+
+→ 抽成唯一实现 **`src/components/model-icon.tsx`**（`getGenerationModelIcon` / `ModelIcon` /
+`AiGenerate3dIcon` / `AiAgentLineIcon` / `DeepSeekIcon`），三处全部改为引用；
+⭐ **core 里再导出**这几个符号 → `chat-workbench.tsx` 那 8 处 import 路径**一个字都没改**（零风险）。
+⭐ `ModelIcon` 用 `createElement` 而不是 `const Icon = …; <Icon/>` —— 后者会触发
+`react-hooks/static-components` 新增一条 lint 错误（代码里已注释钉住原因）。
+⭐ 用脚本核对 **SVG path 与 HEAD 里各原文逐字节相同**（8 项 PASS）+ 断言三个文件里本地定义已删净。
+顺带清掉 core 里因搬家变成未使用的 5 个 import。
+
+### 六、验证
+
+- `tsc` 0、`npm test` 15/15。
+- `.runtime/verify-prompt-length.ts`（**23 条 ALL PASS**）：默认值 2.0=3500 / Fast/Mini 跟随 / 2.5=14500 / 其余 2000；
+  **面板默认 == 运行时默认**（三条）；⭐⭐ **双向隔离**：给 2.0 配 800 → 2.5 仍 14500；给 2.5 配 20000 → 2.0 仍 3500；
+  **2.5 开关关掉回落 14500 而不是 2000**；key 与 normalize 边界。
+- eslint：新文件与后台面板 0 问题；`chat-workbench-core.tsx` 剩的 4 条是**搬家前就有的**（行号只是位移）。
+- ⛔ **这批新功能一次界面都没跑过**（只有 no-store 那一半上了测试服）。
+
+### 七、下一步要做的「前端字数拦截」——用户已定 3 条口径（⭐ 下个 AI 直接接着做）
+
+先去实测了 **即梦（jimeng.jianying.com 首页 Agent 输入框，未登录能测）**，全是量出来的：
+
+| 维度 | 即梦实测 |
+|---|---|
+| 上限 | **20000 字符**（20000 不报，20001 才报）|
+| 超限处理 | ⭐ **不截断、不删字**：一次粘 25000 字，**25000 字全留在框里** |
+| 字数计数器 | ⭐ **完全没有**（全页扫 `数字/数字` 文本节点 0 命中，接近上限也不出现）|
+| 提示 | **顶部居中全局 toast**（Arco `lv-message-content`），「文字描述超过了 20000 字符」，14px，约 3 秒消失，每次继续输入再弹 |
+| 发送按钮 | ⭐ **不禁用**（`disabled=false`、`opacity:1`、`cursor:pointer`）|
+| 输入框 | 固定 96px 高 + `overflow-y:scroll`（内容 9384px 自己滚），不撑长页面 |
+
+⚠️ `/ai-tool/generate`（图片/视频生成页）**要登录，没测到**；那里的表现可能不一样（可能有计数器），下次可问用户。
+
+🗣️ **用户拍板的三条（务必照做）**：
+1. **学即梦：不删字** —— 打字/粘贴都允许超出，字全留在框里，超了报错并**拦住发送**；
+2. **要计数器**，但**只在用户输入（框里有内容）时才显示**；位置 **输入框内右上角**、**灰字**、**字号小一点**；
+3. **超限时发送按钮灰掉禁用 + 悬浮（title）说明原因**。
+
+⭐ 完整实施计划（8 个改造点、文件行号都查好了）写在 **`05-next-actions.md` 待办 1**，
+⛔ 里面还有**两个必须先问用户**的问题（计数器留白方案 A/B、服务端要不要拦），别自己决定。
+
+### 八、留痕与遗留
+
+- **正式服**：只做过只读操作（psql SELECT、curl、登录测试号看页面）+ **登录了一次测试号**，
+  ⛔ 没生成任何内容、没花钱、没动公告开关（守住"正式服禁测公告"铁律）。
+- **测试服**：跑了 1 次 Seedance 2.5 视频生成（成功，扣 82 积分），多了一条对话「v93巡检：一只橘猫坐在窗台上晒太阳」。
+- 遗留：① **v91/v92/v93 都没上正式服**（正式服还带着公告 bug）② 本地那批未提交、且**本地 v93 ≠ 测试服 v93**
+  ③ 前端字数拦截未做 ④「间断性卡死」老 bug 待静态定位 ⑤ 视频延长"变长"语义未验。
+
+---
+
+
 ## 第五十七次会话（2026-08-09）：后台补齐 Seedance 2.5（上传规则独立开关 + Agent 视频开关 + 快捷编辑链）+ 视频延长端到端验通 —— **测试服 `v1.0.0.92`**
 
 > | | 版本 |
