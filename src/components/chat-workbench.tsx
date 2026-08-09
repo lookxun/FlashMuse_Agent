@@ -786,7 +786,7 @@ export function ChatWorkbench() {
   const assetGenerateUploadRule = useMemo(() => getUploadRule({ mode: "asset-image", modelId: characterGenerateModel, transportMode: "local-base64" }, uploadRuleOverrides), [characterGenerateModel, uploadRuleOverrides]);
   const assetGenerateMaxReferenceImages = assetGenerateUploadRule.image.maxCount;
   // ⭐ 提示词字数上限「按模型」（后台「上传规则」页的「文字」列，唯一权威 lib/prompt-length）。
-  //    ⛔ 别再用写死的 MAX_DRAFT_INPUT_LENGTH —— 那只是"没配过"时的默认值 2000。
+  //    ⛔ 别再写死 2000（那个老常量 MAX_DRAFT_INPUT_LENGTH 已于 2026-08-09 删除）。
   //    键只看模型、不看参考模式：同一模型换融合/首帧不会让字数上限跳变。
   const currentPromptMaxLength = useMemo(() => getPromptMaxLength({ mode, modelId: selectedGenerationModel }, promptLengthOverrides), [mode, selectedGenerationModel, promptLengthOverrides]);
   const assetGeneratePromptMaxLength = useMemo(() => getPromptMaxLength({ mode: "asset-image", modelId: characterGenerateModel }, promptLengthOverrides), [characterGenerateModel, promptLengthOverrides]);

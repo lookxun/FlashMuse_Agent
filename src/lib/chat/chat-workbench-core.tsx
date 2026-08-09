@@ -963,7 +963,11 @@ const MAX_DOCUMENT_CONTEXT_CHARS = 30000;
 // ⭐ BlackHoverTooltip 的唯一实现已搬到 components/black-hover-tooltip.tsx（工作流画布也要用它，
 //    而它不能 import 本文件）。这里**再导出**，老 import 路径照旧可用。
 export { BlackHoverTooltip };
-export const MAX_DRAFT_INPUT_LENGTH = 2000;
+// ⛔⛔ 这里曾经有 `export const MAX_DRAFT_INPUT_LENGTH = 2000;`（2026-08-09 删除）。
+// 删它的原因：提示词字数上限早已改成**按模型可配**（唯一权威 `src/lib/prompt-length.ts`），
+// 这个常量已经零引用，但留着是个真陷阱 —— 下一个人很可能拿它去 `slice(0, 2000)`，
+// 那会直接破坏「超字数不删字」这条已拍板的产品口径（学即梦：超了只提示、不吞用户的字）。
+// ⭐ 要上限就用 `getPromptMaxLength()`；要安全网就用 `PROMPT_MAX_LENGTH_CEILING`（99999）。
 export const MAX_USER_NICKNAME_LENGTH = 8;
 export const RETRY_IMAGE_SIDE = 1280;
 export const RETRY_IMAGE_QUALITY = 0.85;
@@ -1506,14 +1510,12 @@ function convertSimplifiedToTraditional(text: string) {
   return Array.from(convertedText).map((char) => globalTraditionalChars[char] ?? char).join("");
 }
 
-const globalSimplifiedPhrases = globalTraditionalPhrases.map(([from, to]) => [to, from] as [string, string]).sort((a, b) => b[0].length - a[0].length);
-const globalSimplifiedChars = Object.fromEntries(Object.entries(globalTraditionalChars).map(([from, to]) => [to, from]));
-
-function convertTraditionalToSimplified(text: string) {
-  let convertedText = text;
-  for (const [from, to] of globalSimplifiedPhrases) convertedText = convertedText.split(from).join(to);
-  return Array.from(convertedText).map((char) => globalSimplifiedChars[char] ?? char).join("");
-}
+// ⛔⛔ 这里**故意不提供**"繁→简"的转换表/转换函数（历史上有过 convertTraditionalToSimplified，
+// 由上面那两张表机械反转得到，2026-08-09 已删除）。原因：反转不是无损的 ——
+// 简→繁里的 ["新建" → "新增"] 反转后变成 ["新增" → "新建"]，会把简体正文里正常的「新增」改成「新建」
+//（真实事故：顶部公告被静默改字）。
+// ⭐ 切回简体一律"还原我们存下来的原文"（见 applyLanguageToTextNode / applyLanguageToElementAttributes），
+// ⛔ 谁都别再加回一个反向转换函数。
 
 function applyLanguageToTextNode(node: Text, language: UserLanguage) {
   const parent = node.parentElement;
@@ -1526,15 +1528,17 @@ function applyLanguageToTextNode(node: Text, language: UserLanguage) {
     return;
   }
 
+  // ⛔⛔ 简体中文是本项目的**源语言**：这里绝不能再做任何"繁→简"字词替换。
+  // 2026-08-09 真实事故：原来这里对每个文本节点跑 convertTraditionalToSimplified()，
+  // 而那张表是把"简→繁"表**机械反转**来的 → 里面有一条 ["新增" → "新建"]
+  //（因为简→繁那侧有 ["新建" → "新增"]，繁体习惯用「新增」表示「新建」）
+  // → 于是**默认的简体用户**页面上任何「新增」都被静默改成「新建」，
+  //   顶部公告「新增【视频编辑】」变成「新建【视频编辑】」，而接口/数据库里全是对的。
+  // ⭐ 正确做法：还原只认"我们自己存下来的原文"（那才是权威），没存过就说明我们从没转过它 → 原样不动。
   const original = originalTextNodeValues.get(node);
-  if (original !== undefined) {
-    const simplified = convertTraditionalToSimplified(original);
-    if (node.nodeValue !== simplified) node.nodeValue = simplified;
-    originalTextNodeValues.delete(node);
-  } else {
-    const simplified = convertTraditionalToSimplified(node.nodeValue ?? "");
-    if (node.nodeValue !== simplified) node.nodeValue = simplified;
-  }
+  if (original === undefined) return;
+  if (node.nodeValue !== original) node.nodeValue = original;
+  originalTextNodeValues.delete(node);
 }
 
 function applyLanguageToElementAttributes(element: Element, language: UserLanguage) {
@@ -1554,16 +1558,12 @@ function applyLanguageToElementAttributes(element: Element, language: UserLangua
       const converted = convertSimplifiedToTraditional(originalAttributes.get(attributeName) ?? value);
       if (element.getAttribute(attributeName) !== converted) element.setAttribute(attributeName, converted);
     } else {
+      // ⛔ 同上：简体是源语言，只还原存下来的原文，没存过就原样不动（绝不做繁→简替换）。
       const originalAttributes = originalAttributeValues.get(element);
       const original = originalAttributes?.get(attributeName);
-      if (original !== undefined) {
-        const simplified = convertTraditionalToSimplified(original);
-        if (element.getAttribute(attributeName) !== simplified) element.setAttribute(attributeName, simplified);
-        originalAttributes?.delete(attributeName);
-      } else {
-        const simplified = convertTraditionalToSimplified(value);
-        if (element.getAttribute(attributeName) !== simplified) element.setAttribute(attributeName, simplified);
-      }
+      if (original === undefined) continue;
+      if (element.getAttribute(attributeName) !== original) element.setAttribute(attributeName, original);
+      originalAttributes?.delete(attributeName);
     }
   }
 }
