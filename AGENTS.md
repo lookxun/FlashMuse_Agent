@@ -4,6 +4,49 @@
 This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code. Heed deprecation notices.
 <!-- END:nextjs-agent-rules -->
 
+# 铁律⭐⭐⭐：**现象相似 ≠ 根因相同** —— 上一次事故的根因会造成路径依赖，把你带到完全错的方向（2026-08-09 第六十一次会话，被用户一句话问倒）
+
+2026-08-09 用户报「测试服顶部公告：后台写的是『新增』，前台显示『新建』」。
+这和**前一天**那起正式服事故（公告显示旧文案 → 根因是响应缺 `Cache-Control`、被透明代理缓存）**现象几乎一样**，
+于是我照着下面那条 no-store 铁律去查，得出结论「用户链路上还存着修复上线前缓存的旧副本」。
+🗣️ 用户一句话直接问倒：「**问题我测试服里是第一次发这条公告。。哪来的缓存？**」
+
+- ⛔⛔ **这个反问是决定性的**：缓存假说要求"以前存过这条内容"，而这是**首次发布** → 假说自相矛盾、当场作废。
+  真凶完全在另一头：**简繁转换在改字**（详见下一条铁律）。
+- ⭐⭐ **判据（写在动手前）**：**我的假说要求什么前提？那个前提在这次的场景里成立吗？**
+  「缓存」要求"这条内容以前存在过"；「竞态」要求"有两个东西在抢"；「权限」要求"身份变过"……
+  **先证明前提，再查证据。** 前提不成立就立刻换方向，⛔ 别为自己的假说找补。
+- ⭐ **最危险的时刻 = 刚修完一个相似 bug**：交接文档里那条崭新的铁律会让你产生强烈的路径依赖，
+  **越"熟悉"越容易错**。这类时候要**强迫自己再列 2~3 个候选根因**（本次正确答案压根不在缓存这一族里）。
+- ⭐⭐ **用户拿业务事实推翻你的技术推理时，他往往是对的**（"第一次发"、"能打字就说明加载完了"都是这种）。
+  **先认真验他的理由，再谈自己的推理。**（同源于本文件「用户的物理常识往往比我的代码推理更硬」那条。）
+- ⭐ 顺带一个**很强的排除手法**：把"接口/数据库返回的内容"和"用户屏幕上看到的内容"**分别取证**。
+  本次接口与库里**全都是正确的「新增」**，而 DOM 里是「新建」→ 一步就把范围锁进"浏览器端渲染后被改字"，
+  彻底排除了链路/缓存/服务端那一整族原因。
+
+# 铁律⭐⭐⭐：**简体中文是本项目的源语言 —— 简体模式下禁止做任何「繁→简」字词替换**（2026-08-09 加，公告改字事故根因）
+
+`src/lib/chat/chat-workbench-core.tsx` 的全局简繁转换（`applyDocumentLanguage`）历史上这么写：
+`globalSimplifiedPhrases`（繁→简表）= 把 `globalTraditionalPhrases`（简→繁表）**机械反转** `.map(([f,t])=>[t,f])`。
+⛔ **反转不是无损的**：简→繁那侧有 `["新建" → "新增"]`（繁体/台湾习惯用「新增」表示「新建」），
+反转后就成了 `["新增" → "新建"]`；而简体分支对**每个文本节点**都跑 `convertTraditionalToSimplified`
+→ **默认简体用户页面上任何「新增」都被静默改成「新建」**（真实事故：顶部公告被改字，用户以为后台没保存）。
+
+- ⭐ **唯一正解（现已实现）**：简体分支**只还原"我们自己存进 WeakMap 的原文"**
+  （`originalTextNodeValues` / `originalAttributeValues`）；**没存过 = 我们从没转过它 = 它本来就是简体 → 原样不动**。
+  ⛔⛔ **禁止再加回任何"繁→简"转换函数/词表**（那两张反向表和 `convertTraditionalToSimplified` 已删除）。
+- ⭐ **为什么这样才对**：繁体模式下每个被转换的节点都存了原始简体文本（含 MutationObserver 新增的）
+  → 切回简体时**那份原文才是权威**，压根不需要拿有损词表去"猜"。
+- ⭐⭐ **验这类"改字"只能用确定性判据，⛔ 别靠刷页面**（简体分支**不装 MutationObserver**，
+  改字与异步渲染是**竞态** → 刷新有时对有时错，旧代码会碰巧显示正确）：
+  **切繁体 → 再切回简体**（旧代码走这条路**必错**）。判据两条：目标词还在 + 其它词完整还原（视频↔影片）。
+  ⭐ 再加一条旁证：**我们自己的界面文案（如「新建工作流」）必须保持不动** → 证明"该动的没动、不该动的也没动"。
+- ⚠️ **已知未修（备忘 M041，用户拍板先不做）**：这套机制**分不清"界面标签"和"用户自己的内容"** ——
+  排除名单只有 `script, style, noscript, textarea, input, [contenteditable="true"], [data-no-translate="true"]`，
+  而 `data-no-translate` 全项目只用在少数 toast 上 → **繁体用户**发出去的聊天消息、上传文档正文、公告都会被改字。
+  🗣️ 用户口径：「**用户用什么文字打，显示出来就是什么文字**」。要修就给用户内容标 `data-no-translate`（标外层容器即可）。
+
+
 # 铁律⭐⭐：几个「真走界面」的验法照抄清单 —— 光看代码/接口证明不了这些（2026-08-09 第六十次会话沉淀）
 
 `AGENTS.md` 已有铁律说「验用户能不能看到必须真走界面」。这条补的是**具体怎么走才算数**，
@@ -61,6 +104,9 @@ This version has breaking changes — APIs, conventions, and file structure may 
 - ⚠️ 影响面不止公告：`/api/auth/me` 被缓存意味着**积分 / 昵称 / 头像也可能显示旧值**，
   甚至可能与「间断性卡死」那类怪现象有关（未证实，但值得下次排查时想到）。
 - ⚠️ 上完正式服后**用户自己那条链路上的旧副本可能还没过期** → 要提醒他强刷一次（Ctrl+F5）。
+- ⛔⛔ **限定（2026-08-09 第六十一次会话补，很重要）**：**这条铁律只适用于"这条内容以前存在过"的场景。**
+  次日测试服出现「公告显示的字不对」，我照这条去查、判成缓存 —— **错了**，那是**首次发布该公告**（缓存假说的前提不成立），
+  真凶是**简繁转换在改字**（见本文件顶部那两条铁律）。⭐ **先证明前提，再查证据。**
 <!-- END:nextjs-agent-rules-anchor-do-not-remove -->
 
 
@@ -353,6 +399,12 @@ UTF-8 中文没被解码 → 我发出去的是乱码，自然不命中词库。
 - ⭐ **正确判据两条**：① `curl /api/health` → `{"ok":true,"version":"vX"}`（这个直接来自 `APP_VERSION`，编译进镜像）
   ② 容器内 `grep` 构建产物 `/app/.next/server` 找**本次新加的字符串/正则字面量**（命中 = 真编译进去了）。
 - ⭐ 部署最后一步再 `PUBLISHED_APP_VERSION=vX` + `force-recreate`，然后 `x-app-version` 才该等于新版。
+- ⛔⛔ **限定（2026-08-09 加）：上面第 ② 条只对「字符串/正则字面量」有效 —— 生产构建会把
+  局部函数名、局部变量名全部压缩改名**，拿**函数名**去 grep `.next` 产物**什么都证明不了**。
+  实测：我查 `convertTraditionalToSimplified`（应为 0）、`MAX_DRAFT_INPUT_LENGTH`（应为 0）、
+  `convertSimplifiedToTraditional`（**本该 >0**）→ **三个全是 0**，差点误判部署失败。
+  ⭐ 判据选择：**改动新增了字符串字面量 → 可以 grep；只改了逻辑/删了函数 → 只能真走界面验**
+  （`export` 出去的符号名通常还在，但也别赌）。
 
 # 铁律⛔⛔：`reportClientDiagnostic` 的事件**不在白名单里就等于没加**（2026-08-06 加，第一版就踩了）
 
@@ -1346,6 +1398,12 @@ nginx 配置在仓库里有副本（`nginx/flashmuse.conf`、`deploy/staging/*.c
 
 - 反例（已踩坑，2026-07-14）：`getBytePlusProviderKey`（模型→BytePlus 端点映射）被复制到 `image/route`、`video/route`、`generation-jobs` 三份，各改各的 → 只修了对话流那份，Agent/通用模式漏修 → 线上 Agent/通用生图/生视频用新模型直接失败。已收敛为唯一实现 `src/lib/byteplus-provider-key.ts`。
 - 判断标准：**理论上"生图在一个地方能用，其它地方都应该能用"**（生视频、上传、进库、读取、命名、扣费、参考图……同理），因为它们本就该走同一套。若出现"对话流可以、工作流/Agent 不行"，几乎一定是某处该统一却分叉了——先找分叉点收敛，别再打局部补丁。
+- ⭐⭐ **2026-08-09 新增的唯一权威 · 之一：简繁转换（`src/lib/chat/chat-workbench-core.tsx`）**
+  `applyDocumentLanguage` / `applyLanguageToTextNode` / `applyLanguageToElementAttributes` / `convertSimplifiedToTraditional`
+  + 两张简→繁表（`globalTraditionalPhrases` / `globalTraditionalChars`）+ `traditionalTextMap` / `getUserText`。
+  ⛔⛔ **只有"简→繁"一个方向**：繁→简一律靠**还原 WeakMap 里的原文**，
+  **禁止再加回任何"繁→简"转换函数/词表**（机械反转是有损的，会把简体正文里的「新增」改成「新建」——真实事故）。
+  详见本文件顶部那条同名铁律。
 - ⭐⭐ **2026-08-09 新增两个唯一权威（改相关功能必须复用）**：
   - **提示词字数上限 `src/lib/prompt-length.ts`**（`DEFAULT_PROMPT_MAX_LENGTH` / `MODEL_DEFAULT_PROMPT_MAX_LENGTH`（2.0 系 3500、2.5 = 14500、其余 2000）/ `getPromptLengthOverrideKey`（**模型粒度、故意不看参考模式** → 一个模型一个开关）/ `getDefaultPromptMaxLength` / `getPromptMaxLength` / `normalizePromptMaxLength` / `PROMPT_MAX_LENGTH_CEILING=99999`）。
     后台「上传规则」页的「文字」列配置它（env `PROMPT_LENGTH_OVERRIDES`，与上传数量的 `UPLOAD_RULE_OVERRIDES` **是两套、粒度不同**）。
