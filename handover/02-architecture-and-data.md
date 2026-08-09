@@ -131,6 +131,40 @@
   四个 route：`chat` / `agent-plan` / `conversation-memory` / `intent`
 - ⭐ **故意没接的一处**：`rewriteGptImagePromptForSafety`（工作流 AI 安全改写）拿不到 userId，走全局回落（影响极小）。
 
+## ⭐⭐ 后台「按模型」的配置层长什么样（2026-08-09 加，改后台前必读）
+
+**所有后台配置都不在数据库里**，全在 `.env.local`（`system-settings.ts` 读写 + 同步 `process.env`，
+当场生效不用重启）→ 加新的配置 key **不需要 Prisma 迁移**。`prisma/schema.prisma` 里只有 `CreditSetting`。
+
+| 配置 | 存哪 | 权威表/函数 | 后台页 |
+|---|---|---|---|
+| 上传数量 override | `.env.local` 的 `UPLOAD_RULE_OVERRIDES` | `upload-rules.ts` 的 `getUploadRuleOverrideKey` + `applyUploadRuleOverrides` | 上传规则 |
+| 模型启用/供应商偏好 | `MODEL_PROVIDER_PREFERENCES` | `DEFAULT_MODEL_PROVIDER_PREFERENCES` + `isBytePlusPreferenceEnabled` / `isConversationVideoModelEnabled` / `isAgentVideoModelEnabled` | 模型开关 |
+| BytePlus 端点 | `BYTEPLUS_MODEL_SELECTIONS` | `DEFAULT_BYTEPLUS_MODEL_SELECTIONS` + `BYTEPLUS_ENDPOINT_MODEL_NAMES` | 模型开关 |
+| 编辑功能候选链开关 | `EDIT_MODEL_TOGGLES` | `EDIT_/HD_/VIDEO_EDIT_FUNCTION_MODEL_CHAIN` + `DEFAULT_EDIT_MODEL_TOGGLES` | 模型开关 |
+
+⛔⛔ **三个必踩的坑（都真发生过）**：
+
+1. **override key 必须带版本号**。`BYTEPLUS_SEEDANCE_UPLOAD_RULE_KEYS` 原来是
+   `byteplus:video.seedance:reference`（无版本号）→ 2.0 系与 2.5 **共用一条 override**，
+   后台碰一下开关就把 2.5 的 30/10/10 砍成 2.0 的 9/3/3。
+   ⭐ 现在按代分家：`getSeedanceUploadRuleKeys(modelId)` 是唯一权威（面板与运行时共用），
+   2.5 用 `byteplus:video.seedance-2-5:*`，**老 key 一字未改**所以 env 里的老配置不用迁移。
+   ⭐ `edit`/`extend` 故意用**面板里不存在的 key**（上游硬规则，不许被后台放宽）；Hailuo 3 的帧模式同理。
+2. **后台面板的行清单要看清是硬编码还是自动生成**。`admin-upload-rules-panel.tsx` 里
+   BytePlus 视频那几行是**硬编码数组**（新增模型必须手工加行），而名字叫 `openRouterVideoRows` 的那行
+   用的是 `videoGenerationModels` —— **只含 OpenRouter 模型**，BytePlus 视频（`bytePlusVideoGenerationModels`）
+   永远不会自动出现。⭐ 每一行的 `context.modelId` 必须写对应模型，否则面板显示的默认值是**别人的数字**。
+3. **只加配置表不接候选链 = 死配置**。`agent-video.seedance-2-0-mini` 在偏好表和端点表里都有，
+   但不在 `BYTEPLUS_AGENT_VIDEO_MODEL_KEYS` 里 → 那两条配置从来没生效过（已在代码里写注释钉住）。
+   ⭐ 补后台时要么两头都接上、要么写注释说明"故意不接"，别留半份。
+
+⭐ **给候选链加新模型的安全姿势**：放**最后一位** + **故意不写进 `DEFAULT_MODEL_PROVIDER_PREFERENCES`**
+（缺省值不是 `"byteplus"` ⇒ 开关默认关）→ 默认行为一字不变。
+本项目现有三条这类链：`EDIT_FUNCTION_MODEL_CHAIN`（橡皮）、`HD_FUNCTION_MODEL_CHAIN`（高清，按模型不是链）、
+`VIDEO_EDIT_FUNCTION_MODEL_CHAIN`（视频快捷编辑，⛔ **三处副本必须同改**：system-settings /
+后台展示 `VIDEO_EDIT_MODEL_CHAIN` / 前端 `WORKFLOW_VIDEO_EDIT_MODEL_CHAIN`）。
+
 ### 后台白名单为什么不进数据库
 `ADMIN_EMAILS` 是全站唯一的管理员判定来源（`isAdminEmail`，15 处引用），而它是**同步**函数、没法查库；
 改成查库要把所有后台鉴权染成 async，风险太大。所以开关做的是"改邮箱清单"：
@@ -259,17 +293,43 @@
 
 - **读取要快必须回传阿里**：`syncGeneratedFilesToAli`（`src/lib/ali-sync.ts`，rsync 到阿里镜像）。"上传走哪≠存哪"，文件始终在腾讯生成，读取快靠阿里本地镜像。`src/lib/recent-upload-origin.ts`：本会话刚上传的读腾讯主源，刷新后走阿里（见 M018）。
 
-## ⭐ 视频/音频时长限制（2026-07-27 实测 + 收敛，唯一权威）
+## ⭐ 视频/音频时长限制（2026-07-27 实测 + 收敛；**2026-08-09 改成「按模型」，唯一权威**）
 
-- **平台真实硬上限（实测，别再猜）**：BytePlus Seedance 2.0 / Fast / Mini 三个模型的 **r2v 参考视频时长上限 = 15.2 秒（含）**，API 报错原文 `video duration (seconds) ... must be less than or equal to 15.2 ... in r2v`。另有 `video pixel count ≥ 409600`、宽高 300–6000px、宽高比 0.4–2.5、帧率 24–60、编码 H.264/H.265。
+- ⭐⭐ **2026-08-09 起时长上限是按模型的**（官方文档 + 实测坐实）：
+  | 模型 | 单条参考视频/音频 | 各自个数 | 总时长 | 上游实测硬上限 |
+  |---|---|---|---|---|
+  | Seedance **2.5** | **2~30 秒** | 各 10 个 | **30 秒** | **30.2 秒** |
+  | Seedance 2.0 / Fast / Mini | 2~15 秒 | 各 3 个 | 15 秒 | 15.2 秒 |
+  两代的硬上限都正好等于「我们宣传的整数 + 0.2 容差」；报错原文
+  `video duration (seconds) ... must be less than or equal to 15.2 / 30.2 ... in r2v`。
+  另有 `video pixel count ≥ 409600`、宽高 300–6000px、宽高比 0.4–2.5、帧率 24–60、编码 H.264/H.265（两代一致）。
+  ⭐ 2.5 的 edit/extend 源视频官方要求 **[4,30] 秒** → 规则里 `minSeconds: 4`。
 - **自家生成的「15秒」视频实际是 15.1 秒**（正式服库三个模型 min=max=avg=15.1）。所以 **15 秒生成视频可以当参考视频**（15.1 < 15.2）——但前提是校验带容差，否则会被自己拦死（曾经就是这个 bug）。
-- **唯一权威实现**（`src/lib/media-upload-validation.ts`，三处共用、禁止再复制）：
-  - `MEDIA_DURATION_EPSILON_SECONDS = 0.2` —— 唯一容差常量。对外宣传 `maxSeconds=15`，`15 + 0.2 = 15.2` 正好等于平台硬上限。
-  - `validateReferenceMediaDurationRange(kindLabel, seconds, rule)` —— **单条**时长范围校验唯一实现。对话流（`chat-workbench.tsx`）与工作流（`workflow-tldraw-canvas-inner.tsx`）都是 import 它（用别名 `validateMediaDuration`/`validateWorkflowMediaDuration` 保持调用点不变），**不要再在组件里写本地副本**（历史上就是各写一份、数值分别是 15.35 / 15.35 / 16.01 三个都错）。
-  - 服务端 `validateMediaUploadMetadata` 也用同一容差（`< 2 - EPS || > 15 + EPS`）。
-- **总时长**（多个参考视频/音频相加）：`src/lib/upload-rules.ts` 的 `REFERENCE_TOTAL_SECONDS_LIMIT = 15` + `validateReferenceTotalDuration()`，**同样带 `+ MEDIA_DURATION_EPSILON_SECONDS`**（=15.2）。这条本来就只有一份实现（服务端+两客户端共用），只是数值以前没带容差。
-- 客户端增量校验用的 `maxTotalSeconds`（`upload-rules.ts` kindRule，值 15）也是 `+ EPSILON` → 同为 15.2。**改一个 epsilon 三类判断一起变，不会再出现各处不一致。**
-- ⚠️ 文案仍写死"2-15秒"（`chat-workbench.tsx` 的 `workflowUploadNodeTypeLabel`/`assetsUploadTypeLabel`、后台 `admin-upload-rules-panel.tsx`），改规则数值时记得手动同步。
+- **唯一权威实现**（`src/lib/media-upload-validation.ts`，禁止再复制）：
+  - `MEDIA_DURATION_EPSILON_SECONDS = 0.2` —— 唯一容差常量（两代通用）。
+  - `REFERENCE_CLIP_SECONDS_MIN / MAX = 2 / 30` —— **全平台最宽区间**，给"还不知道用哪个模型"的通道兜底。
+  - `buildReferenceDurationRangeMessage(kindLabel, min, max)` —— 超限文案唯一实现，
+    产出「**当前模型支持上传2-15秒参考视频**」/「…2-30秒参考音频」。⛔ 别再写不带区间的「时长不能超过 15 秒」。
+  - `validateReferenceMediaDurationRange(kindLabel, seconds, rule)` —— **单条**时长范围校验唯一实现。
+    对话流（`chat-workbench.tsx`）与工作流（`workflow-tldraw-canvas-inner.tsx`）都 import 它
+    （别名 `validateMediaDuration`/`validateWorkflowMediaDuration`），**不要再在组件里写本地副本**
+    （历史上就是各写一份、数值分别是 15.35 / 15.35 / 16.01 三个都错）。
+  - `validateMediaUploadMetadata(kind, metadata, limits?)` —— **第三个参数是可选的模型区间**：
+    传了就按模型收紧，不传就用 2-30 最宽。
+- ⭐⭐ **五条通道谁传模型区间、谁不传**（改这块必须逐条对，`AGENTS.md` 有对应铁律）：
+  | 通道 | 传不传 | 为什么 |
+  |---|---|---|
+  | 对话流附加参考视频/音频 | **传** | 这一刻已知模型 |
+  | 对话流 @引用已有资产 | 本来就传 `rule` | 自动拿到新文案 |
+  | 工作流发送前校验 | 本来就传 `uploadRule` | 自动拿到新文案 |
+  | 资产库上传 / 工作流上传节点·拖拽 / 服务端 `/api/upload-file` | **不传（=2-30 最宽）** | ⛔ 还没选模型，收紧就是"2.5 用户永远传不上 30 秒" |
+  | **服务端 `/api/video` 的 `validateOwnedReferences`** | **传** | ⭐ 最容易漏，它在发上游前再校一遍 |
+- **总时长**（多个参考视频/音频相加）：`src/lib/upload-rules.ts` 的 `validateReferenceTotalDuration()`
+  按 `getSeedanceReferenceLimits(modelId).totalSeconds` 取模型上限（2.5=30 / 2.0=15），带 `+ EPSILON`。
+  （`REFERENCE_TOTAL_SECONDS_LIMIT = 15` 那个常量已只是历史遗留，别再当权威用。）
+- 客户端增量校验用的 `maxTotalSeconds`（`upload-rules.ts` kindRule）也按模型给，同样 `+ EPSILON`。
+- ⚠️ 后台「上传规则」页的只读文案是**手写的两行**（2.0 一行、2.5 一行，
+  `admin-upload-rules-panel.tsx`），改规则数值时记得手动同步。
 
 ## ⭐ 视频「参考图」尺寸/比例限制（2026-07-27 新增，唯一权威）
 
