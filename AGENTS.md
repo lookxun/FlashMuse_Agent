@@ -4,6 +4,39 @@
 This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code. Heed deprecation notices.
 <!-- END:nextjs-agent-rules -->
 
+# 铁律⭐⭐：几个「真走界面」的验法照抄清单 —— 光看代码/接口证明不了这些（2026-08-09 第六十次会话沉淀）
+
+`AGENTS.md` 已有铁律说「验用户能不能看到必须真走界面」。这条补的是**具体怎么走才算数**，
+全都是 2026-08-09 审 v94 那批时真用过、且**成本为 0** 的姿势：
+
+- ⭐⭐ **验「粘贴会不会被静默砍字」必须真发 `paste` 事件**，⛔ `fill()`/`type()` 证明不了
+  （原生 `maxLength`、`slice()` 只在粘贴路径上咬人）：
+  ```js
+  const dt = new DataTransfer(); dt.setData('text/plain', 'A'.repeat(20000));
+  el.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+  ```
+  ⚠️ **contenteditable 有效**（组件自己有 `onPaste` 处理器）；⛔ **`<textarea>` 上无效**
+  （合成事件没有默认插入行为）→ textarea 用 `page.keyboard.insertText('D'.repeat(4000))`。
+  ⭐ 判据是**字符数**（`el.innerText.length` / `ta.value.length`），不是"看起来很长"。
+- ⭐ **验「加了一行会不会把框顶高 / 跳高」必须量高度**，⛔ 别靠肉眼：
+  空态和有内容各测一次 `card.getBoundingClientRect().height`，**两个数必须相等**（本次 136 = 136）。
+  ⭐ 顺带：`maxlength` 这类属性存不存在也要 `getAttribute('maxlength')` **实测**，别看源码。
+- ⭐⭐ **验「服务端只记日志不拦」不用手打接口**（⛔ 手打生成接口 = 开始烧钱，见本文件那条铁律）：
+  **先在后台把上限调小 → 前端此时还是旧缓存 → 从界面正常发一条**
+  → 既证明了"没被拦"（图正常出），又让服务端真落一行日志（回头 `grep -c` 判据）。
+  ⭐ 这个"后台改配置 + 前端旧缓存"的错位，是验一切「前后端各自判定」的通用手法。
+- ⭐⭐ **验「只保存 A 不会清空 B」要连试多次并每次 GET 回读**：
+  本次连发 3 次只带 `promptLengthOverrides` 的 POST，每次都 `GET` 回来确认
+  `uploadRuleOverrides` **原样在**。⛔ 只试一次 + 只看返回值不算（返回值可能是你刚发的那份）。
+  ⭐ 测完**必须把配置改回原值并复验**（本次改回 `{}`）。
+- ⭐ **验「后台配好了前台到底吃不吃」要走完整条链**：后台 POST → `GET /admin/api/...` →
+  **`/api/model-availability`**（前台真正读的那个）→ **刷新前台页面**看界面上的数字变了。
+  ⛔ 少任何一环都可能"后台存对了、前台没生效"。
+- ⭐ **`aria-pressed` 是开关状态的唯一硬判据**；若 `aria-label` 是通用文案（如「启用 BytePlus」重复很多个），
+  就**往上爬 DOM 找带模型名的那个祖先**当上下文，再把 `{ctx, pressed}` 成对打出来。
+- ⚠️ **Playwright 截图/文件默认落在仓库根**（不是 `.playwright-mcp/`）→ 用完记得删，别混进 commit。
+- ⚠️ 上传文件类的用例，**文件必须放在 workspace 根内**（放 temp 目录会 `File access denied ... outside allowed roots`）。
+
 # 铁律⭐⭐⭐：所有 GET 接口**必须显式带 `Cache-Control: no-store`** —— 没有这个头，运营商/网关的透明缓存会给用户返旧数据（2026-08-09 正式服真实事故）
 
 2026-08-09 用户报「正式服顶部公告：后台写的是『新增』，前台显示『新建』（10 小时前那一版），**刷新一下新的、再刷新旧的、过几秒自动又变回旧的**」。

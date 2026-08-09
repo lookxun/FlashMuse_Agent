@@ -322,6 +322,46 @@ sudo /opt/flashmuse/scripts/flashmuse-db-backup.sh --stack prod --label pre-depl
    ⭐ 正解：**用 write 工具把中文 commit message 写进 `.runtime/commit-xx.txt` → `git commit -F 那个文件` → 删掉**。
    ⛔⛔ 别用 `Set-Content`/`Out-File` 写它（中文会坏，见 `AGENTS.md` 那条铁律）。
 
+### ⭐⭐ v1.0.0.94（2026-08-09 第六十次会话）新增的四条部署经验
+
+1. ⭐⭐⭐ **「版本号一样 = 代码一样」这条约定要有一个能真正证明它的判据 —— `src/` 逐文件 md5。**
+   服务器侧：`cd <app 目录> && find src -type f | LC_ALL=C sort | xargs md5sum | md5sum`（再 `find src -type f | wc -l`）。
+   本地侧：用 **node**（⛔ 不用 PowerShell）按同样顺序算，模板见下（这次三方全等 = 194 文件 /
+   `1f041835ac49a5ef5db4f1796934e485`）：
+   ```js
+   // 本地跑：node .runtime/local-hash.js
+   const fs=require('fs'),path=require('path'),crypto=require('crypto');
+   const files=[];(function w(d){for(const e of fs.readdirSync(d,{withFileTypes:true})){const p=path.join(d,e.name);
+   e.isDirectory()?w(p):files.push(path.relative(process.cwd(),p).split(path.sep).join('/'));}})('src');
+   files.sort();const lines=files.map(f=>crypto.createHash('md5').update(fs.readFileSync(f)).digest('hex')+'  '+f+'\n');
+   console.log(files.length, crypto.createHash('md5').update(lines.join('')).digest('hex'));
+   ```
+   ⭐ **staging→prod rsync 之后立刻算一次**：等于用一条命令证明"正式服代码 = 已验过的测试服代码"，
+   比"rsync 没报错"强得多。⛔ 别再只看 `grep APP_VERSION`（那只证明版本号文件对了）。
+   ⚠️ 前提：本地工作区文件必须是 LF（本项目 `git status` 会提示 "LF will be replaced by CRLF **the next time**"，
+   意思是**现在还是 LF**，所以能对上）。
+2. ⭐ **正式服的 `PUBLISHED_APP_VERSION` 在 `/opt/flashmuse/.env` 里**（compose 里是
+   `PUBLISHED_APP_VERSION: "${PUBLISHED_APP_VERSION:-}"` 只做变量替换）。
+   改法：`sudo sed -i 's/^PUBLISHED_APP_VERSION=.*/PUBLISHED_APP_VERSION=vX/' /opt/flashmuse/.env`
+   → `sudo docker compose up -d --force-recreate flashmuse-app` →
+   ⭐ 判据 `sudo docker exec flashmuse-flashmuse-app-1 sh -c 'echo "[$PUBLISHED_APP_VERSION]"'`。
+   ⚠️ **这个 `.env` 是 root 属主**：不加 `sudo` 的 `grep` 会 `Permission denied`
+   （本次脚本里"改前/改后"两行都因此没打出来，但 `sudo sed` 其实成功了 —— ⭐ **所以判据要看容器里的值，别看 grep**）。
+3. ⚠️ **正式服没有 `sync-ali.sh`**（服务器上只有 `/opt/flashmuse-staging/sync-ali-test.sh`，
+   而它推的是 **test** 镜像 `flashmuse-static-test`）→ 正式服要自己写一份推 **`flashmuse-static`**。
+   本次那份（可照抄，写成 .sh scp 上去跑）：
+   ```bash
+   KEY=/opt/flashmuse/data/runtime/flashmuse_to_ali_ed25519; ALI=root@101.37.129.164
+   sudo ssh -o StrictHostKeyChecking=no -i $KEY $ALI 'mkdir -p /var/www/flashmuse-static/_next/static'
+   sudo rm -rf /tmp/prod-next-static
+   sudo docker cp flashmuse-flashmuse-app-1:/app/.next/static /tmp/prod-next-static
+   sudo rsync -a --delete -e "ssh -i $KEY -o StrictHostKeyChecking=no" /tmp/prod-next-static/ $ALI:/var/www/flashmuse-static/_next/static/
+   ```
+   ⭐ 判据：**腾讯侧文件数 = 阿里侧文件数**（本次 42 = 42）。⛔ 别只看 rsync 退出码。
+4. ⭐ **build 时长参考（正式服，无迁移）**：`up -d --build` 到容器 Started 约 **4 分钟**
+   （`chown -R node:node /app` 那步最久）→ 所以**必须后台跑 + 另起 ssh 轮询日志**
+   （`nohup ... > /tmp/prodbuild-vXX.log 2>&1 & sleep 3; echo started`），⛔ 别内联等它（工具 120s 就超时）。
+
 ## 关键踩坑与记忆
 
 - ⛔⛔⛔ **单文件 bind mount 用 `cp` 覆盖 = 换了 inode = 容器里永远还是旧文件**（2026-08-04 v71 踩到，查了三轮）。
