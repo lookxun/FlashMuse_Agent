@@ -22,13 +22,35 @@ export const DEFAULT_PROMPT_MAX_LENGTH = 2000;
 
 /**
  * 「按模型的默认字数」——后台没配过时用它（面板里显示的也是它）。
- * ⭐ 2026-08-09 用户拍板：Seedance 2.0 系 = 3500、Seedance 2.5 = 14500，其余仍 2000。
+ * ⭐ 2026-08-10 用户拍板的产品端限制（依据是当天逐个模型实测的上游真实上限，桌面
+ *   `模型提示词字数上限.md` 有完整对照表）。key 的算法见 `getPromptLengthOverrideKey`：
+ *   对话/Agent/通用 → `"chat"`；BytePlus Seedance 2.0 系 → `SEEDANCE_20_FAMILY_MODEL_ID`；其余 → 模型 id。
  * ⛔ 这里放的是**默认值**，不是硬上限：管理员在后台填的数字优先。
  * ⛔ 加新模型的默认值就改这一张表，别在组件里写死数字。
+ * ⚠️ Kling 三个上游硬上限只有 2500，产品端限 2000（= 全局默认），别往上加超过 2500。
  */
 const MODEL_DEFAULT_PROMPT_MAX_LENGTH: Record<string, number> = {
-  [SEEDANCE_20_FAMILY_MODEL_ID]: 3500,
-  [SEEDANCE_25_VIDEO_MODEL_ID]: 14500,
+  // 对话模型（全部统一一条）
+  chat: 20000,
+  // 图片模型
+  "byteplus:conversation-image.seedream-4-5": 5000, // Seedream 4.5
+  "byteplus:conversation-image.seedream-5-0": 5000, // Seedream 5.0 Lite
+  "byteplus:conversation-image.seedream-5-0-pro": 5000, // Seedream 5.0 Pro
+  "bytedance-seed/seedream-4.5": 5000, // Seedream 4.5（OpenRouter 通道）
+  "google/gemini-3.1-flash-image-preview": 8000, // Gemini 3.1 Flash Image
+  "google/gemini-3-pro-image-preview": 8000, // Gemini 3 Pro Image
+  "openai/gpt-5.4-image-2": 8000, // GPT-5.4 Image 2
+  "openai/gpt-5.4-image-2-agent": 8000, // GPT-5.4 Image 2（GPT 版）
+  // 视频模型
+  [SEEDANCE_20_FAMILY_MODEL_ID]: 4000, // Seedance 2.0 / Fast / Mini（共用一条 key）
+  [SEEDANCE_25_VIDEO_MODEL_ID]: 15000, // Seedance 2.5
+  "bytedance/seedance-2.0": 4000, // Seedance 2.0（OpenRouter 通道）
+  "bytedance/seedance-2.0-fast": 4000, // Seedance 2.0 Fast（OpenRouter 通道）
+  "minimax/hailuo-3": 4000, // MiniMax H3（海螺）
+  "kwaivgi/kling-v3.0-std": 2000, // Kling v3.0 Standard（上游硬上限 2500）
+  "kwaivgi/kling-v3.0-pro": 2000, // Kling v3.0 Pro（上游硬上限 2500）
+  "kwaivgi/kling-video-o1": 2000, // Kling Video O1（上游硬上限 2500）
+  "google/veo-3.1": 4000, // Veo 3.1
 };
 
 /** 后台可填的绝对上限（防手滑输入天文数字把浏览器/上游打挂）。 */
