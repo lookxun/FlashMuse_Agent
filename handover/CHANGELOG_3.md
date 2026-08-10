@@ -17,14 +17,16 @@
 
 | | 版本 / 状态 |
 |---|---|
-| 本地 / 测试服 / **正式服** / GitHub | **`v1.0.0.95`** —— **四方同步**，commit `6bf62bb` 已 push，工作区干净、无未推送 |
-| 硬判据 | 测试服与正式服 `src/` 逐文件 md5 **完全相等**（194 文件、hash `3517c5e1f162d744c638798db1f7dfcd`）；本次改的 4 个文件本地与正式服**逐字节相等** |
-| 迁移 / 基础设施 | 无 Prisma 迁移（两服都 41 个、`No pending migrations`）、无 compose/nginx 改动 |
-| 自查 | `tsc` 0、`npm test` **71/71**（原 15 + 本次新增 56） |
+| 本地 / 测试服 / **正式服** / GitHub | **`v1.0.0.96`** —— **四方同步**，commit `815650e` 已 push，工作区干净、无未推送 |
+| 硬判据 | 本次改的 2 个文件（`prompt-length.ts` / `app-version.ts`）本地 = 测试服 = 正式服 **md5 完全相等**（`8e4c705781b3db4981cad0b6f4d9c6bd` / `b1ad9c07e73eda3738599110dda30dd6`）|
+| 迁移 / 基础设施 | 无 Prisma 迁移、无 compose/nginx 改动；只动了两服 `.env` 的 `PUBLISHED_APP_VERSION`（v95→v96）|
+| 自查 | `tsc` 0、`npm test` **71/71** |
 
-- **最近上线的内容（v95）**：修掉「顶部公告『新增』被显示成『新建』」（**简繁转换改字**，影响所有默认简体用户）
-  + **M040** 红字文案映射幂等固化成 56 个自动化用例 + 删死常量 `MAX_DRAFT_INPUT_LENGTH`；**M011 已关闭**。
-- **上一批（v91~v94）**：Seedance 2.5 后台补齐、提示词「超字数不删字」全套、API 统一 `no-store`、三处重复实现收敛。已全部在正式服。
+- **最近上线的内容（v96，第六十二次会话）**：按**逐模型实测的上游真实上限**，把「提示词字数默认限制」按模型全部改成用户拍板的产品值
+  （`MODEL_DEFAULT_PROMPT_MAX_LENGTH`）。⭐⭐ **关键发现：即梦/各家前台的字数限制是"产品限制"，上游 API 大多不卡这么严** ——
+  实测对照表在桌面 `模型提示词字数上限.md`，也整理进了本次会话记录。
+- **上一批（v95）**：修「公告『新增』显示成『新建』」（简繁转换改字）+ M040 幂等测试 + 删死常量 `MAX_DRAFT_INPUT_LENGTH` + M011 关闭。
+- **再上一批（v91~v94）**：Seedance 2.5 后台补齐、提示词「超字数不删字」全套、API 统一 `no-store`、三处重复实现收敛。已全部在正式服。
 - **账号**：一切测试（本地/测试服/正式服）只用 `12424740@qq.com` / `dragonstar`；
   登后台 `/admin` 只能用白名单号 `lookxun@163.com`（同密码，⛔ 只许看后台、禁止在前台做任何生成）。
 - **服务器**：腾讯新加坡 `119.28.116.16`（app，正式 `:5000` / 测试 `:5001`）、阿里杭州 `101.37.129.164`（入口+静态镜像）。
@@ -32,6 +34,87 @@
 - **活跃备忘重点**：**M041**（简繁转换会改用户自己的字，只影响繁体用户，用户拍板先记不做）、
   M038 / M039（@名正则不对称、从资产库捞回老图，都要先确认产品口径）、M032（工作流参考图静默挂不上，**根因未知，只许加日志**）。
 - 🎯🎯 **下一个 AI 的最优先任务 = 「间断性卡死」bug 的静态定位**（证据链已完整，⛔ 定位到之前只许加日志、不许改行为）。
+
+---
+
+## 第六十二次会话（2026-08-10）：逐模型实测提示词上游真实上限 → 按用户拍板的产品值改「默认字数限制」→ 两服上线 `v1.0.0.96`
+
+> | | 版本 / 状态 |
+> |---|---|
+> | 本地 = 测试服 = **正式服** = GitHub | **`v1.0.0.96`**，commit `815650e` |
+>
+> ⭐ 用户指令链：「先看当前平台里所有模型分别支持多少字」→「2000 都是临时值，你去 OpenRouter 查其它模型」→
+> 「到各家官方文档去查」→「不要动代码，你自己测试一下这些数值对不对」→「GPT-5.4 Image 2 到腾讯服上测；
+> 所有语言模型也查+测；Seedance 2.0/2.5 也测；最后给我一张准确表格」→「Seedream 三个也测；语言模型是 token 吗？我要文字数量」→
+> 「导出到桌面，三列，第三列产品端限制我来填」→（乱码）「做成 md」→「我填好了，做进项目做成默认字数限制，本地/测试服/正式服都做，不用测试」→
+> 「有版本号为什么前端没跳版本提示？」
+
+### 一、把"平台所有模型的提示词字数上限"逐个查清 + 实测（本次的核心）
+
+**背景**：`prompt-length.ts` 里除了 Seedance 2.0 系(3500)/2.5(14500) 外全是临时值 2000。用户要精确数据。
+
+- ⭐⭐ **最重要的方法论结论**：**OpenRouter 不公布"提示词字数上限"，只有 `context_length`（token 上下文窗口）；
+  图片/视频生成模型在其模型列表里 `context_length=0`（不适用）。真实上限只能去各家官方文档 + 直打上游实测。**
+- ⭐⭐ **第二个关键结论**：**即梦/各家前台看到的字数限制是"产品限制"，上游 API 往往不卡这么严** ——
+  实测 Seedance 2.0（即梦 3500）发 8000 字真出片；2.5（即梦 14500）发 30000 字真出片；Seedream 全系（即梦 2000）发 2 万字真出图。
+  → 所以我们平台的字数限制是**产品决策**，想设多少设多少（别超上游硬上限即可）。
+
+**实测手法（照抄）**：直打上游，**只发"必被拒"的超长值**，被拒 = 免费且错误信息里带真实上限；
+被收下 = 会真生成、真花钱（走 OpenRouter/BytePlus 余额，不走用户积分），属探测的必要留痕。
+- OpenRouter 视频：`POST https://openrouter.ai/api/v1/videos`（key 在本地 `.env.local` 的 `OPENROUTER_API_KEY`）。
+- OpenRouter 图片：`POST /api/v1/images`；OpenRouter 对话：`POST /api/v1/chat/completions`（`max_tokens:1` 兜底）。
+- BytePlus 直连视频：`POST https://ark.ap-southeast.bytepluses.com/api/v3/contents/generations/tasks`，
+  model 用真实端点 id（2.0=`ep-20260521133841-nn8bg`… 2.5=`ep-20260807153703-h48pt`；`getBytePlusBaseUrl` 默认这个域名，
+  ⛔ 不是 `openai.byteplusapi.com`，那个 DNS 解析不了）。BytePlus 图片：`/api/v3/images/generations`（⚠️ Seedream `size` 至少 3686400 像素，用 `2048x2048`）。BytePlus 对话：`/api/v3/chat/completions`。
+- ⛔ **GPT/OpenAI 系从本机直连会 403「Country not supported」** → 必须到**腾讯服**（新加坡）跑：
+  写 `.mjs` scp 到 `/tmp` → `docker cp` 进 `flashmuse-staging-staging-app-1:/app` → `docker exec -w /app ... node x.mjs`（读 `/app/.env.local`）。
+- ⚠️ **踩坑**：构造超长字符串**别用 `Array.from(s).length` 判长度**（对多 MB 串是 O(n²)、node 卡 99% CPU 卡死）→ 用 `s.length`（BMP 中文 length==字数）。
+- ⚠️ 语言模型上下文单位是 **token**；实测**重复中文 ≈ 1 字 = 1 token**（错误信息里 `requested about N tokens` 反推），故"字数 ≈ token 数"。
+
+**实测结果（完整表导出到桌面 `模型提示词字数上限.md`）**：
+| 模型 | 实测真实上限 |
+|---|---|
+| 对话模型（全部） | 最低 GPT-4o≈12.8万字，其余 16万~105万字（Seed2.0Lite 26万 / DeepSeek R1 16万 / DeepSeek V4 Pro·Gemini·GPT5.x 105万；Seed2.0Pro 30万~60万之间）|
+| Seedream 4.5 / 5.0 Lite / 5.0 Pro | ≥2万字（都真出图）|
+| GPT-5.4 Image 2 | **正好 32000**（40039 被拒，错误原文写明）|
+| Gemini 3.1 Flash / 3 Pro Image | ≥10万字 |
+| Seedance 2.0 系 / 2.5（BytePlus） | ≥8000 / ≥30000（都真出片）|
+| Kling v3.0 Std/Pro/O1 | **2500 硬上限**（⚠️ 官方文档写 3072 是错的，8000 字任务秒失败 `size must be between 0 and 2500`）|
+| MiniMax H3（海螺）| **7000**（15040 被拒 `> 7000 characters`）|
+| Veo 3.1 | ≥20000（真出片）|
+
+### 二、按用户填的产品值改「默认字数限制」（v96 的代码改动）
+
+用户在桌面 md 第三列填好后，改**唯一权威** `src/lib/prompt-length.ts` 的 `MODEL_DEFAULT_PROMPT_MAX_LENGTH`：
+- 对话（key `chat`）**20000**；Seedream 三个 **5000**；GPT-5.4 Image 2（两个 id）+ Gemini 两个图片 **8000**；
+  Seedance 2.0 系 **4000** / 2.5 **15000**；H3 **4000**；Veo 3.1 **4000**；Kling 三个 **2000**（注释钉住"上游硬上限 2500 别超"）。
+- ⭐ **配 key 的依据**（`getPromptLengthOverrideKey`）：agent/general→`chat`；BytePlus Seedance 2.0 系→`SEEDANCE_20_FAMILY_MODEL_ID`；
+  其余→模型 id。⭐ **OpenRouter 通道的 `bytedance/seedance-2.0`/`-fast` 不属于 BytePlus 2.0 系**（`isBytePlusVideoModel` 只认 `byteplus:video.*`），
+  所以单独各配了一条 4000，否则会漏。图片模型每个 id 各一条（含 BytePlus 的 `byteplus:conversation-image.*` 和 OpenRouter 的 `bytedance-seed/seedream-4.5`）。
+- ⛔ 这只改**默认值**，后台 `PROMPT_LENGTH_OVERRIDES` override 仍优先。`DEFAULT_PROMPT_MAX_LENGTH`(全局兜底 2000) 保持不变。
+
+**部署**（用户要求本地/测试服/正式服都做、不用测试）：bump v95→v96 → 打 2 文件 tgz → 测试服解包 build + `sync-ali-test.sh` →
+正式服 `rsync staging→prod`（不 bump）+ build + `docker cp .next/static` 到阿里正式镜像（chunk 26=26）→ 三方 md5 一致 → 四域名 200、health=v96 → commit `815650e` push。
+
+### 三、⭐⭐ 补上被漏掉的「版本提示」最后一步（用户追问"为什么前端没跳版本提示"）
+
+- **根因**：前端"发现新版本"提示由 `/api/*` 响应头 `x-app-version` 触发（`src/proxy.ts` 写，读环境变量 `PUBLISHED_APP_VERSION`），
+  **服务端版本比前端 bundle 新才弹**。我部署时把代码升到 v96，但**漏了最后一步**：两服 compose 的
+  `PUBLISHED_APP_VERSION` 还停在 **v95**（在 `/opt/flashmuse/.env` 和 `/opt/flashmuse-staging/.env`，⛔ 不是 `data/.env.local`，
+  是 compose 用 `${PUBLISHED_APP_VERSION:-}` 注入）→ 头报 v95 ≤ 前端 v96 → 不弹。
+- ⚠️ 顺带澄清：`x-app-version` **只加在 `/api/*` 上**，curl 根域名/页面路由看不到头是正常的（我一度以为是"没生效"）。
+- **修复**：`sed -i` 把两服 `.env` 的 `PUBLISHED_APP_VERSION` 改成 v1.0.0.96 → `docker compose up -d --force-recreate <app>`（只重建容器、不 build，十几秒）。
+  验证正式服 `curl -sI https://main.venusface.com/api/model-availability` → `x-app-version: v1.0.0.96` ✅。
+- ⭐⭐ **写死的教训（下次部署必做）**：部署最后一步 = 改 `/opt/flashmuse*/.env` 的 `PUBLISHED_APP_VERSION` 为新版号 + `force-recreate`，
+  否则前端永远不弹版本提示。这次是我漏了、被用户发现。
+
+### 留痕（本次测试花的钱，⛔ 别当用户数据）
+
+- 走 OpenRouter/BytePlus **余额**（不走用户积分）：Veo 3.1 一条 4 秒视频、Seedance 2.0 三条、2.5 一条、
+  Seedream 三个模型各一张图（5.0 Pro 因脚本改错多跑一张）、Gemini 图片 2 张、Seed 2.0 Pro 一次 30 万 token 输入。合计约几美元。
+- 可灵 3 个任务是"创建后秒失败"（免费）；所有语言模型/GPT 图片超限都是 400 免费。
+- ⛔ 全程没在前台界面做过生成、没花用户积分、零删用户数据；服务器/本地所有临时脚本已清理。
+- ⚠️ 桌面留了 `模型提示词字数上限.md`（有用，别删）+ 一个乱码的 `模型提示词字数上限.csv`（用户可删）。
 
 ---
 

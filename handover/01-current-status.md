@@ -2,7 +2,43 @@
 
 > 本批交接文档 2026-07-21 重建。更早的详细流水在 `historical-handover-docs-last-used-2026-07-21/`（尤其 `CHANGELOG.md` 580KB、`01-current-status.md`、`05-next-actions.md`）。遇到需要历史上下文的难题再翻归档。
 
-## ✅ 当前状态（2026-08-09 第六十一次会话末：**本地 = 测试服 = 正式服 = GitHub 全部 `v1.0.0.95`**）
+## ✅ 当前状态（2026-08-10 第六十二次会话末：**本地 = 测试服 = 正式服 = GitHub 全部 `v1.0.0.96`**）
+
+  | | 版本 / 状态 |
+  |---|---|
+  | 本地 / 测试服 / 正式服 / GitHub | **`v1.0.0.96`** —— **四方同步**；commit `815650e` 已 push，工作区干净 |
+  | 判据 | 本次改的 2 文件（`prompt-length.ts` / `app-version.ts`）本地 = 测试服 = 正式服 md5 完全相等 |
+  | 自查 | `tsc` 0、`npm test` **71/71** |
+  | 迁移 / 基建 | 无 Prisma 迁移、无 compose/nginx 改动；只改了两服 `.env` 的 `PUBLISHED_APP_VERSION`（v95→v96）|
+  | 回滚点 | `/opt/flashmuse/app-backups/20260810-175300-presync-v1.0.0.96` |
+
+⭐ **本次会话全部细节在 `CHANGELOG_3.md` 顶条（第六十二次会话）。**
+
+**本次干的事：把「提示词字数默认限制」按模型全部改成用户拍板的产品值。**
+
+1. ⭐⭐ **逐模型实测了上游真实的提示词字数上限**（直打 OpenRouter / BytePlus 上游，只发"必被拒"的超长值）。
+   两个关键结论：① **OpenRouter 不公布字数上限，只有 token 上下文窗口；真实上限只能查各家官方文档 + 实测**；
+   ② **即梦/各家前台的字数限制是"产品限制"，上游 API 大多不卡这么严**（Seedance 2.0 发 8000 字、2.5 发 3 万字、
+   Seedream 发 2 万字都能真出片/图）。完整对照表在桌面 `模型提示词字数上限.md`。
+2. 按用户在表里填的第三列（产品端限制），改**唯一权威** `src/lib/prompt-length.ts` 的 `MODEL_DEFAULT_PROMPT_MAX_LENGTH`：
+   对话统一 **20000**、Seedream 三个 **5000**、GPT-5.4 Image 2 + Gemini 图片 **8000**、Seedance 2.0 系 **4000** / 2.5 **15000**、
+   H3 / Veo **4000**、Kling 三个 **2000**（上游硬上限仅 2500）。只改默认值，后台 override 仍优先。
+3. ⭐⭐ **补上被漏掉的「版本提示」最后一步**（用户追问"为什么前端不跳版本提示"）：前端提示靠 `/api/*` 响应头
+   `x-app-version`（`proxy.ts` 读 compose 的 `PUBLISHED_APP_VERSION`）触发，我部署时漏了把它从 v95 改到 v96 →
+   已在两服 `/opt/flashmuse*/.env` 改成 v96 + `force-recreate`，正式服 `/api/*` 头现在报 v1.0.0.96。
+
+**实测出的各模型真实上限（备查，桌面 md 有完整版）**：
+Kling v3.0 全系 **2500**（硬上限，官方文档写 3072 是错的）、MiniMax H3 **7000**、GPT-5.4 Image 2 **正好 32000**、
+Veo 3.1 ≥2万、Gemini 图片 ≥10万、Seedance 2.0/2.5 ≥8000/≥30000、Seedream ≥2万；
+语言模型上下文（token≈中文字数）：GPT-4o 12.8万、DeepSeek R1 16万、Seed 2.0 Lite 26万、Seed 2.0 Pro 30~60万、其余（DeepSeek V4 Pro / Gemini / GPT-5.x）约 105万。
+
+⚠️ **本次零界面测试、零用户积分消耗、零删用户数据**；探测真出的几条视频/图片走的是 OpenRouter/BytePlus 余额（约几美元，明细见 `CHANGELOG_3.md`）。
+
+⭐⭐ **下次部署必记的教训**：部署最后一步一定要把 `/opt/flashmuse*/.env` 的 `PUBLISHED_APP_VERSION` 改成新版号 + `docker compose up -d --force-recreate`，否则前端永远不弹「发现新版本」。
+
+---
+
+## ⏪ 上一状态（2026-08-09 第六十一次会话末：**本地 = 测试服 = 正式服 = GitHub 全部 `v1.0.0.95`**）
 
   | | 版本 / 状态 |
   |---|---|
