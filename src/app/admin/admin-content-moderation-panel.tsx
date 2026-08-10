@@ -117,7 +117,7 @@ export function AdminContentModerationPanel({ initialEnabled, initialHidden, ini
   };
 
   const blocked = events.filter((item) => item.action === "keyword_block");
-  const review = events.filter((item) => item.action === "semantic_review");
+  const review = events.filter((item) => item.action === "semantic_review" && item.status === "flagged");
   const termCount = new Set(terms.split(/[\n,，]+/).map((item) => item.trim()).filter(Boolean)).size;
   return (
     <>

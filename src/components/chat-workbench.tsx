@@ -4974,22 +4974,28 @@ export function ChatWorkbench() {
           ? {
               ...session,
               updatedAt: Date.now(),
-              messages: session.messages.map((message) =>
-                message.role === "assistant" && message.requestId === requestId
-                  ? {
+              messages: session.messages.map((message) => {
+                if (message.role !== "assistant" || message.requestId !== requestId) return message;
+                const isRetry = Boolean(message.retryingFailedVideoIndexes?.length);
+                // M029：视频失败以前是无脑 failedVideoCount+1（图片是按 slot 下标幂等的，视频没有 slot）。
+                // 于是「前台 while 轮询」和「后台 reconcile」对同一个 ${requestId}:video:${index} 双双收尾时，
+                // 计数会变成 2（真实事故：失败卡显示两张、但 mediaErrorReasons 只有一条）。
+                // 判据：非重试路径下，只有还剩「待生成」名额（pendingVideoCount>0）才是一次真正的收尾；
+                // pending 已归 0 = 这个视频早被另一个收尾者处理过（成功或失败）→ 这次是重复收尾，整条不动。
+                if (!isRetry && (message.pendingVideoCount ?? 1) <= 0) return message;
+                return {
                       ...message,
                       error: errorMessage ?? message.error,
                       mediaErrorReasons: [...(message.mediaErrorReasons ?? []), errorMessage ?? GENERIC_MEDIA_ERROR_MESSAGE],
-                      failedVideoCount: message.retryingFailedVideoIndexes?.length ? message.failedVideoCount : (message.failedVideoCount ?? 0) + 1,
-                      pendingVideoCount: Math.max(0, (message.pendingVideoCount ?? (message.retryingFailedVideoIndexes?.length ? 0 : 1)) - 1),
+                      failedVideoCount: isRetry ? message.failedVideoCount : (message.failedVideoCount ?? 0) + 1,
+                      pendingVideoCount: Math.max(0, (message.pendingVideoCount ?? (isRetry ? 0 : 1)) - 1),
                       // 失败也撤掉一条"保存中"预览（极少见：远程成功但本地一直存不下到 24h 过期）。
                       videoPreviewUrls: message.videoPreviewUrls?.length ? message.videoPreviewUrls.slice(1) : message.videoPreviewUrls,
                       retryingFailedVideoIndexes: message.retryingFailedVideoIndexes?.slice(1),
                       retryingFailedVideoStartedAt: message.retryingFailedVideoIndexes?.slice(1).reduce<Record<number, number>>((next, index) => ({ ...next, [index]: message.retryingFailedVideoStartedAt?.[index] ?? Date.now() }), {}),
                       mode: "video",
-                    }
-                  : message,
-              ),
+                    };
+              }),
             }
           : session,
       ),

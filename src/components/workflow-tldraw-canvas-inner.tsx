@@ -3060,6 +3060,11 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
   const userInteractedRef = useRef(false);
   const markUserInteracted = useCallback(() => { userInteractedRef.current = true; }, []);
   const loadingRef = useRef(false);
+  // M037：上传进度是纯显示态。它以前走 updateNode → updateState → onChange（整张画布 JSON.stringify + 父级 6 次全画布遍历 + 防抖 PUT），
+  // 而一次上传要触发 70~100 次进度 → O(进度次数 × 节点数 × 画布大小)，工作流节点越多越卡。
+  // 现在进度只直接改那一个 shape 的 props（tldraw 自己重渲染那一个节点），不 stringify、不 onChange、不 PUT。
+  // 这个 ref 让 shape 变更处理器对"纯进度更新"直接跳过（否则它每次都会重新 exportStateFromEditor + syncWorkflowConnectionShapes）。
+  const progressOnlyUpdateRef = useRef(false);
   const rafRef = useRef<number | null>(null);
   const geometryPollRef = useRef<number | null>(null);
   const unlistenRef = useRef<(() => void) | null>(null);
@@ -3274,6 +3279,8 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
         return;
       }
       if (prevShape.type !== "workflow_node" && nextShape.type !== "workflow_node") return;
+      // M037：纯上传进度更新只改一个 shape 的显示态，不需要重新导出整张画布 / 同步连线 / 触发存库。
+      if (progressOnlyUpdateRef.current) return;
       const next = exportStateFromEditor(editor);
       stateRef.current = next;
       syncWorkflowConnectionShapes(editor, next);
@@ -3407,6 +3414,23 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
       }),
     }));
   }, [markNodeAction, updateState, uploadRuleOverrides]);
+
+  // M037：只更新某个节点的上传进度显示，绝不走 updateState/onChange/存库那条重路径。
+  // 直接 patch 那一个 shape 的 props → tldraw 只重渲染那个节点上的 UploadingNodeOverlay。
+  // 上传完成时仍走正常的 updateNode（带 url 等真实数据 + uploadProgress:undefined）落库。
+  const updateNodeUploadProgress = useCallback((nodeId: string, progress: number | undefined) => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const id = getShapeId(nodeId);
+    const shape = editor.getShape(id) as WorkflowNodeShape | undefined;
+    if (!shape) return;
+    const wasLoading = loadingRef.current;
+    loadingRef.current = true;
+    progressOnlyUpdateRef.current = true;
+    editor.updateShape<WorkflowNodeShape>({ id, type: "workflow_node", props: { ...shape.props, node: { ...shape.props.node, data: { ...shape.props.node.data, uploadProgress: progress } } } });
+    progressOnlyUpdateRef.current = false;
+    loadingRef.current = wasLoading;
+  }, []);
 
   const addNode = useCallback((kind: WorkflowNodeKind, pagePoint?: { x: number; y: number }) => {
     const editor = editorRef.current;
@@ -3585,7 +3609,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
         const nodeId = createId("workflow_node");
         const previewUrl = URL.createObjectURL(file);
         addUploadedNode({ id: nodeId, kind: "image", title: imageTitle, data: { ...getDefaultNodeData("image"), prompt: imageTitle, imageDimensions: {}, ratio: normalizeWorkflowImageRatio(undefined, dimensions), uploadProgress: 1, uploadPreviewUrl: previewUrl } }, targetNodeId, rightOfNode);
-        const uploaded = await uploadWorkflowImage(file, throttleUploadProgress((progress) => updateNode(nodeId, { uploadProgress: Math.min(99, progress) })), true);
+        const uploaded = await uploadWorkflowImage(file, throttleUploadProgress((progress) => updateNodeUploadProgress(nodeId, Math.min(99, progress))), true);
         const url = uploaded.url;
         if (uploaded.duplicate) (onDuplicateTip ?? onShowTip)?.("图片已存在，无需重复上传！");
         // 名字一律用服务端权威名（去扩展名 + 全局唯一 + 同图复用同名），兜底才用文件名。
@@ -3608,7 +3632,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
         const nodeId = createId("workflow_node");
         const previewUrl = URL.createObjectURL(file);
         addUploadedNode({ id: nodeId, kind: "video", title: "上传视频", data: { ...defaultData, prompt: "上传视频", videoDimensions: media.dimensions, durationSeconds: media.durationSeconds, ratio: media.dimensions ? getCommonWorkflowRatioLabel(media.dimensions) ?? defaultData.ratio : defaultData.ratio, uploadProgress: 1, uploadPreviewUrl: previewUrl } }, targetNodeId);
-        const uploadedVideo = await uploadWorkflowFile(file, "video", workflowId, nodeId, media, throttleUploadProgress((progress) => updateNode(nodeId, { uploadProgress: Math.min(99, progress) })));
+        const uploadedVideo = await uploadWorkflowFile(file, "video", workflowId, nodeId, media, throttleUploadProgress((progress) => updateNodeUploadProgress(nodeId, Math.min(99, progress))));
         const url = uploadedVideo.url;
         if (uploadedVideo.duplicate) (onDuplicateTip ?? onShowTip)?.("视频已存在，无需重复上传！");
         const mediaName = uploadedVideo.name || sanitizeWorkflowReferenceName(file.name);
@@ -3624,7 +3648,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
         if (validationError) return onShowTip?.(validationError);
         const nodeId = createId("workflow_node");
         addUploadedNode({ id: nodeId, kind: "audio", title: "上传音频", data: { ...getDefaultNodeData("audio"), durationSeconds: media.durationSeconds, uploadProgress: 1 } }, targetNodeId);
-        const uploadedAudio = await uploadWorkflowFile(file, "audio", workflowId, nodeId, media, throttleUploadProgress((progress) => updateNode(nodeId, { uploadProgress: Math.min(99, progress) })));
+        const uploadedAudio = await uploadWorkflowFile(file, "audio", workflowId, nodeId, media, throttleUploadProgress((progress) => updateNodeUploadProgress(nodeId, Math.min(99, progress))));
         const url = uploadedAudio.url;
         if (uploadedAudio.duplicate) (onDuplicateTip ?? onShowTip)?.("音频已存在，无需重复上传！");
         const mediaName = uploadedAudio.name || sanitizeWorkflowReferenceName(file.name);
@@ -3635,7 +3659,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
       if (file.type === "text/plain" || getWorkflowFileExtension(file) === "txt") {
         const nodeId = createId("workflow_node");
         addUploadedNode({ id: nodeId, kind: "text", title: "上传文本", data: { ...getDefaultNodeData("text"), uploadProgress: 1 } }, targetNodeId);
-        const text = await readWorkflowDocumentText(file, throttleUploadProgress((progress) => updateNode(nodeId, { uploadProgress: Math.min(99, progress) })));
+        const text = await readWorkflowDocumentText(file, throttleUploadProgress((progress) => updateNodeUploadProgress(nodeId, Math.min(99, progress))));
         const validationError = validateWorkflowUploadNodeFile(file, "text", undefined, text);
         if (validationError) {
           updateNode(nodeId, { uploadProgress: undefined, error: validationError });
