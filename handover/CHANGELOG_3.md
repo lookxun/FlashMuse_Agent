@@ -13,16 +13,21 @@
 >   ④ 把旧卷标题改成「卷 N · 已归档只读」并在顶部加指向新卷的提示 ⑤ 更新 `00-README.md` 文档索引里的 CHANGELOG 行。
 > - 判据不变：**版本号一样 = 测试服和正式服代码一样**（本项目核心约定，见 `AGENTS.md`）。
 
-## 📌 当前状态摘要（2026-08-09 第六十一次会话末，开卷时写）
+## 📌 当前状态摘要（2026-08-10 第六十三次会话末）
 
 | | 版本 / 状态 |
 |---|---|
-| 本地 / 测试服 / **正式服** / GitHub | **`v1.0.0.96`** —— **四方同步**，commit `815650e` 已 push，工作区干净、无未推送 |
-| 硬判据 | 本次改的 2 个文件（`prompt-length.ts` / `app-version.ts`）本地 = 测试服 = 正式服 **md5 完全相等**（`8e4c705781b3db4981cad0b6f4d9c6bd` / `b1ad9c07e73eda3738599110dda30dd6`）|
-| 迁移 / 基础设施 | 无 Prisma 迁移、无 compose/nginx 改动；只动了两服 `.env` 的 `PUBLISHED_APP_VERSION`（v95→v96）|
-| 自查 | `tsc` 0、`npm test` **71/71** |
+| 本地 / 测试服 / **正式服** / GitHub | **`v1.0.0.97`** —— **四方同步**，commit `abfca9a` 已 push，工作区干净、无未推送 |
+| 硬判据 | staging→prod 对齐后 `src/` 逐文件 md5 完全相等（`f608cba83ef9a05fcbf4cc2690295ee1`，194 文件）|
+| 迁移 / 基础设施 | 无 Prisma 迁移、无 compose/nginx 改动；只动了正式服 `.env` 的 `PUBLISHED_APP_VERSION`（v96→v97）|
+| 自查 | `tsc` 0 |
+| 回滚点 | `/opt/flashmuse/app-backups/20260810-192542-presync-v1.0.0.97` |
 
-- **最近上线的内容（v96，第六十二次会话）**：按**逐模型实测的上游真实上限**，把「提示词字数默认限制」按模型全部改成用户拍板的产品值
+- **最近上线的内容（v97，第六十三次会话）**：① **M029 修对话流「视频双失败卡」**（视频失败无脑 +1、被两个轮询器双双收尾 → 加"只有还剩待生成名额才计一次失败"守卫）；
+  ② **M037 工作流上传进度不再拖垮画布**（进度只 patch 那一个 shape、不 stringify/不 onChange/不 PUT）；
+  ③ **后台「语义审核待确认」只显示 `flagged`（疑似命中）**，不再把「正常」结果列进来。
+  ⭐ 还**修了历史坏数据**：本地 1 条 + 正式库 2 条 `failedVideoCount=2` 的老消息回收成 1（修复只对新数据生效，老消息要手动改）。
+- **上一批（v96，第六十二次会话）**：按**逐模型实测的上游真实上限**，把「提示词字数默认限制」按模型全部改成用户拍板的产品值
   （`MODEL_DEFAULT_PROMPT_MAX_LENGTH`）。⭐⭐ **关键发现：即梦/各家前台的字数限制是"产品限制"，上游 API 大多不卡这么严** ——
   实测对照表在桌面 `模型提示词字数上限.md`，也整理进了本次会话记录。
 - **上一批（v95）**：修「公告『新增』显示成『新建』」（简繁转换改字）+ M040 幂等测试 + 删死常量 `MAX_DRAFT_INPUT_LENGTH` + M011 关闭。
@@ -34,6 +39,82 @@
 - **活跃备忘重点**：**M041**（简繁转换会改用户自己的字，只影响繁体用户，用户拍板先记不做）、
   M038 / M039（@名正则不对称、从资产库捞回老图，都要先确认产品口径）、M032（工作流参考图静默挂不上，**根因未知，只许加日志**）。
 - 🎯🎯 **下一个 AI 的最优先任务 = 「间断性卡死」bug 的静态定位**（证据链已完整，⛔ 定位到之前只许加日志、不许改行为）。
+
+---
+
+## 第六十三次会话（2026-08-10）：修「视频双失败卡」(M029) + 「工作流上传进度拖垮画布」(M037) + 后台语义审核只显示疑似 → 两服上线 `v1.0.0.97`
+
+> | | 版本 / 状态 |
+> |---|---|
+> | 本地 = 测试服 = **正式服** = GitHub | **`v1.0.0.97`**，commit `abfca9a` |
+>
+> ⭐ 用户指令链：「后台语义审核待确认里为什么把结果是正常的也显示了？不是应该显示疑似吗」→（选 1：只保留疑似）→
+> 「把备忘任务列出来看哪些优先」→「M037 做掉，M029 也看能不能做掉，我本地『生成毛主席』这条就出现了重复失败卡」→
+> （给了截图：一条视频消息里两张「视频生成失败」卡，B_242）→「全部做吧，本地修复，部署测试服要测就上号测，测试服没问题就推正式服」。
+
+### 一、后台「语义审核待确认」只显示「疑似命中」（用户报的第一件事）
+
+- **现象**：后台那张表把 `status=clear`（正常/不涉及敏感政治）的记录也列出来了，而它叫"待确认"，正常的根本不需要确认。
+- **根因**：`admin-content-moderation-panel.tsx:120` 的过滤只看 `action === "semantic_review"`，不看 status →
+  flagged / clear / error 全塞进来。（图片侧的"已拦截记录"不受影响。）
+- **修法（1 行）**：`const review = events.filter((item) => item.action === "semantic_review" && item.status === "flagged");`
+
+### 二、M037：工作流上传进度不再拖垮画布（✅ 完成）
+
+- **根因（备忘里早写清了）**：`updateNode({uploadProgress}) → updateState → onChange`，每次要 `exportStateFromEditor` +
+  `stateKey`（整张画布 `JSON.stringify`，重度用户 655KB）+ 对所有节点 `updateShape` + 父级 6 次全画布遍历 + 防抖 PUT；
+  而一次上传触发 70~100 次进度 → **O(进度次数 × 节点数 × 画布大小)**，节点越多越卡。
+- **修法（`workflow-tldraw-canvas-inner.tsx`，约 25 行）**：
+  - 新增 `updateNodeUploadProgress(nodeId, progress)`：只直接 `editor.updateShape` patch 那**一个** shape 的
+    `props.node.data.uploadProgress`，tldraw 只重渲染那一个节点的 `UploadingNodeOverlay`。**不 stringify、不 onChange、不 PUT。**
+  - 新增 `progressOnlyUpdateRef`：在 `registerAfterChangeHandler` 的 workflow_node 分支里，进度更新期间直接 `return`，
+    连 `exportStateFromEditor` + `syncWorkflowConnectionShapes` 都跳过（改动周围 `loadingRef` 也一并置真）。
+  - 4 个上传热点回调（图/视频/音频/文本）从 `updateNode(...)` 换成 `updateNodeUploadProgress(...)`；
+    **上传完成/失败仍走原来的 `updateNode`**（带真实 url + `uploadProgress:undefined`）正常落库。
+  - ⭐ 既有的 `throttleUploadProgress` 节流保留（双保险）。上传态字段在存库边界的既有剥离逻辑不动。
+
+### 三、M029：修对话流「视频双失败卡」（✅ 完成，含历史坏数据修复）
+
+- ⭐⭐ **是我先拿用户库里的持久化数据坐实的**（`WorkspaceMessage.messageJson`）：那条 B_242 视频消息
+  `failedVideoCount=2 / pendingVideoCount=0 / videos=0 / mediaErrorReasons 只有 1 条` —— 失败记了 2 次但真实原因只有 1 个 → 画出 2 张失败卡。
+- **根因（关键是找到"为什么只有视频会双"）**：
+  - **图片**失败打在具体 slot 下标（`imageResultSlots[i]`）→ 同一格标两次仍是 1 张卡，**天然幂等**。
+  - **视频**没有 slot 概念，失败就是无脑 `failedVideoCount + 1`（`markAssistantVideoFailure`，`chat-workbench.tsx`）。
+    对话流有**两个收尾者**：前台 `while` 轮询（catch 里 mark）+ 后台 reconcile 兜底（`reconcileConversationVideo`，
+    key = `${requestId}:video:${index}`）。虽然有 `runningRequestIdsRef` 守卫，但**跨浏览器重启/竞态**下两者会对同一个视频先后各收尾一次 → 计数变 2。
+    （B_242「远程地址已过期」正是任务跑久、跨重启最容易触发的失败。）
+- **修法（`markAssistantVideoFailure`）**：保持不变量 `videos.length + failedVideoCount + pendingVideoCount === 请求数`。
+  非重试路径下，**只有还剩待生成名额（`pendingVideoCount > 0`）时这次失败才算一次真正收尾**；pending 已归 0 = 早被另一个收尾者处理过（成功或失败）→ **这次是重复收尾，整条消息不动**（不 +1、不追加原因）。
+  ⭐ 已推演所有时序（前台先/reconcile 先/竞态/Agent 一次多视频）都正确；不碰重试路径、不碰图片侧（图片有 slot 兜底、且没报过、最小改动）。
+- **历史坏数据修复**（一次性脚本，逻辑：video 消息 + 非重试 + `mediaErrorReasons.length>=1` + `failedVideoCount > 原因条数` → 把 `failedVideoCount` 收回到原因条数）：
+  - 本地库 dry-run 1 条 → apply 修 1；正式库 3100 条视频消息里 2 条坏（都是 failed=2/reasons=1）→ 修 2；测试库 0 条。
+  - ⚠️ **修复只对新数据生效**，老坏消息必须这样手动改回来（脚本已删，逻辑记在这，下次照做）。
+
+### 四、部署（测试服 → 正式服，全程按 `03` 部署铁律）
+
+- `bump-version` v96→**v97**；改动 4 文件（3 个 src + app-version），**无迁移、无 compose/nginx**。
+- **测试服**：清单法 tgz → scp → `tar -xzf -C /opt/flashmuse-staging/app` → grep 确认 4 处改动进服务器源码 →
+  后台 build（health=v97）→ `sync-ali.sh --stack=staging`（42 文件）→ `.env` 写 `PUBLISHED_APP_VERSION` + force-recreate →
+  `x-app-version=v97` + 外网 8080=200。测试库坏数据扫描 = 0。
+- **测试服上号冒烟**：登录 ✓ / 工作流点节点不崩 ✓（M037 那个文件、最高风险区）/ 后台内容审核页「正常」**0 条、只剩「疑似命中」1 条** ✓ / 全程 console 0 error。
+- **正式服**：备份 145M（`20260810-192542-presync-v1.0.0.97`）→ staging→prod rsync（**不 bump**）→
+  ⭐ **`src/` md5 与 staging 完全相等 `f608cba...`（194 文件）** → build（health=v97、无迁移）→
+  `docker cp .next/static` 推阿里正式镜像 `flashmuse-static`（腾讯 42 = 阿里 42）→ `.env` 版本信号 + force-recreate → 四域名 200 + `x-app-version=v97`。
+- **正式库坏数据**：dry-run 2 条 → apply 修 2（容器内 `node repair.mjs`，跑完删脚本）。
+- **正式服上号巡检 6 项全过**：登录 / 对话模式 / 工作流点节点不崩 / 资产库 33 缩略图 / **真跑生图成功**（灰色布偶猫 2K）/ 后台内容审核过滤修复生效 + **0 console error**。
+- commit `abfca9a` + push GitHub。
+
+### 五、留痕（⛔ 别当用户数据）
+
+- 正式服 `12424740@qq.com`：新建一条对话「v97巡检：一只灰色布偶猫趴在木地板上晒太阳」含 1 张 2K 图（扣积分，余额约 9,097）。
+- ⛔ 公告一个字没动（正式服禁测公告）；后台只登录看页面，没改任何配置。
+
+### 六、经验/踩坑
+
+- ⭐⭐ **"现象相似≠根因相同"再次应验**：M029 备忘假设是"两个轮询器都 +1"，但**图片和视频不一样** ——
+  图片按 slot 幂等、只有视频是裸计数。**先去库里把持久化数据取证（failed=2 但 reasons=1）**，比读代码猜快得多、也一次锁定是视频侧。
+- ⭐ **PowerShell 又吃掉了 shell 的 `for` 循环和 `\$`**（验四域名那条 `for d in ...` 被拆成一堆 `=`）→ 一律用服务器上现成的 `/tmp/health.sh`，或写 `.sh` scp 上去跑。
+- ⭐ 判"生图成功"要**排除 `user_avatar`**（`/generated/user_avatar/...` 是头像，会被算进 img；本次卡了两轮才想起截图确认）。
 
 ---
 
