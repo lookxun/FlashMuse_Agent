@@ -361,6 +361,10 @@ model ContentModerationTerm {
   groupId   String
   value     String
   normalized String
+  // ⭐ 词库的显示顺序（= 管理员在后台文本框里的输入顺序）。
+  // ⛔ 别再用 createdAt 排序：整批词是在同一个事务里插入的，586 行的 createdAt 完全相同，
+  //    ORDER BY createdAt 没有任何决定性依据 → 同一份数据在不同机器上排列不同（2026-08-11 正式服真实事故）。
+  sortOrder Int      @default(0)
   createdAt DateTime @default(now())
   group     ContentModerationRuleGroup @relation(fields: [groupId], references: [id], onDelete: Cascade)
 

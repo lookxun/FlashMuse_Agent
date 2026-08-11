@@ -50,11 +50,15 @@ export async function POST(request: Request) {
       if (!groupId) throw new Error("保存审核规则失败");
       if (hasTerms) {
         await tx.$executeRaw`DELETE FROM "ContentModerationTerm" WHERE "groupId" = ${groupId}`;
+        // ⭐ sortOrder = 管理员输入的下标，读取端一律按它排 —— ⛔ 别退回按 createdAt 排：
+        //    这一批全在同一事务里插入、createdAt 完全相同，按它排会得到不确定的顺序。
+        let sortOrder = 0;
         for (const term of terms) {
           await tx.$executeRaw`
-            INSERT INTO "ContentModerationTerm" ("id", "groupId", "value", "normalized")
-            VALUES (${randomUUID()}, ${groupId}, ${term.value}, ${term.normalized})
+            INSERT INTO "ContentModerationTerm" ("id", "groupId", "value", "normalized", "sortOrder")
+            VALUES (${randomUUID()}, ${groupId}, ${term.value}, ${term.normalized}, ${sortOrder})
           `;
+          sortOrder += 1;
         }
       }
     });

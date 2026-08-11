@@ -441,7 +441,7 @@ export default async function AdminPage({ searchParams }: { searchParams?: Promi
   if (activeTab === "content-moderation") {
     const [groups, terms, rows] = await Promise.all([
       prisma.$queryRaw<Array<{ id: string; enabled: boolean; termsHidden: boolean; editUnlocked: boolean }>>`SELECT "id", "enabled", "termsHidden", "editUnlocked" FROM "ContentModerationRuleGroup" WHERE "category" = 'sensitive_politics' LIMIT 1`,
-      prisma.$queryRaw<Array<{ value: string }>>`SELECT t."value" FROM "ContentModerationTerm" t INNER JOIN "ContentModerationRuleGroup" g ON g."id" = t."groupId" WHERE g."category" = 'sensitive_politics' ORDER BY t."createdAt" ASC`,
+      prisma.$queryRaw<Array<{ value: string }>>`SELECT t."value" FROM "ContentModerationTerm" t INNER JOIN "ContentModerationRuleGroup" g ON g."id" = t."groupId" WHERE g."category" = 'sensitive_politics' ORDER BY t."sortOrder" ASC, t."createdAt" ASC, t."id" ASC`,
       prisma.$queryRaw<Array<{ id: string; createdAt: Date; userId: string | null; email: string | null; kind: string; source: string; action: string; status: string; prompt: string; matchedTerm: string | null; semanticReason: string | null }>>`SELECT e."id", e."createdAt", e."userId", u."email", e."kind", e."source", e."action", e."status", e."prompt", e."matchedTerm", e."semanticReason" FROM "ContentModerationEvent" e LEFT JOIN "User" u ON u."id" = e."userId" ORDER BY e."createdAt" DESC LIMIT 300`,
     ]);
     const sourceLabels: Record<string, string> = { conversation: "对话流", workflow: "工作流", asset: "资产库", agent: "Agent" };
