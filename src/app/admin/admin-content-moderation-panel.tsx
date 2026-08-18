@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { RiEyeLine, RiEyeOffLine, RiFileCopyLine, RiLockLine, RiLockUnlockLine, RiShieldCheckLine } from "react-icons/ri";
 
 export type ContentModerationEventRow = {
@@ -164,11 +164,113 @@ export function AdminContentModerationPanel({ initialEnabled, initialHidden, ini
   );
 }
 
+function highlightMatchedTerm(text: string, term?: string): ReactNode {
+  if (!term) return text;
+  const parts: ReactNode[] = [];
+  let rest = text;
+  let key = 0;
+  let cursor = rest.indexOf(term);
+  if (cursor < 0) return text;
+  while (cursor >= 0) {
+    if (cursor > 0) parts.push(rest.slice(0, cursor));
+    parts.push(
+      <mark key={key++} className="rounded bg-[#ffe0d6] px-0.5 font-medium text-[#d21b1b]">{term}</mark>,
+    );
+    rest = rest.slice(cursor + term.length);
+    cursor = rest.indexOf(term);
+  }
+  if (rest) parts.push(rest);
+  return parts;
+}
+
 function EventTable({ title, subtitle, events, onUsePrompt, showMatchedTerm = false }: { title: string; subtitle: string; events: ContentModerationEventRow[]; onUsePrompt?: (prompt: string) => void; showMatchedTerm?: boolean }) {
   const [page, setPage] = useState(0);
-  const gridClassName = onUsePrompt ? "grid-cols-[130px_170px_110px_120px_minmax(340px,1fr)_130px]" : "grid-cols-[130px_170px_110px_120px_minmax(340px,1fr)]";
+  const [detail, setDetail] = useState<ContentModerationEventRow | null>(null);
+  const showDetail = showMatchedTerm;
+  const gridClassName = onUsePrompt
+    ? "grid-cols-[130px_170px_110px_120px_minmax(340px,1fr)_130px]"
+    : showDetail
+      ? "grid-cols-[130px_170px_110px_120px_minmax(340px,1fr)_80px]"
+      : "grid-cols-[130px_170px_110px_120px_minmax(340px,1fr)]";
   const pageCount = Math.max(1, Math.ceil(events.length / 10));
   const currentPage = Math.min(page, pageCount - 1);
   const visibleEvents = events.slice(currentPage * 10, currentPage * 10 + 10);
-  return <section className="mt-6 overflow-hidden rounded-[14px] border border-[#eeeeee] bg-white shadow-[0_10px_28px_rgba(0,0,0,0.04)]"><div className="border-b border-[#eeeeee] px-5 py-4"><div className="font-semibold text-[#222222]">{title}</div><div className="mt-1 text-[12px] text-[#888888]">{subtitle}</div></div><div className={`grid ${gridClassName} border-b border-[#eeeeee] bg-[#fafafa] text-[12px] text-[#777777]`}><div className="px-4 py-3">时间</div><div className="px-4 py-3">用户</div><div className="px-4 py-3">来源</div><div className="px-4 py-3">{showMatchedTerm ? "命中" : "结果"}</div><div className="px-4 py-3">完整提示词</div>{onUsePrompt ? <div className="px-4 py-3">操作</div> : null}</div>{events.length ? <>{visibleEvents.map((item) => <div key={item.id} className={`grid ${gridClassName} border-b border-[#f0f0f0] text-[12px] leading-5 text-[#444444] last:border-b-0`}><div className="whitespace-nowrap px-4 py-3 text-[#888888]">{item.createdAtLabel}</div><div className="whitespace-pre-line break-all px-4 py-3">{item.userLabel}</div><div className="px-4 py-3">{item.sourceLabel} / {item.kindLabel}</div><div className="px-4 py-3">{showMatchedTerm ? <span className="text-[#d95d35]">{item.matchedTerm ?? "-"}</span> : <><div>{item.status === "flagged" ? "疑似命中" : item.status === "clear" ? "正常" : item.status === "blocked" ? "已拦截" : item.status === "error" ? "审核失败" : "待审核"}</div>{item.matchedTerm ? <div className="mt-1 text-[#d95d35]">命中：{item.matchedTerm}</div> : null}{item.semanticReason ? <div className="mt-1 text-[#888888]">{item.semanticReason}</div> : null}</>}</div><div className="whitespace-pre-wrap break-words px-4 py-3 text-[#222222]">{item.prompt}</div>{onUsePrompt ? <div className="px-4 py-3"><button type="button" onClick={() => onUsePrompt(item.prompt)} className="inline-flex items-center gap-1 rounded-[6px] border border-[#dddddd] px-2 py-1 text-[#666666] hover:border-[#111111] hover:text-[#111111]"><RiFileCopyLine className="h-3 w-3" />加入词库</button></div> : null}</div>)}{pageCount > 1 ? <div className="flex items-center justify-end gap-2 px-5 py-3 text-[12px] text-[#777777]"><button type="button" disabled={currentPage === 0} onClick={() => setPage((value) => Math.max(0, value - 1))} className="rounded-[6px] border border-[#dddddd] px-2 py-1 disabled:cursor-not-allowed disabled:opacity-40">上一页</button><span>第 {currentPage + 1} / {pageCount} 页</span><button type="button" disabled={currentPage >= pageCount - 1} onClick={() => setPage((value) => Math.min(pageCount - 1, value + 1))} className="rounded-[6px] border border-[#dddddd] px-2 py-1 disabled:cursor-not-allowed disabled:opacity-40">下一页</button></div> : null}</> : <div className="px-5 py-8 text-center text-[13px] text-[#999999]">暂无记录</div>}</section>;
+  return (
+    <section className="mt-6 overflow-hidden rounded-[14px] border border-[#eeeeee] bg-white shadow-[0_10px_28px_rgba(0,0,0,0.04)]">
+      <div className="border-b border-[#eeeeee] px-5 py-4">
+        <div className="font-semibold text-[#222222]">{title}</div>
+        <div className="mt-1 text-[12px] text-[#888888]">{subtitle}</div>
+      </div>
+      <div className={`grid ${gridClassName} border-b border-[#eeeeee] bg-[#fafafa] text-[12px] text-[#777777]`}>
+        <div className="px-4 py-3">时间</div>
+        <div className="px-4 py-3">用户</div>
+        <div className="px-4 py-3">来源</div>
+        <div className="px-4 py-3">{showMatchedTerm ? "命中" : "结果"}</div>
+        <div className="px-4 py-3">完整提示词</div>
+        {showDetail ? <div className="px-4 py-3">详细</div> : null}
+        {onUsePrompt ? <div className="px-4 py-3">操作</div> : null}
+      </div>
+      {events.length ? (
+        <>
+          {visibleEvents.map((item) => (
+            <div key={item.id} className={`grid ${gridClassName} border-b border-[#f0f0f0] text-[12px] leading-5 text-[#444444] last:border-b-0`}>
+              <div className="whitespace-nowrap px-4 py-3 text-[#888888]">{item.createdAtLabel}</div>
+              <div className="whitespace-pre-line break-all px-4 py-3">{item.userLabel}</div>
+              <div className="px-4 py-3">{item.sourceLabel} / {item.kindLabel}</div>
+              <div className="px-4 py-3">
+                {showMatchedTerm ? (
+                  <span className="text-[#d95d35]">{item.matchedTerm ?? "-"}</span>
+                ) : (
+                  <>
+                    <div>{item.status === "flagged" ? "疑似命中" : item.status === "clear" ? "正常" : item.status === "blocked" ? "已拦截" : item.status === "error" ? "审核失败" : "待审核"}</div>
+                    {item.matchedTerm ? <div className="mt-1 text-[#d95d35]">命中：{item.matchedTerm}</div> : null}
+                    {item.semanticReason ? <div className="mt-1 text-[#888888]">{item.semanticReason}</div> : null}
+                  </>
+                )}
+              </div>
+              <div className="px-4 py-3 text-[#222222]">
+                <div className="line-clamp-2 whitespace-pre-wrap break-words">{item.prompt}</div>
+              </div>
+              {showDetail ? (
+                <div className="px-4 py-3">
+                  <button type="button" onClick={() => setDetail(item)} className="inline-flex items-center rounded-[6px] border border-[#dddddd] px-2 py-1 text-[#666666] hover:border-[#111111] hover:text-[#111111]">详细</button>
+                </div>
+              ) : null}
+              {onUsePrompt ? (
+                <div className="px-4 py-3">
+                  <button type="button" onClick={() => onUsePrompt(item.prompt)} className="inline-flex items-center gap-1 rounded-[6px] border border-[#dddddd] px-2 py-1 text-[#666666] hover:border-[#111111] hover:text-[#111111]"><RiFileCopyLine className="h-3 w-3" />加入词库</button>
+                </div>
+              ) : null}
+            </div>
+          ))}
+          {pageCount > 1 ? (
+            <div className="flex items-center justify-end gap-2 px-5 py-3 text-[12px] text-[#777777]">
+              <button type="button" disabled={currentPage === 0} onClick={() => setPage((value) => Math.max(0, value - 1))} className="rounded-[6px] border border-[#dddddd] px-2 py-1 disabled:cursor-not-allowed disabled:opacity-40">上一页</button>
+              <span>第 {currentPage + 1} / {pageCount} 页</span>
+              <button type="button" disabled={currentPage >= pageCount - 1} onClick={() => setPage((value) => Math.min(pageCount - 1, value + 1))} className="rounded-[6px] border border-[#dddddd] px-2 py-1 disabled:cursor-not-allowed disabled:opacity-40">下一页</button>
+            </div>
+          ) : null}
+        </>
+      ) : (
+        <div className="px-5 py-8 text-center text-[13px] text-[#999999]">暂无记录</div>
+      )}
+      {detail ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => setDetail(null)}>
+          <div className="flex max-h-[80vh] w-[560px] max-w-full flex-col overflow-hidden rounded-[14px] bg-white shadow-[0_20px_60px_rgba(0,0,0,0.2)]" onClick={(event) => event.stopPropagation()}>
+            <div className="flex items-center justify-between border-b border-[#eeeeee] px-5 py-4">
+              <div className="text-[15px] font-semibold text-[#222222]">完整提示词</div>
+              <button type="button" aria-label="关闭" onClick={() => setDetail(null)} className="text-[16px] leading-none text-[#999999] hover:text-[#111111]">✕</button>
+            </div>
+            <div className="overflow-y-auto whitespace-pre-wrap break-words px-5 py-4 text-[13px] leading-6 text-[#222222]">{highlightMatchedTerm(detail.prompt, detail.matchedTerm)}</div>
+            {detail.matchedTerm ? (
+              <div className="border-t border-[#eeeeee] px-5 py-3 text-[13px]">
+                <span className="text-[#888888]">命中词：</span>
+                <span className="rounded bg-[#ffe0d6] px-1 font-medium text-[#d21b1b]">{detail.matchedTerm}</span>
+              </div>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+    </section>
+  );
 }

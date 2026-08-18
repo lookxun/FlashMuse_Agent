@@ -19,6 +19,16 @@ model User {
   autoSaveHistory            Boolean   @default(true)
   previewWheelZoom           Boolean   @default(true)
   previewWheelFlip           Boolean   @default(true)
+  // 用户中心「设置」里的默认偏好：登录后默认进入的面板 + 新建对话时套用的默认生成参数（图片/视频分两组）。
+  // 空字符串 = 未设置，前端会回落到该模型的自然默认值。
+  defaultWorkspacePanel      String    @default("chat")
+  defaultImageModel          String    @default("")
+  defaultImageRatio          String    @default("")
+  defaultImageResolution     String    @default("")
+  defaultVideoModel          String    @default("")
+  defaultVideoRatio          String    @default("")
+  defaultVideoResolution     String    @default("")
+  defaultVideoDuration       String    @default("")
   credits                    Int       @default(1500)
   textCreditRemainder        Float     @default(0)
   disabled                   Boolean   @default(false)

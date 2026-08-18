@@ -12,7 +12,21 @@ export type UserProfilePayload = {
   autoSaveHistory?: boolean | null;
   previewWheelZoom?: boolean | null;
   previewWheelFlip?: boolean | null;
+  defaultWorkspacePanel?: string | null;
+  defaultImageModel?: string | null;
+  defaultImageRatio?: string | null;
+  defaultImageResolution?: string | null;
+  defaultVideoModel?: string | null;
+  defaultVideoRatio?: string | null;
+  defaultVideoResolution?: string | null;
+  defaultVideoDuration?: string | null;
 };
+
+const workspacePanelValues = ["chat", "workflow", "assets"] as const;
+
+function normalizeWorkspacePanel(value: unknown): string {
+  return workspacePanelValues.includes(value as (typeof workspacePanelValues)[number]) ? (value as string) : "chat";
+}
 
 function cleanText(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
@@ -34,6 +48,14 @@ export function getUserProfileFromUser(user: {
   autoSaveHistory?: boolean | null;
   previewWheelZoom?: boolean | null;
   previewWheelFlip?: boolean | null;
+  defaultWorkspacePanel?: string | null;
+  defaultImageModel?: string | null;
+  defaultImageRatio?: string | null;
+  defaultImageResolution?: string | null;
+  defaultVideoModel?: string | null;
+  defaultVideoRatio?: string | null;
+  defaultVideoResolution?: string | null;
+  defaultVideoDuration?: string | null;
   credits?: number | null;
   generalModeEnabled?: boolean | null;
   generatedImageCount?: number | null;
@@ -51,6 +73,14 @@ export function getUserProfileFromUser(user: {
     autoSaveHistory: user.autoSaveHistory ?? true,
     previewWheelZoom: user.previewWheelZoom ?? true,
     previewWheelFlip: user.previewWheelFlip ?? true,
+    defaultWorkspacePanel: normalizeWorkspacePanel(user.defaultWorkspacePanel),
+    defaultImageModel: user.defaultImageModel?.trim() || "",
+    defaultImageRatio: user.defaultImageRatio?.trim() || "",
+    defaultImageResolution: user.defaultImageResolution?.trim() || "",
+    defaultVideoModel: user.defaultVideoModel?.trim() || "",
+    defaultVideoRatio: user.defaultVideoRatio?.trim() || "",
+    defaultVideoResolution: user.defaultVideoResolution?.trim() || "",
+    defaultVideoDuration: user.defaultVideoDuration?.trim() || "",
     credits: user.credits ?? 0,
     generalModeEnabled: user.generalModeEnabled ?? false,
     generatedImageCount: user.generatedImageCount ?? 0,
@@ -104,6 +134,14 @@ export function normalizeUserProfileInput(input: UserProfilePayload) {
     autoSaveHistory: typeof input.autoSaveHistory === "boolean" ? input.autoSaveHistory : true,
     previewWheelZoom: typeof input.previewWheelZoom === "boolean" ? input.previewWheelZoom : true,
     previewWheelFlip: typeof input.previewWheelFlip === "boolean" ? input.previewWheelFlip : true,
+    defaultWorkspacePanel: normalizeWorkspacePanel(input.defaultWorkspacePanel),
+    defaultImageModel: cleanText(input.defaultImageModel).slice(0, 120),
+    defaultImageRatio: cleanText(input.defaultImageRatio).slice(0, 40),
+    defaultImageResolution: cleanText(input.defaultImageResolution).slice(0, 40),
+    defaultVideoModel: cleanText(input.defaultVideoModel).slice(0, 120),
+    defaultVideoRatio: cleanText(input.defaultVideoRatio).slice(0, 40),
+    defaultVideoResolution: cleanText(input.defaultVideoResolution).slice(0, 40),
+    defaultVideoDuration: cleanText(input.defaultVideoDuration).slice(0, 40),
   };
 }
 

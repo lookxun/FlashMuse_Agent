@@ -431,6 +431,14 @@ export type CurrentUserProfile = {
   autoSaveHistory?: boolean;
   previewWheelZoom?: boolean;
   previewWheelFlip?: boolean;
+  defaultWorkspacePanel?: string;
+  defaultImageModel?: string;
+  defaultImageRatio?: string;
+  defaultImageResolution?: string;
+  defaultVideoModel?: string;
+  defaultVideoRatio?: string;
+  defaultVideoResolution?: string;
+  defaultVideoDuration?: string;
   generatedImageCount?: number;
   generatedVideoCount?: number;
   credits?: number;
@@ -5581,6 +5589,53 @@ export function SettingsSwitch({ checked, onChange }: { checked: boolean; onChan
     >
       <span className={`absolute top-1/2 h-[22px] w-[22px] -translate-y-1/2 rounded-full bg-white transition ${checked ? "left-[21px]" : "left-[2px]"}`} />
     </button>
+  );
+}
+
+/** 用户中心「设置」里的下拉选择器（登录默认面板 / 默认生成参数共用，自带展开态、样式与语言下拉一致）。 */
+export function SettingsSelect({ value, options, onChange, disabled }: { value: string; options: { value: string; label: string; icon?: ReactNode }[]; onChange: (value: string) => void; disabled?: boolean }) {
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const current = options.find((option) => option.value === value) ?? options[0];
+  // 点菜单以外的任何空白区域都关闭下拉。
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onPointerDown, true);
+    return () => document.removeEventListener("mousedown", onPointerDown, true);
+  }, [open]);
+  return (
+    <div ref={containerRef} className="relative" onClick={(event) => event.stopPropagation()}>
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={() => setOpen((currentOpen) => !currentOpen)}
+        className="inline-flex items-center gap-1.5 bg-transparent p-0 text-right font-normal text-[#333333] disabled:cursor-not-allowed disabled:opacity-50"
+        data-no-translate="true"
+      >
+        {current?.icon ? <span className="flex h-4 w-4 shrink-0 items-center justify-center text-[#777777]">{current.icon}</span> : null}
+        <span style={{ fontSize: 14 }} className="whitespace-nowrap">{current?.label ?? "-"}</span>
+        <RiArrowDownSLine className="h-4 w-4 shrink-0 text-[#9a9a9a]" aria-hidden="true" />
+      </button>
+      {open && !disabled ? (
+        <div className="absolute right-0 top-8 z-50 max-h-[248px] w-max min-w-[9rem] max-w-[min(340px,calc(100vw-40px))] overflow-y-auto rounded-[10px] bg-white p-1.5 shadow-[0_12px_28px_rgba(0,0,0,0.12)]">
+          {options.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              onClick={() => { onChange(option.value); setOpen(false); }}
+              className={option.value === value ? "flex h-9 w-full items-center gap-2 whitespace-nowrap rounded-[8px] bg-[#f5f5f5] px-2.5 text-left text-[#111111]" : "flex h-9 w-full items-center gap-2 whitespace-nowrap rounded-[8px] px-2.5 text-left text-[#555555] hover:bg-[#f7f7f7]"}
+            >
+              {option.icon ? <span className="flex h-4 w-4 shrink-0 items-center justify-center text-[#555555]">{option.icon}</span> : null}
+              <span style={{ fontSize: 13 }} className="whitespace-nowrap" data-no-translate="true">{option.label}</span>
+              {option.value === value ? <RiCheckLine className="ml-auto h-4 w-4 shrink-0" aria-hidden="true" /> : null}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
   );
 }
 

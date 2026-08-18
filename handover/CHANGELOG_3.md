@@ -13,17 +13,27 @@
 >   ④ 把旧卷标题改成「卷 N · 已归档只读」并在顶部加指向新卷的提示 ⑤ 更新 `00-README.md` 文档索引里的 CHANGELOG 行。
 > - 判据不变：**版本号一样 = 测试服和正式服代码一样**（本项目核心约定，见 `AGENTS.md`）。
 
-## 📌 当前状态摘要（2026-08-11 第六十四次会话末）
+## 📌 当前状态摘要（2026-08-18 第六十五次会话末）
 
 | | 版本 / 状态 |
 |---|---|
-| 本地 / 测试服 / **正式服** / GitHub | **`v1.0.0.98`** —— **四方同步**，commit `77d7357` 已 push，工作区干净、无未推送 |
-| 硬判据 | staging→prod 对齐后 `src/` 逐文件 md5 完全相等（`42b1d044b6a094a34e3a2fe02e2d1265`，194 文件）|
-| 迁移 / 基础设施 | ⭐ **带 1 个 Prisma 迁移**（`20260811010000_content_moderation_term_sort_order`，两服都已 Applying）；无 compose/nginx 改动；两服 `.env` 的 `PUBLISHED_APP_VERSION` 已改 v98 |
-| 自查 | `tsc` 0 |
-| 回滚点 | `/opt/flashmuse/app-backups/20260811-180453-presync-v1.0.0.98`（145M）+ 正式库备份 `pre-deploy-v98`（6.3M，EXIT=0）|
+| 测试服 / **正式服** / GitHub | **`v1.0.0.98`** —— commit `77d7357` 已 push（这三方仍是 v98，**本次没动它们**）|
+| 本地 | ⚠️ **`v1.0.0.98` + 一批未提交改动**（第六十五次会话：后台审核表格 + 用户中心设置新功能）—— **未 commit / 未 build / 未部署 / 未 bump 版本** |
+| ⚠️ 本地新增迁移 | **1 个：`20260817010000_user_default_workspace_prefs`**（User 表加 8 个默认偏好字段，**本地已 `migrate deploy` apply**；部署时必须带上）|
+| 自查 | `tsc` 0（每步都过）；本次按用户默认口径**只做本地 + tsc + 真机验证，没有 build/部署/commit** |
+| 回滚点（v98 那次）| `/opt/flashmuse/app-backups/20260811-180453-presync-v1.0.0.98`（145M）+ 正式库备份 `pre-deploy-v98` |
 
-- **最近上线的内容（v98，第六十四次会话）**：修**内容审核词库的两个问题** ——
+- 🆕 **本次（第六十五次会话，2026-08-18，全部本地未提交）做了 4 件事**（详见下方顶条会话记录）：
+  ① **修本地「登录后对话历史读不出来」**——根因是 dev 的 `.next` 构建缓存损坏（`routes.d.ts` 乱码 → `/api/workspace-state` 路由没注册、返 404 HTML），**删 `.next` 重启即好，不是代码问题**；顺手清了 `.runtime` 垃圾（88M→12.5M）+ 删 `.next`（596M）。
+  ② **后台「内容审核 → 已拦截记录」表格**：完整提示词列改成**最多 2 行**（`line-clamp-2`，超出 `...`）+ 新增「**详细**」列按钮 → 弹窗显示完整提示词、**命中词红色高亮**（正文内高亮 + 底部单独一行）。
+  ③ **用户中心「设置」新增两大功能**：**登录后默认进入哪个面板**（对话/工作流/资产库，默认对话流）+ **新建对话的默认生成参数**（图片组=模型/比例/分辨率，视频组=模型/比例/分辨率/时长，选项随模型联动）。后端 User 表加 8 字段 + 迁移；新增复用组件 **`SettingsSelect`**。
+  ④ **设置项调整**：删掉「生成图片/视频自动收入资产库」开关（**它是死开关，本来就恒收入**）→ 现在永远收入；下拉全部支持**点空白处关闭**；行图标/菜单选项图标按项目风格对齐。
+- ⚠️ **下一个 AI 若要把本批上线**：先 `node scripts/bump-version.mjs`（→ v99），再走「测试服→正式服」；**务必带上那个 Prisma 迁移**。
+- ⚠️ 测试账号 `12424740@qq.com` 的默认图片模型被我测成了 **GPT-5.4 Image 2**、默认视频模型 **MiniMax H3**、登录默认面板已改回**对话模式**（自己在设置里能调）。
+
+---
+
+- **上一批已上线的内容（v98，第六十四次会话）**：修**内容审核词库的两个问题** ——
   ① **「王丹」被存成「王\uFFFD\uFFFD」**（测试服 + 正式服都有、本地没有；根因是 2026-08-07 填词时词表**分段传入浏览器、每段各自 UTF-8 解码**，「丹」的 3 个字节被切在第 4587 字节这个 3 字节/base64 对齐边界上）；
   ② **词库排列三端不一致**（后台按 `createdAt` 排，而整批词同一事务插入、586 行 `createdAt` 完全相同 → 排序无决定性依据）。
   ⭐ 修法：新增 **`sortOrder`** 列（读取 `ORDER BY sortOrder, createdAt, id`）+ 三端数据统一成**权威 587 词**（原 586 含王丹 + 用户加的「毛主席」）。
@@ -44,6 +54,79 @@
 - **活跃备忘重点**：**M041**（简繁转换会改用户自己的字，只影响繁体用户，用户拍板先记不做）、
   M038 / M039（@名正则不对称、从资产库捞回老图，都要先确认产品口径）、M032（工作流参考图静默挂不上，**根因未知，只许加日志**）。
 - 🎯🎯 **下一个 AI 的最优先任务 = 「间断性卡死」bug 的静态定位**（证据链已完整，⛔ 定位到之前只许加日志、不许改行为）。
+
+---
+
+## 第六十五次会话（2026-08-18）：修本地历史读不出来 + 后台审核表格「详细」弹窗 + 用户中心设置两大新功能（全部本地未提交）
+
+> | | 版本 / 状态 |
+> |---|---|
+> | 测试服 / 正式服 / GitHub | `v1.0.0.98`（**本次没动**）|
+> | 本地 | `v1.0.0.98` + **未提交改动**；`tsc` 0；⛔ 未 commit / 未 build / 未部署 / 未 bump |
+> | 本地新增迁移 | `20260817010000_user_default_workspace_prefs`（本地已 apply，部署要带上）|
+> | 改动文件 | `prisma/schema.prisma`、`prisma/migrations/20260817010000_.../migration.sql`(新)、`src/lib/user-profile.ts`、`src/lib/chat/chat-workbench-core.tsx`、`src/components/chat-workbench.tsx`、`src/app/admin/admin-content-moderation-panel.tsx` |
+
+🗣️ **用户起点**：本地登录后对话历史读不出来 → 让我查。之后连续加需求（后台审核表格、用户中心设置），全程「先本地做、做完汇报，别测别部署」的默认口径（个别验证是我为确认无崩顺手做的，成本为 0）。
+
+### 一、本地「登录后对话历史读不出来」——不是 bug，是 dev 的 `.next` 缓存坏了
+
+- **现象**：登录后前端反复报 `GET /api/workspace-state?summary=1&panel=chat` → **404**，5 次重试后弹「用户工作区加载失败」。
+- **排查链（值得记）**：① 库是好的（测试号 36 个会话都在，迁移都 apply）；② 关键判据——这个 404 返回的是 **Next 默认 404 HTML 页而不是路由的 JSON** → 说明 Next **根本没把 `route.ts` 注册成路由**；③ `route.ts` 文件本身没问题；④ `npx tsc --noEmit` 冒出一堆 `.next/dev/types/routes.d.ts` 语法错 + 那文件内容**互相串行/乱码** → **`.next` 构建缓存损坏**。
+- **修法**：停 dev → 删 `.next`（会自动重建）→ 重启 dev。接口立刻恢复 200 JSON、历史 36 条正常显示。**不是代码问题，无需改任何代码。**
+- ⭐ **通用判据留档**：`route.ts` 存在却 404、且返回的是 HTML 而不是该路由的 JSON = **路由没注册**，八成是 `.next` 缓存坏，删了重启即可。
+- **顺手清理**（用户要求，本地 4G+）：删 `.next`（596M）+ 清 `.runtime` 里的测试残留（88M→12.5M，只删 eslint 报告/tgz 打包/旧代码副本/测试媒体/几个子目录，**保留**诊断日志、`media-save-jobs.json`、词库恢复资产、`migration-backups`）。`public/generated`(1.7G 用户媒体) 和 `node_modules`(1.5G) 不能动。
+
+### 二、后台「内容审核 → 已拦截记录」表格加「详细」弹窗（`admin-content-moderation-panel.tsx`）
+
+- **完整提示词列**从整段展开改成**最多 2 行**（`line-clamp-2`，超出 `...`）。
+- 新增「**详细**」列（仅 `showMatchedTerm` 的「已拦截记录」表有；语义审核表保持原样）。点按钮弹窗显示完整提示词，**命中词红色高亮**：正文里出现处用 `<mark>` 红底高亮（`highlightMatchedTerm` 函数，逐个 indexOf 切片）+ 弹窗底部单独一行「命中词：xxx」。点遮罩/✕ 关闭。
+- ⚠️ 这个文件里 `EventTable` 原本是**一整行 2755 字符的巨型 JSX**，我把它整段重写成多行可读版（逻辑等价），并给文件加了 `ReactNode` 类型 import。
+
+### 三、⭐ 用户中心「设置」新增两大功能（本次主要工作量）
+
+**功能 A：登录后默认进入哪个面板**（下拉：对话/工作流/资产库，默认「对话模式」）。
+**功能 B：新建对话的默认生成参数**——按用户要求**分图片组 / 视频组**：图片组 = 模型/比例/分辨率；视频组 = 模型/比例/分辨率/时长。比例/分辨率/时长选项**随所选模型联动**（换模型自动把不支持的值纠正到该模型默认）。
+
+**数据模型（后端）**：
+- `prisma/schema.prisma`：`User` 加 8 个字段——`defaultWorkspacePanel`(默认 `"chat"`) + `defaultImageModel/Ratio/Resolution` + `defaultVideoModel/Ratio/Resolution/Duration`（其余默认空串 `""`=未设置，前端回落到该模型自然默认）。
+- 迁移 `prisma/migrations/20260817010000_user_default_workspace_prefs/migration.sql`（8 个 `ADD COLUMN`），**本地已 `npx prisma migrate deploy` + `prisma generate`**。⚠️ generate 时 dev 在跑会锁 DLL（`EPERM`），要先停 dev。
+- `src/lib/user-profile.ts`：`UserProfilePayload` + `getUserProfileFromUser`（读取，含 `normalizeWorkspacePanel`）+ `normalizeUserProfileInput`（保存，字符串裁剪长度）都补齐 8 字段。`/api/auth/me` 和 `/api/user-profile` 都走 `getUserProfileWithGeneratedCounts`，所以新字段自动流到前端。
+- `src/lib/chat/chat-workbench-core.tsx`：`CurrentUserProfile` type 加 8 字段。
+
+**前端（`chat-workbench.tsx`）**：
+- 8 个 state + `defaultWorkspacePanelRef`（登录落面板要在 `applyWorkspaceState` 里同步读，用 ref 避免 setState 异步）。
+- `applyCurrentUserProfile`：读 profile 的 8 字段，空/非法**回落到系统或该模型默认**（用 `getSupportedImageResolutions`/`getSupportedVideoResolutions`/`getSupportedVideoRatios`/`getVideoDurationOptions`/`generationModelOptions`/`ratioOptions`/`DEFAULT_*` 现算）。
+- PUT payload（`/api/user-profile` debounce 500ms）+ 那个 effect 的 deps 都加了 8 字段 → **跨设备同步**。
+- **登录落面板**：`applyWorkspaceState` 里把 activePanel 改成读 `defaultWorkspacePanelRef.current`（覆盖原来的「恢复上次面板」；这是用户要的确定性落点）。
+- **新建对话套用默认参数**：`startNewSession` 开头 set `selectedGenerationModels/selectedRatios/selectedResolutions/selectedDurations` 为默认值（已有的归一化 effect 会纠正不合法组合）。
+- 设置页 UI 用 IIFE 重构，加了三个分组：「登录默认」「新建对话·默认图片参数」「新建对话·默认视频参数」。
+
+**新增复用组件 `SettingsSelect`（`chat-workbench-core.tsx`，与 `SettingsSwitch` 并列导出）**：
+- 支持 `options[].icon`（每选项前图标）、**点菜单外部空白处自动关闭**（document mousedown 捕获监听）、选项**单行不换行** + 菜单 `w-max` 自动加宽（`min-w-[9rem]`、`max-w-[min(340px,calc(100vw-40px))]`）。
+- 语言下拉也换用了它（原来是内联的 `isLanguageMenuOpen`，那个 state/effect 现在是死代码但无害，没删）。
+
+### 四、设置项调整 + 图标细化（都是用户逐条追加的）
+
+- **删掉「生成图片/视频自动收入资产库」开关**：排查发现它是**死开关**——生成成功路径（`addGeneratedAssets`，3 处调用）**从不读 `autoSaveHistory`**，本来就恒收入。所以直接删 UI 行 = 「做成默认功能，永远收入」。⚠️ **DB 字段 `autoSaveHistory` 和后台用户详情里的「自动收入资产库」显示都没动**（无害，值恒 true）；要彻底清理可后续把后台那行也去掉（问过用户，未拍板）。顺手删了不再用的 `RiSaveLine` import。
+- **所有设置下拉点空白处关闭**：靠 `SettingsSelect` 自带的外部点击监听（语言/登录面板/图片视频各参数全覆盖）。
+- **图标对齐项目风格**（用户三次追加）：
+  - 行左侧图标：比例 = `RatioOptionIcon`、分辨率 = 灰色 **`RiFullscreenLine`**（用户要求「跟其它一致、灰色」，不用那个深色「2K」徽章）、时长 = `RiTimeLine`、**图片/视频模型行固定用 `AiGenerate3dIcon`**（用户要求固定，不跟随所选模型）、登录默认 = `RiSettingsLine`、版本 = `RiInformationLine`。
+  - 菜单选项前图标：模型选项 = 各自 `getGenerationModelIcon(id)`（`AiGenerate3dIcon` 兜底）、比例 = `RatioOptionIcon`、分辨率 = `ResolutionOptionIcon`、时长 = `RiTimeLine`。
+  - `RatioOptionIcon(option)` / `ResolutionOptionIcon(option, mode)` 是项目已有组件（`chat-workbench-core.tsx`），直接复用。
+
+### 五、真机验证（本地，console 0 error）
+
+- 历史读不出来：接口 404→200，左侧「历史对话 36」全部出来。
+- 设置：所有下拉能开、图标正确、选项单行、菜单自动加宽；**点空白处关闭**验过（下拉关、弹窗不误关）；换模型→分辨率联动纠正；**设登录默认=资产库 → 刷新真落在资产库**；图片模型默认改 GPT-5.4 Image 2 → **刷新仍在**（DB 持久化 OK）；「自动收入资产库」行已消失。
+- ⚠️ dev **热重载会掉登录态**（`workspace-instance` 接管），验证中多次重登属正常。
+- ⚠️ Playwright 截图默认落**仓库根**（不是 `.playwright-mcp/`），用完记得删（本次已删）。
+
+### 六、给下一个 AI 的衔接要点
+
+1. 本批**全在本地、未提交**。要上线：`bump-version.mjs`（→v99）→ 测试服 → 正式服，**带上 `20260817010000_user_default_workspace_prefs` 迁移**。
+2. 「登录默认面板」现在**覆盖了「恢复上次面板」**——这是用户要的确定性行为，别当 bug 改回去。
+3. 「新建对话套用默认参数」只在 `startNewSession` 触发；老会话/加载时仍走持久化的 `inputSettings`。
+4. 🎯🎯 **最优先任务仍是「间断性卡死」bug 的静态定位**（见 `05-next-actions.md` 待办 1，⛔ 定位到之前只许加日志、不许改行为）。
 
 ---
 

@@ -1,13 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, CSSProperties, DragEvent, PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, CSSProperties, DragEvent, PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import Image from "next/image";
 import { createPortal } from "react-dom";
 import { validateImageUploadFile } from "@/lib/image-upload-validation";
 import { IS_TEST_SERVER, versionLabel } from "@/lib/app-version";
 import { MEDIA_DURATION_EPSILON_SECONDS, validateMediaUploadFile, validateMediaUploadMetadata, validateReferenceMediaDurationRange as validateMediaDuration } from "@/lib/media-upload-validation";
 import { getStaticMediaUrl } from "@/lib/static-media-url";
-import { RiAddLine, RiArrowLeftSLine, RiArrowRightSLine, RiArrowDownSLine, RiArrowDownFill, RiArrowUpDownLine, RiArrowUpLine, RiArrowUpSLine, RiArrowDownWideLine, RiAtLine, RiCameraLine, RiCheckLine, RiChat3Line, RiChatSmileAiLine, RiChatDeleteLine, RiCheckboxMultipleBlankLine, RiCloseLine, RiDeleteBinLine, RiEmotionUnhappyLine, RiEmotionSadLine, RiErrorWarningLine, RiFolderLine, RiFolderOpenLine, RiBellLine, RiFormatClear, RiLandscapeLine, RiImageLine, RiSidebarFoldLine, RiSidebarUnfoldLine, RiLeafLine, RiLockPasswordLine, RiMoreLine, RiMusic2Line, RiMultiImageLine, RiMailLine, RiPhoneLine, RiEditBoxLine, RiPushpinLine, RiResetLeftLine, RiRefreshLine, RiShining2Line, RiStarSmileLine, RiStopFill, RiThumbDownLine, RiThumbDownFill, RiThumbUpLine, RiThumbUpFill, RiTimeLine, RiVipCrown2Line, RiVipDiamondLine, RiVideoLine, RiVideoOnLine, RiVoiceprintLine, RiQuillPenAiLine, RiAccountBoxLine, RiAccountCircleLine, RiFilmLine, RiInformationLine, RiGlobalLine, RiGitMergeLine, RiGitPullRequestLine, RiFilmAiLine, RiImageAddLine, RiImageAiLine, RiDownloadLine, RiRobot2Line, RiZoomInLine, RiTBoxLine, RiTerminalWindowFill, RiLogoutBoxRLine, RiSettingsLine, RiSunLine, RiMoonLine, RiComputerLine, RiNotification2Line, RiShieldUserLine, RiSaveLine } from "react-icons/ri";
+import { RiAddLine, RiArrowLeftSLine, RiArrowRightSLine, RiArrowDownSLine, RiArrowDownFill, RiArrowUpDownLine, RiArrowUpLine, RiArrowUpSLine, RiArrowDownWideLine, RiAtLine, RiCameraLine, RiCheckLine, RiChat3Line, RiChatSmileAiLine, RiChatDeleteLine, RiCheckboxMultipleBlankLine, RiCloseLine, RiDeleteBinLine, RiEmotionUnhappyLine, RiEmotionSadLine, RiErrorWarningLine, RiFolderLine, RiFolderOpenLine, RiBellLine, RiFormatClear, RiLandscapeLine, RiImageLine, RiSidebarFoldLine, RiSidebarUnfoldLine, RiLeafLine, RiLockPasswordLine, RiMoreLine, RiMusic2Line, RiMultiImageLine, RiMailLine, RiPhoneLine, RiEditBoxLine, RiPushpinLine, RiResetLeftLine, RiRefreshLine, RiShining2Line, RiStarSmileLine, RiStopFill, RiThumbDownLine, RiThumbDownFill, RiThumbUpLine, RiThumbUpFill, RiTimeLine, RiVipCrown2Line, RiVipDiamondLine, RiVideoLine, RiVideoOnLine, RiVoiceprintLine, RiQuillPenAiLine, RiAccountBoxLine, RiAccountCircleLine, RiFilmLine, RiFullscreenLine, RiInformationLine, RiGlobalLine, RiGitMergeLine, RiGitPullRequestLine, RiFilmAiLine, RiImageAddLine, RiImageAiLine, RiDownloadLine, RiRobot2Line, RiZoomInLine, RiTBoxLine, RiTerminalWindowFill, RiLogoutBoxRLine, RiSettingsLine, RiSunLine, RiMoonLine, RiComputerLine, RiNotification2Line, RiShieldUserLine } from "react-icons/ri";
 import { ADVANCED_CHAT_MODEL, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, DEFAULT_IMAGE_QUALITY, IMAGE_QUALITY_OPTIONS, IMAGE_QUALITY_LABELS, isGptImage2Model, getImageModelSelectHint, bytePlusVideoGenerationModels, frontendConversationModels, frontendImageGenerationModels, getImageQualityBadgeLabel, getImageResolutionLabel, getSupportedImageResolutions, getSupportedVideoRatios, getSupportedVideoResolutions, imageGenerationModels, isNonStandardVideoSize, normalizeImageResolutionForModel, normalizeVideoRatioForModel, normalizeVideoResolutionForModel, validateVideoDurationWithReferences, videoGenerationModels, ConversationModel, GenerationModel, ModelName } from "@/lib/models";
 import { toUserErrorMessage } from "@/lib/error-message";
 import { handleSessionExpiredResponse } from "@/lib/session-expired-redirect";
@@ -365,6 +365,7 @@ import {
   UserMessageContent,
   ReminderToast,
   SettingsSwitch,
+  SettingsSelect,
   ReferenceThumbnailStrip,
   UploadedDocumentStrip,
   getDisplayImageReferences,
@@ -559,6 +560,16 @@ export function ChatWorkbench() {
   const [autoSaveHistory, setAutoSaveHistory] = useState(true);
   const [previewWheelZoom, setPreviewWheelZoom] = useState(true);
   const [previewWheelFlip, setPreviewWheelFlip] = useState(true);
+  // 用户中心「设置」：登录后默认进入的面板 + 新建对话时套用的默认生成参数（图片/视频两组）。
+  const [defaultWorkspacePanel, setDefaultWorkspacePanel] = useState<ActivePanel>("chat");
+  const defaultWorkspacePanelRef = useRef<ActivePanel>("chat");
+  const [defaultImageModel, setDefaultImageModel] = useState<ModelName>(DEFAULT_IMAGE_MODEL);
+  const [defaultImageRatio, setDefaultImageRatio] = useState<string>(ratioOptions[0]);
+  const [defaultImageResolution, setDefaultImageResolution] = useState<string>(getSupportedImageResolutions(DEFAULT_IMAGE_MODEL)[0]);
+  const [defaultVideoModel, setDefaultVideoModel] = useState<ModelName>(DEFAULT_VIDEO_MODEL);
+  const [defaultVideoRatio, setDefaultVideoRatio] = useState<string>(ratioOptions[0]);
+  const [defaultVideoResolution, setDefaultVideoResolution] = useState<string>(getSupportedVideoResolutions(DEFAULT_VIDEO_MODEL)[0]);
+  const [defaultVideoDuration, setDefaultVideoDuration] = useState<string>(getVideoDurationOptions(DEFAULT_VIDEO_MODEL)[0]);
   const [generatedImageCount, setGeneratedImageCount] = useState(0);
   const [generatedVideoCount, setGeneratedVideoCount] = useState(0);
   const [currentUserCredits, setCurrentUserCredits] = useState(1500);
@@ -849,6 +860,28 @@ export function ChatWorkbench() {
     setAutoSaveHistory(profile.autoSaveHistory ?? true);
     setPreviewWheelZoom(profile.previewWheelZoom ?? true);
     setPreviewWheelFlip(profile.previewWheelFlip ?? true);
+
+    // 默认偏好：空/非法一律回落到系统或该模型的自然默认值，落库时永远是合法值。
+    const nextPanel: ActivePanel = profile.defaultWorkspacePanel === "workflow" || profile.defaultWorkspacePanel === "assets" ? profile.defaultWorkspacePanel : "chat";
+    defaultWorkspacePanelRef.current = nextPanel;
+    setDefaultWorkspacePanel(nextPanel);
+
+    const nextImageModel = (profile.defaultImageModel && generationModelOptions.image.some((option) => option.id === profile.defaultImageModel) ? profile.defaultImageModel : DEFAULT_IMAGE_MODEL) as ModelName;
+    const imageResolutionOptionsForModel = getSupportedImageResolutions(nextImageModel);
+    setDefaultImageModel(nextImageModel);
+    setDefaultImageRatio(profile.defaultImageRatio && ratioOptions.includes(profile.defaultImageRatio) ? profile.defaultImageRatio : ratioOptions[0]);
+    setDefaultImageResolution(profile.defaultImageResolution && imageResolutionOptionsForModel.includes(profile.defaultImageResolution as never) ? profile.defaultImageResolution : imageResolutionOptionsForModel[0]);
+
+    const nextVideoModel = (profile.defaultVideoModel && generationModelOptions.video.some((option) => option.id === profile.defaultVideoModel) ? profile.defaultVideoModel : DEFAULT_VIDEO_MODEL) as ModelName;
+    const videoResolutionOptionsForModel = getSupportedVideoResolutions(nextVideoModel);
+    const nextVideoResolution = profile.defaultVideoResolution && videoResolutionOptionsForModel.includes(profile.defaultVideoResolution as never) ? profile.defaultVideoResolution : videoResolutionOptionsForModel[0];
+    const videoRatioOptionsForModel = ["智能比例", ...getSupportedVideoRatios(nextVideoModel, nextVideoResolution as never)];
+    const videoDurationOptionsForModel = getVideoDurationOptions(nextVideoModel);
+    setDefaultVideoModel(nextVideoModel);
+    setDefaultVideoResolution(nextVideoResolution);
+    setDefaultVideoRatio(profile.defaultVideoRatio && videoRatioOptionsForModel.includes(profile.defaultVideoRatio) ? profile.defaultVideoRatio : "智能比例");
+    setDefaultVideoDuration(profile.defaultVideoDuration && videoDurationOptionsForModel.includes(profile.defaultVideoDuration) ? profile.defaultVideoDuration : videoDurationOptionsForModel[0]);
+
     setGeneratedImageCount(profile.generatedImageCount ?? 0);
     setGeneratedVideoCount(profile.generatedVideoCount ?? 0);
     setCurrentUserCredits(profile.credits ?? 0);
@@ -2859,7 +2892,11 @@ export function ChatWorkbench() {
           const nextActivePanel = uiState.activePanel ?? (storedActivePanel === "chat" || storedActivePanel === "workflow" || storedActivePanel === "assets" ? storedActivePanel : undefined);
           const nextAssetFilter = uiState.assetFilter ?? (isAssetFilter(state.assetFilter) ? state.assetFilter : undefined);
           const nextAssetScrollTopByFilter = uiState.assetScrollTopByFilter ?? state.assetScrollTopByFilter;
-          if (nextActivePanel) setActivePanel(nextActivePanel);
+          // 用户中心「设置」里配置的「登录默认面板」优先：每次进工作台都落在这个面板（会话内切换仍然自由）。
+          const preferredPanel = defaultWorkspacePanelRef.current;
+          const landingPanel: ActivePanel = preferredPanel === "workflow" && !WORKFLOW_MODE_ENABLED ? "chat" : preferredPanel;
+          setActivePanel(landingPanel);
+          void nextActivePanel;
           if (nextAssetFilter) setAssetFilter(nextAssetFilter);
           if (nextAssetScrollTopByFilter && typeof nextAssetScrollTopByFilter === "object") setAssetScrollTopByFilter(nextAssetScrollTopByFilter);
           setSessions(nextSessions);
@@ -3390,6 +3427,14 @@ export function ChatWorkbench() {
       autoSaveHistory,
       previewWheelZoom,
       previewWheelFlip,
+      defaultWorkspacePanel,
+      defaultImageModel,
+      defaultImageRatio,
+      defaultImageResolution,
+      defaultVideoModel,
+      defaultVideoRatio,
+      defaultVideoResolution,
+      defaultVideoDuration,
     };
 
     userProfileSaveTimerRef.current = window.setTimeout(() => {
@@ -3403,7 +3448,7 @@ export function ChatWorkbench() {
     return () => {
       if (userProfileSaveTimerRef.current !== null) window.clearTimeout(userProfileSaveTimerRef.current);
     };
-  }, [autoSaveHistory, currentUserAvatarUrl, currentUserNickname, currentUserPhone, isLoaded, notifyOnGenerationComplete, previewWheelFlip, previewWheelZoom, userLanguage, workspaceStorageMode]);
+  }, [autoSaveHistory, currentUserAvatarUrl, currentUserNickname, currentUserPhone, isLoaded, notifyOnGenerationComplete, previewWheelFlip, previewWheelZoom, userLanguage, workspaceStorageMode, defaultWorkspacePanel, defaultImageModel, defaultImageRatio, defaultImageResolution, defaultVideoModel, defaultVideoRatio, defaultVideoResolution, defaultVideoDuration]);
 
   useEffect(() => {
     if (!isLoaded) return;
@@ -4365,6 +4410,13 @@ export function ChatWorkbench() {
 
   const startNewSession = () => {
     setOpenSessionMenuId("");
+
+    // 新建对话时套用用户在「设置」里配置的默认生成参数（图片/视频两组），省去每次手调。
+    // 值可能因模型能力变化而不完全匹配，交给已有的归一化 effect 自动纠正。
+    setSelectedGenerationModels((current) => ({ ...current, image: defaultImageModel, video: defaultVideoModel }));
+    setSelectedRatios((current) => ({ ...current, image: defaultImageRatio, video: defaultVideoRatio }));
+    setSelectedResolutions((current) => ({ ...current, image: defaultImageResolution, video: defaultVideoResolution }));
+    setSelectedDurations((current) => ({ ...current, video: defaultVideoDuration }));
 
     if (activeSession && isEmptySession(activeSession)) {
       return;
@@ -10629,16 +10681,58 @@ export function ChatWorkbench() {
                 </div>
               ) : null}
 
-              {userDialogTab === "settings" ? (
+              {userDialogTab === "settings" ? (() => {
+                const modelIconNode = (id: string) => { const Ic = getGenerationModelIcon(id); return Ic ? <Ic className="h-4 w-4" aria-hidden="true" /> : <AiGenerate3dIcon />; };
+                const enabledImageModelOptions = generationModelOptions.image.filter((option) => enabledGenerationModelIds.image.includes(option.id)).map((option) => ({ value: option.id, label: option.label, icon: modelIconNode(option.id) }));
+                const enabledVideoModelOptions = generationModelOptions.video.filter((option) => enabledGenerationModelIds.video.includes(option.id)).map((option) => ({ value: option.id, label: option.label, icon: modelIconNode(option.id) }));
+                const imageResolutionSelectOptions = getSupportedImageResolutions(defaultImageModel).map((value) => ({ value, label: value, icon: <ResolutionOptionIcon option={value} mode="image" /> }));
+                const videoResolutionSelectOptions = getSupportedVideoResolutions(defaultVideoModel).map((value) => ({ value, label: value, icon: <ResolutionOptionIcon option={value} mode="video" /> }));
+                const videoRatioSelectOptions = ["智能比例", ...getSupportedVideoRatios(defaultVideoModel, defaultVideoResolution as never)].map((value) => ({ value, label: value, icon: <RatioOptionIcon option={value} /> }));
+                const videoDurationSelectOptions = getVideoDurationOptions(defaultVideoModel).map((value) => ({ value, label: value, icon: <RiTimeLine className="h-4 w-4" aria-hidden="true" /> }));
+                const imageRatioSelectOptions = ratioOptions.map((value) => ({ value, label: value, icon: <RatioOptionIcon option={value} /> }));
+                const panelSelectOptions = [
+                  { value: "chat", label: userText("对话模式") },
+                  ...(WORKFLOW_MODE_ENABLED ? [{ value: "workflow", label: userText("工作流模式") }] : []),
+                  { value: "assets", label: userText("资产库") },
+                ];
+                const changeDefaultVideoModel = (id: string) => {
+                  setDefaultVideoModel(id as ModelName);
+                  const resolutionOptions = getSupportedVideoResolutions(id);
+                  const nextResolution = resolutionOptions.includes(defaultVideoResolution as never) ? defaultVideoResolution : resolutionOptions[0];
+                  setDefaultVideoResolution(nextResolution);
+                  const ratioOptionsForModel = ["智能比例", ...getSupportedVideoRatios(id, nextResolution as never)];
+                  setDefaultVideoRatio(defaultVideoRatio && ratioOptionsForModel.includes(defaultVideoRatio) ? defaultVideoRatio : "智能比例");
+                  const durationOptionsForModel = getVideoDurationOptions(id);
+                  setDefaultVideoDuration(durationOptionsForModel.includes(defaultVideoDuration) ? defaultVideoDuration : durationOptionsForModel[0]);
+                };
+                const changeDefaultVideoResolution = (resolution: string) => {
+                  setDefaultVideoResolution(resolution);
+                  const ratioOptionsForModel = ["智能比例", ...getSupportedVideoRatios(defaultVideoModel, resolution as never)];
+                  setDefaultVideoRatio(defaultVideoRatio && ratioOptionsForModel.includes(defaultVideoRatio) ? defaultVideoRatio : "智能比例");
+                };
+                const changeDefaultImageModel = (id: string) => {
+                  setDefaultImageModel(id as ModelName);
+                  const resolutionOptions = getSupportedImageResolutions(id);
+                  setDefaultImageResolution((current) => resolutionOptions.includes(current as never) ? current : resolutionOptions[0]);
+                };
+                const groupHeading = (text: string) => <div className="px-1 pb-0.5 pt-3 text-[12px] font-medium text-[#9a9a9a]">{text}</div>;
+                const selectRow = (iconNode: ReactNode, label: string, control: ReactNode) => (
+                  <div className="relative flex min-h-11 items-center justify-between gap-6 rounded-[10px] bg-[#f7f7f7] px-4">
+                    <div className="flex min-w-0 items-center gap-2.5 text-[#9a9a9a]">
+                      <span className="flex h-[18px] w-[18px] shrink-0 items-center justify-center text-[#9a9a9a]">{iconNode}</span>
+                      <span className="text-[14px] font-normal">{label}</span>
+                    </div>
+                    {control}
+                  </div>
+                );
+                return (
                 <div>
                   <div className="w-[min(490px,100%)] space-y-2">
                     {[
                       { key: "language", label: userText("语言"), value: getLanguageDisplayName(userLanguage), icon: RiGlobalLine },
                       { key: "notify", label: userText("图片/视频生成完成提醒"), value: "", icon: RiNotification2Line },
-                      { key: "history", label: userText("生成图片/视频自动收入资产库"), value: "", icon: RiSaveLine },
                       { key: "wheelZoom", label: userText("预览页鼠标放在图片上滚轮有缩放功能"), value: "", icon: RiZoomInLine },
                       { key: "wheelFlip", label: userText("预览页鼠标放在缩略图区域滚轮有翻页功能"), value: "", icon: RiArrowUpDownLine },
-                      { key: "version", label: userText("版本信息"), value: versionLabel(), icon: RiInformationLine },
                     ].map((item) => {
                       const RowIcon = item.icon;
 
@@ -10649,35 +10743,16 @@ export function ChatWorkbench() {
                           <span className="text-[14px] font-normal">{item.label}</span>
                         </div>
                         {item.key === "language" ? (
-                          <div className="relative" onClick={(event) => event.stopPropagation()}>
-                            <button type="button" onClick={() => setIsLanguageMenuOpen((current) => !current)} className="inline-flex items-center gap-1.5 bg-transparent p-0 text-right font-normal text-[#333333]" data-no-translate="true">
-                              <span style={{ fontSize: 14 }}>{item.value}</span>
-                              <RiArrowDownSLine className="h-4 w-4 text-[#9a9a9a]" aria-hidden="true" />
-                            </button>
-                            {isLanguageMenuOpen ? (
-                              <div className="absolute right-0 top-8 z-50 w-36 rounded-[10px] bg-white p-1.5 shadow-[0_12px_28px_rgba(0,0,0,0.12)]">
-                                {userLanguageOptions.map((option) => (
-                                  <button
-                                    key={option}
-                                    type="button"
-                                    onClick={() => {
-                                      setUserLanguage(option);
-                                      setIsLanguageMenuOpen(false);
-                                      setUserDialogTip({ message: option === "繁体中文" ? "已切換到繁體中文" : "已切换到简体中文", tone: "default", noTranslate: true });
-                                    }}
-                                    className={option === userLanguage ? "flex h-9 w-full items-center justify-between rounded-[8px] bg-[#f5f5f5] px-2.5 text-left text-[#111111]" : "flex h-9 w-full items-center justify-between rounded-[8px] px-2.5 text-left text-[#555555] hover:bg-[#f7f7f7]"}
-                                  >
-                                    <span style={{ fontSize: 13 }} data-no-translate="true">{getLanguageDisplayName(option)}</span>
-                                    {option === userLanguage ? <RiCheckLine className="h-4 w-4" aria-hidden="true" /> : null}
-                                  </button>
-                                ))}
-                              </div>
-                            ) : null}
-                          </div>
+                          <SettingsSelect
+                            value={userLanguage}
+                            options={userLanguageOptions.map((option) => ({ value: option, label: getLanguageDisplayName(option) }))}
+                            onChange={(option) => {
+                              setUserLanguage(option as UserLanguage);
+                              setUserDialogTip({ message: option === "繁体中文" ? "已切換到繁體中文" : "已切换到简体中文", tone: "default", noTranslate: true });
+                            }}
+                          />
                         ) : item.key === "notify" ? (
                           <SettingsSwitch checked={notifyOnGenerationComplete} onChange={setNotifyOnGenerationComplete} />
-                        ) : item.key === "history" ? (
-                          <SettingsSwitch checked={autoSaveHistory} onChange={setAutoSaveHistory} />
                         ) : item.key === "wheelZoom" ? (
                           <SettingsSwitch checked={previewWheelZoom} onChange={setPreviewWheelZoom} />
                         ) : item.key === "wheelFlip" ? (
@@ -10688,9 +10763,45 @@ export function ChatWorkbench() {
                       </div>
                       );
                     })}
+
+                    {groupHeading(userText("登录默认"))}
+                    {selectRow(<RiSettingsLine className="h-[18px] w-[18px]" aria-hidden="true" />, userText("登录后默认进入"), (
+                      <SettingsSelect value={defaultWorkspacePanel} options={panelSelectOptions} onChange={(value) => { setDefaultWorkspacePanel(value as ActivePanel); defaultWorkspacePanelRef.current = value as ActivePanel; }} />
+                    ))}
+
+                    {groupHeading(userText("新建对话 · 默认图片参数"))}
+                    {selectRow(<AiGenerate3dIcon />, userText("默认图片模型"), (
+                      <SettingsSelect value={defaultImageModel} options={enabledImageModelOptions} onChange={changeDefaultImageModel} />
+                    ))}
+                    {selectRow(<RatioOptionIcon option={defaultImageRatio} />, userText("默认比例"), (
+                      <SettingsSelect value={defaultImageRatio} options={imageRatioSelectOptions} onChange={setDefaultImageRatio} />
+                    ))}
+                    {selectRow(<RiFullscreenLine className="h-[18px] w-[18px]" aria-hidden="true" />, userText("默认分辨率"), (
+                      <SettingsSelect value={defaultImageResolution} options={imageResolutionSelectOptions} onChange={setDefaultImageResolution} />
+                    ))}
+
+                    {groupHeading(userText("新建对话 · 默认视频参数"))}
+                    {selectRow(<AiGenerate3dIcon />, userText("默认视频模型"), (
+                      <SettingsSelect value={defaultVideoModel} options={enabledVideoModelOptions} onChange={changeDefaultVideoModel} />
+                    ))}
+                    {selectRow(<RatioOptionIcon option={defaultVideoRatio} />, userText("默认比例"), (
+                      <SettingsSelect value={defaultVideoRatio} options={videoRatioSelectOptions} onChange={setDefaultVideoRatio} />
+                    ))}
+                    {selectRow(<RiFullscreenLine className="h-[18px] w-[18px]" aria-hidden="true" />, userText("默认分辨率"), (
+                      <SettingsSelect value={defaultVideoResolution} options={videoResolutionSelectOptions} onChange={changeDefaultVideoResolution} />
+                    ))}
+                    {selectRow(<RiTimeLine className="h-[18px] w-[18px]" aria-hidden="true" />, userText("默认时长"), (
+                      <SettingsSelect value={defaultVideoDuration} options={videoDurationSelectOptions} onChange={setDefaultVideoDuration} />
+                    ))}
+
+                    {groupHeading("")}
+                    {selectRow(<RiInformationLine className="h-[18px] w-[18px]" aria-hidden="true" />, userText("版本信息"), (
+                      <div className="min-w-0 truncate text-right text-[14px] text-[#333333]">{versionLabel()}</div>
+                    ))}
                   </div>
                 </div>
-              ) : null}
+                );
+              })() : null}
               </div>
             </div>
           </div>
