@@ -20,6 +20,9 @@ export type UserProfilePayload = {
   defaultVideoRatio?: string | null;
   defaultVideoResolution?: string | null;
   defaultVideoDuration?: string | null;
+  defaultAudioModel?: string | null;
+  defaultAudioVoice?: string | null;
+  defaultAudioEmotion?: string | null;
 };
 
 const workspacePanelValues = ["chat", "workflow", "assets"] as const;
@@ -56,6 +59,9 @@ export function getUserProfileFromUser(user: {
   defaultVideoRatio?: string | null;
   defaultVideoResolution?: string | null;
   defaultVideoDuration?: string | null;
+  defaultAudioModel?: string | null;
+  defaultAudioVoice?: string | null;
+  defaultAudioEmotion?: string | null;
   credits?: number | null;
   generalModeEnabled?: boolean | null;
   generatedImageCount?: number | null;
@@ -81,6 +87,9 @@ export function getUserProfileFromUser(user: {
     defaultVideoRatio: user.defaultVideoRatio?.trim() || "",
     defaultVideoResolution: user.defaultVideoResolution?.trim() || "",
     defaultVideoDuration: user.defaultVideoDuration?.trim() || "",
+    defaultAudioModel: user.defaultAudioModel?.trim() || "",
+    defaultAudioVoice: user.defaultAudioVoice?.trim() || "",
+    defaultAudioEmotion: user.defaultAudioEmotion?.trim() || "",
     credits: user.credits ?? 0,
     generalModeEnabled: user.generalModeEnabled ?? false,
     generatedImageCount: user.generatedImageCount ?? 0,
@@ -142,6 +151,9 @@ export function normalizeUserProfileInput(input: UserProfilePayload) {
     defaultVideoRatio: cleanText(input.defaultVideoRatio).slice(0, 40),
     defaultVideoResolution: cleanText(input.defaultVideoResolution).slice(0, 40),
     defaultVideoDuration: cleanText(input.defaultVideoDuration).slice(0, 40),
+    defaultAudioModel: cleanText(input.defaultAudioModel).slice(0, 120),
+    defaultAudioVoice: cleanText(input.defaultAudioVoice).slice(0, 160),
+    defaultAudioEmotion: cleanText(input.defaultAudioEmotion).slice(0, 40),
   };
 }
 

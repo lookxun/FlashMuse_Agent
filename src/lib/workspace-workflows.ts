@@ -11,6 +11,7 @@ type WorkspaceWorkflowRow = {
   updatedAt: Date;
   createdAt: Date;
   deletedAt: Date | null;
+  archivedAt?: Date | null;
   canvasJson: Prisma.JsonValue;
   usageSummary: Prisma.JsonValue | null;
 };
@@ -254,6 +255,23 @@ function mergeWorkflowCanvasMedia(existingCanvas: unknown, incomingCanvas: Prism
   return merged as Prisma.InputJsonObject;
 }
 
+function usageSummaryForStore(usage: Prisma.InputJsonValue | undefined, archivedAt: Date | null) {
+  const next: Record<string, unknown> = isRecord(usage) ? { ...usage } : {};
+  if (archivedAt) next.archivedAt = archivedAt.getTime();
+  else delete next.archivedAt;
+  return next as Prisma.InputJsonObject;
+}
+
+function archivedAtFromUsage(usage: Prisma.JsonValue | null | undefined) {
+  return isRecord(usage) && typeof usage.archivedAt === "number" ? usage.archivedAt : undefined;
+}
+
+function usageSummaryForClient(usage: Prisma.JsonValue | null | undefined) {
+  if (!isRecord(usage)) return undefined;
+  const { archivedAt: _archivedAt, ...rest } = usage;
+  return Object.keys(rest).length > 0 ? rest : undefined;
+}
+
 function normalizeWorkflowItems(value: unknown) {
   if (!Array.isArray(value)) return [];
   return value.filter(isRecord).flatMap((workflow) => {
@@ -268,6 +286,7 @@ function normalizeWorkflowItems(value: unknown) {
       nextVideoNumber: toPositiveInt(workflow.nextVideoNumber),
       updatedAt: toDate(workflow.updatedAt),
       deletedAt: toNullableDate(workflow.deletedAt),
+      archivedAt: toNullableDate(workflow.archivedAt),
       canvasJson: toJsonObject(workflow.canvas),
       canvasTrimmed: workflow.canvasTrimmed === true,
       usageSummary: toJsonObject(workflow.usageSummary),
@@ -352,10 +371,11 @@ export async function upsertWorkspaceWorkflows(userId: string, workflowItems: un
     const canvasJson = skipCanvasWrite
       ? undefined
       : mergeWorkflowCanvasMedia(existingCanvas, workflow.canvasJson, jobResultsByWorkflowId.get(workflow.workflowId));
+    const usageSummary = usageSummaryForStore(workflow.usageSummary, workflow.archivedAt);
     return prisma.workspaceWorkflow.upsert({
       where: { userId_workflowId: { userId, workflowId: workflow.workflowId } },
-      create: { userId, workflowId: workflow.workflowId, workflowCode: workflow.workflowCode, workspaceKind: "workflow", title: workflow.title, nextImageNumber: workflow.nextImageNumber, nextVideoNumber: workflow.nextVideoNumber, updatedAt: workflow.updatedAt, deletedAt: workflow.deletedAt, canvasJson: canvasJson ?? workflow.canvasJson, usageSummary: workflow.usageSummary },
-      update: { workspaceKind: "workflow", workflowCode: workflow.workflowCode, title: workflow.title, nextImageNumber: workflow.nextImageNumber, nextVideoNumber: workflow.nextVideoNumber, updatedAt: workflow.updatedAt, deletedAt: workflow.deletedAt, ...(canvasJson === undefined ? {} : { canvasJson }), usageSummary: workflow.usageSummary },
+      create: { userId, workflowId: workflow.workflowId, workflowCode: workflow.workflowCode, workspaceKind: "workflow", title: workflow.title, nextImageNumber: workflow.nextImageNumber, nextVideoNumber: workflow.nextVideoNumber, updatedAt: workflow.updatedAt, deletedAt: workflow.deletedAt, canvasJson: canvasJson ?? workflow.canvasJson, usageSummary },
+      update: { workspaceKind: "workflow", workflowCode: workflow.workflowCode, title: workflow.title, nextImageNumber: workflow.nextImageNumber, nextVideoNumber: workflow.nextVideoNumber, updatedAt: workflow.updatedAt, deletedAt: workflow.deletedAt, ...(canvasJson === undefined ? {} : { canvasJson }), usageSummary },
     });
   }));
 
@@ -381,8 +401,9 @@ export function workspaceWorkflowRowToPayload(row: Omit<WorkspaceWorkflowRow, "c
     createdAt: row.createdAt.getTime(),
     updatedAt: row.updatedAt.getTime(),
     deletedAt: row.deletedAt ? row.deletedAt.getTime() : undefined,
+    archivedAt: row.archivedAt ? row.archivedAt.getTime() : archivedAtFromUsage(row.usageSummary),
     canvas: isRecord(row.canvasJson) ? row.canvasJson : {},
-    usageSummary: isRecord(row.usageSummary) ? row.usageSummary : undefined,
+    usageSummary: usageSummaryForClient(row.usageSummary),
   };
 }
 

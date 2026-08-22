@@ -15,6 +15,7 @@ type WorkspaceSessionRow = {
   usageSummary: Prisma.JsonValue | null;
   memorySummary: Prisma.JsonValue | null;
   deletedAt?: Date | null;
+  archivedAt?: Date | null;
 };
 
 type WorkspaceMessageRow = {
@@ -523,6 +524,7 @@ export function workspaceSessionRowToPayload(row: WorkspaceSessionRow, includeMe
     title: row.title,
     updatedAt: row.updatedAt.getTime(),
     deletedAt: row.deletedAt ? row.deletedAt.getTime() : undefined,
+    archivedAt: row.archivedAt ? row.archivedAt.getTime() : (isRecord(summary) && typeof summary.archivedAt === "number" ? summary.archivedAt : undefined),
     messages: includeMessages ? (messages ?? (Array.isArray(row.messagesJson) ? workspaceMessageRowsToMessages(row.messagesJson.map((message) => ({ messageJson: message as Prisma.JsonValue, createdAt: row.updatedAt }))) : [])) : [],
     messagesHasMore: includeMessages ? Boolean(messagePage?.hasMore) : undefined,
     messagesBeforeCursor: includeMessages ? messagePage?.nextBefore : undefined,

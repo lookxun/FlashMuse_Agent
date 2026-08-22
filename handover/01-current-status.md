@@ -2,26 +2,45 @@
 
 > 本批交接文档 2026-07-21 重建。更早的详细流水在 `historical-handover-docs-last-used-2026-07-21/`（尤其 `CHANGELOG.md` 580KB、`01-current-status.md`、`05-next-actions.md`）。遇到需要历史上下文的难题再翻归档。
 
-## ✅ 当前状态（2026-08-22 第七十九次会话末：**四方同步 `v1.0.1.3`**）
+## ✅ 当前状态（2026-08-23 第八十二次会话末：**已部署测试服 `v1.0.1.4` 并 push；正式服仍 `v1.0.1.3`**）
 
   | | 版本 / 状态 |
   |---|---|
-  | 本地 = 测试服 = 正式服 = GitHub | **`v1.0.1.3`** |
+  | 本地 = 测试服 = GitHub | **`v1.0.1.4`** |
+  | 正式服 | 仍 **`v1.0.1.3`**（`387ad87`） |
+  | 自查 | `tsc` 0 |
+  | 迁移 | 测试服已跑 `20260823010000_user_default_audio_prefs`、`20260823020000_workspace_archived_at`。归档运行时仍走 JSON：对话 `summaryJson.archivedAt`、工作流 `usageSummary.archivedAt`。 |
+  | 基建 | 无 compose/nginx |
+  | 回滚点 | 测服库 `pre-deploy-v1.0.1.4`（20260822-183306）；正式服 app `/opt/flashmuse/app-backups/20260822-190507-presync-v1.0.1.3` |
+
+**本对话框：** 审第 80+81 批 → 修归档空对话会被 persist 丢掉 → bump 部署测试服 → 上号验完全部更新 → push GitHub。正式服没动。细节 → `CHANGELOG_3.md` 第八十二次。
+
+---
+
+## ⏪ 上一状态（2026-08-22 第八十次会话末：**本对话框收尾；本地叠了 Fish 音色克隆，线上仍 `v1.0.1.3`**）
+
+  | | 版本 / 状态 |
+  |---|---|
+  | 本地 | **`v1.0.1.3` + 本会话未提交**（Fish 音色克隆；⛔ 未 bump、未部署、未 commit） |
+  | 测试服 = 正式服 = GitHub | 仍 **`v1.0.1.3`**（`387ad87`） |
   | 自查 | `tsc` 0 |
   | 迁移 / 基建 | 无 Prisma 迁移、无 compose/nginx |
   | 回滚点 | 正式服 app `/opt/flashmuse/app-backups/20260822-190507-presync-v1.0.1.3`（145M） |
 
-**本会话：** 把测试服 `v1.0.1.3` 原样同步正式服（不再 bump）+ 真上号巡检 + commit/push。
-staging/prod `src` md5 = `f384495350f694478ea75f3026098996`（204 文件）。四域名 200。`x-app-version` = v1.0.1.3。
-⛔ 正式服公告没动。
+**那次：** 查四个语音模型克隆能力 → 只接 Fish → 按 Seedance 模式做对话流「文本转换 / 音色克隆」→ 本地修时长读取、提示词显示、灰字。用户拍板先不建音色 ID。细节 → `CHANGELOG_3.md` 第八十次。
 
-**正式服巡检留痕（`12424740@qq.com`，新建对话，没删）：**
-1. Recraft V4.1 出图「一只橙色小猫坐在窗台上」→ 积分 8231→8229（2 分，对账对）。
-2. Agent 问「你是谁」→「我是闪念…」人话，无 JSON、不报模型名。
-3. Fish 免费 TTS「你好，这是正式服语音巡检。」→ 2 秒音频，不扣分。
-4. 工作流 tldraw 点节点不崩；资产库有「语音生成 1」；后台模型开关有 Recraft / 语音组 / K3「Agent优先」，console 0 error。
+---
 
-细节 → `CHANGELOG_3.md` 第七十九次。
+## ⏪ 上一状态（2026-08-22 第七十九次会话末：**本对话框收尾；四方同步 `v1.0.1.3`**）
+
+  | | 版本 / 状态 |
+  |---|---|
+  | 本地 = 测试服 = 正式服 = GitHub | **`v1.0.1.3`**（commit **`387ad87`** 已 push） |
+  | 自查 | `tsc` 0 |
+  | 迁移 / 基建 | 无 Prisma 迁移、无 compose/nginx |
+  | 回滚点 | 正式服 app `/opt/flashmuse/app-backups/20260822-190507-presync-v1.0.1.3`（145M） |
+
+当时：推正式服、巡检全过、commit + push。正式服巡检留痕见 `CHANGELOG_3.md` 第七十九次。工作区还剩 `modal.md`。
 
 ---
 

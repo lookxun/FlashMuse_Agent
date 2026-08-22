@@ -145,7 +145,7 @@ export function AdminLoginForm({ hasAdminEmails, initialMessage = "" }: { hasAdm
             className="h-11 w-full rounded-[10px] border border-[#e5e5e5] bg-[#fafafa] px-3 text-[14px] outline-none transition focus:border-[#367cee] focus:bg-white"
           />
           {isLoginHistoryOpen && loginHistory.length > 0 ? (
-            <div className="absolute left-0 right-0 top-[50px] z-20 max-h-[220px] overflow-y-auto rounded-[12px] bg-white p-1.5 shadow-[0_12px_28px_rgba(0,0,0,0.12)] ring-1 ring-[#ececec]">
+            <div className="yinzao-scrollbar-always absolute left-0 right-0 top-[50px] z-20 max-h-[220px] overflow-y-auto rounded-[12px] bg-white p-1.5 shadow-[0_12px_28px_rgba(0,0,0,0.12)] ring-1 ring-[#ececec]">
               {loginHistory.map((historyEmail) => (
                 <button
                   key={historyEmail}

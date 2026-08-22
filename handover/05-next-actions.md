@@ -2,22 +2,24 @@
 
 > 历史 END-OF-SESSION 记录都在 `historical-handover-docs-last-used-2026-07-21/05-next-actions.md`（很长）。这里只留当前有效待办。
 
-## ✅ 当前状态（2026-08-22 第七十九次会话末）：**四方同步 `v1.0.1.3`**
+## ✅ 当前状态（2026-08-23 第八十二次会话末）：**已部署测试服 `v1.0.1.4` 并 push；正式服仍 `v1.0.1.3`**
 
 | | 版本 / 状态 |
 |---|---|
-| 本地 = 测试服 = 正式服 = GitHub | **`v1.0.1.3`** |
+| 本地 = 测试服 = GitHub | **`v1.0.1.4`** |
+| 正式服 | 仍 **`v1.0.1.3`**（`387ad87`） |
 | 自查 | `tsc` 0 |
-| 迁移 / 基建 | 无 Prisma 迁移、无 compose/nginx |
-| 回滚点 | 正式服 app `/opt/flashmuse/app-backups/20260822-190507-presync-v1.0.1.3`（145M） |
+| 迁移 | 测服已跑默认语音字段 + `archivedAt` 列。归档运行时仍走 JSON。 |
+| 回滚点 | 测服库 `pre-deploy-v1.0.1.4`；正式服 app `.../20260822-190507-presync-v1.0.1.3` |
 
 ### 🎯 待办 0
 
-1. 无待部署。老对话里已存成 JSON 的 Agent 消息不回填。
-2. 语速别做。Kimi 别写成 MiniMax。
-3. Agent/通用已经流式出字，**别再给流式回复叠打字机**。
-4. Agent/通用「自动」生视频默认是对话流列表第一项（现 H3），别改回独立 Agent 档位链，除非用户改口。
-5. ⛔ 正式服公告别动。
+1. 正式服等拍板（**不再 bump**，staging→prod 原样同步）。上正式服前再上号巡检。⛔ 正式服公告别动。
+2. 点归档名称弹详情**已撤**，别加回来。语速别做。Kimi 别写成 MiniMax。别给 MiniMax/Qwen 做 OpenRouter 克隆。`modal.md` 别误 commit。
+
+### ⚠️ 血泪教训（本对话框仍有效）
+
+写文件只用 edit/write。`button { font: inherit }` 无 layer，会赢过 Tailwind 写在 button 上的字号 → 字号写 span。工作流归档必须能从 GET 读回来（`usageSummary.archivedAt`），只写内存/未生效列 = 热更新就「自动恢复」。刷新面板别再用「登录默认」覆盖上次所在页。
 
 ---
 

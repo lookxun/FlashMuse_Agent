@@ -165,6 +165,10 @@ export function getAudioModelUsdPerChar(modelId?: string): number {
 export function isAudioModel(modelId?: string): boolean {
   return Boolean(modelId && modelId in AUDIO_MODEL_MENU_INFO);
 }
+
+export function isFishAudioModel(modelId?: string) {
+  return Boolean(modelId?.startsWith("fish-audio/"));
+}
 export function normalizeImageQuality(value?: string): ImageQuality {
   return IMAGE_QUALITY_OPTIONS.includes(value as ImageQuality) ? (value as ImageQuality) : DEFAULT_IMAGE_QUALITY;
 }

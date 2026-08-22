@@ -14,43 +14,183 @@
 >   ④ 把旧卷标题改成「卷 N · 已归档只读」并在顶部加指向新卷的提示 ⑤ 更新 `00-README.md` 文档索引里的 CHANGELOG 行。
 > - 判据不变：**版本号一样 = 测试服和正式服代码一样**（本项目核心约定，见 `AGENTS.md`）。
 
-## 📌 当前状态摘要（2026-08-22 第七十九次会话末）：**四方同步 `v1.0.1.3`**
+## 📌 当前状态摘要（2026-08-23 第八十二次会话末）：**已部署测试服 `v1.0.1.4` 并 push；正式服仍 `v1.0.1.3`**
 
 | | 版本 / 状态 |
 |---|---|
-| 本地 = 测试服 = 正式服 = GitHub | **`v1.0.1.3`** |
+| 本地 = 测试服 = GitHub | **`v1.0.1.4`** |
+| 正式服 | 仍 **`v1.0.1.3`** |
 | 自查 | `tsc` 0 |
-| 迁移 / 基建 | 无 Prisma 迁移、无 compose/nginx |
-
-本会话把 `v1.0.1.3` 推正式服并真上号巡检，随后 commit + push。细节见下方第七十九次。
+| 迁移 | 测服已跑 `20260823010000_user_default_audio_prefs`、`20260823020000_workspace_archived_at` |
 
 ---
 
-## 🗒️ 第七十九次会话（2026-08-22）：正式服 `v1.0.1.3` + GitHub
+## 🗒️ 第八十二次会话（2026-08-23）：审 80+81 批、修归档空对话丢失、部署测试服 `v1.0.1.4`、上号验、push GitHub
 
-**用户诉求**：推正式服；推好后把更新内容全测一遍，有问题修；最后 push GitHub。
+**用户诉求**：全面查本地这批代码 → 有问题修 → 没问题部署测试服 → 更新内容全部上号测 → 全过 push GitHub。
 
-### 一、部署（不再 bump）
+### 一、审计
+
+审了第 80 次 Fish 克隆 + 第 81 次用户中心/字体/归档/默认语音。规则层、扣费、克隆上限、归档 JSON 读写、用户中心壳子大体对。
+
+### 二、修的真 bug
+
+`keepSingleEmptySession` 只跳过已删、不跳过已归档。归档最后一个空对话会新建一个空对话，persist 时把归档那条当「多余空会话」丢掉。改成 `deletedAt || archivedAt` 都跳过。加载时 `activeSessionId` / `activeWorkflowId` 只认可见项。
+
+### 三、部署测试服
+
+bump `v1.0.1.3` → `v1.0.1.4`。测服库备份 `pre-deploy-v1.0.1.4`。迁移两条已 apply。health / `x-app-version` / 8080 / https 都是 `v1.0.1.4`。
+
+### 四、上号巡检（`12424740@qq.com`；后台只看 `lookxun@163.com`）
+
+登录、对话历史、工作流画布点节点不崩、资产库、真跑生图成功（扣 3 积分 94337→94334）、后台 0 error。新功能：用户中心全屏、头像悬停菜单含归档、归档对话+工作流刷新还在、刷新停在工作流、Fish「文本转换/音色克隆」、设置默认语音。没真跑克隆（要烧钱+10 秒参考音）。
+
+### 五、下一个 AI
+
+正式服等拍板，不再 bump。`modal.md` 别 commit。语速别做。
+
+---
+
+## 🗒️ 第八十一次会话（2026-08-23）：用户中心全屏 + 字体 + 归档 + 默认语音（本对话框收尾；全本地）
+
+**用户诉求**：继续项目 → 改用户中心 → 全屏参考扣子结构 → 字更清楚 → 用户信息左右排 → 积分表 20 条/加宽列 → 设置加默认语音 → 下拉不跑出屏、滚动条要看见 → 做归档 → 修工作流归档热更新丢失 → 刷新别跳回对话 → 去掉点名称弹窗 → 删除二次确认 → 写交接。
+
+### 一、用户中心壳子
+
+- 头像菜单：悬停出、移开关；菜单和头像用 `pb-2` 连上，别用 margin。
+- 弹窗改全屏：左 240 `#f4f4f4`，「退出用户中心」+ 用户信息/积分/帐号安全/**归档**/设置。图标淡灰 `#b4b4b4`。右白底圆角，内容 `max-w-[950px]` 居中。
+- 用户信息：头像左、字段右、顶对齐。
+- 积分：20 条一页；后四列约 +20%（110/110/110/86）。
+
+### 二、字体
+
+- `globals.css` / `--font-sans`：苹方 → 微软雅黑 UI → HarmonyOS → Noto。去掉 html `antialiased`。
+- 首页、工作流画布、邮件也齐上。
+- 全局 `button { font: inherit }` 会盖掉 button 上的 `text-[14px]`（归档名称点成 button 后看起来变 16）。字号写里面的 span，或别用 button。
+
+### 三、设置
+
+- 默认语音模型 / 音色（有才显示）/ 情绪（有才显示）。存 User 新列（要迁移才稳）。新建对话会套用。
+- `SettingsSelect`：portal + 下面不够就往上弹，不跑出窗口。
+- 弹出菜单一律 `yinzao-scrollbar-always`，有滚动就显示条。
+
+### 四、归档
+
+- 入口：用户中心左栏、头像菜单、历史对话/工作流三点菜单。
+- 列表：对话流归档 / 工作流归档；灰条名称+时间；外面两个正方形灰描边图标（恢复/删除），黑底提示。
+- **必须入库**：对话 `archivedAt` 在 session `summaryJson`；工作流在 `usageSummary.archivedAt`（读的时候剥掉再给前端）。只写 Prisma 新列、客户端还没 generate = 热更新工作流会自己「恢复」。
+- 仓库另有 `WorkspaceSession/Workflow.archivedAt` 列迁移，跑了更好，但运行时不依赖。
+- 删除：工作流删节点那套确认框（360 白卡、取消/确定）。
+- 点名称看详情：**用户要求去掉了**。
+- 侧栏/当前会话过滤用 `isVisibleSession/Workflow`（没删且没归档）。
+
+### 五、刷新面板
+
+- 以前「登录默认面板」每次加载都 `setActivePanel(landingPanel)`，刷新工作流会跳对话。
+- 现：`setActivePanel(nextActivePanel ?? landingPanel)`。localStorage / 服务端上次面板优先，没有才用设置默认。
+
+### 六、主要文件
+
+`chat-workbench.tsx`、`chat-workbench-core.tsx`、`globals.css`、`layout.tsx`、`page.tsx`、`mailer.ts`、`user-profile.ts`、`workspace-sessions.ts`、`workspace-workflows.ts`、`prisma/schema.prisma`、两条 migrations。
+
+### 七、下一个 AI
+
+1. 要上线先 bump。没让测别烧钱。
+2. 别把归档点名称弹窗加回来。别再用登录默认覆盖刷新。
+3. 工作流归档读写必须经过 `usageSummary.archivedAt`。
+4. 语速别做。写文件只用 edit/write。
+
+---
+
+## 🗒️ 第八十次会话（2026-08-22）：Fish 音色克隆（本对话框收尾；全本地）
+
+**用户诉求**：查四个语音模型能不能克隆 → 只接 Fish → 学 Seedance 2.0 三种模式做「文本转换 / 音色克隆」→ 本地先做 → 修试用问题 → 写交接。
+
+### 一、四个模型克隆能力（OpenRouter 实测 `supports_voice_cloning`）
+
+| 模型 | 走 OpenRouter | 官方自己 |
+|---|---|---|
+| Fish 免费 / Fish Pro | **能**（无状态 `input_references`） | 能（还可持久化 voice id，咱们没接） |
+| MiniMax Speech 2.8 HD | 不能 | 能（要 MiniMax 自己的复刻接口） |
+| Qwen Audio 3.0 TTS Plus | 不能 | 能（要阿里百炼先注册音色） |
+
+用户拍板：只接 Fish；先不建音色 ID。同一段音再发 = 再克隆一次。上传同文件我们秒回不落盘，但发送仍打上游。
+
+### 二、产品口径（⛔ 别改回去）
+
+1. 发送键前两个模式：「文本转换」「音色克隆」。只 Fish 出这个菜单。切 MiniMax/Qwen 回落到文本转换并清掉参考音。
+2. 克隆：藏音色、藏情绪；加号**禁用不隐藏**（文本转换时灰掉）。
+3. 灰字最终稿：「上传一段10-60秒的语音克隆源, 并输入需要转换成语音的文案...」
+4. 上限：10–60 秒、15MB、mp3/wav、1 段。格式/超 15MB 黑底拦，灰字不写格式和 15MB。
+5. 提示词显示 = 用户打的字 + 上传的文件。**没打 `@` 不许画出 `@文件名`**，只出音频小图标（学图片缩略图）。⛔ 别自动往输入框塞 `@`。
+6. 点发送先出等待卡；创建/校验/调上游全在服务端。
+
+### 三、实现
+
+- 规则层：`upload-rules.ts` 的 `AudioReferenceMode` / `supportsAudioCloneMode` / `FISH_AUDIO_CLONE_*`；克隆 override key `fish-audio:clone`（后台没有这行，改融合数量动不了它）。
+- 菜单：`audio-reference-modes.ts`。
+- 上游：`openrouter-audio.ts` 发 `input_references`（1 段 data URL）。
+- 路由：`/api/audio` 校验归属 + 时长；`generationSettings` 记下 `audioReferenceMode` + `referenceAudios`。对话消息的文字和 `uploadedFiles` 进工作区。
+- `REFERENCE_CLIP_SECONDS_MAX` 从 30 改成 **60**（全平台最宽兜底，给克隆 60 秒；Seedance 仍按模型收 15/30）。
+- `isFishAudioModel` 收到 `models.ts`。
+
+### 四、本对话框修的真 bug
+
+1. **「音频时长读取失败」**：① 浏览器对有的 mp3/wav 读出 `Infinity` → `readMediaFileMetadata` 补 seek；② `probeUploadedMedia` 返回空时长对象，`??` 盖掉客户端秒数 → 上传合并探测+客户端。
+2. 提示词没 `@` 却画出 `@文件名`：自动塞 `@` 已撤；未提及的参考音只画小图标。
+
+### 五、主要文件
+
+`upload-rules.ts`、`audio-reference-modes.ts`、`openrouter-audio.ts`、`api/audio/route.ts`、`chat-workbench.tsx`、`chat-workbench-core.tsx`、`media-upload-validation.ts`、`media-upload-probe` 调用处、`generated-asset-path.ts`（音频 MIME）、`models.ts`、`audio-emotions.ts`。
+
+### 六、下一个 AI
+
+1. 要上线先 bump。没让测就别烧钱。
+2. 别接 MiniMax/Qwen 克隆，除非用户改口并另开官方接口。
+3. 别再给流式叠打字机。语速别做。写文件只用 edit/write。
+
+---
+
+## 🗒️ 第七十九次会话（2026-08-22）：正式服 `v1.0.1.3` + 巡检 + GitHub（本对话框收尾）
+
+**用户诉求**：① 先看交接做到哪 ② 推正式服、更新内容全测、有问题修 ③ 最后 push GitHub ④ 把本对话框写进交接。
+
+### 一、本对话框时间线
+
+1. 接手看交接：本地 = 测试服 `v1.0.1.3`，正式服 / GitHub 仍 `v1.0.0.99`，未 commit。上一个对话框（76～78）已把 74+75 审计上测试服，并修了 Agent JSON 当正文和思考结束乱滚。
+2. 用户拍板推正式服，测完全部更新，最后 push。
+3. 按 `03` 原样同步（**不再 bump**）→ 巡检全过 → commit `387ad87` push。
+4. 本条收尾写文档。无新业务代码。
+
+### 二、部署（不再 bump）
 
 1. 备份 `/opt/flashmuse/app-backups/20260822-190507-presync-v1.0.1.3`（145M）。
 2. staging→prod rsync。`src` md5 两边都是 `f384495350f694478ea75f3026098996`（204 文件）。voice-previews 147 个。迁移 44=44，无 pending。
 3. `up -d --build` → health `v1.0.1.3`。`.next/static` 推阿里正式镜像 42=42。
 4. `PUBLISHED_APP_VERSION=v1.0.1.3` + force-recreate。`x-app-version` = v1.0.1.3。四域名 200。
 
-### 二、正式服巡检（`12424740@qq.com`；后台 `lookxun@163.com` 只看）
+### 三、正式服巡检（`12424740@qq.com`；后台 `lookxun@163.com` 只看）
 
-1. 登录进工作台，历史 52 条，console 0 error。
-2. Recraft 菜单在、副标题「2积分/张」、比例无 21:9、分辨率 1K。真跑一张出图，积分 8231→8229。
-3. 新建对话 Agent 问「你是谁」→「我是闪念…」，无 JSON、不报 Kimi/公司名。复制/重新生成按钮答完才出。
-4. 语音生成 4 个模型都在。Fish 免费出 2 秒音频，不扣分。资产库「语音生成 1」。
-5. 工作流 tldraw 打开、点节点不崩。
+1. 登录进工作台，历史 52 条，console 0 error。首页版本号 `v1.0.1.3`。
+2. Recraft 菜单在、副标题「2积分/张」、比例无 21:9（智能/16:9/4:3/1:1/3:4/9:16）、分辨率 1K。真跑一张「一只橙色小猫坐在窗台上」出图，积分 8231→8229。
+3. 新建对话切 Agent，问「你是谁」→「我是闪念，一个专门做短剧和影片创作的 Agent。」人话，无 `"intent"`/`"content"`，不报 Kimi/公司名。复制/重新生成按钮答完才出。
+4. 语音生成 4 个模型都在（Fish 免费 / Fish Pro / Qwen / MiniMax）。Fish 免费出 2 秒「你好，这是正式服语音巡检。」，不扣分。资产库「语音生成 1」。
+5. 工作流 tldraw 打开 `工作流_12`、点节点不崩。
 6. 后台模型开关：Recraft、语音生成组、Kimi K3「Agent优先」。没动公告。
 
 没发现问题，无热修。
 
-### 三、GitHub
+### 四、GitHub
 
-整批 v1.0.1.0～v1.0.1.3（Recraft + 语音 + Agent/通用 + 审计修复）一次 commit + push。
+整批 v1.0.1.0～v1.0.1.3（Recraft + 语音 + Agent/通用 + 审计修复 + 交接）一次 commit **`387ad87`** 已 push `main`。
+工作区还剩未跟踪的 `modal.md`，别误 commit。
+
+### 五、下一个 AI 别再当漏改
+
+- 流式和打字机不叠：`isStreamingReply` 时 `isComplete=true`。
+- Agent 解析失败不许吐 JSON；思考结束不许再 `scrollIntoView`。
+- Agent/通用「自动」生图生视频用对话流列表 `[0]`（图 Seedream 4.5，视频 H3）是第 75 次产品口径。
+- 语速别做。Kimi 别写成 MiniMax。写文件只用 edit/write。
 
 ---
 

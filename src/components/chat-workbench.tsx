@@ -7,7 +7,7 @@ import { validateImageUploadFile } from "@/lib/image-upload-validation";
 import { IS_TEST_SERVER, versionLabel } from "@/lib/app-version";
 import { MEDIA_DURATION_EPSILON_SECONDS, validateMediaUploadFile, validateMediaUploadMetadata, validateReferenceMediaDurationRange as validateMediaDuration } from "@/lib/media-upload-validation";
 import { getStaticMediaUrl } from "@/lib/static-media-url";
-import { RiAddLine, RiArrowLeftSLine, RiArrowRightSLine, RiArrowDownSLine, RiArrowDownFill, RiArrowUpDownLine, RiArrowUpLine, RiArrowUpSLine, RiArrowDownWideLine, RiAtLine, RiCameraLine, RiCheckLine, RiChat3Line, RiChatSmileAiLine, RiChatDeleteLine, RiCheckboxMultipleBlankLine, RiCloseLine, RiDeleteBinLine, RiEmotionHappyLine, RiEmotionUnhappyLine, RiEmotionSadLine, RiEqualizerLine, RiErrorWarningLine, RiFolderLine, RiFolderOpenLine, RiBellLine, RiFormatClear, RiLandscapeLine, RiImageLine, RiSidebarFoldLine, RiSidebarUnfoldLine, RiLeafLine, RiLockPasswordLine, RiMoreLine, RiMusic2Line, RiMultiImageLine, RiMailLine, RiPhoneLine, RiEditBoxLine, RiPushpinLine, RiResetLeftLine, RiRefreshLine, RiShining2Line, RiStarSmileLine, RiStopFill, RiThumbDownLine, RiThumbDownFill, RiThumbUpLine, RiThumbUpFill, RiTimeLine, RiVipCrown2Line, RiVipDiamondLine, RiVideoLine, RiVideoOnLine, RiVoiceprintLine, RiQuillPenAiLine, RiAccountBoxLine, RiAccountCircleLine, RiFilmLine, RiFullscreenLine, RiInformationLine, RiGlobalLine, RiGitMergeLine, RiGitPullRequestLine, RiFilmAiLine, RiImageAddLine, RiImageAiLine, RiMicAiLine, RiDownloadLine, RiRobot2Line, RiZoomInLine, RiTBoxLine, RiTerminalWindowFill, RiLogoutBoxRLine, RiSettingsLine, RiSunLine, RiMoonLine, RiComputerLine, RiNotification2Line, RiShieldUserLine } from "react-icons/ri";
+import { RiAddLine, RiArrowLeftSLine, RiArrowRightSLine, RiArrowDownSLine, RiArrowDownFill, RiArrowUpDownLine, RiArrowUpLine, RiArrowUpSLine, RiArrowDownWideLine, RiAtLine, RiCameraLine, RiCheckLine, RiChat3Line, RiChatSmileAiLine, RiChatDeleteLine, RiCheckboxMultipleBlankLine, RiCloseLine, RiDeleteBinLine, RiEmotionHappyLine, RiEmotionUnhappyLine, RiEmotionSadLine, RiEqualizerLine, RiErrorWarningLine,   RiFolderLine, RiFolderOpenLine, RiInboxArchiveLine, RiBellLine, RiFormatClear, RiLandscapeLine, RiImageLine, RiSidebarFoldLine, RiSidebarUnfoldLine, RiLeafLine, RiLockPasswordLine, RiMoreLine, RiMusic2Line, RiMultiImageLine, RiMailLine, RiPhoneLine, RiEditBoxLine, RiPushpinLine, RiResetLeftLine, RiRefreshLine, RiShining2Line, RiStarSmileLine, RiStopFill, RiThumbDownLine, RiThumbDownFill, RiThumbUpLine, RiThumbUpFill, RiTimeLine, RiVipCrown2Line, RiVipDiamondLine, RiVideoLine, RiVideoOnLine, RiVoiceprintLine, RiQuillPenAiLine, RiAccountBoxLine, RiAccountCircleLine, RiFilmLine, RiFullscreenLine, RiInformationLine, RiGlobalLine, RiGitMergeLine, RiGitPullRequestLine, RiFilmAiLine, RiImageAddLine, RiImageAiLine, RiMicAiLine, RiDownloadLine, RiRobot2Line, RiZoomInLine, RiTBoxLine, RiTerminalWindowFill, RiLogoutBoxRLine, RiSettingsLine, RiSunLine, RiMoonLine, RiComputerLine, RiNotification2Line, RiShieldUserLine } from "react-icons/ri";
 import { ADVANCED_CHAT_MODEL, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, DEFAULT_AUDIO_MODEL, audioGenerationModels, isAudioModel, DEFAULT_IMAGE_QUALITY, IMAGE_QUALITY_OPTIONS, IMAGE_QUALITY_LABELS, isGptImage2Model, getGenerationModelSelectHint, bytePlusVideoGenerationModels, frontendConversationModels, frontendImageGenerationModels, getImageQualityBadgeLabel, getImageResolutionLabel, getSupportedImageRatios, getSupportedImageResolutions, getSupportedVideoRatios, getSupportedVideoResolutions, imageGenerationModels, isNonStandardVideoSize, normalizeImageRatioForModel, normalizeImageResolutionForModel, normalizeVideoRatioForModel, normalizeVideoResolutionForModel, validateVideoDurationWithReferences, videoGenerationModels, ConversationModel, GenerationModel, ModelName, PROMPT_TOOL_MODEL_CHAIN } from "@/lib/models";
 import { toUserErrorMessage } from "@/lib/error-message";
 import { handleSessionExpiredResponse } from "@/lib/session-expired-redirect";
@@ -24,7 +24,7 @@ import { VideoPlayBadge } from "@/components/video-play-badge";
 import { NewBadge } from "@/components/new-badge";
 import { validateVideoReferenceImagesBeforeSend, videoModelEnforcesReferenceImageSizeRules } from "@/lib/video-reference-image-rules";
 import { WorkflowCanvas, WorkflowCanvasState, WorkflowNode } from "@/components/workflow-tldraw-canvas";
-import { getEffectiveVideoReferenceItems, getSupportedUploadTypeLabel, getUploadAcceptValue, getUploadKindFromFileName, getUploadRule, getVideoAudioUploadDisabledMessage, getVideoReferenceLimitHint, supportsVideoReferenceMode, validateReferenceTotalDuration, validateVideoReferenceCombination, UploadRuleOverrides } from "@/lib/upload-rules";
+import { FISH_AUDIO_CLONE_MAX_SECONDS, FISH_AUDIO_CLONE_MIN_SECONDS, getEffectiveVideoReferenceItems, getSupportedUploadTypeLabel, getUploadAcceptValue, getUploadKindFromFileName, getUploadRule, getVideoAudioUploadDisabledMessage, getVideoReferenceLimitHint, normalizeAudioReferenceModeForModel, supportsAudioCloneMode, supportsVideoReferenceMode, validateReferenceTotalDuration, validateVideoReferenceCombination, UploadRuleOverrides } from "@/lib/upload-rules";
 import { countPromptLength, getPromptCeilingTipText, getPromptLimitTooltipText, getPromptMaxLength, getPromptOverLimitTipText, isPromptOverLimit, PROMPT_MAX_LENGTH_CEILING, type PromptLengthOverrides } from "@/lib/prompt-length";
 import { PromptLengthCounterRow } from "@/components/prompt-length-counter";
 import {
@@ -56,7 +56,9 @@ import {
   type MediaFileReference,
   type PendingGeneration,
   type VideoReferenceMode,
+  type AudioReferenceMode,
   getVideoReferenceModeOptions,
+  getAudioReferenceModeOptions,
 
   type WorkMode,
   type UploadedImage,
@@ -252,6 +254,8 @@ import {
   createNumberedWorkflowItem,
   isUntitledWorkflow,
   isDeletedWorkflow,
+  isArchivedWorkflow,
+  isVisibleWorkflow,
   hasWorkflowAction,
   getWorkflowTextSnapshot,
   getWorkflowMediaSnapshot,
@@ -263,6 +267,8 @@ import {
   isEmptySession,
   getSessionPendingRequests,
   isDeletedSession,
+  isArchivedSession,
+  isVisibleSession,
   sortByUpdatedAtDesc,
   getPersistableSessions,
   getSessionTitle,
@@ -527,6 +533,7 @@ export function ChatWorkbench() {
   const [selectedAudioVoice, setSelectedAudioVoice] = useState<string | undefined>(getDefaultAudioVoiceId(DEFAULT_AUDIO_MODEL));
   const [audioVoiceLang, setAudioVoiceLang] = useState<AudioVoiceLang>(getAudioVoiceLang(DEFAULT_AUDIO_MODEL, getDefaultAudioVoiceId(DEFAULT_AUDIO_MODEL)));
   const [selectedAudioEmotion, setSelectedAudioEmotion] = useState(AUDIO_EMOTION_DEFAULT_ID);
+  const [selectedAudioReferenceMode, setSelectedAudioReferenceMode] = useState<AudioReferenceMode>("tts");
   const [selectedVideoReferenceMode, setSelectedVideoReferenceMode] = useState<VideoReferenceMode>("reference");
   const [selectedGeneralModels, setSelectedGeneralModels] = useState<Record<"chat" | "image" | "video", ModelName>>({
     chat: frontendConversationModels[0].id,
@@ -619,7 +626,7 @@ export function ChatWorkbench() {
   const [autoSaveHistory, setAutoSaveHistory] = useState(true);
   const [previewWheelZoom, setPreviewWheelZoom] = useState(true);
   const [previewWheelFlip, setPreviewWheelFlip] = useState(true);
-  // 用户中心「设置」：登录后默认进入的面板 + 新建对话时套用的默认生成参数（图片/视频两组）。
+  // 用户中心「设置」：登录后默认进入的面板 + 新建对话时套用的默认生成参数（图片/视频/语音）。
   const [defaultWorkspacePanel, setDefaultWorkspacePanel] = useState<ActivePanel>("chat");
   const defaultWorkspacePanelRef = useRef<ActivePanel>("chat");
   const [defaultImageModel, setDefaultImageModel] = useState<ModelName>(DEFAULT_IMAGE_MODEL);
@@ -629,6 +636,9 @@ export function ChatWorkbench() {
   const [defaultVideoRatio, setDefaultVideoRatio] = useState<string>(ratioOptions[0]);
   const [defaultVideoResolution, setDefaultVideoResolution] = useState<string>(getSupportedVideoResolutions(DEFAULT_VIDEO_MODEL)[0]);
   const [defaultVideoDuration, setDefaultVideoDuration] = useState<string>(getVideoDurationOptions(DEFAULT_VIDEO_MODEL)[0]);
+  const [defaultAudioModel, setDefaultAudioModel] = useState<ModelName>(DEFAULT_AUDIO_MODEL);
+  const [defaultAudioVoice, setDefaultAudioVoice] = useState<string | undefined>(getDefaultAudioVoiceId(DEFAULT_AUDIO_MODEL));
+  const [defaultAudioEmotion, setDefaultAudioEmotion] = useState(AUDIO_EMOTION_DEFAULT_ID);
   const [generatedImageCount, setGeneratedImageCount] = useState(0);
   const [generatedVideoCount, setGeneratedVideoCount] = useState(0);
   const [currentUserCredits, setCurrentUserCredits] = useState(1500);
@@ -639,6 +649,8 @@ export function ChatWorkbench() {
   const defaultUserAvatar = useMemo(() => getDefaultUserAvatar(currentUserEmail), [currentUserEmail]);
   const [workspaceStorageMode, setWorkspaceStorageMode] = useState<WorkspaceStorageMode>("loading");
   const [userDialogTab, setUserDialogTab] = useState<UserDialogTab | "">("");
+  const [archiveKind, setArchiveKind] = useState<"session" | "workflow">("session");
+  const [archiveDeleteConfirm, setArchiveDeleteConfirm] = useState<{ kind: "session" | "workflow"; id: string; title: string } | null>(null);
   const [currentPasswordInput, setCurrentPasswordInput] = useState("");
   const [newPasswordInput, setNewPasswordInput] = useState("");
   const [confirmPasswordInput, setConfirmPasswordInput] = useState("");
@@ -839,9 +851,10 @@ export function ChatWorkbench() {
   const selectedImageCount = selectedImageCounts[mode];
   const selectedGenerationModel = mode === "general" ? selectedGeneralModels.chat : mode === "agent" ? selectedModel : selectedGenerationModels[mode];
   const isSelectedVideoReferenceModeModel = mode === "video" && supportsVideoReferenceMode(selectedGenerationModels.video);
-  // 视频编辑/延长（仅 Seedance 2.5）：比例=adaptive、时长=-1 由后端强制，用户选了也不生效 → 隐藏这两个选择器，避免误导。
+  const isSelectedAudioCloneModel = mode === "audio" && supportsAudioCloneMode(selectedGenerationModels.audio);
+  const isAudioCloneMode = isSelectedAudioCloneModel && selectedAudioReferenceMode === "clone";
   const isVideoEditOrExtendMode = isSelectedVideoReferenceModeModel && (selectedVideoReferenceMode === "edit" || selectedVideoReferenceMode === "extend");
-  const currentUploadRule = useMemo(() => getUploadRule({ mode, modelId: selectedGenerationModel, transportMode: "local-base64", videoReferenceMode: mode === "video" && isSelectedVideoReferenceModeModel ? selectedVideoReferenceMode : undefined }, uploadRuleOverrides), [isSelectedVideoReferenceModeModel, mode, selectedGenerationModel, selectedVideoReferenceMode, uploadRuleOverrides]);
+  const currentUploadRule = useMemo(() => getUploadRule({ mode, modelId: selectedGenerationModel, transportMode: "local-base64", videoReferenceMode: mode === "video" && isSelectedVideoReferenceModeModel ? selectedVideoReferenceMode : undefined, audioReferenceMode: mode === "audio" && isSelectedAudioCloneModel ? selectedAudioReferenceMode : undefined }, uploadRuleOverrides), [isSelectedAudioCloneModel, isSelectedVideoReferenceModeModel, mode, selectedAudioReferenceMode, selectedGenerationModel, selectedVideoReferenceMode, uploadRuleOverrides]);
   const currentMaxReferenceImages = currentUploadRule.image.maxCount;
   const uploadAcceptValue = useMemo(() => getUploadAcceptValue(currentUploadRule), [currentUploadRule]);
   const supportedUploadTypeLabel = useMemo(() => getSupportedUploadTypeLabel(currentUploadRule), [currentUploadRule]);
@@ -944,6 +957,11 @@ export function ChatWorkbench() {
     setDefaultVideoResolution(nextVideoResolution);
     setDefaultVideoRatio(profile.defaultVideoRatio && videoRatioOptionsForModel.includes(profile.defaultVideoRatio) ? profile.defaultVideoRatio : "智能比例");
     setDefaultVideoDuration(profile.defaultVideoDuration && videoDurationOptionsForModel.includes(profile.defaultVideoDuration) ? profile.defaultVideoDuration : videoDurationOptionsForModel[0]);
+
+    const nextAudioModel = (profile.defaultAudioModel && generationModelOptions.audio.some((option) => option.id === profile.defaultAudioModel) ? profile.defaultAudioModel : DEFAULT_AUDIO_MODEL) as ModelName;
+    setDefaultAudioModel(nextAudioModel);
+    setDefaultAudioVoice(normalizeAudioVoiceForModel(nextAudioModel, profile.defaultAudioVoice));
+    setDefaultAudioEmotion(normalizeAudioEmotionForModel(nextAudioModel, profile.defaultAudioEmotion));
 
     setGeneratedImageCount(profile.generatedImageCount ?? 0);
     setGeneratedVideoCount(profile.generatedVideoCount ?? 0);
@@ -1152,8 +1170,8 @@ export function ChatWorkbench() {
     }
   }, []);
 
-  const activeSession = sessions.find((session) => session.id === activeSessionId && !isDeletedSession(session)) ?? sessions.find((session) => !isDeletedSession(session)) ?? sessions[0];
-  const activeWorkflowItems = sortByUpdatedAtDesc(workflowItems.filter((item) => !isDeletedWorkflow(item)));
+  const activeSession = sessions.find((session) => session.id === activeSessionId && isVisibleSession(session)) ?? sessions.find((session) => isVisibleSession(session)) ?? sessions[0];
+  const activeWorkflowItems = sortByUpdatedAtDesc(workflowItems.filter((item) => isVisibleWorkflow(item)));
   const activeWorkflow = activeWorkflowItems.find((item) => item.id === activeWorkflowId) ?? activeWorkflowItems[0];
   const messages = activeSession?.messages ?? initialMessages;
   const activeInput = activeSession?.draftInput ?? "";
@@ -2650,7 +2668,7 @@ export function ChatWorkbench() {
       });
       setHistoryHasMoreSessions(Boolean(data.state?.sessionsHasMore));
       setHistoryNextOffset(Math.floor(Number(data.state?.sessionsNextOffset ?? historyNextOffset)));
-      setHistoryTotalSessionCount((current) => Math.max(current, Math.floor(Number(data.state?.sessionsTotalCount ?? 0)), sessionsRef.current.filter((session) => !isDeletedSession(session)).length + nextItems.length));
+      setHistoryTotalSessionCount((current) => Math.max(current, Math.floor(Number(data.state?.sessionsTotalCount ?? 0)), sessionsRef.current.filter((session) => isVisibleSession(session)).length + nextItems.length));
       setHistoryVisibleSessionCount((count) => Math.max(count, count + nextItems.length));
     } catch {
       showInputTip("历史对话加载失败，请稍后重试");
@@ -2896,9 +2914,9 @@ export function ChatWorkbench() {
   useEffect(() => {
     if (!isLoaded || workspaceStorageMode === "loading") return;
     if (activePanel !== "workflow") return;
-    if (workflowItems.some((item) => !isDeletedWorkflow(item))) return;
+    if (workflowItems.some((item) => isVisibleWorkflow(item))) return;
     const workflow = createNumberedWorkflowItem(workflowItems);
-    setWorkflowItems((current) => (current.some((item) => !isDeletedWorkflow(item)) ? current : [workflow, ...current]));
+    setWorkflowItems((current) => (current.some((item) => isVisibleWorkflow(item)) ? current : [workflow, ...current]));
     setActiveWorkflowId((current) => current || workflow.id);
   }, [activePanel, isLoaded, workflowItems, workspaceStorageMode]);
 
@@ -2957,6 +2975,7 @@ export function ChatWorkbench() {
           setSelectedAudioVoice(nextAudioVoice);
           setAudioVoiceLang(getAudioVoiceLang(nextAudioModel, nextAudioVoice));
           setSelectedAudioEmotion(normalizeAudioEmotionForModel(nextAudioModel, parsedInputSettings.selectedAudioEmotion));
+          setSelectedAudioReferenceMode(normalizeAudioReferenceModeForModel(nextAudioModel, parsedInputSettings.selectedAudioReferenceMode));
           setSelectedGeneralModels(nextGeneralModels as Record<"chat" | "image" | "video", ModelName>);
         };
 
@@ -2968,8 +2987,8 @@ export function ChatWorkbench() {
           const nextWorkflows = normalizeWorkflowCodesAndMediaNumbers(normalizeStoredWorkflowItems(state.workflowItems));
           const nextStoredWorkflowNumber = Math.max(1, Math.floor(Number(state.nextWorkflowNumber ?? 1)));
           const nextWorkflowNumberValue = Math.max(nextStoredWorkflowNumber, getMaxWorkflowTitleNumber(nextWorkflows) + 1);
-          const nextActiveWorkflowId = state.activeWorkflowId && nextWorkflows.some((item) => item.id === state.activeWorkflowId) ? state.activeWorkflowId : nextWorkflows[0]?.id ?? "";
-          const nextActiveSessionId = state.activeSessionId && nextSessions.some((session) => session.id === state.activeSessionId) ? state.activeSessionId : nextSessions[0].id;
+          const nextActiveWorkflowId = state.activeWorkflowId && nextWorkflows.some((item) => item.id === state.activeWorkflowId && isVisibleWorkflow(item)) ? state.activeWorkflowId : nextWorkflows.find((item) => isVisibleWorkflow(item))?.id ?? nextWorkflows[0]?.id ?? "";
+          const nextActiveSessionId = state.activeSessionId && nextSessions.some((session) => session.id === state.activeSessionId && isVisibleSession(session)) ? state.activeSessionId : nextSessions.find((session) => isVisibleSession(session))?.id ?? nextSessions[0].id;
           const savedAssets = Array.isArray(state.assets) ? applyAssetGenerationSystemNames(applySessionMediaSystemNamesToAssets(normalizeStoredAssets(state.assets).map((asset) => replaceAssetMediaUrls(asset, legacyMediaUrlReplacements)), nextSessions)) : undefined;
           const savedAssetGenerateJobs = Array.isArray(state.assetGenerateJobs) ? normalizeStoredAssetGenerateJobs(state.assetGenerateJobs).map((job) => replaceAssetGenerateJobMediaUrls(job, legacyMediaUrlReplacements, {})) : undefined;
 
@@ -2982,20 +3001,19 @@ export function ChatWorkbench() {
           // 用户中心「设置」里配置的「登录默认面板」优先：每次进工作台都落在这个面板（会话内切换仍然自由）。
           const preferredPanel = defaultWorkspacePanelRef.current;
           const landingPanel: ActivePanel = preferredPanel === "workflow" && !WORKFLOW_MODE_ENABLED ? "chat" : preferredPanel;
-          setActivePanel(landingPanel);
-          void nextActivePanel;
+          setActivePanel(nextActivePanel ?? landingPanel);
           if (nextAssetFilter) setAssetFilter(nextAssetFilter);
           if (nextAssetScrollTopByFilter && typeof nextAssetScrollTopByFilter === "object") setAssetScrollTopByFilter(nextAssetScrollTopByFilter);
           setSessions(nextSessions);
           setHistoryHasMoreSessions(Boolean(state.sessionsHasMore));
           setHistoryNextOffset(Math.floor(Number(state.sessionsNextOffset ?? nextSessions.length)));
-          setHistoryTotalSessionCount(Math.max(Math.floor(Number(state.sessionsTotalCount ?? 0)), nextSessions.filter((session) => !isDeletedSession(session)).length));
+          setHistoryTotalSessionCount(Math.max(Math.floor(Number(state.sessionsTotalCount ?? 0)), nextSessions.filter((session) => isVisibleSession(session)).length));
           setHistoryVisibleSessionCount(Math.max(HISTORY_INITIAL_SESSION_COUNT, nextSessions.length));
           setNextConversationNumber(normalizedWorkspace.nextConversationNumber);
           setWorkflowItems(nextWorkflows);
           setRunningWorkflowIds(Array.isArray(state.runningWorkflowIds) ? state.runningWorkflowIds.filter((id): id is string => typeof id === "string") : []);
           setNextWorkflowNumber(nextWorkflowNumberValue);
-          setWorkflowVisibleItemCount(Math.max(WORKFLOW_INITIAL_ITEM_COUNT, Math.min(nextWorkflows.filter((item) => !isDeletedWorkflow(item)).length, WORKFLOW_INITIAL_ITEM_COUNT)));
+          setWorkflowVisibleItemCount(Math.max(WORKFLOW_INITIAL_ITEM_COUNT, Math.min(nextWorkflows.filter((item) => isVisibleWorkflow(item)).length, WORKFLOW_INITIAL_ITEM_COUNT)));
           setActiveWorkflowId(nextActiveWorkflowId);
           setActiveSessionId(nextActiveSessionId);
           setCompletedTypingMessageIds(new Set(getAssistantMessageIds(nextSessions)));
@@ -3353,6 +3371,7 @@ export function ChatWorkbench() {
         selectedGeneralModels,
         selectedAudioVoice,
         selectedAudioEmotion,
+        selectedAudioReferenceMode,
         generalPreferenceAuto,
         generalPreferenceKind,
         generalImageRatio,
@@ -3406,7 +3425,7 @@ export function ChatWorkbench() {
     };
     // ⛔ 依赖里不许再放 assets / assetScrollTopByFilter：assets 不在载荷里（变了白发一次全量 PUT），
     //   assetScrollTopByFilter 是资产库滚动位置（滚一下整体重写几百 KB）。见载荷处的注释。
-  }, [activePanel, activeSessionId, activeWorkflowId, agentModelTier, assetFilter, assetGenerateJobs, assetsLoadStatus, feedbackLogs, generalImageRatio, generalImageResolution, generalPreferenceAuto, generalPreferenceKind, generalVideoRatio, generalVideoResolution, intentMemoryRules, isLoaded, lastAgentChatModel, mode, nextConversationNumber, nextWorkflowNumber, selectedAudioEmotion, selectedAudioVoice, selectedDurations, selectedGeneralModels, selectedGenerationModels, selectedImageCounts, selectedRatios, selectedResolutions, sessions, workflowItems, workspaceLoadStatus, workspaceStorageMode]);
+  }, [activePanel, activeSessionId, activeWorkflowId, agentModelTier, assetFilter, assetGenerateJobs, assetsLoadStatus, feedbackLogs, generalImageRatio, generalImageResolution, generalPreferenceAuto, generalPreferenceKind, generalVideoRatio, generalVideoResolution, intentMemoryRules, isLoaded, lastAgentChatModel, mode, nextConversationNumber, nextWorkflowNumber, selectedAudioEmotion, selectedAudioReferenceMode, selectedAudioVoice, selectedDurations, selectedGeneralModels, selectedGenerationModels, selectedImageCounts, selectedRatios, selectedResolutions, sessions, workflowItems, workspaceLoadStatus, workspaceStorageMode]);
 
   useEffect(() => {
     if (!isLoaded || workspaceStorageMode !== "user") return;
@@ -3534,6 +3553,9 @@ export function ChatWorkbench() {
       defaultVideoRatio,
       defaultVideoResolution,
       defaultVideoDuration,
+      defaultAudioModel,
+      defaultAudioVoice: defaultAudioVoice ?? "",
+      defaultAudioEmotion,
     };
 
     userProfileSaveTimerRef.current = window.setTimeout(() => {
@@ -3547,7 +3569,7 @@ export function ChatWorkbench() {
     return () => {
       if (userProfileSaveTimerRef.current !== null) window.clearTimeout(userProfileSaveTimerRef.current);
     };
-  }, [autoSaveHistory, currentUserAvatarUrl, currentUserNickname, currentUserPhone, isLoaded, notifyOnGenerationComplete, previewWheelFlip, previewWheelZoom, userLanguage, workspaceStorageMode, defaultWorkspacePanel, defaultImageModel, defaultImageRatio, defaultImageResolution, defaultVideoModel, defaultVideoRatio, defaultVideoResolution, defaultVideoDuration]);
+  }, [autoSaveHistory, currentUserAvatarUrl, currentUserNickname, currentUserPhone, isLoaded, notifyOnGenerationComplete, previewWheelFlip, previewWheelZoom, userLanguage, workspaceStorageMode, defaultWorkspacePanel, defaultImageModel, defaultImageRatio, defaultImageResolution, defaultVideoModel, defaultVideoRatio, defaultVideoResolution, defaultVideoDuration, defaultAudioModel, defaultAudioVoice, defaultAudioEmotion]);
 
   useEffect(() => {
     if (!isLoaded) return;
@@ -3891,7 +3913,7 @@ export function ChatWorkbench() {
       </button>
 
       {openControlMenu === name ? (
-        <div className={`absolute bottom-full left-0 z-[70] mb-2 max-h-[420px] overflow-y-auto rounded-[12px] bg-white p-2 shadow-[0_18px_40px_rgba(0,0,0,0.12)] ${isDurationMenu ? "w-[340px]" : "min-w-[180px]"}`}>
+        <div className={`yinzao-scrollbar-always absolute bottom-full left-0 z-[70] mb-2 max-h-[420px] overflow-y-auto rounded-[12px] bg-white p-2 shadow-[0_18px_40px_rgba(0,0,0,0.12)] ${isDurationMenu ? "w-[340px]" : "min-w-[180px]"}`}>
           <div className="px-2 pb-2 text-[12px] font-medium text-[#a0a0a0]">{isDurationMenu ? "选择视频生成时长" : title}</div>
           {isDurationMenu ? (
             <VideoDurationSlider
@@ -3973,6 +3995,59 @@ export function ChatWorkbench() {
     );
   };
 
+  const pruneActiveAudioUploads = () => {
+    setSessions((current) =>
+      current.map((session) => {
+        if (session.id !== activeSessionId) return session;
+        const removingNames = (session.uploadedFiles ?? []).filter((file) => getUploadedFileMediaKind(file) === "audio").map((file) => getUploadedFileDisplayName(file)).filter(Boolean);
+        const nextDraft = removingNames.reduce((draft, name) => removeAllMentionNames(draft, name), session.draftInput ?? "");
+        return { ...session, draftInput: nextDraft, uploadedFiles: (session.uploadedFiles ?? []).filter((file) => getUploadedFileMediaKind(file) !== "audio"), updatedAt: Date.now() };
+      }),
+    );
+  };
+
+  const renderAudioReferenceModeMenu = () => {
+    if (!isSelectedAudioCloneModel) return null;
+    const referenceModeOptions = getAudioReferenceModeOptions();
+    const selectedOption = referenceModeOptions.find((option) => option.value === selectedAudioReferenceMode) ?? referenceModeOptions[0];
+    return (
+      <div className="relative" onClick={(event) => event.stopPropagation()}>
+        <button
+          type="button"
+          disabled={isMainInputDisabled}
+          onClick={() => {
+            const shouldClose = openControlMenu === "audioReferenceMode";
+            closeAllPopupMenus();
+            if (!shouldClose) setOpenControlMenu("audioReferenceMode");
+          }}
+          className={`${toolButtonClassName} ${openControlMenu === "audioReferenceMode" ? toolButtonActiveClassName : ""}`}
+        >
+          <ToolButtonLabel icon={selectedOption.icon} label={selectedOption.label} showChevron />
+        </button>
+        {openControlMenu === "audioReferenceMode" ? (
+          <div className="absolute bottom-full right-0 z-[70] mb-2 w-[320px] rounded-[14px] bg-white p-2.5 shadow-[0_18px_40px_rgba(0,0,0,0.12)]">
+            <div className="px-2 pb-2 text-[12px] font-medium text-[#a0a0a0]">语音模式</div>
+            {referenceModeOptions.map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                onClick={() => {
+                  if (option.value !== selectedAudioReferenceMode && option.value === "tts") pruneActiveAudioUploads();
+                  setSelectedAudioReferenceMode(option.value);
+                  setOpenControlMenu("");
+                }}
+                className={option.value === selectedAudioReferenceMode ? "flex min-h-[58px] w-full items-center justify-between rounded-[10px] bg-[#f5f5f5] px-3 py-2 text-left text-[14px] font-medium text-[#111111]" : "flex min-h-[58px] w-full items-center justify-between rounded-[10px] px-3 py-2 text-left text-[14px] text-[#555555] hover:bg-[#f7f7f7]"}
+              >
+                <span className="flex min-w-0 items-start gap-2"><IconRenderer icon={option.icon} /><span className="min-w-0"><span className="block whitespace-nowrap">{option.label}</span><span className="mt-1 block whitespace-normal break-words text-[12px] font-normal leading-4 text-[#999999]">{option.description}</span></span></span>
+                {option.value === selectedAudioReferenceMode ? <RiCheckLine className="h-[18px] w-[18px] text-[#111111]" aria-hidden="true" /> : null}
+              </button>
+            ))}
+          </div>
+        ) : null}
+      </div>
+    );
+  };
+
   const renderModelMenu = () => {
     if (mode === "agent" || mode === "general") return null;
 
@@ -3999,7 +4074,7 @@ export function ChatWorkbench() {
         </button>
 
         {openControlMenu === "model" ? (
-          <div className="absolute bottom-full left-0 z-[70] mb-2 w-[300px] rounded-[12px] bg-white p-2 shadow-[0_18px_40px_rgba(0,0,0,0.12)]">
+          <div className="yinzao-scrollbar-always absolute bottom-full left-0 z-[70] mb-2 max-h-[420px] w-[300px] overflow-y-auto rounded-[12px] bg-white p-2 shadow-[0_18px_40px_rgba(0,0,0,0.12)]">
             <div className="px-2 pb-2 text-[12px] font-medium text-[#a0a0a0]">选择模型</div>
             {options.length === 0 ? <div className="px-2 py-6 text-center text-[13px] text-[#999999]">暂无可用模型</div> : options.map((option) => {
               const ModelIcon = getGenerationModelIcon(option.id);
@@ -4027,6 +4102,9 @@ export function ChatWorkbench() {
                       setSelectedAudioVoice(nextVoice);
                       setAudioVoiceLang(getAudioVoiceLang(option.id, nextVoice));
                       setSelectedAudioEmotion(normalizeAudioEmotionForModel(option.id, selectedAudioEmotion));
+                      const nextAudioMode = normalizeAudioReferenceModeForModel(option.id, selectedAudioReferenceMode);
+                      if (nextAudioMode !== "clone" && selectedAudioReferenceMode === "clone") pruneActiveAudioUploads();
+                      setSelectedAudioReferenceMode(nextAudioMode);
                     }
                     setOpenControlMenu("");
                   }}
@@ -4122,7 +4200,7 @@ export function ChatWorkbench() {
           </span>
         </button>
         {openControlMenu === "audioEmotion" ? (
-          <div className="absolute bottom-full left-0 z-[70] mb-2 max-h-[320px] min-w-[160px] overflow-y-auto rounded-[12px] bg-white p-2 shadow-[0_18px_40px_rgba(0,0,0,0.12)]">
+          <div className="yinzao-scrollbar-always absolute bottom-full left-0 z-[70] mb-2 max-h-[320px] min-w-[160px] overflow-y-auto rounded-[12px] bg-white p-2 shadow-[0_18px_40px_rgba(0,0,0,0.12)]">
             <div className="px-2 pb-2 text-[12px] font-medium text-[#a0a0a0]">选择情绪</div>
             {emotions.map((emotion) => {
               const selected = emotion.id === currentEmotion;
@@ -4178,7 +4256,7 @@ export function ChatWorkbench() {
         </button>
 
         {openControlMenu === menuName ? (
-          <div className="absolute bottom-full left-0 z-[70] mb-2 w-[300px] rounded-[12px] bg-white p-2 shadow-[0_18px_40px_rgba(0,0,0,0.12)]">
+          <div className="yinzao-scrollbar-always absolute bottom-full left-0 z-[70] mb-2 max-h-[420px] w-[300px] overflow-y-auto rounded-[12px] bg-white p-2 shadow-[0_18px_40px_rgba(0,0,0,0.12)]">
             <div className="px-2 pb-2 text-[12px] font-medium text-[#a0a0a0]">{title}</div>
             {options.length === 0 ? <div className="px-2 py-6 text-center text-[13px] text-[#999999]">暂无可用模型</div> : options.map((option) => {
               const ModelIcon = kind === "chat" ? getGeneralChatIcon(option.id) : getGenerationModelIcon(option.id);
@@ -4412,7 +4490,7 @@ export function ChatWorkbench() {
         </button>
 
         {openControlMenu === "characterModel" && !isCharacterGenerateInputDisabled ? (
-          <div className="absolute left-0 top-full z-[70] mt-1 w-full rounded-[12px] bg-white p-2 shadow-[0_18px_40px_rgba(0,0,0,0.12)]">
+          <div className="yinzao-scrollbar-always absolute left-0 top-full z-[70] mt-1 max-h-[320px] w-full overflow-y-auto rounded-[12px] bg-white p-2 shadow-[0_18px_40px_rgba(0,0,0,0.12)]">
             <div className="px-2 pb-2 text-[12px] font-medium text-[#a0a0a0]">选择模型</div>
             {options.length === 0 ? <div className="px-2 py-3 text-[13px] text-[#999999]">暂无可用模型</div> : null}
             {options.map((option) => {
@@ -4586,7 +4664,7 @@ export function ChatWorkbench() {
         </button>
 
         {openControlMenu === "characterRatio" && !isCharacterGenerateInputDisabled ? (
-          <div className="absolute left-0 top-full z-[70] mt-1 w-full rounded-[12px] bg-white p-2 shadow-[0_18px_40px_rgba(0,0,0,0.12)]">
+          <div className="yinzao-scrollbar-always absolute left-0 top-full z-[70] mt-1 max-h-[320px] w-full overflow-y-auto rounded-[12px] bg-white p-2 shadow-[0_18px_40px_rgba(0,0,0,0.12)]">
             <div className="px-2 pb-2 text-[12px] font-medium text-[#a0a0a0]">选择比例</div>
             {options.map((option) => (
               <button
@@ -4640,7 +4718,7 @@ export function ChatWorkbench() {
         </button>
 
         {openControlMenu === "characterStyle" && !isCharacterGenerateInputDisabled ? (
-          <div className="absolute left-0 top-full z-[70] mt-1 w-full rounded-[12px] bg-white p-2 shadow-[0_18px_40px_rgba(0,0,0,0.12)]">
+          <div className="yinzao-scrollbar-always absolute left-0 top-full z-[70] mt-1 max-h-[320px] w-full overflow-y-auto rounded-[12px] bg-white p-2 shadow-[0_18px_40px_rgba(0,0,0,0.12)]">
             <div className="px-2 pb-2 text-[12px] font-medium text-[#a0a0a0]">选择风格</div>
             {options.map((option) => (
               <button
@@ -4801,17 +4879,19 @@ export function ChatWorkbench() {
 
     // 新建对话时套用用户在「设置」里配置的默认生成参数（图片/视频两组），省去每次手调。
     // 值可能因模型能力变化而不完全匹配，交给已有的归一化 effect 自动纠正。
-    setSelectedGenerationModels((current) => ({ ...current, image: defaultImageModel, video: defaultVideoModel }));
+    setSelectedGenerationModels((current) => ({ ...current, image: defaultImageModel, video: defaultVideoModel, audio: defaultAudioModel }));
     // ⭐ 比例要按"默认模型支不支持"归一化（例如老账号存着 21:9、默认模型换成 Recraft 就不支持了）。
     setSelectedRatios((current) => ({ ...current, image: normalizeImageRatioForModel(defaultImageModel, defaultImageRatio), video: defaultVideoRatio }));
     setSelectedResolutions((current) => ({ ...current, image: defaultImageResolution, video: defaultVideoResolution }));
     setSelectedDurations((current) => ({ ...current, video: defaultVideoDuration }));
+    setSelectedAudioVoice(normalizeAudioVoiceForModel(defaultAudioModel, defaultAudioVoice));
+    setSelectedAudioEmotion(normalizeAudioEmotionForModel(defaultAudioModel, defaultAudioEmotion));
 
     if (activeSession && isEmptySession(activeSession)) {
       return;
     }
 
-    const existingEmptySession = sessions.find(isEmptySession);
+    const existingEmptySession = sessions.find((session) => isVisibleSession(session) && isEmptySession(session));
 
     if (existingEmptySession) {
       setActiveSessionId(existingEmptySession.id);
@@ -4859,7 +4939,7 @@ export function ChatWorkbench() {
 
   const deleteWorkflow = (workflowId: string) => {
     setOpenWorkflowMenuId("");
-    const activeWorkflowCount = workflowItems.filter((item) => !isDeletedWorkflow(item)).length;
+    const activeWorkflowCount = workflowItems.filter((item) => isVisibleWorkflow(item)).length;
     if (activeWorkflowCount <= 1) {
       showInputTip("至少保留一个工作流，无法删除");
       return;
@@ -4867,7 +4947,7 @@ export function ChatWorkbench() {
     setWorkflowItems((current) => {
       const deletedAt = Date.now();
       const next = ensureWorkflowItems(current.map((item) => item.id === workflowId ? { ...item, deletedAt, updatedAt: deletedAt } : item));
-      const nextVisible = next.filter((item) => !isDeletedWorkflow(item));
+      const nextVisible = next.filter((item) => isVisibleWorkflow(item));
       setActiveWorkflowId((currentActiveId) => {
         if (currentActiveId !== workflowId && nextVisible.some((item) => item.id === currentActiveId)) return currentActiveId;
         return nextVisible[0]?.id ?? next[0]?.id ?? "";
@@ -5053,11 +5133,11 @@ export function ChatWorkbench() {
     setSessions((current) => {
       const deletedAt = Date.now();
       const nextSessions = current.map((session) => (session.id === sessionId ? { ...session, deletedAt, updatedAt: deletedAt } : session));
-      const visibleSessions = nextSessions.filter((session) => !isDeletedSession(session));
+      const visibleSessions = nextSessions.filter((session) => isVisibleSession(session));
       const safeSessions = visibleSessions.length > 0 ? nextSessions : [createSession(nextConversationNumber), ...nextSessions];
       if (visibleSessions.length === 0) setNextConversationNumber((current) => Math.max(current + 1, nextConversationNumber + 1));
       setHistoryTotalSessionCount((count) => Math.max(visibleSessions.length === 0 ? 1 : 0, count - 1 + (visibleSessions.length === 0 ? 1 : 0)));
-      const nextVisibleSessions = safeSessions.filter((session) => !isDeletedSession(session));
+      const nextVisibleSessions = safeSessions.filter((session) => isVisibleSession(session));
 
       if (sessionId === activeSessionId || !nextVisibleSessions.some((session) => session.id === activeSessionId)) {
         setActiveSessionId(nextVisibleSessions[0]?.id ?? safeSessions[0].id);
@@ -5065,6 +5145,51 @@ export function ChatWorkbench() {
 
       return safeSessions;
     });
+  };
+
+  const archiveSession = (sessionId: string) => {
+    setOpenSessionMenuId("");
+    setSessions((current) => {
+      const archivedAt = Date.now();
+      const nextSessions = current.map((session) => (session.id === sessionId ? { ...session, archivedAt, updatedAt: archivedAt } : session));
+      const visibleSessions = nextSessions.filter((session) => isVisibleSession(session));
+      const safeSessions = visibleSessions.length > 0 ? nextSessions : [createSession(nextConversationNumber), ...nextSessions];
+      if (visibleSessions.length === 0) setNextConversationNumber((count) => Math.max(count + 1, nextConversationNumber + 1));
+      setHistoryTotalSessionCount((count) => Math.max(visibleSessions.length === 0 ? 1 : 0, count - 1 + (visibleSessions.length === 0 ? 1 : 0)));
+      const nextVisibleSessions = safeSessions.filter((session) => isVisibleSession(session));
+      if (sessionId === activeSessionId || !nextVisibleSessions.some((session) => session.id === activeSessionId)) {
+        setActiveSessionId(nextVisibleSessions[0]?.id ?? safeSessions[0].id);
+      }
+      return safeSessions;
+    });
+  };
+
+  const restoreArchivedSession = (sessionId: string) => {
+    setSessions((current) => current.map((session) => (session.id === sessionId ? { ...session, archivedAt: undefined, updatedAt: Date.now() } : session)));
+    setHistoryTotalSessionCount((count) => count + 1);
+  };
+
+  const archiveWorkflow = (workflowId: string) => {
+    setOpenWorkflowMenuId("");
+    const activeWorkflowCount = workflowItems.filter((item) => isVisibleWorkflow(item)).length;
+    if (activeWorkflowCount <= 1) {
+      showInputTip("至少保留一个工作流，无法归档");
+      return;
+    }
+    setWorkflowItems((current) => {
+      const archivedAt = Date.now();
+      const next = ensureWorkflowItems(current.map((item) => item.id === workflowId ? { ...item, archivedAt, updatedAt: archivedAt } : item));
+      const nextVisible = next.filter((item) => isVisibleWorkflow(item));
+      setActiveWorkflowId((currentActiveId) => {
+        if (currentActiveId !== workflowId && nextVisible.some((item) => item.id === currentActiveId)) return currentActiveId;
+        return nextVisible[0]?.id ?? next[0]?.id ?? "";
+      });
+      return next;
+    });
+  };
+
+  const restoreArchivedWorkflow = (workflowId: string) => {
+    setWorkflowItems((current) => current.map((item) => (item.id === workflowId ? { ...item, archivedAt: undefined, updatedAt: Date.now() } : item)));
   };
 
   const appendAssistantMessage = useCallback((sessionId: string, payload: Partial<Message> & Pick<Message, "content">) => {
@@ -6690,7 +6815,7 @@ export function ChatWorkbench() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           signal: abortController.signal,
-          body: JSON.stringify({ prompt, sourcePrompt: prompt, model: pendingRequest.model, voice: pendingRequest.voice, emotion: pendingRequest.emotion, conversationId: sessionId, conversationTitle, conversationCode: conversationSession?.conversationCode, requestId: audioRequestId }),
+          body: JSON.stringify({ prompt, sourcePrompt: prompt, model: pendingRequest.model, voice: pendingRequest.voice, emotion: pendingRequest.emotion, audioReferenceMode: pendingRequest.audioReferenceMode, referenceAudios: pendingRequest.referenceAudios, conversationId: sessionId, conversationTitle, conversationCode: conversationSession?.conversationCode, requestId: audioRequestId }),
         }).then((response) => readJson<{ url?: string; name?: string; credit?: CreditMeta; error?: string; errorCode?: string }>(response));
         if (!submit.url) throw new Error(getApiErrorMessageWithCode({ error: submit.error, errorCode: submit.errorCode }, GENERIC_MEDIA_ERROR_MESSAGE));
         applyCreditResult(sessionId, submit.credit);
@@ -6771,6 +6896,7 @@ export function ChatWorkbench() {
     const availableUploadedImages = isSuggestionSend ? [] : activeUploadedImages;
     const availableUploadedFiles = isSuggestionSend ? [] : activeUploadedFiles;
     const submitVideoReferenceMode = submitMode === "video" && supportsVideoReferenceMode(generationModelsForSubmit.video) ? selectedVideoReferenceMode : undefined;
+    const submitAudioReferenceMode = submitMode === "audio" ? normalizeAudioReferenceModeForModel(generationModelsForSubmit.audio, selectedAudioReferenceMode) : undefined;
     // 图片/视频生成：必须有提示词才能发（rawText 含 @ 文本，所以有 @ 时它非空、不会被拦）。
     if ((submitMode === "image" || submitMode === "video") && !rawText) {
       showInputTip("请输入提示词！");
@@ -6781,7 +6907,7 @@ export function ChatWorkbench() {
       showInputTip(getPromptOverLimitTipText(countPromptLength(activeInput), currentPromptMaxLength));
       return;
     }
-    const submitUploadRule = getUploadRule({ mode: submitMode, modelId: submitMode === "general" ? generalModelsForSubmit.chat : submitMode === "agent" ? selectedModel : generationModelsForSubmit[submitMode], transportMode: "local-base64", videoReferenceMode: submitVideoReferenceMode }, uploadRuleOverrides);
+    const submitUploadRule = getUploadRule({ mode: submitMode, modelId: submitMode === "general" ? generalModelsForSubmit.chat : submitMode === "agent" ? selectedModel : generationModelsForSubmit[submitMode], transportMode: "local-base64", videoReferenceMode: submitVideoReferenceMode, audioReferenceMode: submitAudioReferenceMode }, uploadRuleOverrides);
     if (availableUploadedImages.length > submitUploadRule.image.maxCount) {
       showInputTip(`当前模型最多支持 ${submitUploadRule.image.maxCount} 张参考图，不能上传更多图片`);
       return;
@@ -6812,6 +6938,10 @@ export function ChatWorkbench() {
       return;
     }
     // 视频编辑/延长（仅 Seedance 2.5）：必须有参考视频（提示词已在上面统一拦过）。
+    if (submitAudioReferenceMode === "clone" && uploadedAudioFiles.length < 1) {
+      showInputTip("音色克隆必须上传一段参考音频");
+      return;
+    }
     if (submitVideoReferenceMode === "edit" || submitVideoReferenceMode === "extend") {
       const modeLabel = submitVideoReferenceMode === "edit" ? "视频编辑" : "视频延长";
       if (uploadedVideoFiles.length < 1) {
@@ -6824,7 +6954,7 @@ export function ChatWorkbench() {
       showInputTip(videoTotalDurationError);
       return;
     }
-    const audioTotalDurationError = validateReferenceTotalDuration("audio", uploadedAudioFiles.map((file) => getUploadedMediaDuration(file)), generationModelsForSubmit.video);
+    const audioTotalDurationError = submitMode === "audio" ? undefined : validateReferenceTotalDuration("audio", uploadedAudioFiles.map((file) => getUploadedMediaDuration(file)), generationModelsForSubmit.video);
     if (audioTotalDurationError) {
       showInputTip(audioTotalDurationError);
       return;
@@ -7239,10 +7369,11 @@ export function ChatWorkbench() {
       assetTargetType: assetTargetType === "other" ? undefined : assetTargetType,
       referenceImages: (shouldApplyVideoReferenceMode ? effectiveModelReferenceImages : effectiveReferenceImages).length > 0 ? (shouldApplyVideoReferenceMode ? effectiveModelReferenceImages : effectiveReferenceImages) : undefined,
       referenceVideos: generationMode === "video" && referenceVideos.length > 0 ? referenceVideos : undefined,
-      referenceAudios: generationMode === "video" && referenceAudios.length > 0 ? referenceAudios : undefined,
+      referenceAudios: ((generationMode === "video" || (generationMode === "audio" && submitAudioReferenceMode === "clone")) && referenceAudios.length > 0) ? referenceAudios : undefined,
       videoReferenceMode: directVideoReferenceMode,
-      voice: generationMode === "audio" ? normalizeAudioVoiceForModel(generationModel, selectedAudioVoice) : undefined,
-      emotion: generationMode === "audio" ? normalizeAudioEmotionForModel(generationModel, selectedAudioEmotion) : undefined,
+      audioReferenceMode: generationMode === "audio" ? submitAudioReferenceMode : undefined,
+      voice: generationMode === "audio" && submitAudioReferenceMode !== "clone" ? normalizeAudioVoiceForModel(generationModel, selectedAudioVoice) : undefined,
+      emotion: generationMode === "audio" && submitAudioReferenceMode !== "clone" ? normalizeAudioEmotionForModel(generationModel, selectedAudioEmotion) : undefined,
       imageReferences: effectiveDisplayImageReferences.length > 0 ? effectiveDisplayImageReferences : undefined,
       referenceHint: getReferenceHint(effectiveDisplayImageReferences, text),
       agentGenerated: isAgentAutoGeneration,
@@ -7308,7 +7439,8 @@ export function ChatWorkbench() {
         pendingAudioCount: 1,
         mode: generationMode,
         requestId: pendingRequest.id,
-        generationMeta: { mode: "audio", model: pendingRequest.model, settings: pendingRequest.settings, preserveOriginalInput: pendingRequest.preserveOriginalInput, originalPrompt: pendingRequest.originalPrompt, agentGenerated: pendingRequest.agentGenerated, voice: pendingRequest.voice, emotion: isAudioEmotionSelectable(pendingRequest.model) ? normalizeAudioEmotionForModel(pendingRequest.model, pendingRequest.emotion) : undefined },
+        uploadedFiles: availableUploadedFiles.length > 0 ? availableUploadedFiles : undefined,
+        generationMeta: { mode: "audio", model: pendingRequest.model, settings: pendingRequest.settings, preserveOriginalInput: pendingRequest.preserveOriginalInput, originalPrompt: pendingRequest.originalPrompt, agentGenerated: pendingRequest.agentGenerated, voice: pendingRequest.voice, emotion: isAudioEmotionSelectable(pendingRequest.model) ? normalizeAudioEmotionForModel(pendingRequest.model, pendingRequest.emotion) : undefined, audioReferenceMode: pendingRequest.audioReferenceMode },
       });
     }
 
@@ -7564,10 +7696,11 @@ export function ChatWorkbench() {
       preserveOriginalInput: false,
       referenceImages: effectiveReplayReferenceImages && effectiveReplayReferenceImages.length > 0 ? effectiveReplayReferenceImages : undefined,
       referenceVideos: generationMode === "video" && replayReferenceVideos.length > 0 ? replayReferenceVideos : undefined,
-      referenceAudios: generationMode === "video" && replayReferenceAudios.length > 0 ? replayReferenceAudios : undefined,
+      referenceAudios: ((generationMode === "video" || (generationMode === "audio" && replayMeta?.audioReferenceMode === "clone")) && replayReferenceAudios.length > 0) ? replayReferenceAudios : undefined,
       videoReferenceMode: replayVideoReferenceMode,
-      voice: generationMode === "audio" ? normalizeAudioVoiceForModel(replayModel, selectedAudioVoice) : undefined,
-      emotion: generationMode === "audio" ? normalizeAudioEmotionForModel(replayModel, selectedAudioEmotion) : undefined,
+      audioReferenceMode: generationMode === "audio" ? normalizeAudioReferenceModeForModel(replayModel, replayMeta?.audioReferenceMode ?? selectedAudioReferenceMode) : undefined,
+      voice: generationMode === "audio" && replayMeta?.audioReferenceMode !== "clone" ? normalizeAudioVoiceForModel(replayModel, selectedAudioVoice) : undefined,
+      emotion: generationMode === "audio" && replayMeta?.audioReferenceMode !== "clone" ? normalizeAudioEmotionForModel(replayModel, selectedAudioEmotion) : undefined,
       imageReferences: effectiveReplayImageReferences && effectiveReplayImageReferences.length > 0 ? effectiveReplayImageReferences : undefined,
       referenceHint: effectiveReplayImageReferences && effectiveReplayImageReferences.length > 0 ? getReferenceHint(effectiveReplayImageReferences, replayPrompt) : undefined,
       assetTargetType: replayMeta?.assetTargetType,
@@ -7621,7 +7754,8 @@ export function ChatWorkbench() {
         pendingAudioCount: 1,
         mode: "audio",
         requestId: pendingRequest.id,
-        generationMeta: { mode: "audio", model: pendingRequest.model, settings: pendingRequest.settings, preserveOriginalInput: pendingRequest.preserveOriginalInput, originalPrompt: pendingRequest.originalPrompt, agentGenerated: pendingRequest.agentGenerated, voice: pendingRequest.voice, emotion: isAudioEmotionSelectable(pendingRequest.model) ? normalizeAudioEmotionForModel(pendingRequest.model, pendingRequest.emotion) : undefined },
+        uploadedFiles: replayUploadedFiles.length > 0 ? replayUploadedFiles : undefined,
+        generationMeta: { mode: "audio", model: pendingRequest.model, settings: pendingRequest.settings, preserveOriginalInput: pendingRequest.preserveOriginalInput, originalPrompt: pendingRequest.originalPrompt, agentGenerated: pendingRequest.agentGenerated, voice: pendingRequest.voice, emotion: isAudioEmotionSelectable(pendingRequest.model) ? normalizeAudioEmotionForModel(pendingRequest.model, pendingRequest.emotion) : undefined, audioReferenceMode: pendingRequest.audioReferenceMode },
       });
     }
     void runGeneration(sessionId, pendingRequest);
@@ -7989,7 +8123,6 @@ export function ChatWorkbench() {
             setSessions((current) => current.map((session) => {
               if (session.id !== activeSessionId) return session;
               const list = session.uploadedFiles ?? [];
-              // 显示名/引用名一律用服务端权威名（去扩展名 + 全局唯一 + 同文件复用同名），框内再兜底去重。
               let nextName: string | undefined;
               if (serverName) {
                 const usedNames = new Set(list.filter((item) => typeof item !== "string" && item.id !== entry.id).map((item) => (typeof item === "string" ? "" : item.name)).filter(Boolean));
@@ -8863,7 +8996,7 @@ export function ChatWorkbench() {
   const showWorkspaceIntlBadge = workspaceSite === "malaysia";
   // 左上角 logo = 切换线路（与首页一致）：新加坡服 ↔ 阿里国内入口。
   const workspaceLogoTargetUrl = workspaceSite === "malaysia" ? ALI_WORKSPACE_URL : MALAYSIA_WORKSPACE_URL;
-  const historySessions = sortByUpdatedAtDesc(sessions.filter((session) => !isDeletedSession(session)));
+  const historySessions = sortByUpdatedAtDesc(sessions.filter((session) => isVisibleSession(session)));
   const visibleHistorySessions = historySessions.slice(0, historyVisibleSessionCount);
   const hiddenHistorySessionCount = Math.max(0, historySessions.length - visibleHistorySessions.length);
   const historyDisplaySessionCount = Math.max(historyTotalSessionCount, historySessions.length);
@@ -9147,7 +9280,7 @@ export function ChatWorkbench() {
 
                 {isCollapsedHistoryMenuOpen ? (
                   <div onClick={(event) => event.stopPropagation()} className="absolute left-[66px] top-0 z-40 flex max-h-[520px] w-[222px] flex-col overflow-hidden rounded-[12px] border border-[#e0e0e0] bg-white p-2 shadow-[0_10px_28px_rgba(0,0,0,0.12)]">
-                    <div className="yinzao-chat-scroll yinzao-scrollbar-hover min-h-0 flex-1 space-y-[3px] overflow-y-auto pr-1">
+                     <div className="yinzao-scrollbar-always min-h-0 flex-1 space-y-[3px] overflow-y-auto pr-1">
                       {activePanel === "workflow" ? visibleWorkflowItems.map((item) => {
                         const isMenuOpen = openWorkflowMenuId === item.id;
                         const isWorkflowRunning = isWorkflowItemRunning(item, runningWorkflowIds);
@@ -9168,6 +9301,7 @@ export function ChatWorkbench() {
                               <div onClick={(event) => event.stopPropagation()} className="absolute right-1 top-10 z-50 w-32 rounded-xl border border-slate-100 bg-white p-1 shadow-[0_12px_28px_rgba(15,23,42,0.12)]">
                                 <button type="button" onClick={() => pinWorkflow(item.id)} className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[13px] font-medium text-slate-900 hover:bg-slate-50"><RiPushpinLine className="h-4 w-4 shrink-0" aria-hidden="true" /><span>置顶</span></button>
                                 <button type="button" onClick={() => renameWorkflow(item.id)} className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[13px] font-medium text-slate-900 hover:bg-slate-50"><RiEditBoxLine className="h-4 w-4 shrink-0" aria-hidden="true" /><span>重命名</span></button>
+                                <button type="button" onClick={() => archiveWorkflow(item.id)} className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[13px] font-medium text-slate-900 hover:bg-slate-50"><RiInboxArchiveLine className="h-4 w-4 shrink-0" aria-hidden="true" /><span>归档</span></button>
                                 <button type="button" onClick={() => deleteWorkflow(item.id)} className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[13px] font-medium text-red-500 hover:bg-red-50"><RiDeleteBinLine className="h-4 w-4 shrink-0" aria-hidden="true" /><span>删除</span></button>
                               </div>
                             ) : null}
@@ -9203,6 +9337,7 @@ export function ChatWorkbench() {
                               <div onClick={(event) => event.stopPropagation()} className="absolute right-1 top-10 z-50 w-32 rounded-xl border border-slate-100 bg-white p-1 shadow-[0_12px_28px_rgba(15,23,42,0.12)]">
                                 <button type="button" onClick={() => pinSession(session.id)} className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[13px] font-medium text-slate-900 hover:bg-slate-50"><RiPushpinLine className="h-4 w-4 shrink-0" aria-hidden="true" /><span>置顶</span></button>
                                 <button type="button" onClick={() => renameSession(session.id)} className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[13px] font-medium text-slate-900 hover:bg-slate-50"><RiEditBoxLine className="h-4 w-4 shrink-0" aria-hidden="true" /><span>重命名</span></button>
+                                <button type="button" onClick={() => archiveSession(session.id)} className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[13px] font-medium text-slate-900 hover:bg-slate-50"><RiInboxArchiveLine className="h-4 w-4 shrink-0" aria-hidden="true" /><span>归档</span></button>
                                 <button type="button" onClick={() => deleteSession(session.id)} className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[13px] font-medium text-red-500 hover:bg-red-50"><RiDeleteBinLine className="h-4 w-4 shrink-0" aria-hidden="true" /><span>删除</span></button>
                               </div>
                             ) : null}
@@ -9298,6 +9433,10 @@ export function ChatWorkbench() {
                           <RiEditBoxLine className="h-4 w-4 shrink-0" aria-hidden="true" />
                           <span>重命名</span>
                         </button>
+                        <button type="button" onClick={() => archiveWorkflow(item.id)} className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[13px] font-medium text-slate-900 hover:bg-slate-50">
+                          <RiInboxArchiveLine className="h-4 w-4 shrink-0" aria-hidden="true" />
+                          <span>归档</span>
+                        </button>
                         <button type="button" onClick={() => deleteWorkflow(item.id)} className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[13px] font-medium text-red-500 hover:bg-red-50">
                           <RiDeleteBinLine className="h-4 w-4 shrink-0" aria-hidden="true" />
                           <span>删除</span>
@@ -9364,6 +9503,10 @@ export function ChatWorkbench() {
                       <RiEditBoxLine className="h-4 w-4 shrink-0" aria-hidden="true" />
                       <span>重命名</span>
                     </button>
+                    <button type="button" onClick={() => archiveSession(session.id)} className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[13px] font-medium text-slate-900 hover:bg-slate-50">
+                      <RiInboxArchiveLine className="h-4 w-4 shrink-0" aria-hidden="true" />
+                      <span>归档</span>
+                    </button>
                     <button type="button" onClick={() => deleteSession(session.id)} className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[13px] font-medium text-red-500 hover:bg-red-50">
                       <RiDeleteBinLine className="h-4 w-4 shrink-0" aria-hidden="true" />
                       <span>删除</span>
@@ -9414,65 +9557,6 @@ export function ChatWorkbench() {
         <div className={isSidebarCollapsed ? "relative z-20 mt-0 flex min-h-[118px] flex-col items-center justify-center pb-3 pt-1" : "relative z-20 mt-0 flex min-h-[148px] flex-col justify-center pb-3 pt-1"}>
           <div aria-hidden="true" className={isSidebarCollapsed ? "absolute bottom-0 left-0 right-0 top-[-6px] bg-[#f9f9f9]" : "absolute bottom-0 left-[-12px] right-[-12px] top-[-6px] bg-[#f9f9f9]"} />
           <div aria-hidden="true" style={{ position: "absolute", left: isSidebarCollapsed ? 0 : -12, right: isSidebarCollapsed ? 0 : -12, top: -6, height: 1, background: "#e5e5e5", zIndex: 1 }} />
-          {isUserMenuOpen ? (
-            <div ref={userMenuRef} onClick={(event) => event.stopPropagation()} className={isSidebarCollapsed ? "absolute bottom-[60px] left-[18px] z-[9999] w-[222px] overflow-visible rounded-[12px] border border-[#e0e0e0] bg-white pt-2 shadow-[0_10px_28px_rgba(0,0,0,0.12)]" : "absolute bottom-[60px] left-[calc(50%-1px)] z-[9999] w-[222px] -translate-x-1/2 overflow-visible rounded-[12px] border border-[#e0e0e0] bg-white pt-2 shadow-[0_10px_28px_rgba(0,0,0,0.12)]"}>
-              <button type="button" onClick={() => openUserDialog("profile")} className="mx-2 flex h-11 w-[calc(100%-16px)] items-center gap-3 rounded-[6px] px-2 text-left text-[12px] font-medium text-[#333333] transition hover:bg-[#e9e9e9]">
-                <RiAccountCircleLine className="h-[18px] w-[18px] text-[#777777]" aria-hidden="true" />
-                <span style={{ fontSize: 13 }}>用户信息</span>
-              </button>
-              <button type="button" onClick={() => openUserDialog("credits")} className="mx-2 flex h-11 w-[calc(100%-16px)] items-center gap-3 rounded-[6px] px-2 text-left text-[12px] font-medium text-[#333333] transition hover:bg-[#e9e9e9]">
-                <RiVipDiamondLine className="h-[18px] w-[18px] text-[#777777]" aria-hidden="true" />
-                <span style={{ fontSize: 13 }}>我的积分</span>
-              </button>
-              <button type="button" onClick={() => openUserDialog("security")} className="mx-2 flex h-11 w-[calc(100%-16px)] items-center gap-3 rounded-[6px] px-2 text-left text-[12px] font-medium text-[#333333] transition hover:bg-[#e9e9e9]">
-                <RiShieldUserLine className="h-[18px] w-[18px] text-[#777777]" aria-hidden="true" />
-                <span style={{ fontSize: 13 }}>帐号安全</span>
-              </button>
-              <div className="relative mx-2" onMouseEnter={() => setIsThemeMenuOpen(false)} onMouseLeave={() => setIsThemeMenuOpen(false)}>
-                <button type="button" disabled aria-disabled="true" onClick={(event) => { event.stopPropagation(); setIsThemeMenuOpen(false); }} className="flex h-11 w-full cursor-not-allowed items-center gap-3 rounded-[6px] px-2 text-left text-[12px] font-medium text-[#aaaaaa] opacity-70">
-                  <ThemeModeIcon className="h-[18px] w-[18px] text-[#b0b0b0]" aria-hidden="true" />
-                  <span className="min-w-0 flex-1 truncate" style={{ fontSize: 13 }}>{themeModeLabel}</span>
-                  <RiArrowRightSLine className="h-[18px] w-[18px] shrink-0 text-[#b0b0b0]" aria-hidden="true" />
-                </button>
-                {isThemeMenuOpen ? (
-                  <div className="absolute bottom-0 left-[calc(100%+8px)] z-[10000] w-[220px] rounded-[12px] border border-[#e0e0e0] bg-white p-2 shadow-[0_10px_28px_rgba(0,0,0,0.12)]">
-                    {([
-                      { value: "light" as const, label: "浅色模式", icon: RiSunLine },
-                      { value: "dark" as const, label: "深色模式", icon: RiMoonLine },
-                      { value: "system" as const, label: `跟随系统 · ${resolvedTheme === "dark" ? "深色" : "浅色"}`, icon: RiComputerLine },
-                    ]).map((item) => {
-                      const ItemIcon = item.icon;
-                      const selected = themeMode === item.value;
-
-                      return (
-                        <button key={item.value} type="button" onClick={(event) => { event.stopPropagation(); setThemeMode(item.value); setIsThemeMenuOpen(false); setIsUserMenuOpen(false); }} className="flex h-10 w-full items-center gap-3 rounded-[8px] px-2 text-left text-[12px] font-medium text-[#333333] transition hover:bg-[#e9e9e9]">
-                          <ItemIcon className="h-[18px] w-[18px] shrink-0 text-[#333333]" aria-hidden="true" />
-                          <span className="min-w-0 flex-1 truncate" style={{ fontSize: 13 }}>{item.label}</span>
-                          {selected ? <RiCheckLine className="h-[18px] w-[18px] shrink-0 text-[#111111]" aria-hidden="true" /> : null}
-                        </button>
-                      );
-                    })}
-                  </div>
-                ) : null}
-              </div>
-              <button type="button" onClick={() => openUserDialog("settings")} className="mx-2 flex h-11 w-[calc(100%-16px)] items-center gap-3 rounded-[6px] px-2 text-left text-[12px] font-medium text-[#333333] transition hover:bg-[#e9e9e9]">
-                <RiSettingsLine className="h-[18px] w-[18px] text-[#777777]" aria-hidden="true" />
-                <span style={{ fontSize: 13 }}>设置</span>
-              </button>
-              {currentUserIsAdmin ? (
-                <button type="button" onClick={() => { setIsUserMenuOpen(false); window.open("/admin", "_blank", "noopener,noreferrer"); }} className="mx-2 flex h-11 w-[calc(100%-16px)] items-center gap-3 rounded-[6px] px-2 text-left text-[12px] font-medium text-[#333333] transition hover:bg-[#e9e9e9]">
-                  <RiTerminalWindowFill className="h-[18px] w-[18px] text-[#777777]" aria-hidden="true" />
-                  <span style={{ fontSize: 13 }}>后台管理</span>
-                </button>
-              ) : null}
-              <div className="mt-2 overflow-hidden rounded-b-[12px] border-t border-[#e7e7e7] bg-[#f4f4f4]">
-                <button type="button" onClick={() => void logoutUser()} className="flex h-14 w-full items-center gap-3 px-3 text-left text-[12px] font-medium text-[#333333] transition hover:bg-[#eeeeee]">
-                  <RiLogoutBoxRLine className="h-[18px] w-[18px] text-[#777777]" aria-hidden="true" />
-                  <span style={{ fontSize: 13 }}>退出登录</span>
-                </button>
-              </div>
-            </div>
-          ) : null}
           {isSidebarCollapsed ? (
             <button type="button" onClick={() => openUserDialog("credits")} className="relative z-10 mt-0 flex h-12 w-12 flex-col items-center justify-center rounded-[10px] border border-[#eeeeee] bg-white text-[#222222] shadow-[0_1px_3px_rgba(0,0,0,0.04)] transition hover:bg-[#f7f7f7]" aria-label="打开我的积分" title="我的积分">
               <div className="flex flex-col items-center justify-center gap-0.5">
@@ -9496,19 +9580,96 @@ export function ChatWorkbench() {
               </button>
             </div>
           )}
-          <button ref={userMenuButtonRef} type="button" onClick={(event) => { event.stopPropagation(); const shouldClose = isUserMenuOpen; closeAllPopupMenus(); if (!shouldClose) setIsUserMenuOpen(true); }} className={isSidebarCollapsed ? "relative z-10 mt-2 flex h-11 w-11 items-center justify-center rounded-lg transition hover:bg-[#ececec]" : "relative z-10 mx-2 mt-2 flex h-11 w-[calc(100%-16px)] items-center gap-3 rounded-lg px-2 text-left transition hover:bg-[#ececec]"}>
-            <div className="relative h-7 w-7 shrink-0 overflow-hidden rounded-full" style={currentUserAvatarUrl ? undefined : { backgroundColor: defaultUserAvatar.backgroundColor, border: `1px solid ${defaultUserAvatar.borderColor}`, color: defaultUserAvatar.color }}>
-              {currentUserAvatarUrl ? (
-                <Image src={currentUserAvatarUrl} alt="用户头像" width={32} height={32} unoptimized className="h-full w-full object-cover" style={{ width: "100%", height: "100%" }} />
-              ) : (
-                <div className="flex h-full w-full items-center justify-center text-[13px] font-medium">{defaultUserAvatar.label}</div>
-              )}
-            </div>
-            {!isSidebarCollapsed ? <div className="flex min-w-0 flex-col justify-center">
-              <div className="truncate text-[13px] font-medium leading-4 text-[#333333]">{currentUserNickname || currentUserEmail}</div>
-              <div className="truncate text-[12px] leading-4 text-[#8a8a8a]">{currentUserEmail}</div>
-            </div> : null}
-          </button>
+          <div
+            className={isSidebarCollapsed ? "relative z-10 mt-2" : "relative z-10 mx-2 mt-2"}
+            onMouseEnter={() => {
+              closeAllPopupMenus("user");
+              setIsUserMenuOpen(true);
+            }}
+            onMouseLeave={() => {
+              setIsUserMenuOpen(false);
+              setIsThemeMenuOpen(false);
+            }}
+          >
+            {isUserMenuOpen ? (
+              <div ref={userMenuRef} className="absolute bottom-full left-1/2 z-[9999] w-[222px] -translate-x-1/2 pb-2">
+                <div className="overflow-visible rounded-[12px] border border-[#e0e0e0] bg-white pt-2 shadow-[0_10px_28px_rgba(0,0,0,0.12)]">
+                  <button type="button" onClick={() => openUserDialog("profile")} className="mx-2 flex h-11 w-[calc(100%-16px)] items-center gap-3 rounded-[6px] px-2 text-left text-[12px] font-medium text-[#333333] transition hover:bg-[#e9e9e9]">
+                    <RiAccountCircleLine className="h-[18px] w-[18px] text-[#777777]" aria-hidden="true" />
+                    <span style={{ fontSize: 13 }}>用户信息</span>
+                  </button>
+                  <button type="button" onClick={() => openUserDialog("credits")} className="mx-2 flex h-11 w-[calc(100%-16px)] items-center gap-3 rounded-[6px] px-2 text-left text-[12px] font-medium text-[#333333] transition hover:bg-[#e9e9e9]">
+                    <RiVipDiamondLine className="h-[18px] w-[18px] text-[#777777]" aria-hidden="true" />
+                    <span style={{ fontSize: 13 }}>我的积分</span>
+                  </button>
+                  <button type="button" onClick={() => openUserDialog("security")} className="mx-2 flex h-11 w-[calc(100%-16px)] items-center gap-3 rounded-[6px] px-2 text-left text-[12px] font-medium text-[#333333] transition hover:bg-[#e9e9e9]">
+                    <RiShieldUserLine className="h-[18px] w-[18px] text-[#777777]" aria-hidden="true" />
+                    <span style={{ fontSize: 13 }}>帐号安全</span>
+                  </button>
+                  <button type="button" onClick={() => openUserDialog("archive")} className="mx-2 flex h-11 w-[calc(100%-16px)] items-center gap-3 rounded-[6px] px-2 text-left text-[12px] font-medium text-[#333333] transition hover:bg-[#e9e9e9]">
+                    <RiInboxArchiveLine className="h-[18px] w-[18px] text-[#777777]" aria-hidden="true" />
+                    <span style={{ fontSize: 13 }}>归档</span>
+                  </button>
+                  <div className="relative mx-2" onMouseEnter={() => setIsThemeMenuOpen(false)} onMouseLeave={() => setIsThemeMenuOpen(false)}>
+                    <button type="button" disabled aria-disabled="true" onClick={(event) => { event.stopPropagation(); setIsThemeMenuOpen(false); }} className="flex h-11 w-full cursor-not-allowed items-center gap-3 rounded-[6px] px-2 text-left text-[12px] font-medium text-[#aaaaaa] opacity-70">
+                      <ThemeModeIcon className="h-[18px] w-[18px] text-[#b0b0b0]" aria-hidden="true" />
+                      <span className="min-w-0 flex-1 truncate" style={{ fontSize: 13 }}>{themeModeLabel}</span>
+                      <RiArrowRightSLine className="h-[18px] w-[18px] shrink-0 text-[#b0b0b0]" aria-hidden="true" />
+                    </button>
+                    {isThemeMenuOpen ? (
+                      <div className="absolute bottom-0 left-[calc(100%+8px)] z-[10000] w-[220px] rounded-[12px] border border-[#e0e0e0] bg-white p-2 shadow-[0_10px_28px_rgba(0,0,0,0.12)]">
+                        {([
+                          { value: "light" as const, label: "浅色模式", icon: RiSunLine },
+                          { value: "dark" as const, label: "深色模式", icon: RiMoonLine },
+                          { value: "system" as const, label: `跟随系统 · ${resolvedTheme === "dark" ? "深色" : "浅色"}`, icon: RiComputerLine },
+                        ]).map((item) => {
+                          const ItemIcon = item.icon;
+                          const selected = themeMode === item.value;
+
+                          return (
+                            <button key={item.value} type="button" onClick={(event) => { event.stopPropagation(); setThemeMode(item.value); setIsThemeMenuOpen(false); setIsUserMenuOpen(false); }} className="flex h-10 w-full items-center gap-3 rounded-[8px] px-2 text-left text-[12px] font-medium text-[#333333] transition hover:bg-[#e9e9e9]">
+                              <ItemIcon className="h-[18px] w-[18px] shrink-0 text-[#333333]" aria-hidden="true" />
+                              <span className="min-w-0 flex-1 truncate" style={{ fontSize: 13 }}>{item.label}</span>
+                              {selected ? <RiCheckLine className="h-[18px] w-[18px] shrink-0 text-[#111111]" aria-hidden="true" /> : null}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ) : null}
+                  </div>
+                  <button type="button" onClick={() => openUserDialog("settings")} className="mx-2 flex h-11 w-[calc(100%-16px)] items-center gap-3 rounded-[6px] px-2 text-left text-[12px] font-medium text-[#333333] transition hover:bg-[#e9e9e9]">
+                    <RiSettingsLine className="h-[18px] w-[18px] text-[#777777]" aria-hidden="true" />
+                    <span style={{ fontSize: 13 }}>设置</span>
+                  </button>
+                  {currentUserIsAdmin ? (
+                    <button type="button" onClick={() => { setIsUserMenuOpen(false); window.open("/admin", "_blank", "noopener,noreferrer"); }} className="mx-2 flex h-11 w-[calc(100%-16px)] items-center gap-3 rounded-[6px] px-2 text-left text-[12px] font-medium text-[#333333] transition hover:bg-[#e9e9e9]">
+                      <RiTerminalWindowFill className="h-[18px] w-[18px] text-[#777777]" aria-hidden="true" />
+                      <span style={{ fontSize: 13 }}>后台管理</span>
+                    </button>
+                  ) : null}
+                  <div className="mt-2 overflow-hidden rounded-b-[12px] border-t border-[#e7e7e7] bg-[#f4f4f4]">
+                    <button type="button" onClick={() => void logoutUser()} className="flex h-14 w-full items-center gap-3 px-3 text-left text-[12px] font-medium text-[#333333] transition hover:bg-[#eeeeee]">
+                      <RiLogoutBoxRLine className="h-[18px] w-[18px] text-[#777777]" aria-hidden="true" />
+                      <span style={{ fontSize: 13 }}>退出登录</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+            <button ref={userMenuButtonRef} type="button" className={isSidebarCollapsed ? "flex h-11 w-11 items-center justify-center rounded-lg transition hover:bg-[#ececec]" : "flex h-11 w-full items-center gap-3 rounded-lg px-2 text-left transition hover:bg-[#ececec]"}>
+              <div className="relative h-7 w-7 shrink-0 overflow-hidden rounded-full" style={currentUserAvatarUrl ? undefined : { backgroundColor: defaultUserAvatar.backgroundColor, border: `1px solid ${defaultUserAvatar.borderColor}`, color: defaultUserAvatar.color }}>
+                {currentUserAvatarUrl ? (
+                  <Image src={currentUserAvatarUrl} alt="用户头像" width={32} height={32} unoptimized className="h-full w-full object-cover" style={{ width: "100%", height: "100%" }} />
+                ) : (
+                  <div className="flex h-full w-full items-center justify-center text-[13px] font-medium">{defaultUserAvatar.label}</div>
+                )}
+              </div>
+              {!isSidebarCollapsed ? <div className="flex min-w-0 flex-col justify-center">
+                <div className="truncate text-[13px] font-medium leading-4 text-[#333333]">{currentUserNickname || currentUserEmail}</div>
+                <div className="truncate text-[12px] leading-4 text-[#8a8a8a]">{currentUserEmail}</div>
+              </div> : null}
+            </button>
+          </div>
         </div>
       </aside>
       ) : null}
@@ -9529,6 +9690,10 @@ export function ChatWorkbench() {
               <button type="button" onClick={() => renameSession(session.id)} className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[13px] font-medium text-slate-900 hover:bg-slate-50">
                 <RiEditBoxLine className="h-4 w-4 shrink-0" aria-hidden="true" />
                 <span>重命名</span>
+              </button>
+              <button type="button" onClick={() => archiveSession(session.id)} className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[13px] font-medium text-slate-900 hover:bg-slate-50">
+                <RiInboxArchiveLine className="h-4 w-4 shrink-0" aria-hidden="true" />
+                <span>归档</span>
               </button>
               <button type="button" onClick={() => deleteSession(session.id)} className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[13px] font-medium text-red-500 hover:bg-red-50">
                 <RiDeleteBinLine className="h-4 w-4 shrink-0" aria-hidden="true" />
@@ -9555,6 +9720,10 @@ export function ChatWorkbench() {
             <button type="button" onClick={() => renameWorkflow(workflow.id)} className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[13px] font-medium text-slate-900 hover:bg-slate-50">
               <RiEditBoxLine className="h-4 w-4 shrink-0" aria-hidden="true" />
               <span>重命名</span>
+            </button>
+            <button type="button" onClick={() => archiveWorkflow(workflow.id)} className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[13px] font-medium text-slate-900 hover:bg-slate-50">
+              <RiInboxArchiveLine className="h-4 w-4 shrink-0" aria-hidden="true" />
+              <span>归档</span>
             </button>
             <button type="button" onClick={() => deleteWorkflow(workflow.id)} className="flex h-9 w-full items-center gap-2 rounded-lg px-2 text-left text-[13px] font-medium text-red-500 hover:bg-red-50">
               <RiDeleteBinLine className="h-4 w-4 shrink-0" aria-hidden="true" />
@@ -10028,7 +10197,7 @@ export function ChatWorkbench() {
                 const displayedFailedImageCount = showImageStatusOnCurrentPage ? imageFailedCount : 0;
                 const displayedMessageVideos = getMessageVideos(message);
                 const userMediaReferences = message.role === "user" ? getUploadedMediaReferences(message.uploadedFiles) : [];
-                const mediaPromptFileReferences = message.role === "assistant" && (message.mode === "image" || message.mode === "video") ? getUploadedMediaReferences(message.uploadedFiles) : [];
+                const mediaPromptFileReferences = message.role === "assistant" && (message.mode === "image" || message.mode === "video" || message.mode === "audio") ? getUploadedMediaReferences(message.uploadedFiles) : [];
                 const documentUploadedFiles = getDocumentOnlyUploadedFiles(message.uploadedFiles);
                 const agentPromptItems = isAgentMediaMessage ? getAgentMediaPromptItems(message) : [];
                 const agentPromptPageIndex = Math.min(agentPromptPageIndexes[message.id] ?? 0, Math.max(0, agentPromptItems.length - 1));
@@ -10502,7 +10671,7 @@ export function ChatWorkbench() {
               {!activeInput ? (
                 <div className="pointer-events-none absolute left-2 top-1 z-20 flex items-center text-[14px] leading-6 text-[#b3b3b3]">
                   {mode === "audio" ? (
-                    <span>文本转语音，请输入要转成语音的文案...</span>
+                    isAudioCloneMode ? <span>上传一段{FISH_AUDIO_CLONE_MIN_SECONDS}-{FISH_AUDIO_CLONE_MAX_SECONDS}秒的语音克隆源, 并输入需要转换成语音的文案...</span> : <span>文本转语音，请输入要转成语音的文案...</span>
                   ) : mode === "agent" ? (
                     <>
                   <span>说说短剧想法，或让我写剧本、做分镜；也可上传或</span>
@@ -10607,10 +10776,10 @@ export function ChatWorkbench() {
                 />
                 <button
                   type="button"
-                  disabled={isMainInputDisabled}
+                  disabled={isMainInputDisabled || !(currentUploadRule.image.enabled || currentUploadRule.document.enabled || currentUploadRule.video.enabled || currentUploadRule.audio.enabled)}
                   onClick={() => fileInputRef.current?.click()}
-                  className="yinzao-tool-button yinzao-tool-button-round inline-flex h-9 w-9 shrink-0 items-center justify-center text-[#777777] transition"
-                  aria-label="上传图片"
+                  className="yinzao-tool-button yinzao-tool-button-round inline-flex h-9 w-9 shrink-0 items-center justify-center text-[#777777] transition disabled:pointer-events-none disabled:opacity-40"
+                  aria-label="上传文件"
                 >
                   <RiAddLine className="h-4 w-4" aria-hidden="true" />
                 </button>
@@ -10704,12 +10873,13 @@ export function ChatWorkbench() {
                 {mode !== "agent" && mode !== "general" ? (
                   <>
                     {renderModelMenu()}
-                    {mode === "audio" ? renderAudioVoiceMenu() : null}
-                    {mode === "audio" ? renderAudioEmotionMenu() : null}
+                    {mode === "audio" && !isAudioCloneMode ? renderAudioVoiceMenu() : null}
+                    {mode === "audio" && !isAudioCloneMode ? renderAudioEmotionMenu() : null}
                     {!isVideoEditOrExtendMode && mode !== "audio" ? renderImageSettingsMenu() : null}
                     {mode === "image" ? renderControlMenu("imageCount", selectedImageCount, "同时生成数量", imageCountOptions, selectedImageCount, (value) => setSelectedImageCounts((current) => ({ ...current, [mode]: value })), RiImageAddLine) : null}
                     {mode === "video" && !isVideoEditOrExtendMode ? renderControlMenu("duration", selectedVideoDuration, "视频时长", currentDurationOptions, selectedVideoDuration, (value) => setSelectedDurations((current) => ({ ...current, video: value })), RiTimeLine) : null}
                     {mode === "video" ? renderVideoReferenceModeMenu() : null}
+                    {mode === "audio" ? renderAudioReferenceModeMenu() : null}
                   </>
                 ) : null}
               </div>
@@ -10988,87 +11158,81 @@ export function ChatWorkbench() {
         <ReminderToast reminder={generationCompleteReminder} fixed />
       ) : null}
       {userDialogTab ? (
-        <div className="fixed inset-0 z-[11000] flex items-center justify-center overscroll-contain bg-black/46 px-5 backdrop-blur-[6px]" onMouseDown={() => setUserDialogTab("")}>
+        <div className="fixed inset-0 z-[11000] flex overscroll-contain bg-[#f4f4f4] text-[#111111]">
           {userDialogTip ? (
-            <div className="pointer-events-none absolute left-1/2 top-[calc(50%-376px)] z-[70] -translate-x-1/2">
+            <div className="pointer-events-none absolute left-1/2 top-6 z-[70] -translate-x-1/2">
               <ReminderToast reminder={userDialogTip} />
             </div>
           ) : null}
-          <div className="relative flex h-[min(640px,calc(100vh-48px))] w-[min(820px,calc(100vw-48px))] overflow-hidden rounded-[18px] bg-white text-[#111111] shadow-[0_24px_80px_rgba(0,0,0,0.22)]" onMouseDown={(event) => event.stopPropagation()}>
-            <div className="w-[230px] shrink-0 border-r border-[#eeeeee] px-5 py-5">
-              <div className="mb-9 flex items-center gap-3">
-                {/* eslint-disable-next-line @next/next/no-img-element -- keep raw img to avoid next/image caching an old replaced logo file. */}
-                <img src="/home-assets/logo.png" alt="闪念" className="h-8 w-8 shrink-0 object-contain" />
-                <div className="text-[16px] font-semibold leading-none">{userText("用户中心")}</div>
-              </div>
-
-              <div className="space-y-1.5">
-                <button type="button" onClick={() => openUserDialog("profile")} className={`flex h-9 w-full items-center gap-2.5 rounded-[8px] px-3 text-left transition ${userDialogTab === "profile" ? "bg-[#f1f1f1] text-[#111111]" : "text-[#333333] hover:bg-[#f7f7f7]"}`}>
-                  <RiAccountCircleLine className="h-[18px] w-[18px]" aria-hidden="true" />
-                  <span className="text-[14px] font-medium">{userText("用户信息")}</span>
-                </button>
-                <button type="button" onClick={() => openUserDialog("credits")} className={`flex h-9 w-full items-center gap-2.5 rounded-[8px] px-3 text-left transition ${userDialogTab === "credits" ? "bg-[#f1f1f1] text-[#111111]" : "text-[#333333] hover:bg-[#f7f7f7]"}`}>
-                  <RiVipDiamondLine className="h-[18px] w-[18px]" aria-hidden="true" />
-                  <span className="text-[14px] font-medium">{userText("我的积分")}</span>
-                </button>
-                <button type="button" onClick={() => openUserDialog("security")} className={`flex h-9 w-full items-center gap-2.5 rounded-[8px] px-3 text-left transition ${userDialogTab === "security" ? "bg-[#f1f1f1] text-[#111111]" : "text-[#333333] hover:bg-[#f7f7f7]"}`}>
-                  <RiShieldUserLine className="h-[18px] w-[18px]" aria-hidden="true" />
-                  <span className="text-[14px] font-medium">{userText("帐号安全")}</span>
-                </button>
-                <button type="button" onClick={() => openUserDialog("settings")} className={`flex h-9 w-full items-center gap-2.5 rounded-[8px] px-3 text-left transition ${userDialogTab === "settings" ? "bg-[#f1f1f1] text-[#111111]" : "text-[#333333] hover:bg-[#f7f7f7]"}`}>
-                  <RiSettingsLine className="h-[18px] w-[18px]" aria-hidden="true" />
-                  <span className="text-[14px] font-medium">{userText("设置")}</span>
-                </button>
-              </div>
+          <aside className="flex h-full w-[240px] shrink-0 flex-col px-4 pb-6 pt-5">
+            <button type="button" onClick={() => setUserDialogTab("")} className="mb-6 flex h-9 w-full items-center gap-1.5 rounded-[8px] px-2 text-left text-[#333333] transition hover:bg-[#ececec]">
+              <RiArrowLeftSLine className="h-5 w-5 shrink-0 text-[#b4b4b4]" aria-hidden="true" />
+              <span className="text-[14px] font-medium">{userText("退出用户中心")}</span>
+            </button>
+            <div className="space-y-1">
+              <button type="button" onClick={() => openUserDialog("profile")} className={`flex h-10 w-full items-center gap-2.5 rounded-[10px] px-3 text-left transition ${userDialogTab === "profile" ? "bg-[#e9e9e9] text-[#111111]" : "text-[#333333] hover:bg-[#ececec]"}`}>
+                <RiAccountCircleLine className="h-[18px] w-[18px] shrink-0 text-[#b4b4b4]" aria-hidden="true" />
+                <span className="text-[14px] font-medium">{userText("用户信息")}</span>
+              </button>
+              <button type="button" onClick={() => openUserDialog("credits")} className={`flex h-10 w-full items-center gap-2.5 rounded-[10px] px-3 text-left transition ${userDialogTab === "credits" ? "bg-[#e9e9e9] text-[#111111]" : "text-[#333333] hover:bg-[#ececec]"}`}>
+                <RiVipDiamondLine className="h-[18px] w-[18px] shrink-0 text-[#b4b4b4]" aria-hidden="true" />
+                <span className="text-[14px] font-medium">{userText("我的积分")}</span>
+              </button>
+              <button type="button" onClick={() => openUserDialog("security")} className={`flex h-10 w-full items-center gap-2.5 rounded-[10px] px-3 text-left transition ${userDialogTab === "security" ? "bg-[#e9e9e9] text-[#111111]" : "text-[#333333] hover:bg-[#ececec]"}`}>
+                <RiShieldUserLine className="h-[18px] w-[18px] shrink-0 text-[#b4b4b4]" aria-hidden="true" />
+                <span className="text-[14px] font-medium">{userText("帐号安全")}</span>
+              </button>
+              <button type="button" onClick={() => openUserDialog("archive")} className={`flex h-10 w-full items-center gap-2.5 rounded-[10px] px-3 text-left transition ${userDialogTab === "archive" ? "bg-[#e9e9e9] text-[#111111]" : "text-[#333333] hover:bg-[#ececec]"}`}>
+                <RiInboxArchiveLine className="h-[18px] w-[18px] shrink-0 text-[#b4b4b4]" aria-hidden="true" />
+                <span className="text-[14px] font-medium">{userText("归档")}</span>
+              </button>
+              <button type="button" onClick={() => openUserDialog("settings")} className={`flex h-10 w-full items-center gap-2.5 rounded-[10px] px-3 text-left transition ${userDialogTab === "settings" ? "bg-[#e9e9e9] text-[#111111]" : "text-[#333333] hover:bg-[#ececec]"}`}>
+                <RiSettingsLine className="h-[18px] w-[18px] shrink-0 text-[#b4b4b4]" aria-hidden="true" />
+                <span className="text-[14px] font-medium">{userText("设置")}</span>
+              </button>
             </div>
-
-            <div className="flex min-w-0 flex-1 flex-col pt-3">
-              <div className="flex h-[64px] shrink-0 items-center justify-between gap-4 px-8">
-                <h2 className="text-[18px] font-normal leading-none">
-                  {userDialogTab === "profile" ? userText("用户信息") : userDialogTab === "credits" ? userText("我的积分") : userDialogTab === "security" ? userText("帐号安全") : userText("设置")}
-                </h2>
-                <button type="button" onClick={() => setUserDialogTab("")} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[8px] text-[#333333] transition hover:bg-[#f4f4f4]" aria-label="关闭用户信息弹窗">
-                  <RiCloseLine className="h-6 w-6" aria-hidden="true" />
-                </button>
-              </div>
-              <div className="min-w-0 flex-1 overflow-y-auto px-8 pb-8 pt-0">
+          </aside>
+          <div className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-tl-[16px] rounded-bl-[16px] bg-white">
+            <div className="min-w-0 flex-1 overflow-y-auto">
+              <div className="mx-auto w-full max-w-[950px] px-10 pb-10 pt-6">
+              <h2 className="mb-8 text-[16px] font-medium leading-none">
+                {userDialogTab === "profile" ? userText("用户信息") : userDialogTab === "credits" ? userText("我的积分") : userDialogTab === "security" ? userText("帐号安全") : userDialogTab === "archive" ? userText("归档") : userText("设置")}
+              </h2>
               {userDialogTab === "profile" ? (
-                <div>
-                  <div className="mt-1 flex w-[min(490px,100%)] justify-center">
-                    <div className="flex flex-col items-center">
-                      <div className="relative h-[92px] w-[92px]">
-                        <div className="h-full w-full overflow-hidden rounded-full" style={currentUserAvatarUrl ? undefined : { backgroundColor: defaultUserAvatar.backgroundColor, border: `1px solid ${defaultUserAvatar.borderColor}`, color: defaultUserAvatar.color }}>
-                          {currentUserAvatarUrl ? (
-                            <Image src={currentUserAvatarUrl} alt="用户头像" width={92} height={92} unoptimized className="h-full w-full object-cover" style={{ width: "100%", height: "100%" }} />
-                          ) : (
-                            <div className="flex h-full w-full items-center justify-center text-[30px] font-medium">{defaultUserAvatar.label}</div>
-                          )}
-                        </div>
-                        <input
-                          ref={userAvatarInputRef}
-                          type="file"
-                          accept="image/*"
-                          className="hidden"
-                          onChange={(event) => {
-                            void uploadUserAvatar(event.target.files?.[0]);
-                            event.target.value = "";
-                          }}
-                        />
-                        <button
-                          type="button"
-                          disabled={isUploadingUserAvatar}
-                          onClick={() => userAvatarInputRef.current?.click()}
-                          className="absolute bottom-0 right-0 flex h-8 w-8 items-center justify-center rounded-full border border-[#d9d9d9] bg-white p-0 text-[#777777] leading-none transition hover:border-[#c8c8c8] hover:text-[#333333] disabled:cursor-not-allowed disabled:opacity-60"
-                          aria-label="上传头像"
-                        >
-                          <RiCameraLine className="block h-[19px] w-[19px]" aria-hidden="true" />
-                        </button>
+                <div className="flex items-start gap-8">
+                  <div className="flex w-[92px] shrink-0 flex-col items-center">
+                    <div className="relative h-[92px] w-[92px]">
+                      <div className="h-full w-full overflow-hidden rounded-full" style={currentUserAvatarUrl ? undefined : { backgroundColor: defaultUserAvatar.backgroundColor, border: `1px solid ${defaultUserAvatar.borderColor}`, color: defaultUserAvatar.color }}>
+                        {currentUserAvatarUrl ? (
+                          <Image src={currentUserAvatarUrl} alt="用户头像" width={92} height={92} unoptimized className="h-full w-full object-cover" style={{ width: "100%", height: "100%" }} />
+                        ) : (
+                          <div className="flex h-full w-full items-center justify-center text-[30px] font-medium">{defaultUserAvatar.label}</div>
+                        )}
                       </div>
-                      {currentUserId ? <div className="mt-2 text-[14px] font-medium text-[#8a8a8a]">{currentUserId}</div> : null}
+                      <input
+                        ref={userAvatarInputRef}
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={(event) => {
+                          void uploadUserAvatar(event.target.files?.[0]);
+                          event.target.value = "";
+                        }}
+                      />
+                      <button
+                        type="button"
+                        disabled={isUploadingUserAvatar}
+                        onClick={() => userAvatarInputRef.current?.click()}
+                        className="absolute bottom-0 right-0 flex h-8 w-8 items-center justify-center rounded-full border border-[#d9d9d9] bg-white p-0 text-[#777777] leading-none transition hover:border-[#c8c8c8] hover:text-[#333333] disabled:cursor-not-allowed disabled:opacity-60"
+                        aria-label="上传头像"
+                      >
+                        <RiCameraLine className="block h-[19px] w-[19px]" aria-hidden="true" />
+                      </button>
                     </div>
+                    {currentUserId ? <div className="mt-2 w-full truncate text-center text-[12px] font-medium text-[#8a8a8a]">{currentUserId}</div> : null}
                   </div>
 
-                  <div className="mt-10 w-[min(534px,100%)] space-y-2">
+                  <div className="min-w-0 flex-1 space-y-2">
                     {[
                       { key: "nickname", label: userText("昵称"), value: currentUserNickname || currentUserEmail, icon: RiAccountCircleLine },
                       { key: "email", label: userText("邮箱（登录帐号）"), value: currentUserEmail, icon: RiMailLine },
@@ -11135,7 +11299,7 @@ export function ChatWorkbench() {
               ) : null}
 
               {userDialogTab === "credits" ? (() => {
-                const pageSize = 8;
+                const pageSize = 20;
                 const totalPages = Math.max(1, Math.ceil(userCreditConversations.length / pageSize));
                 const safePage = Math.min(totalPages, Math.max(1, userCreditPage));
                 const rows = userCreditConversations.slice((safePage - 1) * pageSize, safePage * pageSize);
@@ -11159,10 +11323,10 @@ export function ChatWorkbench() {
                         <thead className="bg-[#f7f7f7] text-[#888888]">
                           <tr>
                             <th className="border-r border-[#dddddd] px-3 py-2 font-medium">积分来源</th>
-                            <th className="w-[92px] border-r border-[#dddddd] px-3 py-2 text-right font-medium">积分变动</th>
-                            <th className="w-[92px] border-r border-[#dddddd] px-3 py-2 text-right font-medium">对话Token</th>
-                            <th className="w-[92px] border-r border-[#dddddd] px-3 py-2 text-right font-medium">图片/视频</th>
-                            <th className="w-[72px] whitespace-nowrap px-2 py-2 text-right font-medium">最后活跃</th>
+                            <th className="w-[110px] border-r border-[#dddddd] px-3 py-2 text-right font-medium">积分变动</th>
+                            <th className="w-[110px] border-r border-[#dddddd] px-3 py-2 text-right font-medium">对话Token</th>
+                            <th className="w-[110px] border-r border-[#dddddd] px-3 py-2 text-right font-medium">图片/视频</th>
+                            <th className="w-[86px] whitespace-nowrap px-2 py-2 text-right font-medium">最后活跃</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -11208,7 +11372,7 @@ export function ChatWorkbench() {
 
               {userDialogTab === "security" ? (
                 <div>
-                  <div className="w-[min(490px,100%)] space-y-2">
+                  <div className="w-full space-y-2">
                     {currentUserHasPassword && securityPasswordMode === "default" ? (
                       <>
                         <div className="flex min-h-11 items-center justify-between gap-6 rounded-[10px] bg-[#f7f7f7] px-4">
@@ -11293,10 +11457,49 @@ export function ChatWorkbench() {
                 </div>
               ) : null}
 
+              {userDialogTab === "archive" ? (() => {
+                const archivedSessions = sortByUpdatedAtDesc(sessions.filter((session) => isArchivedSession(session)));
+                const archivedWorkflows = sortByUpdatedAtDesc(workflowItems.filter((item) => isArchivedWorkflow(item)));
+                const rows = archiveKind === "session" ? archivedSessions.map((item) => ({ id: item.id, title: item.title, at: item.archivedAt, kind: "session" as const })) : archivedWorkflows.map((item) => ({ id: item.id, title: item.title, at: item.archivedAt, kind: "workflow" as const }));
+                return (
+                  <div>
+                    <div className="mb-5 flex items-center gap-3">
+                      <button type="button" onClick={() => setArchiveKind("session")} className={archiveKind === "session" ? "h-10 min-w-[160px] rounded-[10px] bg-[#111111] px-5 text-[14px] font-medium text-white" : "h-10 min-w-[160px] rounded-[10px] bg-[#f4f4f4] px-5 text-[14px] font-medium text-[#555555] transition hover:bg-[#ececec]"}>{userText("对话流归档")}</button>
+                      <button type="button" onClick={() => setArchiveKind("workflow")} className={archiveKind === "workflow" ? "h-10 min-w-[160px] rounded-[10px] bg-[#111111] px-5 text-[14px] font-medium text-white" : "h-10 min-w-[160px] rounded-[10px] bg-[#f4f4f4] px-5 text-[14px] font-medium text-[#555555] transition hover:bg-[#ececec]"}>{userText("工作流归档")}</button>
+                    </div>
+                    <div className="space-y-2">
+                      {rows.length > 0 ? rows.map((row) => (
+                        <div key={`${row.kind}-${row.id}`} className="flex min-h-11 items-center gap-2">
+                          <div className="flex min-h-11 min-w-0 flex-1 items-center gap-4 rounded-[10px] bg-[#f7f7f7] px-4">
+                            <div className="min-w-0 flex-1 truncate text-[14px] text-[#333333]">{row.title}</div>
+                            <div className="shrink-0 text-[14px] text-[#9a9a9a]">{formatMessageTime(row.at)}</div>
+                          </div>
+                          <BlackHoverTooltip label={<span className="text-[16px] font-medium">恢复</span>}>
+                          <button type="button" onClick={() => { if (row.kind === "session") restoreArchivedSession(row.id); else restoreArchivedWorkflow(row.id); }} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[10px] border border-[#e0e0e0] bg-white text-[#333333] transition hover:bg-[#f7f7f7]" aria-label="恢复">
+                            <RiResetLeftLine className="h-[18px] w-[18px]" aria-hidden="true" />
+                          </button>
+                          </BlackHoverTooltip>
+                          <BlackHoverTooltip label={<span className="text-[16px] font-medium">删除</span>}>
+                          <button type="button" onClick={() => setArchiveDeleteConfirm({ kind: row.kind, id: row.id, title: row.title })} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[10px] border border-[#e0e0e0] bg-white text-[#333333] transition hover:bg-[#f7f7f7]" aria-label="删除">
+                            <RiDeleteBinLine className="h-[18px] w-[18px]" aria-hidden="true" />
+                          </button>
+                          </BlackHoverTooltip>
+                        </div>
+                      )) : (
+                        <div className="flex min-h-11 items-center justify-center rounded-[10px] bg-[#f7f7f7] px-4 text-[14px] text-[#999999]">{archiveKind === "session" ? "暂无归档对话" : "暂无归档工作流"}</div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })() : null}
+
               {userDialogTab === "settings" ? (() => {
                 const modelIconNode = (id: string) => { const Ic = getGenerationModelIcon(id); return Ic ? <Ic className="h-4 w-4" aria-hidden="true" /> : <AiGenerate3dIcon />; };
                 const enabledImageModelOptions = generationModelOptions.image.filter((option) => enabledGenerationModelIds.image.includes(option.id)).map((option) => ({ value: option.id, label: option.label, icon: modelIconNode(option.id) }));
                 const enabledVideoModelOptions = generationModelOptions.video.filter((option) => enabledGenerationModelIds.video.includes(option.id)).map((option) => ({ value: option.id, label: option.label, icon: modelIconNode(option.id) }));
+                const enabledAudioModelOptions = generationModelOptions.audio.filter((option) => enabledGenerationModelIds.audio.includes(option.id)).map((option) => ({ value: option.id, label: option.label, icon: modelIconNode(option.id) }));
+                const audioVoiceSelectOptions = getAudioVoicesForModel(defaultAudioModel).map((voice) => ({ value: voice.id, label: voice.label }));
+                const audioEmotionSelectOptions = getAudioEmotionsForModel(defaultAudioModel).map((emotion) => ({ value: emotion.id, label: emotion.label }));
                 const imageResolutionSelectOptions = getSupportedImageResolutions(defaultImageModel).map((value) => ({ value, label: value, icon: <ResolutionOptionIcon option={value} mode="image" /> }));
                 const videoResolutionSelectOptions = getSupportedVideoResolutions(defaultVideoModel).map((value) => ({ value, label: value, icon: <ResolutionOptionIcon option={value} mode="video" /> }));
                 const videoRatioSelectOptions = ["智能比例", ...getSupportedVideoRatios(defaultVideoModel, defaultVideoResolution as never)].map((value) => ({ value, label: value, icon: <RatioOptionIcon option={value} /> }));
@@ -11328,6 +11531,11 @@ export function ChatWorkbench() {
                   setDefaultImageResolution((current) => resolutionOptions.includes(current as never) ? current : resolutionOptions[0]);
                   setDefaultImageRatio((current) => normalizeImageRatioForModel(id, current));
                 };
+                const changeDefaultAudioModel = (id: string) => {
+                  setDefaultAudioModel(id as ModelName);
+                  setDefaultAudioVoice(normalizeAudioVoiceForModel(id, defaultAudioVoice));
+                  setDefaultAudioEmotion(normalizeAudioEmotionForModel(id, defaultAudioEmotion));
+                };
                 const groupHeading = (text: string) => <div className="px-1 pb-0.5 pt-3 text-[12px] font-medium text-[#9a9a9a]">{text}</div>;
                 const selectRow = (iconNode: ReactNode, label: string, control: ReactNode) => (
                   <div className="relative flex min-h-11 items-center justify-between gap-6 rounded-[10px] bg-[#f7f7f7] px-4">
@@ -11340,7 +11548,7 @@ export function ChatWorkbench() {
                 );
                 return (
                 <div>
-                  <div className="w-[min(490px,100%)] space-y-2">
+                  <div className="w-full space-y-2">
                     {[
                       { key: "language", label: userText("语言"), value: getLanguageDisplayName(userLanguage), icon: RiGlobalLine },
                       { key: "notify", label: userText("图片/视频生成完成提醒"), value: "", icon: RiNotification2Line },
@@ -11407,6 +11615,17 @@ export function ChatWorkbench() {
                       <SettingsSelect value={defaultVideoDuration} options={videoDurationSelectOptions} onChange={setDefaultVideoDuration} />
                     ))}
 
+                    {groupHeading(userText("新建对话 · 默认语音参数"))}
+                    {selectRow(<RiMicAiLine className="h-[18px] w-[18px]" aria-hidden="true" />, userText("默认语音模型"), (
+                      <SettingsSelect value={defaultAudioModel} options={enabledAudioModelOptions} onChange={changeDefaultAudioModel} />
+                    ))}
+                    {isAudioVoiceSelectable(defaultAudioModel) && defaultAudioVoice ? selectRow(<RiVoiceprintLine className="h-[18px] w-[18px]" aria-hidden="true" />, userText("默认音色"), (
+                      <SettingsSelect value={defaultAudioVoice} options={audioVoiceSelectOptions} onChange={setDefaultAudioVoice} />
+                    )) : null}
+                    {isAudioEmotionSelectable(defaultAudioModel) ? selectRow(<RiEmotionHappyLine className="h-[18px] w-[18px]" aria-hidden="true" />, userText("默认情绪"), (
+                      <SettingsSelect value={defaultAudioEmotion} options={audioEmotionSelectOptions} onChange={setDefaultAudioEmotion} />
+                    )) : null}
+
                     {groupHeading("")}
                     {selectRow(<RiInformationLine className="h-[18px] w-[18px]" aria-hidden="true" />, userText("版本信息"), (
                       <div className="min-w-0 truncate text-right text-[14px] text-[#333333]">{versionLabel()}</div>
@@ -11416,6 +11635,24 @@ export function ChatWorkbench() {
                 );
               })() : null}
               </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {archiveDeleteConfirm ? (
+        <div className="fixed inset-0 z-[11100] flex items-center justify-center bg-black/40" onMouseDown={() => setArchiveDeleteConfirm(null)}>
+          <div className="w-[360px] rounded-[14px] bg-white p-6 shadow-[0_24px_60px_rgba(0,0,0,0.28)]" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="text-[15px] font-semibold text-[#111111]">删除归档</div>
+            <div className="mt-3 text-[13px] leading-6 text-[#555555]">删除后不可恢复，是否删除「{archiveDeleteConfirm.title}」？</div>
+            <div className="mt-6 flex justify-end gap-2">
+              <button type="button" onClick={() => setArchiveDeleteConfirm(null)} className="rounded-lg border border-[#ddd] px-4 py-2 text-[13px] text-[#444] hover:bg-[#f5f5f5]">取消</button>
+              <button type="button" onClick={() => {
+                const { kind, id } = archiveDeleteConfirm;
+                setArchiveDeleteConfirm(null);
+                if (kind === "session") deleteSession(id);
+                else deleteWorkflow(id);
+              }} className="rounded-lg bg-[#111] px-12 py-2 text-[13px] font-medium text-white hover:bg-[#252525]">确定</button>
             </div>
           </div>
         </div>

@@ -41,12 +41,10 @@ const FISH_AUDIO_EMOTIONS: AudioEmotionOption[] = [
   { id: "sarcastic", label: "讽刺" },
 ];
 
+import { isFishAudioModel } from "@/lib/models";
+
 function isMiniMaxAudioModel(modelId?: string) {
   return modelId === "minimax/speech-2.8-hd";
-}
-
-function isFishAudioModel(modelId?: string) {
-  return Boolean(modelId?.startsWith("fish-audio/"));
 }
 
 export function isAudioEmotionSelectable(modelId?: string) {

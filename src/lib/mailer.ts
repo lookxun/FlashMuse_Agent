@@ -39,7 +39,7 @@ export async function sendLoginCodeEmail(email: string, code: string) {
     subject: "闪念登录验证码",
     text: `你的闪念登录验证码是：${code}。验证码 10 分钟内有效。`,
     html: `
-      <div style="font-family: Arial, 'Microsoft YaHei', sans-serif; color: #111; line-height: 1.7;">
+      <div style="font-family: 'PingFang SC', 'Microsoft YaHei UI', 'Microsoft YaHei', sans-serif; color: #111; line-height: 1.7;">
         <div style="font-size: 18px; font-weight: 600; margin-bottom: 12px;">闪念登录验证码</div>
         <div>你的验证码是：</div>
         <div style="font-size: 32px; font-weight: 700; letter-spacing: 6px; margin: 12px 0;">${code}</div>

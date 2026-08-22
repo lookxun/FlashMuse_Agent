@@ -33,7 +33,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="zh-CN" className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}>
+    <html lang="zh-CN" className={`${geistSans.variable} ${geistMono.variable} h-full`}>
       <head>
         <link rel="icon" href="/home-assets/logo.png?v=20260518-2" type="image/png" />
         <link rel="shortcut icon" href="/home-assets/logo.png?v=20260518-2" type="image/png" />

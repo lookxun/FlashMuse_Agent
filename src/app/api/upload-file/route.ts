@@ -124,7 +124,15 @@ export async function POST(request: Request) {
       const buffer = Buffer.from(await file.arrayBuffer());
       const requestedKind = mediaKindRaw === "video" || mediaKindRaw === "audio" ? mediaKindRaw as UploadMediaKind : undefined;
       if (requestedKind) {
-        const metadata: MediaUploadMetadata = await probeUploadedMedia(buffer, name.split(".").pop() ?? "", requestedKind) ?? { durationSeconds, width: typeof dimensions?.width === "number" ? dimensions.width : undefined, height: typeof dimensions?.height === "number" ? dimensions.height : undefined };
+        const probed = await probeUploadedMedia(buffer, name.split(".").pop() ?? "", requestedKind);
+        const metadata: MediaUploadMetadata = {
+          durationSeconds: probed?.durationSeconds ?? durationSeconds,
+          width: probed?.width ?? (typeof dimensions?.width === "number" ? dimensions.width : undefined),
+          height: probed?.height ?? (typeof dimensions?.height === "number" ? dimensions.height : undefined),
+          fps: probed?.fps,
+          videoCodec: probed?.videoCodec,
+          audioCodec: probed?.audioCodec,
+        };
         const validationError = validateMediaUploadBuffer(buffer, { name, type: file.type, size: file.size }, requestedKind, metadata);
         if (validationError) return NextResponse.json({ error: validationError }, { status: 400, headers });
         durationSeconds = metadata.durationSeconds;

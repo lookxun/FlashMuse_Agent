@@ -2,6 +2,7 @@ import { getConfiguredOpenRouterApiKey } from "@/lib/system-settings";
 import { getAudioModelDefaultVoice, getAudioModelUsdPerChar } from "@/lib/models";
 import { saveGeneratedAsset } from "@/lib/local-assets";
 import { syncGeneratedFilesToAli } from "@/lib/ali-sync";
+import { toDataUrlIfLocalPublicAsset } from "@/lib/generated-asset-path";
 import { toUserErrorMessage } from "@/lib/error-message";
 import { appendGenerationDiagnosticsLog } from "@/lib/generation-diagnostics-log";
 
@@ -35,6 +36,7 @@ export type GenerateAudioOptions = {
   model: string;
   voice?: string;
   emotion?: string;
+  referenceAudioUrl?: string;
   requestId?: string;
   userId?: string;
 };
@@ -52,16 +54,20 @@ export async function generateOpenRouterAudio(text: string, options: GenerateAud
   const apiKey = getConfiguredOpenRouterApiKey();
   if (!apiKey) throw new Error("语音生成失败：未配置 OpenRouter 密钥。");
 
-  const voice = options.voice ?? getAudioModelDefaultVoice(options.model);
+  const voice = options.referenceAudioUrl ? undefined : (options.voice ?? getAudioModelDefaultVoice(options.model));
   const body: Record<string, unknown> = {
     model: options.model,
     input,
     response_format: "mp3",
   };
-  // Fish 系没有固定音色 → 不传 voice（用供应商默认音色）。其余模型传默认音色。
   if (voice) body.voice = voice;
-  if (options.emotion) {
+  if (options.emotion && !options.referenceAudioUrl) {
     body.provider = { options: { minimax: { emotion: options.emotion } } };
+  }
+  if (options.referenceAudioUrl) {
+    const dataUrl = toDataUrlIfLocalPublicAsset(options.referenceAudioUrl);
+    if (!dataUrl.startsWith("data:audio/")) throw new Error("音色克隆失败：参考音频读取失败。");
+    body.input_references = [{ type: "input_audio", input_audio: { data: dataUrl } }];
   }
 
   const controller = new AbortController();
@@ -123,7 +129,7 @@ export async function generateOpenRouterAudio(text: string, options: GenerateAud
     mode: "audio",
     model: options.model,
     prompt: input,
-    extra: { characters, usd, voice: voice ?? "(default)", emotion: options.emotion ?? "(default)", bytes: arrayBuffer.byteLength, generationId },
+      extra: { characters, usd, voice: voice ?? "(default)", emotion: options.emotion ?? "(default)", clone: Boolean(options.referenceAudioUrl), bytes: arrayBuffer.byteLength, generationId },
   });
 
   return { url, characters, usage: { characters, usd }, generationId };

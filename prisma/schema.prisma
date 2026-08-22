@@ -29,6 +29,9 @@ model User {
   defaultVideoRatio          String    @default("")
   defaultVideoResolution     String    @default("")
   defaultVideoDuration       String    @default("")
+  defaultAudioModel          String    @default("")
+  defaultAudioVoice          String    @default("")
+  defaultAudioEmotion        String    @default("")
   credits                    Int       @default(1500)
   textCreditRemainder        Float     @default(0)
   disabled                   Boolean   @default(false)
@@ -258,6 +261,7 @@ model WorkspaceSession {
   usageSummary  Json?
   memorySummary Json?
   deletedAt     DateTime?
+  archivedAt    DateTime?
   createdAt     DateTime @default(now())
   storedAt      DateTime @updatedAt
   user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -266,6 +270,7 @@ model WorkspaceSession {
   @@index([workspaceKind])
   @@index([userId, updatedAt])
   @@index([userId, deletedAt, updatedAt])
+  @@index([userId, archivedAt, updatedAt])
 }
 
 model WorkspaceWorkflow {
@@ -281,6 +286,7 @@ model WorkspaceWorkflow {
   canvasJson    Json
   usageSummary  Json?
   deletedAt     DateTime?
+  archivedAt    DateTime?
   createdAt     DateTime @default(now())
   storedAt      DateTime @updatedAt
   user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -289,6 +295,7 @@ model WorkspaceWorkflow {
   @@index([workspaceKind])
   @@index([userId, updatedAt])
   @@index([userId, deletedAt, updatedAt])
+  @@index([userId, archivedAt, updatedAt])
 }
 
 model WorkspaceMessage {

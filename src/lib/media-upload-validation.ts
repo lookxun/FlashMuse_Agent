@@ -19,13 +19,11 @@ function extensionOf(name: string | undefined | null) { return (name ?? "").spli
 export const MEDIA_DURATION_EPSILON_SECONDS = 0.2;
 
 // 参考视频/音频「单条时长」的全平台最小/最大值（唯一权威）。
-// 最大值 = 目前所有模型里最宽的那个 —— Seedance 2.5（官方文档 2026-08 明确：单条参考视频/音频 [2,30] 秒、
-// 最多各 10 个、总时长各 ≤30 秒；Seedance 2.0 系仍是 [2,15] / 3 个 / 总 15 秒）。
+// 最大值 = 目前所有模型里最宽的那个 —— Fish 音色克隆 60 秒（Seedance 2.5 参考音视频仍是 30）。
 // ⭐ 这两个数只给「不知道用哪个模型」的通道兜底：资产库上传、工作流上传节点、服务端 /api/upload-file。
 //    真正按模型收紧的地方是 upload-rules.ts 的 minSeconds/maxSeconds（对话流附加、工作流发送前校验都读它）。
-// ⛔ 别把这里改回 15：那会让 2.5 用户压根传不上 30 秒素材（历史 bug：服务端写死 15，规则层写 30 全白费）。
 export const REFERENCE_CLIP_SECONDS_MIN = 2;
-export const REFERENCE_CLIP_SECONDS_MAX = 30;
+export const REFERENCE_CLIP_SECONDS_MAX = 60;
 
 /**
  * 参考视频/音频时长越界时的统一文案（唯一权威）。

@@ -563,7 +563,6 @@ export default function Home() {
           <h1
             className="text-center leading-tight text-white"
             style={{
-              fontFamily: '"HarmonyOS Sans SC", "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans SC", sans-serif',
               fontSize: 100,
               fontWeight: 550,
               letterSpacing: "normal",
@@ -576,7 +575,6 @@ export default function Home() {
           <p
             className="text-center text-white"
             style={{
-              fontFamily: '"Microsoft YaHei UI", "Microsoft YaHei", sans-serif',
               marginTop: 12,
               fontSize: 40,
               fontWeight: 300,
@@ -768,7 +766,7 @@ export default function Home() {
                         </button>
                       ) : null}
                       {isLoginHistoryOpen && loginHistory.length > 0 ? (
-                        <div className="absolute left-0 right-0 top-full z-20 max-h-[250px] overflow-y-auto rounded-[5px] bg-white p-1.5 shadow-[0_12px_28px_rgba(0,0,0,0.12)] ring-1 ring-[#ececec]">
+                        <div className="yinzao-scrollbar-always absolute left-0 right-0 top-full z-20 max-h-[250px] overflow-y-auto rounded-[5px] bg-white p-1.5 shadow-[0_12px_28px_rgba(0,0,0,0.12)] ring-1 ring-[#ececec]">
                           {loginHistory.map((email) => (
                             <button
                               key={email}

@@ -1,6 +1,6 @@
 import { IMAGE_UPLOAD_ACCEPT, IMAGE_UPLOAD_FORMATS } from "@/lib/image-upload-validation";
 import { DOCUMENT_UPLOAD_FORMATS, MEDIA_DURATION_EPSILON_SECONDS } from "@/lib/media-upload-validation";
-import { HAILUO3_VIDEO_MODEL_ID, isRecraftModel as isRecraftImageModel, SEEDANCE_25_VIDEO_MODEL_ID } from "@/lib/models";
+import { HAILUO3_VIDEO_MODEL_ID, isFishAudioModel, isRecraftModel as isRecraftImageModel, SEEDANCE_25_VIDEO_MODEL_ID } from "@/lib/models";
 
 export type UploadRuleMode = "agent" | "general" | "image" | "video" | "asset-image" | "audio";
 export type UploadTransportMode = "local-base64" | "server-url";
@@ -33,11 +33,18 @@ export type UploadRule = {
 // edit/extend 仅 Seedance 2.5 支持：靠 reference_video + 提示词触发词，强制 ratio=adaptive、duration=-1（见 openrouter-video）。
 export type VideoReferenceMode = "reference" | "first_frame" | "last_frame" | "first_last_frame" | "edit" | "extend";
 
+export type AudioReferenceMode = "tts" | "clone";
+
+export const FISH_AUDIO_CLONE_MIN_SECONDS = 10;
+export const FISH_AUDIO_CLONE_MAX_SECONDS = 60;
+export const FISH_AUDIO_CLONE_MAX_SIZE_MB = 15;
+
 export type UploadRuleContext = {
   mode: UploadRuleMode;
   modelId?: string;
   transportMode?: UploadTransportMode;
   videoReferenceMode?: VideoReferenceMode;
+  audioReferenceMode?: AudioReferenceMode;
 };
 
 export type UploadRuleCountOverride = {
@@ -184,8 +191,18 @@ export function getVideoReferenceLimitHint(modelId?: string, mode?: UploadRuleCo
   return `普通参考图模式最多使用${getSeedanceReferenceLimits(modelId).image}张参考图`;
 }
 
+export function supportsAudioCloneMode(modelId?: string) {
+  return isFishAudioModel(modelId);
+}
+
+export function normalizeAudioReferenceModeForModel(modelId?: string, mode?: AudioReferenceMode): AudioReferenceMode {
+  if (mode === "clone" && supportsAudioCloneMode(modelId)) return "clone";
+  return "tts";
+}
+
 export function getUploadRuleOverrideKey(context: UploadRuleContext) {
   if (context.mode === "agent" || context.mode === "general") return "chat";
+  if (context.mode === "audio" && context.audioReferenceMode === "clone") return "fish-audio:clone";
   if (context.mode === "video" && isBytePlusVideoModel(context.modelId)) {
     // ⭐ edit/extend 的「1 个参考视频」是上游硬规则 → 故意给一个后台面板里不存在的 key，
     // 免得后台把「融合模式」的视频数量调成 3 之后，把 edit/extend 也一起放宽（那样必然被上游拒）。
@@ -230,8 +247,19 @@ function getBaseUploadRule(context: UploadRuleContext): UploadRule {
     });
   }
 
-  // 语音生成（TTS）：v1 只做「文字转语音」，不支持上传任何参考素材（音色克隆以后再做）。
   if (context.mode === "audio") {
+    if (context.audioReferenceMode === "clone" && supportsAudioCloneMode(context.modelId)) {
+      return makeRule({
+        audio: kindRule({
+          enabled: true,
+          maxCount: 1,
+          maxSizeMb: FISH_AUDIO_CLONE_MAX_SIZE_MB,
+          formats: ["mp3", "wav"],
+          minSeconds: FISH_AUDIO_CLONE_MIN_SECONDS,
+          maxSeconds: FISH_AUDIO_CLONE_MAX_SECONDS,
+        }),
+      });
+    }
     return makeRule({});
   }
 

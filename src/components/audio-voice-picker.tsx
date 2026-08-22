@@ -45,7 +45,7 @@ export function AudioVoicePicker({
           })}
         </div>
         <div className="relative min-w-0 flex-1">
-          <div className="absolute inset-0 overflow-y-auto pl-2">
+          <div className="audio-voice-scroll absolute inset-0 overflow-y-auto pl-2">
             {voices.length === 0 ? (
               <div className="flex h-full items-center justify-center text-[13px] text-[#999]">暂无音色</div>
             ) : (

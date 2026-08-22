@@ -93,7 +93,7 @@ export function AssetMentionPicker({
           </div>
           <div className="relative min-w-0 flex-1">
             <div
-              className="absolute inset-0 overflow-y-auto pl-2"
+              className="mention-cat-scroll absolute inset-0 overflow-y-auto pl-2"
               onScroll={(event) => {
                 if (!onScrollLoadMore || activeLoading) return;
                 const el = event.currentTarget;

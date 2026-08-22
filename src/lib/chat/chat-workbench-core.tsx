@@ -11,7 +11,7 @@ import { defaultProductionUploadApiBaseUrl, getStaticMediaUrl, shouldUseStaticAs
 import { RiAddLargeLine, RiArrowLeftSLine, RiArrowRightSLine, RiArrowDownSLine, RiArrowUpSLine, RiAtLine, RiCheckLine, RiChat3Line, RiChatDeleteFill, RiCheckboxCircleLine, RiCheckboxMultipleBlankLine, RiCloseLine, RiCopperDiamondLine, RiDeleteBinLine, RiEmotionUnhappyFill, RiEmotionSadLine, RiFolderLine, RiBellLine, RiLandscapeLine, RiImageLine, RiMoreLine, RiMusic2Line, RiMultiImageLine, RiEditBoxLine, RiResetLeftLine, RiRefreshLine, RiResetRightLine, RiShining2Line, RiUpload2Line, RiVipCrown2Line, RiVipDiamondLine, RiVideoLine, RiVideoOnLine, RiVoiceprintLine, RiQuillPenAiLine, RiAccountBoxLine, RiFilmLine, RiInformationLine, RiGitPullRequestLine, RiFilmAiLine, RiImageAddLine, RiImageAiLine, RiMicAiLine, RiMicLine, RiDownloadLine, RiTBoxLine, RiTerminalWindowFill } from "react-icons/ri";
 import { ADVANCED_CHAT_MODEL, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, DEFAULT_AUDIO_MODEL, audioGenerationModels, classifyImageResolutionByModel, bytePlusVideoGenerationModels, frontendConversationModels, frontendImageGenerationModels, getExpectedImageDimensions, getExpectedVideoDimensions, getImageQualityBadgeLabel, getSupportedImageResolutions, getSupportedVideoRatios, getSupportedVideoResolutions, isNonStandardVideoSize, normalizeImageResolutionForModel, normalizeVideoRatioForModel, normalizeVideoResolutionForModel, videoGenerationModels, GenerationModel, ModelName } from "@/lib/models";
 import { toUserErrorMessage } from "@/lib/error-message";
-import { type VideoReferenceMode } from "@/lib/upload-rules";
+import { type AudioReferenceMode, type VideoReferenceMode } from "@/lib/upload-rules";
 import { getAudioVoiceLabel } from "@/lib/audio-voices";
 import { getAudioEmotionLabel, isAudioEmotionSelectable } from "@/lib/audio-emotions";
 import { PROMPT_MAX_LENGTH_CEILING } from "@/lib/prompt-length";
@@ -287,6 +287,7 @@ export type PendingGeneration = {
   referenceVideos?: string[];
   referenceAudios?: string[];
   videoReferenceMode?: VideoReferenceMode;
+  audioReferenceMode?: AudioReferenceMode;
   imageReferences?: ImageReference[];
   referenceHint?: string;
   preserveOriginalInput?: boolean;
@@ -319,8 +320,9 @@ export type PendingGeneration = {
 //   `@/lib/upload-rules`（类型）+ `@/lib/video-reference-modes`（选项）。
 //   ⛔ 禁止在本文件里再写一份选项数组 —— 工作流原来那份漏了「尾帧模式」就是这么来的。
 //   这里保留 re-export，是为了不动 chat-workbench.tsx 的现有 import 路径。
-export type { VideoReferenceMode } from "@/lib/upload-rules";
+export type { VideoReferenceMode, AudioReferenceMode } from "@/lib/upload-rules";
 export { getVideoReferenceModeOptions, videoReferenceModeOptions } from "@/lib/video-reference-modes";
+export { getAudioReferenceModeOptions, audioReferenceModeOptions } from "@/lib/audio-reference-modes";
 
 export function isBytePlusSeedanceVideoModel(modelId?: string) {
   return modelId === "byteplus:video.seedance-2-0" || modelId === "byteplus:video.seedance-2-0-fast" || modelId === "byteplus:video.seedance-2-0-mini" || modelId === "byteplus:video.seedance-2-5";
@@ -372,14 +374,15 @@ type MessageGenerationMeta = {
   // 视频参考模式（仅视频）。edit/extend 时等待卡上方的参数条会显示"生成后自动获取参数"的说明，
   // 因为这两个模式的比例/时长被后端强制成 adaptive/-1、真实输出跟随源视频，出片前显示请求档会误导。
   videoReferenceMode?: VideoReferenceMode;
+  audioReferenceMode?: AudioReferenceMode;
   voice?: string;
   emotion?: string;
 };
 
-export type ControlMenuName = "model" | "generalChatModel" | "generalImageModel" | "generalVideoModel" | "generalCustom" | "characterModel" | "characterRatio" | "characterResolution" | "characterQuality" | "characterStyle" | "imageSettings" | "style" | "duration" | "imageCount" | "videoReferenceMode" | "audioVoice" | "audioEmotion";
+export type ControlMenuName = "model" | "generalChatModel" | "generalImageModel" | "generalVideoModel" | "generalCustom" | "characterModel" | "characterRatio" | "characterResolution" | "characterQuality" | "characterStyle" | "imageSettings" | "style" | "duration" | "imageCount" | "videoReferenceMode" | "audioVoice" | "audioEmotion" | "audioReferenceMode";
 export type ModeMenuName = "mode";
 export type ActivePanel = "chat" | "workflow" | "assets";
-export type UserDialogTab = "profile" | "credits" | "security" | "settings";
+export type UserDialogTab = "profile" | "credits" | "security" | "archive" | "settings";
 export type WorkspaceStorageMode = "loading" | "user";
 export type WorkspaceLoadStatus = "loading" | "retrying" | "loaded" | "failed";
 export type UserLanguage = "简体中文" | "繁体中文";
@@ -404,6 +407,7 @@ export type WorkSession = {
   generatedMediaCounts?: { images: number; videos: number };
   memorySummary?: SessionMemorySummary;
   deletedAt?: number;
+  archivedAt?: number;
   messagesLoaded?: boolean;
   messagesHasMore?: boolean;
   messagesBeforeCursor?: number;
@@ -460,6 +464,9 @@ export type CurrentUserProfile = {
   defaultVideoRatio?: string;
   defaultVideoResolution?: string;
   defaultVideoDuration?: string;
+  defaultAudioModel?: string;
+  defaultAudioVoice?: string;
+  defaultAudioEmotion?: string;
   generatedImageCount?: number;
   generatedVideoCount?: number;
   credits?: number;
@@ -527,6 +534,7 @@ export type WorkflowItem = {
   nextImageNumber?: number;
   nextVideoNumber?: number;
   deletedAt?: number;
+  archivedAt?: number;
   usageSummary?: UsageSummary;
   generatedMediaCounts?: { images: number; videos: number };
   canvas?: WorkflowCanvasState;
@@ -610,6 +618,7 @@ export type StoredInputSettings = {
   selectedGeneralModels?: Partial<Record<"chat" | "image" | "video", string>>;
   selectedAudioVoice?: string;
   selectedAudioEmotion?: string;
+  selectedAudioReferenceMode?: AudioReferenceMode;
   generalPreferenceAuto?: boolean;
   generalPreferenceKind?: "image" | "video";
   generalImageRatio?: string;
@@ -1483,6 +1492,15 @@ export function getDefaultUserAvatar(email: string) {
 
 const traditionalTextMap: Record<string, string> = {
   用户中心: "用戶中心",
+  归档: "歸檔",
+  对话流归档: "對話流歸檔",
+  工作流归档: "工作流歸檔",
+  恢复: "恢復",
+  退出用户中心: "退出用戶中心",
+  "新建对话 · 默认语音参数": "新增對話 · 預設語音參數",
+  默认语音模型: "預設語音模型",
+  默认音色: "預設音色",
+  默认情绪: "預設情緒",
   用户信息: "用戶資訊",
   帐号安全: "帳號安全",
   设置: "設定",
@@ -2709,8 +2727,9 @@ export function MediaPromptBlock({ message, references, mediaReferences, onUsePr
   const dimensions = isAudio ? { width: 0, height: 0 } : getDisplayDimensions(ratio, resolution, mode, meta?.model);
   const nonStandardSize = mode === "video" && ratio !== "智能比例" && isNonStandardVideoSize(meta?.model, resolution, ratio);
   const modelLabel = meta?.model ? getGenerationModelLabel(mode, meta.model) : mode === "audio" ? getGenerationModelLabel("audio", DEFAULT_AUDIO_MODEL) : mode === "video" ? getGenerationModelLabel("video", DEFAULT_VIDEO_MODEL) : getGenerationModelLabel("image", DEFAULT_IMAGE_MODEL);
-  const audioVoiceLabel = mode === "audio" ? getAudioVoiceLabel(meta?.model, meta?.voice) : "";
-  const audioEmotionLabel = mode === "audio" && isAudioEmotionSelectable(meta?.model) ? getAudioEmotionLabel(meta?.model, meta?.emotion) : "";
+  const audioVoiceLabel = mode === "audio" && meta?.audioReferenceMode !== "clone" ? getAudioVoiceLabel(meta?.model, meta?.voice) : "";
+  const audioEmotionLabel = mode === "audio" && meta?.audioReferenceMode !== "clone" && isAudioEmotionSelectable(meta?.model) ? getAudioEmotionLabel(meta?.model, meta?.emotion) : "";
+  const audioCloneLabel = mode === "audio" && meta?.audioReferenceMode === "clone" ? "音色克隆" : "";
   const rawSizeText = actualDimensions ? `${actualDimensions.width} × ${actualDimensions.height}` : getImageSizeText(message) ?? (dimensions.width && dimensions.height ? `${dimensions.width} × ${dimensions.height}` : "智能尺寸");
   const sizeText = formatMediaSizeText(rawSizeText, nonStandardSize);
   const displayRatio = actualDimensions ? getCommonRatioLabel(actualDimensions.width, actualDimensions.height) : mode === "video" && dimensions.width && dimensions.height ? getCommonRatioLabel(dimensions.width, dimensions.height) : ratio;
@@ -2723,10 +2742,14 @@ export function MediaPromptBlock({ message, references, mediaReferences, onUsePr
     message.content
       .split(/(@[^@\s，。！？；;、]+)/g)
       .filter((part) => part.startsWith("@"))
-      .map((part) => promptReferences?.find((reference) => reference.name === part.slice(1))?.url)
+      .map((part) => {
+        const name = part.slice(1);
+        return promptReferences?.find((reference) => reference.name === name)?.url ?? mediaReferences?.find((reference) => reference.name === name)?.url;
+      })
       .filter((url): url is string => Boolean(url))
       .map(normalizeMediaUrlForMatch),
   );
+  const unmentionedMediaReferences = (mediaReferences ?? []).filter((reference) => reference.url && !mentionedReferenceUrls.has(normalizeMediaUrlForMatch(reference.url)));
   const renderCopyButton = (variant: "inline" | "overlay") => (
     <button
       type="button"
@@ -2784,6 +2807,7 @@ export function MediaPromptBlock({ message, references, mediaReferences, onUsePr
       <div className="group/prompt relative">
         <div ref={promptRef} className="relative max-h-[56px] overflow-hidden text-[14px] leading-7 text-[#111111]">
           {shouldShowReferenceThumbnails ? <InlineReferenceThumbnails references={promptReferences} excludeUrls={mentionedReferenceUrls} /> : null}
+          {unmentionedMediaReferences.length > 0 ? <InlineMediaReferenceChips references={unmentionedMediaReferences} /> : null}
           <ReferencedTextContent content={message.content} references={promptReferences} mediaReferences={mediaReferences} />
           {inlineCopyButton}
           {shouldShowPromptOverlay ? <div className="pointer-events-none absolute bottom-0 right-0 h-7 w-16 bg-gradient-to-r from-white/0 via-white/90 to-white" /> : null}
@@ -2791,7 +2815,7 @@ export function MediaPromptBlock({ message, references, mediaReferences, onUsePr
         {shouldShowPromptOverlay ? (
           <div className="pointer-events-none absolute -inset-x-4 -top-3 z-30 max-h-[250px] rounded-[12px] bg-white/88 px-4 pb-3 pt-3 text-[14px] leading-7 text-[#111111] opacity-0 shadow-[0_18px_36px_rgba(0,0,0,0.08)] backdrop-blur-[10px] transition-opacity delay-500 duration-200 group-hover/prompt:pointer-events-auto group-hover/prompt:opacity-100 group-hover/prompt:delay-0">
             {blockCopyButton}
-            <div className="max-h-[198px] overflow-y-auto pr-2">{shouldShowReferenceThumbnails ? <InlineReferenceThumbnails references={promptReferences} excludeUrls={mentionedReferenceUrls} /> : null}<ReferencedTextContent content={message.content} references={promptReferences} mediaReferences={mediaReferences} /></div>
+            <div className="max-h-[198px] overflow-y-auto pr-2">{shouldShowReferenceThumbnails ? <InlineReferenceThumbnails references={promptReferences} excludeUrls={mentionedReferenceUrls} /> : null}{unmentionedMediaReferences.length > 0 ? <InlineMediaReferenceChips references={unmentionedMediaReferences} /> : null}<ReferencedTextContent content={message.content} references={promptReferences} mediaReferences={mediaReferences} /></div>
           </div>
         ) : null}
       </div>
@@ -2799,6 +2823,7 @@ export function MediaPromptBlock({ message, references, mediaReferences, onUsePr
         {mode === "audio" ? (
           <>
             <span className="truncate">{modelLabel}</span>
+            {audioCloneLabel ? (<><span className="text-[#d0d0d0]">|</span><span>{audioCloneLabel}</span></>) : null}
             {audioVoiceLabel ? (<><span className="text-[#d0d0d0]">|</span><span>{audioVoiceLabel}</span></>) : null}
             {audioEmotionLabel ? (<><span className="text-[#d0d0d0]">|</span><span>{audioEmotionLabel}</span></>) : null}
           </>
@@ -3177,11 +3202,19 @@ export function createNumberedWorkflowItem(items: WorkflowItem[]): WorkflowItem 
 }
 
 export function isUntitledWorkflow(item: WorkflowItem) {
-  return !item.deletedAt && item.title === "新工作流";
+  return !item.deletedAt && !item.archivedAt && item.title === "新工作流";
 }
 
 export function isDeletedWorkflow(item: Pick<WorkflowItem, "deletedAt">) {
   return Boolean(item.deletedAt);
+}
+
+export function isArchivedWorkflow(item: Pick<WorkflowItem, "archivedAt" | "deletedAt">) {
+  return Boolean(item.archivedAt) && !item.deletedAt;
+}
+
+export function isVisibleWorkflow(item: Pick<WorkflowItem, "archivedAt" | "deletedAt">) {
+  return !item.deletedAt && !item.archivedAt;
 }
 
 export function hasWorkflowAction(canvas?: WorkflowCanvasState) {
@@ -3235,7 +3268,7 @@ export function getWorkflowMeaningfulSnapshot(canvas?: WorkflowCanvasState) {
 }
 
 export function ensureWorkflowItems(items: WorkflowItem[]) {
-  return items.some((item) => !isDeletedWorkflow(item)) ? items : [createNumberedWorkflowItem(items), ...items];
+  return items.some((item) => isVisibleWorkflow(item)) ? items : [createNumberedWorkflowItem(items), ...items];
 }
 
 function keepSingleUntitledWorkflow(items: WorkflowItem[]) {
@@ -3313,10 +3346,11 @@ export function normalizeStoredWorkflowItems(value: unknown): WorkflowItem[] {
     const createdAt = Number.isFinite(workflow.createdAt) ? Number(workflow.createdAt) : Date.now();
     const updatedAt = Number.isFinite(workflow.updatedAt) ? Number(workflow.updatedAt) : createdAt;
     const deletedAt = Number.isFinite(workflow.deletedAt) ? Number(workflow.deletedAt) : undefined;
+    const archivedAt = Number.isFinite(workflow.archivedAt) ? Number(workflow.archivedAt) : undefined;
     const workflowCode = getWorkflowCode({ workflowCode: workflow.workflowCode, title: workflow.title }) ?? undefined;
     const nextImageNumber = Math.max(1, Math.floor(workflow.nextImageNumber ?? 1));
     const nextVideoNumber = Math.max(1, Math.floor(workflow.nextVideoNumber ?? 1));
-    return [{ ...workflow, id: workflow.id, workflowCode, title: workflow.title, createdAt, updatedAt, nextImageNumber, nextVideoNumber, deletedAt }];
+    return [{ ...workflow, id: workflow.id, workflowCode, title: workflow.title, createdAt, updatedAt, nextImageNumber, nextVideoNumber, deletedAt, archivedAt }];
   })));
 }
 
@@ -3355,7 +3389,7 @@ function keepSingleEmptySession(sessions: WorkSession[]) {
   let hasEmptySession = false;
 
   return sessions.filter((session) => {
-    if (session.deletedAt) return true;
+    if (session.deletedAt || session.archivedAt) return true;
     if (!isEmptySession(session)) return true;
     if (hasEmptySession) return false;
     hasEmptySession = true;
@@ -3365,6 +3399,14 @@ function keepSingleEmptySession(sessions: WorkSession[]) {
 
 export function isDeletedSession(session: Pick<WorkSession, "deletedAt">) {
   return Boolean(session.deletedAt);
+}
+
+export function isArchivedSession(session: Pick<WorkSession, "archivedAt" | "deletedAt">) {
+  return Boolean(session.archivedAt) && !session.deletedAt;
+}
+
+export function isVisibleSession(session: Pick<WorkSession, "archivedAt" | "deletedAt">) {
+  return !session.deletedAt && !session.archivedAt;
 }
 
 export function sortByUpdatedAtDesc<T extends { updatedAt?: number }>(items: T[]) {
@@ -5659,6 +5701,18 @@ function InlineReferenceThumbnails({ references, excludeUrls }: { references?: I
   );
 }
 
+function InlineMediaReferenceChips({ references }: { references: MediaFileReference[] }) {
+  return (
+    <span className="mr-1 inline-flex items-center gap-1 align-[-4px]">
+      {references.map((reference, index) => (
+        <span key={`${reference.url}-${index}`} className="inline-flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded bg-black/5 text-[#8a8a8a] ring-1 ring-[#e5e5e5]">
+          {reference.mediaKind === "video" ? <RiVideoLine className="h-3.5 w-3.5" aria-hidden="true" /> : <RiVoiceprintLine className="h-3.5 w-3.5" aria-hidden="true" />}
+        </span>
+      ))}
+    </span>
+  );
+}
+
 export function ReminderToast({ reminder, fixed = false }: { reminder: ReminderMessage; fixed?: boolean }) {
   const baseClass = fixed
     ? "pointer-events-none fixed left-1/2 top-20 z-[9999] inline-flex h-10 -translate-x-1/2 items-center gap-1.5 whitespace-nowrap rounded-lg px-3 text-[12px] font-medium leading-none text-white shadow-[0_8px_18px_rgba(0,0,0,0.18)]"
@@ -5690,20 +5744,50 @@ export function SettingsSwitch({ checked, onChange }: { checked: boolean; onChan
 /** 用户中心「设置」里的下拉选择器（登录默认面板 / 默认生成参数共用，自带展开态、样式与语言下拉一致）。 */
 export function SettingsSelect({ value, options, onChange, disabled }: { value: string; options: { value: string; label: string; icon?: ReactNode }[]; onChange: (value: string) => void; disabled?: boolean }) {
   const [open, setOpen] = useState(false);
+  const [menuBox, setMenuBox] = useState<{ top?: number; bottom?: number; right: number; maxHeight: number } | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
   const current = options.find((option) => option.value === value) ?? options[0];
-  // 点菜单以外的任何空白区域都关闭下拉。
+
+  const updateMenuBox = useCallback(() => {
+    const button = buttonRef.current;
+    if (!button) return;
+    const rect = button.getBoundingClientRect();
+    const gap = 6;
+    const margin = 8;
+    const maxMenu = 248;
+    const estimated = Math.min(maxMenu, options.length * 36 + 12);
+    const spaceBelow = window.innerHeight - rect.bottom - margin;
+    const spaceAbove = rect.top - margin;
+    const openUp = spaceBelow < estimated && spaceAbove > spaceBelow;
+    const maxHeight = Math.max(96, Math.min(maxMenu, openUp ? spaceAbove - gap : spaceBelow - gap));
+    const right = Math.max(margin, window.innerWidth - rect.right);
+    setMenuBox(openUp ? { bottom: window.innerHeight - rect.top + gap, right, maxHeight } : { top: rect.bottom + gap, right, maxHeight });
+  }, [options.length]);
+
   useEffect(() => {
     if (!open) return;
+    updateMenuBox();
     const onPointerDown = (event: MouseEvent) => {
-      if (containerRef.current && !containerRef.current.contains(event.target as Node)) setOpen(false);
+      const target = event.target as Node;
+      if (containerRef.current?.contains(target) || menuRef.current?.contains(target)) return;
+      setOpen(false);
     };
     document.addEventListener("mousedown", onPointerDown, true);
-    return () => document.removeEventListener("mousedown", onPointerDown, true);
-  }, [open]);
+    window.addEventListener("resize", updateMenuBox);
+    window.addEventListener("scroll", updateMenuBox, true);
+    return () => {
+      document.removeEventListener("mousedown", onPointerDown, true);
+      window.removeEventListener("resize", updateMenuBox);
+      window.removeEventListener("scroll", updateMenuBox, true);
+    };
+  }, [open, updateMenuBox]);
+
   return (
     <div ref={containerRef} className="relative" onClick={(event) => event.stopPropagation()}>
       <button
+        ref={buttonRef}
         type="button"
         disabled={disabled}
         onClick={() => setOpen((currentOpen) => !currentOpen)}
@@ -5714,8 +5798,12 @@ export function SettingsSelect({ value, options, onChange, disabled }: { value: 
         <span style={{ fontSize: 14 }} className="whitespace-nowrap">{current?.label ?? "-"}</span>
         <RiArrowDownSLine className="h-4 w-4 shrink-0 text-[#9a9a9a]" aria-hidden="true" />
       </button>
-      {open && !disabled ? (
-        <div className="absolute right-0 top-8 z-50 max-h-[248px] w-max min-w-[9rem] max-w-[min(340px,calc(100vw-40px))] overflow-y-auto rounded-[10px] bg-white p-1.5 shadow-[0_12px_28px_rgba(0,0,0,0.12)]">
+      {open && !disabled && menuBox && typeof document !== "undefined" ? createPortal(
+        <div
+          ref={menuRef}
+          className="yinzao-scrollbar-always fixed z-[12000] w-max min-w-[9rem] max-w-[min(340px,calc(100vw-40px))] overflow-y-auto rounded-[10px] bg-white p-1.5 shadow-[0_12px_28px_rgba(0,0,0,0.12)]"
+          style={{ top: menuBox.top, bottom: menuBox.bottom, right: menuBox.right, maxHeight: menuBox.maxHeight }}
+        >
           {options.map((option) => (
             <button
               key={option.value}
@@ -5728,7 +5816,8 @@ export function SettingsSelect({ value, options, onChange, disabled }: { value: 
               {option.value === value ? <RiCheckLine className="ml-auto h-4 w-4 shrink-0" aria-hidden="true" /> : null}
             </button>
           ))}
-        </div>
+        </div>,
+        document.body,
       ) : null}
     </div>
   );
@@ -7011,44 +7100,67 @@ export function createUploadedDocumentEntry(file: File, media?: { mediaKind?: "d
   };
 }
 
-export function readMediaFileMetadata(file: File, kind: "video" | "audio") {
+function readHtmlMediaDuration(element: HTMLMediaElement) {
+  return Number.isFinite(element.duration) && element.duration > 0 ? element.duration : undefined;
+}
+
+function readHtmlMediaMetadata(element: HTMLMediaElement, kind: "video" | "audio") {
   return new Promise<{ durationSeconds?: number; dimensions?: ImageDimensions }>((resolve, reject) => {
-    const url = URL.createObjectURL(file);
-    const element = kind === "video" ? document.createElement("video") : document.createElement("audio");
-    const cleanup = () => URL.revokeObjectURL(url);
-    element.preload = "metadata";
-    element.onloadedmetadata = () => {
-      const durationSeconds = Number.isFinite(element.duration) ? element.duration : undefined;
+    let settled = false;
+    const finish = (durationSeconds?: number) => {
+      if (settled) return;
+      settled = true;
       const dimensions = kind === "video"
         ? { width: Math.floor((element as HTMLVideoElement).videoWidth), height: Math.floor((element as HTMLVideoElement).videoHeight) }
         : undefined;
-      cleanup();
       resolve({ durationSeconds, dimensions: dimensions?.width && dimensions.height ? dimensions : undefined });
     };
-    element.onerror = () => {
-      cleanup();
+    const fail = () => {
+      if (settled) return;
+      settled = true;
       reject(new Error(kind === "video" ? "视频信息读取失败" : "音频信息读取失败"));
     };
-    element.src = url;
+    element.preload = "metadata";
+    element.onerror = fail;
+    element.onloadedmetadata = () => {
+      const ready = readHtmlMediaDuration(element);
+      if (ready) {
+        finish(ready);
+        return;
+      }
+      const onDuration = () => finish(readHtmlMediaDuration(element));
+      element.addEventListener("durationchange", onDuration);
+      window.setTimeout(() => {
+        element.removeEventListener("durationchange", onDuration);
+        finish(readHtmlMediaDuration(element));
+      }, 1500);
+      try {
+        element.currentTime = 1e101;
+      } catch {
+        finish(undefined);
+      }
+    };
   });
 }
 
-// 从已托管的 url 读取视频/音频元数据（@引用库资产用，不重新上传）。校验规则和 + 号上传共用。
-export function readMediaMetadataFromUrl(url: string, kind: "video" | "audio") {
-  return new Promise<{ durationSeconds?: number; dimensions?: ImageDimensions }>((resolve, reject) => {
-    const element = kind === "video" ? document.createElement("video") : document.createElement("audio");
-    element.preload = "metadata";
-    element.crossOrigin = "anonymous";
-    element.onloadedmetadata = () => {
-      const durationSeconds = Number.isFinite(element.duration) ? element.duration : undefined;
-      const dimensions = kind === "video"
-        ? { width: Math.floor((element as HTMLVideoElement).videoWidth), height: Math.floor((element as HTMLVideoElement).videoHeight) }
-        : undefined;
-      resolve({ durationSeconds, dimensions: dimensions?.width && dimensions.height ? dimensions : undefined });
-    };
-    element.onerror = () => reject(new Error(kind === "video" ? "视频信息读取失败" : "音频信息读取失败"));
-    element.src = url;
+export function readMediaFileMetadata(file: File, kind: "video" | "audio") {
+  const url = URL.createObjectURL(file);
+  const element = kind === "video" ? document.createElement("video") : document.createElement("audio");
+  const pending = readHtmlMediaMetadata(element, kind);
+  element.src = url;
+  return pending.finally(() => {
+    URL.revokeObjectURL(url);
+    element.removeAttribute("src");
+    element.load();
   });
+}
+
+export function readMediaMetadataFromUrl(url: string, kind: "video" | "audio") {
+  const element = kind === "video" ? document.createElement("video") : document.createElement("audio");
+  element.crossOrigin = "anonymous";
+  const pending = readHtmlMediaMetadata(element, kind);
+  element.src = url;
+  return pending;
 }
 
 export function readDocumentFileText(file: File, onProgress: (progress: number) => void) {
