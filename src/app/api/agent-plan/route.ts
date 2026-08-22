@@ -8,6 +8,7 @@ import { createCodedApiError } from "@/lib/error-code";
 import { appendGeneralTaskLog } from "@/lib/general-task-log";
 import { appendUploadRuleFeedbackLog, summarizeMessageUploads } from "@/lib/upload-rule-feedback-log";
 import { resolveUnlockLimitsForUser } from "@/lib/account-features";
+import { getAgentAutoChatModelIds, isRetryableAgentChatError, rememberAgentChatModelSkip } from "@/lib/system-settings";
 
 function withChargedUsage<T extends { usage?: { promptTokens?: number; completionTokens?: number; totalTokens?: number; usd?: number } }>(result: T, credit: Awaited<ReturnType<typeof chargeCredits>> | undefined) {
   if (!credit || credit.skipped) return result;
@@ -34,9 +35,11 @@ export async function POST(request: Request) {
       mode?: "agent" | "general";
     };
 
-    const model = body.model || DEFAULT_CHAT_MODEL;
-
-    if (!isModelName(model) || !Array.isArray(body.messages)) {
+    const requestedModel = body.model || DEFAULT_CHAT_MODEL;
+    const planModels = body.mode === "general"
+      ? [requestedModel]
+      : (getAgentAutoChatModelIds(requestedModel).length > 0 ? getAgentAutoChatModelIds(requestedModel) : [requestedModel]);
+    if (!isModelName(requestedModel) || !Array.isArray(body.messages)) {
       return NextResponse.json({ error: "参数不完整" }, { status: 400 });
     }
 
@@ -52,7 +55,23 @@ export async function POST(request: Request) {
     const policy = await enforceContentPolicy({ prompt: moderationPrompt, userId: user?.id, requestId: body.requestId, kind: "chat", source: body.mode === "general" ? "general" : "agent" });
     if (policy.blocked) return NextResponse.json({ error: CONTENT_POLICY_ERROR_MESSAGE, errorCode: CONTENT_POLICY_ERROR_CODE }, { status: 400 });
 
-    const result = await planAgentTask({ model, messages: body.messages, mode: body.mode === "general" ? "general" : "agent", unlockLimits: await resolveUnlockLimitsForUser(user?.id) });
+    const unlockLimits = await resolveUnlockLimitsForUser(user?.id);
+    let result: Awaited<ReturnType<typeof planAgentTask>> | undefined;
+    let lastError: unknown;
+    let usedModel = requestedModel;
+    for (const chatModel of planModels) {
+      try {
+        result = await planAgentTask({ model: chatModel, messages: body.messages, mode: body.mode === "general" ? "general" : "agent", unlockLimits });
+        usedModel = chatModel;
+        lastError = undefined;
+        break;
+      } catch (error) {
+        lastError = error;
+        rememberAgentChatModelSkip(chatModel, error);
+        if (!isRetryableAgentChatError(error)) throw error;
+      }
+    }
+    if (!result) throw lastError instanceof Error ? lastError : new Error("连接不到模型，请联系管理员！");
     if (body.mode === "general") {
       const latestUserMessage = [...body.messages].reverse().find((message) => message.role === "user");
       void appendGeneralTaskLog({
@@ -60,14 +79,14 @@ export async function POST(request: Request) {
         conversationId: body.conversationId,
         conversationTitle: body.conversationTitle,
         requestId: body.requestId,
-        model,
+        model: usedModel,
         taskText: latestUserMessage?.content,
         intent: result.intent,
         needsClarification: result.needsClarification,
         hasImages: Boolean(latestUserMessage?.images?.length),
       });
     }
-    const credit = user ? await chargeCredits(user.id, "text", result.usage, { conversationId: body.conversationId, conversationTitle: body.conversationTitle, requestId: body.requestId ? `${body.requestId}:plan` : undefined, label: "Agent 规划", model }) : undefined;
+    const credit = user ? await chargeCredits(user.id, "text", result.usage, { conversationId: body.conversationId, conversationTitle: body.conversationTitle, requestId: body.requestId ? `${body.requestId}:plan` : undefined, label: "Agent 规划", model: usedModel }) : undefined;
 
     return NextResponse.json({ ...withChargedUsage(result, credit), credit });
     } catch (error) {

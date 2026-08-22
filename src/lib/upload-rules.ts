@@ -1,8 +1,8 @@
 import { IMAGE_UPLOAD_ACCEPT, IMAGE_UPLOAD_FORMATS } from "@/lib/image-upload-validation";
 import { DOCUMENT_UPLOAD_FORMATS, MEDIA_DURATION_EPSILON_SECONDS } from "@/lib/media-upload-validation";
-import { HAILUO3_VIDEO_MODEL_ID, SEEDANCE_25_VIDEO_MODEL_ID } from "@/lib/models";
+import { HAILUO3_VIDEO_MODEL_ID, isRecraftModel as isRecraftImageModel, SEEDANCE_25_VIDEO_MODEL_ID } from "@/lib/models";
 
-export type UploadRuleMode = "agent" | "general" | "image" | "video" | "asset-image";
+export type UploadRuleMode = "agent" | "general" | "image" | "video" | "asset-image" | "audio";
 export type UploadTransportMode = "local-base64" | "server-url";
 
 export type UploadKind = "image" | "document" | "video" | "audio";
@@ -230,10 +230,25 @@ function getBaseUploadRule(context: UploadRuleContext): UploadRule {
     });
   }
 
+  // 语音生成（TTS）：v1 只做「文字转语音」，不支持上传任何参考素材（音色克隆以后再做）。
+  if (context.mode === "audio") {
+    return makeRule({});
+  }
+
   if (context.mode === "asset-image" || context.mode === "image") {
     if (isBytePlusImageModel(context.modelId)) {
       return makeRule({
         image: kindRule({ enabled: true, maxCount: bytePlusLocalImageMax, maxSizeMb: 30, formats: commonImageFormats }),
+      });
+    }
+
+    // ⭐⭐ Recraft V4.1 / Pro：走 /api/v1/images，但**参考图上游硬上限 1 张**
+    // （2026-08-19 实测：传 2 张直接 400「input_references: must have between 0 and 1 items」）。
+    // ⛔ 不许回落到下面那条 fallback（3 张）——那样用户能选 3 张，而 generateRecraftImage
+    //    只 slice(0,1) 发出去 = 静默丢掉 2 张参考图，界面上完全看不出来。
+    if (isRecraftImageModel(context.modelId)) {
+      return makeRule({
+        image: kindRule({ enabled: true, maxCount: 1, maxSizeMb: 8, formats: commonImageFormats }),
       });
     }
 

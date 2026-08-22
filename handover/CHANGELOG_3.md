@@ -7,23 +7,846 @@
 >   需要第 45~60 次会话的详细过程时才去翻它。
 >   ⚠️ 卷 2 的 **887~1033 行是编码受损原文**（用 PowerShell 写中文文件的失误，760 个 `U+FFFD`，第 50~53 次会话）——
 >   ⛔ **别去"修"它**（等于伪造记录）；那几批的完好摘要在 `01-current-status.md` / `05-next-actions.md`。
-> - ⛔⛔ **轮转规则**：当本文件也变得过大（经验阈值 ≈ 400KB 或 2000+ 行）时，
->   **新建 `CHANGELOG_4.md` 接着写**，本文件转为只读归档；以此类推（5、6…）。
+> - ⛔⛔ **轮转规则（2026-08-20 用户拍板改阈值）**：**当本文件超过 500KB 时才归档**——
+>   到那时**新建 `CHANGELOG_4.md` 接着写**，本文件转为只读归档；以此类推（5、6…）。
+>   （旧阈值是 ≈400KB/2000 行，现统一改成"超过 500KB 才建新的"。）
 >   ⭐ 新卷开头都要照本文件这样：① 指明上一卷是谁、已归档只读 ② 写一段「当前状态摘要」保证接手能续上 ③ 再往下倒序追加会话记录
 >   ④ 把旧卷标题改成「卷 N · 已归档只读」并在顶部加指向新卷的提示 ⑤ 更新 `00-README.md` 文档索引里的 CHANGELOG 行。
 > - 判据不变：**版本号一样 = 测试服和正式服代码一样**（本项目核心约定，见 `AGENTS.md`）。
 
-## 📌 当前状态摘要（2026-08-18 第六十五次会话末）
+## 📌 当前状态摘要（2026-08-22 第七十九次会话末）：**四方同步 `v1.0.1.3`**
 
 | | 版本 / 状态 |
 |---|---|
-| 测试服 / **正式服** / GitHub | **`v1.0.0.98`** —— commit `77d7357` 已 push（这三方仍是 v98，**本次没动它们**）|
-| 本地 | ⚠️ **`v1.0.0.98` + 一批未提交改动**（第六十五次会话：后台审核表格 + 用户中心设置新功能）—— **未 commit / 未 build / 未部署 / 未 bump 版本** |
-| ⚠️ 本地新增迁移 | **1 个：`20260817010000_user_default_workspace_prefs`**（User 表加 8 个默认偏好字段，**本地已 `migrate deploy` apply**；部署时必须带上）|
-| 自查 | `tsc` 0（每步都过）；本次按用户默认口径**只做本地 + tsc + 真机验证，没有 build/部署/commit** |
-| 回滚点（v98 那次）| `/opt/flashmuse/app-backups/20260811-180453-presync-v1.0.0.98`（145M）+ 正式库备份 `pre-deploy-v98` |
+| 本地 = 测试服 = 正式服 = GitHub | **`v1.0.1.3`** |
+| 自查 | `tsc` 0 |
+| 迁移 / 基建 | 无 Prisma 迁移、无 compose/nginx |
 
-- 🆕 **本次（第六十五次会话，2026-08-18，全部本地未提交）做了 4 件事**（详见下方顶条会话记录）：
+本会话把 `v1.0.1.3` 推正式服并真上号巡检，随后 commit + push。细节见下方第七十九次。
+
+---
+
+## 🗒️ 第七十九次会话（2026-08-22）：正式服 `v1.0.1.3` + GitHub
+
+**用户诉求**：推正式服；推好后把更新内容全测一遍，有问题修；最后 push GitHub。
+
+### 一、部署（不再 bump）
+
+1. 备份 `/opt/flashmuse/app-backups/20260822-190507-presync-v1.0.1.3`（145M）。
+2. staging→prod rsync。`src` md5 两边都是 `f384495350f694478ea75f3026098996`（204 文件）。voice-previews 147 个。迁移 44=44，无 pending。
+3. `up -d --build` → health `v1.0.1.3`。`.next/static` 推阿里正式镜像 42=42。
+4. `PUBLISHED_APP_VERSION=v1.0.1.3` + force-recreate。`x-app-version` = v1.0.1.3。四域名 200。
+
+### 二、正式服巡检（`12424740@qq.com`；后台 `lookxun@163.com` 只看）
+
+1. 登录进工作台，历史 52 条，console 0 error。
+2. Recraft 菜单在、副标题「2积分/张」、比例无 21:9、分辨率 1K。真跑一张出图，积分 8231→8229。
+3. 新建对话 Agent 问「你是谁」→「我是闪念…」，无 JSON、不报 Kimi/公司名。复制/重新生成按钮答完才出。
+4. 语音生成 4 个模型都在。Fish 免费出 2 秒音频，不扣分。资产库「语音生成 1」。
+5. 工作流 tldraw 打开、点节点不崩。
+6. 后台模型开关：Recraft、语音生成组、Kimi K3「Agent优先」。没动公告。
+
+没发现问题，无热修。
+
+### 三、GitHub
+
+整批 v1.0.1.0～v1.0.1.3（Recraft + 语音 + Agent/通用 + 审计修复）一次 commit + push。
+
+---
+
+## 🗒️ 第七十八次会话（2026-08-22）：本对话框收尾归纳（无新代码）
+
+**用户诉求**：把本对话框内所有做的内容写进交接文档和更新日志，让下一个 AI 能接着干。
+
+### 一、本对话框时间线
+
+1. 接手看交接：当时本地叠 74+75，测试服 `v1.0.1.1`，正式服 `v99`。
+2. **第 76 次**：全面审计生成 / 扣费 / 新语音 → 修 3 个真 bug → 部署测试服 **`v1.0.1.2`**，上号巡检不崩（没真跑生图/TTS）。
+3. **第 77 次**：用户报测试服 Agent 出很多代码 + 说话时页面往上跳 → 修完部署 **`v1.0.1.3`**，新建对话真走界面验过。
+4. 用户问流式和打字机冲不冲突 → **不冲突**（见下）。本条只写文档。
+
+### 二、第 76 次审计（别当新 bug 再改）
+
+**没问题：** 扣费公式、菜单积分和 `chargeCredits` 同一套、Recraft 参考图上限 1、图/视频路由文件、失败不先扣费、Qwen 无情绪 / Fish 无音色、后台能关音频、审核喂 `sourcePrompt`。
+
+**产品口径不是漏：** Agent/通用「自动」生图生视频用对话流列表 `[0]`（图 Seedream 4.5，视频 H3）。第 75 次用户要去掉普通/高级、跟对话流同一套开关。
+
+**修了并已在 `v1.0.1.2`：**
+- TTS 刷新/多标签同 `requestId` 会再调上游、第二次白送 → 已落库直接回；同进程共用一次调用。
+- 语音系统名前端丢掉服务端 `name` → 跟视频一样用服务端名；命名加 advisory lock。
+- Recraft/GPT `/api/v1/images` 缺 `usage.cost` 会扣 0 → `getImageModelFallbackUsd` × 张数兜底。
+
+### 三、第 77 次 Agent（已在 `v1.0.1.3`）
+
+**很多代码：** 流式抽 `content` 是人话，收尾 `parseStructuredAgentReply` 失败（或先 `cleanModelText` 把 JSON 弄坏）把整段 JSON 盖回去；前端 `data.content` 再覆盖流式正文。
+修：Agent 用原文解析；失败不吐 JSON；抽取能跨真实换行；done 还是 JSON 就留流式正文。
+老数据不回填。测试服新对话两句已是人话。
+
+**滚动：** 思考结束 `isThinking` 变 false 再 `scrollIntoView`，300px 思考条消失后又钉 360px 垫块 → 往上跳。现思考结束不滚。`wasThinkingRef`。
+
+### 四、流式 vs 打字机（用户问过，别改回去）
+
+Agent/通用走 SSE 流式（`/api/chat` `stream:true`，40ms 刷字）。渲染仍用 `TypewriterFormattedMessage`，但 **`isStreamingReply` 时 `isComplete=true`，打字机不跑**，只跟流式内容走，光标用单独一根脉冲条。`onTick` 是 `keepTypingInPlace`（空函数）。打字机只给不走流的旧路径。⛔ 别再给 Agent/通用流式叠打字机。
+
+### 五、版本与文件
+
+- `v1.0.1.1`（测试服旧）→ `v1.0.1.2`（76）→ `v1.0.1.3`（77，当前）。
+- 正式服仍 `v1.0.0.99`。未 commit。
+- 76 主要改：`api/audio/route.ts`、`chat-workbench.tsx`、`openrouter.ts`、`models.ts`（`getImageModelFallbackUsd`）。
+- 77 主要改：`openrouter.ts`、`chat-workbench.tsx`。
+
+### 六、下一个 AI
+
+1. 正式服等拍板，不再 bump。
+2. 语速别做。别把普通/高级加回去。别把 Kimi 写成 MiniMax。
+3. 写文件只用 edit/write。
+
+---
+
+## 📌 上一状态摘要（2026-08-22 第七十七次会话末）：**已部署测试服 `v1.0.1.3`；正式服仍 v99，未 commit**
+
+| | 版本 / 状态 |
+|---|---|
+| 本地 = 测试服 | **`v1.0.1.3`** |
+| 正式服 / GitHub | 仍 **`v1.0.0.99`** |
+| 自查 | `tsc` 0 |
+| 迁移 / 基建 | 无 Prisma 迁移、无 compose/nginx |
+
+本会话修 Agent JSON 当正文 + 思考结束二次滚动。已上测试服并真走界面。细节见下方第七十七次会话。
+
+---
+
+## 🗒️ 第七十七次会话（2026-08-22）：Agent 对话出代码 + 说话时滚动往上跳
+
+**用户诉求**：测试服 Agent 对话出现很多代码；思考时把页面推上去是对的，说话时要定位原地、别往上返回。本地先改，上号测，没问题部署测试服。
+
+### 一、很多代码
+
+根因：流式中只抽 `content` 是人话，收尾 `parseStructuredAgentReply` 失败（或 `cleanModelText` 先把 JSON 弄坏）就把**整段原始 JSON** 盖回去。前端 `assembled = data.content || assembled` 用脏的 done 覆盖好的流式正文。
+
+修：Agent 用原始文本解析，不再先 `cleanModelText`；解析失败不吐 JSON；流式抽取能跨真实换行；前端发现 done 还是 JSON 就留流式正文。
+
+### 二、滚动
+
+`isThinking` 从 true 变 false 会再 `scrollIntoView` 一次，思考条（300px）消失后再钉到 360px 垫块 → 画面往上跳。现：思考结束不再滚。
+
+### 三、部署 + 验
+
+`v1.0.1.2 → v1.0.1.3`。测试服新建对话两句 Agent：身份句和短剧开头都是人话，没有 `"intent"`/`"content"`。老对话里已存的 JSON 不回填。
+
+改：`openrouter.ts`、`chat-workbench.tsx`。
+
+---
+
+## 📌 上一状态摘要（2026-08-22 第七十六次会话末）：**已部署测试服 `v1.0.1.2`；正式服仍 v99，未 commit**
+
+| | 版本 / 状态 |
+|---|---|
+| 本地 = 测试服 | **`v1.0.1.2`** |
+| 正式服 / GitHub | 仍 **`v1.0.0.99`** |
+| 自查 | `tsc` 0 |
+| 迁移 / 基建 | 无 Prisma 迁移、无 compose/nginx |
+
+本会话审计 74+75 → 修 TTS 刷新白送、语音权威名、Recraft 扣费兜底 → 部署测试服。未 commit。细节见下方第七十六次会话。
+
+---
+
+## 🗒️ 第七十六次会话（2026-08-22）：审计 74+75 整批 → 修 3 个真 bug → 部署测试服 `v1.0.1.2`
+
+**用户诉求**：全面查本地这批（生成链路、扣费、新语音链路），没问题就部署测试服，可以上号测试。
+
+### 一、审计结论（没动产品口径）
+
+扣费公式、Recraft 参考图上限 1、菜单积分公式、图/视频路由文件、审核关键词、语音失败不先扣、Qwen 无情绪 / Fish 无音色、后台能关音频模型——这些没问题。
+
+Agent/通用「自动」生图生视频拿对话流列表 `[0]`（图=Seedream 4.5，视频=H3）：第 75 次用户要的「自动=模型自己定 + 跟对话流同一套开关」，不是漏改。
+
+### 二、修了 3 个真 bug
+
+1. **TTS 刷新白送**：没有 GenerationJob，`pendingRequests` 刷新会再 `POST /api/audio`，上游再出一份，`requestId` 相同只扣一次。现：已落库同 requestId 直接回上次 url；同进程进行中共用一次上游调用。
+2. **语音系统名**：服务端已 `reserveAudioName` 并返回 `name`，前端扔掉改用客户端名。现跟视频一样用服务端名。命名加了 `pg_advisory_xact_lock`。
+3. **Recraft/GPT `/api/v1/images` 缺 `usage.cost` 会 `usd=0` 白送**。现按 `IMAGE_MODEL_MENU_INFO` 单价 × 张数兜底，日志打 `usdFromFallbackPricing`。
+
+### 三、部署测试服 `v1.0.1.2`
+
+`bump v1.0.1.1 → v1.0.1.2`，整批 src + `public/voice-previews` 打包推腾讯 staging → build → `sync-ali.sh --stack=staging` → `PUBLISHED_APP_VERSION=v1.0.1.2`。`/api/health` + `x-app-version` + 首页版本号 = v1.0.1.2。无迁移、无 compose/nginx。
+
+**上号巡检（HTTPS，`12424740@qq.com`；后台 `lookxun@163.com`）：**
+1. 登录进工作台 ✅ 2. 对话历史 26 条、console 0 error ✅ 3. 工作流 tldraw 打开不崩 ✅ 4. 资产库「语音生成」分类在 ✅ 5. 后台模型开关有 K3「Agent优先」、语音生成组、0 error ✅
+⛔ **没真跑生图/生语音**（留给用户测）。
+
+### 四、主要文件
+
+改：`api/audio/route.ts`、`chat-workbench.tsx`、`openrouter.ts`、`models.ts`（`getImageModelFallbackUsd`）。
+
+### 五、下一个 AI
+
+1. 正式服等拍板，不再 bump。
+2. 真走界面验 K3 / 身份 / 生成偏好 / 闲聊流式 / TTS。
+3. 语速别做。别把普通/高级加回去。
+
+---
+
+## 📌 上一状态摘要（2026-08-22 第七十五次会话末）：**本地叠了 74+75 未提交（生成偏好 + Agent 改造）；测试服仍旧 v1.0.1.1，正式服仍 v99**
+
+| | 版本 / 状态 |
+|---|---|
+| 本地 | **`v1.0.1.1` + 第 74、75 次未提交** |
+| 测试服 | 仍 **`v1.0.1.1`** |
+| 正式服 / GitHub | 仍 **`v1.0.0.99`** |
+| 自查 | `tsc` 0 |
+| 迁移 / 基建 | 无 Prisma 迁移、无 compose/nginx |
+
+本次全本地：对话模型列表精简；反推/审核链统一；通用+Agent 自定义生成偏好；Agent 去掉普通/高级、K3 优先自动连、身份不报模型名。未 bump、未部署、未 commit。细节见下方第七十五次会话。
+
+---
+
+## 🗒️ 第七十五次会话（2026-08-22）：生成偏好 + Agent 对齐通用 + 对话模型精简（全本地，未部署）
+
+**用户诉求**：继续项目；通用去掉 GPT-4o/GPT-5.4；反推优化和语义审核 OpenRouter 统一 Terra Pro / Kimi / Grok，BytePlus 也统一成 Pro+Lite；查 OpenCode 开源规则（没有可抄的通用 agent 规则）；通用加自定义、去掉图片视频选模按钮；自定义按「生成偏好」图做（自动/比例/K/模型）；Agent 去掉普通高级、语言模型不能选、跟通用同一套图视频模型和后台开关；K3 优先；去掉 R1/Gemini Flash/GPT-5.5；K3 与 Deep 换位；身份不许报模型名/公司名；改输入框灰字；写交接文档。
+
+### 一、对话模型列表
+
+`src/lib/models.ts` 的 `models`：去掉 `openai/gpt-4o`、`openai/gpt-5.4`、`deepseek/deepseek-r1-0528`、`google/gemini-3-flash-preview`、`openai/gpt-5.5`。Kimi 与 DeepSeek V4 换位。
+
+现菜单（`frontendConversationModels`）：Seed Lite、Seed Pro、DeepSeek V4 Pro、Grok 4.6、Kimi K3、Gemini 3.1 Pro、Terra、Terra Pro。
+
+### 二、反推/优化 + 语义审核
+
+OpenRouter：`prompt.priority`=Terra Pro、`prompt.second`=Kimi、`prompt.third`=Grok（新 key）。BytePlus：第四 Pro、第五 Lite。语义审核同样五档（`moderation.second/third/seed-2-0-lite` 新 key）。默认全开。权威链 `PROMPT_TOOL_MODEL_CHAIN`；对话流反推/优化三处共用。
+
+### 三、生成偏好（自定义）
+
+通用留下对话模型按钮。图片/视频进「自定义」弹窗：标题生成偏好、自动开关、图片/视频页、按模型比例、模型下拉（带图标+常显滚动条）、K 数。自动=模型自己定参数和模型；关=按用户选的出。按钮文案自动时显示「自动」。`generalPreferenceAuto` 等进 `StoredInputSettings`，刷新保留。Agent 与通用共用这一份。
+
+### 四、Agent 改造
+
+去掉普通/高级。自定义与通用对齐。后台删独立「Agent 模式」开关组；规划走通用模式开关，生图生视频走图片/视频生成开关。`isAgentImageModelEnabled`/`isAgentVideoModelEnabled` 改成跟对话流同一套。
+
+语言模型用户不能选。`getAgentAutoChatModelIds`：**先 `moonshotai/kimi-k3`**，再菜单倒序其余。`/api/chat`、`/api/agent-plan` 服务端按这条链换模。地区不可用/无 endpoint 记跳过 30 分钟，不每句重试。后台 K3 灰字「Agent优先」。
+
+### 五、身份与灰字
+
+Agent/通用都不许报底层模型名和公司名。问你是谁/什么模型：Agent 答闪念短剧 Agent，通用答闪念通用 Agent。`toAgentPayloadMessages` 补了身份约束。
+
+输入框：Agent「说说短剧想法…」；通用「问问题、写方案、做任务…」。
+
+### 六、本地事故
+
+问「你是什么模型」曾 B_252/253 地区不可用：旧探测路径只打链首 Terra Pro；后改服务端换模。文案不再说「切换普通/高级」。
+
+### 七、主要文件
+
+改：`models.ts`、`system-settings.ts`、`openrouter.ts`、`chat-workbench.tsx`、`chat-workbench-core.tsx`、`admin-system-settings-panel.tsx`、`api/chat/route.ts`、`api/agent-plan/route.ts`、`content-moderation.ts`。
+
+### 八、下一个 AI
+
+1. 本地 ≠ 测试服，部署先 bump。验 K3 优先、身份不露馅、生成偏好、后台开关。
+2. 正式服等拍板。语速别做。别把 Kimi 写成 MiniMax。
+3. Agent=短剧；通用=万能（以后加 skill）。别把普通/高级加回去。
+
+---
+
+## 📌 上一状态摘要（2026-08-22 第七十四次会话末）：**本地叠了未提交整批（语音收尾 + Kimi/Grok + 闲聊流式）；测试服仍旧 v1.0.1.1，正式服仍 v99**
+
+| | 版本 / 状态 |
+|---|---|
+| 本地 | **`v1.0.1.1` + 本会话未提交** |
+| 测试服 | 仍 **`v1.0.1.1`**（不含本会话） |
+| 正式服 / GitHub | 仍 **`v1.0.0.99`** |
+| 自查 | `tsc` 0 |
+| 迁移 / 基建 | 无 Prisma 迁移、无 compose/nginx |
+
+本次全本地：音频刷新记住模型/音色/情绪；生成语音下载+@；语音命名 `audio_N_dXX`；通用模式 Kimi K3 + Grok 4.6；闲聊跳过规划 + Agent/通用流式；答完才出反馈按钮。未 bump、未部署、未 commit。细节见下方第七十四次会话。
+
+---
+
+## 🗒️ 第七十四次会话（2026-08-22）：语音收尾 + 通用模式 Kimi/Grok + 闲聊跳过规划/流式（全本地，未部署）
+
+**用户诉求**：继续项目；修音频模型刷新掉回 Fish；查本地起不来；升 Docker；生成语音右上角下载和 @；语音文件名每个不同并对齐图/视频；通用模式加 MiniMax K3 和 Grok 4.6（后改口是 Kimi K3，Grok 图标用 lobehub）；查对话为什么要等一分钟；闲聊跳过规划 + 流式（Agent 也一样）；思考中不要出复制/重新生成/反馈按钮；写交接文档。
+
+### 一、音频模型刷新不丢
+
+根因：保存 `inputSettings.selectedGenerationModels` 已经带 audio，加载 `applyInputSettings` 写死 `audio: DEFAULT_AUDIO_MODEL`（Fish 免费）。
+
+修法：`StoredInputSettings` 加上 audio / `selectedAudioVoice` / `selectedAudioEmotion`；加载时 `isGenerationModelOption("audio")` 还原，音色情绪 `normalize*`。
+
+文件：`chat-workbench-core.tsx`、`chat-workbench.tsx`。
+
+### 二、生成本地语音的下载 + @
+
+抽出共用 `MediaCardHoverActions`（图片那套黑底下载/@）。生成语音卡 `group` + 悬停出按钮。`@` 走 `mentionAudioIntoInput` → `addActiveUploadedMediaReference`（不能走图片那条 `mentionMediaIntoInput`）。`getDownloadName` 音频缺后缀回落 `mp3`。
+
+### 三、语音系统名对齐图/视频
+
+以前下载都叫「生成语音1」。现对齐 `image_N_dXX` / `video_N_dXX`：
+
+- `buildConversationMediaSystemName` 支持 audio → `audio_1_d37`
+- `WorkSession.nextAudioNumber`
+- `reserveMediaSystemNames` / `normalizeSessionCodesAndMediaNames` / `applySessionMediaSystemNamesToAssets` 都认 audio
+- 成功回调用 `reserveMediaSystemNames(sessionId, "audio", [url])` 写进 `mediaSystemNames`
+- `getMediaSystemName` 兼容老数据 `audioNames`
+
+### 四、通用模式对话模型
+
+OpenRouter 实测：
+
+- **Grok 4.6** = `x-ai/grok-4.6`（确认）
+- **没有 MiniMax K3**。用户后来说要的是 **Kimi K3** = `moonshotai/kimi-k3`
+- MiniMax 对话旗舰是 M3，本会话先接错过，已换成 Kimi
+
+加进 `models`（后台「通用模式」开关自动出）。图标：`kimi-icon.tsx`、`grok-icon.tsx`（lobehub SVG），`getGenerationModelIcon` 认 `moonshotai/`、`x-ai/`。
+
+### 五、对话慢 + 闲聊跳过规划 + 流式
+
+根因：通用/Agent **每句先 `/api/agent-plan` 再 `/api/chat`**，两次都走用户选的重模型，且非流式。Kimi/Grok 一加就变成一分钟。
+
+做了：
+
+1. `shouldPlanAgentTask(text)`：只有明显要生图/生视频才规划；闲聊 `needsIntentResolution=false`，只调一次。
+2. `sendToOpenRouter(..., { onDelta })` 走 SSE。`/api/chat` `stream:true` 回 `text/event-stream`。跳过规划时审核改在 `/api/chat` 里做（以前只在 agent-plan）。
+3. 前端 `readChatStream`，40ms 刷字。`streamingRequestIds` 有了就藏「正在认真思考」。
+4. 复制 / 重新生成 / 喜欢不喜欢 / 感谢反馈：**流式中或这条还在 pending 时不渲染**，答完才出。
+
+Agent 流式时先藏 JSON，用 `extractAgentStreamContent` 只吐 `content` 字段。
+
+### 六、本机 Docker
+
+启动脚本看 5432 TCP 通就以为有库。其实是半死的 `com.docker.backend` 占端口，Prisma P1001。Docker Desktop 服务停了。硬重启（杀进程 + `wsl --shutdown`）后 `flashmuse-postgres` 起来了。随后 winget 升 **4.77.0 → 4.87.0**。
+
+### 七、主要文件
+
+新：`src/components/grok-icon.tsx`、`src/components/kimi-icon.tsx`。  
+改：`models.ts`、`model-icon.tsx`、`openrouter.ts`、`api/chat/route.ts`、`chat-workbench.tsx`、`chat-workbench-core.tsx`。
+
+### 八、下一个 AI
+
+1. 本地 ≠ 测试服。部署要先 bump。闲聊/流式必须真走界面验。
+2. 正式服等拍板。语速别做。别把 Kimi K3 写成 MiniMax。
+3. 规划仍用用户当前对话模型（生图/生视频那条）；闲聊已跳过。
+
+---
+
+## 📌 上一状态摘要（2026-08-21 第七十三次会话末）：**已部署测试服 `v1.0.1.1`（语音全套 + 后台语音统计）；正式服仍 v99，未 commit**
+
+| | 版本 / 状态 |
+|---|---|
+| 本地 = 测试服 | **`v1.0.1.1`** |
+| 正式服 / GitHub | 仍 **`v1.0.0.99`** |
+| 自查 | `tsc` 0 |
+| 迁移 / 基建 | 无 Prisma 迁移、无 compose/nginx |
+
+本次：后台把语音当成和图片/视频同一类生成补齐；创作类型「语音生成」菜单内 NEW；去掉侧栏「工作流模式」NEW。已上测试服并上号点过（登录/对话/工作流点节点/资产库/后台），console 0 error。**没真跑生图。** 细节见下方第七十三次会话。
+
+---
+
+## 🗒️ 第七十三次会话（2026-08-21）：后台补齐「语音生成」统计/弹窗 + NEW 徽标 + 部署测试服 `v1.0.1.1`
+
+**用户诉求**：① 用户管理展开「历史对话」那列最下面加「所有生成语音」② 生成记录也要有 ③ 图片和视频有的、语音作为同一类生成也得有，后台全部查一遍补上 ④ 语音生成后面加 NEW（统一样式）、工作流模式后面的 NEW 去掉、外面按钮上不显示 NEW ⑤ 查完没问题就部署测试服，上号保证不崩 ⑥ 把本对话框做的事写进交接文档。
+
+### 一、后台「语音 = 图片/视频」第三种生成
+
+口径：语音生成和图片/视频生成是同一类的三种生成。后台凡是图+视频成对出现的地方，都加了语音。
+
+**做了的：**
+1. **用户管理**展开第三列最下面「所有生成语音」（点开弹窗，能播波形）。计数 = `conversationAudioCount + workflowAudioCount`。
+2. **生成记录**：顶部「语音生成总数」、表列「语音生成」、展开「对话流语音」「工作流语音」。
+3. **运营概览**：累计/今日生成语音（对话流/工作流拆分）、成功率第三档、语音趋势图。
+4. **失败排查**：语音生成失败率 + 趋势堆叠第三色。
+5. **内容审核** `kindLabel`：audio →「语音」。
+6. **积分明细**文案加「生成语音」；流水缩略图语音显示「语音」两字。`getCreditLedgerReason` 加「对话流语音生成」。
+7. **历史对话弹窗**能播消息里的 `audios`。
+
+**故意没动的（不是漏）：**
+- 积分开关 **不加 `chargeAudio`**（`credits.ts` 已写：v1 暂无独立开关、默认始终计费）。tooltip 写了「语音生成始终计费（暂无独立开关）」。
+- 生成设置里的图片/视频**压缩**不是「生成类型」，没加语音压缩。
+- 上传规则是参考素材，不是生成物。
+- 系统设置「语音生成」模型开关第七十一次已经有了。
+- 前台用户中心「生成图片 X 张 / 生成视频 Y 段」这次没改（用户说的是后台）。
+
+**计数权威：** `getFastMediaSummary` / `getMediaAssetRecordsSummary` / 概览 SQL 都按 `mediaType=audio` 且 `sourceKind` 不含 upload。本地测过测试号 `12424740@qq.com` 库里 **19 条** `conversation_audios`。
+
+**界面显示 0 那次**：用户截图展开后是 0，库里其实有 19。根因是展开缓存了加字段之前的旧详情。刷新就对了。不是计数写错。
+
+### 二、NEW 徽标
+
+- 创作类型下拉里「语音生成」后面加 `NewBadge`（青绿小圆角，跟模型菜单同一份）。
+- 外面那颗模式按钮**不显示** NEW（用户当场改口）。
+- 侧栏「工作流模式」后面的 NEW **去掉**。
+
+### 三、部署测试服 `v1.0.1.1`
+
+`bump v1.0.1.0 → v1.0.1.1`，整批 src + `public/voice-previews` 打包推腾讯 staging → build → `sync-ali.sh --stack=staging` → `PUBLISHED_APP_VERSION=v1.0.1.1`。`/api/health` = v1.0.1.1，构建产物有 `/api/audio`。无迁移、无 compose/nginx。
+
+**上号巡检（HTTPS `staging-static.venusface.com`，`12424740@qq.com`；后台 `lookxun@163.com`）：**
+1. 登录进工作台 ✅ 2. 对话历史 26 条、console 0 error ✅ 3. 工作流点节点，tldraw 不崩（无 React #310）✅ 4. 资产库「语音生成」分类在、生成图片缩略图 33/33 加载 ✅ 5. 后台概览有「累计生成语音」、生成记录有「语音生成」列 ✅  
+⛔ **没真跑生图/生语音**（用户说保证不崩，没烧积分）。
+
+### 四、主要文件
+
+新：`src/app/api/audio/route.ts`、`src/lib/openrouter-audio.ts`、`src/lib/audio-voices.ts`、`src/lib/audio-emotions.ts`、`src/components/audio-voice-picker.tsx`、`src/components/{fish-audio,qwen,recraft}-icon.tsx`、`public/voice-previews/minimax/*.mp3`（本批打包带上，上一批本地就有）。  
+改（本会话后台/徽标）：`admin-users-panel.tsx`、`admin-records-panel.tsx`、`admin-overview-2.tsx`、`admin-failure-triage-panel.tsx`、`admin-credits-panel.tsx`、`admin/page.tsx`、`user-detail/route.ts`、`admin-overview.ts`、`admin-failure-triage.ts`、`chat-workbench.tsx`。
+
+### 五、下一个 AI
+
+1. 正式服等拍板（照 `03`，**不再 bump**；staging→prod rsync）。
+2. 音频模型选择不跨刷新持久化。
+3. 语速别做。Qwen 无情绪 / Fish 无音色 / 粤语专业主持不要加回去。
+
+---
+
+
+## 📌 上一状态摘要（2026-08-21 第七十二次会话末）：**情绪下拉 + MiniMax 音色试听全语种 + 语音失败卡对齐；全本地，tsc 0，未部署未 commit**
+
+| | 版本 / 状态 |
+|---|---|
+| 本地 | **`v1.0.1.0` + 一大批未提交**（Recraft 等旧批次 + 语音第一版 + 第七十一次收尾 + 本次）；⛔ 未 bump、未部署、未 commit |
+| 测试服 | **`v1.0.1.0`** |
+| 正式服 / GitHub | 仍 **`v1.0.0.99`** |
+| 自查 | `tsc` 0 |
+| 迁移 / 基建 | 无 Prisma 迁移、无 compose/nginx 改动 |
+
+⭐⭐ **本次把语音「情绪」和 MiniMax「音色试听」做完**。Qwen 无情绪按钮、Fish 无音色按钮（官方能力，不是漏）。细节见下方第七十二次会话。
+
+---
+
+## 🗒️ 第七十二次会话（2026-08-21）：情绪下拉 + MiniMax 音色试听（五语种预录音频）+ 失败卡/资产库/输入框收尾（全本地、未部署未 commit）
+
+**用户诉求**：做情绪下拉；音色菜单改成引用那种方格并能试听；失败卡跟图片/视频统一。只动 audio。
+
+### 一、情绪（唯一权威 `src/lib/audio-emotions.ts`）
+
+- **Qwen**：官方无情绪接口 → **不显示下拉**。
+- **MiniMax**：真参数，走 OpenRouter `provider.options.minimax.emotion`。选项：默认 + 高兴/悲伤/愤怒/恐惧/厌恶/惊讶/平静。选默认不传。
+- **Fish**（免费+收费同一套）：下拉默认 + 官方 24 个基础情绪；发送时服务端往文案前塞 `[happy]`，界面/审核仍用用户原话。
+- 参数行（`MediaPromptBlock`）显示当前音色、情绪；模型没有的不显示；有情绪的模型选「默认」也显示「默认」。
+
+### 二、音色菜单 UI + 试听
+
+- 右侧改成和 `@引用资产` 一样的 5 列方格（`audio-voice-picker.tsx`），中间播放键、底下名字。
+- 选中描边 = 通用蓝 `#367cee` **2px 内边框**（不用 ring，避免最上排被 overflow 裁掉）。
+- MiniMax 官方无现成试听文件。做法 = 按音色写 3–5 秒文案、默认情绪真调 TTS，mp3 落 `public/voice-previews/minimax/`。悬停用 `AudioWaveformPlayer variant=card hideTime`：波形 + 中间红线，播放时播放键消失，不显示时间。
+- 数量：**普通话 34、粤语 4、英语 45、日语 15、韩语 49**。粤语 `Cantonese_ProfessionalHost (F)/(M)` 上游一直 502，用户确认后**从菜单去掉**。Qwen 两个音色没做预录。
+- 文案和路径：`AudioVoiceOption.previewText` + `getAudioVoicePreviewUrl`。
+
+### 三、其它收尾
+
+1. 新生成语音立刻进资产库：`addGeneratedAssets` 补 audio → `conversation_audios`（以前只图片/视频会 `setAssets`，刷新才看见）。
+2. 语音模式藏 @ 按钮；空输入提示「文本转语音，请输入要转成语音的文案...」。
+3. 对话流右上角使用量最下面加语音数量，图标 `RiMicLine`（mic-line）。
+4. 语音失败卡改走 `VideoFailedCard kind="audio"`（880×200 灰底、左上「语音生成失败」、中间蓝「重新生成」），红字在卡下面，跟图片/视频一套。
+
+### 四、还没做 / 下一个 AI
+
+1. 音频模型选择不跨刷新持久化。
+2. 部署前问用户：本地叠着 Recraft + 语音多批，一起 bump 还是分开。⛔ 没让部署就别部署。
+3. 语速别做。别把 Qwen 无情绪 / Fish 无音色当成 bug。
+
+### 五、主要文件
+
+新音频：`public/voice-previews/minimax/*.mp3`。
+改：`audio-emotions.ts`（新）、`audio-voices.ts`、`audio-voice-picker.tsx`、`audio-waveform-player.tsx`（`hideTime`）、`openrouter-audio.ts`、`api/audio/route.ts`、`chat-workbench.tsx`、`chat-workbench-core.tsx`。
+
+---
+
+## 📌 上一状态摘要（2026-08-21 第七十一次会话末）：**对话流「语音生成」收尾一大批（等待卡/提示词/音色弹窗/后台开关）；全本地，tsc 0，未部署未 commit**
+
+| | 版本 / 状态 |
+|---|---|
+| 本地 | **`v1.0.1.0` + 一大批未提交**（Recraft 等旧批次 + 第七十次语音第一版 + 那次收尾）；⛔ 未 bump、未部署、未 commit |
+| 测试服 | **`v1.0.1.0`** |
+| 正式服 / GitHub | 仍 **`v1.0.0.99`** |
+| 自查 | `tsc` 0 |
+| 迁移 / 基建 | 无 Prisma 迁移、无 compose/nginx 改动 |
+
+⭐⭐ **那次把语音生成从「能出音频」补成能用**。默认模型仍是 Fish 免费 → 没有音色按钮。
+
+---
+
+## 🗒️ 第七十一次会话（2026-08-21）：语音生成收尾（等待卡/提示词/音色/后台开关）+ 两处真 bug（全本地、未部署未 commit）
+
+**用户诉求**：继续语音生成，把没做完的做完；**千万不要影响图片/视频/Agent**。过程中又报了若干界面和拦截问题，逐条修。
+
+### 一、对话流语音模式补齐（只动 audio 分支）
+
+1. **不要打字机**：`appendAssistantMessage` 的 `shouldTypeMessage` 排除 `audio`（跟 image/video 一样）；提示词立刻出。
+2. **等待卡没有**：根因 = `appendAssistantMessage` 手写字段时**漏了 `pendingAudioCount`**（payload 传了 1，消息上永远是 undefined）。已补 `pendingAudioCount/audios/audioNames/audioPrompts`。
+3. **等待卡对齐图片/视频**：复用 `MediaWaitingCard`，加 `kind:"audio"`（880×200、左上角灰底「X%语音生成中」、无图标、字号一致）。
+4. **结果卡两端发白**：外壳 `bg-white px-5` 改成整卡 `bg-[#e6e6e6]`，跟波形中间一样灰；三卡直角 `rounded-none`。
+5. **提示词长了**：audio 走 `MediaPromptBlock`（两行截断、悬停全文、「使用提示词」）；参数行只显示模型名。
+6. **资产库**：新增分类 `conversation_audios`（对话流资产里「语音生成」），生成的语音进这里；上传音频仍是「上传音频」。规则层/计数/`workspace-state`/`media-assets`/`workspace-sessions` 同步。
+7. **重新生成**：audio 失败卡「重新生成」用原提示词 + 当前音色重跑（以前 regenerate 把 audio 当 Agent、拿上一条用户消息）。
+
+### 二、模型菜单
+
+- 图标：Fish / Qwen 用 lobehub 品牌标（新文件 `fish-audio-icon.tsx` / `qwen-icon.tsx`）；MiniMax 本来就有。
+- 排序：**Fish 免费 → Fish 收费 → Qwen → MiniMax**（最下、金色 `isGoldGenerationModel`）。
+- 默认模型 = 列表第一 = Fish 免费。
+
+### 三、后台「模型开关」
+
+视频生成下面加「语音生成」一栏（4 个 OpenRouter 模型，默认全开）。`isConversationAudioModelEnabled` + `/api/model-availability` 的 `audioModels` + `/api/audio` 关了的模型拒。前台菜单只显示已开的。
+
+### 四、音色选择（先做音色，情绪还没做）
+
+- 弹窗做成 @引用资产那种左右结构：左语言、右音色名。唯一权威 `src/lib/audio-voices.ts` + `src/components/audio-voice-picker.tsx`。
+- **Qwen Plus**：官网系统音色也只有 2 个（`longanlingxin` 龙安灵心女 / `longanlufeng` 龙安鲁风男）。OpenRouter `supported_voices` 对得上。另有 500+ 基础音色 OpenRouter **没透**，做不了。
+- **MiniMax**：官方系统表 332 个。中文方言**单独成音色的只有粤语 6 个**（四川/上海/北京没有独立 voice id；方言靠 `language_boost`，不是下拉）。本次下拉放：**普通话 34 + 粤语 6 + 英语 45 + 日语 15 + 韩语 49**。
+- **Fish**：无固定音色表 → **不显示音色按钮**。用户刷新看不到按钮 = 当前模型是 Fish 免费（默认）。
+- 发出去带 `pendingRequest.voice` → `/api/audio` → `normalizeAudioVoiceForModel` 校验后再给 OpenRouter。
+
+### 五、修的两个真 bug（会让人以为「全模式坏了」）
+
+1. ⛔ **`isModelIdentityQuestion` 原来拦所有非 general 模式**。语音提示词带「你是谁」就被抢走，固定回「前端入口：Seed 2.0 Lite…后台实际模型：Seed 2.0 Pro…」，**音频根本没发**。已改成**只有 Agent 模式**才走这句。图片/视频提示词碰巧不含这些词所以当时看着没坏。
+2. ⛔ **加载更早消息会跳到底部**：`messages.length` 变了就 `scrollIntoView` 底部。按钮改成无底小字通用蓝；加载后用 scrollHeight 差把画面钉在原地。
+
+### 六、还没做 / 下一个 AI
+
+1. **情绪下拉**（用户说音色和情绪都要做，先加了音色）。MiniMax 官方 emotion：`happy/sad/angry/fearful/disgusted/surprised/calm`（2.8 不支持 whisper）。Qwen 是文本里嵌 `[sad]` 这类标签，不是独立参数。Fish 是提示词自然语言控情绪。
+2. 音频模型选择**不跨刷新持久化**（load 时 audio 仍可能回落到 `DEFAULT_AUDIO_MODEL`=Fish 免费）。
+3. 部署前跟用户理清：本地叠着 Recraft + 语音第一版 + 本次收尾，一起 bump 还是分开。⛔ 没让部署就别部署。
+4. 语速 `speed`：OpenRouter 文档写只有 OpenAI TTS 吃，我们这 4 个会静默忽略，**别做**。
+
+### 七、改了哪些文件（方便核对，勿用 shell 写中文文件）
+
+新：`src/lib/audio-voices.ts`、`src/components/audio-voice-picker.tsx`、`src/components/qwen-icon.tsx`、`src/components/fish-audio-icon.tsx`。
+改：`chat-workbench.tsx` / `chat-workbench-core.tsx` / `models.ts` / `model-icon.tsx` / `system-settings.ts` / `admin-system-settings-panel.tsx` / `api/audio/route.ts` / `api/model-availability/route.ts` / `api/workspace-state/route.ts` / `api/media-assets/route.ts` / `workspace-sessions.ts` / `admin/.../user-detail/route.ts` / `workflow-tldraw-canvas-inner.tsx`。
+
+---
+
+## 📌 上一状态摘要（2026-08-20 第七十次会话末）：**对话流「语音生成」第一版做完（本地，tsc 0）；期间发生一次编码事故已完全恢复**
+
+| | 版本 / 状态 |
+|---|---|
+| 本地 | **`v1.0.1.0` + 一大批未提交**（Recraft 等旧批次 + 本次语音生成）；⛔ 未 bump、未部署、未 commit |
+| 测试服 | **`v1.0.1.0`** |
+| 正式服 / GitHub | 仍 **`v1.0.0.99`** |
+| 自查 | `tsc` 0；11 个音频相关文件 0 U+FFFD / 0 BOM |
+| 迁移 / 基建 | 无 Prisma 迁移、无 compose/nginx 改动 |
+
+⭐⭐ **本次给对话流接了「语音生成」(TTS) 第一版**（4 个 OpenRouter 音频模型），全本地、未部署。细节见下方第七十次会话。
+⚠️⚠️ **本次发生过一次严重编码事故（我用 PowerShell 写中文文件把 `chat-workbench.tsx` 弄坏 + `git checkout` 误删了 Recraft 未提交改动），已从测试服 v1.0.1.0 完全恢复、零损失**。由此**新增了一条最高级铁律**（AGENTS.md 顶部「写/改任何文件只准用 edit/write 工具」），下一个 AI 务必遵守。
+
+---
+
+## 🗒️ 第七十次会话（2026-08-20）：对话流接入「语音生成」(TTS) 第一版 + 一次编码事故的完整恢复（全本地、未部署未 commit）
+
+**用户诉求**：调研 OpenRouter 上的音频模型 → 选定 4 个 TTS 模型 → 在**对话流**接入「语音生成」第一版（工作流节点先不做）。前端表现：模式图标用 `mic-ai-line`；结果卡复用资产库那个 `AudioWaveformPlayer`；等待/失败/结果三卡统一 **880×200**；音色按模型写死默认（方案 B）、不做语速/情绪/克隆。
+
+### 一、选定的 4 个模型 + 关键事实（都已查官网 + OpenRouter endpoints 实测）
+
+| 模型 id | 定位 | 默认音色 | 每字符 USD |
+|---|---|---|---|
+| `minimax/speech-2.8-hd` | 音色最全(332)、中文强、**有机器人音** | `female-tianmei`（甜美女声，⚠️需实测校准） | 0.0001 |
+| `qwen/qwen-audio-3.0-tts-plus` | 中文/方言强、表现力好 | `longanlingxin`（龙安灵心女声） | 0.00002 |
+| `fish-audio/s2.1-pro` | 情绪/克隆强，**无固定音色表** | **不传 voice**（用供应商默认音色） | 0.000015 |
+| `fish-audio/s2.1-pro-free` | 同上，免费测试用 | 不传 voice | 0（免费） |
+
+- **接口**：`POST https://openrouter.ai/api/v1/audio/speech`，body `{model, input, voice?, response_format:"mp3"}`，**返回原始音频字节流（非 JSON），非 2xx 才回 JSON 错误体**。X-Generation-Id 在响应头。
+- **计费**：TTS 按**字符数**；字节响应里没有 cost → 按 `字符数 × 每字符 USD` 兜底定价。
+- **音色**：Fish 系官方**没有固定音色表**（playground 只有克隆、无音色下拉）→ OpenRouter 文档说这类供应商有默认音色，`voice` 留空即用默认；MiniMax/Qwen 传上表默认音色。
+
+### 二、后端（全新增、tsc 通过、不碰图片/视频）
+
+- **`src/lib/openrouter-audio.ts`（新）**：`generateOpenRouterAudio(text,{model,voice,requestId,userId})` → 调接口 → 音频字节转 data URL → `saveGeneratedAsset(...,"audio")` 存本地 → `syncGeneratedFilesToAli` → 返回 `{url, characters, usage:{characters,usd}}`。
+- **`src/app/api/audio/route.ts`（新）**：**同步**路由（TTS 几秒完成，不进 GenerationJob/worker）。校验模型(`isAudioModel`)→ `assertUserCanUseCredits(user,"audio")` → `enforceContentPolicy({kind:"audio"})` → 出音频 → 写 MediaAsset+UserAssetState（`mediaType:"audio"`, flow conversation, 名字 `audio_N_<code>`）→ `chargeCredits(user.id,"audio",{usd})` → 返回 `{url,name,characters,credit}`。
+- **`src/lib/models.ts`**：新增 `audioGenerationModels` / `DEFAULT_AUDIO_MODEL` / `AUDIO_MODEL_MENU_INFO`（唯一权威，含 desc/usdPerChar/defaultVoice）/ `getAudioModelSelectHint`（副标题「简介·约X积分/千字」，免费显示"免费"，接进 `getGenerationModelSelectHint` 兜底链）/ `getAudioModelDefaultVoice` / `getAudioModelUsdPerChar` / `isAudioModel`。
+- **`src/lib/local-assets.ts`**：`AssetType` 加 `"audio"`；`getAssetFolder` audio→`audios`（落到 `/generated/.../audios/`）。
+- **`src/lib/credits.ts`**：`CreditKind` 加 `"audio"`；`getChargeEnabled` 里 audio 暂**始终计费**（未加 DB 列 `chargeAudio`，以后要后台可调再加）。
+- **`src/lib/content-moderation.ts`**：`enforceContentPolicy` 与 `createEvent` 的 `kind` 加 `"audio"`。
+- **`src/lib/media-asset-record.ts`**：`classifyAsset` 生成音频 → conversation 归 `conversation_audios`（sourceKind `conversation_generation_audio`），workflow 归 `workflow_audios`。
+- **`src/lib/analytics-events.ts`**：`recordGenerationEvent` 的 `kind` 加 `"audio"`。
+- **`src/lib/upload-rules.ts`**：`UploadRuleMode` 加 `"audio"`；`getBaseUploadRule` 里 audio 分支 `makeRule({})`（**不开任何上传**，v1 不做音色克隆）。
+
+### 三、前端（在测试服 v1.0.1.0 基线上加，含第 5 个 WorkMode）
+
+- **`chat-workbench-core.tsx`**：`WorkMode` 加 `"audio"`；`isWorkMode`/`modeOptions`(图标 `RiMicAiLine`=mic-ai-line)/`modeNoticeText`/`generationModelOptions`/`isGenerationModelOption` 补 audio；`Message` 加 `audios/audioNames/audioPrompts/pendingAudioCount`；`MessageGenerationMeta.mode` 加 audio；`getGenerationModelLabel` 支持 audio；`getPreviewMediaMeta`/`MediaPromptBlock` 的 `mode` 收敛成 `"image"|"video"`（audio 不走它们）。
+- **`chat-workbench.tsx`**：所有 `Record<WorkMode,...>` / `Record<"image"|"video",...>`（selectedRatios/Resolutions/Durations/ImageCounts、selectedGenerationModels、enabledGenerationModelIds、model-availability 各处）补 audio；提交路径加 audio 分支（空文本拦截、direct 模式、generationModel 取 audio、pendingRequest prompt、appendAssistantMessage `pendingAudioCount:1`）；`runGeneration` 加 audio 成功分支（调 `/api/audio` → 写 `message.audios` + 扣分）+ catch 里 audio 失败分支；**渲染三卡**（880×200：结果=`AudioWaveformPlayer` variant=card；等待=蓝色渐变+转圈+已等待；失败=红卡+重新生成）；audio 模式隐藏 `renderImageSettingsMenu`（比例/分辨率）。
+- **模型下拉**：`renderModelMenu` 本来就按 `generationModelOptions[mode]` 渲染 → audio 自动显示 4 个模型（带 NEW/副标题）。
+
+### 四、⚠️⚠️ 编码事故 + 完整恢复（务必看，教训已升铁律）
+
+- **闯祸**：为加一句 ASCII import，我用 PowerShell `Get-Content -Raw|-replace|Set-Content -Encoding UTF8` 改 `chat-workbench.tsx` → **中文被 GBK 双重编码损坏 + 加 BOM**（违反既有铁律）。
+- **扩大损失**：`git checkout -- chat-workbench.tsx` 想恢复 → 但 HEAD=v99，**把这个文件里未提交的 Recraft（第 67 次）改动一起 revert 掉了**（本项目工作区长期叠着多批未提交改动）。
+- **恢复**：GBK 反向恢复有损（921 个 U+FFFD，弃用）→ 从**测试服 v1.0.1.0** `scp` 取回正确的 `chat-workbench.tsx`（含 Recraft）→ `Copy-Item` 字节复制到位 → 重做「第 69 次失败卡按钮居中」（本地未提交那部分，用 edit 工具套外层 `absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2` 的 div）→ 重做全部音频前端改动 → `tsc` 0、11 文件 0 乱码验证通过。
+- **未受影响**：三视图（在 core，没碰）、`models.ts` 的 Recraft+音频、其它所有文件、新建音频后端文件——全部完好。
+- ⭐ **新增最高级铁律**（AGENTS.md 顶部）：写/改任何文件只准用 edit/write 工具，shell 永不写文件；checkout/revert 前先查该文件有没有别批次的未提交改动。
+
+### 五、还没做的小尾巴（下一个 AI 接手）
+
+1. **4 个音频模型的图标**没做（现在 `getGenerationModelIcon` 命中不了 `minimax/`?其实命中，但 `fish-audio/`、`qwen/` 走通用兜底 `AiGenerate3dIcon`）。用户要求：remixicon 找不到就去 lobehub 找。建议在 `src/components/model-icon.tsx` 的 `getGenerationModelIcon` 补 minimax/qwen/fish-audio 分支（唯一权威）。
+2. **音频模型选择不跨刷新持久化**（load 时 `setSelectedGenerationModels` 的 audio 写死 `DEFAULT_AUDIO_MODEL`）——v1 可接受，要持久化需在 inputSettings 存/读里带上 audio。
+3. **默认音色需真跑校准**：尤其 MiniMax `female-tianmei` 是按 MiniMax 常见 voice id 填的、**未实测**；真调一次确认音色 id 对不对（Qwen `longanlingxin` 是 OpenRouter playground 实测的、较稳）。
+4. **未真跑过一次 TTS**（用户只让做本地，没让测）。下次要验：本地带代理跑一次（音频模型是否被地区限制未知）→ 看是否出音频、扣分是否对（回 `CreditLedger` kind=audio 对账）、资产库是否进 `conversation_audios`。
+5. 部署时：无迁移、无 compose/nginx；但**这批叠在一大堆未提交改动上**（Recraft 等），要先跟用户理清"这批和之前那些一起 bump 部署，还是分开"。
+
+---
+
+## 🗒️ 第六十九次会话（2026-08-20）：三视图左侧大脸 + 资产库失败卡「重新生成」按钮居中（都本地、未部署未 commit）
+
+**用户诉求**：两个小需求，都要求「先做本地」。
+1. 资产库角色生成的**三视图**，左侧那格人物脸太小 → 要**大脸**，让左侧显示「肩膀以上」把脸做大，更好固定脸型（区域宽度不变、只是把范围收到肩膀以上）。标杆图在 `C:\Users\ASUS\Desktop\三视图`（3 张：左边大脸特写 + 右边正/侧/背三个全身），可参考项目 `E:\project\clean_project_code`。
+2. 资产库失败卡上的「重新生成」按钮**没居中**（偏右下）。
+
+### 一、三视图第一格：半身 → 肩膀以上大脸特写
+
+- **文件**：`src/lib/chat/chat-workbench-core.tsx` 的 `getCharacterGenerationRuleText`，`ratio === "three-view"` 分支。
+- **改了 3 个模型分支的「第一位/第一格」描述**（原来都是「正面半身，从头顶到腰部」）：
+  - Seedream 4.5 分支（约 4486 行）
+  - Gemini 3 Pro Image 分支（约 4490 行）
+  - **默认分支（约 4493 行）——GPT-5.4 Image 2 走这里**
+  - 新文案统一为：「正面脸部大特写（head-and-shoulders close-up），画面范围只到肩膀以上（头顶到肩膀/锁骨），脸部要占满这一位/格的整个高度、尽量大，用于固定脸型；绝不要拍到胸部、腰部或半身。」
+  - ⭐ 后面三位（全身正/侧/背）**一个字没动**。
+- ⭐ **本地真机验证通过**：用 GPT-5.4 Image 2 真跑一张三视图 → 左边确实变成大脸特写、右边三个全身完整、构图与标杆图一致（截图见 `.playwright-mcp`）。
+
+### 二、失败卡「重新生成」按钮居中
+
+- **文件**：`src/components/chat-workbench.tsx`（约 10215 行，资产库/角色生成 modal 预览区的 `characterGenerateResult.status === "failed"` 分支）。
+- **根因（已用 computed-style 探针坐实，不是猜）**：那个按钮外面套的 `BlackHoverTooltip`，它的**基础 class 写死了 `relative inline-flex`**（`black-hover-tooltip.tsx:55`），而调用处把居中样式 `absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2` 通过 `className` 传进去。
+  ⭐⭐ **同时出现 `relative` 和 `absolute` 时，Tailwind 生成的 CSS 里 `relative` 排在 `absolute` 后面 → `relative` 赢** → 外壳变成 `position:relative`（不是 absolute）→ `left-1/2` 那套居中失效，按钮被顶到偏右下。
+  探针实测：`<div class="relative inline-flex absolute left-1/2 ...">` 的 `getComputedStyle().position` = **`relative`**。
+- **修法（不动共享组件）**：`BlackHoverTooltip` 是全站唯一实现、另有 3 处调用都靠默认 `relative`，改组件有风险 → 在调用处**外面套一个 `absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2` 的 div**，`BlackHoverTooltip` 保持默认（它是 absolute 还是 relative 都能给 tooltip 当定位上下文）。
+- ⭐ **本地真机验证通过**：用 `page.route('**/api/image')` fulfill 500 造失败卡（零成本），三视图失败卡里「重新生成」已水平+垂直居中。
+
+### 三、⭐⭐ 本地测「被地区限制的模型」怎么办（GPT-5.4 Image 2）
+
+- 本地直连出图报 **(B_243/B_244) 当前模型在你的地区不可用** —— GPT-5.4 Image 2 被上游按出口 IP 地区限制。
+- ⛔ **光开 Clash 系统代理没用**：Node 内置 fetch（undici）默认**不认**系统代理 / `HTTP_PROXY` 环境变量。
+- ⭐ **解法（Node 24）**：带代理环境变量**重启 dev 服务**即可，无需改代码：
+  `$env:HTTPS_PROXY="http://127.0.0.1:7897"; $env:HTTP_PROXY="http://127.0.0.1:7897"; $env:NODE_USE_ENV_PROXY="1"` 再 `npm run dev`。
+  （`NODE_USE_ENV_PROXY=1` 是 Node 24 让内置 fetch 走环境变量代理的开关；7897 是本机 Clash Verge 的混合代理端口，判据：`curl 127.0.0.1:7897` 返回 400 而不是超时。）
+- ⚠️ 本次为此 kill 了旧 dev（PID 会变）并用代理环境重启，纯本地临时操作、不影响代码。重启后需要重新登录一次。
+
+### 四、状态 / 自查
+
+- `npx tsc --noEmit` = 0 报错。
+- ⛔ **两处都只在本地**：未 bump、未部署测试服/正式服、未 commit（遵守"没提前说就只做本地"铁律）。
+- 改动文件：`src/lib/chat/chat-workbench-core.tsx`、`src/components/chat-workbench.tsx`（**无迁移、无 compose/nginx**）。
+
+### 五、⭐ 可升铁律的两条经验
+
+1. **`BlackHoverTooltip`（及任何基础 class 写死 `relative` 的组件）不要通过 `className` 传 `absolute` 定位** —— Tailwind CSS 源序里 `relative` 在 `absolute` 之后，二者同时出现 `relative` 必赢，定位静默失效。要么在外层套定位 div，要么改组件为「className 里带定位类时就不加 relative」。判据：`getComputedStyle(el).position` 一测便知。
+2. **本地测「被地区限制的模型」= 带 `NODE_USE_ENV_PROXY=1` + `HTTPS_PROXY` 重启 dev**（Node 24），因为 node fetch 不认系统代理。
+
+---
+
+## 🗒️ 第六十八次会话（2026-08-19）：审计上一批（Recraft 接入 + 内容审核删除）→ 修 2 个真 bug → 部署测试服 v1.0.1.0
+
+**用户诉求**：「先查一下这批改动有没有问题，主要是新模型扣费扣分对不对、上传图片数量及规格对不对，以及其它相关的，全部查清楚，需要可以自己上号测试；有问题就修复，没问题就部署到测试服。」
+
+### 一、⭐⭐ 修掉的 2 个真 bug（都是"静默不一致"这一族）
+
+**Bug 1｜Recraft 参考图上限没配，用户能选 3 张但只发 1 张（静默丢图）**
+- `upload-rules.ts` 的 `getBaseUploadRule` 里 Recraft 没有分支 → 落进 fallback（**3 张 / 8MB**），
+  而 `generateRecraftImage` 里 `slice(0, 1)` → 多传的 2 张**被静默丢掉**，界面上完全看不出来。
+- ⭐ **上游硬上限实测坐实**（不是读文档猜）：`input_references` 传 2 条 → **400
+  「No provider ... supports the requested parameter(s) ... Recraft: input_references: must have between 0 and 1 items」**。
+- **修法**：`getBaseUploadRule` 加 Recraft 分支 `image: { enabled: true, maxCount: 1, maxSizeMb: 8 }`
+  （唯一权威 → 对话流 / 资产库 / 工作流 / 服务端 `/api/image` 一次全好）。
+  ⭐ 界面判据：工作流图片节点的上传按钮从「图片 3」变成「**图片 1**」。
+  ⭐ 服务端判据（零成本）：给 Recraft 发 2 张参考图 → 400「当前模型最多支持 1 张参考图，不能上传更多图片」。
+
+**Bug 2｜对话流/资产库的图片比例菜单还给 Recraft 显示 21:9**
+- 上一批只改了「用户设置」那个下拉和工作流节点，**漏了主输入框那个比例菜单**：
+  `chat-workbench.tsx` 的 `renderImageSettingsMenu` 里
+  `currentRatioOptions = mode === "video" ? [...] : ratioOptions`（全局列表含 21:9）。
+- 后果：用户能选 21:9 → `generateRecraftImage` 把不支持的比例映射成 `aspect_ratio:"auto"`
+  → **出图比例和他选的不一样，且没有任何提示**。
+- **修法**：图片模式改成 `["智能比例", ...getSupportedImageRatios(selectedGenerationModels.image)]`
+  （general/agent 模式的模型是自动挑的，仍用全局列表）；顺手补两处归一化 ——
+  ① 加载用户 profile 时 `setDefaultImageRatio(normalizeImageRatioForModel(...))`
+  ② `startNewSession` 套用默认参数时也归一化（老账号存着 21:9 + 默认模型是 Recraft 的场景）。
+
+**顺带**：`prompt-length.ts` 给 Recraft 两个模型加**显式条目 2000**（= 全局默认，行为不变），
+注释里写下实测的上游硬上限：**10000 字**（发 20000 → 400「prompt length should be in [1, 10000]」，5000 能正常出图）。
+
+### 二、⭐ 扣费/扣分：真调上游 + 回库对账（不是读代码猜）
+
+| 项 | 结果 |
+|---|---|
+| Recraft 返回 `usage.cost` 吗 | ✅ **返回**：V4.1 = `0.035`、Pro = `0.21`（都真调了一次）→ **不存在"静默白送"** |
+| 多张会不会少收 | ✅ `n=2` 时 cost = **0.07**（按张线性，4 张 = 0.14）|
+| 菜单显示 vs 实际扣费 | ✅ **同一个公式** `round(usd × usdToCnyRate × creditsPerCny)`（`credits.ts:158` ↔ `models.ts` 的 hint）|
+| 真跑对账 | 测试服汇率 7×10 → 菜单「2积分/张」，实跑回库 **`credits=2 / usd=0.035 / cny=0.245 / imageCount=1`** ✅ |
+| 走的哪条路 | 诊断日志坐实 `api:"images"` + `url ... api/v1/images` + `aspect_ratio:"auto"`（智能比例）✅ |
+
+⭐ 其它模型的副标题也抽查过：Seedream 4.5 = 3 分（与历史真实扣费一致）、Gemini 3.1 = 约 8、GPT-5.4 Image 2 = 约 17
+（浮动计费的都标「约」，取中间常见档）。
+
+### 三、其它审计项（查过、没问题，别重复查）
+
+- **模型开关**：Recraft 走 `isConversationImageModelEnabled` 的 openrouter-only 默认分支 → **默认启用**，
+  后台「模型开关」「上传规则」「/api/model-availability」全自动包含（后台已真机确认两行都在，显示「文字 2000 / 图片 1」）。
+- **Agent 自动生图**不会用到 Recraft（`isAgentImageModelEnabled` 只放 GPT-5.4 Image 2）→ 默认行为不变。
+- **分辨率**：V4.1 只 1K、Pro 只 2K；从别的模型切过来时 `normalizeImageResolutionForModel` 会把 4K 归一化掉 ✅。
+- **尺寸表**与上游实测一致（1344×768 / 2688×1536 真机核对）。
+- **内容审核那批（session 66）**：`DELETE` 接口 + 两张表的「详细/删除」+ 去掉「加入词库」+ 不再自动清理，
+  代码逐行读过没问题；`grid-cols` 是写死字面量（真机 `gridTemplateColumns` = 7 列，没塌）。
+
+### 四、部署测试服 + 巡检（全过）
+
+- `node scripts/bump-version.mjs` → **v1.0.0.99 → `v1.0.1.0`**（⚠️ 满 100 进位，别误以为是 v1.0.0.100）。
+- 整批推 **15 个源码文件**（`git status --short -- src` 清单法打 tgz）→ build（约 2.5 分钟）→
+  `sync-ali.sh --stack=staging`（`_next/static` 42 文件 + home-assets 18）→ `.env` 置
+  `PUBLISHED_APP_VERSION=v1.0.1.0` + `force-recreate`。
+- 判据：`/api/health` = `v1.0.1.0`、`x-app-version` = `v1.0.1.0`、容器内 grep 构建产物命中新字面量「短词出图」、
+  8080 / staging-static 入口都 200。
+- **巡检 6 项**：登录 ✅ / 对话历史 ✅ / 工作流点节点不崩 ✅ / 资产库缩略图 9 张全 loaded ✅ /
+  **真跑 Recraft 出图成功扣 2 分** ✅ / 后台 ✅。**console 全程只有我自己故意造的 2 个 400**（参考图超限、审核拦截），无真错误。
+- **Recraft 必测 5 项全过**（菜单位置在 Gemini 上面、图标 + NEW、副标题积分、5 比例无 21:9、单档分辨率、真出图扣费）。
+- **审核删除功能真验了**：⭐ **零成本造样本** —— 从库里取一个词库词（`温加宝`）发一次生图 → 被拦
+  （400 `CONTENT_POLICY_BLOCKED`，**不扣积分**）→ 事件表多一条 → 调 `DELETE /admin/api/content-moderation` 删它
+  → **30 → 29，用户历史记录一条没动**。
+  ⚠️ 后台页面上那些删除按钮在**锁定态是 disabled**（整页编辑锁），这是设计如此、不是 bug。
+
+### 五、⚠️ 留痕（⛔ 别当成用户数据）
+
+- 测试服 `12424740@qq.com`：一条对话「v100巡检：一只戴红色围巾的白色小狗坐在雪地里」+ 1 张 Recraft V4.1 图，
+  **扣 2 积分**（余额 94,343）。
+- 那条被拦截的审核记录**已被我删掉**（就是用来验删除功能的）。
+- 我在 **工作流_16** 里加过一个 Recraft Pro 空节点用于验比例/上传数，**已删除、画布恢复原状**（只剩原有那个彩条节点）。
+- OpenRouter 直调探测（cost/字数/参考图上限）约 **$0.35**，走 OpenRouter 余额、不是用户积分。
+- 临时脚本已全删（`.runtime/recraft-*`、几个 `.sh`、探测用 png、两张截图）。
+
+### 六、⭐ 本次经验
+
+1. ⭐⭐ **"上游只吃 1 个"这类硬上限，必须同步写进 `upload-rules.ts`** —— 只在最底层 `slice()` 等于**静默丢用户的东西**。
+   判据一句话：**代码里有 `slice(0, N)`，就去问"规则层是不是也是 N"**。
+2. ⭐ **"按模型给选项"这种改造要把该模型的选项菜单全部数一遍**：本次上一批改了 3 处、**漏了主输入框那 1 处**
+   （对话流/资产库共用的 `renderImageSettingsMenu`）。
+3. ⭐ **验扣费的最强判据 = 上游 `usage.cost` + 库里 `CreditLedger` 那一行**（两边都取到就没有解释空间）；
+   顺手验 `n=2` 是否线性，能一次排除"多张少收"。
+4. ⭐ **造"被拦截"样本是免费的**（命中词库直接拒、不调模型不扣分）→ 验审核类功能别去删用户已有的记录。
+
+---
+
+## 📌 上一状态摘要（2026-08-19 第六十七次会话末）：**接入 Recraft V4.1 / V4.1 Pro 两个图片模型 + 给全部图片/视频模型加菜单副标题（简介·积分）；全在本地未提交/未部署**
+
+| | 版本 / 状态 |
+|---|---|
+| 测试服 / 正式服 / GitHub | **`v1.0.0.99`**（四方同步基线，没动过）|
+| 本地 | ⚠️ **`v1.0.0.99` + 两批未提交改动**：① 第66次会话的「内容审核记录不自动清理+手动删除」（3 文件）② **本次的 Recraft 接入 + 菜单副标题**（10 文件 + 1 新文件）。**未 commit / 未 build / 未部署 / 未 bump** |
+| 自查 | `tsc` 0（每步都过），`next build` 也整体过（本次早段验证过）|
+| 迁移 / 基建 | **无新 Prisma 迁移、无 compose/nginx 改动**（两批都是纯代码）|
+| 回滚点（v99）| 正式服 app `/opt/flashmuse/app-backups/20260818-141800-presync-v1.0.0.99` + 正式库 `pre-deploy-v99` |
+
+### 🎯🎯 下一个 AI 要部署（用户已交代），务必看清：
+
+⛔⛔ **本地叠了两批未提交改动，一起部署**（除非用户要求拆开）：
+1. **内容审核删除功能**（session 66）：`src/lib/content-moderation.ts`、`src/app/admin/api/content-moderation/route.ts`、`src/app/admin/admin-content-moderation-panel.tsx`
+2. **本次 Recraft + 菜单副标题**：`src/lib/models.ts`、`src/lib/openrouter.ts`、`src/lib/media-asset-record.ts`、`src/app/api/model-availability/route.ts`、`src/components/chat-workbench.tsx`、`src/components/workflow-tldraw-canvas.tsx`、`src/components/workflow-tldraw-canvas-inner.tsx`、`src/components/model-icon.tsx`、**新增 `src/components/recraft-icon.tsx`**
+
+- ⛔ **部署前先 `node scripts/bump-version.mjs`（v99 → v100）**，别往 v99 上叠（破坏"版本号一样=代码一样"）。
+- **无迁移、无 compose/nginx** → 上正式服**不需要**跑库备份（但按铁律跑一次不亏）。流程照 `03-deploy-and-servers.md`：先测试服→巡检→再 staging→prod rsync（不再 bump）→ `up -d --build` → `docker cp .next/static` 推阿里镜像（数量一致）→ 置 `PUBLISHED_APP_VERSION` + `force-recreate` → 四域名 200。
+- ⭐⭐ **Recraft 必测项（真上号，`12424740@qq.com`）**：
+  1. 对话流/工作流图片模型下拉里能看到 **Recraft V4.1 / V4.1 Pro**，排在 **Gemini 3.1 Flash 上面**，带 **Recraft 图标 + NEW 标**；
+  2. 名字下方灰字副标题：`平面设计·高美学·短词出图 · 2积分/张`（V4.1）、`意料之外的美·2K高清 · 15积分/张`（Pro）——**积分数随后台汇率**（本地库汇率7→V4.1显示2；正式服看它自己的汇率）；
+  3. 选 Recraft → 比例菜单**只有 5 个**（无 21:9）、分辨率**只有单档**（V4.1=1K / Pro=2K）；
+  4. **真跑一张 Recraft 出图**（会走 `/api/v1/images`，⛔ 不是 /chat/completions）→ 确认出图 + 扣费正常（V4.1 约2-3分、Pro 约15分）；
+  5. 顺带看别的图片/视频模型下方也都有了「简介 · X积分/张 或 /秒」灰字。
+- ⚠️ 公告在正式服**一个字都别动**（禁测铁律）。
+
+---
+
+## 🗒️ 第六十七次会话（2026-08-19）：Recraft V4.1/Pro 接入 + 模型菜单副标题（简介 + 实时积分）
+
+**用户诉求（分几轮）**：① 查 Recraft V4.1 这批模型区别 → ② 测 V4.1 / V4.1 Pro 支持哪些比例、输出尺寸，按数据接入**所有图片生成模式** → ③ 用 lobehub 的 Recraft 图标、排在 Gemini 3.1 Flash 上面、标 NEW、样式统一 → ④ 给所有图片模型加「几个字简介 + xxx积分/张」灰字副标题 → ⑤ 视频模型同规格加「简介 + xxx积分/秒」 → ⑥ 积分**按后台实时汇率算、不写死** → ⑦ 按 recraft 官网口吻定文案。
+
+### 一、Recraft 实测数据（真调 OpenRouter API，花了约 $1.26 走 OpenRouter 余额）
+
+- **只支持 5 个比例**：`1:1 / 4:3 / 3:4 / 16:9 / 9:16`（+`auto`）；**没有 21:9**；**没有 resolution 参数**（分辨率不可调）。
+- **输出尺寸**（webp）：
+  - V4.1（恒 ~1K）：1:1=1024², 4:3=1216×896, 3:4=896×1216, 16:9=1344×768, 9:16=768×1344
+  - V4.1 Pro（恒 ~2K，正好每边 ×2）：1:1=2048², 4:3=2432×1792, 3:4=1792×2432, 16:9=2688×1536, 9:16=1536×2688
+- **价格**：V4.1 = **$0.035/张**、V4.1 Pro = **$0.21/张**（endpoints 接口权威；⚠️ 比模型卡上标的贵）。参考图最多 1 张，n≤6。
+- ⛔⛔ **Recraft 不能走项目默认的 `/chat/completions` 路径**（实测 404「No endpoints found」）→ **只能走专用 `/api/v1/images`**（跟 gpt-5.4-image-2 同一条路）。
+
+### 二、代码改动（唯一权威落点）
+
+- **`src/lib/models.ts`**：
+  - `imageGenerationModels` 加 Recraft 两条，**放在 Gemini 3.1 Flash 上面**（Seedream 4.5 仍首位，`DEFAULT_IMAGE_MODEL` 不变）。
+  - `ImageModelRule` **新增 `ratios` 字段**（方案 B：按模型给可选比例）——给所有现有图片模型补 `standardImageRatios`(含21:9)，Recraft 用 `recraftImageRatios`(5个无21:9)。
+  - 新增 Recraft 尺寸表 + rule（V4.1 只 1K、Pro 只 2K）。
+  - 新增 `getSupportedImageRatios` / `normalizeImageRatioForModel`（切模型时归一化比例，不支持就回落"智能比例"）/ `isRecraftModel` / `RECRAFT_V41_MODEL_ID` / `RECRAFT_V41_PRO_MODEL_ID`。
+  - `isNewGenerationModel` 加上 Recraft（→ NEW 标自动出现在两个菜单）。
+  - **菜单副标题唯一权威**：`getImageModelSelectHint(id, usdToCnyRate?, creditsPerCny?)` + `getVideoModelSelectHint(...)` + 合并的 `getGenerationModelSelectHint(...)`。内含 `IMAGE_MODEL_MENU_INFO` / `VIDEO_MODEL_MENU_INFO`（每条 = `{desc, usd/usdPerSecond, approx?, usdHigh?}`）。积分 = `round(usd × usdToCnyRate × creditsPerCny)`，**汇率由调用方传入（不写死）**，浮动计费标「约」。
+- **`src/lib/openrouter.ts`**：新增 `generateRecraftImage`（走 `/api/v1/images`，只传 `aspect_ratio`（智能比例/不支持→`auto`）、无 size/resolution/quality、参考图1张、输出webp、按 `usage.cost` 计费）；`generateOpenRouterImage` 加 `isRecraftModel` 分支。
+- **`src/app/api/model-availability/route.ts`**：下发 `creditRate: { usdToCnyRate, creditsPerCny }`（从 `getCreditSettings()` 取，搭同趟车）。
+- **`src/components/chat-workbench.tsx`**：存 `creditRate` state（从 model-availability）；对话流/资产库图片比例改成按模型；切模型归一化比例；菜单副标题用 `getGenerationModelSelectHint(id, creditRate...)`；用户设置默认比例按模型 + 切模型归一化；`creditRate` 作为 prop 传给 `WorkflowCanvas`。
+- **`src/components/workflow-tldraw-canvas.tsx` + `-inner.tsx`**：`creditRate` 从 prop → `WorkflowModelOptions` → `WorkflowModelMenuSingle`（图片+视频节点菜单都用），副标题走 `getGenerationModelSelectHint`；工作流图片节点比例按模型 + 切模型归一化。
+- **`src/components/recraft-icon.tsx`（新）**：lobe-icons 的 Recraft 单色 SVG；接进 `model-icon.tsx` 的 `getGenerationModelIcon`（`recraft/` → RecraftIcon），三端自动一致。
+- **`src/lib/media-asset-record.ts`**：加 Recraft 两个显示名。
+
+### 三、最终文案（用户逐条定的，⛔ 别乱改）
+
+图片（`积分/张`，随汇率）：
+- Recraft V4.1 → **平面设计·高美学·短词出图**（$0.035，本地汇率7→2积分）
+- Recraft V4.1 Pro → **意料之外的美·2K高清**（$0.21→15积分）
+- Gemini 3.1 Flash → 均衡·高性价比（约）/ Gemini 3 Pro → 均衡·质感更好（约）
+- GPT-5.4 Image 2（GPT版）→ GPT优化提示·适合新手（约）/ GPT-5.4 Image 2 → 精准·可4K·多参考图（约）
+- Seedream 4.5 → 中文强·通用 / 5.0 Lite → 新版·高性价比 / 5.0 Pro → 新版·精修可控（约，给区间）
+
+视频（`积分/秒`，随汇率；Kling/H3 按秒固定价=精确，Seedance(token)/Veo=约）：
+- Seedance 2.0 Fast → 出片快·480/720p（约）/ Seedance 2.0 → 通用·最高4K（约）
+- MiniMax H3 → 2K·自带音效 / Kling v3.0 Standard → 标准·高性价比 / Kling v3.0 Pro → 高质量 / Kling Video O1 → 新版·运镜强
+- Veo 3.1 → 顶级画质·原生音频（约）
+- Seedance 2.0 Mini → 出片快·低成本（约）/ 2.5 → 新版·最长30秒（约）
+
+⭐ **积分口径**：浮动计费的模型（gemini/gpt 按 token、seedance 按分辨率、veo 带音频/4K）目前取**中间常见档（约720p / 均值）**做代表，标「约」；⚠️ 用户问过"是不是按最低分辨率算"——答：不是，是中间档。若以后要改成"低至/起步价"或区间，只改 `models.ts` 那两张表的数值。
+
+### 四、Recraft 官网口径（供以后调文案参考）
+
+recraft.ai 对 V4.1 的定位 = **"More Beautiful by Nature"**：高级美学、写实自然、**短提示词也能出好图**、3D/渐变强、矢量/文字强。家族三成员：V4.1（最有表现力、"意料之外的美"）/ V4.1 Vector（矢量）/ V4.1 Utility（简单可控、mockup）。⚠️ 官网没单列"Pro"，Pro 是 OpenRouter 侧的 2K 版。
+
+### 五、后台核对（子agent 已查证，无需手动加）
+
+Recraft 加进 `imageGenerationModels` 后，后台「系统设置→图片生成」组、「上传规则」页、`/api/model-availability`、客户端默认列表、Agent 自动生图**兜底池**全部**自动包含**（openrouter-only 开关默认启用），⛔ **不用在后台/system-settings 手动加任何东西**。Agent 自动生图**首选**故意不含 Recraft（保持默认行为）。
+
+### 六、修了个"本地起不来"（不是代码问题）
+
+`.next` 缓存损坏（第65次会话记过）+ **3000 端口被僵尸 node 进程 PID 38280 占着**（老 dev 没退）。已删 `.next` + 杀掉 38280，3000 空出来，`npm run dev` 正常。
+
+### 七、⚠️ 我自己犯的事故（已完全修复，无数据损失）
+
+改 chat-workbench 的 import 时**图省事用 PowerShell `Set-Content` 改了含中文的文件**（违反 AGENTS.md 铁律），导致全文中文 GBK 误读变 mojibake（如 `銆孈寮曠敤`）。处理：`git checkout HEAD -- chat-workbench.tsx` 取回干净版 → 用 **edit 工具逐条重新应用**本次的 10 处编辑 → 校验 U+FFFD=0 / 中文完好 / 无BOM / `git diff` 只剩预期改动 / tsc 通过。**教训：含中文文件只用 edit/write 工具或 node，绝不用 PowerShell（`Get-Content`/`Set-Content`/`-replace` 全禁）。**
+
+### 八、留痕 / 花费
+
+- 本次**只在 OpenRouter API 直接测了 Recraft**（10 张探尺寸 + 1 张探路径 + 少量），共约 **$1.26 走 OpenRouter 余额，不是用户积分**。
+- **没在任何环境做过前台生成、没动用户数据、没部署、没 commit**。
+- 临时脚本已删（`.runtime/recraft-*.mjs`）。
+
+---
+
+## 📌 上一状态摘要（2026-08-18 第六十六次会话末）
+
+| | 版本 / 状态 |
+|---|---|
+| 测试服 / **正式服** / GitHub | **`v1.0.0.99`** —— commit `5fc8886` 已 push，**四方同步的基线就是它** |
+| 本地 | ⚠️ **`v1.0.0.99` + 一批未提交改动**（本次会话后半段：内容审核记录「不自动清理 + 手动删除」）—— **未 commit / 未 build / 未部署 / 未 bump** |
+| ⚠️ 本地改动文件 | 3 个：`src/lib/content-moderation.ts`、`src/app/admin/api/content-moderation/route.ts`、`src/app/admin/admin-content-moderation-panel.tsx`。**无新 Prisma 迁移、无 compose/nginx 改动** |
+| 自查 | `tsc` 0（每步都过）；本地后台真机验证界面正常、console 0 error |
+| 回滚点（v99 那次）| 正式服 app `/opt/flashmuse/app-backups/20260818-141800-presync-v1.0.0.99` + 正式库备份 `pre-deploy-v99` |
+
+- ⚠️⚠️ **本地代码 ≠ 已部署的 v99**（本地在 v99 之上又叠了内容审核删除功能）→ **下一个 AI 要上线本批必须先 `node scripts/bump-version.mjs`（→ v100）**，⛔ 别往 v99 上叠。
+- 🆕 **本次（第六十六次会话，2026-08-18）做了两段**（详见下方顶条会话记录）：
+  **① 把第六十五次攒的那批本地改动部署上线 → 四方同步 `v1.0.0.99`**（用户中心「设置」新功能 + 后台审核表格「详细」列，带 User 表 +8 字段的迁移）。测试服 + 正式服都真上号巡检 6 项全过、console 0 error，commit `5fc8886` 已 push。
+  **② 新需求（本地未提交）：内容审核记录改「不自动清理 + 手动删除」**：
+    - 去掉审核记录 30 天自动清理（`content-moderation.ts` 删 `cleanupExpiredModerationEvents` + 两常量 + 队列里那次调用）→ **永不自动删**；
+    - 新增 `DELETE /admin/api/content-moderation`（按 id 删一条 `ContentModerationEvent`，要管理员）；
+    - **已拦截记录 + 语义审核待确认两张表**：提示词都两行截断，后面都是「**详细**」+「**删除**」按钮（删除红色、带 `window.confirm` 确认、删除中防重复点、成功后本地 `deletedIds` 过滤移除）；
+    - **去掉了语义审核表原来的「加入词库」按钮**（🗣️ 用户拍板：语义审核记录里没存"命中的词"、只有 AI 判定原因，"只加命中词"取不到词 → 干脆去掉），顺手删掉 `copyPromptToTerms` 和 `RiFileCopyLine`。
+- ⚠️ **本次踩的坑（已修，写进经验）**：我一度把表格 `grid-cols-[...]` 改成**模板字符串动态拼接** → **Tailwind 扫不到拼出来的 class、CSS 不生成、表格塌成一列竖着堆**（用户截图报的"界面出问题"）。⭐ 修法 = 改回**逐组合写死完整字面量**，并在代码里加注释钉住。原代码本来就是写死字面量、正是为了避这个坑。
+
+---
+
+## 📌 上一状态摘要（2026-08-18 第六十五次会话末）
+
+| | 版本 / 状态 |
+|---|---|
+| 测试服 / **正式服** / GitHub | **`v1.0.0.98`** —— commit `77d7357`（第六十六次会话已把它推到 v99）|
+| 本地 | 第六十五次会话攒的一批未提交改动（第六十六次会话已 bump→v99 上线）|
+| ⚠️ 迁移 | `20260817010000_user_default_workspace_prefs`（User 表 +8 字段，已随 v99 上线）|
   ① **修本地「登录后对话历史读不出来」**——根因是 dev 的 `.next` 构建缓存损坏（`routes.d.ts` 乱码 → `/api/workspace-state` 路由没注册、返 404 HTML），**删 `.next` 重启即好，不是代码问题**；顺手清了 `.runtime` 垃圾（88M→12.5M）+ 删 `.next`（596M）。
   ② **后台「内容审核 → 已拦截记录」表格**：完整提示词列改成**最多 2 行**（`line-clamp-2`，超出 `...`）+ 新增「**详细**」列按钮 → 弹窗显示完整提示词、**命中词红色高亮**（正文内高亮 + 底部单独一行）。
   ③ **用户中心「设置」新增两大功能**：**登录后默认进入哪个面板**（对话/工作流/资产库，默认对话流）+ **新建对话的默认生成参数**（图片组=模型/比例/分辨率，视频组=模型/比例/分辨率/时长，选项随模型联动）。后端 User 表加 8 字段 + 迁移；新增复用组件 **`SettingsSelect`**。
@@ -54,6 +877,49 @@
 - **活跃备忘重点**：**M041**（简繁转换会改用户自己的字，只影响繁体用户，用户拍板先记不做）、
   M038 / M039（@名正则不对称、从资产库捞回老图，都要先确认产品口径）、M032（工作流参考图静默挂不上，**根因未知，只许加日志**）。
 - 🎯🎯 **下一个 AI 的最优先任务 = 「间断性卡死」bug 的静态定位**（证据链已完整，⛔ 定位到之前只许加日志、不许改行为）。
+
+---
+
+## 第六十六次会话（2026-08-18）：把第六十五次那批部署上线（四方同步 v99）+ 内容审核记录改「不自动清理 + 手动删除」（后半段本地未提交）
+
+> | | 版本 / 状态 |
+> |---|---|
+> | 测试服 / 正式服 / GitHub | **`v1.0.0.99`**（commit `5fc8886` 已 push，四方同步基线）|
+> | 本地 | `v1.0.0.99` + **一批未提交改动**（内容审核删除功能）；`tsc` 0；⛔ 未 commit / 未 bump / 未部署 |
+> | 本地改动文件（未提交）| `src/lib/content-moderation.ts`、`src/app/admin/api/content-moderation/route.ts`、`src/app/admin/admin-content-moderation-panel.tsx`（**无新迁移、无 compose/nginx 改动**）|
+> | 回滚点（v99）| 正式服 app `/opt/flashmuse/app-backups/20260818-141800-presync-v1.0.0.99` + 正式库 `pre-deploy-v99` |
+
+🗣️ **用户指令流**：① 先看交接文档说做到哪了 → ② 「A. 部署掉吧」→ ③ 问「已拦截记录会自动清理吗」→ ④「不要自动清理，详细后面加删除按钮」→ ⑤「语义审核待确认也一样，两行字 + 详细 + 删除」→ ⑥「加入词库改成只加命中词」→（我指出语义审核没存命中词）→「直接去掉加入词库按钮」→ ⑦ 报「本地内容审核界面出问题了」→ 我修 → ⑧ 更新交接文档。
+
+### 一、部署第六十五次那批 → 四方同步 v1.0.0.99（已上线）
+
+- **改动内容**（第六十五次做的，本次负责上线）：用户中心「设置」新增登录默认面板 + 新建对话默认图片/视频参数（`SettingsSelect`、User 表 +8 字段）；后台「已拦截记录」加「完整提示词」+「详细」弹窗列；删「自动收入资产库」死开关。
+- **带 1 个 Prisma 迁移** `20260817010000_user_default_workspace_prefs`（User 表 +8 字段带默认值，纯加列、安全）。
+- **流程**（严格按 `03` 九步）：bump v98→v99 → 打包源码+迁移 tgz 推测试服 → build（迁移 Applying）→ sync-ali（42 chunk）→ 发布信号 → 巡检 → 备份正式库(`pre-deploy-v99`)+app目录 → staging→prod rsync（**src md5 完全相等 `875c03b9923a74cd2f0ae038911d39f7`**）→ build（迁移 Applying）→ 推阿里正式镜像（腾讯 42 = 阿里 42）→ 发布信号 → 四域名 200 → 巡检 → commit `5fc8886` + push。
+- **两服都真上号巡检 6 项全过、console 0 error**：登录 / 对话历史 / 工作流点节点不崩 / 资产库 / **真跑生图成功** / 后台内容审核页。新功能真机验过：设置登录默认 + 图片/视频默认参数（下拉能开、新建对话真套用）；后台「详细」弹窗正常开关。
+- ⛔ 正式服公告一个字没动、没保存任何后台配置。
+- ⚠️ 测试留痕：测试服 + 正式服各一条「v99巡检：一只戴帽子的橘色小猫坐在书桌上」+1图。
+
+### 二、内容审核记录「不自动清理 + 手动删除」（本地未提交，⛔ 未 bump/未部署）
+
+原来 `MODERATION_EVENT_RETENTION_DAYS=30` + 每小时清一次的 `cleanupExpiredModerationEvents`（挂在语义审核队列 tick 里）。用户拍板改成不自动清理 + 手动删。改了 3 个文件：
+
+1. **`src/lib/content-moderation.ts`**：删掉 `cleanupExpiredModerationEvents` 函数 + `MODERATION_EVENT_RETENTION_DAYS`/`MODERATION_CLEANUP_INTERVAL_MS`/`lastCleanupAt` + 队列里那次调用 → **审核记录永不自动删**。
+2. **`src/app/admin/api/content-moderation/route.ts`**：新增 `export async function DELETE`（`requireAdmin` + 按 body.id `DELETE FROM "ContentModerationEvent"`）。
+3. **`src/app/admin/admin-content-moderation-panel.tsx`**：加 `deletedIds`/`deletingId` 状态 + `deleteEvent`（`window.confirm` → `fetch DELETE` → 成功加进 `deletedIds` 过滤移除）；`EventTable` 把 `showDetail` 从 `showMatchedTerm` 解耦 + 加 `onDelete`/`deletingId`；**两张表**（已拦截记录 + 语义审核待确认）现在都是提示词两行截断 + 「详细」+「删除」列（删除红色、二次确认、删除中防重复点）；**去掉语义审核表的「加入词库」按钮**（🗣️ 语义审核 `matchedTerm` 恒 null，"只加命中词"取不到词）→ 顺手删 `copyPromptToTerms` 和 `RiFileCopyLine`。
+
+### 三、⛔ 我踩的坑（用户截图报"界面出问题"）—— 已修
+
+- **现象**：本地后台已拦截记录整张表塌成一列、每个格子竖着堆。
+- **根因**：我把 `EventTable` 的 `grid-cols-[...]` 从写死的完整字面量改成了**模板字符串动态拼接** → ⛔⛔ **Tailwind 只识别源码里出现的完整 class 字面量，拼出来的扫不到 → CSS 不生成 → grid 回落单列**。
+- **修法**：改回**逐组合写死完整字面量**（详细+删除 / 只详细 / 只删除 / 都无），加注释钉住。刷新后正常、console 0 error。
+- ⭐ **教训（可升铁律）**：**Tailwind 的 `grid-cols-[...]` / 任意值 class 绝不能用模板字符串/变量拼**，要多种组合就每种写死一个完整字面量。
+
+### 四、下一个 AI 的衔接要点
+
+- 本地那 3 个文件的改动**没 bump/没部署/没提交** → 要上线先 `node scripts/bump-version.mjs`（v99→**v100**），走「测试服→正式服」；**这批无迁移、无 compose/nginx 改动**。
+- 内容审核两张表现在都能逐条手动删（删 `ContentModerationEvent` 行、不可恢复）；**不再自动清理**，表会一直增长——以后太大可考虑加「批量删/按时间清」入口（用户目前只要了逐条删）。
+- 删除按钮受页面编辑锁约束（锁定时整页 `pointer-events-none`），和其它编辑操作一致。
 
 ---
 

@@ -42,6 +42,7 @@ type WorkflowCanvasProps = {
   enabledVideoModelIds?: string[];
   uploadRuleOverrides?: UploadRuleOverrides;
   promptLengthOverrides?: PromptLengthOverrides;
+  creditRate?: { usdToCnyRate: number; creditsPerCny: number };
   editModelToggles?: Record<string, boolean>;
   leftSidebarVisible?: boolean;
   leftSidebarToggleLabel?: string;

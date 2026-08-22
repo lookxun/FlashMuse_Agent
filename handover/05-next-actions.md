@@ -2,30 +2,299 @@
 
 > 历史 END-OF-SESSION 记录都在 `historical-handover-docs-last-used-2026-07-21/05-next-actions.md`（很长）。这里只留当前有效待办。
 
-## ✅ 当前状态（2026-08-18 第六十六次会话末）：**本地 = 测试服 = 正式服 = GitHub 全部 `v1.0.0.99`（四方同步）**
+## ✅ 当前状态（2026-08-22 第七十九次会话末）：**四方同步 `v1.0.1.3`**
 
 | | 版本 / 状态 |
 |---|---|
-| 本地 / 测试服 / 正式服 / GitHub | **`v1.0.0.99`** —— **四方同步**；工作区干净 |
-| 判据 | staging→prod 对齐后 `src/` 逐文件 md5 完全相等（`875c03b9923a74cd2f0ae038911d39f7`）|
+| 本地 = 测试服 = 正式服 = GitHub | **`v1.0.1.3`** |
 | 自查 | `tsc` 0 |
-| 迁移 / 基建 | ⭐ **带 1 个 Prisma 迁移**（`20260817010000_user_default_workspace_prefs`，User 表 +8 字段，两服都已 Applying）；无 compose/nginx 改动；两服 `.env` 的 `PUBLISHED_APP_VERSION` 已改 v99 |
-| 回滚点 | 正式服 app `/opt/flashmuse/app-backups/20260818-141800-presync-v1.0.0.99` + 正式库备份 `pre-deploy-v99`（EXIT=0，异地已同步）|
+| 迁移 / 基建 | 无 Prisma 迁移、无 compose/nginx |
+| 回滚点 | 正式服 app `/opt/flashmuse/app-backups/20260822-190507-presync-v1.0.1.3`（145M） |
 
-🎯 **本次 = 把第六十五次会话攒下的一批本地改动（后台审核表格 + 用户中心「设置」新功能，含 8 字段迁移）bump 到 v99 → 部署测试服 → 同步正式服 → commit/push，四方同步完成。**
+### 🎯 待办 0
 
-- ✅ 两服都真上号巡检 6 项全过（登录 / 对话历史 / 工作流点节点不崩 / 资产库 / **真跑生图成功** / 后台内容审核页）；**console 全程 0 error**。
-- ✅ 新功能真机验过：用户中心「设置」登录默认面板 + 图片/视频默认参数（下拉能开、新建对话真套用默认参数）；后台「已拦截记录」新增「完整提示词」+「详细」弹窗列（详细弹窗正常打开、关闭）。
-- ⛔ 正式服公告一个字没动、没保存任何后台配置。
-- ⚠️ 测试留痕（⛔ 别当用户数据）：测试服对话「v99巡检：一只戴帽子的橘色小猫坐在书桌上」+1 图；正式服对话「v99正式服巡检：一只戴帽子的橘色小猫坐在书桌上」+1 图。
+1. 无待部署。老对话里已存成 JSON 的 Agent 消息不回填。
+2. 语速别做。Kimi 别写成 MiniMax。
+3. Agent/通用已经流式出字，**别再给流式回复叠打字机**。
+4. Agent/通用「自动」生视频默认是对话流列表第一项（现 H3），别改回独立 Agent 档位链，除非用户改口。
+5. ⛔ 正式服公告别动。
+
+---
+
+## ⏪ 上一状态（2026-08-22 第七十八次会话末）：**本对话框收尾；本地 = 测试服 `v1.0.1.3`；正式服仍 v99，未 commit**
+
+| | 版本 / 状态 |
+|---|---|
+| 本地 = 测试服 | **`v1.0.1.3`** |
+| 正式服 / GitHub | 仍 **`v1.0.0.99`** |
+| 自查 | `tsc` 0 |
+| 迁移 / 基建 | 无 Prisma 迁移、无 compose/nginx |
+| 回滚点 | 正式服 app `/opt/flashmuse/app-backups/20260818-141800-presync-v1.0.0.99` + 正式库 `pre-deploy-v99` |
+
+当时待办：正式服等拍板（本会话已做）。
+
+### ⚠️ 血泪教训（本对话框仍有效）
+
+写/改文件只准 edit/write。Agent 收尾解析失败把整段 JSON 当正文 = 「对话后出现很多代码」。`cleanModelText` 不能先拿整段 JSON 去洗。思考结束不要再 `scrollIntoView`。
+
+---
+
+## ⏪ 上一状态（2026-08-22 第七十七次会话末）：**已部署测试服 `v1.0.1.3`；正式服仍 v99，未 commit**
+
+| | 版本 / 状态 |
+|---|---|
+| 本地 = 测试服 | **`v1.0.1.3`** |
+| 正式服 / GitHub | 仍 **`v1.0.0.99`** |
+| 自查 | `tsc` 0 |
+| 迁移 / 基建 | 无 Prisma 迁移、无 compose/nginx |
+| 回滚点 | 正式服 app `/opt/flashmuse/app-backups/20260818-141800-presync-v1.0.0.99` + 正式库 `pre-deploy-v99` |
+
+### 🎯 待办 0
+
+1. 正式服等拍板（不再 bump）。⛔ 正式服公告别动。
+2. 老对话里已经存成 JSON 的 Agent 消息不会自动变，只修新回复。
+3. 语速别做。
+
+---
+
+## ⏪ 上一状态（2026-08-22 第七十六次会话末）：**已部署测试服 `v1.0.1.2`；正式服仍 v99，未 commit**
+
+| | 版本 / 状态 |
+|---|---|
+| 本地 = 测试服 | **`v1.0.1.2`** |
+| 正式服 / GitHub | 仍 **`v1.0.0.99`** |
+| 自查 | `tsc` 0 |
+| 迁移 / 基建 | 无 Prisma 迁移、无 compose/nginx |
+| 回滚点 | 正式服 app `/opt/flashmuse/app-backups/20260818-141800-presync-v1.0.0.99` + 正式库 `pre-deploy-v99` |
+
+### 🎯 待办 0
+
+1. 真走界面验：Agent 先 K3、问「你是什么模型」只答闪念、生成偏好自动/手动、闲聊流式、TTS 出声+扣费对账。
+2. 正式服等拍板（不再 bump，staging→prod 原样同步）。⛔ 正式服公告别动。
+3. 语速别做。Kimi 别写成 MiniMax。Agent/通用自动生视频默认是对话流列表第一项（现为 H3）。
+
+---
+
+## ⏪ 上一状态（2026-08-22 第七十五次会话末）：**本地叠了 74+75 未提交；测试服仍旧 v1.0.1.1，正式服仍 v99**
+
+| | 版本 / 状态 |
+|---|---|
+| 本地 | **`v1.0.1.1` + 第 74、75 次未提交**（⛔ 未 bump、未部署、未 commit） |
+| 测试服 | 仍 **`v1.0.1.1`** |
+| 正式服 / GitHub | 仍 **`v1.0.0.99`** |
+| 自查 | `tsc` 0 |
+| 迁移 / 基建 | 无 Prisma 迁移、无 compose/nginx |
+| 回滚点 | 正式服 app `/opt/flashmuse/app-backups/20260818-141800-presync-v1.0.0.99` + 正式库 `pre-deploy-v99` |
+
+⭐ 本会话细节 → `CHANGELOG_3.md` 第七十五次会话。
+
+### 🎯 待办 0
+
+1. ⚠️ **本地 ≠ 测试服**。要上线先问一起 bump 还是拆。正常：`node scripts/bump-version.mjs` → 测服 → 真走界面验 → 再正式服（正式服不再 bump）。
+2. 建议验：Agent 先走 K3、地区不可用会换下一个且下一句不再重试已跳过的；问「你是什么模型」只答闪念、不报 Kimi/月之暗面；生成偏好自动/手动出图参数对；后台 K3 有「Agent优先」、没有独立 Agent 开关组。闲聊/流式第 74 次那批也还没真走界面验。
+3. 正式服等拍板。无迁移、无 compose/nginx。⛔ 正式服公告别动。
+4. 语速别做。Kimi K3 别写成 MiniMax。Agent 是短剧 Agent，通用是万能任务（以后加 skill）。
+
+### ⚠️ 血泪教训（仍有效）
+
+写/改任何文件只准用 edit/write。Agent 自动链若从 Terra Pro 起、又不在服务端换模 = 每句地区不可用。身份探测路径不要只打一个模型。
+
+---
+
+## ⏪ 上一状态（2026-08-22 第七十四次会话末）：**本地叠了未提交整批；测试服仍旧 v1.0.1.1，正式服仍 v99**
+
+| | 版本 / 状态 |
+|---|---|
+| 本地 | **`v1.0.1.1` + 本会话未提交**（⛔ 未 bump、未部署、未 commit） |
+| 测试服 | 仍 **`v1.0.1.1`**（不含本会话） |
+| 正式服 / GitHub | 仍 **`v1.0.0.99`** |
+| 自查 | `tsc` 0 |
+| 迁移 / 基建 | 无 Prisma 迁移、无 compose/nginx |
+| 回滚点 | 正式服 app `/opt/flashmuse/app-backups/20260818-141800-presync-v1.0.0.99` + 正式库 `pre-deploy-v99` |
+
+⭐ 本会话细节 → `CHANGELOG_3.md` 第七十四次会话。
+
+### 🎯 待办 0
+
+1. ⚠️ **本地 ≠ 测试服**。要上线先问用户：一起 bump 还是拆。正常：`node scripts/bump-version.mjs` → 测服 → 真走界面验闲聊/流式/Kimi/Grok/语音下载命名 → 再正式服（正式服**不再 bump**）。
+2. 闲聊跳过规划 + 流式 **还没真走界面验**。建议验：闲聊只打一次 `/api/chat`（stream）；说「生成一张图」仍走 `/api/agent-plan`；字是边出边写；思考中没有复制/重新生成/反馈按钮。
+3. 正式服等拍板。无迁移、无 compose/nginx。⛔ 正式服公告一个字别动。上正式服巡检要真跑一次生图；动过语音就再跑一次 TTS。
+4. 语速别做。Qwen 无情绪、Fish 无音色。粤语专业主持不要加回。Kimi K3 别再写成 MiniMax。
+
+### ⚠️ 血泪教训（仍有效）
+
+写/改任何文件只准用 edit/write 工具，shell 永不写文件；`git checkout`/revert 前先 `git status`。
+本机 5432 通 ≠ Postgres 在跑（Docker 半死进程会占端口）。启动脚本只测 TCP 会误判。
+
+---
+
+## ⏪ 上一状态（2026-08-21 第七十三次会话末）：**已部署测试服 `v1.0.1.1`；正式服仍 v99，未 commit**
+
+当时待办：音频模型刷新不持久化（本会话已修）；正式服等拍板。
+
+---
+
+## ⏪ 上一状态（2026-08-21 第七十二次会话末）：**情绪下拉 + MiniMax 音色试听全语种 + 失败卡对齐；全本地 tsc 0，未部署未 commit**
+
+| | 版本 / 状态 |
+|---|---|
+| 本地 | **`v1.0.1.0` + 一大批未提交**（Recraft + 语音第一版 + 第七十一次收尾 + 本次）；⛔ 未 bump、未部署、未 commit |
+| 测试服 | **`v1.0.1.0`** |
+| 正式服 / GitHub | 仍 **`v1.0.0.99`** |
+| 自查 | `tsc` 0 |
+| 迁移 / 基建 | 无 Prisma 迁移、无 compose/nginx 改动 |
+| 回滚点 | 正式服 app `/opt/flashmuse/app-backups/20260818-141800-presync-v1.0.0.99` + 正式库 `pre-deploy-v99` |
+
+⭐⭐ 本次 = 情绪下拉 + MiniMax 五种语言试听预录音频 + 语音失败卡对齐图片/视频。细节 → `CHANGELOG_3.md` 顶条（第七十二次会话）。
+
+### 🎯 待办 0（本次）
+
+1. 音频模型选择**不跨刷新持久化**（load 时 audio 可能回落到 Fish 免费）。
+2. ⚠️ **本地叠着多批未提交**（Recraft + 语音第一版 + 收尾 + 本次）→ 部署前先问一起 bump 还是分开。⛔ 没让部署就别部署、别测烧钱。
+3. 语速 `speed` 别做。Qwen 没有情绪下拉、Fish 没有音色按钮 = 官方能力如此，别当漏了。
+4. Qwen 两个音色没有预录音频（用户没让做）。粤语专业主持两个已从菜单去掉，别加回去。
+
+### ⚠️ 血泪教训（仍有效）
+
+写/改任何文件只准用 edit/write 工具，shell 永不写文件；`git checkout`/revert 前先 `git status`。
+
+---
+
+## ⏪ 上一状态（2026-08-21 第七十一次会话末）：**语音生成收尾一大批（等待卡/提示词/音色弹窗/后台开关）；全本地 tsc 0，未部署未 commit**
+
+情绪下拉当时还没做。已修：身份句拦语音、`pendingAudioCount` 漏写。
+
+---
+
+## ⏪ 上一状态（2026-08-20 第七十次会话末）：**对话流「语音生成」第一版做完（本地，tsc 0）；期间一次编码事故已完全恢复零损失**
+
+| | 版本 / 状态 |
+|---|---|
+| 本地 | **`v1.0.1.0` + 一大批未提交**（Recraft 旧批次 + 本次语音生成）；⛔ 未 bump、未部署、未 commit |
+| 测试服 | **`v1.0.1.0`** |
+| 正式服 / GitHub | 仍 **`v1.0.0.99`** |
+| 自查 | `tsc` 0；11 个音频相关文件 0 U+FFFD / 0 BOM |
+| 迁移 / 基建 | 无 Prisma 迁移、无 compose/nginx 改动 |
+| 回滚点 | 正式服 app `/opt/flashmuse/app-backups/20260818-141800-presync-v1.0.0.99` + 正式库 `pre-deploy-v99` |
+
+⭐⭐ 本次 = **对话流接入「语音生成」(TTS) 第一版**（4 个 OpenRouter 音频模型：MiniMax Speech 2.8 HD / Qwen Audio 3.0 TTS Plus / Fish Audio S2.1 Pro / Fish 免费版）。全本地、未部署未 commit。细节、事故恢复、还没做的小尾巴 → `CHANGELOG_3.md` 顶条（第七十次会话，五节）。
+
+### 🎯 待办 0（本次新增）：语音生成第一版的收尾 + 首次真跑验证
+
+1. **4 个音频模型图标**（用户要 remixicon，找不到去 lobehub）：改 `src/components/model-icon.tsx` 的 `getGenerationModelIcon`（唯一权威）补 `minimax/` `qwen/` `fish-audio/` 分支。
+2. **首次真跑一次 TTS**（本地，可能要带代理——音频模型是否被地区限制未知）：验出音频 + 扣分对账（`CreditLedger` kind=`audio`）+ 进资产库 `conversation_audios` + 三卡样式（880×200）。
+3. **默认音色校准**：MiniMax `female-tianmei` 未实测，真调一次确认 voice id（Qwen `longanlingxin` 已由 playground 实测）。
+4. （可选）音频模型选择跨刷新持久化。
+5. ⚠️ **本地现在叠着多批未提交改动**（Recraft 等 + 语音生成）→ 部署前先跟用户理清"一起 bump 还是分开"。
+
+### ⚠️ 血泪教训（已升 AGENTS.md 最高级铁律）
+
+本次我用 PowerShell 写含中文的 `chat-workbench.tsx` → 整份中文损坏；补救时 `git checkout` 又误删了该文件里未提交的 Recraft 改动。已从测试服 v1.0.1.0 完整恢复。**下一个 AI：写/改任何文件只准用 edit/write 工具，shell 永不写文件；`git checkout`/revert 单个文件前先 `git status` 看它有没有别批次的未提交改动。**
+
+---
+
+## ⏪ 上一状态（2026-08-20 第六十九次会话末）：**又加了 2 个本地小改动（三视图大脸 + 失败卡按钮居中）；测试服仍 v1.0.1.0、正式服仍 v99**
+
+### 🎯🎯 待办 0（本次新增，等用户拍板）：把本次这两处小改动一起部署
+
+⚠️ **现在有两批待部署**：① 待办 1 的 v1.0.1.0（已在测试服）② 本次两处小改动（本地、未 bump）。
+**先问用户**：这两批一起推正式服，还是分开？若一起 → 本地这两处直接跟着 v1.0.1.0 上（v1.0.1.0 已经在测试服跑过巡检，本次两处只是加在其上、无迁移无基建改动，测试服重新同步一次再巡检即可，⛔ 是否 bump 看用户，正常做法：本地既然还叫 v1.0.1.0 且测试服也是 v1.0.1.0，要区分就得 bump 一版，否则会破坏"版本号一样=代码一样"的核心约定）。
+
+### 🎯🎯 待办 1（等用户拍板）：把 `v1.0.1.0` 推正式服 + commit
+
+测试服已巡检 6 项 + Recraft 必测全过（含真跑出图、扣费对账、服务端拦截、后台删除功能）。
+正式服步骤（照 `03-deploy-and-servers.md`，⛔ **不再 bump**）：
+
+1. 备份 app：`sudo cp -r /opt/flashmuse/app /opt/flashmuse/app-backups/<ts>-presync-v1.0.1.0`（无迁移，库备份可选）。
+2. staging→prod rsync → ⭐ **判据：prod 的 `src/` 逐文件 md5 = staging**。
+3. `up -d --build flashmuse-app` → `/api/health` = v1.0.1.0。
+4. `docker cp .next/static` 推阿里**正式**镜像 `flashmuse-static`（腾讯文件数 = 阿里文件数）。
+5. `/opt/flashmuse/.env` 的 `PUBLISHED_APP_VERSION=v1.0.1.0` + `force-recreate` → 四域名 200。
+6. 正式服**真上号**巡检 6 项 + Recraft 必测（正式服汇率不同 → 菜单积分数会不一样，按它自己的汇率对账）。
+   ⛔ 公告一个字都别动。
+7. commit + push（15 个源码文件 + 交接文档）。
+
+---
+
+## ⏪ 上一状态（2026-08-19 第六十七次会话末）：**Recraft V4.1/Pro 接入 + 模型菜单副标题；本地两批未提交，下一个 AI 要部署**
+
+| | 版本 / 状态 |
+|---|---|
+| 测试服 / 正式服 / GitHub | **`v1.0.0.99`**（四方同步基线，没动）|
+| 本地 | ⚠️ **`v1.0.0.99` + 两批未提交**：① 内容审核删除功能（session66，3文件）② 本次 Recraft + 菜单副标题（10文件 + 新 `recraft-icon.tsx`）；`tsc` 0 |
+| 迁移 / 基建 | 无新 Prisma 迁移、无 compose/nginx 改动 |
+| 回滚点 | 正式服 app `/opt/flashmuse/app-backups/20260818-141800-presync-v1.0.0.99` + 正式库 `pre-deploy-v99` |
+
+### 🎯🎯🎯 待办 1（最优先，用户已交代要部署）：把这两批一起上测试服 → 正式服
+
+**这次要部署的全部文件（两批）**：
+```
+# 批1 内容审核删除功能（session66）
+src/lib/content-moderation.ts
+src/app/admin/api/content-moderation/route.ts
+src/app/admin/admin-content-moderation-panel.tsx
+# 批2 Recraft + 菜单副标题（本次）
+src/lib/models.ts
+src/lib/openrouter.ts
+src/lib/media-asset-record.ts
+src/app/api/model-availability/route.ts
+src/components/chat-workbench.tsx
+src/components/workflow-tldraw-canvas.tsx
+src/components/workflow-tldraw-canvas-inner.tsx
+src/components/model-icon.tsx
+src/components/recraft-icon.tsx   # 新文件
+```
+
+**步骤（照 `03-deploy-and-servers.md`）**：
+1. ⛔ **先 `node scripts/bump-version.mjs`（v99 → v100）** —— 别往 v99 上叠。
+2. **无 Prisma 迁移、无 compose/nginx** → 上正式服**不需要**库备份（按铁律跑一次也行）。
+3. 测试服：打包 → scp → grep 确认版本号在服务器源码 → 后台 build → `sync-ali.sh --stack=staging` → 写 `PUBLISHED_APP_VERSION=v1.0.0.100` + `force-recreate` → 验 `/api/health` version + `x-app-version` + 8080/https 200。
+4. 测试服**真上号巡检 6 项 + Recraft 必测 5 项**（见下），OK 再上正式服。
+5. 正式服：备份 app → staging→prod rsync（**不再 bump**）→ 判据 prod `src/` md5 = staging → `up -d --build`（health=v100）→ `docker cp .next/static` 推阿里正式镜像（数量一致）→ 置 `PUBLISHED_APP_VERSION` + `force-recreate` → 四域名 200 → **正式服也真上号巡检 + Recraft 必测** → commit + push。
+
+**⭐⭐ Recraft 必测 5 项（真上号 `12424740@qq.com`）**：
+1. 图片模型下拉有 **Recraft V4.1 / V4.1 Pro**，排在 **Gemini 3.1 Flash 上面**，带 **Recraft 图标 + NEW 标**；
+2. 名字下方灰字：`平面设计·高美学·短词出图 · X积分/张`（V4.1）、`意料之外的美·2K高清 · X积分/张`（Pro）——**积分随后台汇率**；顺带看别的图片/视频模型也有「简介 · X积分/张 或 /秒」；
+3. 选 Recraft → 比例菜单**只 5 个**（无 21:9）、分辨率**单档**（V4.1=1K / Pro=2K）；
+4. **真跑一张 Recraft 出图**（走 `/api/v1/images`）→ 出图 + 扣费正常（V4.1 约2-3分 / Pro 约15分）；
+5. 内容审核后台两张表（已拦截 / 语义待确认）能「详细」弹窗 + 逐条「删除」，且**不再30天自动清理**。
+⛔ 公告在正式服**一个字都别动**（禁测铁律）。
+
+---
+
+## ⏪ 上一状态（2026-08-18 第六十六次会话末）：**已部署 `v1.0.0.99` 四方同步；本地另有一批未提交改动（内容审核删除功能）**
+
+| | 版本 / 状态 |
+|---|---|
+| 测试服 / 正式服 / GitHub | **`v1.0.0.99`** —— 四方同步基线；commit `5fc8886` 已 push；staging→prod `src` md5 完全相等（`875c03b9923a74cd2f0ae038911d39f7`）|
+| 本地 | ⚠️ **`v1.0.0.99` + 未提交改动**（内容审核「不自动清理 + 手动删除」）；`tsc` 0；⛔ 未 commit / 未 bump / 未部署 |
+| 本地改动文件 | `src/lib/content-moderation.ts`、`src/app/admin/api/content-moderation/route.ts`、`src/app/admin/admin-content-moderation-panel.tsx`（**无新迁移、无 compose/nginx 改动**）|
+| 回滚点（v99）| 正式服 app `/opt/flashmuse/app-backups/20260818-141800-presync-v1.0.0.99` + 正式库 `pre-deploy-v99`（EXIT=0，异地已同步）|
+
+🎯 **本次两段**（细节在 `CHANGELOG_3.md` 顶条，第六十六次会话，四节）：
+
+1. **把第六十五次会话攒下的一批本地改动（用户中心「设置」新功能 + 后台审核「详细」列，含 8 字段迁移）bump→v99 部署上线，四方同步完成。** 两服巡检 6 项全过、console 0 error、真跑生图成功。⛔ 正式服公告没动。
+2. **（本地未提交）内容审核记录改「不自动清理 + 手动删除」**：去掉 30 天自动清理 → 永不自动删；新增 `DELETE` 接口按 id 删记录；已拦截记录 + 语义审核待确认两张表都改成「提示词两行 + 详细 + 删除」按钮；去掉语义审核表的「加入词库」按钮。
+
+### ⚠️ 下一个 AI 衔接要点
+
+- ⛔⛔ **本地代码 ≠ 已部署 v99**（本地在 v99 之上又叠了内容审核删除功能）→ 要上线本批**先 `node scripts/bump-version.mjs`（→ v100）**再走「测试服→正式服」，⛔ 别往 v99 上叠。**这批无迁移、无 compose/nginx 改动，比 v99 简单。**
+- 内容审核两张表现在逐条手动删（删 `ContentModerationEvent` 行、不可恢复）、**不再自动清理**——表会一直长，以后太大可加「批量删/按时间清」入口（用户目前只要逐条删）。删除按钮受页面编辑锁约束（锁定时整页 `pointer-events-none`）。
+- ⭐ **踩坑教训（可升铁律）**：Tailwind 的 `grid-cols-[...]` 任意值 class **绝不能用模板字符串/变量拼**（Tailwind 扫不到 → CSS 不生成 → 表格塌成一列），每种组合写死完整字面量。
 
 🎯🎯 **下一个 AI 的最优先任务仍是「间断性卡死」bug 的静态定位**（见下方待办 1，⛔ 只许加日志不许改行为）。
 
 ---
 
+## ⏪ 上一状态（2026-08-18 第六十六次会话中·部署完 v99 时的快照）：**四方同步 `v1.0.0.99`**
+
+（此后本地又叠了内容审核删除功能，见上方最新状态。）
+
+---
+
 ## ⏪ 上一状态（2026-08-18 第六十五次会话末）：**测试服 = 正式服 = GitHub `v1.0.0.98`；本地 = v98 + 一批未提交改动**
 
-⭐ 本次做了 4 件事（**全部本地、未提交**），详细过程在 `CHANGELOG_3.md` 顶条（第六十五次会话，六节）：
+⭐ 本次做了 4 件事（**全部本地、未提交**），详细过程在 `CHANGELOG_3.md`（第六十五次会话，六节）：
 
 1. **修本地「登录后对话历史读不出来」**——根因 dev 的 `.next` 缓存损坏（路由没注册返 404 HTML），删 `.next` 重启即好，**不是代码问题**；顺手清 `.runtime` 垃圾 + 删 `.next`。
 2. **后台「已拦截记录」表格**：完整提示词最多 2 行 + 新增「详细」列弹窗（命中词红色高亮）。文件 `admin-content-moderation-panel.tsx`。

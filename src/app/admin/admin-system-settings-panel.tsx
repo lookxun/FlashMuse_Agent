@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { ADVANCED_CHAT_MODEL, DEFAULT_CHAT_MODEL, imageGenerationModels, models, videoGenerationModels } from "@/lib/models";
+import { ADVANCED_CHAT_MODEL, DEFAULT_CHAT_MODEL, audioGenerationModels, imageGenerationModels, models, videoGenerationModels } from "@/lib/models";
 import type { AdminSystemSettings } from "@/lib/system-settings";
 import { BytePlusIcon } from "@/components/byteplus-icon";
 import { ModelIcon } from "@/components/model-icon";
@@ -20,7 +20,7 @@ const extraModelLabels: Record<string, string> = {
 };
 
 function getModelLabel(id: string) {
-  return extraModelLabels[id] ?? models.find((model) => model.id === id)?.label ?? imageGenerationModels.find((model) => model.id === id)?.label ?? videoGenerationModels.find((model) => model.id === id)?.label ?? (id === DEFAULT_CHAT_MODEL ? "Seed 2.0 Lite" : id === ADVANCED_CHAT_MODEL ? "GPT-5.4" : id);
+  return extraModelLabels[id] ?? models.find((model) => model.id === id)?.label ?? imageGenerationModels.find((model) => model.id === id)?.label ?? videoGenerationModels.find((model) => model.id === id)?.label ?? audioGenerationModels.find((model) => model.id === id)?.label ?? (id === DEFAULT_CHAT_MODEL ? "Seed 2.0 Lite" : id === ADVANCED_CHAT_MODEL ? "GPT-5.4" : id);
 }
 
 type ModelUsageItem = {
@@ -29,6 +29,7 @@ type ModelUsageItem = {
   providerKey?: string;
   bytePlusOptions?: Array<{ label: string; endpointId: string }>;
   bytePlusStatic?: { label: string; endpointId: string };
+  hint?: string;
   subheading?: string;
   // additive 布局下，标记该项属于哪一列（openrouter 独有模型 / byteplus 模型）。
   provider?: "openrouter" | "byteplus";
@@ -74,7 +75,7 @@ const modelUsageGroups: ModelUsageGroup[] = [
   {
     title: "图片生成",
     note: "",
-    usageLocations: ["通用模式生图", "对话流图片模式", "工作流图片节点", "资产库生图"],
+    usageLocations: ["通用模式生图", "Agent 模式生图", "对话流图片模式", "工作流图片节点", "资产库生图"],
     providerGroup: "对话流图片生成",
     additive: true,
     models: [
@@ -87,7 +88,7 @@ const modelUsageGroups: ModelUsageGroup[] = [
   {
     title: "视频生成",
     note: "",
-    usageLocations: ["通用模式生视频", "对话流视频", "工作流视频节点"],
+    usageLocations: ["通用模式生视频", "Agent 模式生视频", "对话流视频", "工作流视频节点"],
     providerGroup: "对话流视频生成",
     additive: true,
     models: [
@@ -99,57 +100,49 @@ const modelUsageGroups: ModelUsageGroup[] = [
     ],
   },
   {
+    title: "语音生成",
+    note: "",
+    usageLocations: ["对话流语音生成"],
+    providerGroup: "对话流语音生成",
+    additive: true,
+    models: audioGenerationModels.map((model) => ({ provider: "openrouter" as const, badge: "", modelId: model.id })),
+  },
+  {
     title: "通用模式",
     note: "",
-    usageLocations: ["通用模式对话"],
+    usageLocations: ["通用模式对话", "Agent 模式对话规划"],
     providerGroup: "通用模式 / Agent 规划 / 意图识别",
     additive: true,
     models: [
-      ...models.filter((model) => model.id !== DEFAULT_CHAT_MODEL).map((model) => ({ provider: "openrouter" as const, badge: "", modelId: model.id })),
+      ...models.filter((model) => model.id !== DEFAULT_CHAT_MODEL).map((model) => ({ provider: "openrouter" as const, badge: "", modelId: model.id, hint: model.id === "moonshotai/kimi-k3" ? "Agent优先" : undefined })),
       { provider: "byteplus", badge: "", modelId: "", providerKey: "general.seed-2-0-lite", bytePlusStatic: bytePlusChatModels[0] },
       { provider: "byteplus", badge: "", modelId: "", providerKey: "general.seed-2-0-pro", bytePlusStatic: bytePlusChatModels[1] },
     ],
   },
   {
-    title: "Agent 模式",
-    note: "Agent 自动规划任务并调用模型：普通/高级两档分别用对应模型；自动生图/生视频的首选不可用时，随机使用「图片生成」「视频生成」里已开启的模型兜底。",
-    usageLocations: ["Agent 对话规划", "Agent 自动生图", "Agent 自动生视频", "兜底：图片生成 / 视频生成"],
-    providerGroup: "Agent 自动生成策略",
-    models: [
-      { badge: "", modelId: "", subheading: "规划对话模型" },
-      { provider: "byteplus", badge: "普通", modelId: "byteplus:chat.seed-2-0-pro", providerKey: "agent-chat.seed-2-0-pro", bytePlusStatic: bytePlusChatModels[1] },
-      { provider: "openrouter", badge: "高级", modelId: "openai/gpt-5.6-terra-pro", providerKey: "agent-chat.advanced" },
-      { badge: "", modelId: "", subheading: "自动生成图片" },
-      { provider: "byteplus", badge: "普通", modelId: "byteplus:conversation-image.seedream-4-5", providerKey: "agent-image.seedream-4-5", bytePlusStatic: bytePlusImageModels[1] },
-      { provider: "openrouter", badge: "高级", modelId: "openai/gpt-5.4-image-2", providerKey: "agent-image.advanced" },
-      { badge: "", modelId: "", subheading: "自动生成视频" },
-      { provider: "byteplus", badge: "普通", modelId: "byteplus:video.seedance-2-0-fast", providerKey: "agent-video.seedance-2-0-fast", bytePlusStatic: bytePlusVideoModels[1] },
-      { provider: "byteplus", badge: "高级", modelId: "byteplus:video.seedance-2-0", providerKey: "agent-video.seedance-2-0", bytePlusStatic: bytePlusVideoModels[2] },
-      // ⭐ 2026-08-09 补：Agent 自动生视频的 Seedance 2.5 开关。**默认关**（偏好表里故意没有这个 key）；
-      //    打开后 Agent「高级」档会优先用 2.5（见 chat-workbench-core 的 getAgentGenerationModel）。
-      { provider: "byteplus", badge: "高级", modelId: "byteplus:video.seedance-2-5", providerKey: "agent-video.seedance-2-5", bytePlusStatic: bytePlusVideoModels[3] },
-    ],
-  },
-  {
     title: "反推提示词 / 优化提示词",
-    note: "四个模型都开启时，按 GPT-5.5 → GPT-5.4 → Seed 2.0 Pro → Seed 2.0 Lite 顺序兜底，前一个失败/关闭再用下一个。",
+    note: "五个模型都开启时，按 GPT-5.6 Terra Pro → Kimi K3 → Grok 4.6 → Seed 2.0 Pro → Seed 2.0 Lite 顺序兜底，前一个失败/关闭再用下一个。",
     usageLocations: ["反推提示词", "优化提示词"],
     additive: true,
     models: [
-      { provider: "openrouter", badge: "", modelId: "openai/gpt-5.5", providerKey: "prompt.priority" },
-      { provider: "openrouter", badge: "", modelId: ADVANCED_CHAT_MODEL, providerKey: "prompt.second" },
-      { provider: "byteplus", badge: "", modelId: "byteplus:chat.seed-2-0-pro", providerKey: "prompt.seed-2-0-pro", bytePlusStatic: bytePlusChatModels[1] },
-      { provider: "byteplus", badge: "", modelId: "", providerKey: "prompt.seed-2-0-lite", bytePlusStatic: bytePlusChatModels[0] },
+      { provider: "openrouter", badge: "首选", modelId: "openai/gpt-5.6-terra-pro", providerKey: "prompt.priority" },
+      { provider: "openrouter", badge: "次选", modelId: "moonshotai/kimi-k3", providerKey: "prompt.second" },
+      { provider: "openrouter", badge: "三选", modelId: "x-ai/grok-4.6", providerKey: "prompt.third" },
+      { provider: "byteplus", badge: "四选", modelId: "byteplus:chat.seed-2-0-pro", providerKey: "prompt.seed-2-0-pro", bytePlusStatic: bytePlusChatModels[1] },
+      { provider: "byteplus", badge: "五选", modelId: "", providerKey: "prompt.seed-2-0-lite", bytePlusStatic: bytePlusChatModels[0] },
     ],
   },
   {
     title: "内容审核语义模型",
-    note: "两个模型都开启时，按 GPT-5.6 Terra Pro → Seed 2.0 Pro 顺序兜底，前一个失败/关闭再用下一个。两个都关闭时语义审核不再执行（关键词拦截不受影响）。",
+    note: "五个模型都开启时，按 GPT-5.6 Terra Pro → Kimi K3 → Grok 4.6 → Seed 2.0 Pro → Seed 2.0 Lite 顺序兜底，前一个失败/关闭再用下一个。全部关闭时语义审核不再执行（关键词拦截不受影响）。",
     usageLocations: ["内容审核语义审核"],
     additive: true,
     models: [
-      { provider: "openrouter", badge: "", modelId: "openai/gpt-5.6-terra-pro", providerKey: "moderation.priority" },
-      { provider: "byteplus", badge: "", modelId: "byteplus:chat.seed-2-0-pro", providerKey: "moderation.seed-2-0-pro", bytePlusStatic: bytePlusChatModels[1] },
+      { provider: "openrouter", badge: "首选", modelId: "openai/gpt-5.6-terra-pro", providerKey: "moderation.priority" },
+      { provider: "openrouter", badge: "次选", modelId: "moonshotai/kimi-k3", providerKey: "moderation.second" },
+      { provider: "openrouter", badge: "三选", modelId: "x-ai/grok-4.6", providerKey: "moderation.third" },
+      { provider: "byteplus", badge: "四选", modelId: "byteplus:chat.seed-2-0-pro", providerKey: "moderation.seed-2-0-pro", bytePlusStatic: bytePlusChatModels[1] },
+      { provider: "byteplus", badge: "五选", modelId: "", providerKey: "moderation.seed-2-0-lite", bytePlusStatic: bytePlusChatModels[0] },
     ],
   },
 ];
@@ -221,6 +214,7 @@ function OpenRouterModelTag({ item, checked, onToggle }: { item: ModelUsageItem;
       <span className="flex min-w-0 flex-1 items-center gap-2">
         <ModelIcon modelId={item.modelId} />
         <span className="min-w-0 truncate font-medium">{getModelLabel(item.modelId)}</span>
+        {item.hint ? <span className="shrink-0 text-[11px] text-[#999999]">{item.hint}</span> : null}
       </span>
       <ProviderSwitch checked={checked} onChange={onToggle} ariaLabel="启用 OpenRouter" />
     </span>

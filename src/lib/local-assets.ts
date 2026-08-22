@@ -14,7 +14,7 @@ import { safeFetch } from "@/lib/ssrf-guard";
 // ⭐ 腾讯→阿里镜像同步的唯一入口（并发分片）。只被 ensureGeneratedImageThumbnail 的 syncToAli 选项用。
 import { syncGeneratedFilesToAli } from "@/lib/ali-sync";
 
-type AssetType = "image" | "video";
+type AssetType = "image" | "video" | "audio";
 type SaveAssetOptions = { userId?: string; diagnostics?: { requestId?: string; fileName?: string; fileSize?: number }; keepTransparent?: boolean };
 
 const GENERATED_ROOT = join(process.cwd(), "public", "generated");
@@ -85,7 +85,7 @@ const mimeExtensions: Record<string, string> = {
 };
 
 function getAssetFolder(type: AssetType) {
-  return type === "image" ? "images" : "videos";
+  return type === "image" ? "images" : type === "audio" ? "audios" : "videos";
 }
 
 function getSafeUserSegment(userId?: string) {

@@ -21,6 +21,8 @@ export type AdminRecordSummary = {
   imageGenerationDeletedCount: number;
   videoGenerationCount: number;
   videoGenerationDeletedCount: number;
+  audioGenerationCount: number;
+  audioGenerationDeletedCount: number;
   uploadImageCount: number;
   uploadImageDeletedCount: number;
   uploadFileCount: number;
@@ -89,9 +91,9 @@ function mediaItemToFlowItem(item: AdminMediaItem, index: number, creditLookup?:
   return {
     id: item.id || `${item.url}-${index}`,
     requestId: item.id || `${item.url}-${index}`,
-    kind: item.type,
+    kind: item.type === "audio" ? "audio" : item.type === "video" ? "video" : "image",
     systemName: item.systemName || item.name || "",
-    displayName: item.name || item.systemName || (item.type === "video" ? `视频${index + 1}` : `图片${index + 1}`),
+    displayName: item.name || item.systemName || (item.type === "audio" ? `语音${index + 1}` : item.type === "video" ? `视频${index + 1}` : `图片${index + 1}`),
     url: item.url,
     status: "success",
     errorText: item.isDeleted ? "用户已删除" : undefined,
@@ -116,7 +118,7 @@ function mediaItemToFlowItem(item: AdminMediaItem, index: number, creditLookup?:
   };
 }
 
-function workspaceConversationGeneratedItems(user: AdminUserRow, creditUser: AdminCreditUser | undefined, kind: "image" | "video") {
+function workspaceConversationGeneratedItems(user: AdminUserRow, creditUser: AdminCreditUser | undefined, kind: "image" | "video" | "audio") {
   const creditLookup = makeCreditLookup((creditUser?.conversationCreditDetails ?? []).flatMap((conversation) => conversation.mediaItems).filter((item) => item.kind === kind));
   return user.mediaItems.filter((item) => item.type === kind && !item.isUploadedAsset).map((item, index) => mediaItemToFlowItem(item, index, creditLookup));
 }
@@ -195,6 +197,7 @@ export function AdminRecordsPanel({ summaries }: { summaries: AdminRecordSummary
     workflows: rows.reduce((sum, row) => sum + row.workflowCount, 0),
     images: rows.reduce((sum, row) => sum + row.imageGenerationCount, 0),
     videos: rows.reduce((sum, row) => sum + row.videoGenerationCount, 0),
+    audios: rows.reduce((sum, row) => sum + row.audioGenerationCount, 0),
   };
   const isDetailLoading = loadingUserIds.size > 0;
 
@@ -323,11 +326,12 @@ export function AdminRecordsPanel({ summaries }: { summaries: AdminRecordSummary
         </div>
       </div>
 
-      <div className="grid grid-cols-4 gap-4">
+      <div className="grid grid-cols-5 gap-4">
         <SmallStat label="历史对话总数" value={formatNumber(stats.conversations)} tone="blue" />
         <SmallStat label="工作流总数" value={formatNumber(stats.workflows)} tone="blue" />
         <SmallStat label="图片生成总数" value={formatNumber(stats.images)} />
         <SmallStat label="视频生成总数" value={formatNumber(stats.videos)} />
+        <SmallStat label="语音生成总数" value={formatNumber(stats.audios)} />
       </div>
 
       <section className="mt-3 min-w-[1180px] overflow-hidden rounded-[10px] border border-[#eeeeee] bg-white shadow-[0_10px_28px_rgba(0,0,0,0.04)]">
@@ -340,7 +344,8 @@ export function AdminRecordsPanel({ summaries }: { summaries: AdminRecordSummary
               <th className="w-[152px] border-b border-[#eeeeee] px-4 py-3 text-left font-medium">历史对话</th>
               <th className="w-[152px] border-b border-[#eeeeee] px-4 py-3 text-left font-medium">工作流</th>
               <th className="w-[152px] border-b border-[#eeeeee] px-4 py-3 text-left font-medium">图片生成</th>
-              <th className="w-[152px] border-b border-[#eeeeee] py-3 pl-4 pr-8 text-left font-medium">视频生成</th>
+              <th className="w-[152px] border-b border-[#eeeeee] px-4 py-3 text-left font-medium">视频生成</th>
+              <th className="w-[152px] border-b border-[#eeeeee] py-3 pl-4 pr-8 text-left font-medium">语音生成</th>
             </tr>
           </thead>
           <tbody>
@@ -354,9 +359,11 @@ export function AdminRecordsPanel({ summaries }: { summaries: AdminRecordSummary
               const isRowDisabled = isDetailLoading && !isLoading;
               const generatedConversationImages = isExpanded && user ? workspaceConversationGeneratedItems(user, creditUser, "image") : [];
               const generatedConversationVideos = isExpanded && user ? workspaceConversationGeneratedItems(user, creditUser, "video") : [];
+              const generatedConversationAudios = isExpanded && user ? workspaceConversationGeneratedItems(user, creditUser, "audio") : [];
               const generatedAssetImages = isExpanded && user ? workspaceAssetGeneratedImageItems(user, creditUser) : [];
               const conversationImageTotal = user?.conversationImageCount ?? generatedConversationImages.length;
               const conversationVideoTotal = user?.conversationVideoCount ?? generatedConversationVideos.length;
+              const conversationAudioTotal = user?.conversationAudioCount ?? generatedConversationAudios.length;
               const assetImageTotal = user?.assetImageCount ?? generatedAssetImages.length;
               return (
                 <Fragment key={summary.id}>
@@ -379,11 +386,12 @@ export function AdminRecordsPanel({ summaries }: { summaries: AdminRecordSummary
                     <td className="border-b border-[#f2f2f2] px-4 py-3 text-left font-medium"><CountWithDeleted total={summary.conversationCount} deleted={summary.conversationDeletedCount} /></td>
                     <td className="border-b border-[#f2f2f2] px-4 py-3 text-left font-medium"><CountWithDeleted total={summary.workflowCount} deleted={summary.workflowDeletedCount} /></td>
                     <td className="border-b border-[#f2f2f2] px-4 py-3 text-left font-medium"><CountWithDeleted total={summary.imageGenerationCount} deleted={summary.imageGenerationDeletedCount} /></td>
-                    <td className="border-b border-[#f2f2f2] py-3 pl-4 pr-8 text-left font-medium"><CountWithDeleted total={summary.videoGenerationCount} deleted={summary.videoGenerationDeletedCount} /></td>
+                    <td className="border-b border-[#f2f2f2] px-4 py-3 text-left font-medium"><CountWithDeleted total={summary.videoGenerationCount} deleted={summary.videoGenerationDeletedCount} /></td>
+                    <td className="border-b border-[#f2f2f2] py-3 pl-4 pr-8 text-left font-medium"><CountWithDeleted total={summary.audioGenerationCount} deleted={summary.audioGenerationDeletedCount} /></td>
                   </tr>
                   {isExpanded ? (
                     <tr className="bg-[#fbfbfb]">
-                      <td colSpan={7} className="border-b border-[#f2f2f2] px-4 py-4">
+                      <td colSpan={8} className="border-b border-[#f2f2f2] px-4 py-4">
                         {!detail ? error ? <div className="px-3 py-5 text-center text-[13px] text-red-500">加载失败：{error}</div> : isLoading ? <AdminDetailLoading label="正在加载详细记录..." /> : <AdminDetailLoading label="正在准备详细记录..." /> : (
                         <div className="grid grid-cols-4 gap-[5px] px-1 py-1 text-left">
                           <div className="space-y-px">
@@ -400,10 +408,12 @@ export function AdminRecordsPanel({ summaries }: { summaries: AdminRecordSummary
                           <div className="space-y-px">
                             <DetailItem label="对话流图片" value={formatNumber(conversationImageTotal)} onClick={() => openMediaDialogForUser(user.id, user.nickname || user.email, "image")} />
                             <DetailItem label="对话流视频" value={formatNumber(conversationVideoTotal)} onClick={() => openMediaDialogForUser(user.id, user.nickname || user.email, "video")} />
+                            <DetailItem label="对话流语音" value={formatNumber(conversationAudioTotal)} onClick={() => openMediaDialogForUser(user.id, user.nickname || user.email, "audio")} />
                           </div>
                           <div className="space-y-px">
                             <DetailItem label="工作流图片" value={formatNumber(user.workflowImageCount ?? 0)} onClick={() => openMediaDialogForUser(user.id, user.nickname || user.email, "workflow_image")} />
                             <DetailItem label="工作流视频" value={formatNumber(user.workflowVideoCount ?? 0)} onClick={() => openMediaDialogForUser(user.id, user.nickname || user.email, "workflow_video")} />
+                            <DetailItem label="工作流语音" value={formatNumber(user.workflowAudioCount ?? 0)} onClick={() => openMediaDialogForUser(user.id, user.nickname || user.email, "workflow_audio")} />
                           </div>
                         </div>
                         )}
@@ -413,7 +423,7 @@ export function AdminRecordsPanel({ summaries }: { summaries: AdminRecordSummary
                 </Fragment>
               );
             })}
-            {pagedRows.length === 0 ? <tr><td colSpan={7} className="px-4 py-12 text-center text-[13px] text-[#999999]">暂无生成记录</td></tr> : null}
+            {pagedRows.length === 0 ? <tr><td colSpan={8} className="px-4 py-12 text-center text-[13px] text-[#999999]">暂无生成记录</td></tr> : null}
           </tbody>
         </table>
       </section>

@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import type { UploadKind, UploadRuleOverrides } from "@/lib/upload-rules";
 import { normalizePromptMaxLength, type PromptLengthOverrides } from "@/lib/prompt-length";
 import { PERMANENT_ADMIN_EMAILS } from "@/lib/permanent-admins";
+import { frontendConversationModels } from "@/lib/models";
 
 export const BYTEPLUS_CONVERSATION_IMAGE_MODEL_KEYS: Record<string, string> = {
   "byteplus:conversation-image.seedream-4-5": "conversation-image.seedream-4-5",
@@ -88,6 +89,7 @@ const DEFAULT_MODEL_PROVIDER_PREFERENCES: Record<string, "openrouter" | "byteplu
   "chat.advanced": "openrouter",
   "prompt.priority": "openrouter",
   "prompt.second": "openrouter",
+  "prompt.third": "openrouter",
   "prompt.seed-2-0-pro": "byteplus",
   "prompt.seed-2-0-lite": "byteplus",
   "conversation-image.seedream-4-5": "byteplus",
@@ -109,9 +111,11 @@ const DEFAULT_MODEL_PROVIDER_PREFERENCES: Record<string, "openrouter" | "byteplu
   "agent-video.seedance-2-0-mini": "byteplus",
   "agent-chat.seed-2-0-pro": "byteplus",
   "agent-chat.advanced": "openrouter",
-  // 内容审核语义模型：两个都默认开启，按 GPT-5.6 Terra Pro → Seed 2.0 Pro 顺序兜底。
   "moderation.priority": "openrouter",
+  "moderation.second": "openrouter",
+  "moderation.third": "openrouter",
   "moderation.seed-2-0-pro": "byteplus",
+  "moderation.seed-2-0-lite": "byteplus",
 };
 
 const DEFAULT_BYTEPLUS_MODEL_SELECTIONS: Record<string, string> = {
@@ -143,6 +147,7 @@ const DEFAULT_BYTEPLUS_MODEL_SELECTIONS: Record<string, string> = {
   "agent-video.seedance-2-5": "ep-20260807153703-h48pt",
   "agent-chat.seed-2-0-pro": "ep-20260514173614-jbcb4",
   "moderation.seed-2-0-pro": "ep-20260514173614-jbcb4",
+  "moderation.seed-2-0-lite": "ep-20260518173102-9mtk6",
 };
 
 // 图片编辑类（橡皮）模型候选链：按顺序优先级，前一个失败/关闭自动用下一个。默认全部启用。
@@ -358,19 +363,45 @@ export function isConversationVideoModelEnabled(modelId: string) {
   return !isOpenRouterOnlyDisabled("对话流视频生成", "", modelId);
 }
 
+export function isConversationAudioModelEnabled(modelId: string) {
+  return !isOpenRouterOnlyDisabled("对话流语音生成", "", modelId);
+}
+
 export function isAgentImageModelEnabled(modelId: string) {
-  const bytePlusKey = BYTEPLUS_AGENT_IMAGE_MODEL_KEYS[modelId];
-  if (bytePlusKey) return isBytePlusPreferenceEnabled(bytePlusKey);
-  // Agent 自动生图只保留：普通=BytePlus Seedream 4.5、高级=OpenRouter GPT-5.4 Image 2（备选已去掉）。
-  if (modelId === "openai/gpt-5.4-image-2") return getModelProviderPreference("agent-image.advanced") !== "byteplus";
-  return false;
+  return isConversationImageModelEnabled(modelId);
 }
 
 export function isAgentVideoModelEnabled(modelId: string) {
-  const bytePlusKey = BYTEPLUS_AGENT_VIDEO_MODEL_KEYS[modelId];
-  if (bytePlusKey) return isBytePlusPreferenceEnabled(bytePlusKey);
-  // Agent 自动生视频只保留：普通=BytePlus Seedance 2.0 Fast、高级=BytePlus Seedance 2.0（备选已去掉）。
-  return false;
+  return isConversationVideoModelEnabled(modelId);
+}
+
+export function getEnabledGeneralTextModelIds() {
+  return frontendConversationModels.filter((model) => isGeneralTextModelEnabled(model.id)).map((model) => model.id);
+}
+
+const agentChatSkipUntil = new Map<string, number>();
+
+export function rememberAgentChatModelSkip(modelId: string, error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  if (!/地区不可用|not available in your region|No endpoints/i.test(message)) return;
+  agentChatSkipUntil.set(modelId, Date.now() + 30 * 60 * 1000);
+}
+
+export function getAgentAutoChatModelIds(preferred?: string) {
+  const kimiId = "moonshotai/kimi-k3";
+  const chain = getEnabledGeneralTextModelIds().slice().reverse();
+  const now = Date.now();
+  const available = chain.filter((id) => (agentChatSkipUntil.get(id) ?? 0) <= now);
+  const ordered = available.length > 0 ? available : chain;
+  const rest = ordered.filter((id) => id !== kimiId);
+  const head = ordered.includes(kimiId) ? [kimiId] : [];
+  void preferred;
+  return [...head, ...rest];
+}
+
+export function isRetryableAgentChatError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return /地区不可用|连接不到模型|No endpoints|not available in your region|503|502|timeout|ECONN|fetch failed|API Key/i.test(message);
 }
 
 export function isGeneralTextModelEnabled(modelId: string) {
@@ -381,17 +412,16 @@ export function isGeneralTextModelEnabled(modelId: string) {
 }
 
 export function isTextModelEnabled(modelId: string, source: "chat" | "prompt" = "chat") {
-  // 反推/优化提示词：additive，OpenRouter 只留 GPT-5.5/GPT-5.4，BytePlus 留 Seed 2.0 Pro/Lite；各自独立开关。
   if (source === "prompt") {
-    if (modelId === "openai/gpt-5.5") return getModelProviderPreference("prompt.priority") !== "byteplus";
-    if (modelId === "openai/gpt-5.4") return getModelProviderPreference("prompt.second") !== "byteplus";
+    if (modelId === "openai/gpt-5.6-terra-pro") return getModelProviderPreference("prompt.priority") !== "byteplus";
+    if (modelId === "moonshotai/kimi-k3") return getModelProviderPreference("prompt.second") !== "byteplus";
+    if (modelId === "x-ai/grok-4.6") return getModelProviderPreference("prompt.third") !== "byteplus";
     if (modelId === "byteplus:chat.seed-2-0-pro") return isBytePlusPreferenceEnabled("prompt.seed-2-0-pro");
     if (modelId === "bytedance-seed/seed-2.0-lite") return isBytePlusPreferenceEnabled("prompt.seed-2-0-lite");
     return true;
   }
   if (modelId === "bytedance-seed/seed-2.0-lite") return getModelProviderPreference("chat.seed-2-0-lite") === "openrouter" || isBytePlusPreferenceEnabled("chat.seed-2-0-lite");
   if (modelId === "openai/gpt-5.4") return getModelProviderPreference("chat.advanced") === "openrouter" || isBytePlusPreferenceEnabled("chat.advanced");
-  if (modelId === "openai/gpt-5.5") return getModelProviderPreference("prompt.priority") === "openrouter" || isBytePlusPreferenceEnabled("prompt.priority");
   // Agent 规划对话模型：普通=BytePlus Seed 2.0 Pro、高级=OpenRouter GPT-5.6 Terra Pro。
   if (modelId === "byteplus:chat.seed-2-0-pro") return isBytePlusPreferenceEnabled("agent-chat.seed-2-0-pro");
   if (modelId === "openai/gpt-5.6-terra-pro") return getModelProviderPreference("agent-chat.advanced") !== "byteplus";

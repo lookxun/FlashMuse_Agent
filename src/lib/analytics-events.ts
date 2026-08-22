@@ -30,7 +30,7 @@ function isModerationReason(reason: string | undefined) {
 export type RecordGenerationEventInput = {
   userId?: string;
   requestId?: string;
-  kind: "image" | "video";
+  kind: "image" | "video" | "audio";
   creditSource?: string;
   model?: string;
   provider?: string;

@@ -1,7 +1,7 @@
 "use client";
 
 import { type ReactNode, useEffect, useMemo, useState } from "react";
-import { RiEyeLine, RiEyeOffLine, RiFileCopyLine, RiLockLine, RiLockUnlockLine, RiShieldCheckLine } from "react-icons/ri";
+import { RiEyeLine, RiEyeOffLine, RiLockLine, RiLockUnlockLine, RiShieldCheckLine } from "react-icons/ri";
 
 export type ContentModerationEventRow = {
   id: string;
@@ -110,14 +110,24 @@ export function AdminContentModerationPanel({ initialEnabled, initialHidden, ini
       .catch(() => setHidden(!next));
   };
 
-  const copyPromptToTerms = (prompt: string) => {
-    setTerms((current) => `${current.trim()}${current.trim() ? "，" : ""}${prompt}`);
-    void navigator.clipboard?.writeText(prompt).catch(() => undefined);
-    setMessage("已复制完整提示词，并放入词库编辑框。请删改成需要匹配的词或短句后保存。");
+  const [deletedIds, setDeletedIds] = useState<Set<string>>(new Set());
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const deleteEvent = (id: string) => {
+    if (deletingId) return;
+    if (!window.confirm("确定删除这条记录？删除后不可恢复。")) return;
+    setDeletingId(id);
+    fetch("/admin/api/content-moderation", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) })
+      .then(async (response) => {
+        const data = await response.json().catch(() => ({})) as { error?: string };
+        if (!response.ok) throw new Error(data.error || "删除失败");
+        setDeletedIds((current) => new Set(current).add(id));
+      })
+      .catch((error) => window.alert(error instanceof Error ? error.message : "删除失败"))
+      .finally(() => setDeletingId(null));
   };
 
-  const blocked = events.filter((item) => item.action === "keyword_block");
-  const review = events.filter((item) => item.action === "semantic_review" && item.status === "flagged");
+  const blocked = events.filter((item) => item.action === "keyword_block" && !deletedIds.has(item.id));
+  const review = events.filter((item) => item.action === "semantic_review" && item.status === "flagged" && !deletedIds.has(item.id));
   const termCount = new Set(terms.split(/[\n,，]+/).map((item) => item.trim()).filter(Boolean)).size;
   return (
     <>
@@ -143,8 +153,8 @@ export function AdminContentModerationPanel({ initialEnabled, initialHidden, ini
         <div className="mt-3 flex items-center justify-end gap-3">{message ? <span className={`text-[12px] ${message.includes("失败") ? "text-red-500" : "text-[#367cee]"}`}>{message}</span> : null}<button type="button" disabled={pending} onClick={save} className="rounded-[8px] bg-[#111111] px-4 py-2 text-[13px] font-medium text-white disabled:opacity-50">{pending ? "保存中..." : "保存规则"}</button></div>
       </section>
 
-  <EventTable title="已拦截记录" subtitle="命中词库后直接停止生成，不扣积分。" events={blocked} showMatchedTerm />
-  <EventTable title="语义审核待确认" subtitle="关键词没命中时异步检查；目前只记录，绝不拦截。" events={review} onUsePrompt={copyPromptToTerms} />
+  <EventTable title="已拦截记录" subtitle="命中词库后直接停止生成，不扣积分。" events={blocked} showMatchedTerm showDetail onDelete={deleteEvent} deletingId={deletingId} />
+  <EventTable title="语义审核待确认" subtitle="关键词没命中时异步检查；目前只记录，绝不拦截。" events={review} showDetail onDelete={deleteEvent} deletingId={deletingId} />
       </div>
       {pwOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={closePassword}>
@@ -183,15 +193,18 @@ function highlightMatchedTerm(text: string, term?: string): ReactNode {
   return parts;
 }
 
-function EventTable({ title, subtitle, events, onUsePrompt, showMatchedTerm = false }: { title: string; subtitle: string; events: ContentModerationEventRow[]; onUsePrompt?: (prompt: string) => void; showMatchedTerm?: boolean }) {
+function EventTable({ title, subtitle, events, showMatchedTerm = false, showDetail = false, onDelete, deletingId }: { title: string; subtitle: string; events: ContentModerationEventRow[]; showMatchedTerm?: boolean; showDetail?: boolean; onDelete?: (id: string) => void; deletingId?: string | null }) {
   const [page, setPage] = useState(0);
   const [detail, setDetail] = useState<ContentModerationEventRow | null>(null);
-  const showDetail = showMatchedTerm;
-  const gridClassName = onUsePrompt
-    ? "grid-cols-[130px_170px_110px_120px_minmax(340px,1fr)_130px]"
+  // ⛔ Tailwind 只能识别源码里出现的**完整** class 字面量 —— 不能用模板字符串拼 grid-cols-[...]，
+  //    否则扫不到、CSS 不生成、表格会塌成一列竖着堆（踩过）。所以这里逐组合写死。
+  const gridClassName = showDetail && onDelete
+    ? "grid-cols-[130px_170px_110px_120px_minmax(340px,1fr)_80px_80px]"
     : showDetail
       ? "grid-cols-[130px_170px_110px_120px_minmax(340px,1fr)_80px]"
-      : "grid-cols-[130px_170px_110px_120px_minmax(340px,1fr)]";
+      : onDelete
+        ? "grid-cols-[130px_170px_110px_120px_minmax(340px,1fr)_80px]"
+        : "grid-cols-[130px_170px_110px_120px_minmax(340px,1fr)]";
   const pageCount = Math.max(1, Math.ceil(events.length / 10));
   const currentPage = Math.min(page, pageCount - 1);
   const visibleEvents = events.slice(currentPage * 10, currentPage * 10 + 10);
@@ -208,7 +221,7 @@ function EventTable({ title, subtitle, events, onUsePrompt, showMatchedTerm = fa
         <div className="px-4 py-3">{showMatchedTerm ? "命中" : "结果"}</div>
         <div className="px-4 py-3">完整提示词</div>
         {showDetail ? <div className="px-4 py-3">详细</div> : null}
-        {onUsePrompt ? <div className="px-4 py-3">操作</div> : null}
+        {onDelete ? <div className="px-4 py-3">删除</div> : null}
       </div>
       {events.length ? (
         <>
@@ -236,9 +249,9 @@ function EventTable({ title, subtitle, events, onUsePrompt, showMatchedTerm = fa
                   <button type="button" onClick={() => setDetail(item)} className="inline-flex items-center rounded-[6px] border border-[#dddddd] px-2 py-1 text-[#666666] hover:border-[#111111] hover:text-[#111111]">详细</button>
                 </div>
               ) : null}
-              {onUsePrompt ? (
+              {onDelete ? (
                 <div className="px-4 py-3">
-                  <button type="button" onClick={() => onUsePrompt(item.prompt)} className="inline-flex items-center gap-1 rounded-[6px] border border-[#dddddd] px-2 py-1 text-[#666666] hover:border-[#111111] hover:text-[#111111]"><RiFileCopyLine className="h-3 w-3" />加入词库</button>
+                  <button type="button" disabled={deletingId === item.id} onClick={() => onDelete(item.id)} className="inline-flex items-center rounded-[6px] border border-[#f0c2c2] px-2 py-1 text-[#d21b1b] hover:border-[#d21b1b] hover:bg-[#fff2f2] disabled:opacity-50">{deletingId === item.id ? "删除中" : "删除"}</button>
                 </div>
               ) : null}
             </div>

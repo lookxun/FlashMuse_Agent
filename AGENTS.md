@@ -4,6 +4,76 @@
 This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code. Heed deprecation notices.
 <!-- END:nextjs-agent-rules -->
 
+# 铁律⭐⭐：代码里出现 `slice(0, N)` / `.filter(...).slice()` 砍用户素材，就必须去 `upload-rules.ts` 把 N 配上（2026-08-19 加）
+
+2026-08-19 审 Recraft 接入时抓到：`generateRecraftImage` 里写了 `referenceImages.slice(0, 1)`（上游只吃 1 张），
+但 **`getBaseUploadRule` 里没给 Recraft 分支** → 落进 fallback 的 **3 张** →
+**用户能选 3 张、界面显示"最多3张"、实际只发 1 张，多的 2 张被静默丢掉**，界面上一点提示都没有。
+
+- ⭐ **判据（一句话）**：**底层砍到 N，规则层是不是也是 N？** 不是 → 那个差额就是"静默丢用户东西"的量。
+  grep 姿势：`slice(0,` / `.slice(0, 1)` / `Math.min(` 出现在"参考图/参考视频/音频/文档"链路上，都要回头查规则层。
+- ⭐ **修的位置永远是 `src/lib/upload-rules.ts` 的 `getBaseUploadRule`**（唯一权威）——
+  改一处，对话流 / 资产库 / 工作流 / 服务端 `/api/image`（它也调 `validateReferenceImageCount`）**一起生效**。
+  ⛔ 别在组件里判、也别只在底层 slice。
+- ⭐ **上游硬上限要实测坐实、别读文档猜**（本次：传 2 张 → 400
+  `Recraft: input_references: must have between 0 and 1 items`）；**探测只用必被拒的值**（免费）。
+- ⭐ **两个零成本判据**：① 界面上上传按钮的数字（工作流节点会直接显示「图片 **1**」）
+  ② 直调接口发 N+1 张 → 必须被我们自己的校验拒（400「当前模型最多支持 N 张参考图」），**不花一分钱**。
+
+# 铁律⭐⭐：把某个选项改成「按模型给」时，必须把**该选项的所有菜单入口**数一遍（2026-08-19 加）
+
+同一批 Recraft 改造里，上一任把「图片比例」改成按模型（新增 `ImageModelRule.ratios`），
+改了**用户设置下拉 / 加载时的 merge / 工作流节点**三处，**漏了最主要的那个** ——
+`chat-workbench.tsx` 的 `renderImageSettingsMenu` 里
+`currentRatioOptions = mode === "video" ? [...] : ratioOptions`（**对话流和资产库共用的主输入框菜单**）。
+后果：用户能选 21:9，而 `generateRecraftImage` 把不支持的比例映射成 `aspect_ratio:"auto"`
+→ **出图比例和他选的不一样，且没有任何提示**。
+
+- ⭐ **判据**：`grep` 那个**全局选项常量**（本次 `ratioOptions`），把每个引用点逐个看
+  「这里该不该换成按模型的版本」。⛔ 别只改你正在看的那个组件。
+- ⭐ **别忘了"存过的旧值"**：老账号的 `defaultImageRatio` 可能存着新模型不支持的值 →
+  **加载 profile 时**和**新建对话套用默认参数时**都要 `normalizeXxxForModel` 归一化
+  （只在"切模型"那一刻归一化是不够的）。
+- ⭐ **反向用例必须有**：改完要证明**别的模型一个字都没变**（本次 35 条回归里 12 条反向：
+  Gemini 仍含 21:9、GPT 仍 16 张、Seedance 2.5 仍 30 张…）。
+
+# 铁律⭐⭐：基础 class 写死 `relative` 的组件（如 `BlackHoverTooltip`），**别再通过 `className` 传 `absolute` 定位**（2026-08-20 加，资产库失败卡「重新生成」按钮不居中）
+
+`BlackHoverTooltip`（`black-hover-tooltip.tsx:55`）根节点写死 `relative inline-flex`，而 `chat-workbench.tsx` 那处
+把居中样式 `absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2` 通过 `className` 传进去。
+⛔ **同时出现 `relative` 和 `absolute` 时，Tailwind 生成的 CSS 里 `relative` 排在 `absolute` 后面 → `relative` 必赢**
+（跟 class 属性里的先后顺序无关，只看 CSS 源序）→ 外壳变成 `position:relative`、`left-1/2` 那套居中静默失效，
+按钮被顶到偏右下。
+
+- ⭐ **判据（一行、二值）**：`getComputedStyle(el).position` —— 造一个 `<div class="relative inline-flex absolute left-1/2 ...">`
+  实测它是 `relative` 就坐实了（本次就是这么验的，⛔ 别靠肉眼看偏没偏）。
+- ⭐ **正解（不动共享组件）**：在调用处**外面套一个带定位类的 div**（`absolute left-1/2 ...`），
+  让 `BlackHoverTooltip` 保持它的默认 `relative`（它是 absolute 还是 relative 都能给 tooltip 气泡当定位上下文）。
+  ⛔ 别去改那个"全站唯一实现"组件的基础 class（其它调用点都靠它默认的 `relative`，改了有连带风险）。
+- ⭐ 同源于本文件那条「tldraw 无 layer 规则永远赢过 @layer」——**位置/优先级问题先想"谁在 CSS 里更靠后/更高优先"，别怀疑类没生成**。
+
+# 铁律⭐：本地测「被地区限制的模型」= 带 `NODE_USE_ENV_PROXY=1` + `HTTPS_PROXY` 重启 dev（Node 24，2026-08-20 加）
+
+本地直连 GPT-5.4 Image 2 出图报 **(B_243) 当前模型在你的地区不可用** —— 上游按出口 IP 地区限制。
+⛔ **光开 Clash 系统代理没用**：Node 内置 fetch（undici）默认**不认**系统代理 / `HTTP_PROXY` 环境变量。
+- ⭐ **解法（无需改代码）**：带代理环境变量**重启 dev 服务**：
+  `$env:HTTPS_PROXY="http://127.0.0.1:7897"; $env:HTTP_PROXY="http://127.0.0.1:7897"; $env:NODE_USE_ENV_PROXY="1"` → `npm run dev`。
+  `NODE_USE_ENV_PROXY=1` 是 Node 24 让内置 fetch 走环境变量代理的开关；7897 是本机 Clash Verge 混合代理端口
+  （判据：`curl 127.0.0.1:7897` 返回 **400** 而不是超时 = 端口对）。
+- ⚠️ kill 旧 dev 会换 PID、重启后需重新登录一次；纯本地临时操作、不动代码。
+
+# 铁律⭐⭐：Tailwind 的 `grid-cols-[...]` / 任意值 class **绝不能用模板字符串/变量拼**（2026-08-18 第六十六次会话，用户截图报"界面出问题"）
+
+Tailwind 只把**源码里静态出现的完整 class 字面量**编进 CSS。你写
+`` `grid-cols-[130px_...${cond ? "_80px" : ""}]` `` 这种**拼出来的 class**，扫描器看不到 →
+**那条 CSS 根本没生成** → grid 回落成默认单列 → **整张表塌成一列、每个格子竖着堆**。
+- ⛔ 2026-08-18 真事故：我把后台内容审核 `EventTable` 的 `grid-cols-[...]` 从写死字面量改成模板拼接 → 表格塌了。
+  原代码本来就写死几个完整字面量，正是为了避这个坑。
+- ⭐ **正解**：每种列组合**各写死一个完整字面量**，用 `cond ? "完整A" : "完整B"` 选，⛔ 别用 `` `...${}...` `` 拼。
+  适用于一切任意值 class（`grid-cols-[...]` / `w-[...]` / `h-[...]` / `bg-[#...]` 等动态部分）。
+- ⭐ **判据**：class 里有 `${` 或变量插值 = 危险信号；本地/测试服看着对不代表安全（dev 有时把用过的类缓存进来），
+  但**换一种组合、或干净构建就会缺**。要么写死字面量，要么把所有可能值写进 `safelist`。
+
 # 铁律⭐⭐⭐：**现象相似 ≠ 根因相同** —— 上一次事故的根因会造成路径依赖，把你带到完全错的方向（2026-08-09 第六十一次会话，被用户一句话问倒）
 
 2026-08-09 用户报「测试服顶部公告：后台写的是『新增』，前台显示『新建』」。
@@ -681,6 +751,14 @@ BytePlus 那边是**预签名 url**（实测 206 + `Accept-Ranges: bytes`），�
   （缺字段就按公式算，并打个 `usdFromFallbackPricing` 标记）—— `usd=0` 是**静默白送**，不报错、不进红字；
   ② 给**只落库不写日志**的那条路补一行诊断日志（本次 `video-job-charged`）——
   "扣费成功零日志"正是这件事三次交接都验不成的根本原因。
+- ⭐⭐ **2026-08-19 补：验"新接的模型扣费对不对"的判据是三条，缺一不可**：
+  ① 真调一次上游看它到底给不给 `usage.cost`（Recraft V4.1 = `0.035`、Pro = `0.21`，**给**）；
+  ② **再发一次 `n=2`**，确认 cost **按张线性**（0.07）→ 一次排除"多张少收"这种只在多图时才漏的钱；
+  ③ 真跑一次后回库看 **`CreditLedger` 那一行**（`credits / usd / cny / imageCount`），
+  与 `round(usd × usdToCnyRate × creditsPerCny)` 对得上。
+  ⭐ 顺带：**界面上「X积分/张」的提示必须和扣费用同一个公式**
+  （本项目 = `models.ts` 的 `getGenerationModelSelectHint` ↔ `credits.ts` 的 `chargeCredits`），
+  否则就是"标价和实收不一致"。
 
 
 
@@ -737,6 +815,26 @@ BytePlus 那边是**预签名 url**（实测 206 + `Accept-Ranges: bytes`），�
 - ✅ **公告只在测试服和本地测**（测试服随便开，那里没有真实用户）。
 - ⭐ 正式服部署后的巡检清单里，**公告那几项直接跳过**，只允许"打开后台『顶部公告』页看它不报错"这一项
   （⛔ 不许动开关、不许改文案）。
+
+# 铁律⛔⛔⛔：写/改任何文件**只准用 edit/write 工具**，shell 永远不许写文件；且 `git checkout`/revert 前先查该文件有没有「别批次的未提交改动」（2026-08-20 第七十次会话，我又栽同一个坑还扩大了损失）
+
+2026-08-20 我为了给 `chat-workbench.tsx` 加**一句 ASCII import**，图快用了
+`(Get-Content -Raw) -replace ... | Set-Content -Encoding UTF8` → **整份中文被 GBK 双重编码损坏 + 加了 BOM**。
+补救时更糟：`git checkout -- <file>` 图快 → 把这个文件里**上一批次（Recraft，第 67 次会话）尚未提交的改动一起 revert 掉了**，
+把一个"编码事故"升级成"丢了整个功能"。最后靠**测试服 v1.0.1.0 的源码** scp 回来才捞回。
+
+- ⭐⭐ **操作红线（无例外）**：**任何"写文件/改文件"只准走 edit / write 工具。** shell 只用于
+  git / tsc / eslint / curl / scp 这类，**绝不许**用它的 `Set-Content` / `Out-File` / `-replace` 回写 /
+  `>`、`>>` 重定向 / `sed -i` 去改**任何**文件（**不管是不是纯 ASCII、不管是不是源码**）。
+  ⛔ 不给自己留"这次只改一句 ASCII / 只往顶部插一段"这种例外——**那正是踩坑的入口**。
+- ⭐⭐ **"看到规则"≠"执行规则"**：下面那条"禁止 PS 读写中文文件"我上下文里一直有、也记得，照样栽了。
+  根因是**动手那一刻凭手感、没在执行前过一遍规则**。所以把它固化成"动作级"约束（上一条），别靠"要记得"。
+- ⭐⭐ **`git checkout` / `git restore` / `git stash` 前，先 `git status` 看那个文件是不是 ` M`**：
+  本项目长期"多批未提交改动叠在工作区"（部署流程决定的）→ 对单文件做 whole-file revert 会**静默抹掉别的会话攒下的功能**。
+  要丢弃改动前先想清楚"这个文件里除了我这次的，还有没有别人的"；宁可用 edit 工具逐处回退，也别一键 checkout。
+- ⭐ **一旦已经用 PS 把中文文件写坏了**：GBK 反向恢复**是有损的**（本次 921 个 U+FFFD，不可接受），别指望它救回来；
+  **优先找"另一份完好的源"**——git HEAD、**测试服/正式服上已部署的源码**（`scp` 取那一个文件）、别的备份盘，
+  用 `Copy-Item`（字节复制，不经编码）回来，再用 edit 工具重做丢失的那少量改动，最后 `tsc` + 逐一核对。
 
 # 铁律⛔⛔：**绝对禁止用 PowerShell 读写含中文的任何文件**（源码 **和交接文档/Markdown 都算**）（2026-08-03 加；2026-08-09 我又栽了一次，扩写）
 
@@ -1457,6 +1555,18 @@ nginx 配置在仓库里有副本（`nginx/flashmuse.conf`、`deploy/staging/*.c
   ⛔⛔ **只有"简→繁"一个方向**：繁→简一律靠**还原 WeakMap 里的原文**，
   **禁止再加回任何"繁→简"转换函数/词表**（机械反转是有损的，会把简体正文里的「新增」改成「新建」——真实事故）。
   详见本文件顶部那条同名铁律。
+- ⭐⭐ **2026-08-19 新增三个唯一权威（改模型菜单/比例/新模型接入必须复用）**：
+  - **菜单副标题 `src/lib/models.ts` 的 `getGenerationModelSelectHint(modelId, usdToCnyRate?, creditsPerCny?)`**
+    （+ 内部 `IMAGE_MODEL_MENU_INFO` / `VIDEO_MODEL_MENU_INFO`）：模型名下方那行灰字 =「几个字简介 · X积分/张(或/秒)」。
+    **汇率必须由调用方从 `/api/model-availability` 的 `creditRate` 传进来**（后台可调、⛔ 别写死 7.2×10）；
+    浮动计费的模型标「约」。对话流/资产库菜单与工作流图片·视频节点菜单**共用它**。
+  - **「该模型支持哪些图片比例」= `ImageModelRule.ratios` + `getSupportedImageRatios` + `normalizeImageRatioForModel`**。
+    ⛔ **禁止再用全局 `ratioOptions` 当图片比例列表**（Recraft 只有 5 个、无 21:9）；
+    ⭐ 归一化要覆盖三处：切模型时 / 加载用户 profile 时 / 新建对话套用默认参数时。
+  - **Recraft = `isRecraftModel` / `RECRAFT_V41_MODEL_ID` / `RECRAFT_V41_PRO_MODEL_ID`**，走
+    `openrouter.ts` 的 `generateRecraftImage`（专用 `/api/v1/images`，⛔ 不支持 `/chat/completions`）；
+    **参考图硬上限 1 张（已配进 `upload-rules.ts`）**、无 resolution 参数（V4.1 恒 1K / Pro 恒 2K）、
+    上游字数硬上限 10000、按张计费（`usage.cost` 线性）。
 - ⭐⭐ **2026-08-09 新增两个唯一权威（改相关功能必须复用）**：
   - **提示词字数上限 `src/lib/prompt-length.ts`**（`DEFAULT_PROMPT_MAX_LENGTH` / `MODEL_DEFAULT_PROMPT_MAX_LENGTH`（2.0 系 3500、2.5 = 14500、其余 2000）/ `getPromptLengthOverrideKey`（**模型粒度、故意不看参考模式** → 一个模型一个开关）/ `getDefaultPromptMaxLength` / `getPromptMaxLength` / `normalizePromptMaxLength` / `PROMPT_MAX_LENGTH_CEILING=99999`）。
     后台「上传规则」页的「文字」列配置它（env `PROMPT_LENGTH_OVERRIDES`，与上传数量的 `UPLOAD_RULE_OVERRIDES` **是两套、粒度不同**）。

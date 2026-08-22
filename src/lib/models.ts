@@ -17,6 +17,12 @@ export const GPT_IMAGE2_MODEL_ID = "openai/gpt-5.4-image-2";
 export function isGptImage2Model(modelId?: string) {
   return modelId === GPT_IMAGE2_MODEL_ID;
 }
+// Recraft V4.1 / V4.1 Pro 走 OpenRouter 专用图片接口 /api/v1/images（同 gpt-5.4-image-2 那条路，但只传 aspect_ratio）。
+export const RECRAFT_V41_MODEL_ID = "recraft/recraft-v4.1";
+export const RECRAFT_V41_PRO_MODEL_ID = "recraft/recraft-v4.1-pro";
+export function isRecraftModel(modelId?: string) {
+  return modelId === RECRAFT_V41_MODEL_ID || modelId === RECRAFT_V41_PRO_MODEL_ID;
+}
 // gpt-5.4-image-2（GPT版）走 OpenRouter 老接口(/chat/completions + modalities)，即经 GPT 语言模型优化提示词后再生图。
 // 内部另起 id，发往 OpenRouter 时映射回真实模型名 GPT_IMAGE2_MODEL_ID。不支持 4K、不支持画质档。
 export const GPT_IMAGE2_AGENT_MODEL_ID = "openai/gpt-5.4-image-2-agent";
@@ -35,11 +41,129 @@ export function modelSupportsPromptSafetyRewrite(modelId?: string) {
 export function resolveOpenRouterImageModelName(modelId?: string) {
   return isGptImage2AgentModel(modelId) ? GPT_IMAGE2_MODEL_ID : modelId;
 }
-// 模型选择弹窗里显示的小灰字说明（仅 GPT-5.4 Image 2 两款有）。
-export function getImageModelSelectHint(modelId?: string): string | null {
-  if (isGptImage2AgentModel(modelId)) return "老接口，会有GPT Agent 理解优化后传给图片模型，适合新手使用";
-  if (isGptImage2Model(modelId)) return "直接把提示词原封不动传给图片模型，支持带16张参考图，支持画质选择和4K出图";
-  return null;
+// 模型选择弹窗里显示在模型名下方的灰字副标题（唯一权威，前台对话流 / 工作流画布共用）。
+// 每条 = 「几个字特点 · 约多少积分/张」。
+// ⭐ 积分/张 = round(usd/张 × usdToCnyRate × creditsPerCny)。汇率/积分率**存数据库、后台可调**，
+//    由调用方从 /api/model-availability 的 creditRate 传进来（不传则用代码默认 7.2 × 10 估算）。
+// ⭐ 浮动计费的模型（gemini / gpt 按 token、seedream-5.0-pro 按像素给区间）标「约」；按张固定价的给精确整数。
+type ImageModelMenuInfo = { desc: string; usd: number; usdHigh?: number; approx?: boolean };
+const IMAGE_MODEL_MENU_INFO: Record<string, ImageModelMenuInfo> = {
+  "recraft/recraft-v4.1": { desc: "平面设计·高美学·短词出图", usd: 0.035 },
+  "recraft/recraft-v4.1-pro": { desc: "意料之外的美·2K高清", usd: 0.21 },
+  "google/gemini-3.1-flash-image-preview": { desc: "均衡·高性价比", usd: 0.11, approx: true },
+  "google/gemini-3-pro-image-preview": { desc: "均衡·质感更好", usd: 0.18, approx: true },
+  "openai/gpt-5.4-image-2-agent": { desc: "GPT优化提示·适合新手", usd: 0.24, approx: true },
+  "openai/gpt-5.4-image-2": { desc: "精准·可4K·多参考图", usd: 0.24, approx: true },
+  "byteplus:conversation-image.seedream-4-5": { desc: "中文强·通用", usd: 0.04 },
+  "bytedance-seed/seedream-4.5": { desc: "中文强·通用", usd: 0.04 },
+  "byteplus:conversation-image.seedream-5-0": { desc: "新版·高性价比", usd: 0.035 },
+  "byteplus:conversation-image.seedream-5-0-pro": { desc: "新版·精修可控", usd: 0.045, usdHigh: 0.09 },
+};
+const IMAGE_MENU_HINT_USD_TO_CNY = 7.2;
+const IMAGE_MENU_HINT_CREDITS_PER_CNY = 10;
+export function getImageModelFallbackUsd(modelId?: string): number | undefined {
+  if (!modelId) return undefined;
+  const usd = IMAGE_MODEL_MENU_INFO[modelId]?.usd;
+  return typeof usd === "number" && usd > 0 ? usd : undefined;
+}
+
+export function getImageModelSelectHint(
+  modelId?: string,
+  usdToCnyRate: number = IMAGE_MENU_HINT_USD_TO_CNY,
+  creditsPerCny: number = IMAGE_MENU_HINT_CREDITS_PER_CNY,
+): string | null {
+  if (!modelId) return null;
+  const info = IMAGE_MODEL_MENU_INFO[modelId];
+  if (!info) return null;
+  const rate = (usdToCnyRate > 0 ? usdToCnyRate : IMAGE_MENU_HINT_USD_TO_CNY) * (creditsPerCny > 0 ? creditsPerCny : IMAGE_MENU_HINT_CREDITS_PER_CNY);
+  const toCredits = (usd: number) => Math.max(1, Math.round(usd * rate));
+  const credits = info.usdHigh
+    ? `约${toCredits(info.usd)}-${toCredits(info.usdHigh)}积分/张`
+    : `${info.approx ? "约" : ""}${toCredits(info.usd)}积分/张`;
+  return `${info.desc} · ${credits}`;
+}
+
+// 视频模型菜单副标题（唯一权威）：几个字特点 · 约多少积分/秒。
+// ⭐ 积分/秒 = round(每秒美元 × usdToCnyRate × creditsPerCny)。汇率由调用方从 creditRate 传进来（同图片）。
+// ⭐ 每秒美元来源（2026-08 实测 `GET /api/v1/videos/models` 的 pricing_skus + 代码里 getBytePlusVideoPricePerMillionUsd）：
+//    - Kling / MiniMax H3 是「按秒固定价」→ 给精确整数；
+//    - Seedance(按 token) / Veo(带音频/4K 分档) 随分辨率浮动 → 取常见档(约 720p / 带音频)的代表值并标「约」。
+//    BytePlus Seedance 的每秒美元 = 每秒 token(720p≈21600) × 每百万 token 单价 / 1e6。
+type VideoModelMenuInfo = { desc: string; usdPerSecond: number; approx?: boolean };
+const VIDEO_MODEL_MENU_INFO: Record<string, VideoModelMenuInfo> = {
+  "bytedance/seedance-2.0-fast": { desc: "出片快·480/720p", usdPerSecond: 0.091, approx: true },
+  "bytedance/seedance-2.0": { desc: "通用·最高4K", usdPerSecond: 0.151, approx: true },
+  "minimax/hailuo-3": { desc: "2K·自带音效", usdPerSecond: 0.13 },
+  "kwaivgi/kling-v3.0-std": { desc: "标准·高性价比", usdPerSecond: 0.084 },
+  "kwaivgi/kling-v3.0-pro": { desc: "高质量", usdPerSecond: 0.112 },
+  "kwaivgi/kling-video-o1": { desc: "新版·运镜强", usdPerSecond: 0.112 },
+  "google/veo-3.1": { desc: "顶级画质·原生音频", usdPerSecond: 0.40, approx: true },
+  "byteplus:video.seedance-2-0-mini": { desc: "出片快·低成本", usdPerSecond: 0.076, approx: true },
+  "byteplus:video.seedance-2-0-fast": { desc: "出片快·480/720p", usdPerSecond: 0.121, approx: true },
+  "byteplus:video.seedance-2-0": { desc: "通用·最高4K", usdPerSecond: 0.151, approx: true },
+  "byteplus:video.seedance-2-5": { desc: "新版·最长30秒", usdPerSecond: 0.231, approx: true },
+};
+export function getVideoModelSelectHint(
+  modelId?: string,
+  usdToCnyRate: number = IMAGE_MENU_HINT_USD_TO_CNY,
+  creditsPerCny: number = IMAGE_MENU_HINT_CREDITS_PER_CNY,
+): string | null {
+  if (!modelId) return null;
+  const info = VIDEO_MODEL_MENU_INFO[modelId];
+  if (!info) return null;
+  const rate = (usdToCnyRate > 0 ? usdToCnyRate : IMAGE_MENU_HINT_USD_TO_CNY) * (creditsPerCny > 0 ? creditsPerCny : IMAGE_MENU_HINT_CREDITS_PER_CNY);
+  const credits = Math.max(1, Math.round(info.usdPerSecond * rate));
+  return `${info.desc} · ${info.approx ? "约" : ""}${credits}积分/秒`;
+}
+// 图片 + 视频通用：菜单副标题（谁能命中用谁）。
+export function getGenerationModelSelectHint(
+  modelId?: string,
+  usdToCnyRate: number = IMAGE_MENU_HINT_USD_TO_CNY,
+  creditsPerCny: number = IMAGE_MENU_HINT_CREDITS_PER_CNY,
+): string | null {
+  return getImageModelSelectHint(modelId, usdToCnyRate, creditsPerCny)
+    ?? getVideoModelSelectHint(modelId, usdToCnyRate, creditsPerCny)
+    ?? getAudioModelSelectHint(modelId, usdToCnyRate, creditsPerCny);
+}
+
+// ⭐ 语音生成（TTS）模型菜单副标题（唯一权威）：几个字特点 · 约多少积分/千字。
+// TTS 按「字符数」计费（OpenRouter `/api/v1/audio/speech`，见 openrouter-audio.ts），
+// 所以这里按「每千字符」估算：round(每字符美元 × 1000 × usdToCnyRate × creditsPerCny)。
+// 每字符美元来源 = OpenRouter endpoints 接口 pricing.prompt（2026-08 实测）。
+type AudioModelMenuInfo = { desc: string; usdPerChar: number; defaultVoice?: string; free?: boolean };
+const AUDIO_MODEL_MENU_INFO: Record<string, AudioModelMenuInfo> = {
+  // MiniMax Speech 2.8 HD：音色最全(332个)、中文强、有机器人音。默认甜美女声。
+  "minimax/speech-2.8-hd": { desc: "音色最全·中文强·高保真", usdPerChar: 0.0001, defaultVoice: "female-tianmei" },
+  // Qwen-Audio-3.0-TTS Plus：中文/方言强、表现力好。默认龙安灵心(女声)。
+  "qwen/qwen-audio-3.0-tts-plus": { desc: "中文方言强·表现力好", usdPerChar: 0.00002, defaultVoice: "longanlingxin" },
+  // Fish Audio S2.1 Pro：情绪/克隆强，无固定音色表 → 不传 voice 用供应商默认音色。
+  "fish-audio/s2.1-pro": { desc: "情绪表演强·多语言", usdPerChar: 0.000015 },
+  // Fish Audio S2.1 Pro 免费版：同模型、免费、无速度/可用性保证（测试用）。
+  "fish-audio/s2.1-pro-free": { desc: "S2.1 免费版·测试用", usdPerChar: 0, free: true },
+};
+export function getAudioModelSelectHint(
+  modelId?: string,
+  usdToCnyRate: number = IMAGE_MENU_HINT_USD_TO_CNY,
+  creditsPerCny: number = IMAGE_MENU_HINT_CREDITS_PER_CNY,
+): string | null {
+  if (!modelId) return null;
+  const info = AUDIO_MODEL_MENU_INFO[modelId];
+  if (!info) return null;
+  if (info.free || info.usdPerChar <= 0) return `${info.desc} · 免费`;
+  const rate = (usdToCnyRate > 0 ? usdToCnyRate : IMAGE_MENU_HINT_USD_TO_CNY) * (creditsPerCny > 0 ? creditsPerCny : IMAGE_MENU_HINT_CREDITS_PER_CNY);
+  const credits = Math.max(1, Math.round(info.usdPerChar * 1000 * rate));
+  return `${info.desc} · 约${credits}积分/千字`;
+}
+// 该模型发给 OpenRouter TTS 接口时用的默认音色（没有就返回 undefined = 用供应商默认音色）。
+export function getAudioModelDefaultVoice(modelId?: string): string | undefined {
+  return modelId ? AUDIO_MODEL_MENU_INFO[modelId]?.defaultVoice : undefined;
+}
+// 该模型每字符美元单价（用于扣费兜底定价，见 audio-usage-cost.ts）。
+export function getAudioModelUsdPerChar(modelId?: string): number {
+  return (modelId && AUDIO_MODEL_MENU_INFO[modelId]?.usdPerChar) || 0;
+}
+export function isAudioModel(modelId?: string): boolean {
+  return Boolean(modelId && modelId in AUDIO_MODEL_MENU_INFO);
 }
 export function normalizeImageQuality(value?: string): ImageQuality {
   return IMAGE_QUALITY_OPTIONS.includes(value as ImageQuality) ? (value as ImageQuality) : DEFAULT_IMAGE_QUALITY;
@@ -53,6 +177,9 @@ export type VideoRatio = "16:9" | "9:16" | "1:1" | "4:3" | "3:4" | "21:9";
 export type ImageModelRule = {
   resolutions: ImageResolution[];
   defaultResolution: ImageResolution;
+  // 该模型在前端下拉里展示（且上游真正支持）的比例。⛔ 别再用全局固定列表 —— Recraft 只支持 5 个（无 21:9）。
+  // 「智能比例」由 UI 统一置顶，不写进这里。
+  ratios: ConcreteImageRatio[];
   modalities: string[];
   dimensions: Partial<Record<ImageResolution, Partial<Record<ConcreteImageRatio, ImageDimensions>>>>;
 };
@@ -69,12 +196,9 @@ export type VideoModelRule = {
 export const models: ConversationModel[] = [
   { label: "Seed 2.0 Lite", id: "bytedance-seed/seed-2.0-lite" },
   { label: "DeepSeek V4 Pro", id: "deepseek/deepseek-v4-pro" },
-  { label: "DeepSeek R1 0528", id: "deepseek/deepseek-r1-0528" },
-  { label: "Gemini 3 Flash Preview", id: "google/gemini-3-flash-preview" },
+  { label: "Grok 4.6", id: "x-ai/grok-4.6" },
+  { label: "Kimi K3", id: "moonshotai/kimi-k3" },
   { label: "Gemini 3.1 Pro Preview", id: "google/gemini-3.1-pro-preview" },
-  { label: "GPT-4o", id: "openai/gpt-4o" },
-  { label: "GPT-5.4", id: "openai/gpt-5.4" },
-  { label: "GPT-5.5", id: "openai/gpt-5.5" },
   { label: "GPT-5.6 Terra", id: "openai/gpt-5.6-terra" },
   { label: "GPT-5.6 Terra Pro", id: "openai/gpt-5.6-terra-pro" },
 ] as const;
@@ -91,8 +215,23 @@ export const frontendConversationModels: ConversationModel[] = [
 
 export const DEFAULT_CHAT_MODEL = "bytedance-seed/seed-2.0-lite";
 export const ADVANCED_CHAT_MODEL = "openai/gpt-5.4";
+export const PROMPT_TOOL_MODEL_CHAIN = [
+  "openai/gpt-5.6-terra-pro",
+  "moonshotai/kimi-k3",
+  "x-ai/grok-4.6",
+  "byteplus:chat.seed-2-0-pro",
+  DEFAULT_CHAT_MODEL,
+] as const;
 export const imageGenerationModels: GenerationModel[] = [
   { label: "Seedream 4.5", id: "bytedance-seed/seedream-4.5" },
+  // ⭐ Recraft V4.1 系（2026-08 接入）：走 OpenRouter 专用图片接口 /api/v1/images（⛔ 不支持 /chat/completions，
+  //    实测 404「No endpoints found」）。参数已实测（endpoints 接口 + 真跑 10 张）：
+  //    - 只支持 5 个比例：1:1 / 4:3 / 3:4 / 16:9 / 9:16（⛔ 无 21:9）；智能比例 → 上游 aspect_ratio:"auto"。
+  //    - 分辨率不可调（上游无 resolution 参数）：V4.1 恒 ~1K、Pro 恒 ~2K（Pro 正好是 V4.1 每边 ×2）。
+  //    - 输出 webp；参考图最多 1 张；n 最多 6；价格 V4.1 $0.035/张、Pro $0.21/张。
+  //    ⭐ 排在 Gemini 之上 + 标 NEW（isNewGenerationModel）。
+  { label: "Recraft V4.1", id: "recraft/recraft-v4.1" },
+  { label: "Recraft V4.1 Pro", id: "recraft/recraft-v4.1-pro" },
   { label: "Gemini 3.1 Flash Image Preview", id: "google/gemini-3.1-flash-image-preview" },
   { label: "Gemini 3 Pro Image Preview", id: "google/gemini-3-pro-image-preview" },
   { label: "GPT-5.4 Image 2（GPT版）", id: "openai/gpt-5.4-image-2-agent" },
@@ -143,7 +282,7 @@ export const SEEDANCE_25_VIDEO_MODEL_ID = "byteplus:video.seedance-2-5";
  * 徽标长相见 `src/components/new-badge.tsx`（⛔ 别再各处手写那串 className）。
  */
 export function isNewGenerationModel(modelId: string) {
-  return modelId === HAILUO3_VIDEO_MODEL_ID || modelId === SEEDANCE_25_VIDEO_MODEL_ID;
+  return modelId === HAILUO3_VIDEO_MODEL_ID || modelId === SEEDANCE_25_VIDEO_MODEL_ID || isRecraftModel(modelId);
 }
 
 // H3 在 OpenRouter 上支持 5~15 秒（整秒）。
@@ -213,6 +352,17 @@ export const bytePlusVideoGenerationModels: GenerationModel[] = [
 
 export const DEFAULT_IMAGE_MODEL = imageGenerationModels[0].id;
 export const DEFAULT_VIDEO_MODEL = videoGenerationModels[0].id;
+
+// ⭐ 语音生成（TTS）模型（2026-08 接入，对话流）——唯一权威列表。
+// 都走 OpenRouter `/api/v1/audio/speech`（见 openrouter-audio.ts）。参数/默认音色/单价见 AUDIO_MODEL_MENU_INFO。
+export const audioGenerationModels: GenerationModel[] = [
+  { label: "Fish Audio S2.1 Pro（免费）", id: "fish-audio/s2.1-pro-free" },
+  { label: "Fish Audio S2.1 Pro", id: "fish-audio/s2.1-pro" },
+  { label: "Qwen Audio 3.0 TTS Plus", id: "qwen/qwen-audio-3.0-tts-plus" },
+  { label: "MiniMax Speech 2.8 HD", id: "minimax/speech-2.8-hd" },
+] as const;
+
+export const DEFAULT_AUDIO_MODEL = audioGenerationModels[0].id;
 
 const seedream2KDimensions: Record<ConcreteImageRatio, ImageDimensions> = {
   "1:1": { width: 2048, height: 2048 },
@@ -335,10 +485,32 @@ const gpt544KDimensions: Record<ConcreteImageRatio, ImageDimensions> = {
   "3:4": { width: 2448, height: 3264 },
 };
 
+// Recraft V4.1（~1K，实测 endpoints + 真跑）；Pro（~2K）正好每边 ×2。仅 5 个比例，无 21:9。
+const recraftV41Dimensions: Partial<Record<ConcreteImageRatio, ImageDimensions>> = {
+  "1:1": { width: 1024, height: 1024 },
+  "4:3": { width: 1216, height: 896 },
+  "3:4": { width: 896, height: 1216 },
+  "16:9": { width: 1344, height: 768 },
+  "9:16": { width: 768, height: 1344 },
+};
+
+const recraftV41ProDimensions: Partial<Record<ConcreteImageRatio, ImageDimensions>> = {
+  "1:1": { width: 2048, height: 2048 },
+  "4:3": { width: 2432, height: 1792 },
+  "3:4": { width: 1792, height: 2432 },
+  "16:9": { width: 2688, height: 1536 },
+  "9:16": { width: 1536, height: 2688 },
+};
+
+// 现有图片模型（Seedream / Gemini / GPT）都支持全部 6 个具体比例。Recraft 只支持其中 5 个（无 21:9）。
+const standardImageRatios: ConcreteImageRatio[] = ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"];
+const recraftImageRatios: ConcreteImageRatio[] = ["16:9", "4:3", "1:1", "3:4", "9:16"];
+
 export const imageModelRules: Record<string, ImageModelRule> = {
   "bytedance-seed/seedream-4.5": {
     resolutions: ["2K", "4K"],
     defaultResolution: "2K",
+    ratios: standardImageRatios,
     modalities: ["image"],
     dimensions: {
       "2K": seedream2KDimensions,
@@ -348,6 +520,7 @@ export const imageModelRules: Record<string, ImageModelRule> = {
   "byteplus:conversation-image.seedream-4-5": {
     resolutions: ["2K", "4K"],
     defaultResolution: "2K",
+    ratios: standardImageRatios,
     modalities: ["image"],
     dimensions: {
       "2K": bytePlusSeedream2KDimensions,
@@ -357,6 +530,7 @@ export const imageModelRules: Record<string, ImageModelRule> = {
   "byteplus:conversation-image.seedream-5-0": {
     resolutions: ["2K", "3K", "4K"],
     defaultResolution: "2K",
+    ratios: standardImageRatios,
     modalities: ["image"],
     dimensions: {
       "2K": bytePlusSeedream2KDimensions,
@@ -367,6 +541,7 @@ export const imageModelRules: Record<string, ImageModelRule> = {
   "byteplus:conversation-image.seedream-5-0-pro": {
     resolutions: ["1K", "2K"],
     defaultResolution: "2K",
+    ratios: standardImageRatios,
     modalities: ["image"],
     dimensions: {
       "1K": bytePlusSeedream1KDimensions,
@@ -376,6 +551,7 @@ export const imageModelRules: Record<string, ImageModelRule> = {
   "google/gemini-3.1-flash-image-preview": {
     resolutions: ["1K", "2K", "4K"],
     defaultResolution: "1K",
+    ratios: standardImageRatios,
     modalities: ["image", "text"],
     dimensions: {
       "1K": gemini1KDimensions,
@@ -386,6 +562,7 @@ export const imageModelRules: Record<string, ImageModelRule> = {
   "google/gemini-3-pro-image-preview": {
     resolutions: ["1K", "2K", "4K"],
     defaultResolution: "1K",
+    ratios: standardImageRatios,
     modalities: ["image", "text"],
     dimensions: {
       "1K": gemini1KDimensions,
@@ -396,6 +573,7 @@ export const imageModelRules: Record<string, ImageModelRule> = {
   "openai/gpt-5.4-image-2": {
     resolutions: ["1K", "2K", "4K"],
     defaultResolution: "1K",
+    ratios: standardImageRatios,
     modalities: ["image", "text"],
     dimensions: {
       "1K": gpt541KDimensions,
@@ -406,10 +584,31 @@ export const imageModelRules: Record<string, ImageModelRule> = {
   "openai/gpt-5.4-image-2-agent": {
     resolutions: ["1K", "2K"],
     defaultResolution: "1K",
+    ratios: standardImageRatios,
     modalities: ["image", "text"],
     dimensions: {
       "1K": gpt541KDimensions,
       "2K": gpt542KDimensions,
+    },
+  },
+  // Recraft V4.1：只有 1K 一档（上游无 resolution 参数），5 个比例。modalities 不用（走 /api/v1/images）。
+  "recraft/recraft-v4.1": {
+    resolutions: ["1K"],
+    defaultResolution: "1K",
+    ratios: recraftImageRatios,
+    modalities: ["image"],
+    dimensions: {
+      "1K": recraftV41Dimensions,
+    },
+  },
+  // Recraft V4.1 Pro：只有 2K 一档，5 个比例。
+  "recraft/recraft-v4.1-pro": {
+    resolutions: ["2K"],
+    defaultResolution: "2K",
+    ratios: recraftImageRatios,
+    modalities: ["image"],
+    dimensions: {
+      "2K": recraftV41ProDimensions,
     },
   },
 };
@@ -417,6 +616,7 @@ export const imageModelRules: Record<string, ImageModelRule> = {
 export const fallbackImageModelRule: ImageModelRule = {
   resolutions: ["1K", "2K"],
   defaultResolution: "1K",
+  ratios: standardImageRatios,
   modalities: ["image", "text"],
   dimensions: {
     "1K": gemini1KDimensions,
@@ -753,6 +953,17 @@ export function classifyImageResolutionByModel(modelId: string | undefined, dime
 
 export function getSupportedImageResolutions(modelId?: string) {
   return getImageModelRule(modelId).resolutions;
+}
+
+// 该模型在前端下拉里可选的「具体比例」（不含智能比例，智能比例由 UI 统一置顶）。
+export function getSupportedImageRatios(modelId?: string): ConcreteImageRatio[] {
+  return getImageModelRule(modelId).ratios;
+}
+
+// 切模型时把当前比例归一化：智能比例保留；该模型支持就保留；否则回落到「智能比例」（各模型都支持智能比例）。
+export function normalizeImageRatioForModel(modelId: string | undefined, ratio?: string): string {
+  if (!ratio || ratio === "智能比例") return "智能比例";
+  return getSupportedImageRatios(modelId).includes(ratio as ConcreteImageRatio) ? ratio : "智能比例";
 }
 
 export function normalizeImageResolutionForModel(modelId: string | undefined, resolution?: string) {

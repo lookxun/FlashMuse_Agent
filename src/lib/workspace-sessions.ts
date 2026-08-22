@@ -113,10 +113,14 @@ function getMessageVideoUrls(message: Record<string, unknown>) {
   return Array.from(urls);
 }
 
+function getMessageAudioUrls(message: Record<string, unknown>) {
+  return Array.isArray(message.audios) ? message.audios.filter((url): url is string => typeof url === "string" && Boolean(url)) : [];
+}
+
 async function syncWorkspaceMessageMediaAssets(userId: string, sessionId: string, messages: Record<string, unknown>[]) {
   // 2026-08-02 审计 1.8：先把全部消息解析成待同步项，再按 6 路并发写库
   // （旧写法是嵌套 for + 顺序 await，每个媒体项 3~6 次串行往返：30 条消息 × 4 张图 ≈ 500 次）。
-  type PendingItem = { url: string; mediaType: "image" | "video"; category: string; sourceKind: string; sourcePrompt?: string; sourceDetail?: string; promptSource: string; name?: string; posterUrl?: string; width?: number; height?: number; videoDuration?: string };
+  type PendingItem = { url: string; mediaType: "image" | "video" | "audio"; category: string; sourceKind: string; sourcePrompt?: string; sourceDetail?: string; promptSource: string; name?: string; posterUrl?: string; width?: number; height?: number; videoDuration?: string };
   const pending: Array<{ item: PendingItem; message: Record<string, unknown>; messageId: string | undefined; createdAt: Date; meta?: Record<string, unknown>; settings?: Record<string, unknown>; mediaSystemNames?: Record<string, unknown> }> = [];
 
   for (const message of messages) {
@@ -162,6 +166,11 @@ async function syncWorkspaceMessageMediaAssets(userId: string, sessionId: string
         const dim = getDimension(videoDimensionsMap?.[url]) || getDimension(message.videoDimensions);
         const detail = getPromptDetail(videoPromptDetails?.[url]);
         items.push({ url, mediaType: "video", category: "conversation_videos", sourceKind: "conversation_generation_video", sourcePrompt: detail?.prompt || getString(videoPrompts?.[url], originalPrompt), sourceDetail: getPromptSourceDetail(detail), promptSource: "generated", posterUrl: getString(videoPosters?.[url]), width: dim?.width, height: dim?.height, videoDuration: getString(settings?.duration) });
+      }
+
+      const audioPrompts = isRecord(message.audioPrompts) ? message.audioPrompts : undefined;
+      for (const url of getMessageAudioUrls(message)) {
+        items.push({ url, mediaType: "audio", category: "conversation_audios", sourceKind: "conversation_generation_audio", sourcePrompt: getString(audioPrompts?.[url], originalPrompt), promptSource: "generated" });
       }
     }
 

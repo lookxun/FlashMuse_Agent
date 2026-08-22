@@ -16,13 +16,14 @@ export interface AudioWaveformPlayerProps {
   stopWaveformPointer?: boolean;
   /** card 变体的时间显示成「倒计时秒/总秒数」两位数（如 09/15），@引用资产弹窗用 */
   secondsCountdown?: boolean;
+  hideTime?: boolean;
 }
 
 /**
  * 统一的音频波形播放器（基于 wavesurfer.js）。
  * 工作流音频节点、资产库上传音频卡等一律复用它，禁止再各写一套。
  */
-export function AudioWaveformPlayer({ url, variant = "node", stopWaveformPointer = false, secondsCountdown = false }: AudioWaveformPlayerProps) {
+export function AudioWaveformPlayer({ url, variant = "node", stopWaveformPointer = false, secondsCountdown = false, hideTime = false }: AudioWaveformPlayerProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const waveRef = useRef<{ play: () => void; pause: () => void; playPause: () => void; destroy: () => void } | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -101,7 +102,7 @@ export function AudioWaveformPlayer({ url, variant = "node", stopWaveformPointer
             <div className="pointer-events-none absolute inset-y-0 z-10 w-[2px] bg-[#ff3b30]" style={{ left: `${progressRatio * 100}%` }} />
           </div>
         </div>
-        <span className={`pointer-events-none absolute z-20 rounded bg-black/12 px-1.5 py-0.5 text-[11px] font-medium tabular-nums text-[#333] backdrop-blur-sm ${secondsCountdown ? "right-[3px] top-[3px]" : "left-2 top-2"}`}>{secondsCountdown ? `${padSeconds(duration - currentTime)}/${padSeconds(duration)}` : `${formatAudioTime(currentTime)} / ${formatAudioTime(duration)}`}</span>
+        {hideTime ? null : <span className={`pointer-events-none absolute z-20 rounded bg-black/12 px-1.5 py-0.5 text-[11px] font-medium tabular-nums text-[#333] backdrop-blur-sm ${secondsCountdown ? "right-[3px] top-[3px]" : "left-2 top-2"}`}>{secondsCountdown ? `${padSeconds(duration - currentTime)}/${padSeconds(duration)}` : `${formatAudioTime(currentTime)} / ${formatAudioTime(duration)}`}</span>}
         {!isPlaying ? (
           <div className="pointer-events-none absolute left-1/2 top-1/2 z-20 flex h-10 w-10 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-black/42 text-white shadow-[0_8px_24px_rgba(0,0,0,0.22)] backdrop-blur-[4px]">
             <RiPlayLargeFill className="ml-0.5 h-5 w-5" aria-hidden="true" />

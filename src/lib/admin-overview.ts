@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { bytePlusImageGenerationModels, bytePlusVideoGenerationModels, imageGenerationModels, videoGenerationModels } from "@/lib/models";
+import { bytePlusImageGenerationModels, bytePlusVideoGenerationModels, audioGenerationModels, imageGenerationModels, videoGenerationModels } from "@/lib/models";
 import { FAILURE_REASON_SQL } from "@/lib/admin-failure-triage";
 import { ONLINE_WINDOW_MS } from "@/lib/online-users";
 
@@ -19,13 +19,15 @@ export type AdminOverviewData = {
   users: { total: number; today: number; dau: number; wau: number; mau: number; online: number; active30: number };
   images: { total: number; conversation: number; workflow: number; today: number; todayConversation: number; todayWorkflow: number };
   videos: { total: number; conversation: number; workflow: number; today: number; todayConversation: number; todayWorkflow: number };
+  audios: { total: number; conversation: number; workflow: number; today: number; todayConversation: number; todayWorkflow: number };
   credits: { balance: number; consumedTotal: number; todayConsumed: number; usd: number; cny: number };
   conversations: { total: number; today: number };
   workflows: { total: number; today: number };
-  success: { imageRate: number; videoRate: number; imageFailed: number; videoFailed: number; hasData: boolean };
+  success: { imageRate: number; videoRate: number; audioRate: number; imageFailed: number; videoFailed: number; audioFailed: number; hasData: boolean };
   activeTrend: TrendPoint[];
   imageTrend: TrendPoint[];
   videoTrend: TrendPoint[];
+  audioTrend: TrendPoint[];
   costTrend: TrendPoint[];
   featureUsage: ShareItem[];
   modelShare: ShareItem[];
@@ -78,12 +80,13 @@ function num(value: unknown) {
 function pct(part: number, total: number) {
   return total > 0 ? Math.round((part / total) * 100) : 0;
 }
-function getModelLabel(type: "image" | "video", modelId: string) {
-  const models = type === "image" ? [...imageGenerationModels, ...bytePlusImageGenerationModels] : [...videoGenerationModels, ...bytePlusVideoGenerationModels];
+function getModelLabel(type: "image" | "video" | "audio", modelId: string) {
+  const models = type === "audio" ? audioGenerationModels : type === "image" ? [...imageGenerationModels, ...bytePlusImageGenerationModels] : [...videoGenerationModels, ...bytePlusVideoGenerationModels];
   return models.find((model) => model.id === modelId)?.label ?? modelId;
 }
 function guessModelLabel(modelId: string) {
   if (!modelId) return "未知模型";
+  if (/audio|speech|tts|fish-audio|minimax\/speech|qwen-audio/i.test(modelId)) return getModelLabel("audio", modelId);
   const isVideo = /video|seedance|kling|hailuo|wan|veo/i.test(modelId);
   return getModelLabel(isVideo ? "video" : "image", modelId);
 }
@@ -149,14 +152,15 @@ export async function getAdminOverviewData(): Promise<AdminOverviewData> {
       COUNT(*)::bigint AS count
     FROM "MediaAsset"
     WHERE "archivedAt" IS NULL
-      AND "mediaType" IN ('image','video')
+      AND "mediaType" IN ('image','video','audio')
       AND COALESCE("sourceKind",'') NOT LIKE '%upload%'
     GROUP BY 1,2,3`;
 
   const images = { total: 0, conversation: 0, workflow: 0, today: 0, todayConversation: 0, todayWorkflow: 0 };
   const videos = { total: 0, conversation: 0, workflow: 0, today: 0, todayConversation: 0, todayWorkflow: 0 };
+  const audios = { total: 0, conversation: 0, workflow: 0, today: 0, todayConversation: 0, todayWorkflow: 0 };
   for (const row of mediaCountsRows) {
-    const target = row.mediatype === "video" ? videos : images;
+    const target = row.mediatype === "audio" ? audios : row.mediatype === "video" ? videos : images;
     const count = num(row.count);
     target.total += count;
     if (row.bucket === "workflow") target.workflow += count; else target.conversation += count;
@@ -174,21 +178,23 @@ export async function getAdminOverviewData(): Promise<AdminOverviewData> {
       COUNT(*)::bigint AS count
     FROM "MediaAsset"
     WHERE "archivedAt" IS NULL
-      AND "mediaType" IN ('image','video')
+      AND "mediaType" IN ('image','video','audio')
       AND COALESCE("sourceKind",'') NOT LIKE '%upload%'
       AND "firstSeenAt" >= ${thirtyDaysAgo}
     GROUP BY 1,2,3`;
   const imageTrendMap = new Map<string, { conversation: number; workflow: number }>();
   const videoTrendMap = new Map<string, { conversation: number; workflow: number }>();
+  const audioTrendMap = new Map<string, { conversation: number; workflow: number }>();
   for (const row of mediaTrendRows) {
     const key = dayKey(new Date(row.day));
-    const map = row.mediatype === "video" ? videoTrendMap : imageTrendMap;
+    const map = row.mediatype === "audio" ? audioTrendMap : row.mediatype === "video" ? videoTrendMap : imageTrendMap;
     const entry = map.get(key) ?? { conversation: 0, workflow: 0 };
     if (row.bucket === "workflow") entry.workflow += num(row.count); else entry.conversation += num(row.count);
     map.set(key, entry);
   }
   const imageTrend: TrendPoint[] = days30.map((day) => ({ label: dayLabel(day), conversation: imageTrendMap.get(dayKey(day))?.conversation ?? 0, workflow: imageTrendMap.get(dayKey(day))?.workflow ?? 0 }));
   const videoTrend: TrendPoint[] = days30.map((day) => ({ label: dayLabel(day), conversation: videoTrendMap.get(dayKey(day))?.conversation ?? 0, workflow: videoTrendMap.get(dayKey(day))?.workflow ?? 0 }));
+  const audioTrend: TrendPoint[] = days30.map((day) => ({ label: dayLabel(day), conversation: audioTrendMap.get(dayKey(day))?.conversation ?? 0, workflow: audioTrendMap.get(dayKey(day))?.workflow ?? 0 }));
 
   // ---- 积分账本聚合（2026-08-02 审计 1.3：全部改在 SQL 里 GROUP BY，不再把整张 CreditLedger 拉进内存） ----
   const [creditTotalRows, creditModelRows, creditUserRows, creditFeatureRows, creditChatModeRows, creditAnomalyRows] = await Promise.all([
@@ -253,7 +259,7 @@ export async function getAdminOverviewData(): Promise<AdminOverviewData> {
   const modelCostMap = new Map<string, number>();
   const costModelTypeMap = new Map<string, "image" | "video">();
   for (const row of creditModelRows) {
-    const label = row.kind === "video" ? getModelLabel("video", row.model) : row.kind === "image" ? getModelLabel("image", row.model) : row.model;
+    const label = row.kind === "audio" ? getModelLabel("audio", row.model) : row.kind === "video" ? getModelLabel("video", row.model) : row.kind === "image" ? getModelLabel("image", row.model) : row.model;
     modelCallMap.set(label, (modelCallMap.get(label) ?? 0) + num(row.calls));
     const cost = num(row.cost);
     if (cost > 0) modelCostMap.set(label, (modelCostMap.get(label) ?? 0) + cost);
@@ -268,18 +274,19 @@ export async function getAdminOverviewData(): Promise<AdminOverviewData> {
   // ---- 生成事件聚合（新表） ----
   const genByKindStatus = await safeRows(() => prisma.$queryRaw<Array<{ kind: string; status: string; count: bigint }>>`
     SELECT "kind", "status", COUNT(*)::bigint AS count FROM "GenerationEvent" GROUP BY 1,2`);
-  let imageSuccess = 0, imageFailed = 0, videoSuccess = 0, videoFailed = 0;
+  let imageSuccess = 0, imageFailed = 0, videoSuccess = 0, videoFailed = 0, audioSuccess = 0, audioFailed = 0;
   for (const row of genByKindStatus) {
     const c = num(row.count);
     if (row.kind === "image") { if (row.status === "success") imageSuccess += c; else imageFailed += c; }
     else if (row.kind === "video") { if (row.status === "success") videoSuccess += c; else videoFailed += c; }
+    else if (row.kind === "audio") { if (row.status === "success") audioSuccess += c; else audioFailed += c; }
   }
-  const genHasData = imageSuccess + imageFailed + videoSuccess + videoFailed > 0;
+  const genHasData = imageSuccess + imageFailed + videoSuccess + videoFailed + audioSuccess + audioFailed > 0;
 
   const genModelRows = await safeRows(() => prisma.$queryRaw<Array<{ model: string | null; calls: bigint; failed: bigint }>>`
     SELECT "model", COUNT(*)::bigint AS calls, COUNT(*) FILTER (WHERE "status" = 'failed')::bigint AS failed
     FROM "GenerationEvent" GROUP BY 1 ORDER BY calls DESC`);
-  const modelCalls = genModelRows.filter((row) => row.model).map((row) => ({ label: guessModelLabel(row.model as string), calls: num(row.calls), failed: num(row.failed), note: /video|seedance|kling|hailuo|wan|veo/i.test(row.model as string) ? "视频" : "图片" }));
+  const modelCalls = genModelRows.filter((row) => row.model).map((row) => ({ label: guessModelLabel(row.model as string), calls: num(row.calls), failed: num(row.failed),     note: /audio|speech|tts|fish-audio|minimax\/speech|qwen-audio/i.test(row.model as string) ? "语音" : /video|seedance|kling|hailuo|wan|veo/i.test(row.model as string) ? "视频" : "图片" }));
 
   // 「失败原因」只统计**未归档**的（resolvedAt IS NULL）。根因查清并修掉后由归档脚本打上
   // resolvedAt，那部分改到下面 failureResolvedTop 里划掉展示（文字保留，便于追溯）。
@@ -302,8 +309,9 @@ export async function getAdminOverviewData(): Promise<AdminOverviewData> {
     SELECT "model", AVG("durationMs") AS avg FROM "GenerationEvent" WHERE "status" = 'success' AND "durationMs" IS NOT NULL AND "model" IS NOT NULL GROUP BY 1 ORDER BY avg DESC LIMIT 8`);
   const latency: RankItem[] = genLatencyRows.map((row) => {
     const ms = num(row.avg);
+    const isAudio = /audio|speech|tts|fish-audio|minimax\/speech|qwen-audio/i.test(row.model as string);
     const isVideo = /video|seedance|kling|hailuo|wan|veo/i.test(row.model as string);
-    return { label: guessModelLabel(row.model as string), value: ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)}ms`, note: isVideo ? "视频" : "图片" };
+    return { label: guessModelLabel(row.model as string), value: ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)}ms`, note: isAudio ? "语音" : isVideo ? "视频" : "图片" };
   });
 
   const genRefRows = await safeRows(() => prisma.$queryRaw<Array<{ total: bigint; withimage: bigint; withvideo: bigint }>>`
@@ -473,13 +481,15 @@ export async function getAdminOverviewData(): Promise<AdminOverviewData> {
     users: { total: totalUsers, today: todayUsers, dau, wau, mau, online, active30 },
     images,
     videos,
+    audios,
     credits: { balance, consumedTotal: consumedCredits, todayConsumed, usd: Number(consumedUsd.toFixed(2)), cny: Number(consumedCny.toFixed(2)) },
     conversations: { total: conversationTotal, today: conversationToday },
     workflows: { total: workflowTotal, today: workflowToday },
-    success: { imageRate: imageSuccess + imageFailed > 0 ? Number(((imageSuccess / (imageSuccess + imageFailed)) * 100).toFixed(1)) : 0, videoRate: videoSuccess + videoFailed > 0 ? Number(((videoSuccess / (videoSuccess + videoFailed)) * 100).toFixed(1)) : 0, imageFailed, videoFailed, hasData: genHasData },
+    success: { imageRate: imageSuccess + imageFailed > 0 ? Number(((imageSuccess / (imageSuccess + imageFailed)) * 100).toFixed(1)) : 0, videoRate: videoSuccess + videoFailed > 0 ? Number(((videoSuccess / (videoSuccess + videoFailed)) * 100).toFixed(1)) : 0, audioRate: audioSuccess + audioFailed > 0 ? Number(((audioSuccess / (audioSuccess + audioFailed)) * 100).toFixed(1)) : 0, imageFailed, videoFailed, audioFailed, hasData: genHasData },
     activeTrend,
     imageTrend,
     videoTrend,
+    audioTrend,
     costTrend,
     featureUsage,
     modelShare,

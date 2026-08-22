@@ -1,7 +1,7 @@
 import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/prisma";
 
-export type CreditKind = "text" | "image" | "video";
+export type CreditKind = "text" | "image" | "video" | "audio";
 export type CreditGrantKind = "signup" | "admin_adjust" | "recharge" | "activity";
 
 export type UsageLike = {
@@ -107,6 +107,8 @@ export function getChargeEnabled(settings: Awaited<ReturnType<typeof getCreditSe
   if (isPromptToolCreditSource(getMetadataRecord(metadata)?.creditSource)) return settings.chargePromptTool;
   if (kind === "image") return settings.chargeImage;
   if (kind === "video") return settings.chargeVideo;
+  // 语音生成（TTS）：v1 暂无独立开关（不加 DB 列），默认始终计费。以后要后台可调再加 chargeAudio 字段。
+  if (kind === "audio") return true;
   return settings.chargeText;
 }
 

@@ -299,10 +299,10 @@ function mediaStateToLegacyAsset(item: {
   };
 }
 
-type AssetFilterKey = "character_image" | "scene_image" | "prop_image" | "shot_image" | "shot_video" | "other" | "trash" | "conversation_images" | "conversation_uploads" | "conversation_videos" | "workflow_images" | "workflow_uploads" | "workflow_videos" | "upload_videos" | "upload_audios";
+type AssetFilterKey = "character_image" | "scene_image" | "prop_image" | "shot_image" | "shot_video" | "other" | "trash" | "conversation_images" | "conversation_uploads" | "conversation_videos" | "conversation_audios" | "workflow_images" | "workflow_uploads" | "workflow_videos" | "upload_videos" | "upload_audios";
 
 function isAssetFilterKey(value: unknown): value is AssetFilterKey {
-  return typeof value === "string" && ["character_image", "scene_image", "prop_image", "shot_image", "shot_video", "other", "trash", "conversation_images", "conversation_uploads", "conversation_videos", "workflow_images", "workflow_uploads", "workflow_videos", "upload_videos", "upload_audios"].includes(value);
+  return typeof value === "string" && ["character_image", "scene_image", "prop_image", "shot_image", "shot_video", "other", "trash", "conversation_images", "conversation_uploads", "conversation_videos", "conversation_audios", "workflow_images", "workflow_uploads", "workflow_videos", "upload_videos", "upload_audios"].includes(value);
 }
 
 // 上传媒体的分类名（对话流 + 工作流）。文档分类刻意不放进任何可见过滤，永不显示。
@@ -325,6 +325,7 @@ function getAssetPageWhere(userId: string, filter: AssetFilterKey): Prisma.UserA
   // 上传图片 = 对话流上传 + 工作流上传 + 工作流视频截图 + 老数据里落在 conversation_images 但地址在 /upload_image/ 的。
   if (filter === "conversation_uploads") return { ...visible, deletedAt: null, OR: [{ currentCategory: { in: UPLOAD_IMAGE_CATEGORIES } }, { currentCategory: "conversation_images", mediaAsset: { archivedAt: null, url: { contains: "/upload_image/" } } }] };
   if (filter === "conversation_videos") return { ...visible, deletedAt: null, currentCategory: "conversation_videos" };
+  if (filter === "conversation_audios") return { ...visible, deletedAt: null, currentCategory: "conversation_audios" };
   if (filter === "conversation_images") return { ...visible, deletedAt: null, currentCategory: "conversation_images", NOT: { mediaAsset: { url: { contains: "/upload_image/" } } } };
   return { ...visible, deletedAt: null, currentCategory: "conversation_images", NOT: { mediaAsset: { url: { contains: "/upload_image/" } } } };
 }
@@ -371,7 +372,7 @@ async function getAssetCounts(userId: string) {
       mediaAsset: { select: { url: true } },
     },
   });
-  const counts: Record<string, number> = { character_image: 0, scene_image: 0, prop_image: 0, shot_image: 0, trash: 0, conversation_images: 0, conversation_uploads: 0, conversation_videos: 0, workflow_images: 0, workflow_uploads: 0, workflow_videos: 0, upload_videos: 0, upload_audios: 0, asset_generation: 0, conversation: 0, workflow: 0 };
+  const counts: Record<string, number> = { character_image: 0, scene_image: 0, prop_image: 0, shot_image: 0, trash: 0, conversation_images: 0, conversation_uploads: 0, conversation_videos: 0, conversation_audios: 0, workflow_images: 0, workflow_uploads: 0, workflow_videos: 0, upload_videos: 0, upload_audios: 0, asset_generation: 0, conversation: 0, workflow: 0 };
   const now = Date.now();
   for (const row of rows) {
     const url = row.mediaAsset.url;
@@ -410,7 +411,8 @@ async function getAssetCounts(userId: string) {
     counts.conversation += 1;
     const isVideo = type === "shot_video" || /\.(mp4|webm|mov)(\?|$)/i.test(url);
     const isUpload = /\/generated\/(?:users\/[^/]+\/)?upload_image\//.test(url);
-    if (row.currentCategory === "conversation_videos" || isVideo) counts.conversation_videos += 1;
+    if (row.currentCategory === "conversation_audios") counts.conversation_audios += 1;
+    else if (row.currentCategory === "conversation_videos" || isVideo) counts.conversation_videos += 1;
     else if (row.currentCategory === "conversation_uploads" || isUpload) counts.conversation_uploads += 1;
     else counts.conversation_images += 1;
   }

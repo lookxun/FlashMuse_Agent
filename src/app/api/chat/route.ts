@@ -3,11 +3,12 @@ import { getCurrentUser } from "@/lib/auth";
 import { assertUserCanUseCredits, chargeCredits, isUnauthenticatedError, recordCreditFailure, UNAUTHENTICATED_ERROR_MESSAGE } from "@/lib/credits";
 import { toUserErrorMessage } from "@/lib/error-message";
 import { sendToOpenRouter } from "@/lib/openrouter";
+import { CONTENT_POLICY_ERROR_CODE, CONTENT_POLICY_ERROR_MESSAGE, enforceContentPolicy } from "@/lib/content-moderation";
 import { DEFAULT_CHAT_MODEL, isModelName } from "@/lib/models";
 import { createCodedApiError } from "@/lib/error-code";
 import type { Prisma } from "@prisma/client";
 import { appendUploadRuleFeedbackLog, summarizeMessageUploads } from "@/lib/upload-rule-feedback-log";
-import { getUploadRuleOverrides } from "@/lib/system-settings";
+import { getAgentAutoChatModelIds, getUploadRuleOverrides, isRetryableAgentChatError, rememberAgentChatModelSkip } from "@/lib/system-settings";
 import { validateReferenceImageCount } from "@/lib/upload-rules";
 import { resolveUnlockLimitsForUser } from "@/lib/account-features";
 
@@ -35,6 +36,7 @@ function withChargedUsage<T extends { usage?: { promptTokens?: number; completio
 export async function POST(request: Request) {
   let body: {
     model?: string;
+    models?: string[];
     mode?: "agent" | "general" | "chat" | "image" | "video";
     messages?: Array<{ role: "user" | "assistant"; content: string; images?: string[] }>;
     settings?: {
@@ -47,6 +49,7 @@ export async function POST(request: Request) {
     conversationId?: string;
     conversationTitle?: string;
     requestId?: string;
+    stream?: boolean;
     metadata?: Prisma.InputJsonValue;
   } | undefined;
   let model = DEFAULT_CHAT_MODEL;
@@ -67,10 +70,14 @@ export async function POST(request: Request) {
       conversationId?: string;
       conversationTitle?: string;
       requestId?: string;
+      stream?: boolean;
       metadata?: Prisma.InputJsonValue;
     };
 
     model = body.model || DEFAULT_CHAT_MODEL;
+    const chatModels = body.mode === "agent"
+      ? (getAgentAutoChatModelIds(model).length > 0 ? getAgentAutoChatModelIds(model) : [model])
+      : [model];
 
     if ((model !== "openai/gpt-5.5" && !isModelName(model)) || !body.mode || !Array.isArray(body.messages)) {
       return NextResponse.json({ error: "参数不完整" }, { status: 400 });
@@ -90,19 +97,99 @@ export async function POST(request: Request) {
     }
     await assertUserCanUseCredits(user, "text", body.metadata);
 
-    const result = await sendToOpenRouter({
-      model,
-      mode: body.mode,
-      messages: body.messages,
-      settings: body.settings,
-      originalPrompt: body.originalPrompt,
-      // 按账号的「解除限制」（后台「帐号功能管理」）。
-      unlockLimits: await resolveUnlockLimitsForUser(user?.id),
-    });
+    if (body.mode === "agent" || body.mode === "general") {
+      const moderationPrompt = [...(body.messages ?? [])].reverse().find((message) => message.role === "user")?.content ?? "";
+      const policy = await enforceContentPolicy({ prompt: moderationPrompt, userId: user?.id, requestId: body.requestId, kind: "chat", source: body.mode });
+      if (policy.blocked) return NextResponse.json({ error: CONTENT_POLICY_ERROR_MESSAGE, errorCode: CONTENT_POLICY_ERROR_CODE }, { status: 400 });
+    }
+
+    const unlockLimits = await resolveUnlockLimitsForUser(user?.id);
+    const creditLabel = body.mode === "agent" ? "Agent 回复" : body.mode === "general" ? "通用回复" : "提示词整理";
+    const creditRequestId = body.requestId ? `${body.requestId}:chat` : undefined;
+
+    if (body.stream && (body.mode === "agent" || body.mode === "general")) {
+      const encoder = new TextEncoder();
+      const stream = new ReadableStream({
+        async start(controller) {
+          const send = (payload: Record<string, unknown>) => controller.enqueue(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`));
+          try {
+            let result: Awaited<ReturnType<typeof sendToOpenRouter>> | undefined;
+            let lastError: unknown;
+            let usedModel = model;
+            for (const chatModel of chatModels) {
+              try {
+                result = await sendToOpenRouter({
+                  model: chatModel,
+                  mode: body!.mode!,
+                  messages: body!.messages!,
+                  settings: body!.settings,
+                  originalPrompt: body!.originalPrompt,
+                  unlockLimits,
+                }, {
+                  onDelta: (text) => send({ type: "delta", text }),
+                });
+                usedModel = chatModel;
+                lastError = undefined;
+                break;
+              } catch (error) {
+                lastError = error;
+                rememberAgentChatModelSkip(chatModel, error);
+                if (!isRetryableAgentChatError(error)) throw error;
+              }
+            }
+            if (!result) throw lastError instanceof Error ? lastError : new Error("连接不到模型，请联系管理员！");
+            if (isPromptToolCreditSource(getCreditSource(body!.metadata)) && !result.content.trim()) throw new Error("服务器繁忙，请稍候再试！");
+            const credit = user ? await chargeCredits(user.id, "text", result.usage, { conversationId: body!.conversationId, conversationTitle: body!.conversationTitle, requestId: creditRequestId, label: creditLabel, model: usedModel, metadata: mergeChatCreditMetadata(body!.metadata, { outputPrompt: result.content ?? "" }) }) : undefined;
+            send({ type: "done", ...withChargedUsage(result, credit), credit });
+            controller.close();
+          } catch (error) {
+            if (isUnauthenticatedError(error)) {
+              send({ type: "error", error: UNAUTHENTICATED_ERROR_MESSAGE, status: 401 });
+            } else {
+              const codedError = await createCodedApiError(error, "对话请求失败，请稍后再试。", `chat stream failed mode=${body?.mode ?? "unknown"} model=${model} requestId=${body?.requestId ?? ""}`);
+              send({ type: "error", error: codedError.error, errorCode: codedError.errorCode });
+            }
+            controller.close();
+          }
+        },
+      });
+      return new Response(stream, {
+        headers: {
+          "Content-Type": "text/event-stream; charset=utf-8",
+          "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
+          Connection: "keep-alive",
+          "X-Accel-Buffering": "no",
+        },
+      });
+    }
+
+    let result: Awaited<ReturnType<typeof sendToOpenRouter>> | undefined;
+    let lastError: unknown;
+    let usedModel = model;
+    for (const chatModel of chatModels) {
+      try {
+        result = await sendToOpenRouter({
+          model: chatModel,
+          mode: body.mode,
+          messages: body.messages,
+          settings: body.settings,
+          originalPrompt: body.originalPrompt,
+          unlockLimits,
+        });
+        usedModel = chatModel;
+        lastError = undefined;
+        break;
+      } catch (error) {
+        lastError = error;
+        rememberAgentChatModelSkip(chatModel, error);
+        if (!isRetryableAgentChatError(error)) throw error;
+      }
+    }
+    if (!result) throw lastError instanceof Error ? lastError : new Error("连接不到模型，请联系管理员！");
     if (isPromptToolCreditSource(getCreditSource(body.metadata)) && !result.content.trim()) {
       throw new Error("服务器繁忙，请稍候再试！");
     }
-    const credit = user ? await chargeCredits(user.id, "text", result.usage, { conversationId: body.conversationId, conversationTitle: body.conversationTitle, requestId: body.requestId ? `${body.requestId}:chat` : undefined, label: body.mode === "agent" ? "Agent 回复" : body.mode === "general" ? "通用回复" : "提示词整理", model, metadata: mergeChatCreditMetadata(body.metadata, { outputPrompt: result.content ?? "" }) }) : undefined;
+    const credit = user ? await chargeCredits(user.id, "text", result.usage, { conversationId: body.conversationId, conversationTitle: body.conversationTitle, requestId: creditRequestId, label: creditLabel, model: usedModel, metadata: mergeChatCreditMetadata(body.metadata, { outputPrompt: result.content ?? "" }) }) : undefined;
 
     return NextResponse.json({ ...withChargedUsage(result, credit), credit });
     } catch (error) {

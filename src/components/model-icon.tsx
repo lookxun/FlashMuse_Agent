@@ -3,6 +3,11 @@ import { RiGoogleFill, RiOpenaiFill, RiTiktokFill } from "react-icons/ri";
 import { BytePlusIcon } from "@/components/byteplus-icon";
 import { KlingIcon } from "@/components/kling-icon";
 import { MiniMaxIcon } from "@/components/minimax-icon";
+import { GrokIcon } from "@/components/grok-icon";
+import { KimiIcon } from "@/components/kimi-icon";
+import { RecraftIcon } from "@/components/recraft-icon";
+import { QwenIcon } from "@/components/qwen-icon";
+import { FishAudioIcon } from "@/components/fish-audio-icon";
 
 /**
  * 「模型 → 图标」的**唯一权威**（前台对话流 / 工作流画布 / 后台各面板共用）。
@@ -57,7 +62,12 @@ export function getGenerationModelIcon(modelId: string) {
   if (modelId.startsWith("google/")) return RiGoogleFill;
   if (modelId.startsWith("bytedance/") || modelId.startsWith("bytedance-seed/")) return RiTiktokFill;
   if (modelId.startsWith("minimax/")) return MiniMaxIcon;
+  if (modelId.startsWith("moonshotai/")) return KimiIcon;
+  if (modelId.startsWith("x-ai/")) return GrokIcon;
+  if (modelId.startsWith("qwen/")) return QwenIcon;
+  if (modelId.startsWith("fish-audio/")) return FishAudioIcon;
   if (modelId.startsWith("kwaivgi/")) return KlingIcon;
+  if (modelId.startsWith("recraft/")) return RecraftIcon;
   return null;
 }
 

@@ -144,6 +144,10 @@ function isAdminVideoUrl(url: string) {
   return /\.(mp4|webm|mov|m4v)(\?|#|$)/i.test(url);
 }
 
+function isAdminAudioUrl(url: string) {
+  return /\.(mp3|wav|m4a|aac|ogg|flac|opus)(\?|#|$)/i.test(url);
+}
+
 function isVideoPosterLikeMedia(url: string, name: string, mediaType: string) {
   return mediaType !== "video" && (/\/video-posters\//.test(normalizeMediaUrlForAdmin(url)) || /^video_/i.test(name));
 }
@@ -156,6 +160,8 @@ function getWorkspaceRecordsSummary(state: unknown) {
     imageGenerationDeletedCount: 0,
     videoGenerationCount: 0,
     videoGenerationDeletedCount: 0,
+    audioGenerationCount: 0,
+    audioGenerationDeletedCount: 0,
     uploadImageCount: 0,
     uploadImageDeletedCount: 0,
     uploadFileCount: 0,
@@ -200,6 +206,10 @@ function getWorkspaceRecordsSummary(state: unknown) {
         summary.videoGenerationCount += 1;
         if (deletedAssetInfoMap.has(url) || deletedAssetInfoMap.has(normalizeMediaUrlForAdmin(url))) summary.videoGenerationDeletedCount += 1;
       }
+      for (const url of getStringArray(message.audios)) {
+        summary.audioGenerationCount += 1;
+        if (deletedAssetInfoMap.has(url) || deletedAssetInfoMap.has(normalizeMediaUrlForAdmin(url))) summary.audioGenerationDeletedCount += 1;
+      }
     }
   }
 
@@ -208,7 +218,7 @@ function getWorkspaceRecordsSummary(state: unknown) {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function getMediaAssetRecordsSummary(assetStates: any[]) {
-  const summary = { imageGenerationCount: 0, imageGenerationDeletedCount: 0, videoGenerationCount: 0, videoGenerationDeletedCount: 0, uploadImageCount: 0, uploadImageDeletedCount: 0, savedAssetCount: 0, latestRecordTs: 0 };
+  const summary = { imageGenerationCount: 0, imageGenerationDeletedCount: 0, videoGenerationCount: 0, videoGenerationDeletedCount: 0, audioGenerationCount: 0, audioGenerationDeletedCount: 0, uploadImageCount: 0, uploadImageDeletedCount: 0, savedAssetCount: 0, latestRecordTs: 0 };
   for (const state of assetStates) {
     const media = state?.mediaAsset;
     if (!media?.url || media.archivedAt || state.hiddenAt) continue;
@@ -219,14 +229,19 @@ function getMediaAssetRecordsSummary(assetStates: any[]) {
     const displayName = formatAdminMediaName(systemName, currentName && currentName !== systemName ? currentName : undefined, "媒体");
     if (isVideoPosterLikeMedia(media.url, displayName, getString(media.mediaType))) continue;
 
-    const mediaType = media.mediaType === "video" || isAdminVideoUrl(media.url) ? "video" : "image";
+    const mediaType = media.mediaType === "audio" || isAdminAudioUrl(media.url) ? "audio" : media.mediaType === "video" || isAdminVideoUrl(media.url) ? "video" : "image";
     const isUpload = category === "conversation_uploads" || getString(media.sourceKind).includes("upload");
     const ts = media.firstSeenAt instanceof Date ? media.firstSeenAt.getTime() : media.createdAt instanceof Date ? media.createdAt.getTime() : 0;
     summary.latestRecordTs = Math.max(summary.latestRecordTs, ts, state.updatedAt instanceof Date ? state.updatedAt.getTime() : 0);
     summary.savedAssetCount += 1;
-    if (isUpload && mediaType !== "video") {
+    if (isUpload && mediaType === "image") {
       summary.uploadImageCount += 1;
       if (isDeleted) summary.uploadImageDeletedCount += 1;
+    } else if (mediaType === "audio") {
+      if (!isUpload) {
+        summary.audioGenerationCount += 1;
+        if (isDeleted) summary.audioGenerationDeletedCount += 1;
+      }
     } else if (mediaType === "video") {
       summary.videoGenerationCount += 1;
       if (isDeleted) summary.videoGenerationDeletedCount += 1;
@@ -445,7 +460,7 @@ export default async function AdminPage({ searchParams }: { searchParams?: Promi
       prisma.$queryRaw<Array<{ id: string; createdAt: Date; userId: string | null; email: string | null; kind: string; source: string; action: string; status: string; prompt: string; matchedTerm: string | null; semanticReason: string | null }>>`SELECT e."id", e."createdAt", e."userId", u."email", e."kind", e."source", e."action", e."status", e."prompt", e."matchedTerm", e."semanticReason" FROM "ContentModerationEvent" e LEFT JOIN "User" u ON u."id" = e."userId" ORDER BY e."createdAt" DESC LIMIT 300`,
     ]);
     const sourceLabels: Record<string, string> = { conversation: "对话流", workflow: "工作流", asset: "资产库", agent: "Agent" };
-    return <AdminShell adminEmail={currentAdminEmail} activeTab={activeTab}><AdminContentModerationPanel initialEnabled={groups[0]?.enabled ?? false} initialHidden={groups[0]?.termsHidden ?? false} initialUnlocked={groups[0]?.editUnlocked ?? false} initialTerms={terms.map((item) => item.value)} events={rows.map((item): ContentModerationEventRow => ({ id: item.id, createdAtLabel: formatDate(item.createdAt), userLabel: item.email ? `${item.email}\n${item.userId ?? "-"}` : item.userId ?? "-", sourceLabel: sourceLabels[item.source] ?? item.source, kindLabel: item.kind === "video" ? "视频" : "图片", action: item.action, status: item.status, prompt: item.prompt, matchedTerm: item.matchedTerm ?? undefined, semanticReason: item.semanticReason ?? undefined }))} /></AdminShell>;
+    return <AdminShell adminEmail={currentAdminEmail} activeTab={activeTab}><AdminContentModerationPanel initialEnabled={groups[0]?.enabled ?? false} initialHidden={groups[0]?.termsHidden ?? false} initialUnlocked={groups[0]?.editUnlocked ?? false} initialTerms={terms.map((item) => item.value)} events={rows.map((item): ContentModerationEventRow => ({ id: item.id, createdAtLabel: formatDate(item.createdAt), userLabel: item.email ? `${item.email}\n${item.userId ?? "-"}` : item.userId ?? "-", sourceLabel: sourceLabels[item.source] ?? item.source,         kindLabel: item.kind === "audio" ? "语音" : item.kind === "video" ? "视频" : item.kind === "chat" ? "对话" : "图片", action: item.action, status: item.status, prompt: item.prompt, matchedTerm: item.matchedTerm ?? undefined, semanticReason: item.semanticReason ?? undefined }))} /></AdminShell>;
   }
 
   if (activeTab === "server") {
@@ -682,6 +697,8 @@ export default async function AdminPage({ searchParams }: { searchParams?: Promi
         imageGenerationDeletedCount: mediaSummary.imageGenerationDeletedCount,
         videoGenerationCount: Math.max(user.generatedVideoCount, mediaSummary.videoGenerationCount, recordSummary.videoGenerationCount),
         videoGenerationDeletedCount: mediaSummary.videoGenerationDeletedCount,
+        audioGenerationCount: Math.max(mediaSummary.audioGenerationCount, recordSummary.audioGenerationCount),
+        audioGenerationDeletedCount: mediaSummary.audioGenerationDeletedCount,
         uploadImageCount: mediaSummary.uploadImageCount || recordSummary.uploadImageCount,
         uploadImageDeletedCount: mediaSummary.uploadImageDeletedCount,
         uploadFileCount: recordSummary.uploadFileCount,

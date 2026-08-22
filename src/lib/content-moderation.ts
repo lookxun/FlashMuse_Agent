@@ -7,26 +7,26 @@ export const CONTENT_POLICY_ERROR_MESSAGE = "你输入的内容不符合平台�
 export const SENSITIVE_POLITICS_CATEGORY = "sensitive_politics";
 
 /**
- * 语义审核模型候选链（唯一权威，后台「模型开关 → 内容审核语义模型」那一行就是这两个）。
- * ⭐ 顺序固定：先 OpenRouter GPT-5.6 Terra Pro，连不上/关闭再用 BytePlus Seed 2.0 Pro。
+ * 语义审核模型候选链（唯一权威，后台「模型开关 → 内容审核语义模型」那一行）。
+ * ⭐ 顺序固定：Terra Pro → Kimi K3 → Grok 4.6 → Seed 2.0 Pro → Seed 2.0 Lite。
  * ⛔ 别在别处再写一份模型 id：新增模型要三处一起改（这里 + system-settings 默认值 + 后台面板那一行）。
  */
 const MODERATION_MODEL_CHAIN = [
   { providerKey: "moderation.priority", provider: "openrouter" as const, modelId: "openai/gpt-5.6-terra-pro" },
+  { providerKey: "moderation.second", provider: "openrouter" as const, modelId: "moonshotai/kimi-k3" },
+  { providerKey: "moderation.third", provider: "openrouter" as const, modelId: "x-ai/grok-4.6" },
   { providerKey: "moderation.seed-2-0-pro", provider: "byteplus" as const, modelId: "byteplus:chat.seed-2-0-pro" },
+  { providerKey: "moderation.seed-2-0-lite", provider: "byteplus" as const, modelId: "bytedance-seed/seed-2.0-lite" },
 ];
 
 // ⛔ 审核请求必须有超时：它跑在常驻 worker 的 tick 里，卡住会连带拖慢整条队列。
 const MODERATION_REQUEST_TIMEOUT_MS = 20000;
-// 审核记录保留期：只留最近这些天，避免表无上限增长（后台只看最近 300 条）。
-const MODERATION_EVENT_RETENTION_DAYS = 30;
-const MODERATION_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
+// ⛔ 审核记录不再自动清理（用户 2026-08-18 拍板）：由后台「已拦截记录」的删除按钮手动清理。
 
 type ActiveTerm = { category: string; value: string; normalized: string };
 type SemanticReviewJob = { id: string; prompt: string };
 
 let queueRunning = false;
-let lastCleanupAt = 0;
 
 export function normalizeContentModerationText(value: string) {
   return value
@@ -62,7 +62,7 @@ async function isCategoryEnabled(category: string) {
 async function createEvent(input: {
   userId?: string;
   requestId?: string;
-  kind: "image" | "video" | "chat";
+  kind: "image" | "video" | "chat" | "audio";
   source: string;
   category: string;
   action: "keyword_block" | "semantic_review";
@@ -81,7 +81,7 @@ async function createEvent(input: {
  * 资产库/工作流会在前面拼一大段规则文本和参考图说明 —— 那样后台看到的是系统文本而不是用户的话，
  * 而且关键词会拿我们自己拼进去的规则文本去匹配，可能凭空命中。
  */
-export async function enforceContentPolicy(input: { prompt: string; userId?: string; requestId?: string; kind: "image" | "video" | "chat"; source: string; recordEvent?: boolean }) {
+export async function enforceContentPolicy(input: { prompt: string; userId?: string; requestId?: string; kind: "image" | "video" | "chat" | "audio"; source: string; recordEvent?: boolean }) {
   const match = await findContentPolicyMatch(input.prompt);
   if (match) {
     if (input.recordEvent !== false) await createEvent({ ...input, category: match.category, action: "keyword_block", status: "blocked", matchedTerm: match.value });
@@ -174,14 +174,6 @@ async function classifySensitivePolitics(prompt: string) {
   throw lastError instanceof Error ? lastError : new Error("审核失败");
 }
 
-async function cleanupExpiredModerationEvents() {
-  if (Date.now() - lastCleanupAt < MODERATION_CLEANUP_INTERVAL_MS) return;
-  lastCleanupAt = Date.now();
-  await prisma.$executeRawUnsafe(
-    `DELETE FROM "ContentModerationEvent" WHERE "createdAt" < NOW() - INTERVAL '${MODERATION_EVENT_RETENTION_DAYS} days'`,
-  ).catch(() => 0);
-}
-
 /**
  * ⛔ 调用方**不要 await 它**（worker 里用 `void`）：它会打外网模型，
  * 一旦上游变慢就会把生成任务的认领 tick 一起拖住。内部已有并发保护。
@@ -190,7 +182,6 @@ export async function processContentModerationQueue(limit = 2) {
   if (queueRunning) return;
   queueRunning = true;
   try {
-    await cleanupExpiredModerationEvents();
     const jobs = await claimSemanticReviewJobs(limit);
     await Promise.all(jobs.map(async (job) => {
       try {

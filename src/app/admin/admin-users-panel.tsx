@@ -2,6 +2,7 @@
 
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useTransition, type ReactNode } from "react";
 import { RiArrowDownSLine, RiArrowRightSLine, RiCloseLine, RiMusic2Line, RiQuillPenAiLine, RiSearchLine } from "react-icons/ri";
+import { AudioWaveformPlayer } from "@/components/audio-waveform-player";
 import { useBodyScrollLock } from "@/components/use-body-scroll-lock";
 import { getMentionRanges } from "@/lib/mention-text";
 import { AdminHoverImagePreview } from "./admin-hover-image-preview";
@@ -22,6 +23,7 @@ export type AdminConversationMessage = {
   createdAtLabel: string;
   images: string[];
   videos: string[];
+  audios: string[];
   mediaNames?: Record<string, string>;
   error?: string;
 };
@@ -44,7 +46,7 @@ export type AdminMediaItem = {
   messageId?: string;
   workflowId?: string;
   workflowNodeId?: string;
-  type: "image" | "video";
+  type: "image" | "video" | "audio";
   systemName?: string;
   assetType?: "character_image" | "scene_image" | "prop_image" | "shot_image";
   isUploadedAsset?: boolean;
@@ -121,6 +123,7 @@ export type AdminUserRow = {
   assetMediaItems: AdminMediaItem[];
   conversationImageCount?: number;
   conversationVideoCount?: number;
+  conversationAudioCount?: number;
   conversationUploadImageCount?: number;
   conversationUploadFileCount?: number;
   assetImageCount?: number;
@@ -129,6 +132,7 @@ export type AdminUserRow = {
   workflowCount?: number;
   workflowImageCount?: number;
   workflowVideoCount?: number;
+  workflowAudioCount?: number;
   workflowMediaItems?: AdminMediaItem[];
   uploadImageCount?: number;
   uploadVideoCount?: number;
@@ -274,7 +278,7 @@ export function AdminHistoryDialog({ user, onClose }: { user: AdminUserRow; onCl
   );
 }
 
-export type AdminMediaDialogType = "image" | "upload_image" | "video" | "asset_image" | "workflow_image" | "workflow_video" | "all_image" | "all_video";
+export type AdminMediaDialogType = "image" | "upload_image" | "video" | "audio" | "asset_image" | "workflow_image" | "workflow_video" | "workflow_audio" | "all_image" | "all_video" | "all_audio";
 
 const MEDIA_DIALOG_PAGE_SIZE = 12;
 
@@ -334,8 +338,8 @@ export function AdminMediaDialog({ userId, userLabel, mediaType, onClose }: { us
   };
 
   const activeMedia = items.find((item) => item.id === activeMediaId) ?? items[0];
-  const title = `${userLabel}${isAssetImage ? "资产库图片" : mediaType === "all_image" ? "所有生成图片" : mediaType === "all_video" ? "所有生成视频" : mediaType === "workflow_image" ? "工作流图片" : mediaType === "workflow_video" ? "工作流视频" : mediaType === "upload_image" ? "对话流上传图片" : mediaType === "image" ? "对话流图片" : "对话流视频"}`;
-  const activeMediaName = activeMedia?.name || activeMedia?.systemName || (activeMedia?.type === "video" ? "视频" : "图片");
+  const title = `${userLabel}${isAssetImage ? "资产库图片" : mediaType === "all_audio" ? "所有生成语音" : mediaType === "all_image" ? "所有生成图片" : mediaType === "all_video" ? "所有生成视频" : mediaType === "workflow_audio" ? "工作流语音" : mediaType === "workflow_image" ? "工作流图片" : mediaType === "workflow_video" ? "工作流视频" : mediaType === "upload_image" ? "对话流上传图片" : mediaType === "audio" ? "对话流语音" : mediaType === "image" ? "对话流图片" : "对话流视频"}`;
+  const activeMediaName = activeMedia?.name || activeMedia?.systemName || (activeMedia?.type === "audio" ? "语音" : activeMedia?.type === "video" ? "视频" : "图片");
   const assetFilterItems: Array<{ key: "character_image" | "scene_image" | "prop_image" | "shot_image"; label: string }> = [
     { key: "character_image", label: "角色" },
     { key: "scene_image", label: "场景" },
@@ -360,7 +364,11 @@ export function AdminMediaDialog({ userId, userLabel, mediaType, onClose }: { us
                 <div className="flex min-h-full flex-col">
                   <div className="relative flex min-h-[480px] flex-1 items-center justify-center bg-[#f5f5f5]">
                     {activeMedia.isDeleted ? <div className="absolute left-3 top-3 z-10 rounded-[4px] bg-red-500 px-2 py-1 text-[12px] font-medium leading-none text-white">已删除</div> : null}
-                    {activeMedia.type === "image" ? (
+                    {activeMedia.type === "audio" ? (
+                      <div className="flex h-[200px] w-full max-w-[880px] items-center overflow-hidden bg-[#e6e6e6] px-5">
+                        <AudioWaveformPlayer url={getAdminMediaSourceUrl(activeMedia.url)} variant="card" />
+                      </div>
+                    ) : activeMedia.type === "image" ? (
                       // eslint-disable-next-line @next/next/no-img-element
                       <img src={getAdminMediaSourceUrl(activeMedia.url)} alt="生成图片" className="max-h-[560px] max-w-full object-contain" />
                     ) : (
@@ -373,6 +381,11 @@ export function AdminMediaDialog({ userId, userLabel, mediaType, onClose }: { us
                       <div className="flex flex-wrap items-center gap-2 text-[12px] leading-5 text-[#9a9a9a]">
                         <span className="mr-2 truncate font-medium text-[#111111]">{activeMediaName}</span>
                         <span>{isAssetImage ? "资产库上传" : "对话流上传"}</span>
+                      </div>
+                    ) : activeMedia.type === "audio" ? (
+                      <div className="flex flex-wrap items-center gap-2 text-[12px] leading-5 text-[#9a9a9a]">
+                        <span className="mr-2 truncate font-medium text-[#111111]">{activeMediaName}</span>
+                        <span className="truncate">{activeMedia.model}</span>
                       </div>
                     ) : (
                       <div className="flex flex-wrap items-center gap-2 text-[12px] leading-5 text-[#9a9a9a]">
@@ -441,7 +454,7 @@ export function AdminMediaDialog({ userId, userLabel, mediaType, onClose }: { us
                   </div>
                 </div>
               ) : (
-                <div className="pt-20 text-center text-[13px] text-[#999999]">{loading ? "加载中..." : loadError ? loadError : `暂无${mediaType === "video" || mediaType === "workflow_video" || mediaType === "all_video" ? "视频" : "图片"}`}</div>
+                <div className="pt-20 text-center text-[13px] text-[#999999]">{loading ? "加载中..." : loadError ? loadError : `暂无${mediaType === "all_audio" || mediaType === "audio" || mediaType === "workflow_audio" ? "语音" : mediaType === "video" || mediaType === "workflow_video" || mediaType === "all_video" ? "视频" : "图片"}`}</div>
               )}
             </div>
           </section>
@@ -465,7 +478,7 @@ export function AdminMediaDialog({ userId, userLabel, mediaType, onClose }: { us
                   ))}
                 </div>
               </div>
-            ) : <div className="mb-4 shrink-0 truncate pr-4 text-[13px] font-semibold text-[#111111]">{mediaType === "upload_image" ? "上传图片" : mediaType === "all_video" ? "所有生成视频" : mediaType === "all_image" ? "所有生成图片" : mediaType === "workflow_video" ? "工作流视频" : mediaType === "workflow_image" ? "工作流图片" : mediaType === "video" ? "生成视频" : "生成图片"}列表{total > 0 ? `（${total}）` : ""}</div>}
+            ) : <div className="mb-4 shrink-0 truncate pr-4 text-[13px] font-semibold text-[#111111]">{mediaType === "upload_image" ? "上传图片" : mediaType === "all_audio" ? "所有生成语音" : mediaType === "all_video" ? "所有生成视频" : mediaType === "all_image" ? "所有生成图片" : mediaType === "workflow_audio" ? "工作流语音" : mediaType === "workflow_video" ? "工作流视频" : mediaType === "workflow_image" ? "工作流图片" : mediaType === "audio" ? "生成语音" : mediaType === "video" ? "生成视频" : "生成图片"}列表{total > 0 ? `（${total}）` : ""}</div>}
             <div onScroll={handleScroll} className="min-h-0 flex-1 space-y-2 overflow-y-auto pb-4 pr-2">
               {items.map((item, index) => (
                 <button
@@ -475,7 +488,9 @@ export function AdminMediaDialog({ userId, userLabel, mediaType, onClose }: { us
                   className={`block w-full overflow-hidden rounded-[8px] border-2 bg-white transition ${activeMedia?.id === item.id ? "border-[#367cee]" : "border-transparent hover:border-[#d6d6d6]"}`}
                 >
                   <div className="relative flex h-[118px] items-center justify-center bg-[#eeeeee]">
-                    {item.type === "image" ? (
+                    {item.type === "audio" ? (
+                      <span className="flex h-full w-full items-center justify-center text-[#8a8a8a]"><RiMusic2Line className="h-8 w-8" aria-hidden="true" /></span>
+                    ) : item.type === "image" ? (
                       // eslint-disable-next-line @next/next/no-img-element
                         <img src={getAdminMediaThumbnailUrl(item.url)} onError={(event) => fallbackAdminImageToOriginal(event.currentTarget, item.url)} alt="图片缩略图" loading="lazy" className="h-full w-full object-contain" />
                     ) : (
@@ -486,7 +501,7 @@ export function AdminMediaDialog({ userId, userLabel, mediaType, onClose }: { us
                     )}
                     {item.isDeleted ? <div className="absolute left-1.5 top-1.5 z-10 rounded-[4px] bg-red-500 px-1.5 py-0.5 text-[11px] font-medium leading-none text-white">已删除</div> : null}
                     <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent px-2 pb-1.5 pt-8 text-left text-[11px] font-medium text-white">
-                      <span className="block truncate">{item.name || `${mediaType === "video" ? "视频" : "图片"}${index + 1}`}</span>
+                      <span className="block truncate">{item.name || `${item.type === "audio" ? "语音" : item.type === "video" || mediaType === "video" || mediaType === "all_video" || mediaType === "workflow_video" ? "视频" : "图片"}${index + 1}`}</span>
                     </div>
                   </div>
                 </button>
@@ -571,6 +586,17 @@ function AdminHistoryMessage({ message }: { message: AdminConversationMessage })
               <div key={`${url}-${index}`} className="relative w-[520px] max-w-full overflow-hidden rounded-[10px] bg-[#f2f2f2]">
                 <video src={getAdminMediaSourceUrl(url)} controls className="w-full bg-[#f2f2f2]" />
                 <div className="pointer-events-none absolute left-2 top-2 max-w-[calc(100%-16px)] rounded bg-black/62 px-2 py-1 text-[11px] font-medium text-white">{message.mediaNames?.[url] || `视频${index + 1}`}</div>
+              </div>
+            ))}
+          </div>
+        ) : null}
+
+        {message.audios.length > 0 ? (
+          <div className="mt-3 space-y-2">
+            {message.audios.map((url, index) => (
+              <div key={`${url}-${index}`} className="relative w-[520px] max-w-full overflow-hidden rounded-[10px] bg-[#e6e6e6] px-4 py-3">
+                <div className="mb-2 text-[11px] font-medium text-[#555555]">{message.mediaNames?.[url] || `语音${index + 1}`}</div>
+                <AudioWaveformPlayer url={getAdminMediaSourceUrl(url)} variant="card" />
               </div>
             ))}
           </div>
@@ -958,6 +984,7 @@ export function AdminUsersPanel({ users, stats }: { users: AdminUserRow[]; stats
                                 <DetailItem label="历史工作流" value={formatNumber(expandedUser.workflowCount ?? 0)} />
                                 <DetailItem label="所有生成图片" value={formatNumber((expandedUser.conversationImageCount ?? 0) + (expandedUser.workflowImageCount ?? 0) + (expandedUser.assetGeneratedImageCount ?? 0))} onClick={() => openMediaDialogForUser(expandedUser.id, expandedUser.nickname || expandedUser.email, "all_image")} />
                                 <DetailItem label="所有生成视频" value={formatNumber((expandedUser.conversationVideoCount ?? 0) + (expandedUser.workflowVideoCount ?? 0))} onClick={() => openMediaDialogForUser(expandedUser.id, expandedUser.nickname || expandedUser.email, "all_video")} />
+                                <DetailItem label="所有生成语音" value={formatNumber((expandedUser.conversationAudioCount ?? 0) + (expandedUser.workflowAudioCount ?? 0))} onClick={() => openMediaDialogForUser(expandedUser.id, expandedUser.nickname || expandedUser.email, "all_audio")} />
                               </div>
                               <div className="space-y-px">
                                 <DetailItem label="积分" value={formatNumber(expandedUser.credits)} />

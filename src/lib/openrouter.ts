@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import type { ConversationModel, ModelName } from "@/lib/models";
-import { ADVANCED_CHAT_MODEL, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, getExpectedImageDimensions, getImageModelRule, GPT_IMAGE2_MODEL_ID, isGptImage2Model, models, normalizeImageQuality, resolveImageSettingsForModel, resolveOpenRouterImageModelName } from "@/lib/models";
+import { ADVANCED_CHAT_MODEL, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, getExpectedImageDimensions, getImageModelFallbackUsd, getImageModelRule, getSupportedImageRatios, GPT_IMAGE2_MODEL_ID, isGptImage2Model, isRecraftModel, models, normalizeImageQuality, RECRAFT_V41_MODEL_ID, resolveImageSettingsForModel, resolveOpenRouterImageModelName } from "@/lib/models";
 import { createGeneratedImageThumbnail, getLocalImageDimensions, saveGeneratedAsset, type ImageDimensions } from "@/lib/local-assets";
 import { enqueueRemoteAssetSave } from "@/lib/media-save-queue";
 import { syncGeneratedFilesToAli } from "@/lib/ali-sync";
@@ -422,20 +422,23 @@ function supportsBytePlusImageOutputFormat(modelName: string) {
 }
 
 function getTextProviderKey(model: string, mode?: ChatRequest["mode"]) {
-  if (mode === "general" && model === DEFAULT_CHAT_MODEL) return "general.seed-2-0-lite";
-  if (model === "byteplus:chat.seed-2-0-pro") return mode === "general" ? "general.seed-2-0-pro" : (mode === "image" || mode === "video") ? "prompt.seed-2-0-pro" : "agent-chat.seed-2-0-pro";
-  if (model === DEFAULT_CHAT_MODEL) return mode === "image" || mode === "video" ? "prompt.seed-2-0-lite" : "chat.seed-2-0-lite";
-  if (model === ADVANCED_CHAT_MODEL) return mode === "image" || mode === "video" ? "prompt.second" : "chat.advanced";
-  if (model === "openai/gpt-5.5") return "prompt.priority";
-  if (model === "openai/gpt-5.6-terra-pro") return "agent-chat.advanced";
+  const isPromptTool = mode === "image" || mode === "video";
+  const isGeneralLike = mode === "general" || mode === "agent";
+  if (isGeneralLike && model === DEFAULT_CHAT_MODEL) return "general.seed-2-0-lite";
+  if (model === "byteplus:chat.seed-2-0-pro") return isGeneralLike ? "general.seed-2-0-pro" : isPromptTool ? "prompt.seed-2-0-pro" : "agent-chat.seed-2-0-pro";
+  if (model === DEFAULT_CHAT_MODEL) return isPromptTool ? "prompt.seed-2-0-lite" : "chat.seed-2-0-lite";
+  if (isPromptTool && model === "openai/gpt-5.6-terra-pro") return "prompt.priority";
+  if (isPromptTool && model === "moonshotai/kimi-k3") return "prompt.second";
+  if (isPromptTool && model === "x-ai/grok-4.6") return "prompt.third";
+  if (model === ADVANCED_CHAT_MODEL) return isPromptTool ? undefined : "chat.advanced";
+  if (model === "openai/gpt-5.6-terra-pro") return isGeneralLike ? undefined : "agent-chat.advanced";
   return undefined;
 }
 
-// `unlock` = 该账号的「解除限制」开关；不传则回落全局 env（见 getBytePlusModelForRequest）。
 function getTextProviderConfig(model: string, mode?: ChatRequest["mode"], unlock?: boolean) {
   const providerKey = getTextProviderKey(model, mode);
   const source = mode === "image" || mode === "video" ? "prompt" : "chat";
-  if (mode === "general" ? !isGeneralTextModelEnabled(model) : !isTextModelEnabled(model, source)) throw new Error("连接不到模型，请联系管理员！");
+  if (mode === "general" || mode === "agent" ? !isGeneralTextModelEnabled(model) : !isTextModelEnabled(model, source)) throw new Error("连接不到模型，请联系管理员！");
   if (providerKey && getModelProviderPreference(providerKey) === "byteplus") {
     const apiKey = getConfiguredBytePlusApiKey();
     if (!apiKey) throw new Error("缺少 BytePlus API Key");
@@ -547,6 +550,126 @@ async function postChatCompletion(url: string, headers: Record<string, string>, 
     });
     throw error;
   }
+}
+
+type ChatStreamChunk = {
+  model?: string;
+  choices?: Array<{ delta?: { content?: string }; finish_reason?: string }>;
+  usage?: OpenRouterChatCompletionResponse["usage"];
+  error?: { message?: string };
+};
+
+async function* iterateSseJsonChunks(response: Response): AsyncGenerator<ChatStreamChunk> {
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error("模型没有返回内容");
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split(/\r?\n/);
+    buffer = lines.pop() ?? "";
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("data:")) continue;
+      const data = trimmed.slice(5).trim();
+      if (!data || data === "[DONE]") {
+        if (data === "[DONE]") return;
+        continue;
+      }
+      try {
+        yield JSON.parse(data) as ChatStreamChunk;
+      } catch {
+        continue;
+      }
+    }
+  }
+}
+
+async function streamChatCompletion(
+  url: string,
+  headers: Record<string, string>,
+  body: Record<string, unknown>,
+  fallback: string,
+  context: { requestId?: string; mode?: string; provider?: string; model?: string },
+  onDelta: (text: string) => void,
+): Promise<{ raw: string; model?: string; usage?: OpenRouterChatCompletionResponse["usage"] }> {
+  const startedAt = Date.now();
+  const streamBody = { ...body, stream: true, stream_options: { include_usage: true } };
+  void appendGenerationDiagnosticsLog({
+    event: "text-provider-stream-start",
+    requestId: context.requestId,
+    mode: context.mode,
+    provider: context.provider,
+    model: context.model,
+    extra: { url, messageCount: Array.isArray(body.messages) ? body.messages.length : undefined },
+  });
+
+  let response: Response;
+  try {
+    response = await fetch(url, { method: "POST", headers, body: JSON.stringify(streamBody) });
+  } catch (error) {
+    void appendGenerationDiagnosticsLog({ event: "text-provider-stream-fetch-error", requestId: context.requestId, mode: context.mode, provider: context.provider, model: context.model, durationMs: Date.now() - startedAt, error, extra: { url } });
+    throw error;
+  }
+
+  if (!response.ok) {
+    const responseText = await readResponseDiagnosticText(response);
+    void appendGenerationDiagnosticsLog({ event: "text-provider-stream-non-ok", requestId: context.requestId, mode: context.mode, provider: context.provider, model: context.model, status: response.status, durationMs: Date.now() - startedAt, upstream: { url, statusText: response.statusText, body: responseText } });
+    throw new Error(`${fallback}：${toUserErrorMessage(responseText)}`);
+  }
+
+  let raw = "";
+  let model = context.model;
+  let usage: OpenRouterChatCompletionResponse["usage"] | undefined;
+  try {
+    for await (const chunk of iterateSseJsonChunks(response)) {
+      if (chunk.error?.message) throw new Error(chunk.error.message);
+      if (chunk.model) model = chunk.model;
+      if (chunk.usage) usage = chunk.usage;
+      const delta = chunk.choices?.[0]?.delta?.content;
+      if (delta) {
+        raw += delta;
+        onDelta(delta);
+      }
+    }
+  } catch (error) {
+    void appendGenerationDiagnosticsLog({ event: "text-provider-stream-failed", requestId: context.requestId, mode: context.mode, provider: context.provider, model, durationMs: Date.now() - startedAt, error, extra: { url } });
+    throw error;
+  }
+
+  void appendGenerationDiagnosticsLog({ event: "text-provider-stream-success", requestId: context.requestId, mode: context.mode, provider: context.provider, model, durationMs: Date.now() - startedAt, extra: { characters: [...raw].length } });
+  return { raw, model, usage };
+}
+
+function looksLikeStructuredAgentJson(text: string) {
+  const trimmed = text.trim();
+  return trimmed.startsWith("{") && /"content"\s*:/.test(trimmed) && /"intent"\s*:/.test(trimmed);
+}
+
+function extractAgentStreamContent(raw: string) {
+  const data = parseLenientModelJson(raw) as StructuredAgentReply | undefined;
+  if (data && typeof data === "object" && typeof data.content === "string") return cleanAgentReplyContent(data.content);
+  const marker = raw.match(/"content"\s*:\s*"/);
+  if (!marker || marker.index === undefined) return "";
+  let out = "";
+  let escaped = false;
+  for (let i = marker.index + marker[0].length; i < raw.length; i += 1) {
+    const ch = raw[i];
+    if (escaped) {
+      out += ch === "n" ? "\n" : ch === "t" ? "\t" : ch === "r" ? "\r" : ch;
+      escaped = false;
+      continue;
+    }
+    if (ch === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (ch === '"') break;
+    out += ch;
+  }
+  return cleanAgentReplyContent(out);
 }
 
 // ⭐ `toDataUrlIfLocalPublicAsset` 已收敛到唯一权威实现 `lib/generated-asset-path.ts`
@@ -689,11 +812,12 @@ function normalizeSuggestions(items?: SuggestionInput[]) {
 
 function parseStructuredAgentReply(text: string): Required<Pick<ChatResponse, "content" | "intent" | "suggestions">> {
   const data = parseLenientModelJson(text) as StructuredAgentReply | undefined;
+  const extracted = extractAgentStreamContent(text);
+  const fallback = looksLikeStructuredAgentJson(text) ? extracted : cleanAgentReplyContent(text);
 
   if (data && typeof data === "object") {
     const intent = data.intent && agentReplyIntents.includes(data.intent) ? data.intent : "chat";
-    const content = typeof data.content === "string" && cleanAgentReplyContent(data.content) ? cleanAgentReplyContent(data.content) : cleanAgentReplyContent(text);
-
+    const content = typeof data.content === "string" && cleanAgentReplyContent(data.content) ? cleanAgentReplyContent(data.content) : fallback;
     return {
       content,
       intent,
@@ -702,7 +826,7 @@ function parseStructuredAgentReply(text: string): Required<Pick<ChatResponse, "c
   }
 
   return {
-    content: cleanAgentReplyContent(text),
+    content: fallback,
     intent: "chat",
     suggestions: normalizeSuggestions(),
   };
@@ -782,7 +906,7 @@ async function getOpenRouterError(response: Response, fallback: string) {
     }
 
     if (response.status === 403 || code === 403 || message.toLowerCase().includes("not available in your region")) {
-      return "当前模型在你的地区不可用，请切换普通/高级模式或更换模型后重试。";
+      return "当前模型在你的地区不可用，请换一个模型后重试。";
     }
 
     return `${fallback}：${toUserErrorMessage(message)}`;
@@ -791,7 +915,7 @@ async function getOpenRouterError(response: Response, fallback: string) {
   }
 }
 
-export async function sendToOpenRouter(request: ChatRequest): Promise<ChatResponse> {
+export async function sendToOpenRouter(request: ChatRequest, options?: { onDelta?: (text: string) => void }): Promise<ChatResponse> {
   const settingsText = request.settings
     ? [
         request.settings.ratio ? `比例：${request.settings.ratio}` : "",
@@ -802,16 +926,16 @@ export async function sendToOpenRouter(request: ChatRequest): Promise<ChatRespon
         .filter(Boolean)
         .join("，")
     : "";
-  const generalFormatProtocol = "你的产品身份是“闪念通用 Agent”。你负责对话、理解、追问、规划和组织结果；闪念系统可以调用当前选择的图片模型和视频模型完成生图、生视频。回答能力问题时，以闪念通用 Agent 的整体能力为准，不要按当前对话模型的裸能力回答“不支持生图/生视频”。身份问题分层回答：用户问“你是谁”时，回答你是闪念通用 Agent；用户问“你是什么模型/当前模型”时，回答你是闪念通用 Agent，当前对话模型是本次选择的模型。通用模式要先判断任务类型再选回复格式。direct_answer：知识问答/判断/解释，先给一句结论，再给 3-5 个要点，不要大标题。deliverable：写作/翻译/润色/总结/代码/邮件/文案，先给 # 结果，再给最终内容，必要时用 --- 后加 # 说明。plan：方案/计划/流程/策略，先给 # 推荐方案，再给 ## 执行步骤 和 ## 注意事项。creative：故事/剧本/分镜/角色/视觉创作，按创作结构回复。clarify：信息不足时一次性追问清楚，给可选项，并允许用户说“你自己定”。用户要结果时先给结果；用户问知识时先给结论。用户问“你能生图吗/你能做视频吗/能不能生成视频”这类能力问题时，不要回答不支持，应该回答可以帮他生成，并追问要生成什么内容、比例、分辨率、时长等必要信息。";
+  const generalFormatProtocol = "你的产品身份是“闪念通用 Agent”。你负责对话、理解、追问、规划和组织结果；闪念系统可以调用当前选择的图片模型和视频模型完成生图、生视频。回答能力问题时，以闪念通用 Agent 的整体能力为准，不要按当前对话模型的裸能力回答“不支持生图/生视频”。身份问题分层回答：用户问“你是谁”或“你是什么模型/当前模型/谁开发你”时，只回答你是闪念通用 Agent，不要说出底层模型名，不要提月之暗面、Kimi、Moonshot、OpenAI、Google、DeepSeek、BytePlus 或任何公司/模型品牌。通用模式要先判断任务类型再选回复格式。direct_answer：知识问答/判断/解释，先给一句结论，再给 3-5 个要点，不要大标题。deliverable：写作/翻译/润色/总结/代码/邮件/文案，先给 # 结果，再给最终内容，必要时用 --- 后加 # 说明。plan：方案/计划/流程/策略，先给 # 推荐方案，再给 ## 执行步骤 和 ## 注意事项。creative：故事/剧本/分镜/角色/视觉创作，按创作结构回复。clarify：信息不足时一次性追问清楚，给可选项，并允许用户说“你自己定”。用户要结果时先给结果；用户问知识时先给结论。用户问“你能生图吗/你能做视频吗/能不能生成视频”这类能力问题时，不要回答不支持，应该回答可以帮他生成，并追问要生成什么内容、比例、分辨率、时长等必要信息。";
   const systemPrompt =
     request.mode === "agent"
-      ? "你是闪念，一个影片/短剧创作 Agent。你的专业方向是电影知识、影片制作、短剧创作、剧本、人物、分镜、镜头、摄影、剪辑、提示词、生图和生视频。你要先满足用户当前问题，再通过建议按钮把用户自然引导到影片/短剧创作。闲聊、鼓励、夸奖、安慰、祝福、轻松创意交流等场景，可以适当多用自然表情和语气词，让回复更有人味；正式方案、剧本结构、知识说明、代码、法律、医疗、财务、政治等严肃内容少用或不用表情。清单、能力列表、步骤、注意事项和长段说明中，可以适当使用 ✅、🎯、📝、💡、⚠️、📌 等符号类图标做视觉锚点，提升可读性、减少枯燥感；不要每句话都堆图标，也不要在严肃风险/法律/医疗/财务结论里滥用表情。如果用户消息包含“已读取文档内容如下”，必须把文档内容当作当前上下文；如果文档明显是智能体规则、角色设定、工作流说明、系统提示词或 Markdown agent 文件，并且用户说激活/启用/读取这个智能体，按普通长回复的排版方式回复：先用一级标题“XXX已激活”，再用自然短段、分隔线和短列表概括文档规则、能做什么、下一步怎么用。不要把很多规则塞进一个长 bullet；一条列表只讲一个重点。XXX 从文档标题/角色名/系统名提取。激活后要按文档规则继续对话。请判断回复类型：chat=普通聊天；film_knowledge=电影史、电影理论、影片制作知识、导演摄影剪辑等知识问答；creative_consult=创作咨询和方案建议；creative_structure=故事梗概、剧本、人物小传、分镜、镜头表、提示词整理；off_topic=明显偏离影片创作的问题。创作流程是：故事概念 -> 扩展故事 -> 改成文字分镜 -> 生成主角图片 -> 生成场景图片 -> 做成图片分镜 -> 做成视频。用户问知识时，suggestions 用 2-3 个当前问题延展 + 1-2 个转创作按钮。用户进入创作后，suggestions 用 2-3 个修改当前内容按钮 + 1-2 个下一步创作按钮。suggestions 必须是对象数组，每项包含 label，并在生成类按钮上加 assetTargetType：生成角色图=character_image，生成场景图=scene_image，生成分镜图片=shot_image，生成分镜视频/做成视频=shot_video，其它不确定=other。故事阶段按钮要能改冲突、人物出场、反转，并推进到文字分镜。文字分镜阶段必须按镜头编号写清画面、人物、动作、景别、镜头、氛围、时长；引导到生成角色、场景、第一镜图片。图片分镜必须一镜一张图，几个镜头就是几张图，建议逐镜生成：先第一镜，再下一镜。角色图生成后要引导生成三视图；场景图生成后要引导生成多角度参考。若上下文里有多版角色/场景，提醒用户用 @ 指定版本，例如 @男主第2版。普通聊天和偏离主题问题正文要短；文档激活、film_knowledge、creative_consult、creative_structure 必须详细且结构化。正文会由网页渲染，允许使用有限内部排版标记：一级标题用 #，二级标题用 ##，三级标题用 ###，重点用 **加粗**，列表用 -，分段横线用单独一行 ---，重要风险用 [red]...[/red]，可执行建议用 [blue]...[/blue]。不要使用 #### 或更多级标题，不要输出 Markdown 表格，不要把排版符号当正文解释。不要在正文里输出“下一步调整方向”。每次都必须给 3-5 个 suggestions，按钮文字 6-18 个中文左右，不要编号，尽量用动词开头。只返回 JSON，不要输出 JSON 之外的文字。"
+      ? "你是闪念，一个影片/短剧创作 Agent。你的专业方向是电影知识、影片制作、短剧创作、剧本、人物、分镜、镜头、摄影、剪辑、提示词、生图和生视频。用户问“你是谁”时，回答你是闪念，专门做短剧和影片创作。用户问“你是什么模型/当前模型/谁开发你/哪家公司”时，也只回答你是闪念短剧创作 Agent，不要说出底层模型名，不要提月之暗面、Kimi、Moonshot、OpenAI、Google、DeepSeek、BytePlus 或任何公司/模型品牌。平时不要主动提身份。你要先满足用户当前问题，再通过建议按钮把用户自然引导到影片/短剧创作。闲聊、鼓励、夸奖、安慰、祝福、轻松创意交流等场景，可以适当多用自然表情和语气词，让回复更有人味；正式方案、剧本结构、知识说明、代码、法律、医疗、财务、政治等严肃内容少用或不用表情。清单、能力列表、步骤、注意事项和长段说明中，可以适当使用 ✅、🎯、📝、💡、⚠️、📌 等符号类图标做视觉锚点，提升可读性、减少枯燥感；不要每句话都堆图标，也不要在严肃风险/法律/医疗/财务结论里滥用表情。如果用户消息包含“已读取文档内容如下”，必须把文档内容当作当前上下文；如果文档明显是智能体规则、角色设定、工作流说明、系统提示词或 Markdown agent 文件，并且用户说激活/启用/读取这个智能体，按普通长回复的排版方式回复：先用一级标题“XXX已激活”，再用自然短段、分隔线和短列表概括文档规则、能做什么、下一步怎么用。不要把很多规则塞进一个长 bullet；一条列表只讲一个重点。XXX 从文档标题/角色名/系统名提取。激活后要按文档规则继续对话。请判断回复类型：chat=普通聊天；film_knowledge=电影史、电影理论、影片制作知识、导演摄影剪辑等知识问答；creative_consult=创作咨询和方案建议；creative_structure=故事梗概、剧本、人物小传、分镜、镜头表、提示词整理；off_topic=明显偏离影片创作的问题。创作流程是：故事概念 -> 扩展故事 -> 改成文字分镜 -> 生成主角图片 -> 生成场景图片 -> 做成图片分镜 -> 做成视频。用户问知识时，suggestions 用 2-3 个当前问题延展 + 1-2 个转创作按钮。用户进入创作后，suggestions 用 2-3 个修改当前内容按钮 + 1-2 个下一步创作按钮。suggestions 必须是对象数组，每项包含 label，并在生成类按钮上加 assetTargetType：生成角色图=character_image，生成场景图=scene_image，生成分镜图片=shot_image，生成分镜视频/做成视频=shot_video，其它不确定=other。故事阶段按钮要能改冲突、人物出场、反转，并推进到文字分镜。文字分镜阶段必须按镜头编号写清画面、人物、动作、景别、镜头、氛围、时长；引导到生成角色、场景、第一镜图片。图片分镜必须一镜一张图，几个镜头就是几张图，建议逐镜生成：先第一镜，再下一镜。角色图生成后要引导生成三视图；场景图生成后要引导生成多角度参考。若上下文里有多版角色/场景，提醒用户用 @ 指定版本，例如 @男主第2版。普通聊天和偏离主题问题正文要短；文档激活、film_knowledge、creative_consult、creative_structure 必须详细且结构化。正文会由网页渲染，允许使用有限内部排版标记：一级标题用 #，二级标题用 ##，三级标题用 ###，重点用 **加粗**，列表用 -，分段横线用单独一行 ---，重要风险用 [red]...[/red]，可执行建议用 [blue]...[/blue]。不要使用 #### 或更多级标题，不要输出 Markdown 表格，不要把排版符号当正文解释。不要在正文里输出“下一步调整方向”。每次都必须给 3-5 个 suggestions，按钮文字 6-18 个中文左右，不要编号，尽量用动词开头。只返回 JSON，不要输出 JSON 之外的文字。"
       : request.mode === "chat" || request.mode === "general"
         ? `${request.mode === "general" ? "你是闪念通用 Agent。" : "你是闪念，一个中文 AI 创作助手。"}请像豆包一样自然对话，结合上下文回答用户问题。闲聊、鼓励、夸奖、安慰、祝福、轻松创意交流等场景，可以适当多用自然表情和语气词，让回复更有人味；正式方案、知识说明、代码、法律、医疗、财务、政治等严肃内容少用或不用表情。清单、能力列表、步骤、注意事项和长段说明中，可以适当使用 ✅、🎯、📝、💡、⚠️、📌 等符号类图标做视觉锚点，提升可读性、减少枯燥感；不要每句话都堆图标，也不要在严肃风险/法律/医疗/财务结论里滥用表情。没有明确要求生成图片或视频时，不要输出生图或生视频提示词。输出要排版清楚，正文会由网页渲染，允许使用有限内部排版标记：一级标题用 #，二级标题用 ##，三级标题用 ###，重点用 **加粗**，列表用 -，分段横线用单独一行 ---。重要风险或必须注意的内容可用 [red]注意内容[/red]；可执行建议、下一步、推荐方案可用 [blue]建议内容[/blue]。不要使用 #### 或更多级标题，不要输出 Markdown 表格，不要整段染色。${request.mode === "general" ? generalFormatProtocol : ""}`
         : "你是一个中文创作助手。你要根据上下文和用户上传的图片，把口语需求整理成适合生图或生视频的提示词。图片模式下，把上传图片当作参考图，保留用户强调的主体、人物、构图或风格，并把带有视频、镜头、动画、运镜、时序等表达改写成适合单帧画面的描述，最终仍然只能输出图片提示词；视频模式下，把上传图片当作首帧或视觉参考，描述主体动作、镜头运动和画面变化，并把偏静态海报或单张图片需求改写成可执行的视频提示词。除 Agent 模式外，用户当前选择的模式优先级最高，不能因为原始文字里写了视频或图片就切换模式。请直接输出简短、清晰、可执行的中文结果，不要输出标题、说明、建议按钮或额外解释。";
   const finalInstruction =
     request.mode === "agent"
-      ? "请基于上下文回复最新用户。返回严格 JSON：{\"intent\":\"chat|film_knowledge|creative_consult|creative_structure|off_topic\",\"content\":\"正文\",\"suggestions\":[{\"label\":\"按钮文字\",\"action\":\"可选动作\",\"assetTargetType\":\"character_image|scene_image|shot_image|shot_video|other\"}]}。如果最新用户消息包含已读取文档，必须明确使用文档内容；如果文档像智能体规则或工作流说明，并且用户说激活/启用/读取这个智能体，正文按普通长回复排版：标题、自然短段、分隔线、短列表。不要强制罗列太多规则，不要把大量规则塞进同一个 bullet。普通聊天简短且不要分段；文档激活、电影/影片制作知识、创作方案、剧本分镜提示词整理必须结构化且详细。正文不要出现“下一步调整方向”，不要输出字面量 \\n 或 \\t。只有长回答、列表、剧本、分镜、文档激活或知识讲解才使用换行。suggestions 必须 3-5 个，并符合：问答阶段=问题延展+转创作；创作阶段=修改当前内容+下一步创作；生成角色图用 character_image，生成场景图用 scene_image，生成图片分镜用 shot_image，生成分镜视频或做成视频用 shot_video。"
+      ? "请基于上下文回复最新用户。不要说出底层模型名或公司名。返回严格 JSON：{\"intent\":\"chat|film_knowledge|creative_consult|creative_structure|off_topic\",\"content\":\"正文\",\"suggestions\":[{\"label\":\"按钮文字\",\"action\":\"可选动作\",\"assetTargetType\":\"character_image|scene_image|shot_image|shot_video|other\"}]}。如果最新用户消息包含已读取文档，必须明确使用文档内容；如果文档像智能体规则或工作流说明，并且用户说激活/启用/读取这个智能体，正文按普通长回复排版：标题、自然短段、分隔线、短列表。不要强制罗列太多规则，不要把大量规则塞进同一个 bullet。普通聊天简短且不要分段；文档激活、电影/影片制作知识、创作方案、剧本分镜提示词整理必须结构化且详细。正文不要出现“下一步调整方向”，不要输出字面量 \\n 或 \\t。只有长回答、列表、剧本、分镜、文档激活或知识讲解才使用换行。suggestions 必须 3-5 个，并符合：问答阶段=问题延展+转创作；创作阶段=修改当前内容+下一步创作；生成角色图用 character_image，生成场景图用 scene_image，生成图片分镜用 shot_image，生成分镜视频或做成视频用 shot_video。"
       : request.mode === "general"
         ? "请基于最新用户任务自然回复，并按通用模式任务类型选择合适结构。不要主动声明模型身份。"
       : request.mode === "chat"
@@ -840,24 +964,47 @@ export async function sendToOpenRouter(request: ChatRequest): Promise<ChatRespon
     messages,
     temperature: 0.7,
   };
-  const data = await postChatCompletion(providerConfig.url, providerConfig.headers, body, "请求失败", { mode: request.mode, provider: providerConfig.provider, model: providerConfig.model });
-
-  const rawContent = cleanModelText(data.choices?.[0]?.message?.content ?? "");
-  const usage = await getUsageMeta(data, providerConfig.provider === "openrouter" ? request.model : providerConfig.model, providerConfig.provider === "openrouter");
+  let rawContent = "";
+  let responseModel: string | undefined;
+  let usage: UsageMeta | undefined;
+  if (options?.onDelta) {
+    let assembled = "";
+    let display = "";
+    const streamed = await streamChatCompletion(providerConfig.url, providerConfig.headers, body, "请求失败", { mode: request.mode, provider: providerConfig.provider, model: providerConfig.model }, (delta) => {
+      assembled += delta;
+      if (request.mode === "agent") {
+        const nextDisplay = extractAgentStreamContent(assembled);
+        if (nextDisplay.length > display.length) {
+          options.onDelta?.(nextDisplay.slice(display.length));
+          display = nextDisplay;
+        }
+        return;
+      }
+      options.onDelta?.(delta);
+    });
+    rawContent = streamed.raw;
+    responseModel = streamed.model;
+    usage = await getUsageMeta({ model: streamed.model, usage: streamed.usage }, providerConfig.provider === "openrouter" ? request.model : providerConfig.model, providerConfig.provider === "openrouter");
+  } else {
+    const data = await postChatCompletion(providerConfig.url, providerConfig.headers, body, "请求失败", { mode: request.mode, provider: providerConfig.provider, model: providerConfig.model });
+    rawContent = data.choices?.[0]?.message?.content ?? "";
+    responseModel = data.model;
+    usage = await getUsageMeta(data, providerConfig.provider === "openrouter" ? request.model : providerConfig.model, providerConfig.provider === "openrouter");
+  }
 
   if (request.mode === "agent") {
     const parsed = parseStructuredAgentReply(rawContent);
 
     return {
       ...parsed,
-      model: data.model,
+      model: responseModel,
       usage,
     };
   }
 
   return {
-    content: rawContent,
-    model: data.model,
+    content: cleanModelText(rawContent),
+    model: responseModel,
     usage,
   };
 }
@@ -1738,7 +1885,10 @@ async function generateGptImage2(prompt: string, referenceImages: string[], opti
   );
 
   // 计费：新接口直接返回美元 cost，塞进 usd，沿用现有"美元→人民币→积分"公式。
-  const usd = typeof data.usage?.cost === "number" && data.usage.cost > 0 ? data.usage.cost : undefined;
+  // 缺 cost 时按菜单单价 × 张数兜底，避免 usd=0 静默白送。
+  const usageCost = typeof data.usage?.cost === "number" && data.usage.cost > 0 ? data.usage.cost : undefined;
+  const fallbackUsd = getImageModelFallbackUsd(model);
+  const usd = usageCost ?? (fallbackUsd !== undefined ? fallbackUsd * Math.max(1, displayImages.length) : undefined);
   const usage: UsageMeta | undefined = (data.usage || usd !== undefined)
     ? {
         promptTokens: Math.max(0, Math.floor(data.usage?.prompt_tokens ?? 0)),
@@ -1760,7 +1910,216 @@ async function generateGptImage2(prompt: string, referenceImages: string[], opti
     settings: options.settings,
     references: safeReferenceImages.map((image, index) => summarizeGeneratedReference(image, index)),
     durationMs: Date.now() - startedAt,
-    extra: { returnedImages: rawImages.length, displayImages: displayImages.length, size: size ?? "auto", quality, usd, dimensions: imageDimensions, api: "images" },
+    extra: { returnedImages: rawImages.length, displayImages: displayImages.length, size: size ?? "auto", quality, usd, usdFromFallbackPricing: usageCost === undefined && usd !== undefined, dimensions: imageDimensions, api: "images" },
+  });
+
+  return {
+    content: "",
+    images: displayImages,
+    imageDimensions,
+    failureReasons: [] as string[],
+    usage,
+  };
+}
+
+// Recraft V4.1 / V4.1 Pro 专用：走 OpenRouter 新图片接口 POST /api/v1/images（⛔ 不支持 /chat/completions）。
+// 与 gpt-5.4-image-2 同一条路，但更简单：只传 aspect_ratio（上游无 resolution/size/quality）；参考图上限 1 张。
+async function generateRecraftImage(prompt: string, referenceImages: string[], options: ImageGenerationOptions, apiKey: string) {
+  const model = options.model || RECRAFT_V41_MODEL_ID;
+  const count = Math.min(6, Math.max(1, Math.floor(options.count ?? 1)));
+
+  // 只支持 5 个比例（无 21:9）。智能比例 / 不支持的比例 → 传 "auto" 让上游自选。
+  const rawRatio = options.settings?.ratio;
+  const supportedRatios = getSupportedImageRatios(model) as string[];
+  const aspectRatio = rawRatio && rawRatio !== "智能比例" && supportedRatios.includes(rawRatio) ? rawRatio : "auto";
+  // 分辨率固定（1K/2K），仅用于"挑最接近的图 / 显示预计尺寸"。
+  const targetDimensions = getExpectedImageDimensions(model, undefined, aspectRatio === "auto" ? "智能比例" : aspectRatio);
+
+  // 参考图：Recraft 上限 1 张。
+  const safeReferenceImages = referenceImages.filter(Boolean).slice(0, 1).map(toPublicGeneratedImageUrl);
+
+  const startedAt = Date.now();
+  const headers = getOpenRouterHeaders(apiKey);
+
+  const buildInputReferences = (urls: string[]) => urls.map((url) => ({ type: "image_url", image_url: { url } }));
+  const buildBody = (inputRefs: Array<{ type: string; image_url: { url: string } }>): Record<string, unknown> => ({
+    model,
+    prompt,
+    n: count,
+    aspect_ratio: aspectRatio,
+    ...(inputRefs.length > 0 ? { input_references: inputRefs } : {}),
+  });
+
+  const sendOnce = async (inputRefs: Array<{ type: string; image_url: { url: string } }>, refMode: string) => {
+    void appendGenerationDiagnosticsLog({
+      event: "image-provider-request-start",
+      requestId: options.requestId,
+      userId: options.userId,
+      mode: "image",
+      provider: "openrouter",
+      model,
+      prompt,
+      settings: options.settings,
+      references: safeReferenceImages.map((image, index) => summarizeGeneratedReference(image, index)),
+      extra: { url: OPENROUTER_IMAGES_URL, aspect_ratio: aspectRatio, n: count, api: "images", refMode },
+    });
+    let resp: Response;
+    try {
+      resp = await fetchWithTimeout(OPENROUTER_IMAGES_URL, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(buildBody(inputRefs)),
+      }, IMAGE_PROVIDER_TIMEOUT_MS, "图片生成");
+    } catch (error) {
+      void appendGenerationDiagnosticsLog({
+        event: "image-provider-fetch-error",
+        requestId: options.requestId,
+        userId: options.userId,
+        mode: "image",
+        provider: "openrouter",
+        model,
+        prompt,
+        settings: options.settings,
+        durationMs: Date.now() - startedAt,
+        error,
+        extra: { url: OPENROUTER_IMAGES_URL, api: "images", refMode },
+      });
+      throw error;
+    }
+    const text = await resp.text();
+    let parsed: OpenRouterImagesApiResponse;
+    try {
+      parsed = JSON.parse(text) as OpenRouterImagesApiResponse;
+    } catch (parseError) {
+      void appendGenerationDiagnosticsLog({
+        event: "image-provider-json-parse-failed",
+        requestId: options.requestId,
+        userId: options.userId,
+        mode: "image",
+        provider: "openrouter",
+        model,
+        status: resp.status,
+        prompt,
+        settings: options.settings,
+        durationMs: Date.now() - startedAt,
+        error: parseError,
+        extra: { url: OPENROUTER_IMAGES_URL, api: "images", body: text.slice(0, 400), refMode },
+      });
+      throw new Error(`图片平台响应解析失败：${parseError instanceof Error ? parseError.message : "unknown"}`);
+    }
+    return { response: resp, data: parsed, responseText: text };
+  };
+
+  const isTransientUpstream = (resp: Response, parsed: OpenRouterImagesApiResponse) => {
+    const statusIsTransient = (s?: number) => typeof s === "number" && (s === 408 || s === 429 || s >= 500);
+    const errCode = typeof parsed.error?.code === "number" ? parsed.error.code : undefined;
+    return statusIsTransient(resp.status) || statusIsTransient(errCode);
+  };
+  const isContentRejection = (parsed: OpenRouterImagesApiResponse) => {
+    const msg = (parsed.error?.message || "").toLowerCase();
+    return /safety system|rejected by the safety|content policy|content_policy|violat|not allowed|安全系统|内容|违规|禁止/.test(msg);
+  };
+
+  // 参考图：优先公网 URL；失败且用了参考图 → 回退 base64 再试一次（同 gpt-image-2）。
+  let { response, data, responseText } = await sendOnce(buildInputReferences(safeReferenceImages), "url");
+
+  if ((!response.ok || data.error) && safeReferenceImages.length > 0 && !isTransientUpstream(response, data) && !isContentRejection(data)) {
+    void appendGenerationDiagnosticsLog({
+      event: "image-provider-url-fallback-base64",
+      requestId: options.requestId,
+      userId: options.userId,
+      mode: "image",
+      provider: "openrouter",
+      model,
+      status: response.status,
+      prompt,
+      settings: options.settings,
+      durationMs: Date.now() - startedAt,
+      upstream: { url: OPENROUTER_IMAGES_URL, statusText: response.statusText, body: responseText.slice(0, 300) },
+    });
+    const base64Refs = await Promise.all(referenceImages.filter(Boolean).slice(0, 1).map(referenceToDataUrl));
+    ({ response, data, responseText } = await sendOnce(buildInputReferences(base64Refs), "base64"));
+  }
+
+  if (!response.ok || data.error) {
+    const reason = cleanNoImageReason(data.error?.message) || `${response.status}`;
+    void appendGenerationDiagnosticsLog({
+      event: "image-provider-non-ok",
+      requestId: options.requestId,
+      userId: options.userId,
+      mode: "image",
+      provider: "openrouter",
+      model,
+      status: response.status,
+      prompt,
+      settings: options.settings,
+      durationMs: Date.now() - startedAt,
+      upstream: { url: OPENROUTER_IMAGES_URL, statusText: response.statusText, body: responseText.slice(0, 600) },
+    });
+    const transientSuffix = isTransientUpstream(response, data) ? "（上游服务暂时不可用，稍后重试）" : "";
+    throw new Error(`图片生成失败：${reason}${transientSuffix}`);
+  }
+
+  const rawImages = (data.data ?? [])
+    .map((item) => (item.b64_json ? `data:${item.media_type || "image/webp"};base64,${item.b64_json}` : undefined))
+    .filter((url): url is string => Boolean(url));
+
+  let displayImages: string[] = [];
+  try {
+    displayImages = await Promise.all(rawImages.map((image) => saveImageForDisplay(image, { requestId: options.requestId, model, userId: options.userId })));
+  } catch (saveError) {
+    if (saveError instanceof Error) throw saveError;
+    throw new Error("Image asset save failed");
+  }
+
+  if (displayImages.length === 0) {
+    void appendGenerationDiagnosticsLog({
+      event: "image-provider-empty-result",
+      requestId: options.requestId,
+      userId: options.userId,
+      mode: "image",
+      provider: "openrouter",
+      model,
+      status: response.status,
+      prompt,
+      settings: options.settings,
+      durationMs: Date.now() - startedAt,
+      upstream: { reason: "empty image result", body: redactBase64ForLog(responseText).slice(0, 1200) },
+    });
+    throw new Error("图片平台没有返回图片，且没有返回可用原因。");
+  }
+
+  const imageDimensions = Object.fromEntries(
+    displayImages
+      .map((image) => [image, getLocalImageDimensions(image)] as const)
+      .filter((item): item is readonly [string, ImageDimensions] => Boolean(item[1])),
+  );
+
+  const usageCost = typeof data.usage?.cost === "number" && data.usage.cost > 0 ? data.usage.cost : undefined;
+  const fallbackUsd = getImageModelFallbackUsd(model);
+  const usd = usageCost ?? (fallbackUsd !== undefined ? fallbackUsd * Math.max(1, displayImages.length) : undefined);
+  const usage: UsageMeta | undefined = (data.usage || usd !== undefined)
+    ? {
+        promptTokens: Math.max(0, Math.floor(data.usage?.prompt_tokens ?? 0)),
+        completionTokens: Math.max(0, Math.floor(data.usage?.completion_tokens ?? 0)),
+        totalTokens: Math.max(0, Math.floor(data.usage?.total_tokens ?? 0)),
+        usd,
+      }
+    : undefined;
+
+  void appendGenerationDiagnosticsLog({
+    event: "image-provider-success",
+    requestId: options.requestId,
+    userId: options.userId,
+    mode: "image",
+    provider: "openrouter",
+    model,
+    status: response.status,
+    prompt,
+    settings: options.settings,
+    references: safeReferenceImages.map((image, index) => summarizeGeneratedReference(image, index)),
+    durationMs: Date.now() - startedAt,
+    extra: { returnedImages: rawImages.length, displayImages: displayImages.length, aspect_ratio: aspectRatio, usd, usdFromFallbackPricing: usageCost === undefined && usd !== undefined, dimensions: imageDimensions, api: "images", targetDimensions },
   });
 
   return {
@@ -1784,6 +2143,10 @@ export async function generateOpenRouterImage(prompt: string, referenceImages: s
 
   if (isGptImage2Model(model)) {
     return generateGptImage2(prompt, referenceImages, { ...options, model }, apiKey);
+  }
+
+  if (isRecraftModel(model)) {
+    return generateRecraftImage(prompt, referenceImages, { ...options, model }, apiKey);
   }
 
   const safeReferenceImages = referenceImages.filter(Boolean).slice(0, 3);

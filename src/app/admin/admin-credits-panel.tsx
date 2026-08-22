@@ -76,7 +76,7 @@ export type AdminCreditBalanceItem = {
 export type AdminCreditFlowItem = {
   id: string;
   requestId: string;
-  kind: "image" | "video" | "file";
+  kind: "image" | "video" | "file" | "audio";
   systemName: string;
   displayName: string;
   mediaName?: string;
@@ -154,9 +154,10 @@ function getCategorySummaryText(category: AdminCreditCategoryDetail, categories:
 
   const conversationGeneratedImages = categories.find((item) => item.id === "conversation-generated-images");
   const conversationGeneratedVideos = categories.find((item) => item.id === "conversation-generated-videos");
+  const conversationGeneratedAudios = categories.find((item) => item.id === "conversation-generated-audios");
   const assetGeneratedImages = categories.find((item) => item.id === "asset-generated-images");
-  if (conversationGeneratedImages || conversationGeneratedVideos || assetGeneratedImages) {
-    return `对话流图片：${conversationGeneratedImages?.items.length ?? 0}　对话流视频：${conversationGeneratedVideos?.items.length ?? 0}　资产库图片：${assetGeneratedImages?.items.length ?? 0}`;
+  if (conversationGeneratedImages || conversationGeneratedVideos || conversationGeneratedAudios || assetGeneratedImages) {
+    return `对话流图片：${conversationGeneratedImages?.items.length ?? 0}　对话流视频：${conversationGeneratedVideos?.items.length ?? 0}　对话流语音：${conversationGeneratedAudios?.items.length ?? 0}　资产库图片：${assetGeneratedImages?.items.length ?? 0}`;
   }
 
   if (category.id === "optimization") return `优化次数：${category.items.length}　消耗Token：${category.items.reduce((sum, item) => sum + item.totalTokens, 0).toLocaleString("en-US")}`;
@@ -164,16 +165,18 @@ function getCategorySummaryText(category: AdminCreditCategoryDetail, categories:
 
   const generatedImages = category.items.filter((item) => item.kind === "image" && !item.isUploadRecord && item.status !== "failed").length;
   const generatedVideos = category.items.filter((item) => item.kind === "video" && !item.isUploadRecord && item.status !== "failed").length;
+  const generatedAudios = category.items.filter((item) => item.kind === "audio" && !item.isUploadRecord && item.status !== "failed").length;
   const uploadedImages = category.items.filter((item) => item.kind === "image" && item.isUploadRecord).length;
-  return `生成图片：${generatedImages}　生成视频：${generatedVideos}　上传图片：${uploadedImages}`;
+  return `生成图片：${generatedImages}　生成视频：${generatedVideos}　生成语音：${generatedAudios}　上传图片：${uploadedImages}`;
 }
 
 function getConversationSummaryText(conversation: AdminCreditConversationDetail) {
   const generatedImages = conversation.mediaItems.filter((item) => item.kind === "image" && !item.isUploadRecord && item.status !== "failed").length;
   const generatedVideos = conversation.mediaItems.filter((item) => item.kind === "video" && !item.isUploadRecord && item.status !== "failed").length;
+  const generatedAudios = conversation.mediaItems.filter((item) => item.kind === "audio" && !item.isUploadRecord && item.status !== "failed").length;
   const uploadedImages = conversation.mediaItems.filter((item) => item.kind === "image" && item.isUploadRecord).length;
   const uploadedFiles = conversation.mediaItems.filter((item) => item.kind === "file" && item.isUploadRecord).length;
-  return `生成图片：${generatedImages}　生成视频：${generatedVideos}　上传图片：${uploadedImages}　上传文件：${uploadedFiles}`;
+  return `生成图片：${generatedImages}　生成视频：${generatedVideos}　生成语音：${generatedAudios}　上传图片：${uploadedImages}　上传文件：${uploadedFiles}`;
 }
 
 function SettingSwitch({ checked, onChange, ariaLabel }: { checked: boolean; onChange: (checked: boolean) => void; ariaLabel: string }) {
@@ -435,7 +438,7 @@ export function CreditFlowDialog({ user, onClose, label = "对话流", details }
   );
 }
 
-function CreditFlowRow({ label, mediaName, credits, expectedCredits, usd, cny, meta, errorText, deletedAtLabel, mediaUrl, mediaKind, status = "success", isUploadRecord, isChargeDisabled, isCreditMissing, isCostUnavailable, isReversePrompt, promptText, promptConstraints, showPromptCopyColumn }: { label: string; mediaName?: string; credits: number; expectedCredits?: number; usd: number; cny: number; meta?: string; errorText?: string; deletedAtLabel?: string; mediaUrl?: string; mediaKind?: "image" | "video" | "file"; status?: "success" | "failed"; isUploadRecord?: boolean; isChargeDisabled?: boolean; isCreditMissing?: boolean; isCostUnavailable?: boolean; isReversePrompt?: boolean; promptText?: string; promptConstraints?: string[]; showPromptCopyColumn?: boolean }) {
+function CreditFlowRow({ label, mediaName, credits, expectedCredits, usd, cny, meta, errorText, deletedAtLabel, mediaUrl, mediaKind, status = "success", isUploadRecord, isChargeDisabled, isCreditMissing, isCostUnavailable, isReversePrompt, promptText, promptConstraints, showPromptCopyColumn }: { label: string; mediaName?: string; credits: number; expectedCredits?: number; usd: number; cny: number; meta?: string; errorText?: string; deletedAtLabel?: string; mediaUrl?: string; mediaKind?: "image" | "video" | "file" | "audio"; status?: "success" | "failed"; isUploadRecord?: boolean; isChargeDisabled?: boolean; isCreditMissing?: boolean; isCostUnavailable?: boolean; isReversePrompt?: boolean; promptText?: string; promptConstraints?: string[]; showPromptCopyColumn?: boolean }) {
   const isDeleted = errorText === "用户已删除";
   const safeExpectedCredits = Math.max(0, Math.floor(expectedCredits ?? credits));
   const creditsLabel = isUploadRecord ? "--" : isChargeDisabled && credits === 0 ? "0（扣分关闭）" : isCreditMissing && credits === 0 ? "0（扣分异常）" : (isCostUnavailable || credits === 0) && status !== "failed" ? "0（未返回成本）" : credits === 0 ? "0" : `-${credits.toLocaleString("en-US")}${safeExpectedCredits > credits ? ` / 应扣${safeExpectedCredits.toLocaleString("en-US")}` : ""}`;
@@ -455,6 +458,11 @@ function CreditFlowRow({ label, mediaName, credits, expectedCredits, usd, cny, m
         {mediaKind === "file" ? (
           <div className="flex h-12 w-16 shrink-0 items-center justify-center rounded-[6px] bg-[#ebebeb] text-[12px] font-medium text-[#777777]">
             文件
+          </div>
+        ) : mediaKind === "audio" ? (
+          <div className="relative flex h-12 w-16 shrink-0 items-center justify-center overflow-hidden rounded-[6px] bg-[#e8e8e8] text-[12px] font-medium text-[#777777]">
+            {isDeleted ? <div className="absolute left-1 top-1 z-10 rounded-[3px] bg-red-500 px-1 py-0.5 text-[9px] font-medium leading-none text-white">已删除</div> : null}
+            语音
           </div>
         ) : mediaUrl ? (
           mediaKind === "video" ? (
@@ -883,7 +891,7 @@ export function AdminCreditsPanel({ settings, stats, rows }: { settings: AdminCr
           <div className="mb-1.5 flex items-center gap-1.5 text-[12px] text-[#777777]">
             <span>选择积分消耗项</span>
             <AdminInfoTooltip>
-              对话/规划是 Agent 和对话模型产生的消耗<br />图片是平台里所有生成图片的消耗<br />视频是平台里所有生成视频的消耗<br />反推/优化提示词是平台里所有反推和优化提示词的消耗<br />打开表示要扣积分，关闭则不扣，但后台仍记录
+              对话/规划是 Agent 和对话模型产生的消耗<br />图片是平台里所有生成图片的消耗<br />视频是平台里所有生成视频的消耗<br />语音生成始终计费（暂无独立开关）<br />反推/优化提示词是平台里所有反推和优化提示词的消耗<br />打开表示要扣积分，关闭则不扣，但后台仍记录
             </AdminInfoTooltip>
           </div>
           <div className="flex items-end gap-3">

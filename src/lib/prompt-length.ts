@@ -41,6 +41,11 @@ const MODEL_DEFAULT_PROMPT_MAX_LENGTH: Record<string, number> = {
   "google/gemini-3-pro-image-preview": 8000, // Gemini 3 Pro Image
   "openai/gpt-5.4-image-2": 8000, // GPT-5.4 Image 2
   "openai/gpt-5.4-image-2-agent": 8000, // GPT-5.4 Image 2（GPT 版）
+  // Recraft V4.1 / Pro：⭐ 2026-08-19 实测上游硬上限 = 10000 字
+  //（发 20000 直接 400「prompt length should be in [1, 10000]」，5000 能正常出图）。
+  // 产品端沿用全局默认 2000（Recraft 本身主打"短词出图"）；要放宽后台改就行，⛔ 别超过 10000。
+  "recraft/recraft-v4.1": 2000,
+  "recraft/recraft-v4.1-pro": 2000,
   // 视频模型
   [SEEDANCE_20_FAMILY_MODEL_ID]: 4000, // Seedance 2.0 / Fast / Mini（共用一条 key）
   [SEEDANCE_25_VIDEO_MODEL_ID]: 15000, // Seedance 2.5

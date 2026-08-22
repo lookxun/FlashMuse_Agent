@@ -67,3 +67,18 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "保存失败" }, { status: 500 });
   }
 }
+
+// 手动删除一条审核记录（已拦截记录 / 语义审核待确认）。用户 2026-08-18 拍板：不再自动清理，改为手动删。
+export async function DELETE(request: Request) {
+  const adminEmail = await requireAdmin();
+  if (!adminEmail) return NextResponse.json({ error: "无权限" }, { status: 403 });
+  const body = await request.json().catch(() => ({}));
+  const id = typeof body.id === "string" ? body.id : "";
+  if (!id) return NextResponse.json({ error: "缺少记录 id" }, { status: 400 });
+  try {
+    await prisma.$executeRaw`DELETE FROM "ContentModerationEvent" WHERE "id" = ${id}`;
+    return NextResponse.json({ ok: true });
+  } catch (error) {
+    return NextResponse.json({ error: error instanceof Error ? error.message : "删除失败" }, { status: 500 });
+  }
+}

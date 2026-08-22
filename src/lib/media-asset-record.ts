@@ -62,11 +62,15 @@ export function classifyAsset(input: {
     if (flow === "workflow") {
       return mediaType === "video"
         ? { promptSource: "generated", sourceKind: "workflow_generation_video", initialCategory: "workflow_videos" }
+        : mediaType === "audio"
+        ? { promptSource: "generated", sourceKind: "workflow_generation_audio", initialCategory: "workflow_audios" }
         : { promptSource: "generated", sourceKind: "workflow_generation_image", initialCategory: "workflow_images" };
     }
     // conversation
     return mediaType === "video"
       ? { promptSource: "generated", sourceKind: "conversation_generation_video", initialCategory: "conversation_videos" }
+      : mediaType === "audio"
+      ? { promptSource: "generated", sourceKind: "conversation_generation_audio", initialCategory: "conversation_audios" }
       : { promptSource: "generated", sourceKind: "conversation_generation_image", initialCategory: "conversation_images" };
   }
 
@@ -219,6 +223,8 @@ const MODEL_DISPLAY_LABELS: Record<string, string> = {
   "google/gemini-3-pro-image-preview": "Gemini 3 Pro",
   "openai/gpt-5.4-image-2": "GPT-5.4 Image 2",
   "openai/gpt-5.4-image-2-agent": "GPT-5.4 Image 2（GPT版）",
+  "recraft/recraft-v4.1": "Recraft V4.1",
+  "recraft/recraft-v4.1-pro": "Recraft V4.1 Pro",
   "bytedance/seedance-2.0-fast": "Seedance 2.0 Fast",
   "bytedance/seedance-2.0": "Seedance 2.0",
   "google/veo-3.1": "Veo 3.1",

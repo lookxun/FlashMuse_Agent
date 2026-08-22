@@ -1,12 +1,14 @@
 import { NextResponse } from "next/server";
-import { bytePlusVideoGenerationModels, frontendConversationModels, frontendImageGenerationModels, videoGenerationModels } from "@/lib/models";
-import { getAdminSystemSettings, getPromptLengthOverrides, getUploadRuleOverrides, isAgentImageModelEnabled, isAgentVideoModelEnabled, isAssetImageModelEnabled, isConversationImageModelEnabled, isConversationVideoModelEnabled, isGeneralTextModelEnabled, isTextModelEnabled } from "@/lib/system-settings";
+import { audioGenerationModels, bytePlusVideoGenerationModels, frontendConversationModels, frontendImageGenerationModels, videoGenerationModels } from "@/lib/models";
+import { getAdminSystemSettings, getPromptLengthOverrides, getUploadRuleOverrides, isAgentImageModelEnabled, isAgentVideoModelEnabled, isAssetImageModelEnabled, isConversationAudioModelEnabled, isConversationImageModelEnabled, isConversationVideoModelEnabled, isGeneralTextModelEnabled, isTextModelEnabled } from "@/lib/system-settings";
+import { getCreditSettings } from "@/lib/credits";
 
 export const runtime = "nodejs";
 
 export async function GET() {
   const generalModels = frontendConversationModels.filter((model) => isGeneralTextModelEnabled(model.id)).map((model) => model.id);
   const chatModels = ["byteplus:chat.seed-2-0-pro", "openai/gpt-5.6-terra-pro"].filter((modelId) => isTextModelEnabled(modelId, "chat"));
+  const creditSettings = await getCreditSettings();
 
   return NextResponse.json({
     generalModels,
@@ -16,11 +18,14 @@ export async function GET() {
     imageModels: frontendImageGenerationModels.filter((model) => isConversationImageModelEnabled(model.id)).map((model) => model.id),
     assetImageModels: frontendImageGenerationModels.filter((model) => isAssetImageModelEnabled(model.id)).map((model) => model.id),
     videoModels: [...videoGenerationModels, ...bytePlusVideoGenerationModels].filter((model) => isConversationVideoModelEnabled(model.id)).map((model) => model.id),
+    audioModels: audioGenerationModels.filter((model) => isConversationAudioModelEnabled(model.id)).map((model) => model.id),
     agentImageModels: frontendImageGenerationModels.filter((model) => isAgentImageModelEnabled(model.id)).map((model) => model.id),
     agentVideoModels: [...videoGenerationModels, ...bytePlusVideoGenerationModels].filter((model) => isAgentVideoModelEnabled(model.id)).map((model) => model.id),
     uploadRuleOverrides: getUploadRuleOverrides(),
     // 提示词字数上限（按模型）。⭐ 和 uploadRuleOverrides 搭同一趟车下发，不新增请求。
     promptLengthOverrides: getPromptLengthOverrides(),
+    // 菜单「约X积分/张」按真实后台汇率算，随这趟车下发（不新增请求）。
+    creditRate: { usdToCnyRate: creditSettings.usdToCnyRate, creditsPerCny: creditSettings.creditsPerCny },
     editModelToggles: getAdminSystemSettings().editModelToggles,
   });
 }

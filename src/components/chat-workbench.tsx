@@ -1,21 +1,24 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, CSSProperties, DragEvent, PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, CSSProperties, DragEvent, PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import Image from "next/image";
 import { createPortal } from "react-dom";
 import { validateImageUploadFile } from "@/lib/image-upload-validation";
 import { IS_TEST_SERVER, versionLabel } from "@/lib/app-version";
 import { MEDIA_DURATION_EPSILON_SECONDS, validateMediaUploadFile, validateMediaUploadMetadata, validateReferenceMediaDurationRange as validateMediaDuration } from "@/lib/media-upload-validation";
 import { getStaticMediaUrl } from "@/lib/static-media-url";
-import { RiAddLine, RiArrowLeftSLine, RiArrowRightSLine, RiArrowDownSLine, RiArrowDownFill, RiArrowUpDownLine, RiArrowUpLine, RiArrowUpSLine, RiArrowDownWideLine, RiAtLine, RiCameraLine, RiCheckLine, RiChat3Line, RiChatSmileAiLine, RiChatDeleteLine, RiCheckboxMultipleBlankLine, RiCloseLine, RiDeleteBinLine, RiEmotionUnhappyLine, RiEmotionSadLine, RiErrorWarningLine, RiFolderLine, RiFolderOpenLine, RiBellLine, RiFormatClear, RiLandscapeLine, RiImageLine, RiSidebarFoldLine, RiSidebarUnfoldLine, RiLeafLine, RiLockPasswordLine, RiMoreLine, RiMusic2Line, RiMultiImageLine, RiMailLine, RiPhoneLine, RiEditBoxLine, RiPushpinLine, RiResetLeftLine, RiRefreshLine, RiShining2Line, RiStarSmileLine, RiStopFill, RiThumbDownLine, RiThumbDownFill, RiThumbUpLine, RiThumbUpFill, RiTimeLine, RiVipCrown2Line, RiVipDiamondLine, RiVideoLine, RiVideoOnLine, RiVoiceprintLine, RiQuillPenAiLine, RiAccountBoxLine, RiAccountCircleLine, RiFilmLine, RiFullscreenLine, RiInformationLine, RiGlobalLine, RiGitMergeLine, RiGitPullRequestLine, RiFilmAiLine, RiImageAddLine, RiImageAiLine, RiDownloadLine, RiRobot2Line, RiZoomInLine, RiTBoxLine, RiTerminalWindowFill, RiLogoutBoxRLine, RiSettingsLine, RiSunLine, RiMoonLine, RiComputerLine, RiNotification2Line, RiShieldUserLine } from "react-icons/ri";
-import { ADVANCED_CHAT_MODEL, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, DEFAULT_IMAGE_QUALITY, IMAGE_QUALITY_OPTIONS, IMAGE_QUALITY_LABELS, isGptImage2Model, getImageModelSelectHint, bytePlusVideoGenerationModels, frontendConversationModels, frontendImageGenerationModels, getImageQualityBadgeLabel, getImageResolutionLabel, getSupportedImageResolutions, getSupportedVideoRatios, getSupportedVideoResolutions, imageGenerationModels, isNonStandardVideoSize, normalizeImageResolutionForModel, normalizeVideoRatioForModel, normalizeVideoResolutionForModel, validateVideoDurationWithReferences, videoGenerationModels, ConversationModel, GenerationModel, ModelName } from "@/lib/models";
+import { RiAddLine, RiArrowLeftSLine, RiArrowRightSLine, RiArrowDownSLine, RiArrowDownFill, RiArrowUpDownLine, RiArrowUpLine, RiArrowUpSLine, RiArrowDownWideLine, RiAtLine, RiCameraLine, RiCheckLine, RiChat3Line, RiChatSmileAiLine, RiChatDeleteLine, RiCheckboxMultipleBlankLine, RiCloseLine, RiDeleteBinLine, RiEmotionHappyLine, RiEmotionUnhappyLine, RiEmotionSadLine, RiEqualizerLine, RiErrorWarningLine, RiFolderLine, RiFolderOpenLine, RiBellLine, RiFormatClear, RiLandscapeLine, RiImageLine, RiSidebarFoldLine, RiSidebarUnfoldLine, RiLeafLine, RiLockPasswordLine, RiMoreLine, RiMusic2Line, RiMultiImageLine, RiMailLine, RiPhoneLine, RiEditBoxLine, RiPushpinLine, RiResetLeftLine, RiRefreshLine, RiShining2Line, RiStarSmileLine, RiStopFill, RiThumbDownLine, RiThumbDownFill, RiThumbUpLine, RiThumbUpFill, RiTimeLine, RiVipCrown2Line, RiVipDiamondLine, RiVideoLine, RiVideoOnLine, RiVoiceprintLine, RiQuillPenAiLine, RiAccountBoxLine, RiAccountCircleLine, RiFilmLine, RiFullscreenLine, RiInformationLine, RiGlobalLine, RiGitMergeLine, RiGitPullRequestLine, RiFilmAiLine, RiImageAddLine, RiImageAiLine, RiMicAiLine, RiDownloadLine, RiRobot2Line, RiZoomInLine, RiTBoxLine, RiTerminalWindowFill, RiLogoutBoxRLine, RiSettingsLine, RiSunLine, RiMoonLine, RiComputerLine, RiNotification2Line, RiShieldUserLine } from "react-icons/ri";
+import { ADVANCED_CHAT_MODEL, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, DEFAULT_AUDIO_MODEL, audioGenerationModels, isAudioModel, DEFAULT_IMAGE_QUALITY, IMAGE_QUALITY_OPTIONS, IMAGE_QUALITY_LABELS, isGptImage2Model, getGenerationModelSelectHint, bytePlusVideoGenerationModels, frontendConversationModels, frontendImageGenerationModels, getImageQualityBadgeLabel, getImageResolutionLabel, getSupportedImageRatios, getSupportedImageResolutions, getSupportedVideoRatios, getSupportedVideoResolutions, imageGenerationModels, isNonStandardVideoSize, normalizeImageRatioForModel, normalizeImageResolutionForModel, normalizeVideoRatioForModel, normalizeVideoResolutionForModel, validateVideoDurationWithReferences, videoGenerationModels, ConversationModel, GenerationModel, ModelName, PROMPT_TOOL_MODEL_CHAIN } from "@/lib/models";
 import { toUserErrorMessage } from "@/lib/error-message";
 import { handleSessionExpiredResponse } from "@/lib/session-expired-redirect";
 import { removeMentionName } from "@/lib/mention-text";
 import { useBodyScrollLock } from "@/components/use-body-scroll-lock";
 import { BytePlusIcon } from "@/components/byteplus-icon";
 import { AudioWaveformPlayer } from "@/components/audio-waveform-player";
+import { AudioVoicePicker } from "@/components/audio-voice-picker";
 import { AssetMentionPicker } from "@/components/asset-mention-picker";
+import { getAudioVoiceLabel, getAudioVoiceLang, getAudioVoiceLangsForModel, getAudioVoicesForModel, getDefaultAudioVoiceId, isAudioVoiceSelectable, normalizeAudioVoiceForModel, type AudioVoiceLang } from "@/lib/audio-voices";
+import { AUDIO_EMOTION_DEFAULT_ID, getAudioEmotionLabel, getAudioEmotionsForModel, isAudioEmotionSelectable, normalizeAudioEmotionForModel } from "@/lib/audio-emotions";
 import { VideoUploadThumbnail } from "@/components/video-upload-thumbnail";
 import { VideoPlayBadge } from "@/components/video-play-badge";
 import { NewBadge } from "@/components/new-badge";
@@ -171,6 +174,7 @@ import {
   getActualTextModelLabel,
   getImageCountValue,
   getAgentGenerationModel,
+  getAgentAutoChatModelChain,
   getAgentGenerationSettings,
   getAgentGenerationSettingsFromPlan,
   joinPromptDetail,
@@ -266,13 +270,13 @@ import {
   formatCreditLastActiveTime,
   formatElapsedTime,
   getVideoWaitProgress,
-  isModelIdentityQuestion,
   isAssetFilter,
   type StoredWorkspaceUiState,
   getStoredWorkspaceUiState,
   setStoredWorkspaceUiState,
   normalizeSuggestionItem,
   getCorrectionMode,
+  shouldPlanAgentTask,
   getLastUserMessage,
   upsertIntentMemoryRule,
   getImageOnlyPrompt,
@@ -416,8 +420,45 @@ import {
   readDocumentFileText,
   copyImageToClipboard,
   getDownloadName,
+  MediaCardHoverActions,
 } from "@/lib/chat/chat-workbench-core";
 import { VideoDurationSlider } from "@/components/video-duration-slider";
+
+async function readChatStream(response: Response, onDelta: (text: string) => void): Promise<ChatApiResponse> {
+  if (!response.ok) {
+    const data = await response.json().catch(() => undefined) as { error?: string } | undefined;
+    throw new Error(data?.error || "对话请求失败，请稍后再试。");
+  }
+  const reader = response.body?.getReader();
+  if (!reader) throw new Error("对话请求失败，请稍后再试。");
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let donePayload: ChatApiResponse | undefined;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split(/\r?\n/);
+    buffer = lines.pop() ?? "";
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("data:")) continue;
+      const raw = trimmed.slice(5).trim();
+      if (!raw) continue;
+      let payload: ChatApiResponse & { type?: string; text?: string; error?: string };
+      try {
+        payload = JSON.parse(raw) as ChatApiResponse & { type?: string; text?: string; error?: string };
+      } catch {
+        continue;
+      }
+      if (payload.type === "delta" && payload.text) onDelta(payload.text);
+      if (payload.type === "done") donePayload = payload;
+      if (payload.type === "error") throw new Error(payload.error || "对话请求失败，请稍后再试。");
+    }
+  }
+  if (!donePayload) throw new Error("对话请求失败，请稍后再试。");
+  return donePayload;
+}
 
 export function ChatWorkbench() {
   const workspaceInstanceIdRef = useRef(createClientId());
@@ -426,7 +467,6 @@ export function ChatWorkbench() {
   if (initialWorkspaceUiStateRef.current === null) initialWorkspaceUiStateRef.current = getStoredWorkspaceUiState();
   const [mode, setMode] = useState<WorkMode>("agent");
   const [agentModelTier, setAgentModelTier] = useState<AgentModelTier>("normal");
-  const selectedModel: ModelName = agentModelTier === "advanced" ? ADVANCED_CHAT_MODEL : DEFAULT_CHAT_MODEL;
   const [activePanel, setActivePanel] = useState<ActivePanel>(() => initialWorkspaceUiStateRef.current?.activePanel ?? "chat");
   const [assetFilter, setAssetFilter] = useState<AssetFilter>(() => initialWorkspaceUiStateRef.current?.assetFilter ?? "character_image");
   const [assetsLoadStatus, setAssetsLoadStatus] = useState<"idle" | "loading" | "loaded" | "failed">("idle");
@@ -453,12 +493,14 @@ export function ChatWorkbench() {
     agent: ratioOptions[0],
     image: ratioOptions[0],
     video: ratioOptions[0],
+    audio: ratioOptions[0],
   });
   const [selectedResolutions, setSelectedResolutions] = useState<Record<WorkMode, string>>({
     general: imageResolutionOptions[0],
     agent: imageResolutionOptions[0],
     image: imageResolutionOptions[0],
     video: videoResolutionOptions[0],
+    audio: imageResolutionOptions[0],
   });
   const [selectedStyle] = useState(styleOptions[0]);
   // gpt-5.4-image-2 专属画质档（新图片接口），默认自动。仅该模型显示/生效。
@@ -468,30 +510,46 @@ export function ChatWorkbench() {
     agent: durationOptions[0],
     image: durationOptions[0],
     video: durationOptions[0],
+    audio: durationOptions[0],
   });
   const [selectedImageCounts, setSelectedImageCounts] = useState<Record<WorkMode, string>>({
     general: imageCountOptions[0],
     agent: imageCountOptions[0],
     image: imageCountOptions[0],
     video: imageCountOptions[0],
+    audio: imageCountOptions[0],
   });
-  const [selectedGenerationModels, setSelectedGenerationModels] = useState<Record<"image" | "video", ModelName>>({
+  const [selectedGenerationModels, setSelectedGenerationModels] = useState<Record<"image" | "video" | "audio", ModelName>>({
     image: DEFAULT_IMAGE_MODEL,
     video: DEFAULT_VIDEO_MODEL,
+    audio: DEFAULT_AUDIO_MODEL,
   });
+  const [selectedAudioVoice, setSelectedAudioVoice] = useState<string | undefined>(getDefaultAudioVoiceId(DEFAULT_AUDIO_MODEL));
+  const [audioVoiceLang, setAudioVoiceLang] = useState<AudioVoiceLang>(getAudioVoiceLang(DEFAULT_AUDIO_MODEL, getDefaultAudioVoiceId(DEFAULT_AUDIO_MODEL)));
+  const [selectedAudioEmotion, setSelectedAudioEmotion] = useState(AUDIO_EMOTION_DEFAULT_ID);
   const [selectedVideoReferenceMode, setSelectedVideoReferenceMode] = useState<VideoReferenceMode>("reference");
   const [selectedGeneralModels, setSelectedGeneralModels] = useState<Record<"chat" | "image" | "video", ModelName>>({
     chat: frontendConversationModels[0].id,
     image: DEFAULT_IMAGE_MODEL,
     video: DEFAULT_VIDEO_MODEL,
   });
+  const [generalPreferenceAuto, setGeneralPreferenceAuto] = useState(true);
+  const [generalPreferenceKind, setGeneralPreferenceKind] = useState<"image" | "video">("image");
+  const [generalCustomSubMenu, setGeneralCustomSubMenu] = useState<"" | "model" | "resolution">("");
+  const [generalImageRatio, setGeneralImageRatio] = useState("智能比例");
+  const [generalImageResolution, setGeneralImageResolution] = useState(() => normalizeImageResolutionForModel(DEFAULT_IMAGE_MODEL, "2K"));
+  const [generalVideoRatio, setGeneralVideoRatio] = useState("智能比例");
+  const [generalVideoResolution, setGeneralVideoResolution] = useState(() => normalizeVideoResolutionForModel(DEFAULT_VIDEO_MODEL, "720p"));
   const [enabledGeneralChatModelIds, setEnabledGeneralChatModelIds] = useState<string[]>(frontendConversationModels.map((model) => model.id));
+  const [lastAgentChatModel, setLastAgentChatModel] = useState<string>("");
+  const selectedModel: ModelName = (getAgentAutoChatModelChain(enabledGeneralChatModelIds)[0] as ModelName | undefined) ?? DEFAULT_CHAT_MODEL;
   const [generalModelProviders, setGeneralModelProviders] = useState<Record<string, "openrouter" | "byteplus">>({});
   const [enabledAgentChatModelIds, setEnabledAgentChatModelIds] = useState<string[]>(["byteplus:chat.seed-2-0-pro", "openai/gpt-5.6-terra-pro"]);
   const [agentChatModelProviders, setAgentChatModelProviders] = useState<Record<string, "openrouter" | "byteplus">>({});
-  const [enabledGenerationModelIds, setEnabledGenerationModelIds] = useState<Record<"image" | "video", string[]>>({
+  const [enabledGenerationModelIds, setEnabledGenerationModelIds] = useState<Record<"image" | "video" | "audio", string[]>>({
     image: imageGenerationModels.map((model) => model.id),
     video: videoGenerationModels.map((model) => model.id),
+    audio: audioGenerationModels.map((model) => model.id),
   });
   const [enabledAgentGenerationModelIds, setEnabledAgentGenerationModelIds] = useState<Record<"image" | "video", string[]>>({
     image: frontendImageGenerationModels.map((model) => model.id),
@@ -501,6 +559,7 @@ export function ChatWorkbench() {
   const [uploadRuleOverrides, setUploadRuleOverrides] = useState<UploadRuleOverrides>({});
   const [promptLengthOverrides, setPromptLengthOverrides] = useState<PromptLengthOverrides>({});
   const [editModelToggles, setEditModelToggles] = useState<Record<string, boolean>>({});
+  const [creditRate, setCreditRate] = useState<{ usdToCnyRate: number; creditsPerCny: number }>({ usdToCnyRate: 7.2, creditsPerCny: 10 });
   const [sessions, setSessions] = useState<WorkSession[]>([]);
   const [nextConversationNumber, setNextConversationNumber] = useState(1);
   const sessionsRef = useRef<WorkSession[]>([]);
@@ -607,6 +666,7 @@ export function ChatWorkbench() {
   const [workspaceSite, setWorkspaceSite] = useState<WorkspaceSite>("other");
   const [modelInfoSessionId, setModelInfoSessionId] = useState("");
   const [activeTypingMessageIds, setActiveTypingMessageIds] = useState<Set<string>>(() => new Set());
+  const [streamingRequestIds, setStreamingRequestIds] = useState<Set<string>>(() => new Set());
   const [completedTypingMessageIds, setCompletedTypingMessageIds] = useState<Set<string>>(() => new Set());
   const [intentMemoryRules, setIntentMemoryRules] = useState<IntentMemoryRule[]>([]);
   const [feedbackLogs, setFeedbackLogs] = useState<FeedbackLogEntry[]>([]);
@@ -614,7 +674,7 @@ export function ChatWorkbench() {
   const [assetRenderLimit, setAssetRenderLimit] = useState(ASSET_RENDER_PAGE_SIZE);
   const getAssetCountFilter = useCallback((asset: AssetItem): AssetFilter => {
     if (asset.type === "trash") return "trash";
-    const filters: AssetFilter[] = ["character_image", "scene_image", "prop_image", "shot_image", "conversation_uploads", "upload_videos", "upload_audios", "conversation_images", "conversation_videos", "workflow_images", "workflow_videos"];
+    const filters: AssetFilter[] = ["character_image", "scene_image", "prop_image", "shot_image", "conversation_uploads", "upload_videos", "upload_audios", "conversation_images", "conversation_videos", "conversation_audios", "workflow_images", "workflow_videos"];
     return filters.find((filter) => isAssetInFilter(asset, filter)) ?? "conversation_images";
   }, []);
   const adjustAssetCounts = useCallback((changes: Array<{ filter: AssetFilter; delta: number }>) => {
@@ -711,6 +771,9 @@ export function ChatWorkbench() {
   const [canScrollAssetGenerateReferences, setCanScrollAssetGenerateReferences] = useState({ left: false, right: false });
   const messageEndRef = useRef<HTMLDivElement | null>(null);
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
+  const pendingOlderMessagesScrollRef = useRef<{ prevHeight: number; prevTop: number } | null>(null);
+  const suppressChatScrollToBottomRef = useRef(false);
+  const wasThinkingRef = useRef(false);
   const uploadedFilesRowRef = useRef<HTMLDivElement | null>(null);
   const uploadedImagesRowRef = useRef<HTMLDivElement | null>(null);
   // 输入框底部工具栏「左侧按钮组」的自然宽度（用于让输入框跟随按钮加宽，发送按钮不被顶出框外）。
@@ -786,7 +849,7 @@ export function ChatWorkbench() {
   // 资产库拖拽上传：只在三个上传标签（上传图片/上传视频/上传音频）生效，遮罩文案只显示当前标签对应类型。
   const assetsUploadKind: "image" | "video" | "audio" | null = activePanel === "assets" ? (assetFilter === "conversation_uploads" ? "image" : assetFilter === "upload_videos" ? "video" : assetFilter === "upload_audios" ? "audio" : null) : null;
   const assetsUploadTypeLabel = assetsUploadKind === "image" ? "图片 jpg/jpeg/png/webp（≤10MB）" : assetsUploadKind === "video" ? "视频 mp4/mov（≤200MB，2-15秒）" : assetsUploadKind === "audio" ? "音频 mp3/wav（≤15MB，2-15秒）" : "";
-  const selectedGenerationModelLabel = mode === "image" || mode === "video" ? getGenerationModelLabel(mode, selectedGenerationModel) : "";
+  const selectedGenerationModelLabel = mode === "image" || mode === "video" || mode === "audio" ? getGenerationModelLabel(mode, selectedGenerationModel) : "";
   const currentDurationOptions = getVideoDurationOptions(selectedGenerationModels.video);
   const selectedVideoDuration = currentDurationOptions.includes(selectedDurations.video) ? selectedDurations.video : currentDurationOptions[0];
   const isSceneGeneration = assetGenerateType === "scene_image";
@@ -869,7 +932,7 @@ export function ChatWorkbench() {
     const nextImageModel = (profile.defaultImageModel && generationModelOptions.image.some((option) => option.id === profile.defaultImageModel) ? profile.defaultImageModel : DEFAULT_IMAGE_MODEL) as ModelName;
     const imageResolutionOptionsForModel = getSupportedImageResolutions(nextImageModel);
     setDefaultImageModel(nextImageModel);
-    setDefaultImageRatio(profile.defaultImageRatio && ratioOptions.includes(profile.defaultImageRatio) ? profile.defaultImageRatio : ratioOptions[0]);
+    setDefaultImageRatio(normalizeImageRatioForModel(nextImageModel, profile.defaultImageRatio && ratioOptions.includes(profile.defaultImageRatio) ? profile.defaultImageRatio : ratioOptions[0]));
     setDefaultImageResolution(profile.defaultImageResolution && imageResolutionOptionsForModel.includes(profile.defaultImageResolution as never) ? profile.defaultImageResolution : imageResolutionOptionsForModel[0]);
 
     const nextVideoModel = (profile.defaultVideoModel && generationModelOptions.video.some((option) => option.id === profile.defaultVideoModel) ? profile.defaultVideoModel : DEFAULT_VIDEO_MODEL) as ModelName;
@@ -1461,7 +1524,7 @@ export function ChatWorkbench() {
   // (durable recovery keeps polling). Keep the 1s timer alive so the recovered waiting card's progress/elapsed advances.
   const hasRecoveringMedia = messages.some((message) => message.role === "assistant" && ((message.pendingVideoCount ?? 0) > 0 || (message.pendingImageCount ?? 0) > 0 || (message.retryingFailedVideoIndexes?.length ?? 0) > 0 || (message.retryingFailedImageIndexes?.length ?? 0) > 0 || (message.videoSavedFlashAt ? Object.values(message.videoSavedFlashAt).some((at) => Date.now() - at < 3000) : false)));
   const needsLiveTimer = activePendingRequestCount > 0 || isActiveSessionLoading || isCharacterGenerating || assetGenerateJobs.length > 0 || hasRecoveringMedia;
-  const isThinking = activeIsResolving || activePendingRequests.some((request) => request.mode === "agent" || request.mode === "general") || modelInfoSessionId === activeSession?.id;
+  const isThinking = activeIsResolving || activePendingRequests.some((request) => (request.mode === "agent" || request.mode === "general") && !streamingRequestIds.has(request.id)) || modelInfoSessionId === activeSession?.id;
   const isMainInputDisabled = isThinking || isInputPromptOptimizing;
   const activeIsSending = activeSession ? sendingSessionIds.has(activeSession.id) : false;
 
@@ -2254,7 +2317,7 @@ export function ChatWorkbench() {
     setIsReversePromptingPreview(true);
     setPreviewPromptError(null);
     try {
-      const reverseModels = Array.from(new Set(["openai/gpt-5.5", ADVANCED_CHAT_MODEL, "byteplus:chat.seed-2-0-pro", DEFAULT_CHAT_MODEL]));
+      const reverseModels = [...PROMPT_TOOL_MODEL_CHAIN];
       let data: ChatApiResponse | undefined;
       let nextPrompt = "";
       let lastError: unknown;
@@ -2535,21 +2598,30 @@ export function ChatWorkbench() {
 
     setLoadingOlderMessageSessionIds((current) => new Set(current).add(sessionId));
     try {
+      const scroller = chatScrollRef.current;
+      pendingOlderMessagesScrollRef.current = scroller ? { prevHeight: scroller.scrollHeight, prevTop: scroller.scrollTop } : null;
+      suppressChatScrollToBottomRef.current = true;
       const response = await fetch(`/api/workspace-session?id=${encodeURIComponent(sessionId)}&historyOnly=1&before=${targetSession.messagesBeforeCursor}`, { cache: "no-store" });
       const data = await readJson<{ messages?: Message[]; messagesHasMore?: boolean; messagesBeforeCursor?: number }>(response);
       const olderMessages = Array.isArray(data.messages) ? data.messages : [];
+      const existingIds = new Set((sessionsRef.current.find((session) => session.id === sessionId)?.messages ?? []).map((message) => message.id));
+      const nextOlderMessages = olderMessages.filter((message) => !existingIds.has(message.id));
+      if (nextOlderMessages.length === 0) {
+        pendingOlderMessagesScrollRef.current = null;
+        suppressChatScrollToBottomRef.current = false;
+      }
       setSessions((current) => current.map((session) => {
         if (session.id !== sessionId) return session;
-        const existingIds = new Set(session.messages.map((message) => message.id));
-        const nextOlderMessages = olderMessages.filter((message) => !existingIds.has(message.id));
         return {
           ...session,
-          messages: [...nextOlderMessages, ...session.messages],
+          messages: nextOlderMessages.length > 0 ? [...nextOlderMessages, ...session.messages] : session.messages,
           messagesHasMore: Boolean(data.messagesHasMore),
           messagesBeforeCursor: data.messagesBeforeCursor,
         };
       }));
     } catch {
+      pendingOlderMessagesScrollRef.current = null;
+      suppressChatScrollToBottomRef.current = false;
       showInputTip("更早消息加载失败，请稍后重试");
     } finally {
       setLoadingOlderMessageSessionIds((current) => {
@@ -2841,11 +2913,13 @@ export function ChatWorkbench() {
           if (!parsedInputSettings) return;
           const storedImageModel = parsedInputSettings.selectedGenerationModels?.image;
           const storedVideoModel = parsedInputSettings.selectedGenerationModels?.video;
+          const storedAudioModel = parsedInputSettings.selectedGenerationModels?.audio;
           const storedGeneralChatModel = parsedInputSettings.selectedGeneralModels?.chat;
           const storedGeneralImageModel = parsedInputSettings.selectedGeneralModels?.image;
           const storedGeneralVideoModel = parsedInputSettings.selectedGeneralModels?.video;
           const nextImageModel = storedImageModel && isGenerationModelOption("image", storedImageModel) ? storedImageModel : DEFAULT_IMAGE_MODEL;
           const nextVideoModel = storedVideoModel && isGenerationModelOption("video", storedVideoModel) ? storedVideoModel : DEFAULT_VIDEO_MODEL;
+          const nextAudioModel = storedAudioModel && isGenerationModelOption("audio", storedAudioModel) ? storedAudioModel : DEFAULT_AUDIO_MODEL;
           const nextGeneralModels = {
             chat: storedGeneralChatModel && frontendConversationModels.some((model) => model.id === storedGeneralChatModel) ? storedGeneralChatModel : frontendConversationModels[0].id,
             image: storedGeneralImageModel && isGenerationModelOption("image", storedGeneralImageModel) ? storedGeneralImageModel : DEFAULT_IMAGE_MODEL,
@@ -2855,21 +2929,34 @@ export function ChatWorkbench() {
           const nextVideoResolution = normalizeVideoResolutionForModel(nextVideoModel, parsedInputSettings.selectedResolutions?.video);
           if (isWorkMode(parsedInputSettings.mode)) setMode(parsedInputSettings.mode);
           if (parsedInputSettings.agentModelTier === "normal" || parsedInputSettings.agentModelTier === "advanced") setAgentModelTier(parsedInputSettings.agentModelTier);
+          if (typeof parsedInputSettings.generalPreferenceAuto === "boolean") setGeneralPreferenceAuto(parsedInputSettings.generalPreferenceAuto);
+          if (parsedInputSettings.generalPreferenceKind === "image" || parsedInputSettings.generalPreferenceKind === "video") setGeneralPreferenceKind(parsedInputSettings.generalPreferenceKind);
+          if (typeof parsedInputSettings.generalImageRatio === "string") setGeneralImageRatio(normalizeImageRatioForModel(nextGeneralModels.image, parsedInputSettings.generalImageRatio));
+          if (typeof parsedInputSettings.generalImageResolution === "string") setGeneralImageResolution(normalizeImageResolutionForModel(nextGeneralModels.image, parsedInputSettings.generalImageResolution));
+          if (typeof parsedInputSettings.generalVideoRatio === "string") setGeneralVideoRatio(parsedInputSettings.generalVideoRatio === "智能比例" ? "智能比例" : normalizeVideoRatioForModel(nextGeneralModels.video, parsedInputSettings.generalVideoRatio, normalizeVideoResolutionForModel(nextGeneralModels.video, parsedInputSettings.generalVideoResolution)));
+          if (typeof parsedInputSettings.generalVideoResolution === "string") setGeneralVideoResolution(normalizeVideoResolutionForModel(nextGeneralModels.video, parsedInputSettings.generalVideoResolution));
+          if (typeof parsedInputSettings.lastAgentChatModel === "string") setLastAgentChatModel(parsedInputSettings.lastAgentChatModel);
           setSelectedRatios((current) => ({
-            ...mergeValidModeSettings(current, parsedInputSettings.selectedRatios, { general: ratioOptions, agent: ratioOptions, image: ratioOptions, video: ["智能比例", ...getSupportedVideoRatios(nextVideoModel)] }),
+            ...mergeValidModeSettings(current, parsedInputSettings.selectedRatios, { general: ratioOptions, agent: ratioOptions, image: ["智能比例", ...getSupportedImageRatios(nextImageModel)], video: ["智能比例", ...getSupportedVideoRatios(nextVideoModel)], audio: ratioOptions }),
+            image: normalizeImageRatioForModel(nextImageModel, parsedInputSettings.selectedRatios?.image),
             video: parsedInputSettings.selectedRatios?.video === "智能比例" ? "智能比例" : normalizeVideoRatioForModel(nextVideoModel, parsedInputSettings.selectedRatios?.video, nextVideoResolution),
           }));
           setSelectedResolutions((current) => ({
-            ...mergeValidModeSettings(current, parsedInputSettings.selectedResolutions, { general: imageResolutionOptions, agent: imageResolutionOptions, image: getSupportedImageResolutions(nextImageModel), video: getSupportedVideoResolutions(nextVideoModel) }),
+            ...mergeValidModeSettings(current, parsedInputSettings.selectedResolutions, { general: imageResolutionOptions, agent: imageResolutionOptions, image: getSupportedImageResolutions(nextImageModel), video: getSupportedVideoResolutions(nextVideoModel), audio: imageResolutionOptions }),
             image: nextImageResolution,
             video: nextVideoResolution,
           }));
-          setSelectedDurations((current) => mergeValidModeSettings(current, parsedInputSettings.selectedDurations, { general: durationOptions, agent: durationOptions, image: durationOptions, video: getVideoDurationOptions(parsedInputSettings.selectedGenerationModels?.video ?? DEFAULT_VIDEO_MODEL) }));
-          setSelectedImageCounts((current) => mergeValidModeSettings(current, parsedInputSettings.selectedImageCounts, { general: imageCountOptions, agent: imageCountOptions, image: imageCountOptions, video: imageCountOptions }));
+          setSelectedDurations((current) => mergeValidModeSettings(current, parsedInputSettings.selectedDurations, { general: durationOptions, agent: durationOptions, image: durationOptions, video: getVideoDurationOptions(parsedInputSettings.selectedGenerationModels?.video ?? DEFAULT_VIDEO_MODEL), audio: durationOptions }));
+          setSelectedImageCounts((current) => mergeValidModeSettings(current, parsedInputSettings.selectedImageCounts, { general: imageCountOptions, agent: imageCountOptions, image: imageCountOptions, video: imageCountOptions, audio: imageCountOptions }));
           setSelectedGenerationModels(() => ({
             image: nextImageModel,
             video: nextVideoModel,
+            audio: nextAudioModel,
           }));
+          const nextAudioVoice = normalizeAudioVoiceForModel(nextAudioModel, parsedInputSettings.selectedAudioVoice);
+          setSelectedAudioVoice(nextAudioVoice);
+          setAudioVoiceLang(getAudioVoiceLang(nextAudioModel, nextAudioVoice));
+          setSelectedAudioEmotion(normalizeAudioEmotionForModel(nextAudioModel, parsedInputSettings.selectedAudioEmotion));
           setSelectedGeneralModels(nextGeneralModels as Record<"chat" | "image" | "video", ModelName>);
         };
 
@@ -2976,11 +3063,12 @@ export function ChatWorkbench() {
     const loadModelAvailability = async () => {
       try {
         const response = await fetch("/api/model-availability", { cache: "no-store" });
-        const data = (await response.json()) as { generalModels?: string[]; generalModelProviders?: Record<string, "openrouter" | "byteplus">; chatModels?: string[]; chatModelProviders?: Record<string, "openrouter" | "byteplus">; imageModels?: string[]; assetImageModels?: string[]; videoModels?: string[]; agentImageModels?: string[]; agentVideoModels?: string[]; uploadRuleOverrides?: UploadRuleOverrides; promptLengthOverrides?: PromptLengthOverrides; editModelToggles?: Record<string, boolean> };
+        const data = (await response.json()) as { generalModels?: string[]; generalModelProviders?: Record<string, "openrouter" | "byteplus">; chatModels?: string[]; chatModelProviders?: Record<string, "openrouter" | "byteplus">; imageModels?: string[]; assetImageModels?: string[]; videoModels?: string[]; audioModels?: string[]; agentImageModels?: string[]; agentVideoModels?: string[]; uploadRuleOverrides?: UploadRuleOverrides; promptLengthOverrides?: PromptLengthOverrides; editModelToggles?: Record<string, boolean>; creditRate?: { usdToCnyRate?: number; creditsPerCny?: number } };
         if (cancelled) return;
         const next = {
           image: Array.isArray(data.imageModels) ? data.imageModels : [],
           video: Array.isArray(data.videoModels) ? data.videoModels : [],
+          audio: Array.isArray(data.audioModels) ? data.audioModels : audioGenerationModels.map((model) => model.id),
         };
         setEnabledGenerationModelIds(next);
         setEnabledAgentGenerationModelIds({
@@ -2992,6 +3080,7 @@ export function ChatWorkbench() {
         setSelectedGenerationModels((current) => ({
           image: next.image.includes(current.image) ? current.image : next.image[0] ?? current.image,
           video: next.video.includes(current.video) ? current.video : next.video[0] ?? current.video,
+          audio: next.audio.includes(current.audio) ? current.audio : next.audio[0] ?? current.audio,
         }));
         setSelectedGeneralModels((current) => ({
           chat: Array.isArray(data.generalModels) && data.generalModels.includes(current.chat) ? current.chat : Array.isArray(data.generalModels) ? data.generalModels[0] as ModelName | undefined ?? current.chat : current.chat,
@@ -3005,10 +3094,11 @@ export function ChatWorkbench() {
         setUploadRuleOverrides(data.uploadRuleOverrides && typeof data.uploadRuleOverrides === "object" ? data.uploadRuleOverrides : {});
         setPromptLengthOverrides(data.promptLengthOverrides && typeof data.promptLengthOverrides === "object" ? data.promptLengthOverrides : {});
         setEditModelToggles(data.editModelToggles && typeof data.editModelToggles === "object" ? data.editModelToggles : {});
+        if (data.creditRate && typeof data.creditRate === "object" && typeof data.creditRate.usdToCnyRate === "number" && typeof data.creditRate.creditsPerCny === "number") setCreditRate({ usdToCnyRate: data.creditRate.usdToCnyRate, creditsPerCny: data.creditRate.creditsPerCny });
         setCharacterGenerateModel((current) => nextAssetImageModels.includes(current) ? current : nextAssetImageModels[0] ?? current);
       } catch {
         if (!cancelled) {
-          setEnabledGenerationModelIds({ image: [], video: [] });
+          setEnabledGenerationModelIds({ image: [], video: [], audio: audioGenerationModels.map((model) => model.id) });
           setEnabledGeneralChatModelIds([]);
           setGeneralModelProviders({});
           setEnabledAgentChatModelIds([]);
@@ -3261,6 +3351,15 @@ export function ChatWorkbench() {
         selectedImageCounts,
         selectedGenerationModels,
         selectedGeneralModels,
+        selectedAudioVoice,
+        selectedAudioEmotion,
+        generalPreferenceAuto,
+        generalPreferenceKind,
+        generalImageRatio,
+        generalImageResolution,
+        generalVideoRatio,
+        generalVideoResolution,
+        lastAgentChatModel,
       },
       intentMemoryRules: intentMemoryRules.slice(0, MAX_INTENT_MEMORY_RULES),
       feedbackLogs: feedbackLogs.slice(0, MAX_FEEDBACK_LOGS),
@@ -3307,7 +3406,7 @@ export function ChatWorkbench() {
     };
     // ⛔ 依赖里不许再放 assets / assetScrollTopByFilter：assets 不在载荷里（变了白发一次全量 PUT），
     //   assetScrollTopByFilter 是资产库滚动位置（滚一下整体重写几百 KB）。见载荷处的注释。
-  }, [activePanel, activeSessionId, activeWorkflowId, agentModelTier, assetFilter, assetGenerateJobs, assetsLoadStatus, feedbackLogs, intentMemoryRules, isLoaded, mode, nextConversationNumber, nextWorkflowNumber, selectedDurations, selectedGeneralModels, selectedGenerationModels, selectedImageCounts, selectedRatios, selectedResolutions, sessions, workflowItems, workspaceLoadStatus, workspaceStorageMode]);
+  }, [activePanel, activeSessionId, activeWorkflowId, agentModelTier, assetFilter, assetGenerateJobs, assetsLoadStatus, feedbackLogs, generalImageRatio, generalImageResolution, generalPreferenceAuto, generalPreferenceKind, generalVideoRatio, generalVideoResolution, intentMemoryRules, isLoaded, lastAgentChatModel, mode, nextConversationNumber, nextWorkflowNumber, selectedAudioEmotion, selectedAudioVoice, selectedDurations, selectedGeneralModels, selectedGenerationModels, selectedImageCounts, selectedRatios, selectedResolutions, sessions, workflowItems, workspaceLoadStatus, workspaceStorageMode]);
 
   useEffect(() => {
     if (!isLoaded || workspaceStorageMode !== "user") return;
@@ -3497,8 +3596,25 @@ export function ChatWorkbench() {
     };
   }, []);
 
+  useLayoutEffect(() => {
+    const pending = pendingOlderMessagesScrollRef.current;
+    if (!pending) return;
+    pendingOlderMessagesScrollRef.current = null;
+    const element = chatScrollRef.current;
+    if (!element) return;
+    element.scrollTop = pending.prevTop + (element.scrollHeight - pending.prevHeight);
+  }, [messages.length]);
+
   useEffect(() => {
     if (activePanel !== "chat") return;
+    if (suppressChatScrollToBottomRef.current) {
+      suppressChatScrollToBottomRef.current = false;
+      wasThinkingRef.current = isThinking;
+      return;
+    }
+    const thinkingJustEnded = wasThinkingRef.current && !isThinking;
+    wasThinkingRef.current = isThinking;
+    if (thinkingJustEnded) return;
     messageEndRef.current?.scrollIntoView({ behavior: "auto", block: "end" });
   }, [activePanel, activeSessionId, messages.length, isThinking]);
 
@@ -3888,7 +4004,7 @@ export function ChatWorkbench() {
             {options.length === 0 ? <div className="px-2 py-6 text-center text-[13px] text-[#999999]">暂无可用模型</div> : options.map((option) => {
               const ModelIcon = getGenerationModelIcon(option.id);
               const isGoldModel = isGoldGenerationModel(option.id);
-              const modelHint = getImageModelSelectHint(option.id);
+              const modelHint = getGenerationModelSelectHint(option.id, creditRate.usdToCnyRate, creditRate.creditsPerCny);
 
               return (
                 <button
@@ -3898,6 +4014,7 @@ export function ChatWorkbench() {
                     setSelectedGenerationModels((current) => ({ ...current, [mode]: option.id }));
                     if (mode === "image") {
                       setSelectedResolutions((current) => ({ ...current, image: normalizeImageResolutionForModel(option.id, current.image) }));
+                      setSelectedRatios((current) => ({ ...current, image: normalizeImageRatioForModel(option.id, current.image) }));
                     } else if (mode === "video") {
                       setSelectedRatios((current) => ({ ...current, video: current.video === "智能比例" ? "智能比例" : normalizeVideoRatioForModel(option.id, current.video, normalizeVideoResolutionForModel(option.id, selectedResolutions.video)) }));
                       setSelectedResolutions((current) => ({ ...current, video: normalizeVideoResolutionForModel(option.id, current.video) }));
@@ -3905,6 +4022,11 @@ export function ChatWorkbench() {
                         const options = getVideoDurationOptions(option.id);
                         return { ...current, video: options.includes(current.video) ? current.video : options[0] };
                       });
+                    } else if (mode === "audio") {
+                      const nextVoice = normalizeAudioVoiceForModel(option.id, selectedAudioVoice);
+                      setSelectedAudioVoice(nextVoice);
+                      setAudioVoiceLang(getAudioVoiceLang(option.id, nextVoice));
+                      setSelectedAudioEmotion(normalizeAudioEmotionForModel(option.id, selectedAudioEmotion));
                     }
                     setOpenControlMenu("");
                   }}
@@ -3923,6 +4045,99 @@ export function ChatWorkbench() {
                     {modelHint ? <span className="pl-[26px] text-[11px] font-normal leading-tight text-[#a0a0a0]">{modelHint}</span> : null}
                   </span>
                   {option.id === selectedGenerationModel ? <RiCheckLine className="ml-2 h-[18px] w-[18px] shrink-0 text-[#111111]" aria-hidden="true" /> : null}
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
+      </div>
+    );
+  };
+
+  const renderAudioVoiceMenu = () => {
+    if (!isAudioVoiceSelectable(selectedGenerationModel)) return null;
+    const langs = getAudioVoiceLangsForModel(selectedGenerationModel);
+    const activeLang = langs.some((lang) => lang.value === audioVoiceLang) ? audioVoiceLang : langs[0]?.value ?? "zh";
+    const voices = getAudioVoicesForModel(selectedGenerationModel).filter((voice) => voice.lang === activeLang);
+    const voiceLabel = getAudioVoiceLabel(selectedGenerationModel, selectedAudioVoice) || "选择音色";
+    return (
+      <div className="relative min-w-0" onClick={(event) => event.stopPropagation()}>
+        <button
+          type="button"
+          disabled={isMainInputDisabled}
+          onClick={() => {
+            const shouldClose = openControlMenu === "audioVoice";
+            closeAllPopupMenus();
+            if (!shouldClose) setOpenControlMenu("audioVoice");
+          }}
+          className={`${toolButtonClassName} ${openControlMenu === "audioVoice" ? toolButtonActiveClassName : ""} w-max max-w-none shrink-0 justify-start whitespace-nowrap`}
+        >
+          <span className="flex min-w-0 flex-nowrap items-center gap-2">
+            <RiVoiceprintLine className="h-[18px] w-[18px] shrink-0 text-[#777777]" aria-hidden="true" />
+            <span className="whitespace-nowrap font-medium text-[#777777] max-[820px]:hidden">{voiceLabel}</span>
+            <RiArrowDownSLine className="h-3.5 w-3.5 shrink-0 text-[#8a8a8a] max-[820px]:hidden" aria-hidden="true" />
+          </span>
+        </button>
+        {openControlMenu === "audioVoice" ? (
+          <div className="absolute bottom-full left-0 z-[70] mb-2">
+            <AudioVoicePicker
+              langs={langs}
+              activeLang={activeLang}
+              onSelectLang={setAudioVoiceLang}
+              voices={voices}
+              selectedVoiceId={selectedAudioVoice}
+              onPick={(voice) => {
+                setSelectedAudioVoice(voice.id);
+                setAudioVoiceLang(voice.lang);
+                setOpenControlMenu("");
+              }}
+            />
+          </div>
+        ) : null}
+      </div>
+    );
+  };
+
+  const renderAudioEmotionMenu = () => {
+    if (!isAudioEmotionSelectable(selectedGenerationModel)) return null;
+    const emotions = getAudioEmotionsForModel(selectedGenerationModel);
+    const currentEmotion = normalizeAudioEmotionForModel(selectedGenerationModel, selectedAudioEmotion);
+    const emotionLabel = getAudioEmotionLabel(selectedGenerationModel, currentEmotion);
+    return (
+      <div className="relative min-w-0" onClick={(event) => event.stopPropagation()}>
+        <button
+          type="button"
+          disabled={isMainInputDisabled}
+          onClick={() => {
+            const shouldClose = openControlMenu === "audioEmotion";
+            closeAllPopupMenus();
+            if (!shouldClose) setOpenControlMenu("audioEmotion");
+          }}
+          className={`${toolButtonClassName} ${openControlMenu === "audioEmotion" ? toolButtonActiveClassName : ""} w-max max-w-none shrink-0 justify-start whitespace-nowrap`}
+        >
+          <span className="flex min-w-0 flex-nowrap items-center gap-2">
+            <RiEmotionHappyLine className="h-[18px] w-[18px] shrink-0 text-[#777777]" aria-hidden="true" />
+            <span className="whitespace-nowrap font-medium text-[#777777] max-[820px]:hidden">{emotionLabel}</span>
+            <RiArrowDownSLine className="h-3.5 w-3.5 shrink-0 text-[#8a8a8a] max-[820px]:hidden" aria-hidden="true" />
+          </span>
+        </button>
+        {openControlMenu === "audioEmotion" ? (
+          <div className="absolute bottom-full left-0 z-[70] mb-2 max-h-[320px] min-w-[160px] overflow-y-auto rounded-[12px] bg-white p-2 shadow-[0_18px_40px_rgba(0,0,0,0.12)]">
+            <div className="px-2 pb-2 text-[12px] font-medium text-[#a0a0a0]">选择情绪</div>
+            {emotions.map((emotion) => {
+              const selected = emotion.id === currentEmotion;
+              return (
+                <button
+                  key={emotion.id}
+                  type="button"
+                  onClick={() => {
+                    setSelectedAudioEmotion(emotion.id);
+                    setOpenControlMenu("");
+                  }}
+                  className={selected ? "flex h-9 w-full items-center justify-between rounded-lg bg-[#f5f5f5] px-2.5 text-left" : "flex h-9 w-full items-center justify-between rounded-lg px-2.5 text-left transition hover:bg-[#f7f7f7]"}
+                >
+                  <span className={selected ? "min-w-0 truncate text-[13px] font-medium text-[#111111]" : "min-w-0 truncate text-[13px] text-[#555555]"}>{emotion.label}</span>
+                  {selected ? <RiCheckLine className="h-4 w-4 shrink-0 text-[#111111]" aria-hidden="true" /> : null}
                 </button>
               );
             })}
@@ -3953,7 +4168,7 @@ export function ChatWorkbench() {
             closeAllPopupMenus();
             if (!shouldClose) setOpenControlMenu(menuName);
           }}
-          className={`${toolButtonClassName} ${openControlMenu === menuName ? toolButtonActiveClassName : ""} w-full min-w-0 justify-start whitespace-nowrap px-2.5 max-[820px]:justify-center`}
+          className={`${toolButtonClassName} ${openControlMenu === menuName ? toolButtonActiveClassName : ""} w-max max-w-none shrink-0 justify-start whitespace-nowrap px-2.5 max-[820px]:justify-center`}
         >
           <span className="flex min-w-0 flex-1 flex-nowrap items-center gap-2">
             {SelectedModelIcon ? <SelectedModelIcon className="h-[18px] w-[18px] shrink-0 text-[#777777]" aria-hidden="true" /> : <AiGenerate3dIcon />}
@@ -3999,6 +4214,172 @@ export function ChatWorkbench() {
                 </button>
               );
             })}
+          </div>
+        ) : null}
+      </div>
+    );
+  };
+
+  const renderGeneralCustomMenu = () => {
+    const kind = generalPreferenceKind;
+    const selectedModelId = selectedGeneralModels[kind];
+    const SelectedModelIcon = getGenerationModelIcon(selectedModelId);
+    const modelOptions = generationModelOptions[kind].filter((option) => enabledGenerationModelIds[kind].includes(option.id));
+    const selectedModelLabel = getGenerationModelLabel(kind, selectedModelId);
+    const ratioOptionsForKind = kind === "image"
+      ? ["智能比例", ...getSupportedImageRatios(selectedModelId)]
+      : ["智能比例", ...getSupportedVideoRatios(selectedModelId, generalVideoResolution)];
+    const currentRatio = kind === "image" ? generalImageRatio : generalVideoRatio;
+    const displayRatio = ratioOptionsForKind.includes(currentRatio) ? currentRatio : ratioOptionsForKind[0];
+    const imageResolutions = getSupportedImageResolutions(selectedModelId);
+    const videoResolutions = getSupportedVideoResolutions(selectedModelId);
+    const displayImageResolution = imageResolutions.includes(generalImageResolution as (typeof imageResolutions)[number]) ? generalImageResolution : imageResolutions[0];
+    const displayVideoResolution = videoResolutions.includes(generalVideoResolution as (typeof videoResolutions)[number]) ? generalVideoResolution : videoResolutions[0];
+    const displayResolution = kind === "image" ? displayImageResolution : displayVideoResolution;
+    const resolutionOptionsForKind = kind === "image" ? imageResolutions : videoResolutions;
+    const resolutionButtonLabel = kind === "image" ? getImageResolutionLabel(displayImageResolution) : getVideoResolutionLabel(displayVideoResolution);
+    const controlsDisabled = generalPreferenceAuto;
+    return (
+      <div className="relative" onClick={(event) => event.stopPropagation()}>
+        <button
+          type="button"
+          disabled={isMainInputDisabled}
+          onClick={() => {
+            const shouldClose = openControlMenu === "generalCustom";
+            closeAllPopupMenus();
+            setGeneralCustomSubMenu("");
+            if (!shouldClose) setOpenControlMenu("generalCustom");
+          }}
+          className={`${toolButtonClassName} ${openControlMenu === "generalCustom" ? toolButtonActiveClassName : ""}`}
+        >
+          <ToolButtonLabel icon={RiEqualizerLine} label={generalPreferenceAuto ? "自动" : "自定义"} />
+        </button>
+        {openControlMenu === "generalCustom" ? (
+          <div className="absolute bottom-full left-0 z-[70] mb-2 w-[min(440px,calc(100vw-40px))] rounded-[16px] bg-white p-4 shadow-[0_18px_40px_rgba(0,0,0,0.12)]">
+            <div className="flex items-center justify-between">
+              <div className="text-[15px] font-medium text-[#222222]">生成偏好</div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={generalPreferenceAuto}
+                aria-label="自动"
+                onClick={() => setGeneralPreferenceAuto((current) => !current)}
+                className="inline-flex items-center gap-2"
+              >
+                <span className="text-[13px] text-[#888888]">自动</span>
+                <span className={generalPreferenceAuto ? "relative h-5 w-9 rounded-full bg-[#111111]" : "relative h-5 w-9 rounded-full bg-[#d8d8d8]"}>
+                  <span className={generalPreferenceAuto ? "absolute top-0.5 right-0.5 h-4 w-4 rounded-full bg-white" : "absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-white"} />
+                </span>
+              </button>
+            </div>
+            <div className="mt-3 grid grid-cols-2 gap-1 rounded-[12px] bg-[#f4f4f4] p-1">
+              <button type="button" onClick={() => { setGeneralPreferenceKind("image"); setGeneralCustomSubMenu(""); }} className={kind === "image" ? "h-9 rounded-[10px] bg-white text-[13px] font-medium text-[#111111] shadow-[0_1px_4px_rgba(0,0,0,0.06)]" : "h-9 rounded-[10px] text-[13px] font-medium text-[#888888]"}>图片</button>
+              <button type="button" onClick={() => { setGeneralPreferenceKind("video"); setGeneralCustomSubMenu(""); }} className={kind === "video" ? "h-9 rounded-[10px] bg-white text-[13px] font-medium text-[#111111] shadow-[0_1px_4px_rgba(0,0,0,0.06)]" : "h-9 rounded-[10px] text-[13px] font-medium text-[#888888]"}>视频</button>
+            </div>
+            <div className={controlsDisabled ? "pointer-events-none mt-4 opacity-40" : "mt-4"}>
+              <div className="text-[13px] text-[#888888]">选择比例</div>
+              <div className="mt-2 grid auto-cols-fr grid-flow-col gap-1 rounded-[12px] bg-[#f6f6f6] px-1.5 py-1">
+                {ratioOptionsForKind.map((option) => (
+                  <button
+                    key={option}
+                    type="button"
+                    onClick={() => {
+                      if (kind === "image") setGeneralImageRatio(option);
+                      else setGeneralVideoRatio(option);
+                    }}
+                    className={option === displayRatio ? "flex h-[58px] min-w-0 flex-col items-center justify-center gap-1 rounded-[10px] bg-white px-1 text-[#111111] shadow-[0_2px_10px_rgba(0,0,0,0.06)]" : "flex h-[58px] min-w-0 flex-col items-center justify-center gap-1 rounded-[10px] px-1 text-[#555555] transition hover:bg-white/80"}
+                  >
+                    <RatioOptionIcon option={option} />
+                    <span className="text-[12px] font-medium leading-none">{option === "智能比例" ? "智能" : option}</span>
+                  </button>
+                ))}
+              </div>
+              <div className="mt-4 text-[13px] text-[#888888]">其他设置</div>
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setGeneralCustomSubMenu((current) => current === "model" ? "" : "model")}
+                    className="flex h-10 w-full items-center justify-between rounded-[12px] bg-[#f5f5f5] px-3 text-[13px] text-[#333333]"
+                  >
+                    <span className="flex min-w-0 items-center gap-2">
+                      {SelectedModelIcon ? <SelectedModelIcon className="h-4 w-4 shrink-0 text-[#555555]" aria-hidden="true" /> : <AiGenerate3dIcon />}
+                      <span className="min-w-0 truncate">{selectedModelLabel}</span>
+                    </span>
+                    <RiArrowDownSLine className="h-3.5 w-3.5 shrink-0 text-[#8a8a8a]" aria-hidden="true" />
+                  </button>
+                  {generalCustomSubMenu === "model" ? (
+                    <div className="yinzao-scrollbar-always absolute bottom-full left-0 z-[80] mb-1 max-h-[240px] w-full overflow-y-scroll rounded-[12px] bg-white p-1.5 shadow-[0_12px_28px_rgba(0,0,0,0.12)]">
+                      {modelOptions.length === 0 ? <div className="px-2 py-4 text-center text-[13px] text-[#999999]">暂无可用模型</div> : modelOptions.map((option) => {
+                        const ModelIcon = getGenerationModelIcon(option.id);
+                        return (
+                        <button
+                          key={option.id}
+                          type="button"
+                          onClick={() => {
+                            setSelectedGeneralModels((current) => ({ ...current, [kind]: option.id }));
+                            if (kind === "image") {
+                              setGeneralImageRatio((current) => normalizeImageRatioForModel(option.id, current));
+                              setGeneralImageResolution((current) => normalizeImageResolutionForModel(option.id, current));
+                            } else {
+                              const nextResolution = normalizeVideoResolutionForModel(option.id, generalVideoResolution);
+                              setGeneralVideoResolution(nextResolution);
+                              setGeneralVideoRatio((current) => current === "智能比例" ? "智能比例" : normalizeVideoRatioForModel(option.id, current, nextResolution));
+                              setSelectedDurations((current) => {
+                                const durationOptionsForModel = getVideoDurationOptions(option.id);
+                                return { ...current, general: durationOptionsForModel.includes(current.general) ? current.general : durationOptionsForModel[0] };
+                              });
+                            }
+                            setGeneralCustomSubMenu("");
+                          }}
+                          className={option.id === selectedModelId ? "flex h-10 w-full items-center justify-between rounded-[8px] bg-[#f5f5f5] px-2.5 text-left text-[13px] font-medium text-[#111111]" : "flex h-10 w-full items-center justify-between rounded-[8px] px-2.5 text-left text-[13px] text-[#555555] hover:bg-[#f7f7f7]"}
+                        >
+                          <span className="flex min-w-0 items-center gap-2">
+                            {ModelIcon ? <ModelIcon className="h-4 w-4 shrink-0 text-[#555555]" aria-hidden="true" /> : <AiGenerate3dIcon />}
+                            <span className="min-w-0 truncate">{option.label}</span>
+                          </span>
+                          {option.id === selectedModelId ? <RiCheckLine className="h-4 w-4 shrink-0" aria-hidden="true" /> : null}
+                        </button>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+                </div>
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setGeneralCustomSubMenu((current) => current === "resolution" ? "" : "resolution")}
+                    className="flex h-10 w-full items-center justify-between rounded-[12px] bg-[#f5f5f5] px-3 text-[13px] text-[#333333]"
+                  >
+                    <span className="min-w-0 truncate">{resolutionButtonLabel}</span>
+                    <RiArrowDownSLine className="h-3.5 w-3.5 shrink-0 text-[#8a8a8a]" aria-hidden="true" />
+                  </button>
+                  {generalCustomSubMenu === "resolution" ? (
+                    <div className="absolute bottom-full left-0 z-[80] mb-1 w-full rounded-[12px] bg-white p-1.5 shadow-[0_12px_28px_rgba(0,0,0,0.12)]">
+                      {resolutionOptionsForKind.map((option) => (
+                        <button
+                          key={option}
+                          type="button"
+                          onClick={() => {
+                            if (kind === "image") setGeneralImageResolution(normalizeImageResolutionForModel(selectedModelId, option));
+                            else {
+                              const nextResolution = normalizeVideoResolutionForModel(selectedModelId, option);
+                              setGeneralVideoResolution(nextResolution);
+                              setGeneralVideoRatio((current) => current === "智能比例" ? "智能比例" : normalizeVideoRatioForModel(selectedModelId, current, nextResolution));
+                            }
+                            setGeneralCustomSubMenu("");
+                          }}
+                          className={option === displayResolution ? "flex h-10 w-full items-center justify-between rounded-[8px] bg-[#f5f5f5] px-2.5 text-left text-[13px] font-medium text-[#111111]" : "flex h-10 w-full items-center justify-between rounded-[8px] px-2.5 text-left text-[13px] text-[#555555] hover:bg-[#f7f7f7]"}
+                        >
+                          <span>{kind === "image" ? getImageResolutionLabel(option) : getVideoResolutionLabel(option)}</span>
+                          {option === displayResolution ? <RiCheckLine className="h-4 w-4 shrink-0" aria-hidden="true" /> : null}
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            </div>
           </div>
         ) : null}
       </div>
@@ -4290,7 +4671,14 @@ export function ChatWorkbench() {
     const isSmartImageRatio = mode === "image" && selectedRatio === "智能比例";
     const isSmartSettings = isSmartImageRatio || (mode === "video" && selectedRatio === "智能比例");
     const displayResolution = isSmartImageRatio ? normalizeImageResolutionForModel(selectedGenerationModels.image, "智能比例") : selectedResolution;
-    const currentRatioOptions = mode === "video" ? ["智能比例", ...getSupportedVideoRatios(selectedGenerationModels.video, displayResolution)] : ratioOptions;
+    // ⭐ 图片模式的比例必须**按模型**给（Recraft 只支持 5 个、无 21:9）。
+    // ⛔ 别退回全局 ratioOptions —— 那样用户能选 21:9，而上游不支持会被我们映射成 auto，
+    //    出图比例和他选的不一样，界面上完全看不出来。general/agent 模式的模型是自动挑的，仍用全局列表。
+    const currentRatioOptions = mode === "video"
+      ? ["智能比例", ...getSupportedVideoRatios(selectedGenerationModels.video, displayResolution)]
+      : mode === "image"
+        ? ["智能比例", ...getSupportedImageRatios(selectedGenerationModels.image)]
+        : ratioOptions;
     const displayRatio = mode === "video" ? (selectedRatio === "智能比例" ? "智能比例" : normalizeVideoRatioForModel(selectedGenerationModels.video, selectedRatio, displayResolution)) : selectedRatio;
     const displayDimensions = getDisplayDimensions(displayRatio, displayResolution, mode, mode === "image" ? selectedGenerationModels.image : mode === "video" ? selectedGenerationModels.video : undefined);
     const isNonStandardVideoDimensions = mode === "video" && displayRatio !== "智能比例" && isNonStandardVideoSize(selectedGenerationModels.video, displayResolution, displayRatio);
@@ -4414,7 +4802,8 @@ export function ChatWorkbench() {
     // 新建对话时套用用户在「设置」里配置的默认生成参数（图片/视频两组），省去每次手调。
     // 值可能因模型能力变化而不完全匹配，交给已有的归一化 effect 自动纠正。
     setSelectedGenerationModels((current) => ({ ...current, image: defaultImageModel, video: defaultVideoModel }));
-    setSelectedRatios((current) => ({ ...current, image: defaultImageRatio, video: defaultVideoRatio }));
+    // ⭐ 比例要按"默认模型支不支持"归一化（例如老账号存着 21:9、默认模型换成 Recraft 就不支持了）。
+    setSelectedRatios((current) => ({ ...current, image: normalizeImageRatioForModel(defaultImageModel, defaultImageRatio), video: defaultVideoRatio }));
     setSelectedResolutions((current) => ({ ...current, image: defaultImageResolution, video: defaultVideoResolution }));
     setSelectedDurations((current) => ({ ...current, video: defaultVideoDuration }));
 
@@ -4680,7 +5069,7 @@ export function ChatWorkbench() {
 
   const appendAssistantMessage = useCallback((sessionId: string, payload: Partial<Message> & Pick<Message, "content">) => {
     const messageId = createClientId();
-    const shouldTypeMessage = Boolean(payload.content.trim()) && payload.mode !== "image" && payload.mode !== "video" && !payload.error;
+    const shouldTypeMessage = Boolean(payload.content.trim()) && payload.mode !== "image" && payload.mode !== "video" && payload.mode !== "audio" && !payload.error;
     if (shouldTypeMessage) {
       setActiveTypingMessageIds((current) => {
         const next = new Set(current);
@@ -4723,6 +5112,10 @@ export function ChatWorkbench() {
                     failedImageCount: payload.failedImageCount,
                     pendingVideoCount: payload.pendingVideoCount,
                     failedVideoCount: payload.failedVideoCount,
+                    pendingAudioCount: payload.pendingAudioCount,
+                    audios: payload.audios,
+                    audioNames: payload.audioNames,
+                    audioPrompts: payload.audioPrompts,
                     error: payload.error,
                     mode: payload.mode,
                     generationMeta: payload.generationMeta,
@@ -5107,14 +5500,15 @@ export function ChatWorkbench() {
     if (urls.length === 0) return;
 
     const namingText = [sourcePrompt, contextText].filter(Boolean).join("\n");
-    const type = getAssetTypeFromText(namingText || sourcePrompt, mode, assetTargetType);
+    const type = mode === "audio" ? "other" : getAssetTypeFromText(namingText || sourcePrompt, mode, assetTargetType);
+    const mediaType = mode === "audio" ? "audio" as const : undefined;
     const simulatedAssets = [...assets];
     const itemsToPersist: Array<{ url: string; name: string; posterUrl?: string }> = [];
     urls.forEach((url) => {
       if (!url || simulatedAssets.some((asset) => asset.url === url)) return;
       const systemName = mediaSystemNames[url] || getConversationAssetName(mode, simulatedAssets);
       if (!isRemoteMediaUrl(url)) itemsToPersist.push({ url, name: systemName, posterUrl: mediaPosterUrls[url] });
-      simulatedAssets.unshift({ id: url, type, name: systemName, systemName, url, posterUrl: mediaPosterUrls[url], librarySource: "conversation", sourcePrompt: namingText || sourcePrompt, promptSource: "generated", sessionId, messageId, createdAt: Date.now() });
+      simulatedAssets.unshift({ id: url, type, mediaType, name: systemName, systemName, url, posterUrl: mediaPosterUrls[url], librarySource: "conversation", sourcePrompt: namingText || sourcePrompt, promptSource: "generated", sessionId, messageId, createdAt: Date.now() });
     });
     const addedAssetCount = simulatedAssets.length - assets.length;
 
@@ -5130,6 +5524,7 @@ export function ChatWorkbench() {
           {
             id: createClientId(),
             type,
+            mediaType,
             name,
             systemName,
             url,
@@ -5147,7 +5542,9 @@ export function ChatWorkbench() {
 
       return nextAssets;
     });
-    const generatedFilter: AssetFilter = type === "character_image" || type === "scene_image" || type === "prop_image" || type === "shot_image"
+    const generatedFilter: AssetFilter = mode === "audio"
+      ? "conversation_audios"
+      : type === "character_image" || type === "scene_image" || type === "prop_image" || type === "shot_image"
       ? type
       : mode === "video" ? "conversation_videos" : "conversation_images";
     if (addedAssetCount > 0) adjustAssetCounts([{ filter: generatedFilter, delta: addedAssetCount }]);
@@ -5160,8 +5557,8 @@ export function ChatWorkbench() {
           body: JSON.stringify({
             url: item.url,
             name: item.name,
-            currentCategory: mode === "video" ? "conversation_videos" : "conversation_images",
-            mediaType: mode === "video" ? "video" : "image",
+            currentCategory: mode === "audio" ? "conversation_audios" : mode === "video" ? "conversation_videos" : "conversation_images",
+            mediaType: mode === "audio" ? "audio" : mode === "video" ? "video" : "image",
             posterUrl: item.posterUrl,
             sourcePrompt: promptDetail?.prompt || namingText || sourcePrompt,
             sourceDetail: getPromptSourceDetail(promptDetail),
@@ -5385,16 +5782,19 @@ export function ChatWorkbench() {
     const conversationCode = currentSession?.conversationCode || "d0";
     let nextImageNumber = Math.max(1, Math.floor(currentSession?.nextImageNumber ?? 1));
     let nextVideoNumber = Math.max(1, Math.floor(currentSession?.nextVideoNumber ?? 1));
+    let nextAudioNumber = Math.max(1, Math.floor(currentSession?.nextAudioNumber ?? 1));
     const existingNames = new Map<string, string>();
     const usedSystemNames = new Set<string>();
     currentSession?.messages.forEach((message) => {
-      Object.entries(message.mediaSystemNames ?? {}).forEach(([url, systemName]) => {
+      Object.entries({ ...(message.mediaSystemNames ?? {}), ...(message.audioNames ?? {}) }).forEach(([url, systemName]) => {
         if (!systemName) return;
         usedSystemNames.add(systemName);
         const imageNumber = Number(systemName.match(/^image_(\d+)_d\d+$/)?.[1]);
         const videoNumber = Number(systemName.match(/^video_(\d+)_d\d+$/)?.[1]);
+        const audioNumber = Number(systemName.match(/^audio_(\d+)_d\d+$/)?.[1]);
         if (Number.isFinite(imageNumber)) nextImageNumber = Math.max(nextImageNumber, imageNumber + 1);
         if (Number.isFinite(videoNumber)) nextVideoNumber = Math.max(nextVideoNumber, videoNumber + 1);
+        if (Number.isFinite(audioNumber)) nextAudioNumber = Math.max(nextAudioNumber, audioNumber + 1);
         if (url) existingNames.set(normalizeMediaUrlForMatch(url), systemName);
       });
     });
@@ -5407,7 +5807,12 @@ export function ChatWorkbench() {
         return;
       }
 
-      if (mode === "video") {
+      if (mode === "audio") {
+        while (usedSystemNames.has(buildConversationMediaSystemName("audio", nextAudioNumber, conversationCode))) nextAudioNumber += 1;
+        result[url] = buildConversationMediaSystemName("audio", nextAudioNumber, conversationCode);
+        usedSystemNames.add(result[url]);
+        nextAudioNumber += 1;
+      } else if (mode === "video") {
         while (usedSystemNames.has(buildConversationMediaSystemName("video", nextVideoNumber, conversationCode))) nextVideoNumber += 1;
         result[url] = buildConversationMediaSystemName("video", nextVideoNumber, conversationCode);
         usedSystemNames.add(result[url]);
@@ -5420,8 +5825,8 @@ export function ChatWorkbench() {
       }
     });
 
-    sessionsRef.current = sessionsRef.current.map((session) => session.id === sessionId ? { ...session, nextImageNumber, nextVideoNumber } : session);
-    setSessions((current) => current.map((session) => session.id === sessionId ? { ...session, nextImageNumber: Math.max(nextImageNumber, session.nextImageNumber ?? 1), nextVideoNumber: Math.max(nextVideoNumber, session.nextVideoNumber ?? 1) } : session));
+    sessionsRef.current = sessionsRef.current.map((session) => session.id === sessionId ? { ...session, nextImageNumber, nextVideoNumber, nextAudioNumber } : session);
+    setSessions((current) => current.map((session) => session.id === sessionId ? { ...session, nextImageNumber: Math.max(nextImageNumber, session.nextImageNumber ?? 1), nextVideoNumber: Math.max(nextVideoNumber, session.nextVideoNumber ?? 1), nextAudioNumber: Math.max(nextAudioNumber, session.nextAudioNumber ?? 1) } : session));
 
     return result;
   }, []);
@@ -5609,22 +6014,42 @@ export function ChatWorkbench() {
       if (pendingRequest.needsIntentResolution) {
         const sourceText = pendingRequest.sourceText ?? pendingRequest.messages[pendingRequest.messages.length - 1]?.content ?? "";
         const conversationTitle = sessions.find((session) => session.id === sessionId)?.title;
-        const [plan] = await Promise.all([
-          fetch("/api/agent-plan", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            signal: abortController.signal,
-            body: JSON.stringify({
-              model: pendingRequest.model,
-              mode: pendingRequest.mode === "general" ? "general" : "agent",
-              messages: pendingRequest.messages,
-              conversationId: sessionId,
-              conversationTitle,
-              requestId: pendingRequest.id,
-            }),
-          }).then((response) => readJson<AgentPlanResponse>(response)),
-          new Promise((resolve) => window.setTimeout(resolve, MIN_AGENT_THINKING_MS)),
-        ]);
+        const agentChatModels = pendingRequest.mode === "agent"
+          ? (pendingRequest.agentChatModelChain?.length ? pendingRequest.agentChatModelChain : [pendingRequest.model])
+          : [pendingRequest.model];
+        const shouldRetryAgentChat = (error: unknown) => {
+          if (error instanceof DOMException && error.name === "AbortError") return false;
+          const message = error instanceof Error ? error.message : String(error);
+          return !message.includes("不符合平台规则");
+        };
+        let plan: AgentPlanResponse | undefined;
+        let lastPlanError: unknown;
+        const planStartedAt = Date.now();
+        for (const chatModel of agentChatModels) {
+          try {
+            plan = await fetch("/api/agent-plan", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              signal: abortController.signal,
+              body: JSON.stringify({
+                model: chatModel,
+                mode: pendingRequest.mode === "general" ? "general" : "agent",
+                messages: pendingRequest.messages,
+                conversationId: sessionId,
+                conversationTitle,
+                requestId: pendingRequest.id,
+              }),
+            }).then((response) => readJson<AgentPlanResponse>(response));
+            pendingRequest = { ...pendingRequest, model: chatModel as ModelName };
+            break;
+          } catch (error) {
+            lastPlanError = error;
+            if (!shouldRetryAgentChat(error)) throw error;
+          }
+        }
+        if (!plan) throw lastPlanError instanceof Error ? lastPlanError : new Error("连接不到模型，请联系管理员！");
+        const remainThinkingMs = MIN_AGENT_THINKING_MS - (Date.now() - planStartedAt);
+        if (remainThinkingMs > 0) await new Promise((resolve) => window.setTimeout(resolve, remainThinkingMs));
         addSessionUsage(sessionId, plan.usage);
         applyCreditResult(sessionId, plan.credit);
 
@@ -5640,41 +6065,47 @@ export function ChatWorkbench() {
         }
 
         const generationMode: WorkMode = plan.intent === "image" || plan.intent === "video" ? plan.intent : pendingRequest.mode === "general" ? "general" : "agent";
-        let availableMediaModels = pendingRequest.mode === "general" ? enabledGenerationModelIds : enabledAgentGenerationModelIds;
-        // Agent 首选不可用时的兜底池 = 「图片生成 / 视频生成」已开启模型。
-        let agentFallbackModels = enabledGenerationModelIds;
+        let availableMediaModels = enabledGenerationModelIds;
         if (generationMode === "image" || generationMode === "video") {
           try {
             const response = await fetch("/api/model-availability", { cache: "no-store" });
-            const data = (await response.json()) as { imageModels?: string[]; videoModels?: string[]; agentImageModels?: string[]; agentVideoModels?: string[] };
+            const data = (await response.json()) as { imageModels?: string[]; videoModels?: string[]; audioModels?: string[]; agentImageModels?: string[]; agentVideoModels?: string[] };
             const conversationModels = {
               image: Array.isArray(data.imageModels) ? data.imageModels : [],
               video: Array.isArray(data.videoModels) ? data.videoModels : [],
+              audio: Array.isArray(data.audioModels) ? data.audioModels : audioGenerationModels.map((model) => model.id),
             };
-            const agentModels = {
-              image: Array.isArray(data.agentImageModels) ? data.agentImageModels : [],
-              video: Array.isArray(data.agentVideoModels) ? data.agentVideoModels : [],
-            };
-            availableMediaModels = pendingRequest.mode === "general" ? conversationModels : agentModels;
-            agentFallbackModels = conversationModels;
+            availableMediaModels = conversationModels;
             setEnabledGenerationModelIds(conversationModels);
-            if (pendingRequest.mode !== "general") setEnabledAgentGenerationModelIds(agentModels);
           } catch {}
 
-          const availablePoolCount = pendingRequest.mode === "general"
-            ? availableMediaModels[generationMode].length
-            : availableMediaModels[generationMode].length + agentFallbackModels[generationMode].length;
-          if (availablePoolCount === 0) {
+          if (availableMediaModels[generationMode].length === 0) {
             appendSystemMessage(sessionId, { content: "连接不到模型，请联系管理员！", error: "连接不到模型，请联系管理员！", mode: generationMode });
             return;
           }
         }
-        const generationModel = pendingRequest.mode === "general" && generationMode === "general"
+        const generationModel = (generationMode === "image" || generationMode === "video") && (pendingRequest.mode === "general" || pendingRequest.mode === "agent")
+          ? pendingRequest.generalPreferenceAuto === false && availableMediaModels[generationMode].includes(pendingRequest.selectedMediaModels?.[generationMode] ?? "")
+            ? pendingRequest.selectedMediaModels?.[generationMode] as ModelName
+            : (availableMediaModels[generationMode][0] as ModelName)
+          : pendingRequest.mode === "general" || pendingRequest.mode === "agent"
           ? pendingRequest.model
-          : pendingRequest.mode === "general" && (generationMode === "image" || generationMode === "video")
-          ? (availableMediaModels[generationMode].includes(pendingRequest.selectedMediaModels?.[generationMode] ?? "") ? pendingRequest.selectedMediaModels?.[generationMode] : availableMediaModels[generationMode][0]) as ModelName
-          : getAgentGenerationModel(agentModelTier, generationMode, selectedGenerationModels, { sourceText, session: sessions.find((session) => session.id === sessionId), feedbackLogs, enabledModels: availableMediaModels, fallbackModels: agentFallbackModels });
-        const agentSettings = getAgentGenerationSettingsFromPlan(plan, sourceText, generationMode, generationModel);
+          : getAgentGenerationModel(agentModelTier, generationMode, selectedGenerationModels, { sourceText, session: sessions.find((session) => session.id === sessionId), feedbackLogs, enabledModels: availableMediaModels, fallbackModels: enabledGenerationModelIds });
+        const plannedSettings = getAgentGenerationSettingsFromPlan(plan, sourceText, generationMode, generationModel);
+        const agentSettings = (pendingRequest.mode === "general" || pendingRequest.mode === "agent") && pendingRequest.generalPreferenceAuto === false && pendingRequest.generalMediaSettings && (generationMode === "image" || generationMode === "video")
+          ? generationMode === "image"
+            ? {
+                ...plannedSettings,
+                ratio: normalizeImageRatioForModel(generationModel, pendingRequest.generalMediaSettings.imageRatio),
+                resolution: normalizeImageResolutionForModel(generationModel, pendingRequest.generalMediaSettings.imageResolution),
+              }
+            : {
+                ...plannedSettings,
+                ratio: pendingRequest.generalMediaSettings.videoRatio === "智能比例" ? "智能比例" : normalizeVideoRatioForModel(generationModel, pendingRequest.generalMediaSettings.videoRatio, pendingRequest.generalMediaSettings.videoResolution),
+                resolution: pendingRequest.generalMediaSettings.videoRatio === "智能比例" ? "720p" : normalizeVideoResolutionForModel(generationModel, pendingRequest.generalMediaSettings.videoResolution),
+                duration: pendingRequest.generalMediaSettings.videoDuration && getVideoDurationOptions(generationModel).includes(pendingRequest.generalMediaSettings.videoDuration) ? pendingRequest.generalMediaSettings.videoDuration : plannedSettings?.duration,
+              }
+          : plannedSettings;
         const agentPromptDetail = generationMode === "image" || generationMode === "video" ? getAgentPromptDetailFromPlan(plan, sourceText, generationMode) : undefined;
         const agentPrompt = joinPromptDetail(agentPromptDetail);
         const videoReferenceMode = generationMode === "video" && supportsVideoReferenceMode(generationModel) ? pendingRequest.videoReferenceMode ?? "reference" : undefined;
@@ -5757,6 +6188,89 @@ export function ChatWorkbench() {
 
       if (!prompt) {
         const conversationTitle = sessions.find((session) => session.id === sessionId)?.title;
+        if (pendingRequest.mode === "agent" || pendingRequest.mode === "general") {
+          appendAssistantMessage(sessionId, { content: "", mode: pendingRequest.mode, requestId: pendingRequest.id, textModel: pendingRequest.mode === "general" ? pendingRequest.model : undefined });
+          let assembled = "";
+          let flushTimer = 0;
+          const flushStream = () => {
+            flushTimer = 0;
+            updateAssistantMessageByRequestId(sessionId, pendingRequest.id, { content: assembled });
+          };
+          const queueDelta = (text: string) => {
+            assembled += text;
+            setStreamingRequestIds((current) => (current.has(pendingRequest.id) ? current : new Set(current).add(pendingRequest.id)));
+            if (flushTimer) return;
+            flushTimer = window.setTimeout(flushStream, 40);
+          };
+          try {
+            const chatModels = pendingRequest.mode === "agent"
+              ? (pendingRequest.agentChatModelChain?.length ? pendingRequest.agentChatModelChain : [pendingRequest.promptModel ?? pendingRequest.model])
+              : [pendingRequest.promptModel ?? pendingRequest.model];
+            let lastChatError: unknown;
+            for (const chatModel of chatModels) {
+              assembled = "";
+              try {
+                const response = await fetch("/api/chat", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  signal: abortController.signal,
+                  body: JSON.stringify({
+                    model: chatModel,
+                    mode: pendingRequest.mode,
+                    messages: pendingRequest.referenceHint ? [...pendingRequest.messages, { role: "user", content: pendingRequest.referenceHint }] : pendingRequest.messages,
+                    settings: pendingRequest.settings,
+                    originalPrompt: pendingRequest.originalPrompt,
+                    conversationId: sessionId,
+                    conversationTitle,
+                    requestId: pendingRequest.id,
+                    stream: true,
+                  }),
+                });
+                if (await handleSessionExpiredResponse(response)) throw new DOMException("aborted", "AbortError");
+                const data = await readChatStream(response, queueDelta);
+                if (flushTimer) window.clearTimeout(flushTimer);
+                const streamedText = assembled.trim();
+                const doneText = data.content?.trim() ?? "";
+                assembled = /^\s*\{/.test(doneText) && /"content"\s*:/.test(doneText) ? streamedText || "暂时没有生成出可用内容，请换一种说法再试。" : doneText || streamedText || "暂时没有生成出可用内容，请换一种说法再试。";
+                addSessionUsage(sessionId, data.usage);
+                applyCreditResult(sessionId, data.credit);
+                updateAssistantMessageByRequestId(sessionId, pendingRequest.id, { content: assembled, suggestions: data.suggestions, textModel: pendingRequest.mode === "agent" ? chatModel : pendingRequest.mode === "general" ? pendingRequest.model : undefined });
+                prompt = assembled;
+                updatePendingRequest(sessionId, pendingRequest.id, { prompt, model: chatModel as ModelName });
+                if (pendingRequest.mode === "agent") setLastAgentChatModel(chatModel);
+                lastChatError = undefined;
+                break;
+              } catch (error) {
+                if (flushTimer) window.clearTimeout(flushTimer);
+                if (stoppedRequestIdsRef.current.has(pendingRequest.id) || (error instanceof DOMException && error.name === "AbortError")) throw error;
+                const message = error instanceof Error ? error.message : String(error);
+                if (assembled.trim() || message.includes("不符合平台规则")) {
+                  updateAssistantMessageByRequestId(sessionId, pendingRequest.id, { content: assembled.trim() || toUserErrorMessage(error), error: toUserErrorMessage(error) });
+                  return;
+                }
+                lastChatError = error;
+              }
+            }
+            if (!prompt) {
+              const message = toUserErrorMessage(lastChatError);
+              updateAssistantMessageByRequestId(sessionId, pendingRequest.id, { content: message, error: message });
+              return;
+            }
+          } catch (error) {
+            if (flushTimer) window.clearTimeout(flushTimer);
+            if (stoppedRequestIdsRef.current.has(pendingRequest.id) || (error instanceof DOMException && error.name === "AbortError")) throw error;
+            const message = toUserErrorMessage(error);
+            updateAssistantMessageByRequestId(sessionId, pendingRequest.id, { content: assembled.trim() || message, error: message });
+            return;
+          } finally {
+            setStreamingRequestIds((current) => {
+              if (!current.has(pendingRequest.id)) return current;
+              const next = new Set(current);
+              next.delete(pendingRequest.id);
+              return next;
+            });
+          }
+        } else {
         let promptMessages = pendingRequest.mode === "image" || pendingRequest.mode === "video" ? await toPromptPreviewPayloadMessages(pendingRequest.messages) : pendingRequest.messages;
         const response = await fetch("/api/chat", {
           method: "POST",
@@ -5779,7 +6293,7 @@ export function ChatWorkbench() {
           data = await readJson<ChatApiResponse>(response);
         } catch (error) {
           const message = error instanceof Error ? error.message : "";
-          if (!isRequestTooLargeError(message) || (pendingRequest.mode !== "agent" && pendingRequest.mode !== "image" && pendingRequest.mode !== "video")) throw error;
+          if (!isRequestTooLargeError(message) || (pendingRequest.mode !== "image" && pendingRequest.mode !== "video")) throw error;
 
           promptMessages = toPromptPayloadMessages(pendingRequest.messages);
           const retryResponse = await fetch("/api/chat", {
@@ -5817,9 +6331,6 @@ export function ChatWorkbench() {
             },
           });
         }
-
-        if (pendingRequest.mode === "agent" || pendingRequest.mode === "general") {
-          appendAssistantMessage(sessionId, { content: prompt, suggestions: data.suggestions, mode: pendingRequest.mode, requestId: pendingRequest.id, textModel: pendingRequest.mode === "general" ? pendingRequest.model : undefined });
         }
       }
 
@@ -6170,9 +6681,36 @@ export function ChatWorkbench() {
           },
         });
       }
+
+      if (pendingRequest.mode === "audio" && prompt) {
+        const conversationSession = sessions.find((session) => session.id === sessionId);
+        const conversationTitle = conversationSession?.title;
+        const audioRequestId = `${pendingRequest.id}:audio:0`;
+        const submit = await fetch("/api/audio", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: abortController.signal,
+          body: JSON.stringify({ prompt, sourcePrompt: prompt, model: pendingRequest.model, voice: pendingRequest.voice, emotion: pendingRequest.emotion, conversationId: sessionId, conversationTitle, conversationCode: conversationSession?.conversationCode, requestId: audioRequestId }),
+        }).then((response) => readJson<{ url?: string; name?: string; credit?: CreditMeta; error?: string; errorCode?: string }>(response));
+        if (!submit.url) throw new Error(getApiErrorMessageWithCode({ error: submit.error, errorCode: submit.errorCode }, GENERIC_MEDIA_ERROR_MESSAGE));
+        applyCreditResult(sessionId, submit.credit);
+        const mediaSystemNames = submit.name ? { [submit.url]: submit.name } : reserveMediaSystemNames(sessionId, "audio", [submit.url]);
+        updateAssistantMessageByRequestId(sessionId, pendingRequest.id, {
+          content: prompt,
+          audios: [submit.url],
+          audioNames: mediaSystemNames,
+          mediaSystemNames,
+          audioPrompts: { [submit.url]: prompt },
+          pendingAudioCount: 0,
+          statusText: undefined,
+          mode: pendingRequest.mode,
+        });
+        addGeneratedAssets(sessionId, "audio", prompt, [submit.url], undefined, undefined, "", mediaSystemNames);
+        notifyGenerationCompleteOnce(pendingRequest.id, "语音生成已完成");
+      }
     } catch (error) {
       if (stoppedRequestIdsRef.current.has(pendingRequest.id) || (error instanceof DOMException && error.name === "AbortError")) return;
-      const message = toUserErrorMessage(error, pendingRequest.mode === "image" || pendingRequest.mode === "video" ? GENERIC_MEDIA_ERROR_MESSAGE : undefined);
+      const message = toUserErrorMessage(error, pendingRequest.mode === "image" || pendingRequest.mode === "video" || pendingRequest.mode === "audio" ? GENERIC_MEDIA_ERROR_MESSAGE : undefined);
       if (pendingRequest.mode === "video") {
         updateAssistantMessageByRequestId(sessionId, pendingRequest.id, {
           content: pendingRequest.agentGenerated ? pendingRequest.agentDisplayText ?? pendingRequest.prompt ?? "" : pendingRequest.prompt ?? "",
@@ -6188,6 +6726,15 @@ export function ChatWorkbench() {
           error: message,
           mediaErrorReasons: [message],
           statusText: imageStatusLabels.failed,
+          mode: pendingRequest.mode,
+        });
+      } else if (pendingRequest.mode === "audio") {
+        updateAssistantMessageByRequestId(sessionId, pendingRequest.id, {
+          content: pendingRequest.prompt ?? "",
+          error: message,
+          mediaErrorReasons: [message],
+          statusText: "语音生成失败",
+          pendingAudioCount: 0,
           mode: pendingRequest.mode,
         });
       } else {
@@ -6304,17 +6851,18 @@ export function ChatWorkbench() {
       return;
     }
 
-    const availabilityMode = submitMode === "image" || submitMode === "video" ? submitMode : undefined;
+    const availabilityMode = submitMode === "image" || submitMode === "video" || submitMode === "audio" ? submitMode : undefined;
     if (availabilityMode) {
-      const modelForAvailability = submitMode === "general" ? generalModelsForSubmit[availabilityMode] : generationModelsForSubmit[availabilityMode];
+      const modelForAvailability = availabilityMode === "audio" ? generationModelsForSubmit.audio : submitMode === "general" ? generalModelsForSubmit[availabilityMode] : generationModelsForSubmit[availabilityMode];
       const isCurrentModelAvailable = enabledModelsForSubmit[availabilityMode].includes(modelForAvailability);
       if (enabledModelsForSubmit[availabilityMode].length === 0 || !isCurrentModelAvailable) {
         try {
           const response = await fetch("/api/model-availability", { cache: "no-store" });
-          const data = (await response.json()) as { imageModels?: string[]; assetImageModels?: string[]; videoModels?: string[]; agentImageModels?: string[]; agentVideoModels?: string[] };
+          const data = (await response.json()) as { imageModels?: string[]; assetImageModels?: string[]; videoModels?: string[]; audioModels?: string[]; agentImageModels?: string[]; agentVideoModels?: string[] };
           const refreshedModels = {
             image: Array.isArray(data.imageModels) ? data.imageModels : [],
             video: Array.isArray(data.videoModels) ? data.videoModels : [],
+            audio: Array.isArray(data.audioModels) ? data.audioModels : audioGenerationModels.map((model) => model.id),
           };
           const refreshedAgentModels = {
             image: Array.isArray(data.agentImageModels) ? data.agentImageModels : [],
@@ -6324,6 +6872,7 @@ export function ChatWorkbench() {
           const nextSelectedModels = {
             image: refreshedModels.image.includes(generationModelsForSubmit.image) ? generationModelsForSubmit.image : refreshedModels.image[0] as ModelName | undefined ?? generationModelsForSubmit.image,
             video: refreshedModels.video.includes(generationModelsForSubmit.video) ? generationModelsForSubmit.video : refreshedModels.video[0] as ModelName | undefined ?? generationModelsForSubmit.video,
+            audio: refreshedModels.audio.includes(generationModelsForSubmit.audio) ? generationModelsForSubmit.audio : refreshedModels.audio[0] as ModelName | undefined ?? generationModelsForSubmit.audio,
           };
           const nextGeneralModels = {
             chat: generalModelsForSubmit.chat,
@@ -6396,7 +6945,7 @@ export function ChatWorkbench() {
       .filter((reference, index, array) => Boolean(reference.url) && array.findIndex((item) => item.url === reference.url) === index)
       .slice(0, currentMaxReferenceImages);
     if (submitMode === "general" && namedImageReferences.length > 0 && !conversationModelSupportsImages(generalModelsForSubmit.chat)) {
-      showInputTip("当前对话模型不支持图片，请切换 Seed、Gemini、GPT-4o、GPT-5.4 或 GPT-5.5");
+      showInputTip("当前对话模型不支持图片，请切换 Seed、Gemini 或 GPT");
       setSessionSending(sessionId, false);
       return;
     }
@@ -6449,6 +6998,12 @@ export function ChatWorkbench() {
     const referencedAssets = getReferencedAssets(rawTextWithMediaMentions, assets);
     const displayImageReferences = (namedImageReferences.length > 0 ? namedImageReferences : referenceImages.map((url, index) => ({ name: `图片${index + 1}`, url }))).slice(0, currentMaxReferenceImages);
     const text = rawTextWithMediaMentions || getImageOnlyPrompt(submitMode);
+    // 语音生成：必须有文字（不能把空文本发去 TTS），且不吃"仅图片"那套占位提示。
+    if (submitMode === "audio" && !rawTextWithMediaMentions.trim()) {
+      showInputTip("请输入要转成语音的文字");
+      setSessionSending(sessionId, false);
+      return;
+    }
     const generationMode: WorkMode = submitMode;
     const directVideoReferenceMode = generationMode === "video" && supportsVideoReferenceMode(generationModelsForSubmit.video) ? selectedVideoReferenceMode : undefined;
     if (generationMode === "video") {
@@ -6510,7 +7065,7 @@ export function ChatWorkbench() {
     const messagesWithoutSuggestions = sessionForSend.messages.map((message) => (message.suggestions ? { ...message, suggestions: undefined } : message));
     const optimisticMessages = [...messagesWithoutSuggestions, payloadUserMessage];
     const visibleOptimisticMessages = [...messagesWithoutSuggestions, userMessage];
-    const isDirectGenerationMode = submitMode === "image" || submitMode === "video";
+    const isDirectGenerationMode = submitMode === "image" || submitMode === "video" || submitMode === "audio";
     const visibleMessages = isDirectGenerationMode ? activeSession.messages : visibleOptimisticMessages;
     addUploadedImagesToAssets(sessionId, sendUploadedImages, text);
 
@@ -6530,57 +7085,6 @@ export function ChatWorkbench() {
       ),
     );
 
-    if (submitMode !== "general" && isModelIdentityQuestion(text)) {
-      const textModel = selectedModel;
-      const selectedModelLabel = agentModelTier === "advanced" ? "GPT-5.4" : "Seed 2.0 Lite";
-      setSessions((current) =>
-        current.map((session) =>
-          session.id === sessionId
-            ? {
-                ...session,
-                title: session.title === "新对话" ? getSessionTitle(text) : session.title,
-                updatedAt: Date.now(),
-                messages: visibleMessages,
-                draftInput: "",
-              }
-            : session,
-        ),
-      );
-      setModelInfoSessionId(sessionId);
-
-      try {
-        const response = await fetch("/api/chat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            model: textModel,
-            mode: "agent",
-            messages: [{ role: "user", content: "请返回一次模型探测结果。" }],
-            conversationId: sessionId,
-            conversationTitle: activeSession.title,
-            requestId: createClientId(),
-          }),
-        });
-        const data = await readJson<{ model?: string; usage?: UsageMeta; credit?: CreditMeta }>(response);
-        addSessionUsage(sessionId, data.usage);
-        applyCreditResult(sessionId, data.credit);
-        appendAssistantMessage(sessionId, {
-          content: data.model
-            ? `前端入口：${selectedModelLabel}（${textModel}）。后台实际模型：${getActualTextModelLabel(data.model)}（${data.model}）。`
-            : `前端入口：${selectedModelLabel}（${textModel}）。本次没有返回后台实际模型。`,
-          suggestions: DEFAULT_AGENT_SUGGESTIONS,
-          mode: "agent",
-        });
-      } catch (error) {
-        const message = toUserErrorMessage(error, "模型信息查询失败。");
-        appendSystemMessage(sessionId, { content: message, error: message, mode: "agent" });
-      } finally {
-        setModelInfoSessionId((current) => (current === sessionId ? "" : current));
-        setSessionSending(sessionId, false);
-      }
-      return;
-    }
-
     const correctionMode = getCorrectionMode(text);
     const previousUserMessage = getLastUserMessage(activeSession.messages);
 
@@ -6597,6 +7101,12 @@ export function ChatWorkbench() {
         }
       }
 
+      const agentChatModelChain = getAgentAutoChatModelChain(enabledGeneralChatModelIds);
+      if (agentChatModelChain.length === 0) {
+        showInputTip("连接不到模型，请联系管理员！");
+        setSessionSending(sessionId, false);
+        return;
+      }
       const pendingRequest: PendingGeneration = {
         id: createClientId(),
         model: selectedModel,
@@ -6605,8 +7115,21 @@ export function ChatWorkbench() {
         referenceImages: referenceImages.length > 0 ? referenceImages : undefined,
         imageReferences: displayImageReferences.length > 0 ? displayImageReferences : undefined,
         referenceHint: getReferenceHint(namedImageReferences, text),
-        needsIntentResolution: true,
+        needsIntentResolution: shouldPlanAgentTask(text),
         sourceText: text,
+        agentChatModelChain,
+        selectedMediaModels: {
+          image: generalModelsForSubmit.image,
+          video: generalModelsForSubmit.video,
+        },
+        generalPreferenceAuto,
+        generalMediaSettings: {
+          imageRatio: generalImageRatio,
+          imageResolution: generalImageResolution,
+          videoRatio: generalVideoRatio,
+          videoResolution: generalVideoResolution,
+          videoDuration: selectedDurations.general,
+        },
       };
 
       setSessions((current) =>
@@ -6652,7 +7175,15 @@ export function ChatWorkbench() {
           image: generalModelsForSubmit.image,
           video: generalModelsForSubmit.video,
         },
-        needsIntentResolution: true,
+        generalPreferenceAuto,
+        generalMediaSettings: {
+          imageRatio: generalImageRatio,
+          imageResolution: generalImageResolution,
+          videoRatio: generalVideoRatio,
+          videoResolution: generalVideoResolution,
+          videoDuration: selectedDurations.general,
+        },
+        needsIntentResolution: shouldPlanAgentTask(text),
       };
       setSessions((current) =>
         current.map((session) =>
@@ -6687,7 +7218,7 @@ export function ChatWorkbench() {
 
     const isAgentAutoGeneration = false;
     const assetTargetType = normalizedSuggestion?.assetTargetType ?? getAssetTypeFromText(text, generationMode);
-    const generationModel = isAgentAutoGeneration ? getAgentGenerationModel(agentModelTier, generationMode, generationModelsForSubmit, { sourceText: text, session: activeSession, feedbackLogs, enabledModels: enabledModelsForSubmit }) : generationMode === "image" ? generationModelsForSubmit.image : generationModelsForSubmit.video;
+    const generationModel = isAgentAutoGeneration ? getAgentGenerationModel(agentModelTier, generationMode, generationModelsForSubmit, { sourceText: text, session: activeSession, feedbackLogs, enabledModels: enabledModelsForSubmit }) : generationMode === "image" ? generationModelsForSubmit.image : generationMode === "audio" ? generationModelsForSubmit.audio : generationModelsForSubmit.video;
     const shouldApplyVideoReferenceMode = generationMode === "video" && supportsVideoReferenceMode(generationModel);
     const effectiveReferenceImages = shouldApplyVideoReferenceMode ? getEffectiveVideoReferenceItems(referenceImages, generationModel, directVideoReferenceMode) : referenceImages;
     const effectiveModelReferenceImages = shouldApplyVideoReferenceMode ? getEffectiveVideoReferenceItems(modelReferenceImages, generationModel, directVideoReferenceMode) : modelReferenceImages;
@@ -6702,14 +7233,16 @@ export function ChatWorkbench() {
       model: generationModel,
       promptModel: isAgentAutoGeneration ? selectedModel : undefined,
       mode: generationMode,
-      prompt: generationMode === "image" || generationMode === "video" ? text : undefined,
-      originalPrompt: generationMode === "image" || generationMode === "video" ? text : undefined,
+      prompt: generationMode === "image" || generationMode === "video" || generationMode === "audio" ? text : undefined,
+      originalPrompt: generationMode === "image" || generationMode === "video" || generationMode === "audio" ? text : undefined,
       preserveOriginalInput: false,
       assetTargetType: assetTargetType === "other" ? undefined : assetTargetType,
       referenceImages: (shouldApplyVideoReferenceMode ? effectiveModelReferenceImages : effectiveReferenceImages).length > 0 ? (shouldApplyVideoReferenceMode ? effectiveModelReferenceImages : effectiveReferenceImages) : undefined,
       referenceVideos: generationMode === "video" && referenceVideos.length > 0 ? referenceVideos : undefined,
       referenceAudios: generationMode === "video" && referenceAudios.length > 0 ? referenceAudios : undefined,
       videoReferenceMode: directVideoReferenceMode,
+      voice: generationMode === "audio" ? normalizeAudioVoiceForModel(generationModel, selectedAudioVoice) : undefined,
+      emotion: generationMode === "audio" ? normalizeAudioEmotionForModel(generationModel, selectedAudioEmotion) : undefined,
       imageReferences: effectiveDisplayImageReferences.length > 0 ? effectiveDisplayImageReferences : undefined,
       referenceHint: getReferenceHint(effectiveDisplayImageReferences, text),
       agentGenerated: isAgentAutoGeneration,
@@ -6765,6 +7298,17 @@ export function ChatWorkbench() {
         imageReferences: pendingRequest.imageReferences,
         uploadedFiles: availableUploadedFiles.length > 0 ? availableUploadedFiles : undefined,
         generationMeta: { mode: "video", model: pendingRequest.model, settings: pendingRequest.settings, preserveOriginalInput: pendingRequest.preserveOriginalInput, assetTargetType: pendingRequest.assetTargetType, originalPrompt: pendingRequest.originalPrompt, agentGenerated: pendingRequest.agentGenerated, videoReferenceMode: pendingRequest.videoReferenceMode },
+      });
+    }
+
+    if (generationMode === "audio") {
+      appendAssistantMessage(sessionId, {
+        content: isDirectGenerationMode ? text : "",
+        statusText: "正在生成语音…",
+        pendingAudioCount: 1,
+        mode: generationMode,
+        requestId: pendingRequest.id,
+        generationMeta: { mode: "audio", model: pendingRequest.model, settings: pendingRequest.settings, preserveOriginalInput: pendingRequest.preserveOriginalInput, originalPrompt: pendingRequest.originalPrompt, agentGenerated: pendingRequest.agentGenerated, voice: pendingRequest.voice, emotion: isAudioEmotionSelectable(pendingRequest.model) ? normalizeAudioEmotionForModel(pendingRequest.model, pendingRequest.emotion) : undefined },
       });
     }
 
@@ -6967,7 +7511,7 @@ export function ChatWorkbench() {
     if (messageIndex < 0) return;
     const generationMode: WorkMode = replayMeta?.mode ?? (message.videoUrl ? "video" : message.images?.length || message.statusText || message.error ? "image" : message.mode === "agent" ? "agent" : mode);
     const previousUserMessage = [...activeSession.messages.slice(0, messageIndex)].reverse().find((item) => item.role === "user");
-    const replayPrompt = generationMode === "image" || generationMode === "video" ? (replayMeta?.originalPrompt ?? message.content).trim() : (previousUserMessage?.content ?? "").trim();
+    const replayPrompt = generationMode === "image" || generationMode === "video" || generationMode === "audio" ? (replayMeta?.originalPrompt ?? message.content).trim() : (previousUserMessage?.content ?? "").trim();
     if (!replayPrompt) return;
     if (generationMode === "agent" && !previousUserMessage) return;
 
@@ -6988,7 +7532,9 @@ export function ChatWorkbench() {
     const referenceImages = replayImageReferences?.map((reference) => reference.url).filter(Boolean) ?? previousUserMessage?.images?.filter(Boolean);
     const replayModel = generationMode === "image" || generationMode === "video"
       ? (replayMeta?.model ?? (generationMode === "image" ? selectedGenerationModels.image : selectedGenerationModels.video))
-      : agentModelTier === "advanced" ? ADVANCED_CHAT_MODEL : DEFAULT_CHAT_MODEL;
+      : generationMode === "audio"
+        ? (replayMeta?.model ?? selectedGenerationModels.audio)
+        : selectedModel;
     const replayResolution = generationMode === "image" ? normalizeImageResolutionForModel(replayModel, replaySettings?.resolution ?? selectedResolutions[generationMode]) : generationMode === "video" ? ((replaySettings?.ratio ?? selectedRatios.video) === "智能比例" ? "720p" : normalizeVideoResolutionForModel(replayModel, replaySettings?.resolution ?? selectedResolutions.video)) : replaySettings?.resolution ?? selectedResolutions[generationMode];
     const replayRatio = generationMode === "video" ? ((replaySettings?.ratio ?? selectedRatios.video) === "智能比例" ? "智能比例" : normalizeVideoRatioForModel(replayModel, replaySettings?.ratio ?? selectedRatios.video, replayResolution)) : replaySettings?.ratio ?? selectedRatios[generationMode];
     const replayVideoReferenceMode = generationMode === "video" && supportsVideoReferenceMode(replayModel) ? selectedVideoReferenceMode : undefined;
@@ -7011,15 +7557,17 @@ export function ChatWorkbench() {
     const pendingRequest: PendingGeneration = {
       id: createClientId(),
       model: replayModel,
-      promptModel: replayMeta?.agentGenerated ? (agentModelTier === "advanced" ? ADVANCED_CHAT_MODEL : DEFAULT_CHAT_MODEL) : undefined,
+      promptModel: replayMeta?.agentGenerated ? selectedModel : undefined,
       mode: generationMode,
-      prompt: generationMode === "image" || generationMode === "video" ? replayPrompt : undefined,
-      originalPrompt: generationMode === "image" || generationMode === "video" ? replayPrompt : undefined,
+      prompt: generationMode === "image" || generationMode === "video" || generationMode === "audio" ? replayPrompt : undefined,
+      originalPrompt: generationMode === "image" || generationMode === "video" || generationMode === "audio" ? replayPrompt : undefined,
       preserveOriginalInput: false,
       referenceImages: effectiveReplayReferenceImages && effectiveReplayReferenceImages.length > 0 ? effectiveReplayReferenceImages : undefined,
       referenceVideos: generationMode === "video" && replayReferenceVideos.length > 0 ? replayReferenceVideos : undefined,
       referenceAudios: generationMode === "video" && replayReferenceAudios.length > 0 ? replayReferenceAudios : undefined,
       videoReferenceMode: replayVideoReferenceMode,
+      voice: generationMode === "audio" ? normalizeAudioVoiceForModel(replayModel, selectedAudioVoice) : undefined,
+      emotion: generationMode === "audio" ? normalizeAudioEmotionForModel(replayModel, selectedAudioEmotion) : undefined,
       imageReferences: effectiveReplayImageReferences && effectiveReplayImageReferences.length > 0 ? effectiveReplayImageReferences : undefined,
       referenceHint: effectiveReplayImageReferences && effectiveReplayImageReferences.length > 0 ? getReferenceHint(effectiveReplayImageReferences, replayPrompt) : undefined,
       assetTargetType: replayMeta?.assetTargetType,
@@ -7064,6 +7612,16 @@ export function ChatWorkbench() {
         imageReferences: pendingRequest.imageReferences,
         uploadedFiles: replayUploadedFiles.length > 0 ? replayUploadedFiles : undefined,
         generationMeta: generationMode === "image" || generationMode === "video" ? { mode: generationMode, model: pendingRequest.model, settings: pendingRequest.settings, preserveOriginalInput: pendingRequest.preserveOriginalInput, assetTargetType: pendingRequest.assetTargetType, originalPrompt: pendingRequest.originalPrompt, agentGenerated: pendingRequest.agentGenerated, itemPrompts: pendingRequest.agentItemPrompts, itemPromptDetails: pendingRequest.agentItemPromptDetails, videoReferenceMode: pendingRequest.videoReferenceMode } : undefined,
+      });
+    }
+    if (generationMode === "audio") {
+      appendAssistantMessage(sessionId, {
+        content: replayPrompt,
+        statusText: "正在生成语音…",
+        pendingAudioCount: 1,
+        mode: "audio",
+        requestId: pendingRequest.id,
+        generationMeta: { mode: "audio", model: pendingRequest.model, settings: pendingRequest.settings, preserveOriginalInput: pendingRequest.preserveOriginalInput, originalPrompt: pendingRequest.originalPrompt, agentGenerated: pendingRequest.agentGenerated, voice: pendingRequest.voice, emotion: isAudioEmotionSelectable(pendingRequest.model) ? normalizeAudioEmotionForModel(pendingRequest.model, pendingRequest.emotion) : undefined },
       });
     }
     void runGeneration(sessionId, pendingRequest);
@@ -7629,6 +8187,19 @@ export function ChatWorkbench() {
     addActiveUploadedImages([toUploadedAssetReference({ name, url })], { draftBase: activeInput.slice(0, start), draftSuffix: activeInput.slice(end), insertReferenceText: true });
     focusEditorAt(start + name.length + 2);
   }, [activeInput, activeUploadedImages, addActiveUploadedImages, currentMaxReferenceImages, focusEditorAt, getCurrentDraftSelection, setActivePanel, showInputTip]);
+  const mentionAudioIntoInput = useCallback((url: string, name: string) => {
+    const already = activeUploadedFiles.some((file) => typeof file !== "string" && Boolean(file.url) && normalizeMediaUrlForMatch(file.url!) === normalizeMediaUrlForMatch(url));
+    const existingCount = activeUploadedFiles.filter((file) => getUploadedFileMediaKind(file) === "audio").length;
+    const maxAudio = currentUploadRule.audio.maxCount;
+    if (!already && maxAudio > 0 && existingCount >= maxAudio) {
+      showInputTip(`当前模型最多支持 ${maxAudio} 个参考音频`);
+      return;
+    }
+    setActivePanel("chat");
+    const { start, end } = getCurrentDraftSelection();
+    addActiveUploadedMediaReference({ id: url, type: "other", name, url, mediaType: "audio", sourcePrompt: "", sessionId: activeSessionId ?? "", createdAt: 0 }, "audio", {}, { draftBase: activeInput.slice(0, start), draftSuffix: activeInput.slice(end) });
+    focusEditorAt(start + name.length + 2);
+  }, [activeInput, activeSessionId, activeUploadedFiles, addActiveUploadedMediaReference, currentUploadRule.audio.maxCount, focusEditorAt, getCurrentDraftSelection, setActivePanel, showInputTip]);
   const focusCharacterEditorAt = useCallback((offset: number) => {
     requestAnimationFrame(() => {
       const editor = characterEditorRef.current;
@@ -7847,7 +8418,7 @@ export function ChatWorkbench() {
       setIsCharacterAtAssetMenuOpen(false);
       setOpenControlMenu("");
       const referencedAssets = getReferencedAssets(rawPrompt, assets);
-      const optimizeModels = Array.from(new Set(["openai/gpt-5.5", ADVANCED_CHAT_MODEL, "byteplus:chat.seed-2-0-pro", DEFAULT_CHAT_MODEL]));
+      const optimizeModels = [...PROMPT_TOOL_MODEL_CHAIN];
       let data: ChatApiResponse | undefined;
       let nextPrompt = "";
       let lastError: unknown;
@@ -8182,7 +8753,7 @@ export function ChatWorkbench() {
     try {
       closeInputMenus();
       const referencedAssets = getReferencedAssets(rawPrompt, assets);
-      const optimizeModels = Array.from(new Set(["openai/gpt-5.5", ADVANCED_CHAT_MODEL, "byteplus:chat.seed-2-0-pro", DEFAULT_CHAT_MODEL]));
+      const optimizeModels = [...PROMPT_TOOL_MODEL_CHAIN];
       let data: ChatApiResponse | undefined;
       let nextPrompt = "";
       let lastError: unknown;
@@ -8360,7 +8931,7 @@ export function ChatWorkbench() {
           </button>
           <button type="button" disabled={!WORKFLOW_MODE_ENABLED} onClick={enterWorkflowPanel} className={!WORKFLOW_MODE_ENABLED ? isSidebarCollapsed ? "relative flex h-10 w-10 cursor-not-allowed items-center justify-center rounded-lg font-medium text-[#b0b0b0]" : "flex h-10 w-full cursor-not-allowed items-center gap-2 rounded-lg px-3 text-left font-medium text-[#b0b0b0]" : isSidebarCollapsed ? activePanel === "workflow" ? "relative flex h-10 w-10 items-center justify-center rounded-lg bg-[#ececec] font-medium text-[#111111]" : "relative flex h-10 w-10 items-center justify-center rounded-lg font-medium text-[#555555] transition hover:bg-[#ececec]" : activePanel === "workflow" ? "flex h-10 w-full items-center gap-2 rounded-lg bg-[#ececec] px-3 text-left font-medium text-[#111111]" : "flex h-10 w-full items-center gap-2 rounded-lg px-3 text-left font-medium text-[#555555] transition hover:bg-[#ececec]"} title={WORKFLOW_MODE_ENABLED ? "工作流模式" : "工作流模式暂未开放"} aria-label={WORKFLOW_MODE_ENABLED ? "工作流模式" : "工作流模式暂未开放"}>
             {activePanel === "workflow" && WORKFLOW_MODE_ENABLED ? <RiGitMergeLine className="h-5 w-5 shrink-0 text-[#111111]" aria-hidden="true" /> : <RiGitPullRequestLine className={!WORKFLOW_MODE_ENABLED ? "h-5 w-5 shrink-0 text-[#b0b0b0]" : "h-5 w-5 shrink-0 text-[#555555]"} aria-hidden="true" />}
-            {!isSidebarCollapsed ? <span className="flex items-center gap-1.5 text-[13px] leading-[1.2]">工作流模式<NewBadge /></span> : null}
+            {!isSidebarCollapsed ? <span className="text-[13px] leading-[1.2]">工作流模式</span> : null}
             {WORKFLOW_MODE_ENABLED && activePanel !== "workflow" && hasAnyWorkflowGenerating ? <span className={isSidebarCollapsed ? "absolute ml-7 mt-7 flex w-4 shrink-0 justify-end" : "ml-auto flex w-7 shrink-0 justify-end"}><HaloPulseIndicator /></span> : null}
             {!isSidebarCollapsed && !WORKFLOW_MODE_ENABLED ? <span className="ml-auto rounded-full bg-white px-2 py-0.5 text-[11px] text-[#9a9a9a] ring-1 ring-[#e3e3e3]">未开放</span> : null}
           </button>
@@ -8447,8 +9018,9 @@ export function ChatWorkbench() {
                 <span className="inline-flex items-center gap-1.5"><span className="h-1.5 w-1.5 rounded-full bg-[#b7b7b7]" aria-hidden="true" />对话流资产</span>
               </div> : <div className="h-2" />}
               {[
-                { label: "生成图片", value: "conversation_images" as const, count: getAssetCount("conversation_images", assets.filter((asset) => isConversationAsset(asset) && !isVideoAsset(asset) && !isConversationUploadedAsset(asset)).length), icon: RiImageAiLine },
+                { label: "生成图片", value: "conversation_images" as const, count: getAssetCount("conversation_images", assets.filter((asset) => isConversationAsset(asset) && !isVideoAsset(asset) && !isAudioAsset(asset) && !isConversationUploadedAsset(asset)).length), icon: RiImageAiLine },
                 { label: "生成视频", value: "conversation_videos" as const, count: getAssetCount("conversation_videos", assets.filter((asset) => isConversationAsset(asset) && isVideoAsset(asset) && !isUploadedMediaAsset(asset)).length), icon: RiFilmAiLine },
+                { label: "语音生成", value: "conversation_audios" as const, count: getAssetCount("conversation_audios", assets.filter((asset) => isConversationAsset(asset) && isAudioAsset(asset) && !isUploadedMediaAsset(asset)).length), icon: RiMicAiLine },
               ].map((item) => {
                 const isActive = assetFilter === item.value;
                 const AssetIcon = item.icon;
@@ -9179,6 +9751,7 @@ export function ChatWorkbench() {
                   enabledVideoModelIds={enabledGenerationModelIds.video}
                   uploadRuleOverrides={uploadRuleOverrides}
                   promptLengthOverrides={promptLengthOverrides}
+                  creditRate={creditRate}
                   editModelToggles={editModelToggles}
                   getImageDisplayUrl={(url) => getMediaThumbnailUrl(url)}
                   getVideoPosterDisplayUrl={(url, posterUrl) => {
@@ -9356,7 +9929,7 @@ export function ChatWorkbench() {
                     type="button"
                     disabled={loadingOlderMessageSessionIds.has(activeSession.id)}
                     onClick={() => void loadOlderMessages(activeSession.id)}
-                    className="rounded-full border border-[#e5e5e5] bg-white px-4 py-2 text-[13px] font-medium text-[#8a8a8a] transition hover:border-[#d8d8d8] hover:bg-[#f7f7f7] hover:text-[#666666] disabled:cursor-not-allowed disabled:opacity-60"
+                    className="bg-transparent px-0 py-0 text-[12px] font-medium leading-none text-[#367cee] transition hover:text-[#1f63d4] disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     {loadingOlderMessageSessionIds.has(activeSession.id) ? "加载中..." : "加载更早消息"}
                   </button>
@@ -9396,7 +9969,8 @@ export function ChatWorkbench() {
 
                 const lastMessage = messages[messages.length - 1];
                 const activeSuggestionMessageId = lastMessage?.role === "assistant" && (lastMessage.mode === "agent" || isAgentGeneratedMedia(lastMessage)) ? lastMessage.id : "";
-                const isAssistantMessageComplete = message.role !== "assistant" || message.mode === "image" || message.mode === "video" || !activeTypingMessageIds.has(message.id) || completedTypingMessageIds.has(message.id);
+                const isStreamingReply = Boolean(message.requestId && streamingRequestIds.has(message.requestId));
+                const isAssistantMessageComplete = message.role !== "assistant" || message.mode === "image" || message.mode === "video" || message.mode === "audio" || !activeTypingMessageIds.has(message.id) || completedTypingMessageIds.has(message.id);
                 const messageType = getMessageType(message);
                 const reaction = messageReactions[message.id];
                 const issueFeedback = messageIssueFeedback[message.id];
@@ -9426,7 +10000,7 @@ export function ChatWorkbench() {
                 const mediaErrorReasonCount = normalizedMediaErrorReasons.length;
                 const preferredMediaErrorIndex = Math.max(0, normalizedMediaErrorReasons.findIndex((reason) => !isGenericMediaReason(reason)));
                 const selectedMediaErrorIndex = mediaErrorReasonCount > 0 ? Math.min(mediaErrorPageIndexes[message.id] ?? preferredMediaErrorIndex, mediaErrorReasonCount - 1) : 0;
-                const hasVisibleMediaFailure = (message.mode === "image" && imageFailedCount > 0) || (message.mode === "video" && videoFailedCount > 0);
+                const hasVisibleMediaFailure = (message.mode === "image" && imageFailedCount > 0) || (message.mode === "video" && videoFailedCount > 0) || (message.mode === "audio" && Boolean(message.error));
                 const mediaErrorText = !hasVisibleMediaFailure || allImageFailuresRetrying || allVideoFailuresRetrying ? undefined : normalizedMediaErrorReasons[selectedMediaErrorIndex] ?? normalizeMediaErrorText(message.error, message.mode) ?? (message.mode === "image" && imagePendingCount === 0 && imageFailedCount > 0 ? GENERIC_MEDIA_ERROR_MESSAGE : message.mode === "video" && videoPendingCount === 0 && videoFailedCount > 0 ? GENERIC_MEDIA_ERROR_MESSAGE : undefined);
                 const isActiveVideoPending = activeMessagePendingRequest?.mode === "video" && videoPendingCount > 0 && !message.error;
                 // A video is still pending based on the PERSISTED count, independent of whether the in-memory
@@ -9489,15 +10063,13 @@ export function ChatWorkbench() {
                         className={
                           message.role === "user"
                             ? "inline-block max-w-full rounded-xl bg-[#f4f4f4] px-5 py-3 text-sm leading-7 text-[#111111]"
-                            : message.mode === "image" || message.mode === "video"
-                              ? "px-0 py-1 text-sm leading-7 text-[#111111]"
-                              : "px-0 py-1 text-sm leading-7 text-[#111111]"
+                            : "px-0 py-1 text-sm leading-7 text-[#111111]"
                         }
                       >
                         {message.role === "assistant" ? (
                         message.mode === "agent" || message.mode === "general" || isAgentMediaMessage ? (
-                          isAgentMediaMessage ? <><InlineAssistantIcon message={message} activated={isAgentActivationMessage(message.content)} provider={message.textModel ? generalModelProviders[message.textModel] : undefined} /><ReferencedTextContent content={message.content} references={mediaPromptReferences} /></> : <TypewriterFormattedMessage messageId={message.id} content={message.content} isComplete={isAssistantMessageComplete} onComplete={markTypingComplete} onTick={keepTypingInPlace} leadingIcon={<InlineAssistantIcon message={message} activated={isAgentActivationMessage(message.content)} provider={message.textModel ? generalModelProviders[message.textModel] : undefined} />} />
-                        ) : message.mode === "image" || message.mode === "video" ? <MediaPromptBlock message={message} references={mediaPromptReferences} mediaReferences={mediaPromptFileReferences} onUsePrompt={(item) => void copyPrompt(item)} copyState={copyFeedback?.messageId === message.id ? copyFeedback.state : undefined} displayImageUrl={displayedMessageImages[0]} variantIndex={selectedImageVariantIndex} variantCount={imageVariantCount} onPreviousVariant={() => setImageVariantIndex(selectedImageVariantIndex - 1)} onNextVariant={() => setImageVariantIndex(selectedImageVariantIndex + 1)} /> : <TypewriterFormattedMessage messageId={message.id} content={message.content} isComplete={isAssistantMessageComplete} onComplete={markTypingComplete} onTick={keepTypingAtBottom} />
+                          isAgentMediaMessage ? <><InlineAssistantIcon message={message} activated={isAgentActivationMessage(message.content)} provider={message.textModel ? generalModelProviders[message.textModel] : undefined} /><ReferencedTextContent content={message.content} references={mediaPromptReferences} /></> : <><TypewriterFormattedMessage messageId={message.id} content={message.content} isComplete={isAssistantMessageComplete || isStreamingReply} onComplete={markTypingComplete} onTick={keepTypingInPlace} leadingIcon={<InlineAssistantIcon message={message} activated={isAgentActivationMessage(message.content)} provider={message.textModel ? generalModelProviders[message.textModel] : undefined} />} />{isStreamingReply ? <span className="ml-0.5 inline-block h-4 w-1 animate-pulse rounded-full bg-[#111111] align-[-2px]" /> : null}</>
+                        ) : message.mode === "image" || message.mode === "video" || message.mode === "audio" ? <MediaPromptBlock message={message} references={mediaPromptReferences} mediaReferences={mediaPromptFileReferences} onUsePrompt={(item) => void copyPrompt(item)} copyState={copyFeedback?.messageId === message.id ? copyFeedback.state : undefined} displayImageUrl={displayedMessageImages[0]} variantIndex={selectedImageVariantIndex} variantCount={imageVariantCount} onPreviousVariant={() => setImageVariantIndex(selectedImageVariantIndex - 1)} onNextVariant={() => setImageVariantIndex(selectedImageVariantIndex + 1)} /> : <TypewriterFormattedMessage messageId={message.id} content={message.content} isComplete={isAssistantMessageComplete} onComplete={markTypingComplete} onTick={keepTypingAtBottom} />
                         ) : (
                         <UserMessageContent content={message.content} references={userImageReferences} mediaReferences={userMediaReferences} />
                         )}
@@ -9601,7 +10173,27 @@ export function ChatWorkbench() {
                         </LazyMediaMount>
                       ) : null}
 
-                    {message.statusText && message.mode !== "video" && message.mode !== "image" && isAssistantMessageComplete ? (
+                      {message.role === "assistant" && message.mode === "audio" && isAssistantMessageComplete ? (
+                        <div className="mt-2">
+                          {(message.audios?.length ?? 0) > 0 ? (
+                            (message.audios ?? []).map((url, audioIndex) => {
+                              const audioName = getCanonicalMediaName(message, url, `生成语音${audioIndex + 1}`);
+                              return (
+                              <div key={`${url}-${audioIndex}`} className="group relative mb-2 overflow-hidden rounded-none border border-[#e6e8eb] bg-[#e6e6e6]" style={{ width: 880, maxWidth: "100%", height: 200 }}>
+                                <AudioWaveformPlayer url={url} variant="card" />
+                                <MediaCardHoverActions url={url} name={audioName} mediaType="audio" onMention={mentionAudioIntoInput} />
+                              </div>
+                              );
+                            })
+                          ) : (message.pendingAudioCount ?? 0) > 0 && !message.error ? (
+                            <MediaWaitingCard createdAt={message.createdAt} now={timerNow} isImage={false} kind="audio" />
+                          ) : message.error ? (
+                            <VideoFailedCard kind="audio" onRetry={() => regenerateMessage(message)} />
+                          ) : null}
+                        </div>
+                      ) : null}
+
+                    {message.statusText && message.mode !== "video" && message.mode !== "image" && message.mode !== "audio" && isAssistantMessageComplete ? (
                       isActiveMediaPending ? (
                         <div className={isActiveImagePending ? "mt-3 flex max-w-full flex-nowrap gap-0.5 overflow-x-auto pb-1" : "mt-3 grid max-w-full grid-cols-2 gap-0.5 pb-1"}>
                           {Array.from({ length: isActiveImagePending ? getImageCountValue(String(message.pendingImageCount ?? 1)) : Math.max(1, videoPendingCount) }).map((_, pendingIndex) => (
@@ -9647,7 +10239,7 @@ export function ChatWorkbench() {
                         <div>{mediaErrorText}</div>
                       </div>
                     ) : null}
-                    {message.role === "assistant" && isAssistantMessageComplete ? (
+                    {message.role === "assistant" && isAssistantMessageComplete && !isStreamingReply && !(activeMessagePendingRequest && (message.mode === "agent" || message.mode === "general")) ? (
                       <>
                         <div className={message.mode === "image" || message.mode === "video" ? "mt-2 flex flex-wrap items-center gap-1.5" : "mt-3 flex flex-wrap items-center gap-1.5"}>
                           {(message.mode === "agent" || message.mode === "general") && messageType === "text" ? (
@@ -9909,6 +10501,42 @@ export function ChatWorkbench() {
             <div className="relative">
               {!activeInput ? (
                 <div className="pointer-events-none absolute left-2 top-1 z-20 flex items-center text-[14px] leading-6 text-[#b3b3b3]">
+                  {mode === "audio" ? (
+                    <span>文本转语音，请输入要转成语音的文案...</span>
+                  ) : mode === "agent" ? (
+                    <>
+                  <span>说说短剧想法，或让我写剧本、做分镜；也可上传或</span>
+                    <button
+                      type="button"
+                      disabled={isMainInputDisabled}
+                      className="pointer-events-auto inline-flex items-center px-0.5 text-[#367cee] transition hover:text-[#367cee]"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        openMentionAssetMenu();
+                    }}
+                    >
+                      <RiAtLine className="h-4 w-4" aria-hidden="true" />
+                    </button>
+                  <span>资产一起创作...</span>
+                    </>
+                  ) : mode === "general" ? (
+                    <>
+                  <span>问问题、写方案、做任务，也可以出图出视频；可上传或</span>
+                    <button
+                      type="button"
+                      disabled={isMainInputDisabled}
+                      className="pointer-events-auto inline-flex items-center px-0.5 text-[#367cee] transition hover:text-[#367cee]"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        openMentionAssetMenu();
+                    }}
+                    >
+                      <RiAtLine className="h-4 w-4" aria-hidden="true" />
+                    </button>
+                  <span>资产...</span>
+                    </>
+                  ) : (
+                    <>
                   <span>输入文字，上传图片或</span>
                     <button
                       type="button"
@@ -9922,9 +10550,11 @@ export function ChatWorkbench() {
                       <RiAtLine className="h-4 w-4" aria-hidden="true" />
                     </button>
                   <span>资产，描述生成内容...</span>
+                    </>
+                  )}
                 </div>
               ) : null}
-              {isAtAssetMenuOpen ? (
+              {isAtAssetMenuOpen && mode !== "audio" ? (
                 <div onClick={(event) => event.stopPropagation()} className="absolute bottom-full left-2 z-50 mb-4">
                   <AssetMentionPicker
                     categories={MENTION_CATEGORIES}
@@ -9949,6 +10579,7 @@ export function ChatWorkbench() {
                 onPasteImages={(files) => void addFilesToInput(files)}
                 onSubmit={() => void sendMessage()}
                 onAtTrigger={() => {
+                  if (mode === "audio") return;
                   openMentionAssetMenu();
                 }}
                 onAtClose={() => setIsAtAssetMenuOpen(false)}
@@ -10042,7 +10673,7 @@ export function ChatWorkbench() {
                         >
                           <span className="flex items-center gap-3">
                             <IconRenderer icon={option.icon} />
-                            <span>{option.label}</span>
+                            <span className="flex items-center gap-1.5">{option.label}{option.value === "audio" ? <NewBadge /> : null}</span>
                           </span>
                           {option.value === mode ? <RiCheckLine className="h-[18px] w-[18px] text-[#111111]" aria-hidden="true" /> : null}
                         </button>
@@ -10051,6 +10682,7 @@ export function ChatWorkbench() {
                   ) : null}
                 </div>
 
+                {mode !== "audio" ? (
                 <button
                   type="button"
                   disabled={isMainInputDisabled}
@@ -10063,40 +10695,18 @@ export function ChatWorkbench() {
                 >
                   <RiAtLine className="h-4.5 w-4.5 text-[#777777]" aria-hidden="true" />
                 </button>
-
-                {mode === "agent" ? (
-                  <div className="yinzao-tool-button inline-flex h-9 shrink-0 items-center gap-0.5 rounded-[8px] p-0.5 text-[12px] text-[#777777]">
-                    <button
-                      type="button"
-                      disabled={isMainInputDisabled}
-                      onClick={() => switchAgentModelTier("normal")}
-                      className={agentModelTier === "normal" ? "h-8 rounded-[7px] bg-white px-3 text-[12px] font-medium text-[#111111] shadow-sm" : "h-8 rounded-[7px] px-3 text-[12px] font-medium text-[#777777] transition hover:text-[#333333]"}
-                    >
-                      普通
-                    </button>
-                    <button
-                      type="button"
-                      disabled={isMainInputDisabled}
-                      onClick={() => switchAgentModelTier("advanced")}
-                      className={agentModelTier === "advanced" ? "h-8 rounded-[7px] bg-white px-3 text-[12px] font-medium text-[#111111] shadow-sm" : "h-8 rounded-[7px] px-3 text-[12px] font-medium text-[#777777] transition hover:text-[#333333]"}
-                    >
-                      高级
-                    </button>
-                  </div>
                 ) : null}
 
-                {mode === "general" ? (
-                  <div className="grid min-w-0 flex-1 grid-cols-3 gap-2">
-                    {renderGeneralModelMenu("chat", "选择对话模型")}
-                    {renderGeneralModelMenu("image", "选择图片模型")}
-                    {renderGeneralModelMenu("video", "选择视频模型")}
-                  </div>
-                ) : null}
+                {mode === "agent" || mode === "general" ? renderGeneralCustomMenu() : null}
+
+                {mode === "general" ? renderGeneralModelMenu("chat", "选择对话模型") : null}
 
                 {mode !== "agent" && mode !== "general" ? (
                   <>
                     {renderModelMenu()}
-                    {!isVideoEditOrExtendMode ? renderImageSettingsMenu() : null}
+                    {mode === "audio" ? renderAudioVoiceMenu() : null}
+                    {mode === "audio" ? renderAudioEmotionMenu() : null}
+                    {!isVideoEditOrExtendMode && mode !== "audio" ? renderImageSettingsMenu() : null}
                     {mode === "image" ? renderControlMenu("imageCount", selectedImageCount, "同时生成数量", imageCountOptions, selectedImageCount, (value) => setSelectedImageCounts((current) => ({ ...current, [mode]: value })), RiImageAddLine) : null}
                     {mode === "video" && !isVideoEditOrExtendMode ? renderControlMenu("duration", selectedVideoDuration, "视频时长", currentDurationOptions, selectedVideoDuration, (value) => setSelectedDurations((current) => ({ ...current, video: value })), RiTimeLine) : null}
                     {mode === "video" ? renderVideoReferenceModeMenu() : null}
@@ -10199,12 +10809,14 @@ export function ChatWorkbench() {
                           <RiEmotionSadLine className="h-5 w-5 shrink-0" aria-hidden="true" />
                           <span>图片生成失败</span>
                         </div>
-                        <BlackHoverTooltip label={isAssetGeneratePromptOverLimit ? getPromptLimitTooltipText(assetGeneratePromptMaxLength) : ""} className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
+                        <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
+                        <BlackHoverTooltip label={isAssetGeneratePromptOverLimit ? getPromptLimitTooltipText(assetGeneratePromptMaxLength) : ""}>
                         <button type="button" disabled={isAssetGeneratePromptOverLimit} onClick={() => void generateCharacterImage()} className="inline-flex items-center gap-1 bg-transparent text-[10px] font-medium text-[#367cee] transition hover:text-[#2568d8] disabled:cursor-not-allowed disabled:text-[#b8b8b8]">
                           <RiResetLeftLine className="h-3.5 w-3.5" aria-hidden="true" />
                           <span className="text-[14px] leading-none">重新生成</span>
                         </button>
                         </BlackHoverTooltip>
+                        </div>
                         {characterGenerateResult.error ? <div className="absolute bottom-4 left-5 right-5 text-left text-[12px] leading-5 text-red-500">{normalizeMediaErrorText(characterGenerateResult.error, "image") ?? GENERIC_MEDIA_ERROR_MESSAGE}</div> : null}
                       </div>
                     ) : characterGenerateResult.status === "succeeded" && characterGenerateResult.url ? (
@@ -10689,7 +11301,7 @@ export function ChatWorkbench() {
                 const videoResolutionSelectOptions = getSupportedVideoResolutions(defaultVideoModel).map((value) => ({ value, label: value, icon: <ResolutionOptionIcon option={value} mode="video" /> }));
                 const videoRatioSelectOptions = ["智能比例", ...getSupportedVideoRatios(defaultVideoModel, defaultVideoResolution as never)].map((value) => ({ value, label: value, icon: <RatioOptionIcon option={value} /> }));
                 const videoDurationSelectOptions = getVideoDurationOptions(defaultVideoModel).map((value) => ({ value, label: value, icon: <RiTimeLine className="h-4 w-4" aria-hidden="true" /> }));
-                const imageRatioSelectOptions = ratioOptions.map((value) => ({ value, label: value, icon: <RatioOptionIcon option={value} /> }));
+                const imageRatioSelectOptions = ["智能比例", ...getSupportedImageRatios(defaultImageModel)].map((value) => ({ value, label: value, icon: <RatioOptionIcon option={value} /> }));
                 const panelSelectOptions = [
                   { value: "chat", label: userText("对话模式") },
                   ...(WORKFLOW_MODE_ENABLED ? [{ value: "workflow", label: userText("工作流模式") }] : []),
@@ -10714,6 +11326,7 @@ export function ChatWorkbench() {
                   setDefaultImageModel(id as ModelName);
                   const resolutionOptions = getSupportedImageResolutions(id);
                   setDefaultImageResolution((current) => resolutionOptions.includes(current as never) ? current : resolutionOptions[0]);
+                  setDefaultImageRatio((current) => normalizeImageRatioForModel(id, current));
                 };
                 const groupHeading = (text: string) => <div className="px-1 pb-0.5 pt-3 text-[12px] font-medium text-[#9a9a9a]">{text}</div>;
                 const selectRow = (iconNode: ReactNode, label: string, control: ReactNode) => (

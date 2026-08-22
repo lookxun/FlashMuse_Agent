@@ -111,15 +111,16 @@ function CopyButton({ text }: { text: string }) {
 }
 
 function FailureTrend({ trend }: { trend: FailureTriageData["trend"] }) {
-  const max = Math.max(1, ...trend.map((point) => point.image + point.video));
+  const max = Math.max(1, ...trend.map((point) => point.image + point.video + point.audio));
   return (
     <>
       <div className="flex h-[150px] items-end gap-[3px] border-b border-[#eeeeee] pb-1">
         {trend.map((point) => {
-          const total = point.image + point.video;
+          const total = point.image + point.video + point.audio;
           return (
-            <div key={point.label} className="group relative flex min-w-0 flex-1 flex-col justify-end" title={`${point.label} 失败 ${total} 条（图片 ${point.image} / 视频 ${point.video}）`}>
-              <div className="w-full rounded-t-[3px] bg-[#f0a020]" style={{ height: `${(point.video / max) * 130}px` }} />
+            <div key={point.label} className="group relative flex min-w-0 flex-1 flex-col justify-end" title={`${point.label} 失败 ${total} 条（图片 ${point.image} / 视频 ${point.video} / 语音 ${point.audio}）`}>
+              <div className="w-full rounded-t-[3px] bg-[#8b5cf6]" style={{ height: `${(point.audio / max) * 130}px` }} />
+              <div className="w-full bg-[#f0a020]" style={{ height: `${(point.video / max) * 130}px` }} />
               <div className="w-full bg-[#e05656]" style={{ height: `${(point.image / max) * 130}px` }} />
             </div>
           );
@@ -133,6 +134,7 @@ function FailureTrend({ trend }: { trend: FailureTriageData["trend"] }) {
       <div className="mt-3 flex items-center gap-4 text-[12px] text-[#888888]">
         <span className="flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-full bg-[#e05656]" />图片失败</span>
         <span className="flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-full bg-[#f0a020]" />视频失败</span>
+        <span className="flex items-center gap-1.5"><span className="inline-block h-2.5 w-2.5 rounded-full bg-[#8b5cf6]" />语音失败</span>
         <span className="text-[#bbbbbb]">（含已归档，看的是「真实发生过多少次」；运维记录保留 31 天，更早的已按清理策略删除）</span>
       </div>
     </>
@@ -282,7 +284,7 @@ export function AdminFailureTriagePanel({ data }: { data: FailureTriageData }) {
             />
           </div>
 
-          <div className="grid grid-cols-3 gap-4">
+          <div className="grid grid-cols-4 gap-4">
             <KpiCard
               icon={RiCheckboxCircleLine}
               tone="#367cee"
@@ -298,6 +300,13 @@ export function AdminFailureTriagePanel({ data }: { data: FailureTriageData }) {
               splits={[{ label: "失败", value: n(summary.videoFailed) }, { label: "总请求", value: n(summary.videoTotal) }]}
             />
             <KpiCard
+              icon={RiCheckboxCircleLine}
+              tone="#8b5cf6"
+              label="语音生成失败率"
+              value={summary.audioTotal > 0 ? `${((summary.audioFailed / summary.audioTotal) * 100).toFixed(1)}%` : "-"}
+              splits={[{ label: "失败", value: n(summary.audioFailed) }, { label: "总请求", value: n(summary.audioTotal) }]}
+            />
+            <KpiCard
               icon={RiShieldCheckLine}
               tone="#f0a020"
               label="审核 / 内容策略类"
@@ -307,7 +316,7 @@ export function AdminFailureTriagePanel({ data }: { data: FailureTriageData }) {
           </div>
 
           <div className="grid grid-cols-[minmax(0,1fr)_360px] gap-5">
-            <CardShell title="失败趋势（近 30 天）" subtitle="堆叠：图片 + 视频。突然一根很高的柱子 = 那天有人连续踩同一个坑，优先去查">
+              <CardShell title="失败趋势（近 30 天）" subtitle="堆叠：图片 + 视频 + 语音。突然一根很高的柱子 = 那天有人连续踩同一个坑，优先去查">
               <FailureTrend trend={data.trend} />
             </CardShell>
             <CardShell title="两个兜底桶" subtitle="⭐ 同一个根因会因为调用处传不传 fallback 而同时污染两个，查任何一类都要两个桶一起查">

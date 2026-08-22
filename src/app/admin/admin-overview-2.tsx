@@ -2,7 +2,7 @@
 
 /**
  * 运营概览（后台默认概览页）。纯展示组件，真实数据由服务端 getAdminOverviewData 计算后通过 data 传入。
- * 生成图片/视频分开统计，核心数据带总数并用小字拆分「对话流 / 工作流」。
+ * 生成图片/视频/语音分开统计，核心数据带总数并用小字拆分「对话流 / 工作流」。
  */
 
 import { useState } from "react";
@@ -13,6 +13,7 @@ import {
   RiBaseStationLine,
   RiImageAiLine,
   RiFilmAiLine,
+  RiMicAiLine,
   RiVipDiamondLine,
   RiChat3Line,
   RiFlowChart,
@@ -295,6 +296,7 @@ export function AdminOverview2({ data }: { data: AdminOverviewData }) {
   const successItems = [
     { label: "图片生成成功率", value: data.success.imageRate, tone: "#18a058", note: `失败 ${n(data.success.imageFailed)} 次` },
     { label: "视频生成成功率", value: data.success.videoRate, tone: "#f0a020", note: `失败 ${n(data.success.videoFailed)} 次` },
+    { label: "语音生成成功率", value: data.success.audioRate, tone: "#8b5cf6", note: `失败 ${n(data.success.audioFailed)} 次` },
   ];
 
   return (
@@ -313,18 +315,20 @@ export function AdminOverview2({ data }: { data: AdminOverviewData }) {
         <KpiCard icon={RiMoneyDollarCircleLine} label="累计消耗成本" value={`$${n(data.credits.usd)}`} note={`≈ ¥${n(data.credits.cny)}`} tone="#8b5cf6" />
       </section>
 
-      <section className="mt-4 grid grid-cols-4 gap-4">
+      <section className="mt-4 grid grid-cols-5 gap-4">
         <KpiCard icon={RiImageAiLine} label="累计生成图片" value={n(data.images.total)} splits={[{ label: "对话流", value: n(data.images.conversation) }, { label: "工作流", value: n(data.images.workflow) }]} tone="#367cee" />
         <KpiCard icon={RiFilmAiLine} label="累计生成视频" value={n(data.videos.total)} splits={[{ label: "对话流", value: n(data.videos.conversation) }, { label: "工作流", value: n(data.videos.workflow) }]} tone="#f0a020" />
+        <KpiCard icon={RiMicAiLine} label="累计生成语音" value={n(data.audios.total)} splits={[{ label: "对话流", value: n(data.audios.conversation) }, { label: "工作流", value: n(data.audios.workflow) }]} tone="#8b5cf6" />
         <KpiCard icon={RiVipDiamondLine} label="累计消耗积分" value={n(data.credits.consumedTotal)} note={`今日消耗 ${n(data.credits.todayConsumed)}`} tone="#e0669a" />
-        <KpiCard icon={RiCheckboxCircleLine} label="生成成功率" value={data.success.hasData ? `${data.success.imageRate}%` : "—"} splits={data.success.hasData ? [{ label: "图片", value: `${data.success.imageRate}%` }, { label: "视频", value: `${data.success.videoRate}%` }] : undefined} note={data.success.hasData ? undefined : "上线后开始统计"} tone="#18a058" />
+        <KpiCard icon={RiCheckboxCircleLine} label="生成成功率" value={data.success.hasData ? `${data.success.imageRate}%` : "—"} splits={data.success.hasData ? [{ label: "图片", value: `${data.success.imageRate}%` }, { label: "视频", value: `${data.success.videoRate}%` }, { label: "语音", value: `${data.success.audioRate}%` }] : undefined} note={data.success.hasData ? undefined : "上线后开始统计"} tone="#18a058" />
       </section>
 
-      <section className="mt-4 grid grid-cols-4 gap-4">
+      <section className="mt-4 grid grid-cols-5 gap-4">
         <KpiCard icon={RiChat3Line} label="历史对话总数" value={n(data.conversations.total)} note={`今日新增 ${data.conversations.today}`} tone="#367cee" />
         <KpiCard icon={RiFlowChart} label="历史工作流总数" value={n(data.workflows.total)} note={`今日新增 ${data.workflows.today}`} tone="#8b5cf6" />
         <KpiCard icon={RiImageAiLine} label="今日生成图片" value={n(data.images.today)} splits={[{ label: "对话流", value: n(data.images.todayConversation) }, { label: "工作流", value: n(data.images.todayWorkflow) }]} tone="#367cee" />
         <KpiCard icon={RiFilmAiLine} label="今日生成视频" value={n(data.videos.today)} splits={[{ label: "对话流", value: n(data.videos.todayConversation) }, { label: "工作流", value: n(data.videos.todayWorkflow) }]} tone="#f0a020" />
+        <KpiCard icon={RiMicAiLine} label="今日生成语音" value={n(data.audios.today)} splits={[{ label: "对话流", value: n(data.audios.todayConversation) }, { label: "工作流", value: n(data.audios.todayWorkflow) }]} tone="#8b5cf6" />
       </section>
 
       {/* 趋势（受下方时间范围控制） */}
@@ -353,12 +357,15 @@ export function AdminOverview2({ data }: { data: AdminOverviewData }) {
         </CardShell>
       </div>
 
-      <div className="mt-4 grid grid-cols-2 gap-4">
+      <div className="mt-4 grid grid-cols-3 gap-4">
         <CardShell title="生成图片趋势" subtitle="对话流 / 工作流 分开统计" right={<Legend items={[{ label: "对话流", color: "#367cee" }, { label: "工作流", color: "#8b5cf6" }]} />}>
           <GroupedBarChart points={sliced(data.imageTrend)} series={[{ key: "conversation", color: "#367cee" }, { key: "workflow", color: "#8b5cf6" }]} />
         </CardShell>
         <CardShell title="生成视频趋势" subtitle="对话流 / 工作流 分开统计" right={<Legend items={[{ label: "对话流", color: "#367cee" }, { label: "工作流", color: "#8b5cf6" }]} />}>
           <GroupedBarChart points={sliced(data.videoTrend)} series={[{ key: "conversation", color: "#367cee" }, { key: "workflow", color: "#8b5cf6" }]} />
+        </CardShell>
+        <CardShell title="生成语音趋势" subtitle="对话流 / 工作流 分开统计" right={<Legend items={[{ label: "对话流", color: "#367cee" }, { label: "工作流", color: "#8b5cf6" }]} />}>
+          <GroupedBarChart points={sliced(data.audioTrend)} series={[{ key: "conversation", color: "#367cee" }, { key: "workflow", color: "#8b5cf6" }]} />
         </CardShell>
       </div>
 

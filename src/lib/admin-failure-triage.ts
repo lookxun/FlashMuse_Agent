@@ -101,13 +101,15 @@ export type FailureTriageData = {
     imageFailed: number;
     videoTotal: number;
     videoFailed: number;
+    audioTotal: number;
+    audioFailed: number;
   };
   /** 两个兜底桶各自的条数（同一根因会同时污染两个，排查时两个都要查） */
   fallbackBuckets: Array<{ label: string; total: number; today: number; last7Days: number }>;
   reasons: FailureTriageReason[];
   resolved: FailureTriageResolvedReason[];
-  /** 近 30 天失败趋势（图片 / 视频分开） */
-  trend: Array<{ label: string; image: number; video: number }>;
+  /** 近 30 天失败趋势（图片 / 视频 / 语音分开） */
+  trend: Array<{ label: string; image: number; video: number; audio: number }>;
   /** 按模型的失败分布（待排查） */
   byModel: Array<{ label: string; total: number; fallback: number; calls: number; failRate: number }>;
   /** 按入口的失败分布（待排查）—— 只在某一个入口出 = 大概率是分叉 */
@@ -132,7 +134,7 @@ function sourceLabel(value: string | null | undefined) {
   return SOURCE_LABELS[key] ?? key;
 }
 
-const KIND_LABELS: Record<string, string> = { image: "图片", video: "视频", chat: "对话", plan: "Agent 规划" };
+const KIND_LABELS: Record<string, string> = { image: "图片", video: "视频", audio: "语音", chat: "对话", plan: "Agent 规划" };
 
 function kindLabel(value: string | null | undefined) {
   const key = (value ?? "").trim();
@@ -366,22 +368,25 @@ export async function getAdminFailureTriageData(): Promise<FailureTriageData> {
   });
 
   // ---- 全量成功/失败（判断是不是普遍性问题） ----
-  let imageTotal = 0, imageFailed = 0, videoTotal = 0, videoFailed = 0;
+  let imageTotal = 0, imageFailed = 0, videoTotal = 0, videoFailed = 0, audioTotal = 0, audioFailed = 0;
   for (const row of kindStatusRows) {
     const count = num(row.count);
     if (row.kind === "image") { imageTotal += count; if (row.status === "failed") imageFailed += count; }
     else if (row.kind === "video") { videoTotal += count; if (row.status === "failed") videoFailed += count; }
+    else if (row.kind === "audio") { audioTotal += count; if (row.status === "failed") audioFailed += count; }
   }
 
   // ---- 趋势 ----
-  const trendMap = new Map<string, { image: number; video: number }>();
+  const trendMap = new Map<string, { image: number; video: number; audio: number }>();
   for (const row of trendRows) {
     const key = dayKey(new Date(row.day));
-    const entry = trendMap.get(key) ?? { image: 0, video: 0 };
-    if (row.kind === "video") entry.video += num(row.count); else if (row.kind === "image") entry.image += num(row.count);
+    const entry = trendMap.get(key) ?? { image: 0, video: 0, audio: 0 };
+    if (row.kind === "audio") entry.audio += num(row.count);
+    else if (row.kind === "video") entry.video += num(row.count);
+    else if (row.kind === "image") entry.image += num(row.count);
     trendMap.set(key, entry);
   }
-  const trend = days30.map((day) => ({ label: dayLabel(day), image: trendMap.get(dayKey(day))?.image ?? 0, video: trendMap.get(dayKey(day))?.video ?? 0 }));
+  const trend = days30.map((day) => ({ label: dayLabel(day), image: trendMap.get(dayKey(day))?.image ?? 0, video: trendMap.get(dayKey(day))?.video ?? 0, audio: trendMap.get(dayKey(day))?.audio ?? 0 }));
 
   // ---- 按模型（附总调用数，算失败率；只有失败数没有分母会误判） ----
   const callsByModel = new Map<string, number>();
@@ -446,6 +451,8 @@ export async function getAdminFailureTriageData(): Promise<FailureTriageData> {
       imageFailed,
       videoTotal,
       videoFailed,
+      audioTotal,
+      audioFailed,
     },
     fallbackBuckets,
     reasons,

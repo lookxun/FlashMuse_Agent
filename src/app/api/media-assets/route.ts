@@ -19,7 +19,7 @@ function mediaTypeFromUrl(url: string) {
 }
 
 function currentCategoryFromBody(value: unknown) {
-  return typeof value === "string" && ["character_image", "scene_image", "prop_image", "shot_image", "conversation_images", "conversation_uploads", "conversation_videos", "conversation_upload_videos", "conversation_upload_audios", "conversation_upload_documents", "conversation_upload_files", "workflow_images", "workflow_uploads", "workflow_videos", "workflow_upload_images", "workflow_upload_videos", "workflow_upload_audios", "workflow_upload_documents"].includes(value) ? value : "conversation_images";
+  return typeof value === "string" && ["character_image", "scene_image", "prop_image", "shot_image", "conversation_images", "conversation_uploads", "conversation_videos", "conversation_audios", "conversation_upload_videos", "conversation_upload_audios", "conversation_upload_documents", "conversation_upload_files", "workflow_images", "workflow_uploads", "workflow_videos", "workflow_upload_images", "workflow_upload_videos", "workflow_upload_audios", "workflow_upload_documents"].includes(value) ? value : "conversation_images";
 }
 
 function sourceKindFromCategory(category: string, mediaType: string, promptSource: string | undefined) {
@@ -30,7 +30,7 @@ function sourceKindFromCategory(category: string, mediaType: string, promptSourc
   if (category === "conversation_upload_documents") return "conversation_upload_document";
   if (category === "conversation_upload_files") return "conversation_upload_file";
   if (category === "conversation_uploads") return mediaType === "video" ? "conversation_upload_video" : "conversation_upload_image";
-  return mediaType === "video" ? "conversation_generation_video" : "conversation_generation_image";
+  return mediaType === "video" ? "conversation_generation_video" : mediaType === "audio" ? "conversation_generation_audio" : "conversation_generation_image";
 }
 
 function workspaceKindFromInput(category: string, body: Record<string, unknown>) {
@@ -335,7 +335,7 @@ export async function POST(request: Request) {
 
 function stateCategoryFromBody(value: unknown, mediaUrl: string) {
   if (value === "conversation_image") return /\/generated\/(?:users\/[^/]+\/)?upload_image\//.test(mediaUrl) ? "conversation_uploads" : "conversation_images";
-  return typeof value === "string" && ["character_image", "scene_image", "prop_image", "shot_image", "conversation_images", "conversation_uploads", "conversation_videos", "conversation_upload_videos", "conversation_upload_audios", "conversation_upload_documents", "conversation_upload_files", "workflow_images", "workflow_uploads", "workflow_videos", "workflow_upload_images", "workflow_upload_videos", "workflow_upload_audios", "workflow_upload_documents"].includes(value) ? value : undefined;
+  return typeof value === "string" && ["character_image", "scene_image", "prop_image", "shot_image", "conversation_images", "conversation_uploads", "conversation_videos", "conversation_audios", "conversation_upload_videos", "conversation_upload_audios", "conversation_upload_documents", "conversation_upload_files", "workflow_images", "workflow_uploads", "workflow_videos", "workflow_upload_images", "workflow_upload_videos", "workflow_upload_audios", "workflow_upload_documents"].includes(value) ? value : undefined;
 }
 
 export async function PATCH(request: Request) {
