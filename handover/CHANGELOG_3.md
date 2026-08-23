@@ -14,56 +14,109 @@
 >   ④ 把旧卷标题改成「卷 N · 已归档只读」并在顶部加指向新卷的提示 ⑤ 更新 `00-README.md` 文档索引里的 CHANGELOG 行。
 > - 判据不变：**版本号一样 = 测试服和正式服代码一样**（本项目核心约定，见 `AGENTS.md`）。
 
-## 📌 当前状态摘要（2026-08-23 第八十三次会话末）：**四方同步 `v1.0.1.5`**
+## 📌 当前状态摘要（2026-08-24 第八十四次会话末）：**线上四方 `v1.0.1.6`**
 
 | | 版本 / 状态 |
 |---|---|
-| 本地 = 测试服 = 正式服 = GitHub | **`v1.0.1.5`** |
+| 测服 = 正式服 | **`v1.0.1.6`** |
 | 自查 | `tsc` 0 |
-| 迁移 | 正式服已 apply `20260823010000_user_default_audio_prefs`、`20260823020000_workspace_archived_at` |
+| 迁移 | 无新迁移 |
+| 回滚点 | 正式服 app `/opt/flashmuse/app-backups/20260824-021441-presync-v1.0.1.6` |
 
 ---
 
-## 🗒️ 第八十三次会话（2026-08-23）：往上滚自动加载更早消息 + 输入框素材入库显示 + 备忘核销；测服+正式服 `v1.0.1.5`
+## 🗒️ 第八十四次会话（2026-08-24）：音色试听缓存 + 后台语音上传规则 + 改部署口径 + 两服上线
 
-**用户诉求**：对话往上滚自动加载；查后台生成弹窗缺参考素材并按「输入框有什么就存什么」修；核销已做完的备忘；本批上测服，没问题推正式服，上号测更新，最后 push GitHub。
+**用户诉求**：音色试听每次悬停从头播、登录期内加载过不再加载；后台上传规则加语音模型（官方字数减半做默认）；Fish 克隆 1 段音频单独一行；收费免费共用两行；重写下方说明表；先写部署规则再上测服，测这批+上一批没测的，没问题推正式服再 push GitHub。
 
-### 一、对话加载更早
+### 产品
 
-去掉顶部「加载更早消息」按钮。滚到顶自动拉；加载时灰色转圈 +「加载更早的消息」。位置钉在原来那条。
+- 悬停试听每次 `play(0)`。切过的语种面板不卸。`audio-waveform-cache.ts` 会话级缓存 blob+波形。
+- 后台：Fish 文本转换 / Fish 音色克隆 / Qwen / MiniMax。Fish 字数 key `fish-audio:s2.1`。默认 5000 / 10000 / 5000。
+- 下方说明表按现行 `upload-rules.ts` 重写。
 
-### 二、参考素材存和显示
+### 部署口径（2026-08-24 拍板）
 
-后台弹窗只读 `GenerationJob`：语音没 job、资产库只存被 @ 的图、成品资产不带快照。改成：
+测服必须把当次新内容全部测一遍，有问题当场修。没说推正式服就别推。说了推正式服，到正式服用免费语音测一下不崩即可。
 
-- 图/视频 finalize 把 job 参考写进 `MediaAsset.generationSettings.inputReferences`
-- 语音克隆参考也写这份快照
-- 资产库框里有的图都发、都存，不再只认 @
-- 后台/预览先读快照，没有再回退 job
-- 工作流编辑/高清本来就会带源图进 job
+### 测服验
 
-老数据当时没存的补不回来。
+音色切回普通话没有第二次拉 mp3。后台表有 Fish 两行 + Recraft/Hailuo/编辑延长。免费语音发出去了。上一批「滚到顶加载更早」那条对话没有更多页，没触发加载。带上传生图看后台参考没跑（正式服按新口径只用免费语音）。
 
-### 三、备忘核销
+### 正式服
 
-关掉已落地的 **M003**（正式服工作流）、**M005**（@mention 收敛）、**M009**（BytePlus `asset://`）、**M012**（TTS/克隆）。
+免费语音发了「你好。」，工作区没崩。公告没动。测试号 `12424740@qq.com`。
 
-### 四、部署
+---
 
-- bump `v1.0.1.4` → `v1.0.1.5`，无新迁移、无 compose/nginx。
-- 测服 health / `x-app-version` / 8080 / https = v1.0.1.5。
-- 正式服备份 `20260823-151900-presync-v1.0.1.5`；staging→prod `src` md5 `c6d08953b2cadbf0493d4c56befcd755`（205 文件）。
-- 正式服 apply 两条积压迁移。静态 42=42。四域名 200。
+## 🗒️ 第八十三次会话（2026-08-23）：自动加载更早消息 + 参考素材入库显示 + 备忘核销 + 两服上线 + 改上号口径
 
-### 五、上号巡检（`12424740@qq.com`；后台 `lookxun@163.com` 只看）
+**用户诉求**：看交接 → 对话往上滚自动加载 → 查后台生成弹窗缺参考素材并按「输入框有什么就存什么」修（工作流编辑/高清也算带图）→ 核销已做完备忘 → 上测服再上正式服并上号 → 问「更新内容测了吗」后拍板：以后上号只测更新内容，生成检查用免费语音 → 写交接。
 
-测服：登录、对话、工作流点节点不崩、资产库缩略图、真跑生图（94334→94328）、后台用户「所有生成图片」弹窗能开、0 error。对话 `v1015巡检：一只灰色小猫趴在书桌上`。
+### 一、时间线
 
-正式服：登录、对话、新建工作流加图片节点不崩、资产库、真跑生图（8228→8225）、后台能进 0 error。⛔ 没动公告。
+1. 接手：线上测服/GitHub `v1.0.1.4`，正式服 `v1.0.1.3`。
+2. 对话流「加载更早消息」改成往上滚自动加载。
+3. 查后台缺参考：写入和显示都有洞，按产品口径修。
+4. 对照代码关掉已落地备忘。
+5. bump `v1.0.1.5` → 测服 → 例行巡检（付费生图）→ 正式服 → 例行巡检 → push `4c7ddeb`。
+6. 用户指出新功能没测。拍板改上号口径（规则已改，**还没 commit**）。
 
-### 六、主要文件
+### 二、对话加载更早（`chat-workbench.tsx`）
 
-`chat-workbench.tsx`、`generation-jobs.ts`、`api/audio/route.ts`、`api/generation-references/route.ts`、`admin-users-panel.tsx`、`admin/api/records/user-detail/route.ts`、`06-memo-tasks.md`、`app-version.ts`。
+- 去掉顶部蓝字按钮。
+- `updateScrollToBottomButton`：对话面板 `scrollTop < 160` 且 `messagesHasMore` → `loadOlderMessages`。
+- 加载后用 `scrollHeight` 差钉住原位置；仍在顶部则继续拉。
+- 加载中：灰色 `RiLoader4Line` +「加载更早的消息」。
+- ⚠️ **没找长对话滚到顶验过**。
+
+### 三、参考素材：查清 + 修
+
+**产品口径**：生成时输入框里的提示词+图+视频+音频都要原样入库（不靠 @），后台和预览都要能看见。工作流编辑/高清带的源图/源视频也算。
+
+**根因（两边都有）**：
+- 后台弹窗只挂 `GenerationJob`（`attachGenerationReferences`）。语音 `/api/audio` **不建 job**，参考只在 `generationSettings.referenceAudios`，后台还故意不选这列 → 语音弹窗永远空。
+- 资产库只发被 @ 且草稿里有缩略图的，没 @ 的丢掉。
+- `MediaAsset` 不存参考数组；job 对不上（requestId 空/不一致）就显示空。
+- 对话流/工作流/编辑高清：有缩略图或源图的会进 job。
+
+**修**：
+- `generation-jobs.ts`：`parseStoredInputReferences` / `mergeInputReferencesIntoSettings` / `getMediaInputReferences`。finalize 图/视频把 job 参考写入 `generationSettings.inputReferences`。
+- `/api/audio`：克隆参考写成 `inputReferences`。
+- 资产库：框里草稿全发全存，只清悬空 @。
+- 后台 `DETAIL_ASSET_STATE_SELECT` 加 `generationSettings`；有快照先用，没有再挂 job。
+- `/api/generation-references` 改走 `getMediaInputReferences`（预览同一套）。
+
+老数据当时没存的补不回来。⚠️ **没带上传真跑过生成，后台/预览参考区没端到端验。**
+
+### 四、备忘
+
+已关：**M003** 正式服工作流、**M005** @mention 已收敛（剩 M038/M039）、**M009** BytePlus `asset://`、**M012** TTS/克隆。
+
+还开着：M041 繁体改用户的字、M038/M039 @ 正则和捞旧图、M032 工作流传图偶发挂不上、M036 阿里多余文件、M030 服务端解析文档、M026 工作流节点分页、M020 视频真超分、M013 歌曲→MV、M014 GPT 生图二期、M015 阿里压缩小服务、M001 参考改公网 URL、M007 前端监控、M008 多实例存盘、M018 上传后切阿里、M019 canvasJson 拆表、M029 统一轮询器（双失败卡已修、重构没做）。
+
+### 五、部署
+
+- 无新迁移、无 compose/nginx。正式服 apply 两条积压迁移。
+- 测服/正式服 `/api/health` + `x-app-version` = v1.0.1.5。staging→prod `src` md5 `c6d08953b2cadbf0493d4c56befcd755`（205 文件）。静态 42=42。四域名 200。
+- 回滚：`/opt/flashmuse/app-backups/20260823-151900-presync-v1.0.1.5`。
+- 例行巡检留痕：测服对话 `v1015巡检：一只灰色小猫趴在书桌上`（94334→94328）；正式服同名（8228→8225）。正式服 `新工作流` 加了 1 个图片节点。测试号 `12424740@qq.com`。⛔ 正式服公告没动。
+
+### 六、上号口径（2026-08-23 拍板，已写 `AGENTS.md` + `03`，未 commit）
+
+以后上号**只测这次更新的内容**。要跑生成 → 免费语音 `fish-audio/s2.1-pro-free`。⛔ 别再例行付费生图、也别为「巡检 6 项」去点没改的界面。
+
+### 七、主要文件
+
+已上线：`chat-workbench.tsx`、`generation-jobs.ts`、`api/audio/route.ts`、`api/generation-references/route.ts`、`admin-users-panel.tsx`、`admin/api/records/user-detail/route.ts`、`06-memo-tasks.md`、`app-version.ts`。
+
+未提交：`AGENTS.md`、`03-deploy-and-servers.md`、`05-next-actions.md`。`modal.md` 别进库。
+
+### 八、下一个 AI
+
+1. 先决定要不要把上号口径那三份规则 commit。
+2. 要验本批：长对话滚到顶；带上传生成后看后台/预览参考。生成用免费语音。
+3. 别把归档点名称弹窗加回来。语速别做。Kimi 别写成 MiniMax。正式服公告别动。
 
 ---
 

@@ -4142,7 +4142,7 @@ export function ChatWorkbench() {
     if (!isAudioVoiceSelectable(selectedGenerationModel)) return null;
     const langs = getAudioVoiceLangsForModel(selectedGenerationModel);
     const activeLang = langs.some((lang) => lang.value === audioVoiceLang) ? audioVoiceLang : langs[0]?.value ?? "zh";
-    const voices = getAudioVoicesForModel(selectedGenerationModel).filter((voice) => voice.lang === activeLang);
+    const voices = getAudioVoicesForModel(selectedGenerationModel);
     const voiceLabel = getAudioVoiceLabel(selectedGenerationModel, selectedAudioVoice) || "选择音色";
     return (
       <div className="relative min-w-0" onClick={(event) => event.stopPropagation()}>

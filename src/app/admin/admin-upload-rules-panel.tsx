@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState, useTransition } from "react";
-import { ADVANCED_CHAT_MODEL, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, frontendImageGenerationModels, SEEDANCE_25_VIDEO_MODEL_ID, videoGenerationModels, type GenerationModel } from "@/lib/models";
+import { ADVANCED_CHAT_MODEL, DEFAULT_AUDIO_MODEL, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, audioGenerationModels, frontendImageGenerationModels, isFishAudioModel, SEEDANCE_25_VIDEO_MODEL_ID, videoGenerationModels, type GenerationModel } from "@/lib/models";
 import { DEFAULT_PROMPT_MAX_LENGTH, getDefaultPromptMaxLength, getPromptLengthOverrideKey, normalizePromptMaxLength, PROMPT_MAX_LENGTH_CEILING, type PromptLengthOverrides } from "@/lib/prompt-length";
 import { AiAgentLineIcon, ModelIcon } from "@/components/model-icon";
 import { BYTEPLUS_SEEDANCE_25_UPLOAD_RULE_KEYS, BYTEPLUS_SEEDANCE_UPLOAD_RULE_KEYS, getUploadRule, getUploadRuleOverrideKey, type UploadKind, type UploadKindRule, type UploadRule, type UploadRuleOverrides } from "@/lib/upload-rules";
@@ -32,11 +32,22 @@ function SettingSwitch({ checked, disabled, onChange, ariaLabel }: { checked: bo
   );
 }
 
-function getEditableUploadRuleRows(enabledImageModelIds: string[], enabledVideoModelIds: string[]): EditableUploadRuleRow[] {
+function getEditableUploadRuleRows(enabledImageModelIds: string[], enabledVideoModelIds: string[], enabledAudioModelIds: string[]): EditableUploadRuleRow[] {
   const imageEnabled = new Set(enabledImageModelIds);
   const videoEnabled = new Set(enabledVideoModelIds);
+  const audioEnabled = new Set(enabledAudioModelIds);
   const openRouterImageRows = frontendImageGenerationModels.filter((model) => !model.id.startsWith("byteplus:") && imageEnabled.has(model.id)).map((model) => makeModelRow(model, { mode: "image", modelId: model.id, transportMode: "local-base64" }));
   const openRouterVideoRows = videoGenerationModels.filter((model) => videoEnabled.has(model.id)).map((model) => makeModelRow(model, { mode: "video", modelId: model.id, transportMode: "local-base64" }));
+  const enabledAudioModels = audioGenerationModels.filter((model) => audioEnabled.has(model.id));
+  const fishModel = enabledAudioModels.find((model) => isFishAudioModel(model.id));
+  const fishAudioRows: EditableUploadRuleRow[] = fishModel
+    ? [
+        { key: getUploadRuleOverrideKey({ mode: "audio", modelId: fishModel.id }), modelName: "Fish Audio · 文本转换", context: { mode: "audio", modelId: fishModel.id, transportMode: "local-base64" } },
+        { key: getUploadRuleOverrideKey({ mode: "audio", modelId: fishModel.id, audioReferenceMode: "clone" }), modelName: "Fish Audio · 音色克隆", context: { mode: "audio", modelId: fishModel.id, transportMode: "local-base64", audioReferenceMode: "clone" } },
+      ]
+    : [];
+  const otherAudioRows = enabledAudioModels.filter((model) => !isFishAudioModel(model.id)).map((model) => makeModelRow(model, { mode: "audio", modelId: model.id, transportMode: "local-base64" }));
+  const audioRows = [...fishAudioRows, ...otherAudioRows];
   const bytePlusImageRows = frontendImageGenerationModels.filter((model) => model.id.startsWith("byteplus:") && imageEnabled.has(model.id)).map((model) => makeModelRow(model, { mode: "image", modelId: model.id, transportMode: "local-base64" }));
   const bytePlusVideoRows: EditableUploadRuleRow[] = [
     // ⭐ 2.0 系与 2.5 是**两组独立 key**（getSeedanceUploadRuleKeys），所以这里必须各列 3 行；
@@ -56,6 +67,7 @@ function getEditableUploadRuleRows(enabledImageModelIds: string[], enabledVideoM
     },
     ...openRouterImageRows,
     ...openRouterVideoRows,
+    ...audioRows,
     ...bytePlusImageRows,
     ...bytePlusVideoRows,
   ];
@@ -128,79 +140,116 @@ type UploadRuleRow = {
   incomplete?: Partial<Record<"image" | "document" | "video" | "audio", string>>;
 };
 
-const bytePlusImageReferenceRuleText = "图片参考完整规则：jpg/jpeg/png/webp/bmp/tiff/tif/gif/heic/heif；单张≤30MB；上传图片和 @资产引用合并计数；按用户显式 @ 顺序传入，并去重。";
-const bytePlusImageOfficialLimitText = "火山官方 URL 参考图上限为 14 张；当前前端本地 Base64 入口为控制请求体，限制为 6 张。";
-const seedanceImageReferenceRuleText = "图片参考完整规则：jpg/jpeg/png/webp/bmp/tiff/tif/gif/heic/heif；融合模式最多 9 张，按 reference_image 传入；首帧模式只用 1 张 first_frame；首尾帧模式用 2 张 first_frame/last_frame；三种模式互斥，只有融合模式支持参考视频/音频。";
-const seedance25ImageReferenceRuleText = "图片参考完整规则：jpg/jpeg/png/webp/bmp/tiff/tif/gif/heic/heif；融合模式最多 30 张，按 reference_image 传入；首帧模式只用 1 张 first_frame；首尾帧模式用 2 张 first_frame/last_frame；视频编辑 / 视频延长两个模式不吃参考图；只有融合模式支持参考视频/音频。";
+const imageFormatText = "格式 jpg/jpeg/png/webp（全站统一，不含 bmp/tiff/gif/heic）。上传图和 @资产引用合并计数。";
 
 const uploadRuleRows: UploadRuleRow[] = [
   {
-    scene: "通用模式",
-    model: "通用 Agent 规则",
+    scene: "通用 / Agent",
+    model: "对话模型",
     rule: getUploadRule({ mode: "general", transportMode: "local-base64" }),
-    note: "用于通用问答、任务规划、看图理解和后续生图/生视频规划；当前入口允许图片和文档，不开放视频/音频上传。",
+    note: "通用和 Agent 同一套：可传图片和文档，不支持视频/音频。",
+    details: {
+      image: imageFormatText,
+      document: "格式 pdf/txt/csv/docx/doc/xlsx/xls/pptx/ppt/md。",
+    },
   },
   {
-    scene: "Agent 模式",
-    model: "通用安全规则",
-    rule: getUploadRule({ mode: "agent", transportMode: "local-base64" }),
-    note: "用于普通对话、规划、理解上传内容。",
-  },
-  {
-    scene: "对话流图片 / 资产库图片",
-    model: "OpenRouter 图片模型",
+    scene: "对话流 / 资产库图片",
+    model: "Seedream / Gemini 等",
     rule: getUploadRule({ mode: "image", modelId: DEFAULT_IMAGE_MODEL, transportMode: "local-base64" }),
-    note: "Seedream / Gemini / GPT 图片模型统一保守限制；图片模型文件输入未做实，文件列按不支持处理。",
+    note: "默认图片模型：最多 3 张、单张≤8MB。不支持文件/视频/音频。",
+    details: { image: imageFormatText },
   },
   {
-    scene: "对话流图片 / 资产库图片",
-    model: "BytePlus 图片模型（4.5 / Lite / Pro，本地测试）",
+    scene: "对话流 / 资产库图片",
+    model: "GPT-5.4 Image 2",
+    rule: getUploadRule({ mode: "image", modelId: "openai/gpt-5.4-image-2", transportMode: "local-base64" }),
+    note: "走 /api/v1/images，参考图最多 16 张、单张≤10MB。",
+    details: { image: imageFormatText },
+  },
+  {
+    scene: "对话流 / 资产库图片",
+    model: "Recraft V4.1 / Pro",
+    rule: getUploadRule({ mode: "image", modelId: "recraft/recraft-v4.1", transportMode: "local-base64" }),
+    note: "上游硬上限 1 张参考图。不支持文件/视频/音频。",
+    details: { image: imageFormatText },
+  },
+  {
+    scene: "对话流 / 资产库图片",
+    model: "BytePlus Seedream（本地）",
     rule: getUploadRule({ mode: "image", modelId: "byteplus:conversation-image.seedream-4-5", transportMode: "local-base64" }),
-    note: "当前本地继续 Base64 打包测试，先限制 6 张。",
-    details: { image: `${bytePlusImageReferenceRuleText}${bytePlusImageOfficialLimitText}` },
-    incomplete: { image: "特殊格式 heic/heif/tiff/bmp/gif 仅规则记录，浏览器预览未完整做实。" },
+    note: "4.5 / Lite / Pro 同一套。本地 Base64 入口最多 6 张、单张≤30MB。",
+    details: { image: imageFormatText },
   },
   {
-    scene: "对话流图片 / 资产库图片",
-    model: "BytePlus 图片模型（4.5 / Lite / Pro，服务器 URL）",
+    scene: "对话流 / 资产库图片",
+    model: "BytePlus Seedream（服务器 URL）",
     rule: getUploadRule({ mode: "image", modelId: "byteplus:conversation-image.seedream-4-5", transportMode: "server-url" }),
-    note: "部署到公网服务器后，上传文件生成服务器 URL，可按官方 14 张上限。",
-    details: { image: `${bytePlusImageReferenceRuleText}服务器 URL 模式按火山官方上限最多 14 张。` },
-    incomplete: { image: "服务器 URL 传模型链路未做实。" },
+    note: "服务器 URL 入口按火山上限最多 14 张、单张≤30MB。",
+    details: { image: imageFormatText },
+  },
+  {
+    scene: "对话流语音",
+    model: "文本转换",
+    rule: getUploadRule({ mode: "audio", modelId: DEFAULT_AUDIO_MODEL, transportMode: "local-base64" }),
+    note: "MiniMax / Qwen / Fish 文本转换都不吃参考文件。",
+  },
+  {
+    scene: "对话流语音",
+    model: "Fish 音色克隆",
+    rule: getUploadRule({ mode: "audio", modelId: "fish-audio/s2.1-pro", transportMode: "local-base64", audioReferenceMode: "clone" }),
+    note: "收费和免费共用。只支持 1 段参考音频。",
+    details: { audio: "mp3/wav；1 个；10-60 秒、≤15MB。" },
   },
   {
     scene: "对话流视频",
-    model: "OpenRouter Seedance 视频",
-    rule: getUploadRule({ mode: "video", modelId: "bytedance/seedance-2.0-fast", transportMode: "local-base64" }),
-    note: "当前仅开放图片参考。",
-  },
-  {
-    scene: "对话流视频",
-    model: "OpenRouter Kling / Veo",
+    model: "Kling / Veo",
     rule: getUploadRule({ mode: "video", modelId: "kwaivgi/kling-v3.0-std", transportMode: "local-base64" }),
-    note: "Kling 和 Veo 统一保守限制，当前仅开放图片参考。",
+    note: "只支持图片参考，最多 2 张。不支持参考视频/音频。",
+    details: { image: imageFormatText },
   },
   {
     scene: "对话流视频",
-    model: "BytePlus Seedance 2.0 / Fast / Mini 系列",
-    rule: getUploadRule({ mode: "video", modelId: "byteplus:video.seedance-2-0", transportMode: "server-url" }),
-    note: "Seedance 2.0 / Fast / Mini 共用同一套上传规则。融合模式支持图片、视频、音频参考上传；首帧/首尾帧模式只支持图片。参考视频/音频按服务器公网 URL 传入模型。",
+    model: "MiniMax Hailuo 3",
+    rule: getUploadRule({ mode: "video", modelId: "minimax/hailuo-3", transportMode: "local-base64", videoReferenceMode: "reference" }),
+    note: "只支持图片。融合最多 9 张；首帧/尾帧 1 张；首尾帧 2 张。参考视频/音频不支持。",
+    details: { image: imageFormatText },
+  },
+  {
+    scene: "对话流视频",
+    model: "OpenRouter Seedance",
+    rule: getUploadRule({ mode: "video", modelId: "bytedance/seedance-2.0-fast", transportMode: "local-base64" }),
+    note: "只支持图片参考，最多 3 张。不支持参考视频/音频。",
+    details: { image: imageFormatText },
+  },
+  {
+    scene: "对话流视频",
+    model: "Seedance 2.0 / Fast / Mini · 融合",
+    rule: getUploadRule({ mode: "video", modelId: "byteplus:video.seedance-2-0", transportMode: "server-url", videoReferenceMode: "reference" }),
+    note: "2.0 系共用。融合可传图/视频/音频。首帧只 1 张图、首尾帧只 2 张图，不支持视频/音频。",
     details: {
-      image: seedanceImageReferenceRuleText,
-      video: "视频参考完整规则：mp4/mov；最多 3 个；单个 2-15 秒、≤200MB；总时长≤15秒；宽高比 0.4-2.5；宽高 300-6000px；总像素 409600-8295044。",
-      audio: "音频参考完整规则：mp3/wav；最多 3 个；单个 2-15 秒、≤15MB；总时长≤15秒；不能单独输入，必须同时有参考图片或参考视频。",
+      image: `${imageFormatText}融合最多 9 张。`,
+      video: "mp4/mov；最多 3 个；单个 2-15 秒、≤200MB；总时长≤15 秒。",
+      audio: "mp3/wav；最多 3 个；单个 2-15 秒、≤15MB；总时长≤15 秒。不能单独传音频，必须带图或视频。",
     },
   },
   {
     scene: "对话流视频",
-    model: "BytePlus Seedance 2.5",
-    rule: getUploadRule({ mode: "video", modelId: SEEDANCE_25_VIDEO_MODEL_ID, transportMode: "server-url" }),
-    note: "Seedance 2.5 的参考能力比 2.0 系强很多，上传规则与 2.0 系完全独立（后台数量开关也是分开的两组）。融合模式支持图片、视频、音频参考上传；首帧/首尾帧只支持图片；另有「视频编辑」「视频延长」两个模式，只吃 1 个参考视频（源视频必须 4-30 秒），图片/音频按钮整个隐藏。参考视频/音频按服务器公网 URL 传入模型。",
+    model: "Seedance 2.5 · 融合",
+    rule: getUploadRule({ mode: "video", modelId: SEEDANCE_25_VIDEO_MODEL_ID, transportMode: "server-url", videoReferenceMode: "reference" }),
+    note: "与 2.0 独立配置。融合可传图/视频/音频。首帧 1 张图、首尾帧 2 张图。",
     details: {
-      image: seedance25ImageReferenceRuleText,
-      video: "视频参考完整规则：mp4/mov；最多 10 个；单个 2-30 秒、≤200MB；总时长≤30秒；宽高比 0.4-2.5；宽高 300-6000px；总像素 409600-8295044。上游实测硬上限 30.2 秒（我们按 30 秒 + 0.2 秒读取容差放行）。",
-      audio: "音频参考完整规则：mp3/wav；最多 10 个；单个 2-30 秒、≤15MB；总时长≤30秒；⭐ 2.5 支持纯音频参考（可以不带图片/视频单独输入，这一点和 2.0 系相反）。",
+      image: `${imageFormatText}融合最多 30 张。`,
+      video: "mp4/mov；最多 10 个；单个 2-30 秒、≤200MB；总时长≤30 秒。",
+      audio: "mp3/wav；最多 10 个；单个 2-30 秒、≤15MB；总时长≤30 秒。可以只传音频。",
     },
+  },
+  {
+    scene: "对话流视频",
+    model: "Seedance 2.5 · 编辑 / 延长",
+    rule: getUploadRule({ mode: "video", modelId: SEEDANCE_25_VIDEO_MODEL_ID, transportMode: "server-url", videoReferenceMode: "edit" }),
+    note: "只吃 1 个源视频，图片/音频按钮隐藏。源视频必须 4-30 秒。",
+    details: { video: "mp4/mov；1 个；4-30 秒、≤200MB。" },
   },
 ];
 
@@ -247,8 +296,8 @@ function EditableUploadRuleCell({ row, kind, fallback, draft, disabled, onChange
   );
 }
 
-export function AdminUploadRulesPanel({ initialUploadRuleOverrides = {}, initialPromptLengthOverrides = {}, enabledImageModelIds = [], enabledVideoModelIds = [] }: { initialUploadRuleOverrides?: UploadRuleOverrides; initialPromptLengthOverrides?: PromptLengthOverrides; enabledImageModelIds?: string[]; enabledVideoModelIds?: string[] }) {
-  const rows = useMemo(() => getEditableUploadRuleRows(enabledImageModelIds, enabledVideoModelIds), [enabledImageModelIds, enabledVideoModelIds]);
+export function AdminUploadRulesPanel({ initialUploadRuleOverrides = {}, initialPromptLengthOverrides = {}, enabledImageModelIds = [], enabledVideoModelIds = [], enabledAudioModelIds = [] }: { initialUploadRuleOverrides?: UploadRuleOverrides; initialPromptLengthOverrides?: PromptLengthOverrides; enabledImageModelIds?: string[]; enabledVideoModelIds?: string[]; enabledAudioModelIds?: string[] }) {
+  const rows = useMemo(() => getEditableUploadRuleRows(enabledImageModelIds, enabledVideoModelIds, enabledAudioModelIds), [enabledImageModelIds, enabledVideoModelIds, enabledAudioModelIds]);
   // ⭐ 每一行算出它的「文字」key，并标出这个 key 的**第一行**（只有它显示输入框，其余行「跟随上面」）。
   const promptRowMeta = useMemo(() => {
     const seen = new Set<string>();

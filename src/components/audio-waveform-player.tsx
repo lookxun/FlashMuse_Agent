@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { RiPauseLargeFill, RiPlayLargeFill } from "react-icons/ri";
 import { formatMediaClockTime, formatMediaPaddedSeconds } from "@/lib/media-duration-format";
+import { loadCachedAudioWaveform, rememberAudioWaveformPeaks } from "@/lib/audio-waveform-cache";
 
 // 时长文案统一走 @/lib/media-duration-format（与资产库视频时长角标同一份实现）。
 const formatAudioTime = formatMediaClockTime;
@@ -17,15 +18,17 @@ export interface AudioWaveformPlayerProps {
   /** card 变体的时间显示成「倒计时秒/总秒数」两位数（如 09/15），@引用资产弹窗用 */
   secondsCountdown?: boolean;
   hideTime?: boolean;
+  suspendPlayback?: boolean;
+  restartOnHover?: boolean;
 }
 
 /**
  * 统一的音频波形播放器（基于 wavesurfer.js）。
  * 工作流音频节点、资产库上传音频卡等一律复用它，禁止再各写一套。
  */
-export function AudioWaveformPlayer({ url, variant = "node", stopWaveformPointer = false, secondsCountdown = false, hideTime = false }: AudioWaveformPlayerProps) {
+export function AudioWaveformPlayer({ url, variant = "node", stopWaveformPointer = false, secondsCountdown = false, hideTime = false, suspendPlayback = false, restartOnHover = false }: AudioWaveformPlayerProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const waveRef = useRef<{ play: () => void; pause: () => void; playPause: () => void; destroy: () => void } | null>(null);
+  const waveRef = useRef<{ play: (start?: number) => void | Promise<void>; pause: () => void; playPause: () => void; destroy: () => void } | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [duration, setDuration] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
@@ -43,9 +46,22 @@ export function AudioWaveformPlayer({ url, variant = "node", stopWaveformPointer
       const { default: WaveSurfer } = await import("wavesurfer.js");
       const container = containerRef.current;
       if (cancelled || !container) return;
+      let sourceUrl = url;
+      let peaks: number[][] | undefined;
+      let cachedDuration: number | undefined;
+      try {
+        const cached = await loadCachedAudioWaveform(url);
+        if (cancelled) return;
+        sourceUrl = cached.objectUrl;
+        peaks = cached.peaks;
+        cachedDuration = cached.duration;
+      } catch {
+        sourceUrl = url;
+      }
       ws = WaveSurfer.create({
         container,
-        url,
+        url: sourceUrl,
+        ...(peaks && cachedDuration ? { peaks, duration: cachedDuration } : {}),
         height: waveHeight,
         waveColor: "#b0b0b0",
         progressColor: "#1a1a1a",
@@ -58,7 +74,17 @@ export function AudioWaveformPlayer({ url, variant = "node", stopWaveformPointer
         dragToSeek: true,
       });
       waveRef.current = ws;
-      ws.on("ready", (value) => setDuration(value));
+      ws.on("ready", (value) => {
+        setDuration(value);
+        if (peaks) return;
+        const exporter = (ws as { exportPeaks?: (opts?: { channels?: number; maxLength?: number }) => number[][] }).exportPeaks;
+        if (!exporter) return;
+        try {
+          rememberAudioWaveformPeaks(url, exporter.call(ws, { channels: 1, maxLength: 800 }), value);
+        } catch {
+          /* ignore */
+        }
+      });
       ws.on("timeupdate", (value) => setCurrentTime(value));
       ws.on("seeking", (value) => setCurrentTime(value));
       ws.on("interaction", (value) => setCurrentTime(value));
@@ -80,6 +106,24 @@ export function AudioWaveformPlayer({ url, variant = "node", stopWaveformPointer
     };
   }, [url, waveHeight, isCard]);
 
+  useEffect(() => {
+    if (suspendPlayback) {
+      try {
+        waveRef.current?.pause();
+      } catch {
+        /* ignore */
+      }
+    }
+  }, [suspendPlayback]);
+
+  const playFromStart = useCallback(() => {
+    try {
+      void waveRef.current?.play(0);
+    } catch {
+      /* ignore until ready */
+    }
+  }, []);
+
   const togglePlay = useCallback(() => {
     waveRef.current?.playPause();
   }, []);
@@ -91,7 +135,10 @@ export function AudioWaveformPlayer({ url, variant = "node", stopWaveformPointer
     return (
       <div
         className="relative h-full w-full overflow-hidden bg-[#e6e6e6]"
-        onMouseEnter={() => waveRef.current?.play()}
+        onMouseEnter={() => {
+          if (restartOnHover) playFromStart();
+          else void waveRef.current?.play();
+        }}
         onMouseLeave={() => waveRef.current?.pause()}
       >
         <div className="absolute inset-x-3 inset-y-4">

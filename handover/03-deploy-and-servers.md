@@ -117,17 +117,12 @@ sudo /opt/flashmuse/scripts/flashmuse-db-backup.sh --stack prod --label pre-depl
 
 - 用户说 **"部署掉/部署一下"= 只部署测试服**，绝不动正式服。
 - 只有用户明确说 **"部署正式服/更新正式服/上线正式服"** 才走：**先部署测试服（含 `node scripts/bump-version.mjs` 版本号+1）→ 验证 → 再把测试服那份代码原样同步正式服（不再自增、原样带版本号）**。不跳过测试服、不直接改正式服代码。目标：版本号一样=代码一样。
-- ⭐⭐ **每部署完一台，必须真上号点一遍看有没有崩（2026-07-29 用户加的硬性要求）**：
-  **curl 200 / 版本号头对了 ≠ 没崩**。测试服部署完要上号，正式服部署完**也要上号**，**发现崩了立刻修**（能回滚就先回滚，保证用户还能用）。
-  最小巡检 6 项（每台都做，用 Playwright 或手点都行）：
-  1. 登录能进（**三个环境一律 `12424740@qq.com`/`dragonstar`**，见本文件末尾「巡检/测试用哪个号」）
-  2. **对话模式**列表 + 历史消息渲染正常
-  3. **工作流模式** tldraw 画布能打开、**点一下任意节点不变「Something went wrong」**（React #310 老坑）
-  4. **资产库**能开、缩略图出得来
-  5. **真跑一次生图**（成功出图 + 积分扣掉）；改过视频链路时**再真跑一次生视频**
-     ⭐ 会留痕的实验**新建一个工作流**来做（用户交代"测试内容不要删"）
-  6. **后台 `/admin`** 能进、`browser_console_messages` 里 **0 error**（hydration mismatch #418 老坑）
-     ⭐ 后台是唯一允许用 `lookxun@163.com` 的地方（要管理员权限），**只看页面、别在上面生成东西**
+- ⭐⭐ **每部署完一台，必须真上号点一遍看有没有崩（2026-07-29 用户加；2026-08-24 改口径）**：
+  **curl 200 / 版本号头对了 ≠ 没崩**。登录号不变：**三个环境一律 `12424740@qq.com`/`dragonstar`**；后台才用 `lookxun@163.com`，只看页面、别生成、⛔ 正式服公告别动。
+  🗣️ **2026-08-24 拍板：**
+  1. **测服**：部署完必须把**当次更新的新内容全部测一遍**，有问题当场修。⛔ 别再例行点对话/工作流/资产库/付费生图/后台全套。
+  2. **正式服**：用户没明确说「推正式服 / 上正式服」就**不许推**。说了才推；到正式服只用免费语音 **`fish-audio/s2.1-pro-free`** 测一下不崩即可。
+  3. ⛔ 别再拿付费生图当默认冒烟。没动视频链路就别真跑生视频。
 
 ---
 
@@ -262,7 +257,7 @@ sudo /opt/flashmuse/scripts/flashmuse-db-backup.sh --stack prod --label pre-depl
    - ⛔ **`.env` 是 root 属主**：`grep`/`sed` 都要 `sudo`，否则 `Permission denied`。用 `grep -q ... || echo >> ` 这种「查不到就追加」的写法时，**非 sudo 的 grep 会因权限失败而误触发追加分支** → 每次部署都多写一行。
    - ⛔ **实测发现 `.env` 里已累积了 4 行 `PUBLISHED_APP_VERSION=`（v66/67/68/69）**：compose 读 `.env` 是**最后一行生效**，所以功能没坏，但很脏。⭐ 正确写法一步到位：`sudo sed -i '/^PUBLISHED_APP_VERSION=/d' .env && echo 'PUBLISHED_APP_VERSION=vX' | sudo tee -a .env`（先删光同名行再追加一行）。改完 `sudo grep -n PUBLISHED_APP_VERSION .env` 确认只剩 1 行。
 6. 验证：`curl -D - http://127.0.0.1:5001/api/models | grep x-app-version`（=新版）+ `curl http://127.0.0.1:5001/api/health`（`{"ok":true,...}`）+ 外网 `http://101.37.129.164:8080/` 200。
-7. ⭐⭐ **必做：上号跑一遍上面「部署铁律」里的最小巡检 6 项**。崩了立刻修，别往正式服推。
+  7. ⭐⭐ **必做：上号把当次更新的新内容全部测一遍**（见上面「部署铁律」）。有问题当场修。用户没说推正式服就停在测服。
 
 ## 正式服（腾讯）部署流程（仅当用户明确说"部署正式服"）
 
@@ -285,7 +280,7 @@ sudo /opt/flashmuse/scripts/flashmuse-db-backup.sh --stack prod --label pre-depl
 6.5. ⭐ **发布版本信号（提示条门控，同测试服）**：正式 compose `/opt/flashmuse/docker-compose.yml` 也需有 `PUBLISHED_APP_VERSION: ""` 环境变量行（首次上此功能要手动加，位置同测试服 DATABASE_URL 行后）。**静态同步阿里正式镜像（第5步）完成后**，sed 改成本次新版 + `sudo docker compose up -d --force-recreate flashmuse-app`。保证正式服提示条弹出时静态已就绪、刷新不白屏。
 7. **env 数据**：`UPLOAD_RULE_OVERRIDES` 等是正式服独立 env（`/opt/flashmuse/data/.env.local`），不随代码同步；需要时手改 + `docker compose up -d --force-recreate flashmuse-app`。
 8. commit + push GitHub（保持四方同步）。
-9. ⭐⭐ **必做：正式服也要上号跑一遍最小巡检 6 项**（正式服崩了直接影响真实用户）。
+9. ⭐⭐ **必做：正式服也要上号，只测本批更新的内容**（正式服崩了直接影响真实用户）。
    **崩了立刻修**：能马上改就改（走"先测试服再正式服"顺序），修不了就用 `/opt/flashmuse/app-backups/<ts>-presync-vXX`
    回滚 `/opt/flashmuse/app` → `up -d --build flashmuse-app` → 重新同步 `.next/static` 到阿里正式镜像 → `PUBLISHED_APP_VERSION` 改回旧版。
 

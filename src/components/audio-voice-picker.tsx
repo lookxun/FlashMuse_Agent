@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { AUDIO_VOICE_LANGS, getAudioVoicePreviewUrl, type AudioVoiceLang, type AudioVoiceOption } from "@/lib/audio-voices";
 import { AudioWaveformPlayer } from "@/components/audio-waveform-player";
 import { VideoPlayBadge } from "@/components/video-play-badge";
@@ -19,6 +20,11 @@ export function AudioVoicePicker({
   selectedVoiceId?: string;
   onPick: (voice: AudioVoiceOption) => void;
 }) {
+  const [seenLangs, setSeenLangs] = useState<AudioVoiceLang[]>([activeLang]);
+  useEffect(() => {
+    setSeenLangs((prev) => (prev.includes(activeLang) ? prev : [...prev, activeLang]));
+  }, [activeLang]);
+
   return (
     <div className="flex w-[560px] max-w-[86vw] flex-col overflow-hidden rounded-[12px] bg-white p-2 shadow-[0_18px_44px_rgba(0,0,0,0.14)]">
       <style>{`
@@ -46,34 +52,43 @@ export function AudioVoicePicker({
         </div>
         <div className="relative min-w-0 flex-1">
           <div className="audio-voice-scroll absolute inset-0 overflow-y-auto pl-2">
-            {voices.length === 0 ? (
-              <div className="flex h-full items-center justify-center text-[13px] text-[#999]">暂无音色</div>
-            ) : (
-              <div className="grid grid-cols-5 gap-2">
-                {voices.map((voice) => {
-                  const selected = voice.id === selectedVoiceId;
-                  const previewUrl = getAudioVoicePreviewUrl(voice);
-                  return (
-                    <button
-                      key={voice.id}
-                      type="button"
-                      onClick={() => onPick(voice)}
-                      className={selected ? "group relative aspect-square overflow-hidden rounded-[8px] border-2 border-[#367cee] bg-[#f4f4f4] text-left" : "group relative aspect-square overflow-hidden rounded-[8px] border-2 border-transparent bg-[#f4f4f4] text-left"}
-                    >
-                      {previewUrl ? (
-                        <div className="h-full w-full overflow-hidden">
-                          <AudioWaveformPlayer key={previewUrl} url={previewUrl} variant="card" hideTime />
-                        </div>
-                      ) : (
-                        <VideoPlayBadge size="sm" />
-                      )}
-                      <div className="pointer-events-none absolute inset-x-0 bottom-0 z-30 h-8 bg-gradient-to-t from-black/75 to-transparent" />
-                      <span className="pointer-events-none absolute bottom-1.5 left-1.5 right-1.5 z-30 truncate text-[12px] font-medium leading-none text-white">{voice.label}</span>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
+            {seenLangs.map((lang) => {
+              const langVoices = voices.filter((voice) => voice.lang === lang);
+              const hidden = lang !== activeLang;
+              if (langVoices.length === 0) {
+                return hidden ? null : (
+                  <div key={lang} className="flex h-full items-center justify-center text-[13px] text-[#999]">暂无音色</div>
+                );
+              }
+              return (
+                <div key={lang} className={hidden ? "hidden" : undefined} aria-hidden={hidden}>
+                  <div className="grid grid-cols-5 gap-2">
+                    {langVoices.map((voice) => {
+                      const selected = voice.id === selectedVoiceId;
+                      const previewUrl = getAudioVoicePreviewUrl(voice);
+                      return (
+                        <button
+                          key={voice.id}
+                          type="button"
+                          onClick={() => onPick(voice)}
+                          className={selected ? "group relative aspect-square overflow-hidden rounded-[8px] border-2 border-[#367cee] bg-[#f4f4f4] text-left" : "group relative aspect-square overflow-hidden rounded-[8px] border-2 border-transparent bg-[#f4f4f4] text-left"}
+                        >
+                          {previewUrl ? (
+                            <div className="h-full w-full overflow-hidden">
+                              <AudioWaveformPlayer url={previewUrl} variant="card" hideTime restartOnHover suspendPlayback={hidden} />
+                            </div>
+                          ) : (
+                            <VideoPlayBadge size="sm" />
+                          )}
+                          <div className="pointer-events-none absolute inset-x-0 bottom-0 z-30 h-8 bg-gradient-to-t from-black/75 to-transparent" />
+                          <span className="pointer-events-none absolute bottom-1.5 left-1.5 right-1.5 z-30 truncate text-[12px] font-medium leading-none text-white">{voice.label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
       </div>

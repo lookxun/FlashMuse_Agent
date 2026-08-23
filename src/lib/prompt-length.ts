@@ -1,5 +1,7 @@
 import { isSeedance20FamilyVideoModel, SEEDANCE_20_FAMILY_MODEL_ID, type UploadRuleMode } from "@/lib/upload-rules";
-import { SEEDANCE_25_VIDEO_MODEL_ID } from "@/lib/models";
+import { isFishAudioModel, SEEDANCE_25_VIDEO_MODEL_ID } from "@/lib/models";
+
+export const FISH_AUDIO_S21_PROMPT_KEY = "fish-audio:s2.1";
 
 /**
  * 「提示词字数上限」按模型配置 —— 唯一权威。
@@ -56,6 +58,13 @@ const MODEL_DEFAULT_PROMPT_MAX_LENGTH: Record<string, number> = {
   "kwaivgi/kling-v3.0-pro": 2000, // Kling v3.0 Pro（上游硬上限 2500）
   "kwaivgi/kling-video-o1": 2000, // Kling Video O1（上游硬上限 2500）
   "google/veo-3.1": 4000, // Veo 3.1
+  // 语音模型：默认 = 文档/官方硬上限的一半（2026-08-24）
+  // MiniMax Speech 2.8 HD：T2A v2 官方「Must be less than 10,000 characters」
+  "minimax/speech-2.8-hd": 5000,
+  // Qwen-Audio-3.0-TTS Plus：DashScope CosyVoice/Qwen-Audio-TTS 单次常见上限 20000 字
+  "qwen/qwen-audio-3.0-tts-plus": 10000,
+  // Fish S2.1 Pro / 免费：同一代、字数一样，共用一条
+  [FISH_AUDIO_S21_PROMPT_KEY]: 5000,
 };
 
 /** 后台可填的绝对上限（防手滑输入天文数字把浏览器/上游打挂）。 */
@@ -82,6 +91,7 @@ export type PromptLengthContext = {
 export function getPromptLengthOverrideKey(context: PromptLengthContext): string {
   if (context.mode === "agent" || context.mode === "general") return "chat";
   if (context.mode === "video" && isSeedance20FamilyVideoModel(context.modelId)) return SEEDANCE_20_FAMILY_MODEL_ID;
+  if (isFishAudioModel(context.modelId)) return FISH_AUDIO_S21_PROMPT_KEY;
   return context.modelId || context.mode;
 }
 

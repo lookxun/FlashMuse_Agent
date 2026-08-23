@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import type { IconType } from "react-icons";
 import { RiLoader4Line } from "react-icons/ri";
 import { AudioWaveformPlayer } from "@/components/audio-waveform-player";
@@ -56,6 +57,10 @@ export function AssetMentionPicker({
   title = "@引用资产",
   className,
 }: AssetMentionPickerProps) {
+  const [seenValues, setSeenValues] = useState<string[]>([activeValue]);
+  useEffect(() => {
+    setSeenValues((prev) => (prev.includes(activeValue) ? prev : [...prev, activeValue]));
+  }, [activeValue]);
   const items = itemsFor(activeValue);
   return (
     <div className={`flex w-[560px] max-w-[86vw] flex-col overflow-hidden rounded-[12px] bg-white p-2 shadow-[0_18px_44px_rgba(0,0,0,0.14)] ${className ?? ""}`}>
@@ -101,35 +106,42 @@ export function AssetMentionPicker({
                 if (el.scrollTop + el.clientHeight >= el.scrollHeight - 48 && items.length < total) onScrollLoadMore(activeValue, items.length);
               }}
             >
-              {items.length === 0 ? (
-                activeLoading
-                  ? <div className="flex h-full items-center justify-center gap-2 text-[13px] font-medium text-[#367cee]"><RiLoader4Line className="h-[18px] w-[18px] animate-spin" /><span>正在加载中...</span></div>
-                  : <div className="flex h-full items-center justify-center text-[13px] text-[#999]">暂无资产</div>
-              ) : (
-                <>
-                <div className="grid grid-cols-5 gap-2">
-                  {items.map((item) => (
-                    <button key={item.id} type="button" onClick={() => onPick(item)} className="group relative aspect-square overflow-hidden rounded-[8px] bg-[#f4f4f4] text-left">
-                    {item.kind === "audio" ? (
-                      <div className="h-full w-full overflow-hidden"><AudioWaveformPlayer key={item.url} url={getMediaSrc(item.url)} variant="card" secondsCountdown /></div>
-                    ) : item.kind === "video" ? (
-                      item.thumbnailUrl
-                        ? /* eslint-disable-next-line @next/next/no-img-element */ <img src={item.thumbnailUrl} alt={item.name} draggable={false} className="h-full w-full object-cover" />
-                        : <video src={`${getMediaSrc(item.url)}#t=0.1`} muted playsInline preload="metadata" className="h-full w-full object-cover" />
-                    ) : (
-                      /* eslint-disable-next-line @next/next/no-img-element */ <img src={item.thumbnailUrl ?? getMediaSrc(item.url)} alt={item.name} draggable={false} className="h-full w-full object-cover" />
-                    )}
-                    {item.kind === "video" ? (
-                      <VideoPlayBadge size="sm" />
-                    ) : null}
-                      <div className="pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t from-black/75 to-transparent" />
-                      <span className="pointer-events-none absolute bottom-1.5 left-1.5 right-1.5 truncate text-[12px] font-medium leading-none text-white">@{item.name}</span>
-                    </button>
-                  ))}
-                </div>
-                {activeLoading ? <div className="flex items-center justify-center gap-2 py-3 text-[12px] font-medium text-[#367cee]"><RiLoader4Line className="h-[14px] w-[14px] animate-spin" /><span>正在加载中...</span></div> : null}
-                </>
-              )}
+              {seenValues.map((value) => {
+                const langItems = itemsFor(value);
+                const hidden = value !== activeValue;
+                const isActiveLoading = value === activeValue && Boolean(activeLoading);
+                if (langItems.length === 0) {
+                  if (hidden) return null;
+                  return isActiveLoading
+                    ? <div key={value} className="flex h-full items-center justify-center gap-2 text-[13px] font-medium text-[#367cee]"><RiLoader4Line className="h-[18px] w-[18px] animate-spin" /><span>正在加载中...</span></div>
+                    : <div key={value} className="flex h-full items-center justify-center text-[13px] text-[#999]">暂无资产</div>;
+                }
+                return (
+                  <div key={value} className={hidden ? "hidden" : undefined} aria-hidden={hidden}>
+                    <div className="grid grid-cols-5 gap-2">
+                      {langItems.map((item) => (
+                        <button key={item.id} type="button" onClick={() => onPick(item)} className="group relative aspect-square overflow-hidden rounded-[8px] bg-[#f4f4f4] text-left">
+                        {item.kind === "audio" ? (
+                          <div className="h-full w-full overflow-hidden"><AudioWaveformPlayer url={getMediaSrc(item.url)} variant="card" secondsCountdown suspendPlayback={hidden} /></div>
+                        ) : item.kind === "video" ? (
+                          item.thumbnailUrl
+                            ? /* eslint-disable-next-line @next/next/no-img-element */ <img src={item.thumbnailUrl} alt={item.name} draggable={false} className="h-full w-full object-cover" />
+                            : <video src={`${getMediaSrc(item.url)}#t=0.1`} muted playsInline preload="metadata" className="h-full w-full object-cover" />
+                        ) : (
+                          /* eslint-disable-next-line @next/next/no-img-element */ <img src={item.thumbnailUrl ?? getMediaSrc(item.url)} alt={item.name} draggable={false} className="h-full w-full object-cover" />
+                        )}
+                        {item.kind === "video" ? (
+                          <VideoPlayBadge size="sm" />
+                        ) : null}
+                          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t from-black/75 to-transparent" />
+                          <span className="pointer-events-none absolute bottom-1.5 left-1.5 right-1.5 truncate text-[12px] font-medium leading-none text-white">@{item.name}</span>
+                        </button>
+                      ))}
+                    </div>
+                    {isActiveLoading ? <div className="flex items-center justify-center gap-2 py-3 text-[12px] font-medium text-[#367cee]"><RiLoader4Line className="h-[14px] w-[14px] animate-spin" /><span>正在加载中...</span></div> : null}
+                  </div>
+                );
+              })}
             </div>
           </div>
         </div>
