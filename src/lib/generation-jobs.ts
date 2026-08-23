@@ -437,6 +437,29 @@ export function buildJobReferenceItems(job: { referenceImages?: unknown; referen
   return [...build(job.referenceImages, "image"), ...build(job.referenceVideos, "video"), ...build(job.referenceAudios, "audio")];
 }
 
+export function parseStoredInputReferences(value: unknown): GenerationReferenceItem[] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+  const record = value as Record<string, unknown>;
+  if (Array.isArray(record.inputReferences)) {
+    return record.inputReferences.flatMap((item): GenerationReferenceItem[] => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+      const row = item as Record<string, unknown>;
+      const url = typeof row.url === "string" ? row.url : "";
+      const kind = row.kind === "video" || row.kind === "audio" || row.kind === "image" ? row.kind : null;
+      if (!url || !kind) return [];
+      return [{ url, kind, name: typeof row.name === "string" && row.name ? row.name : undefined }];
+    });
+  }
+  const audios = Array.isArray(record.referenceAudios) ? record.referenceAudios : [];
+  return audios.filter((url): url is string => typeof url === "string" && Boolean(url)).map((url) => ({ url, kind: "audio" as const }));
+}
+
+export function mergeInputReferencesIntoSettings(settings: unknown, refs: GenerationReferenceItem[]): Prisma.InputJsonValue | undefined {
+  const base = settings && typeof settings === "object" && !Array.isArray(settings) ? { ...(settings as Record<string, unknown>) } : {};
+  if (refs.length > 0) base.inputReferences = refs;
+  return Object.keys(base).length > 0 ? base as Prisma.InputJsonValue : undefined;
+}
+
 // ⛔ 原来这里有个 `getLatestSucceededJobForWorkflowNode`（`SELECT *` 取整行 job）已删除：
 // 唯一调用者是「使用提示词」接口，已换成下面的窄查询 `getWorkflowPromptReferenceRow`。别把它捡回来。
 
@@ -528,6 +551,20 @@ export async function getGenerationJobByMediaUrl(userId: string, mediaUrl: strin
     SELECT * FROM "GenerationJob" WHERE "userId" = ${userId} AND "requestId" LIKE ${requestId + ":%"} ORDER BY "createdAt" DESC LIMIT 1
   `;
   return prefixed[0];
+}
+
+export async function getMediaInputReferences(userId: string, mediaUrl: string): Promise<GenerationReferenceItem[]> {
+  if (!mediaUrl) return [];
+  const clean = mediaUrl.split("?")[0].split("#")[0].replace(/^https?:\/\/[^/]+/, "");
+  const assetRows = await prisma.$queryRaw<Array<{ generationSettings: unknown }>>`
+    SELECT "generationSettings" FROM "MediaAsset"
+    WHERE "userId" = ${userId} AND ("url" = ${mediaUrl} OR "url" = ${clean} OR "normalizedUrl" = ${clean})
+    LIMIT 1
+  `;
+  const stored = parseStoredInputReferences(assetRows[0]?.generationSettings);
+  if (stored.length > 0) return stored;
+  const job = await getGenerationJobByMediaUrl(userId, mediaUrl);
+  return job ? buildJobReferenceItems(job) : [];
 }
 
 /** 拉取该用户所有仍在进行 + 最近完成的任务，供前端加载/重连时对齐展示。 */
@@ -768,18 +805,17 @@ async function finalizeImageJobAsset(job: GenerationJobRow, images: string[], di
           url: resolved.url, normalizedUrl: resolved.normalizedUrl, originalUrl: resolved.originalUrl, thumbnailUrl: resolved.thumbnailUrl,
           name, sourcePrompt,
           model: job.model ?? undefined, ratio: settings?.ratio, resolution: settings?.resolution,
-          generationSettings: (settings ?? undefined) as Prisma.InputJsonValue | undefined,
+          generationSettings: mergeInputReferencesIntoSettings(settings, buildJobReferenceItems(job)),
           width: dim?.width, height: dim?.height,
           conversationId: job.conversationId ?? undefined, messageId: job.messageId ?? undefined,
           workflowId: job.workflowId ?? undefined, workflowNodeId: job.workflowNodeId ?? undefined,
           requestId: job.requestId,
         }),
-        // 出生即冻结用户数据；但权威补齐生成参数（兜底路径可能抢先建了空参数行）。
         update: {
           model: job.model ?? undefined,
           ratio: settings?.ratio ?? undefined,
           resolution: settings?.resolution ?? undefined,
-          generationSettings: (settings ?? undefined) as Prisma.InputJsonValue | undefined,
+          generationSettings: mergeInputReferencesIntoSettings(settings, buildJobReferenceItems(job)),
           width: dim?.width ?? undefined,
           height: dim?.height ?? undefined,
           requestId: job.requestId ?? undefined,
@@ -979,14 +1015,12 @@ async function finalizeVideoJobAsset(job: GenerationJobRow, videoUrl: string, po
         url: resolved.url, normalizedUrl: resolved.normalizedUrl, originalUrl: resolved.originalUrl,
         posterUrl, thumbnailUrl: posterUrl, name, sourcePrompt,
         model: job.model ?? undefined, ratio: storeRatio, resolution: storeResolution, videoDuration: storeDuration,
-        generationSettings: (settings ?? undefined) as Prisma.InputJsonValue | undefined,
+        generationSettings: mergeInputReferencesIntoSettings(settings, buildJobReferenceItems(job)),
         width: dimensions?.width, height: dimensions?.height, durationSeconds: dimensions?.durationSeconds,
         conversationId: job.conversationId ?? undefined, messageId: job.messageId ?? undefined,
         workflowId: job.workflowId ?? undefined, workflowNodeId: job.workflowNodeId ?? undefined,
         requestId: job.requestId,
       }),
-      // 权威写入者补齐生成参数：兜底路径(workspace JSON)可能抢先建了空参数行，这里用 job 的
-      // 权威参数补上（生成事实，非冻结的用户数据）；不动 name/sourcePrompt/归类等用户冻结字段。
       update: {
         posterUrl: posterUrl ?? undefined,
         thumbnailUrl: posterUrl ?? undefined,
@@ -994,7 +1028,7 @@ async function finalizeVideoJobAsset(job: GenerationJobRow, videoUrl: string, po
         ratio: storeRatio ?? undefined,
         resolution: storeResolution ?? undefined,
         videoDuration: storeDuration ?? undefined,
-        generationSettings: (settings ?? undefined) as Prisma.InputJsonValue | undefined,
+        generationSettings: mergeInputReferencesIntoSettings(settings, buildJobReferenceItems(job)),
         width: dimensions?.width ?? undefined,
         height: dimensions?.height ?? undefined,
         durationSeconds: dimensions?.durationSeconds ?? undefined,

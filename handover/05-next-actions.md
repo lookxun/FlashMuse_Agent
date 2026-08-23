@@ -2,24 +2,25 @@
 
 > 历史 END-OF-SESSION 记录都在 `historical-handover-docs-last-used-2026-07-21/05-next-actions.md`（很长）。这里只留当前有效待办。
 
-## ✅ 当前状态（2026-08-23 第八十二次会话末）：**已部署测试服 `v1.0.1.4` 并 push；正式服仍 `v1.0.1.3`**
+## ✅ 当前状态（2026-08-23 第八十三次会话末）：**四方同步 `v1.0.1.5`**
 
 | | 版本 / 状态 |
 |---|---|
-| 本地 = 测试服 = GitHub | **`v1.0.1.4`** |
-| 正式服 | 仍 **`v1.0.1.3`**（`387ad87`） |
+| 本地 = 测试服 = 正式服 = GitHub | **`v1.0.1.5`** |
 | 自查 | `tsc` 0 |
-| 迁移 | 测服已跑默认语音字段 + `archivedAt` 列。归档运行时仍走 JSON。 |
-| 回滚点 | 测服库 `pre-deploy-v1.0.1.4`；正式服 app `.../20260822-190507-presync-v1.0.1.3` |
+| 迁移 | 正式服已 apply 默认语音字段 + `archivedAt` 列。归档运行时仍走 JSON。 |
+| 回滚点 | 正式服 app `.../20260823-151900-presync-v1.0.1.5` |
 
 ### 🎯 待办 0
 
-1. 正式服等拍板（**不再 bump**，staging→prod 原样同步）。上正式服前再上号巡检。⛔ 正式服公告别动。
+1. Fish 音色克隆**没真打上游**（要 10–60 秒参考音 + 烧钱）。要验克隆再真走界面。
 2. 点归档名称弹详情**已撤**，别加回来。语速别做。Kimi 别写成 MiniMax。别给 MiniMax/Qwen 做 OpenRouter 克隆。`modal.md` 别误 commit。
+3. 工作区还剩未跟踪的 `modal.md`，别 `git add -A`。
+4. ⛔ 正式服公告别动。老成品没存过的参考素材补不回来。
 
 ### ⚠️ 血泪教训（本对话框仍有效）
 
-写文件只用 edit/write。`button { font: inherit }` 无 layer，会赢过 Tailwind 写在 button 上的字号 → 字号写 span。工作流归档必须能从 GET 读回来（`usageSummary.archivedAt`），只写内存/未生效列 = 热更新就「自动恢复」。刷新面板别再用「登录默认」覆盖上次所在页。
+写文件只用 edit/write。`button { font: inherit }` 无 layer，会赢过 Tailwind 写在 button 上的字号 → 字号写 span。工作流归档必须能从 GET 读回来（`usageSummary.archivedAt`），只写内存/未生效列 = 热更新就「自动恢复」。刷新面板别再用「登录默认」覆盖上次所在页。`keepSingleEmptySession` 必须把归档会话当已删一样跳过，否则归档空对话刷新就没了。
 
 ---
 

@@ -3,7 +3,7 @@ import { isAdminEmail } from "@/lib/admin";
 import { getCurrentAdminEmail } from "@/lib/admin-auth";
 import { getCreditSettings } from "@/lib/credits";
 import { audioGenerationModels, bytePlusImageGenerationModels, bytePlusVideoGenerationModels, imageGenerationModels, videoGenerationModels } from "@/lib/models";
-import { buildJobReferenceItems } from "@/lib/generation-jobs";
+import { buildJobReferenceItems, parseStoredInputReferences } from "@/lib/generation-jobs";
 import { prisma } from "@/lib/prisma";
 import { Prisma } from "@prisma/client";
 import type { AdminCreditCategoryDetail, AdminCreditConversationDetail, AdminCreditFlowItem, AdminCreditUser } from "../../../admin-credits-panel";
@@ -257,6 +257,7 @@ function getMediaAssetItems(assetStates: any[], scope: "conversation" | "asset" 
       size,
       style: "-",
       createdAtTs: media.firstSeenAt instanceof Date ? media.firstSeenAt.getTime() : media.createdAt instanceof Date ? media.createdAt.getTime() : 0,
+      references: parseStoredInputReferences(media.generationSettings),
     }];
   });
 }
@@ -300,7 +301,7 @@ async function attachGenerationReferences(userId: string, items: AdminMediaItem[
     const refs = buildJobReferenceItems(job);
     if (refs.length === 0) continue;
     if (job.requestId && !byRequest.has(job.requestId)) byRequest.set(job.requestId, refs);
-    const bare = job.requestId?.match(/^(.+):(?:video|image):\d+$/)?.[1];
+    const bare = job.requestId?.match(/^(.+):(?:video|image|audio):\d+$/)?.[1];
     if (bare && !byBareRequest.has(bare)) byBareRequest.set(bare, refs);
     if (job.workflowNodeId && !byNode.has(job.workflowNodeId)) byNode.set(job.workflowNodeId, refs);
     if (job.messageId) {
@@ -310,6 +311,7 @@ async function attachGenerationReferences(userId: string, items: AdminMediaItem[
   }
 
   for (const item of items) {
+    if (item.references && item.references.length > 0) continue;
     const references =
       (item.requestId ? byRequest.get(item.requestId) : undefined) ??
       (item.requestId ? byBareRequest.get(item.requestId) : undefined) ??
@@ -488,14 +490,14 @@ const RECORDS_ASSET_STATE_SELECT = {
   mediaAsset: { select: { url: true, archivedAt: true, mediaType: true, sourceKind: true, systemName: true, initialName: true, workspaceKind: true } },
 } as const;
 
-// Media/full modes render full media lists, so they need more columns — but still exclude the
-// heavy unused JSON columns (previewMeta / generationSettings / legacyAssetJson).
+// Media/full modes render full media lists, so they need more columns — still exclude
+// unused heavy JSON (previewMeta / legacyAssetJson). generationSettings 带本次输入框参考素材快照。
 const DETAIL_ASSET_STATE_SELECT = {
   currentCategory: true,
   hiddenAt: true,
   currentName: true,
   deletedAt: true,
-  mediaAsset: { select: { id: true, url: true, archivedAt: true, mediaType: true, sourceKind: true, workspaceKind: true, systemName: true, initialName: true, originalFileName: true, mimeType: true, reversePrompt: true, sourcePrompt: true, sourceDetail: true, model: true, ratio: true, resolution: true, videoDuration: true, width: true, height: true, imageSize: true, requestId: true, conversationId: true, messageId: true, workflowId: true, workflowNodeId: true, firstSeenAt: true, createdAt: true } },
+      mediaAsset: { select: { id: true, url: true, archivedAt: true, mediaType: true, sourceKind: true, workspaceKind: true, systemName: true, initialName: true, originalFileName: true, mimeType: true, reversePrompt: true, sourcePrompt: true, sourceDetail: true, model: true, ratio: true, resolution: true, videoDuration: true, width: true, height: true, imageSize: true, requestId: true, conversationId: true, messageId: true, workflowId: true, workflowNodeId: true, firstSeenAt: true, createdAt: true, generationSettings: true } },
 } as const;
 
 // Light select for the paginated media dialog: only the columns needed to classify a row and sort

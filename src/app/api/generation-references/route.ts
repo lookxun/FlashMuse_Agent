@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
-import { buildJobReferenceItems, getGenerationJobByMediaUrl } from "@/lib/generation-jobs";
+import { getMediaInputReferences } from "@/lib/generation-jobs";
 
 export const runtime = "nodejs";
 
@@ -15,8 +15,6 @@ export async function POST(request: Request) {
   const mediaUrl = typeof body?.mediaUrl === "string" ? body.mediaUrl : "";
   if (!mediaUrl) return NextResponse.json({ references: [] });
 
-  const job = await getGenerationJobByMediaUrl(user.id, mediaUrl);
-  if (!job) return NextResponse.json({ references: [] });
-
-  return NextResponse.json({ references: buildJobReferenceItems(job) });
+  const references = await getMediaInputReferences(user.id, mediaUrl);
+  return NextResponse.json({ references });
 }

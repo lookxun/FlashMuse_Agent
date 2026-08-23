@@ -65,7 +65,6 @@ export type AdminMediaItem = {
   size: string;
   style?: string;
   createdAtTs?: number;
-  // 该次生成实际用到的参考素材（上传/连线的图片/视频/音频 + 显示名），来自权威 GenerationJob。
   references?: Array<{ url: string; name?: string; kind: "image" | "video" | "audio" }>;
 };
 

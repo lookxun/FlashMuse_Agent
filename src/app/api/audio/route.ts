@@ -100,7 +100,11 @@ async function persistGeneratedAudio(input: {
         name, sourcePrompt: input.text,
         model: input.model, conversationId: input.conversationId, messageId: input.messageId, requestId: input.requestId,
         generationSettings: (input.audioReferenceMode || input.referenceAudios?.length)
-          ? { audioReferenceMode: input.audioReferenceMode, referenceAudios: input.referenceAudios ?? [] } as Prisma.InputJsonValue
+          ? {
+              audioReferenceMode: input.audioReferenceMode,
+              referenceAudios: input.referenceAudios ?? [],
+              inputReferences: (input.referenceAudios ?? []).map((url) => ({ url, kind: "audio" })),
+            } as Prisma.InputJsonValue
           : undefined,
       }),
       update: { model: input.model, requestId: input.requestId ?? undefined },
@@ -188,7 +192,7 @@ export async function POST(request: Request) {
           messageId: body?.messageId,
           requestId: body?.requestId,
           audioReferenceMode,
-          referenceAudios: cloneReferenceUrl ? [cloneReferenceUrl] : undefined,
+          referenceAudios: (audioReferenceMode === "clone" && cloneReferenceUrl) ? [cloneReferenceUrl] : (referenceAudios.length > 0 ? referenceAudios : undefined),
         });
         const credit = await chargeCredits(user.id, "audio", { usd: result.usage.usd }, {
           conversationId: body?.conversationId, conversationTitle: body?.conversationTitle, requestId: body?.requestId,

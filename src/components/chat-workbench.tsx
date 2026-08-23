@@ -7,7 +7,7 @@ import { validateImageUploadFile } from "@/lib/image-upload-validation";
 import { IS_TEST_SERVER, versionLabel } from "@/lib/app-version";
 import { MEDIA_DURATION_EPSILON_SECONDS, validateMediaUploadFile, validateMediaUploadMetadata, validateReferenceMediaDurationRange as validateMediaDuration } from "@/lib/media-upload-validation";
 import { getStaticMediaUrl } from "@/lib/static-media-url";
-import { RiAddLine, RiArrowLeftSLine, RiArrowRightSLine, RiArrowDownSLine, RiArrowDownFill, RiArrowUpDownLine, RiArrowUpLine, RiArrowUpSLine, RiArrowDownWideLine, RiAtLine, RiCameraLine, RiCheckLine, RiChat3Line, RiChatSmileAiLine, RiChatDeleteLine, RiCheckboxMultipleBlankLine, RiCloseLine, RiDeleteBinLine, RiEmotionHappyLine, RiEmotionUnhappyLine, RiEmotionSadLine, RiEqualizerLine, RiErrorWarningLine,   RiFolderLine, RiFolderOpenLine, RiInboxArchiveLine, RiBellLine, RiFormatClear, RiLandscapeLine, RiImageLine, RiSidebarFoldLine, RiSidebarUnfoldLine, RiLeafLine, RiLockPasswordLine, RiMoreLine, RiMusic2Line, RiMultiImageLine, RiMailLine, RiPhoneLine, RiEditBoxLine, RiPushpinLine, RiResetLeftLine, RiRefreshLine, RiShining2Line, RiStarSmileLine, RiStopFill, RiThumbDownLine, RiThumbDownFill, RiThumbUpLine, RiThumbUpFill, RiTimeLine, RiVipCrown2Line, RiVipDiamondLine, RiVideoLine, RiVideoOnLine, RiVoiceprintLine, RiQuillPenAiLine, RiAccountBoxLine, RiAccountCircleLine, RiFilmLine, RiFullscreenLine, RiInformationLine, RiGlobalLine, RiGitMergeLine, RiGitPullRequestLine, RiFilmAiLine, RiImageAddLine, RiImageAiLine, RiMicAiLine, RiDownloadLine, RiRobot2Line, RiZoomInLine, RiTBoxLine, RiTerminalWindowFill, RiLogoutBoxRLine, RiSettingsLine, RiSunLine, RiMoonLine, RiComputerLine, RiNotification2Line, RiShieldUserLine } from "react-icons/ri";
+import { RiAddLine, RiArrowLeftSLine, RiArrowRightSLine, RiArrowDownSLine, RiArrowDownFill, RiArrowUpDownLine, RiArrowUpLine, RiArrowUpSLine, RiArrowDownWideLine, RiAtLine, RiCameraLine, RiCheckLine, RiChat3Line, RiChatSmileAiLine, RiChatDeleteLine, RiCheckboxMultipleBlankLine, RiCloseLine, RiDeleteBinLine, RiEmotionHappyLine, RiEmotionUnhappyLine, RiEmotionSadLine, RiEqualizerLine, RiErrorWarningLine,   RiFolderLine, RiFolderOpenLine, RiInboxArchiveLine, RiBellLine, RiFormatClear, RiLandscapeLine, RiImageLine, RiSidebarFoldLine, RiSidebarUnfoldLine, RiLeafLine, RiLoader4Line, RiLockPasswordLine, RiMoreLine, RiMusic2Line, RiMultiImageLine, RiMailLine, RiPhoneLine, RiEditBoxLine, RiPushpinLine, RiResetLeftLine, RiRefreshLine, RiShining2Line, RiStarSmileLine, RiStopFill, RiThumbDownLine, RiThumbDownFill, RiThumbUpLine, RiThumbUpFill, RiTimeLine, RiVipCrown2Line, RiVipDiamondLine, RiVideoLine, RiVideoOnLine, RiVoiceprintLine, RiQuillPenAiLine, RiAccountBoxLine, RiAccountCircleLine, RiFilmLine, RiFullscreenLine, RiInformationLine, RiGlobalLine, RiGitMergeLine, RiGitPullRequestLine, RiFilmAiLine, RiImageAddLine, RiImageAiLine, RiMicAiLine, RiDownloadLine, RiRobot2Line, RiZoomInLine, RiTBoxLine, RiTerminalWindowFill, RiLogoutBoxRLine, RiSettingsLine, RiSunLine, RiMoonLine, RiComputerLine, RiNotification2Line, RiShieldUserLine } from "react-icons/ri";
 import { ADVANCED_CHAT_MODEL, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, DEFAULT_AUDIO_MODEL, audioGenerationModels, isAudioModel, DEFAULT_IMAGE_QUALITY, IMAGE_QUALITY_OPTIONS, IMAGE_QUALITY_LABELS, isGptImage2Model, getGenerationModelSelectHint, bytePlusVideoGenerationModels, frontendConversationModels, frontendImageGenerationModels, getImageQualityBadgeLabel, getImageResolutionLabel, getSupportedImageRatios, getSupportedImageResolutions, getSupportedVideoRatios, getSupportedVideoResolutions, imageGenerationModels, isNonStandardVideoSize, normalizeImageRatioForModel, normalizeImageResolutionForModel, normalizeVideoRatioForModel, normalizeVideoResolutionForModel, validateVideoDurationWithReferences, videoGenerationModels, ConversationModel, GenerationModel, ModelName, PROMPT_TOOL_MODEL_CHAIN } from "@/lib/models";
 import { toUserErrorMessage } from "@/lib/error-message";
 import { handleSessionExpiredResponse } from "@/lib/session-expired-redirect";
@@ -3625,7 +3625,9 @@ export function ChatWorkbench() {
     const element = chatScrollRef.current;
     if (!element) return;
     element.scrollTop = pending.prevTop + (element.scrollHeight - pending.prevHeight);
-  }, [messages.length]);
+    const session = sessionsRef.current.find((item) => item.id === activeSessionId);
+    if (session?.messagesHasMore && element.scrollTop < 160) void loadOlderMessages(session.id);
+  }, [messages.length, activeSessionId, loadOlderMessages]);
 
   useEffect(() => {
     if (activePanel !== "chat") return;
@@ -3693,6 +3695,10 @@ export function ChatWorkbench() {
     }
 
     setShowScrollToBottom(distanceToBottom > 120);
+    if (activePanel === "chat" && element.scrollTop < 160) {
+      const session = sessionsRef.current.find((item) => item.id === activeSessionId);
+      if (session?.messagesHasMore) void loadOlderMessages(session.id);
+    }
   };
 
   useEffect(() => {
@@ -8668,31 +8674,24 @@ export function ChatWorkbench() {
     // 所以每次点生成一律新建一条 job，旧失败卡原样留着。
     const jobId = requestId;
     const startedAt = Date.now();
-    // 以提示词里的 @名为唯一真源：参考图 = 文字里 @到、且有缩略图草稿的资产（按 @名匹配草稿）；
-    // 去掉没有缩略图草稿的悬空 @名，保证 sourcePrompt 的每个 @名都精确对应它实际发送的参考图，
-    // 杜绝"@的是这张、发的是那张"的脱钩（历史 bug 根因）。参考图与 @名从此一一对应，预览 @名天然变蓝。
     const draftReferences = getCharacterPromptReferences();
     const draftByName = new Map(draftReferences.map((reference) => [reference.name, reference]));
     const mentionNames = getMentionNames(rawPrompt);
-    const references = mentionNames.map((name) => draftByName.get(name)).filter((reference): reference is ImageReference => Boolean(reference));
-    const validReferenceNames = new Set(references.map((reference) => reference.name));
+    const mentionedReferences = mentionNames.map((name) => draftByName.get(name)).filter((reference): reference is ImageReference => Boolean(reference));
+    const validReferenceNames = new Set(mentionedReferences.map((reference) => reference.name));
     const danglingNames = mentionNames.filter((name) => !validReferenceNames.has(name));
     if (danglingNames.length > 0) {
       let cleaned = rawPrompt;
       for (const name of danglingNames) cleaned = removeMentionName(cleaned, name, { trim: true });
       rawPrompt = cleaned.trim();
       if (!rawPrompt) { showInputTip("请输入提示词"); return; }
-    }
-    // 同步可见输入框：文字清掉悬空 @名、草稿只留被 @到的（保持 UI 与提交一致）。
-    if (danglingNames.length > 0 || references.length !== draftReferences.length) {
       setActiveAssetGeneratePrompt(rawPrompt);
-      setActiveAssetGenerateReferences(() => references);
     }
-    if (references.length > assetGenerateMaxReferenceImages) {
+    if (draftReferences.length > assetGenerateMaxReferenceImages) {
       showInputTip(`当前模型最多支持 ${assetGenerateMaxReferenceImages} 张参考图，不能上传更多图片`);
       return;
     }
-    const referenceHint = getReferenceHint(references, rawPrompt);
+    const referenceHint = getReferenceHint(draftReferences, rawPrompt);
     const ruleText = isShotGeneration ? getShotGenerationRuleText(characterGenerateStyle, characterGenerateRatio, characterGenerateModel) : isSceneGeneration ? getSceneGenerationRuleText(characterGenerateStyle, characterGenerateRatio, characterGenerateModel) : isPropGeneration ? getPropGenerationRuleText(characterGenerateStyle, characterGenerateRatio, characterGenerateModel) : getCharacterGenerationRuleText(characterGenerateRatio, characterGenerateStyle, characterGenerateModel);
     const styledPrompt = isPropGeneration ? enforceAssetGeneratePropStylePrompt(rawPrompt, characterGenerateStyle) : enforceAssetGenerateStylePrompt(rawPrompt, characterGenerateStyle);
     const prompt = [ruleText, referenceHint, `${isShotGeneration ? "用户分镜提示词" : isSceneGeneration ? "用户场景提示词" : isPropGeneration ? "用户道具提示词" : "用户角色提示词"}：${styledPrompt}`].filter(Boolean).join("\n\n");
@@ -8743,7 +8742,7 @@ export function ChatWorkbench() {
             prompt,
             sourcePrompt: rawPrompt,
             model: characterGenerateModel,
-            referenceImages: references.length > 0 ? references.map((reference) => reference.url) : undefined,
+            referenceImages: draftReferences.length > 0 ? draftReferences.map((reference) => reference.url) : undefined,
             settings,
             count: 1,
             candidateMode: "best",
@@ -10092,16 +10091,10 @@ export function ChatWorkbench() {
             </div>
           ) : (
             <div className="mx-auto max-w-[1006px] space-y-12">
-              {activeSession?.messagesHasMore ? (
-                <div className="flex justify-center">
-                  <button
-                    type="button"
-                    disabled={loadingOlderMessageSessionIds.has(activeSession.id)}
-                    onClick={() => void loadOlderMessages(activeSession.id)}
-                    className="bg-transparent px-0 py-0 text-[12px] font-medium leading-none text-[#367cee] transition hover:text-[#1f63d4] disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    {loadingOlderMessageSessionIds.has(activeSession.id) ? "加载中..." : "加载更早消息"}
-                  </button>
+              {activeSession && loadingOlderMessageSessionIds.has(activeSession.id) ? (
+                <div className="flex items-center justify-center gap-2 py-4 text-[13px] text-[#8a8a8a]" role="status" aria-label="加载更早的消息">
+                  <RiLoader4Line className="h-[16px] w-[16px] animate-spin" aria-hidden="true" />
+                  <span>加载更早的消息</span>
                 </div>
               ) : null}
               {messages.map((message) => {

@@ -14,7 +14,60 @@
 >   ④ 把旧卷标题改成「卷 N · 已归档只读」并在顶部加指向新卷的提示 ⑤ 更新 `00-README.md` 文档索引里的 CHANGELOG 行。
 > - 判据不变：**版本号一样 = 测试服和正式服代码一样**（本项目核心约定，见 `AGENTS.md`）。
 
-## 📌 当前状态摘要（2026-08-23 第八十二次会话末）：**已部署测试服 `v1.0.1.4` 并 push；正式服仍 `v1.0.1.3`**
+## 📌 当前状态摘要（2026-08-23 第八十三次会话末）：**四方同步 `v1.0.1.5`**
+
+| | 版本 / 状态 |
+|---|---|
+| 本地 = 测试服 = 正式服 = GitHub | **`v1.0.1.5`** |
+| 自查 | `tsc` 0 |
+| 迁移 | 正式服已 apply `20260823010000_user_default_audio_prefs`、`20260823020000_workspace_archived_at` |
+
+---
+
+## 🗒️ 第八十三次会话（2026-08-23）：往上滚自动加载更早消息 + 输入框素材入库显示 + 备忘核销；测服+正式服 `v1.0.1.5`
+
+**用户诉求**：对话往上滚自动加载；查后台生成弹窗缺参考素材并按「输入框有什么就存什么」修；核销已做完的备忘；本批上测服，没问题推正式服，上号测更新，最后 push GitHub。
+
+### 一、对话加载更早
+
+去掉顶部「加载更早消息」按钮。滚到顶自动拉；加载时灰色转圈 +「加载更早的消息」。位置钉在原来那条。
+
+### 二、参考素材存和显示
+
+后台弹窗只读 `GenerationJob`：语音没 job、资产库只存被 @ 的图、成品资产不带快照。改成：
+
+- 图/视频 finalize 把 job 参考写进 `MediaAsset.generationSettings.inputReferences`
+- 语音克隆参考也写这份快照
+- 资产库框里有的图都发、都存，不再只认 @
+- 后台/预览先读快照，没有再回退 job
+- 工作流编辑/高清本来就会带源图进 job
+
+老数据当时没存的补不回来。
+
+### 三、备忘核销
+
+关掉已落地的 **M003**（正式服工作流）、**M005**（@mention 收敛）、**M009**（BytePlus `asset://`）、**M012**（TTS/克隆）。
+
+### 四、部署
+
+- bump `v1.0.1.4` → `v1.0.1.5`，无新迁移、无 compose/nginx。
+- 测服 health / `x-app-version` / 8080 / https = v1.0.1.5。
+- 正式服备份 `20260823-151900-presync-v1.0.1.5`；staging→prod `src` md5 `c6d08953b2cadbf0493d4c56befcd755`（205 文件）。
+- 正式服 apply 两条积压迁移。静态 42=42。四域名 200。
+
+### 五、上号巡检（`12424740@qq.com`；后台 `lookxun@163.com` 只看）
+
+测服：登录、对话、工作流点节点不崩、资产库缩略图、真跑生图（94334→94328）、后台用户「所有生成图片」弹窗能开、0 error。对话 `v1015巡检：一只灰色小猫趴在书桌上`。
+
+正式服：登录、对话、新建工作流加图片节点不崩、资产库、真跑生图（8228→8225）、后台能进 0 error。⛔ 没动公告。
+
+### 六、主要文件
+
+`chat-workbench.tsx`、`generation-jobs.ts`、`api/audio/route.ts`、`api/generation-references/route.ts`、`admin-users-panel.tsx`、`admin/api/records/user-detail/route.ts`、`06-memo-tasks.md`、`app-version.ts`。
+
+---
+
+## 📌 上一状态摘要（2026-08-23 第八十二次会话末）：**已部署测试服 `v1.0.1.4` 并 push；正式服仍 `v1.0.1.3`**
 
 | | 版本 / 状态 |
 |---|---|
@@ -27,27 +80,56 @@
 
 ## 🗒️ 第八十二次会话（2026-08-23）：审 80+81 批、修归档空对话丢失、部署测试服 `v1.0.1.4`、上号验、push GitHub
 
-**用户诉求**：全面查本地这批代码 → 有问题修 → 没问题部署测试服 → 更新内容全部上号测 → 全过 push GitHub。
+**用户诉求**：① 先看交接做到哪 ② 全面查本地这批代码，有问题修，没问题部署测试服，更新内容全部上号测，全过 push GitHub ③ 把本对话框写进交接。
 
-### 一、审计
+### 一、本对话框时间线
 
-审了第 80 次 Fish 克隆 + 第 81 次用户中心/字体/归档/默认语音。规则层、扣费、克隆上限、归档 JSON 读写、用户中心壳子大体对。
+1. 接手看交接：本地叠了第 80 次 Fish 克隆 + 第 81 次用户中心/字体/归档/默认语音，线上仍 `v1.0.1.3`，未 bump、未部署、未 commit。
+2. 用户拍板：审代码 → 修 → 上测试服 → 上号全测 → push GitHub。**没说上正式服**。
+3. 审完整批（规则层/克隆上限/归档 JSON/用户中心/默认语音/字体）。发现 1 个真 bug 并修了。
+4. bump `v1.0.1.3` → `v1.0.1.4`，测服库备份后部署，两条迁移已 apply。
+5. 测试号上号验过（含真跑生图）。commit `d96e883` 已 push。正式服没动。
 
-### 二、修的真 bug
+### 二、本批带上线的产品（第 80+81 次攒的，本会话才上船）
 
-`keepSingleEmptySession` 只跳过已删、不跳过已归档。归档最后一个空对话会新建一个空对话，persist 时把归档那条当「多余空会话」丢掉。改成 `deletedAt || archivedAt` 都跳过。加载时 `activeSessionId` / `activeWorkflowId` 只认可见项。
+- **Fish 音色克隆**：只 Fish 有「文本转换 / 音色克隆」。克隆藏音色/情绪，加号启用，灰字「上传一段10-60秒的语音克隆源…」，上限 10–60 秒 / 15MB / mp3·wav / 1 段。没打 `@` 不许画 `@文件名`。规则 key `fish-audio:clone`（后台没有这行）。MiniMax/Qwen 不接克隆。
+- **用户中心全屏**：左 240 灰导航（退出 + 用户信息/积分/帐号安全/**归档**/设置），右白底 `max-w-[950px]`。头像菜单悬停出、移开关（`pb-2` 连命中区）。
+- **归档**：侧栏三点 + 头像菜单都能进。对话走 `summaryJson.archivedAt`，工作流走 `usageSummary.archivedAt`。删有二次确认。点名称弹详情**已撤**。
+- **默认语音**：设置里模型/音色/情绪，存 User 新列；新建对话套用。
+- **字体**：苹方 → 微软雅黑 UI。`button { font: inherit }` 会吃掉写在 button 上的字号 → 字号写 span。
+- **刷新停在上次面板**：`setActivePanel(nextActivePanel ?? landingPanel)`，别再用登录默认每次覆盖。
 
-### 三、部署测试服
+### 三、本会话修的真 bug
 
-bump `v1.0.1.3` → `v1.0.1.4`。测服库备份 `pre-deploy-v1.0.1.4`。迁移两条已 apply。health / `x-app-version` / 8080 / https 都是 `v1.0.1.4`。
+`keepSingleEmptySession`（`chat-workbench-core.tsx`）只跳过 `deletedAt`。归档最后一个空对话会先新建一个空对话，persist 时把归档那条当「多余空会话」丢掉 → 刷新归档列表没了。改成 `deletedAt || archivedAt` 都跳过。加载时 `activeSessionId` / `activeWorkflowId` 只认 `isVisibleSession/Workflow`。
 
-### 四、上号巡检（`12424740@qq.com`；后台只看 `lookxun@163.com`）
+### 四、部署
 
-登录、对话历史、工作流画布点节点不崩、资产库、真跑生图成功（扣 3 积分 94337→94334）、后台 0 error。新功能：用户中心全屏、头像悬停菜单含归档、归档对话+工作流刷新还在、刷新停在工作流、Fish「文本转换/音色克隆」、设置默认语音。没真跑克隆（要烧钱+10 秒参考音）。
+- bump 只发生在测服。包了整份 `src` + `prisma`。
+- 测服库备份：`/opt/flashmuse/backups/staging/flashmuse-staging-20260822-183306-pre-deploy-v1.0.1.4.dump.xz`
+- 迁移已 apply：`20260823010000_user_default_audio_prefs`、`20260823020000_workspace_archived_at`
+- 判据：`/api/health` = `v1.0.1.4`；静态同步后再置 `PUBLISHED_APP_VERSION`；`x-app-version` = v1.0.1.4；8080 / https 都 200。
+- commit **`d96e883`** 已 push。`modal.md` 未进库。
 
-### 五、下一个 AI
+### 五、上号巡检（`12424740@qq.com`；后台 `lookxun@163.com` 只看）
 
-正式服等拍板，不再 bump。`modal.md` 别 commit。语速别做。
+1. 登录进工作台，console 0 error。首页版本号 `v1.0.1.4`。字体 `PingFang SC, Microsoft YaHei UI…`。
+2. 对话历史正常。工作流画布能开、点节点不崩。资产库能开。
+3. 真跑生图成功。积分 94337→94334（扣 3）。对话名 `v1014巡检：一只白色小猫坐在窗台上`。
+4. 用户中心全屏 + 头像悬停菜单含归档。归档对话 `v1014归档测试`、工作流 `新工作流` 各一条，刷新还在。刷新停在工作流。
+5. Fish 菜单能切「文本转换 / 音色克隆」；克隆态音色隐藏、上传启用、灰字 10–60 秒。**没真打上游克隆**。
+6. 后台 `/admin` 能进、0 error。⛔ 没动公告。
+
+### 六、主要文件
+
+`chat-workbench.tsx`、`chat-workbench-core.tsx`、`upload-rules.ts`、`audio-reference-modes.ts`、`openrouter-audio.ts`、`api/audio/route.ts`、`user-profile.ts`、`workspace-sessions.ts`、`workspace-workflows.ts`、`globals.css`、`prisma/schema.prisma`、两条 migrations、`app-version.ts`。
+
+### 七、下一个 AI
+
+1. 正式服等拍板，**不再 bump**，staging→prod 原样同步。上正式服前再上号巡检。
+2. 别把归档点名称弹窗加回来。别再用登录默认覆盖刷新。工作流归档读写必须经过 `usageSummary.archivedAt`。
+3. 别接 MiniMax/Qwen 克隆。语速别做。写文件只用 edit/write。`modal.md` 别 commit。
+4. 测服克隆还没真跑，别写成「端到端验过克隆」。
 
 ---
 
