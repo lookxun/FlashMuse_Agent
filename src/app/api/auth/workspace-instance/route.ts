@@ -22,12 +22,15 @@ export async function POST(request: Request) {
       where: { id: session.id },
       data: { activeWorkspaceInstanceId: instanceId, activeWorkspaceSeenAt: new Date(), lastSeenAt: new Date() },
     });
-    // 这条心跳本身就写了 lastSeenAt → 对齐节流计时，别让下一个接口再白写一次（见 auth.ts 顶部注释）。
     markSessionLastSeenWritten(session.id);
     return Response.json({ active: true });
   }
 
-  const active = session.activeWorkspaceInstanceId === instanceId;
+  const live = await prisma.session.findUnique({
+    where: { id: session.id },
+    select: { activeWorkspaceInstanceId: true },
+  });
+  const active = live?.activeWorkspaceInstanceId === instanceId;
   if (active) {
     await prisma.session.update({ where: { id: session.id }, data: { activeWorkspaceSeenAt: new Date(), lastSeenAt: new Date() } }).catch(() => null);
     markSessionLastSeenWritten(session.id);

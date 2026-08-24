@@ -4,7 +4,7 @@ import { NextResponse } from "next/server";
 import { isAdminEmail } from "@/lib/admin";
 import { getCurrentAdminEmail } from "@/lib/admin-auth";
 import { verifyPassword } from "@/lib/auth";
-import { normalizeContentModerationText, SENSITIVE_POLITICS_CATEGORY, splitContentModerationTerms } from "@/lib/content-moderation";
+import { invalidateContentModerationCache, normalizeContentModerationText, SENSITIVE_POLITICS_CATEGORY, splitContentModerationTerms } from "@/lib/content-moderation";
 import { prisma } from "@/lib/prisma";
 
 export const runtime = "nodejs";
@@ -62,6 +62,7 @@ export async function POST(request: Request) {
         }
       }
     });
+    invalidateContentModerationCache();
     return NextResponse.json({ ok: true, count: terms.length, termsUpdated: hasTerms });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "保存失败" }, { status: 500 });

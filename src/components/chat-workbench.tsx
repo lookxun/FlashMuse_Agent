@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, CSSProperties, DragEvent, PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import Image from "next/image";
-import { createPortal } from "react-dom";
+import { createPortal, flushSync } from "react-dom";
 import { validateImageUploadFile } from "@/lib/image-upload-validation";
 import { IS_TEST_SERVER, versionLabel } from "@/lib/app-version";
 import { MEDIA_DURATION_EPSILON_SECONDS, validateMediaUploadFile, validateMediaUploadMetadata, validateReferenceMediaDurationRange as validateMediaDuration } from "@/lib/media-upload-validation";
@@ -235,6 +235,7 @@ import {
   AiGenerate3dIcon,
   getDisplayDimensions,
   ThinkingIndicator,
+  ThinkingProcessBlock,
   PromptOptimizingOverlay,
   LoadingSpinner,
   InlineLoadingDots,
@@ -283,6 +284,9 @@ import {
   normalizeSuggestionItem,
   getCorrectionMode,
   shouldPlanAgentTask,
+  isExplicitImageGenerationRequest,
+  isExplicitVideoGenerationRequest,
+  suggestionRequestsGeneration,
   getLastUserMessage,
   upsertIntentMemoryRule,
   getImageOnlyPrompt,
@@ -429,42 +433,6 @@ import {
   MediaCardHoverActions,
 } from "@/lib/chat/chat-workbench-core";
 import { VideoDurationSlider } from "@/components/video-duration-slider";
-
-async function readChatStream(response: Response, onDelta: (text: string) => void): Promise<ChatApiResponse> {
-  if (!response.ok) {
-    const data = await response.json().catch(() => undefined) as { error?: string } | undefined;
-    throw new Error(data?.error || "对话请求失败，请稍后再试。");
-  }
-  const reader = response.body?.getReader();
-  if (!reader) throw new Error("对话请求失败，请稍后再试。");
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let donePayload: ChatApiResponse | undefined;
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split(/\r?\n/);
-    buffer = lines.pop() ?? "";
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith("data:")) continue;
-      const raw = trimmed.slice(5).trim();
-      if (!raw) continue;
-      let payload: ChatApiResponse & { type?: string; text?: string; error?: string };
-      try {
-        payload = JSON.parse(raw) as ChatApiResponse & { type?: string; text?: string; error?: string };
-      } catch {
-        continue;
-      }
-      if (payload.type === "delta" && payload.text) onDelta(payload.text);
-      if (payload.type === "done") donePayload = payload;
-      if (payload.type === "error") throw new Error(payload.error || "对话请求失败，请稍后再试。");
-    }
-  }
-  if (!donePayload) throw new Error("对话请求失败，请稍后再试。");
-  return donePayload;
-}
 
 export function ChatWorkbench() {
   const workspaceInstanceIdRef = useRef(createClientId());
@@ -678,7 +646,6 @@ export function ChatWorkbench() {
   const [workspaceSite, setWorkspaceSite] = useState<WorkspaceSite>("other");
   const [modelInfoSessionId, setModelInfoSessionId] = useState("");
   const [activeTypingMessageIds, setActiveTypingMessageIds] = useState<Set<string>>(() => new Set());
-  const [streamingRequestIds, setStreamingRequestIds] = useState<Set<string>>(() => new Set());
   const [completedTypingMessageIds, setCompletedTypingMessageIds] = useState<Set<string>>(() => new Set());
   const [intentMemoryRules, setIntentMemoryRules] = useState<IntentMemoryRule[]>([]);
   const [feedbackLogs, setFeedbackLogs] = useState<FeedbackLogEntry[]>([]);
@@ -785,6 +752,7 @@ export function ChatWorkbench() {
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
   const pendingOlderMessagesScrollRef = useRef<{ prevHeight: number; prevTop: number } | null>(null);
   const suppressChatScrollToBottomRef = useRef(false);
+  const canLoadOlderByScrollRef = useRef(false);
   const wasThinkingRef = useRef(false);
   const uploadedFilesRowRef = useRef<HTMLDivElement | null>(null);
   const uploadedImagesRowRef = useRef<HTMLDivElement | null>(null);
@@ -1542,7 +1510,7 @@ export function ChatWorkbench() {
   // (durable recovery keeps polling). Keep the 1s timer alive so the recovered waiting card's progress/elapsed advances.
   const hasRecoveringMedia = messages.some((message) => message.role === "assistant" && ((message.pendingVideoCount ?? 0) > 0 || (message.pendingImageCount ?? 0) > 0 || (message.retryingFailedVideoIndexes?.length ?? 0) > 0 || (message.retryingFailedImageIndexes?.length ?? 0) > 0 || (message.videoSavedFlashAt ? Object.values(message.videoSavedFlashAt).some((at) => Date.now() - at < 3000) : false)));
   const needsLiveTimer = activePendingRequestCount > 0 || isActiveSessionLoading || isCharacterGenerating || assetGenerateJobs.length > 0 || hasRecoveringMedia;
-  const isThinking = activeIsResolving || activePendingRequests.some((request) => (request.mode === "agent" || request.mode === "general") && !streamingRequestIds.has(request.id)) || modelInfoSessionId === activeSession?.id;
+  const isThinking = activeIsResolving || activePendingRequests.some((request) => request.mode === "agent" || request.mode === "general") || modelInfoSessionId === activeSession?.id;
   const isMainInputDisabled = isThinking || isInputPromptOptimizing;
   const activeIsSending = activeSession ? sendingSessionIds.has(activeSession.id) : false;
 
@@ -3619,6 +3587,10 @@ export function ChatWorkbench() {
   }, []);
 
   useLayoutEffect(() => {
+    canLoadOlderByScrollRef.current = false;
+  }, [activeSessionId, activePanel]);
+
+  useLayoutEffect(() => {
     const pending = pendingOlderMessagesScrollRef.current;
     if (!pending) return;
     pendingOlderMessagesScrollRef.current = null;
@@ -3626,7 +3598,7 @@ export function ChatWorkbench() {
     if (!element) return;
     element.scrollTop = pending.prevTop + (element.scrollHeight - pending.prevHeight);
     const session = sessionsRef.current.find((item) => item.id === activeSessionId);
-    if (session?.messagesHasMore && element.scrollTop < 160) void loadOlderMessages(session.id);
+    if (canLoadOlderByScrollRef.current && session?.messagesHasMore && element.scrollTop < 160) void loadOlderMessages(session.id);
   }, [messages.length, activeSessionId, loadOlderMessages]);
 
   useEffect(() => {
@@ -3664,6 +3636,7 @@ export function ChatWorkbench() {
 
       const distanceToBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
       setShowScrollToBottom(distanceToBottom > 120);
+      canLoadOlderByScrollRef.current = true;
     }, 0);
 
     return () => window.clearTimeout(timer);
@@ -3695,7 +3668,7 @@ export function ChatWorkbench() {
     }
 
     setShowScrollToBottom(distanceToBottom > 120);
-    if (activePanel === "chat" && element.scrollTop < 160) {
+    if (activePanel === "chat" && canLoadOlderByScrollRef.current && element.scrollTop < 160) {
       const session = sessionsRef.current.find((item) => item.id === activeSessionId);
       if (session?.messagesHasMore) void loadOlderMessages(session.id);
     }
@@ -4080,7 +4053,7 @@ export function ChatWorkbench() {
         </button>
 
         {openControlMenu === "model" ? (
-          <div className="yinzao-scrollbar-always absolute bottom-full left-0 z-[70] mb-2 max-h-[420px] w-[300px] overflow-y-auto rounded-[12px] bg-white p-2 shadow-[0_18px_40px_rgba(0,0,0,0.12)]">
+          <div className="absolute bottom-full left-0 z-[70] mb-2 w-[300px] rounded-[12px] bg-white p-2 shadow-[0_18px_40px_rgba(0,0,0,0.12)]">
             <div className="px-2 pb-2 text-[12px] font-medium text-[#a0a0a0]">选择模型</div>
             {options.length === 0 ? <div className="px-2 py-6 text-center text-[13px] text-[#999999]">暂无可用模型</div> : options.map((option) => {
               const ModelIcon = getGenerationModelIcon(option.id);
@@ -5250,12 +5223,15 @@ export function ChatWorkbench() {
                     error: payload.error,
                     mode: payload.mode,
                     generationMeta: payload.generationMeta,
+                    reasoning: payload.reasoning,
+                    thinkMs: payload.thinkMs,
                   },
                 ],
               }
           : session,
       ),
     );
+    return messageId;
   }, []);
 
   const appendSystemMessage = useCallback((sessionId: string, payload: Pick<Message, "content"> & Partial<Pick<Message, "mode" | "error">>) => {
@@ -6185,6 +6161,9 @@ export function ChatWorkbench() {
         applyCreditResult(sessionId, plan.credit);
 
         if (plan.needsClarification || plan.intent === "clarify") {
+          const forceImage = pendingRequest.assetTargetType && pendingRequest.assetTargetType !== "other" && pendingRequest.assetTargetType !== "shot_video" || isExplicitImageGenerationRequest(sourceText);
+          const forceVideo = pendingRequest.assetTargetType === "shot_video" || isExplicitVideoGenerationRequest(sourceText);
+          if (!forceImage && !forceVideo) {
           appendAssistantMessage(sessionId, {
             content: plan.clarifyQuestion?.trim() || "我需要再确认一下你的目标：你想让我继续聊创意、生成图片，还是生成视频？",
             suggestions: plan.suggestions,
@@ -6193,6 +6172,15 @@ export function ChatWorkbench() {
             textModel: pendingRequest.mode === "general" ? pendingRequest.model : undefined,
           });
           return;
+          }
+          plan = { ...plan, intent: forceVideo ? "video" : "image", needsClarification: false };
+        }
+        if (plan.intent === "chat") {
+          if (pendingRequest.assetTargetType === "shot_video" || isExplicitVideoGenerationRequest(sourceText)) {
+            plan = { ...plan, intent: "video" };
+          } else if (pendingRequest.assetTargetType && pendingRequest.assetTargetType !== "other" || isExplicitImageGenerationRequest(sourceText)) {
+            plan = { ...plan, intent: "image" };
+          }
         }
 
         const generationMode: WorkMode = plan.intent === "image" || plan.intent === "video" ? plan.intent : pendingRequest.mode === "general" ? "general" : "agent";
@@ -6320,27 +6308,16 @@ export function ChatWorkbench() {
       if (!prompt) {
         const conversationTitle = sessions.find((session) => session.id === sessionId)?.title;
         if (pendingRequest.mode === "agent" || pendingRequest.mode === "general") {
-          appendAssistantMessage(sessionId, { content: "", mode: pendingRequest.mode, requestId: pendingRequest.id, textModel: pendingRequest.mode === "general" ? pendingRequest.model : undefined });
-          let assembled = "";
-          let flushTimer = 0;
-          const flushStream = () => {
-            flushTimer = 0;
-            updateAssistantMessageByRequestId(sessionId, pendingRequest.id, { content: assembled });
-          };
-          const queueDelta = (text: string) => {
-            assembled += text;
-            setStreamingRequestIds((current) => (current.has(pendingRequest.id) ? current : new Set(current).add(pendingRequest.id)));
-            if (flushTimer) return;
-            flushTimer = window.setTimeout(flushStream, 40);
-          };
           try {
             const chatModels = pendingRequest.mode === "agent"
               ? (pendingRequest.agentChatModelChain?.length ? pendingRequest.agentChatModelChain : [pendingRequest.promptModel ?? pendingRequest.model])
               : [pendingRequest.promptModel ?? pendingRequest.model];
             let lastChatError: unknown;
+            appendAssistantMessage(sessionId, { content: "", mode: pendingRequest.mode, requestId: pendingRequest.id, textModel: pendingRequest.mode === "general" ? pendingRequest.model : undefined });
             for (const chatModel of chatModels) {
-              assembled = "";
+              let liveContent = "";
               try {
+                const thinkStartedAt = Date.now();
                 const response = await fetch("/api/chat", {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
@@ -6348,35 +6325,147 @@ export function ChatWorkbench() {
                   body: JSON.stringify({
                     model: chatModel,
                     mode: pendingRequest.mode,
+                    stream: true,
                     messages: pendingRequest.referenceHint ? [...pendingRequest.messages, { role: "user", content: pendingRequest.referenceHint }] : pendingRequest.messages,
                     settings: pendingRequest.settings,
                     originalPrompt: pendingRequest.originalPrompt,
                     conversationId: sessionId,
                     conversationTitle,
                     requestId: pendingRequest.id,
-                    stream: true,
                   }),
                 });
                 if (await handleSessionExpiredResponse(response)) throw new DOMException("aborted", "AbortError");
-                const data = await readChatStream(response, queueDelta);
-                if (flushTimer) window.clearTimeout(flushTimer);
-                const streamedText = assembled.trim();
-                const doneText = data.content?.trim() ?? "";
-                assembled = /^\s*\{/.test(doneText) && /"content"\s*:/.test(doneText) ? streamedText || "暂时没有生成出可用内容，请换一种说法再试。" : doneText || streamedText || "暂时没有生成出可用内容，请换一种说法再试。";
+                const contentType = response.headers.get("content-type") ?? "";
+                let data: ChatApiResponse = {};
+                let liveReasoning = "";
+                let thinkMsFrozen: number | undefined;
+                const thinkMsNow = () => Date.now() - thinkStartedAt;
+                const finishThinkMs = () => {
+                  if (thinkMsFrozen == null) thinkMsFrozen = thinkMsNow();
+                  return thinkMsFrozen;
+                };
+                let thinkCollapsed = false;
+                const waitMs = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms));
+                const visibleThinkText = () => liveReasoning.replace(/\u200b/g, "").trim();
+                const syncThinkMessage = (collapsed: boolean) => {
+                  updateAssistantMessageByRequestId(sessionId, pendingRequest.id, { reasoning: liveReasoning, thinkMs: collapsed ? finishThinkMs() : thinkMsNow(), thinkCollapsed: collapsed, streaming: false });
+                };
+                let collapsePromise: Promise<void> | undefined;
+                const collapseThink = () => {
+                  if (thinkCollapsed) return Promise.resolve();
+                  if (collapsePromise) return collapsePromise;
+                  collapsePromise = (async () => {
+                    if (!visibleThinkText()) {
+                      thinkCollapsed = true;
+                      flushSync(() => syncThinkMessage(true));
+                      return;
+                    }
+                    flushSync(() => syncThinkMessage(false));
+                    await waitMs(Math.min(1200, Math.max(280, visibleThinkText().length * 6)));
+                    if (abortController.signal.aborted) throw new DOMException("aborted", "AbortError");
+                    thinkCollapsed = true;
+                    flushSync(() => syncThinkMessage(true));
+                    await waitMs(400);
+                    if (abortController.signal.aborted) throw new DOMException("aborted", "AbortError");
+                  })();
+                  return collapsePromise;
+                };
+                let thinkIdleTimer: number | undefined;
+                const armThinkIdle = () => {
+                  window.clearTimeout(thinkIdleTimer);
+                  thinkIdleTimer = window.setTimeout(() => {
+                    void collapseThink();
+                  }, 200);
+                };
+                const revealBody = async (text: string) => {
+                  if (!text) return;
+                  await collapseThink();
+                  updateAssistantMessageByRequestId(sessionId, pendingRequest.id, { content: text, reasoning: liveReasoning, thinkMs: finishThinkMs(), thinkCollapsed: true, streaming: true, mode: pendingRequest.mode, requestId: pendingRequest.id, textModel: pendingRequest.mode === "agent" ? chatModel : pendingRequest.mode === "general" ? pendingRequest.model : undefined });
+                };
+                if (contentType.includes("text/event-stream") && response.body) {
+                  const reader = response.body.getReader();
+                  const decoder = new TextDecoder();
+                  let buffer = "";
+                  data = {};
+                  try {
+                  while (true) {
+                    const chunk = await reader.read();
+                    buffer += chunk.done ? decoder.decode() : decoder.decode(chunk.value, { stream: true });
+                    const lines = buffer.split("\n");
+                    buffer = chunk.done ? "" : (lines.pop() ?? "");
+                    for (const line of lines) {
+                      if (!line.startsWith("data:")) continue;
+                      const raw = line.slice(5).trim();
+                      if (!raw) continue;
+                      let event: Record<string, unknown>;
+                      try { event = JSON.parse(raw) as Record<string, unknown>; } catch { continue; }
+                      if (typeof event.error === "string") throw new Error(event.error);
+                      if (event.done) {
+                        data = event as ChatApiResponse;
+                        continue;
+                      }
+                      if (typeof event.reasoning === "string") {
+                        const incoming = event.reasoning;
+                        const prevVisible = liveReasoning.replace(/\u200b/g, "");
+                        if (incoming === "\u200b") {
+                          if (!prevVisible) liveReasoning = incoming;
+                        } else if (!prevVisible || incoming.startsWith(prevVisible)) {
+                          liveReasoning = incoming;
+                        } else {
+                          liveReasoning += incoming;
+                        }
+                        if (visibleThinkText() && !thinkCollapsed) {
+                          updateAssistantMessageByRequestId(sessionId, pendingRequest.id, { reasoning: liveReasoning, thinkMs: thinkMsNow(), thinkCollapsed: false });
+                          armThinkIdle();
+                        }
+                      }
+                      const incomingDelta = typeof event.delta === "string" ? event.delta : "";
+                      const incomingReplace = typeof event.content === "string" ? event.content : "";
+                      if (incomingDelta || incomingReplace) {
+                        window.clearTimeout(thinkIdleTimer);
+                        if (incomingDelta) liveContent += incomingDelta;
+                        else if (!liveContent || incomingReplace.startsWith(liveContent)) liveContent = incomingReplace;
+                        if (liveContent) await revealBody(liveContent);
+                        else await collapseThink();
+                      }
+                    }
+                    if (chunk.done) break;
+                  }
+                  } finally {
+                    window.clearTimeout(thinkIdleTimer);
+                  }
+                  if (!visibleThinkText() && typeof data.reasoning === "string") liveReasoning = data.reasoning;
+                  if (visibleThinkText()) await collapseThink();
+                } else {
+                  data = await readJson<ChatApiResponse>(response);
+                  if (data.reasoning) liveReasoning = data.reasoning;
+                }
+                if (!visibleThinkText() && typeof data.reasoning === "string") liveReasoning = data.reasoning;
+                const assembled = liveContent.trim() || data.content?.trim() || "暂时没有生成出可用内容，请换一种说法再试。";
                 addSessionUsage(sessionId, data.usage);
                 applyCreditResult(sessionId, data.credit);
-                updateAssistantMessageByRequestId(sessionId, pendingRequest.id, { content: assembled, suggestions: data.suggestions, textModel: pendingRequest.mode === "agent" ? chatModel : pendingRequest.mode === "general" ? pendingRequest.model : undefined });
+                if (!liveContent.trim()) await revealBody(assembled);
+                updateAssistantMessageByRequestId(sessionId, pendingRequest.id, { suggestions: data.suggestions, reasoning: liveReasoning || data.reasoning, thinkMs: finishThinkMs(), thinkCollapsed: true, streaming: true });
+                window.setTimeout(() => {
+                  updateAssistantMessageByRequestId(sessionId, pendingRequest.id, { streaming: false });
+                }, 1600);
                 prompt = assembled;
                 updatePendingRequest(sessionId, pendingRequest.id, { prompt, model: chatModel as ModelName });
                 if (pendingRequest.mode === "agent") setLastAgentChatModel(chatModel);
                 lastChatError = undefined;
                 break;
               } catch (error) {
-                if (flushTimer) window.clearTimeout(flushTimer);
                 if (stoppedRequestIdsRef.current.has(pendingRequest.id) || (error instanceof DOMException && error.name === "AbortError")) throw error;
+                 const streamErrorText = error instanceof Error ? error.message : String(error);
+                 if (liveContent.trim() && !streamErrorText.includes("不符合平台规则")) {
+                   prompt = liveContent.trim();
+                   lastChatError = undefined;
+                   updateAssistantMessageByRequestId(sessionId, pendingRequest.id, { streaming: false, thinkCollapsed: true });
+                   break;
+                 }
                 const message = error instanceof Error ? error.message : String(error);
-                if (assembled.trim() || message.includes("不符合平台规则")) {
-                  updateAssistantMessageByRequestId(sessionId, pendingRequest.id, { content: assembled.trim() || toUserErrorMessage(error), error: toUserErrorMessage(error) });
+                if (message.includes("不符合平台规则")) {
+                  updateAssistantMessageByRequestId(sessionId, pendingRequest.id, { content: toUserErrorMessage(error), error: toUserErrorMessage(error), mode: pendingRequest.mode });
                   return;
                 }
                 lastChatError = error;
@@ -6384,22 +6473,14 @@ export function ChatWorkbench() {
             }
             if (!prompt) {
               const message = toUserErrorMessage(lastChatError);
-              updateAssistantMessageByRequestId(sessionId, pendingRequest.id, { content: message, error: message });
+              updateAssistantMessageByRequestId(sessionId, pendingRequest.id, { content: message, error: message, mode: pendingRequest.mode });
               return;
             }
           } catch (error) {
-            if (flushTimer) window.clearTimeout(flushTimer);
             if (stoppedRequestIdsRef.current.has(pendingRequest.id) || (error instanceof DOMException && error.name === "AbortError")) throw error;
             const message = toUserErrorMessage(error);
-            updateAssistantMessageByRequestId(sessionId, pendingRequest.id, { content: assembled.trim() || message, error: message });
+            updateAssistantMessageByRequestId(sessionId, pendingRequest.id, { content: message, error: message, mode: pendingRequest.mode });
             return;
-          } finally {
-            setStreamingRequestIds((current) => {
-              if (!current.has(pendingRequest.id)) return current;
-              const next = new Set(current);
-              next.delete(pendingRequest.id);
-              return next;
-            });
           }
         } else {
         let promptMessages = pendingRequest.mode === "image" || pendingRequest.mode === "video" ? await toPromptPreviewPayloadMessages(pendingRequest.messages) : pendingRequest.messages;
@@ -7251,9 +7332,10 @@ export function ChatWorkbench() {
         referenceImages: referenceImages.length > 0 ? referenceImages : undefined,
         imageReferences: displayImageReferences.length > 0 ? displayImageReferences : undefined,
         referenceHint: getReferenceHint(namedImageReferences, text),
-        needsIntentResolution: shouldPlanAgentTask(text),
+        needsIntentResolution: shouldPlanAgentTask(text) || suggestionRequestsGeneration(normalizedSuggestion),
         sourceText: text,
         agentChatModelChain,
+        assetTargetType: normalizedSuggestion?.assetTargetType && normalizedSuggestion.assetTargetType !== "other" ? normalizedSuggestion.assetTargetType : undefined,
         selectedMediaModels: {
           image: generalModelsForSubmit.image,
           video: generalModelsForSubmit.video,
@@ -7319,7 +7401,7 @@ export function ChatWorkbench() {
           videoResolution: generalVideoResolution,
           videoDuration: selectedDurations.general,
         },
-        needsIntentResolution: shouldPlanAgentTask(text),
+        needsIntentResolution: shouldPlanAgentTask(text) || suggestionRequestsGeneration(normalizedSuggestion),
       };
       setSessions((current) =>
         current.map((session) =>
@@ -10090,7 +10172,7 @@ export function ChatWorkbench() {
               </div>
             </div>
           ) : (
-            <div className="mx-auto max-w-[1006px] space-y-12">
+            <div className="mx-auto max-w-[1006px] space-y-3">
               {activeSession && loadingOlderMessageSessionIds.has(activeSession.id) ? (
                 <div className="flex items-center justify-center gap-2 py-4 text-[13px] text-[#8a8a8a]" role="status" aria-label="加载更早的消息">
                   <RiLoader4Line className="h-[16px] w-[16px] animate-spin" aria-hidden="true" />
@@ -10131,7 +10213,6 @@ export function ChatWorkbench() {
 
                 const lastMessage = messages[messages.length - 1];
                 const activeSuggestionMessageId = lastMessage?.role === "assistant" && (lastMessage.mode === "agent" || isAgentGeneratedMedia(lastMessage)) ? lastMessage.id : "";
-                const isStreamingReply = Boolean(message.requestId && streamingRequestIds.has(message.requestId));
                 const isAssistantMessageComplete = message.role !== "assistant" || message.mode === "image" || message.mode === "video" || message.mode === "audio" || !activeTypingMessageIds.has(message.id) || completedTypingMessageIds.has(message.id);
                 const messageType = getMessageType(message);
                 const reaction = messageReactions[message.id];
@@ -10209,6 +10290,11 @@ export function ChatWorkbench() {
                   if (mediaErrorReasonCount <= 1) return;
                   setMediaErrorPageIndexes((current) => ({ ...current, [message.id]: (nextIndex + mediaErrorReasonCount) % mediaErrorReasonCount }));
                 };
+                const visibleThinkText = (message.reasoning ?? "").replace(/\u200b/g, "").trim();
+                const hasAssistantBody = Boolean(message.content.trim()) && !message.error;
+                const thinkLive = Boolean(visibleThinkText) && !message.thinkCollapsed && !hasAssistantBody;
+                const showThinkBlock = Boolean(visibleThinkText) || ((Boolean(message.thinkCollapsed) || hasAssistantBody) && message.thinkMs != null);
+                const showThinkLoading = !message.error && !hasAssistantBody && !thinkLive;
 
                 return (
                 <div key={message.id} className={message.role === "user" ? "group flex justify-end" : "flex justify-start"}>
@@ -10230,7 +10316,12 @@ export function ChatWorkbench() {
                       >
                         {message.role === "assistant" ? (
                         message.mode === "agent" || message.mode === "general" || isAgentMediaMessage ? (
-                          isAgentMediaMessage ? <><InlineAssistantIcon message={message} activated={isAgentActivationMessage(message.content)} provider={message.textModel ? generalModelProviders[message.textModel] : undefined} /><ReferencedTextContent content={message.content} references={mediaPromptReferences} /></> : <><TypewriterFormattedMessage messageId={message.id} content={message.content} isComplete={isAssistantMessageComplete || isStreamingReply} onComplete={markTypingComplete} onTick={keepTypingInPlace} leadingIcon={<InlineAssistantIcon message={message} activated={isAgentActivationMessage(message.content)} provider={message.textModel ? generalModelProviders[message.textModel] : undefined} />} />{isStreamingReply ? <span className="ml-0.5 inline-block h-4 w-1 animate-pulse rounded-full bg-[#111111] align-[-2px]" /> : null}</>
+                          isAgentMediaMessage ? <><InlineAssistantIcon message={message} activated={isAgentActivationMessage(message.content)} provider={message.textModel ? generalModelProviders[message.textModel] : undefined} /><ReferencedTextContent content={message.content} references={mediaPromptReferences} /></> : (
+                            <>
+                              {showThinkBlock ? <ThinkingProcessBlock reasoning={message.reasoning ?? ""} thinkMs={message.thinkMs} live={thinkLive} /> : null}
+                              {showThinkLoading ? <ThinkingIndicator compact={showThinkBlock} /> : hasAssistantBody ? <TypewriterFormattedMessage messageId={message.id} content={message.content} isComplete onComplete={markTypingComplete} onTick={keepTypingInPlace} showCaret={Boolean(message.streaming)} leadingIcon={<InlineAssistantIcon message={message} activated={isAgentActivationMessage(message.content)} provider={message.textModel ? generalModelProviders[message.textModel] : undefined} />} /> : null}
+                            </>
+                          )
                         ) : message.mode === "image" || message.mode === "video" || message.mode === "audio" ? <MediaPromptBlock message={message} references={mediaPromptReferences} mediaReferences={mediaPromptFileReferences} onUsePrompt={(item) => void copyPrompt(item)} copyState={copyFeedback?.messageId === message.id ? copyFeedback.state : undefined} displayImageUrl={displayedMessageImages[0]} variantIndex={selectedImageVariantIndex} variantCount={imageVariantCount} onPreviousVariant={() => setImageVariantIndex(selectedImageVariantIndex - 1)} onNextVariant={() => setImageVariantIndex(selectedImageVariantIndex + 1)} /> : <TypewriterFormattedMessage messageId={message.id} content={message.content} isComplete={isAssistantMessageComplete} onComplete={markTypingComplete} onTick={keepTypingAtBottom} />
                         ) : (
                         <UserMessageContent content={message.content} references={userImageReferences} mediaReferences={userMediaReferences} />
@@ -10401,7 +10492,7 @@ export function ChatWorkbench() {
                         <div>{mediaErrorText}</div>
                       </div>
                     ) : null}
-                    {message.role === "assistant" && isAssistantMessageComplete && !isStreamingReply && !(activeMessagePendingRequest && (message.mode === "agent" || message.mode === "general")) ? (
+                    {message.role === "assistant" && isAssistantMessageComplete && !(activeMessagePendingRequest && (message.mode === "agent" || message.mode === "general")) ? (
                       <>
                         <div className={message.mode === "image" || message.mode === "video" ? "mt-2 flex flex-wrap items-center gap-1.5" : "mt-3 flex flex-wrap items-center gap-1.5"}>
                           {(message.mode === "agent" || message.mode === "general") && messageType === "text" ? (
@@ -10460,7 +10551,7 @@ export function ChatWorkbench() {
                 </div>
                 );
               })}
-              {isThinking ? <ThinkingIndicator /> : null}
+              {isThinking && !(messages[messages.length - 1]?.role === "assistant" && (messages[messages.length - 1]?.mode === "agent" || messages[messages.length - 1]?.mode === "general") && !messages[messages.length - 1]?.error) ? <ThinkingIndicator /> : null}
               <div className="h-[360px]" ref={messageEndRef} />
             </div>
           )}

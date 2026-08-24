@@ -100,11 +100,11 @@ export async function POST(request: Request) {
     if (referenceLimitError) return NextResponse.json({ error: referenceLimitError }, { status: 400 });
 
     const user = await getCurrentUser();
-    await assertUserCanUseCredits(user, "image", body.metadata);
-    // ⭐ 审核只看「用户自己写的那句」（sourcePrompt）：资产库/工作流发给模型的 prompt 里
-    // 拼了一大段规则文本和参考图说明，用它会让后台看到系统文本、还可能被我们自己的规则文本误命中。
     const moderationPrompt = (typeof body.sourcePrompt === "string" && body.sourcePrompt.trim()) ? body.sourcePrompt.trim() : prompt;
-    const policy = await enforceContentPolicy({ prompt: moderationPrompt, userId: user?.id, requestId: body.requestId, kind: "image", source: creditSource?.startsWith("workflow_") ? "workflow" : isAssetImageCreditSource(creditSource) ? "asset" : creditSource === "agent_image_generation" ? "agent" : "conversation", recordEvent: !body.suppressContentModerationRecord });
+    const [, policy] = await Promise.all([
+      assertUserCanUseCredits(user, "image", body.metadata),
+      enforceContentPolicy({ prompt: moderationPrompt, userId: user?.id, requestId: body.requestId, kind: "image", source: creditSource?.startsWith("workflow_") ? "workflow" : isAssetImageCreditSource(creditSource) ? "asset" : creditSource === "agent_image_generation" ? "agent" : "conversation", recordEvent: !body.suppressContentModerationRecord }),
+    ]);
     if (policy.blocked) return NextResponse.json({ error: CONTENT_POLICY_ERROR_MESSAGE, errorCode: CONTENT_POLICY_ERROR_CODE }, { status: 400 });
     // ⭐ 提示词超字数：**只记日志、不拦**（用户拍板先观察）。唯一实现 lib/prompt-length-server.ts。
     logPromptLengthOverLimit({

@@ -16,6 +16,7 @@ const FORBIDDEN_KEYS = [
   "uploadStatus",
   "promptLoading",
   "pendingRequest",
+  "streaming",
 ];
 
 /** 深度遍历，收集所有「值不是 undefined」的 key（undefined 键在 JSON 落库时会被丢弃，不算泄露） */

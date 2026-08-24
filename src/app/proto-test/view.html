@@ -1,0 +1,654 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>原型测试页</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/remixicon@4.6.0/fonts/remixicon.css" />
+  <style>
+    html, body { height: 100%; margin: 0; font-family: sans-serif; }
+    body { display: flex; }
+    #menu { width: 200px; flex: none; border-right: 1px solid #ddd; padding: 16px 0; background: #f7f7f7; }
+    #menu .title { padding: 0 16px 12px; font-size: 14px; color: #111; }
+    #menu button { display: block; width: 100%; text-align: left; border: 0; background: transparent; height: 40px; padding: 0 16px; cursor: pointer; }
+    #menu button.active { background: #111; color: #fff; }
+    #main { flex: 1; min-width: 0; padding: 20px 24px; overflow: auto; }
+    .panel { display: none; max-width: 720px; }
+    .panel.active { display: block; }
+    #panel-chat-model { max-width: 860px; }
+    #panel-anim { max-width: 980px; }
+    .anim-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+    .anim-card { border: 1px solid #e5e5e5; border-radius: 10px; padding: 12px; background: #fff; }
+    .anim-card h3 { margin: 0 0 4px; font-size: 14px; }
+    .anim-card p { margin: 0 0 10px; font-size: 12px; color: #888; }
+    .anim-stage { min-height: 88px; display: flex; align-items: center; justify-content: center; background: #f4f4f4; border-radius: 8px; overflow: hidden; position: relative; }
+    .anim-stage.dark { background: #2a2a2a; }
+    .anim-stage.wide { min-height: 140px; }
+    select, input, button.act, #log { width: 100%; box-sizing: border-box; }
+    select, input { height: 40px; margin: 8px 0; padding: 0 10px; }
+    button.act { height: 40px; margin: 8px 0; background: #111; color: #fff; border: 0; cursor: pointer; }
+    button.act:disabled { opacity: .4; }
+    #box { height: 600px; overflow: auto; border: 1px solid #ddd; padding: 12px; }
+    #status { color: #666; font-size: 12px; min-height: 18px; }
+    .msg { display: flex; margin: 12px 0 0; }
+    .msg.user { justify-content: flex-end; }
+    .msg.assistant { justify-content: flex-start; }
+    .bubble { max-width: 80%; white-space: pre-wrap; word-break: break-word; font-size: 14px; line-height: 1.7; }
+    .bubble.user { border-radius: 12px; background: #f4f4f4; padding: 12px 20px; color: #111; }
+    .bubble.assistant { padding: 4px 0; color: #111; }
+    .think { color: #b0b0b0; margin: 0 0 8px; }
+    .first-ms { color: #2563eb; display: block; margin: 0 0 6px; }
+    .thinking-wrap { display: flex; align-items: flex-start; }
+    .thinking-wrap.tall { min-height: 300px; }
+    .thinking-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 14px; color: #6f6f6f; }
+    .thinking-row .yinzao-grid-loader { --grid-loader-size: 16px; margin-right: 4px; }
+    .thinking-dots { display: flex; align-items: center; gap: 4px; }
+    .fold { display: flex; align-items: flex-start; gap: 2px; margin: 0 0 8px; color: #b0b0b0; }
+    .fold-btn { flex: none; width: 20px; height: 22px; border: 0; background: transparent; color: #b0b0b0; cursor: pointer; padding: 0; display: flex; align-items: center; justify-content: center; }
+    .fold-btn i { font-size: 18px; line-height: 1; transition: transform .15s ease; }
+    .fold-btn.open i { transform: rotate(90deg); }
+    .fold-text { min-width: 0; flex: 1; }
+    .fold-text.closed { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .fold-text.open { white-space: pre-wrap; }
+    .hint { color: #888; font-size: 13px; margin-bottom: 8px; }
+    .yinzao-grid-loader { --grid-loader-size: 28px; --grid-loader-color: #367cee; --grid-loader-cell: calc((var(--grid-loader-size) - 4px) / 3); display: inline-grid; width: var(--grid-loader-size); height: var(--grid-loader-size); grid-template-columns: repeat(3, var(--grid-loader-cell)); grid-template-rows: repeat(3, var(--grid-loader-cell)); place-content: center; gap: 2px; }
+    .yinzao-grid-loader-cell { width: var(--grid-loader-cell); height: var(--grid-loader-cell); border-radius: 1px; background: color-mix(in srgb, var(--grid-loader-color) 18%, white); opacity: .62; transform: scale(.76); }
+    .yinzao-grid-loader-cell[data-active="false"] { opacity: .18; animation: none; }
+    .yinzao-grid-loader-pulse .yinzao-grid-loader-cell[data-active="true"] { animation: yinzaoGridLoaderPulse 1.55s ease-in-out infinite; }
+    .yinzao-grid-loader-stagger .yinzao-grid-loader-cell[data-active="true"] { animation: yinzaoGridLoaderStagger 1.45s ease-in-out infinite; animation-delay: calc(var(--grid-loader-index) * .085s); }
+    .yinzao-grid-loader-orbit .yinzao-grid-loader-cell { background: color-mix(in srgb, var(--grid-loader-color) 18%, white); opacity: .5; transform: scale(.72); box-shadow: 0 0 0 rgba(54, 124, 238, 0); animation: none; }
+    .yinzao-grid-loader-orbit .yinzao-grid-loader-cell[data-orbit] {
+      animation: yinzaoGridLoaderOrbit 1.2s linear infinite;
+      animation-delay: calc(var(--orbit-index) * .15s);
+    }
+    .yinzao-thinking-shimmer { font-size: 14px; background-image: linear-gradient(100deg, #5f5f5f 0%, #5f5f5f 22%, #fff 36%, #d9d9d9 44%, #5f5f5f 58%, #5f5f5f 100%); background-size: 200% 100%; -webkit-background-clip: text; background-clip: text; color: transparent; filter: drop-shadow(0 0 4px rgba(255, 255, 255, 0.12)); animation: yinzaoThinkingShimmer 2.4s linear infinite; }
+    .yinzao-thinking-dot { width: 6px; height: 6px; border-radius: 50%; background: #8a8a8a; animation: yinzaoThinkingDotSweep 2.1s ease-in-out infinite; }
+    .yinzao-thinking-dot:nth-child(2) { animation-delay: .12s; }
+    .yinzao-thinking-dot.still { animation: none; }
+    .yinzao-stop-shimmer { position: relative; overflow: hidden; width: 40px; height: 40px; border-radius: 999px; background: #111; }
+    .yinzao-stop-shimmer::after { content: ""; position: absolute; inset: -40% auto -40% -70%; width: 58%; transform: rotate(18deg); background: linear-gradient(90deg, transparent, rgba(255,255,255,.65), transparent); animation: yinzaoStopButtonShimmer 1.25s ease-in-out infinite; }
+    .yinzao-stop-shimmer span { position: relative; z-index: 1; display: block; width: 12px; height: 12px; margin: 14px auto; background: #fff; border-radius: 2px; }
+    .wait-bg { position: absolute; inset: 0; animation: yinzaoVideoWaiting 5s ease-in-out infinite; background: radial-gradient(circle at 16% 22%, rgba(193,210,255,.7), transparent 31%), radial-gradient(circle at 42% 70%, rgba(188,177,255,.46), transparent 34%), radial-gradient(circle at 76% 34%, rgba(126,205,255,.52), transparent 35%), linear-gradient(120deg,#eef8ff 0%,#d8efff 36%,#edfaff 68%,#dcf8ff 100%); }
+    .wait-b1 { position: absolute; left: -20px; top: 8px; width: 80px; height: 80px; border-radius: 999px; background: rgba(184,200,255,.45); filter: blur(18px); animation: yinzaoBlobOne 4.5s ease-in-out infinite; }
+    .wait-b2 { position: absolute; right: -16px; bottom: 10px; width: 90px; height: 90px; border-radius: 999px; background: rgba(158,238,240,.5); filter: blur(18px); animation: yinzaoBlobTwo 6s ease-in-out infinite; }
+    .wait-b3 { position: absolute; left: 40px; top: 48px; width: 70px; height: 70px; border-radius: 999px; background: rgba(181,224,255,.55); filter: blur(16px); animation: yinzaoBlobThree 5.5s ease-in-out infinite; }
+    .wait-shimmer { position: absolute; inset: 0; animation: yinzaoVideoShimmer 2.8s ease-in-out infinite; background: radial-gradient(circle at 30% 20%, rgba(255,255,255,.35), transparent 22%), radial-gradient(circle at 70% 80%, rgba(255,255,255,.22), transparent 28%); }
+    .tip { padding: 8px 12px; background: #111; color: #fff; border-radius: 8px; font-size: 13px; }
+    .tip.enter { animation: yinzaoAssetUploadTipEnter .1s ease-out both; }
+    .tip.exit { animation: yinzaoAssetUploadTipExit .1s ease-in both; }
+    .login-slide { width: 70%; height: 72px; background: #fff; border: 1px solid #ddd; display: flex; align-items: center; justify-content: center; animation: home-login-slide-in .22s ease-out; }
+    .home-login-sending-dot { display: inline-block; width: .42em; animation: homeLoginSendingDot 1.2s steps(1, end) infinite; }
+    .home-login-sending-dot:nth-child(2) { animation-delay: .2s; }
+    .home-login-sending-dot:nth-child(3) { animation-delay: .4s; }
+    .home-login-close-mark { width: 28px; height: 28px; border: 0; background: #eee; border-radius: 999px; cursor: pointer; }
+    .home-login-close-mark span { display: block; transition: transform .42s ease; }
+    .home-login-close-mark:hover span { transform: rotate(360deg); }
+    .marquee-wrap { width: 100%; overflow: hidden; height: 36px; background: #111; color: #fff; }
+    .flashmuse-announcement-marquee { display: flex; width: max-content; height: 100%; align-items: center; white-space: pre; animation-name: flashmuse-announcement-marquee; animation-timing-function: linear; animation-iteration-count: infinite; }
+    .spin-ring { width: 28px; height: 28px; border-radius: 50%; border: 2px solid #d8e6ff; border-top-color: #367cee; animation: spin 1s linear infinite; }
+    .spin-conic { width: 32px; height: 32px; border-radius: 50%; animation: spin 1s linear infinite; background: radial-gradient(farthest-side,#367cee 94%,#0000) top/5px 5px no-repeat, conic-gradient(#0000 10%, rgba(54,124,238,.12) 28%, rgba(54,124,238,.42) 48%, #367cee 100%); -webkit-mask: radial-gradient(farthest-side,#0000 calc(100% - 5px),#000 0); mask: radial-gradient(farthest-side,#0000 calc(100% - 5px),#000 0); }
+    .bounce-row { display: flex; gap: 6px; }
+    .bounce-dot { width: 6px; height: 6px; border-radius: 50%; background: #8a8a8a; animation: bounce 1s infinite; }
+    .bounce-dot:nth-child(1) { animation-delay: -.2s; }
+    .bounce-dot:nth-child(2) { animation-delay: -.1s; }
+    .type-caret { display: inline-block; width: 11px; height: 11px; margin-left: 4px; border-radius: 50%; background: #111; vertical-align: -1px; animation: typeCaretBlink .55s ease-in-out infinite; }
+    .pulse-line { width: 70%; height: 8px; border-radius: 999px; background: #367cee; animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+    @keyframes yinzaoThinkingShimmer { 0% { background-position: 0% 0; } 100% { background-position: -200% 0; } }
+    @keyframes yinzaoStopButtonShimmer { 0% { left: -70%; } 100% { left: 120%; } }
+    @keyframes yinzaoThinkingDotSweep { 0%,80%,100% { background:#8a8a8a; box-shadow:none; transform: translateY(0) scale(1); } 35% { background:#fff; box-shadow: 0 0 10px rgba(255,255,255,.46); transform: translateY(-4px) scale(1.22); } 55% { background:#d9d9d9; box-shadow: 0 0 8px rgba(217,217,217,.38); transform: translateY(-1px) scale(1.08); } }
+    @keyframes yinzaoGridLoaderPulse { 0%,100% { background: color-mix(in srgb, var(--grid-loader-color) 18%, white); opacity:.56; transform: scale(.74); } 45% { background: var(--grid-loader-color); box-shadow: 0 0 10px color-mix(in srgb, var(--grid-loader-color) 64%, transparent); opacity:1; transform: scale(1); } }
+    @keyframes yinzaoGridLoaderStagger { 0%,78%,100% { background: color-mix(in srgb, var(--grid-loader-color) 18%, white); box-shadow: 0 0 0 rgba(54, 124, 238, 0); opacity:.5; transform: scale(.72); } 28% { background: var(--grid-loader-color); box-shadow: 0 0 10px color-mix(in srgb, var(--grid-loader-color) 68%, transparent); opacity:1; transform: scale(1.05); } 48% { background: color-mix(in srgb, var(--grid-loader-color) 58%, white); opacity:.82; transform: scale(.88); } }
+    @keyframes yinzaoGridLoaderOrbit {
+      0%, 6% { background: var(--grid-loader-color); opacity: 1; transform: scale(1); box-shadow: 0 0 8px color-mix(in srgb, var(--grid-loader-color) 64%, transparent); }
+      20% { background: color-mix(in srgb, var(--grid-loader-color) 78%, white); opacity: .88; transform: scale(.98); box-shadow: 0 0 6px color-mix(in srgb, var(--grid-loader-color) 46%, transparent); }
+      38% { background: color-mix(in srgb, var(--grid-loader-color) 52%, white); opacity: .58; transform: scale(.93); box-shadow: none; }
+      56% { background: color-mix(in srgb, var(--grid-loader-color) 32%, white); opacity: .42; transform: scale(.8); box-shadow: none; }
+      74%, 100% { background: color-mix(in srgb, var(--grid-loader-color) 18%, white); opacity: .5; transform: scale(.72); box-shadow: 0 0 0 rgba(54, 124, 238, 0); }
+    }
+    @keyframes yinzaoVideoWaiting { 0%,100% { filter: hue-rotate(0deg) saturate(1); transform: scale(1); } 50% { filter: hue-rotate(12deg) saturate(1.15); transform: scale(1.05) translate3d(-10px,8px,0); } }
+    @keyframes yinzaoVideoShimmer { 0% { opacity:.35; transform: translate3d(-18px,-10px,0) scale(1); } 50% { opacity:.65; transform: translate3d(24px,18px,0) scale(1.08); } 100% { opacity:.35; transform: translate3d(-18px,-10px,0) scale(1); } }
+    @keyframes yinzaoBlobOne { 0%,100% { transform: translate3d(0,0,0) scale(1); } 35% { transform: translate3d(40px,30px,0) scale(1.2); } 68% { transform: translate3d(16px,50px,0) scale(.92); } }
+    @keyframes yinzaoBlobTwo { 0%,100% { transform: translate3d(0,0,0) scale(1); } 42% { transform: translate3d(-40px,-30px,0) scale(1.18); } 76% { transform: translate3d(-16px,-50px,0) scale(.96); } }
+    @keyframes yinzaoBlobThree { 0%,100% { transform: translate3d(0,0,0) scale(1); } 30% { transform: translate3d(50px,-24px,0) scale(.9); } 72% { transform: translate3d(-20px,-36px,0) scale(1.22); } }
+    @keyframes yinzaoAssetUploadTipEnter { from { opacity:0; translate: 0 -8px; } to { opacity:1; translate: 0 0; } }
+    @keyframes yinzaoAssetUploadTipExit { from { opacity:1; translate: 0 0; } to { opacity:0; translate: 0 -8px; } }
+    @keyframes home-login-slide-in { from { transform: translateX(100%); } to { transform: translateX(0); } }
+    @keyframes homeLoginSendingDot { 0%,24%,100% { opacity:0; } 25%,72% { opacity:1; } }
+    @keyframes flashmuse-announcement-marquee { from { transform: translateX(0); } to { transform: translateX(var(--flashmuse-marquee-shift, -50%)); } }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes bounce { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
+    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .4; } }
+    @keyframes typeCaretBlink { 0%,100% { opacity: 1; } 50% { opacity: .12; } }
+  </style>
+</head>
+<body>
+  <aside id="menu">
+    <div class="title">原型测试页</div>
+    <button type="button" class="active" data-panel="chat-model">对话模型测试</button>
+    <button type="button" data-panel="anim">动画</button>
+  </aside>
+  <main id="main">
+    <section id="panel-chat-model" class="panel active">
+      <div class="hint">真流式 · 思考先出 · 用户右对齐 / 模型左对齐 · 气泡约八成宽 · 蓝字是已思考秒数</div>
+      <select id="model">
+        <option value="x-ai/grok-4.6">Grok 4.6 · x-ai/grok-4.6</option>
+        <option value="moonshotai/kimi-k3">Kimi K3 · moonshotai/kimi-k3</option>
+        <option value="bytedance-seed/seed-2.0-lite">Seed 2.0 Lite · bytedance-seed/seed-2.0-lite</option>
+        <option value="deepseek/deepseek-v4-pro">DeepSeek V4 Pro · deepseek/deepseek-v4-pro</option>
+        <option value="google/gemini-3.1-pro-preview">Gemini 3.1 Pro Preview · google/gemini-3.1-pro-preview</option>
+        <option value="openai/gpt-5.6-terra">GPT-5.6 Terra · openai/gpt-5.6-terra</option>
+        <option value="openai/gpt-5.6-terra-pro">GPT-5.6 Terra Pro · openai/gpt-5.6-terra-pro</option>
+      </select>
+      <div id="box">发一条看看</div>
+      <div id="status">输入文字，点发送</div>
+      <input id="text" placeholder="输入后回车发送" />
+      <button id="send" class="act" type="button">发送</button>
+      <button id="clear" class="act" type="button">清空聊天</button>
+    </section>
+    <section id="panel-anim" class="panel">
+      <div class="hint">项目里正在用的动画，按用途标了名</div>
+      <div class="anim-grid">
+        <article class="anim-card">
+          <h3>正在思考中... · 整组</h3>
+          <p>九宫格沿方形转圈 + 扫光字</p>
+          <div class="anim-stage" style="background:#fff;justify-content:flex-start;padding:0 16px">
+            <div class="thinking-row">
+              <span class="yinzao-grid-loader yinzao-grid-loader-orbit" style="--grid-loader-size:16px">
+                <span class="yinzao-grid-loader-cell" data-orbit style="--orbit-index:0"></span>
+                <span class="yinzao-grid-loader-cell" data-orbit style="--orbit-index:1"></span>
+                <span class="yinzao-grid-loader-cell" data-orbit style="--orbit-index:2"></span>
+                <span class="yinzao-grid-loader-cell" data-orbit style="--orbit-index:7"></span>
+                <span class="yinzao-grid-loader-cell"></span>
+                <span class="yinzao-grid-loader-cell" data-orbit style="--orbit-index:3"></span>
+                <span class="yinzao-grid-loader-cell" data-orbit style="--orbit-index:6"></span>
+                <span class="yinzao-grid-loader-cell" data-orbit style="--orbit-index:5"></span>
+                <span class="yinzao-grid-loader-cell" data-orbit style="--orbit-index:4"></span>
+              </span>
+              <span class="yinzao-thinking-shimmer">正在思考中...</span>
+            </div>
+          </div>
+        </article>
+        <article class="anim-card">
+          <h3>思考中文字扫光</h3>
+          <p>对话「思考中」那几个字 · yinzaoThinkingShimmer</p>
+          <div class="anim-stage" style="background:#fff"><span class="yinzao-thinking-shimmer">正在思考中...</span></div>
+        </article>
+        <article class="anim-card">
+          <h3>思考中三点扫光</h3>
+          <p>思考中旁边的点 · yinzaoThinkingDotSweep</p>
+          <div class="anim-stage" style="gap:4px;background:#fff">
+            <span class="yinzao-thinking-dot"></span><span class="yinzao-thinking-dot"></span><span class="yinzao-thinking-dot"></span>
+          </div>
+        </article>
+        <article class="anim-card">
+          <h3>停止按钮闪光</h3>
+          <p>生成中点停止那个圆钮 · yinzaoStopButtonShimmer</p>
+          <div class="anim-stage"><div class="yinzao-stop-shimmer"><span></span></div></div>
+        </article>
+        <article class="anim-card">
+          <h3>九宫格加载 · 脉冲</h3>
+          <p>小加载器 pulse · yinzaoGridLoaderPulse</p>
+          <div class="anim-stage"><span class="yinzao-grid-loader yinzao-grid-loader-pulse">
+            <span class="yinzao-grid-loader-cell" data-active="true" style="--grid-loader-index:0"></span>
+            <span class="yinzao-grid-loader-cell" data-active="true" style="--grid-loader-index:1"></span>
+            <span class="yinzao-grid-loader-cell" data-active="true" style="--grid-loader-index:2"></span>
+            <span class="yinzao-grid-loader-cell" data-active="true" style="--grid-loader-index:3"></span>
+            <span class="yinzao-grid-loader-cell" data-active="true" style="--grid-loader-index:4"></span>
+            <span class="yinzao-grid-loader-cell" data-active="true" style="--grid-loader-index:5"></span>
+            <span class="yinzao-grid-loader-cell" data-active="true" style="--grid-loader-index:6"></span>
+            <span class="yinzao-grid-loader-cell" data-active="true" style="--grid-loader-index:7"></span>
+            <span class="yinzao-grid-loader-cell" data-active="true" style="--grid-loader-index:8"></span>
+          </span></div>
+        </article>
+        <article class="anim-card">
+          <h3>九宫格加载 · 错开</h3>
+          <p>小加载器 stagger · yinzaoGridLoaderStagger</p>
+          <div class="anim-stage"><span class="yinzao-grid-loader yinzao-grid-loader-stagger">
+            <span class="yinzao-grid-loader-cell" data-active="true" style="--grid-loader-index:0"></span>
+            <span class="yinzao-grid-loader-cell" data-active="true" style="--grid-loader-index:1"></span>
+            <span class="yinzao-grid-loader-cell" data-active="true" style="--grid-loader-index:2"></span>
+            <span class="yinzao-grid-loader-cell" data-active="true" style="--grid-loader-index:3"></span>
+            <span class="yinzao-grid-loader-cell" data-active="true" style="--grid-loader-index:4"></span>
+            <span class="yinzao-grid-loader-cell" data-active="true" style="--grid-loader-index:5"></span>
+            <span class="yinzao-grid-loader-cell" data-active="true" style="--grid-loader-index:6"></span>
+            <span class="yinzao-grid-loader-cell" data-active="true" style="--grid-loader-index:7"></span>
+            <span class="yinzao-grid-loader-cell" data-active="true" style="--grid-loader-index:8"></span>
+          </span></div>
+        </article>
+        <article class="anim-card">
+          <h3>生成等待背景</h3>
+          <p>图片/视频等待卡 · Waiting + Blob + Shimmer</p>
+          <div class="anim-stage wide">
+            <div class="wait-bg"></div><div class="wait-b1"></div><div class="wait-b2"></div><div class="wait-b3"></div><div class="wait-shimmer"></div>
+          </div>
+        </article>
+        <article class="anim-card">
+          <h3>上传提示出现/消失</h3>
+          <p>资产库上传 tip · yinzaoAssetUploadTipEnter / Exit</p>
+          <div class="anim-stage"><div id="tipDemo" class="tip enter">上传成功</div></div>
+        </article>
+        <article class="anim-card">
+          <h3>登录抽屉滑入</h3>
+          <p>首页登录面板 · home-login-slide-in</p>
+          <div class="anim-stage" id="loginSlideStage"><div class="login-slide">登录面板</div></div>
+        </article>
+        <article class="anim-card">
+          <h3>登录发送中省略号</h3>
+          <p>首页点发送后 · homeLoginSendingDot</p>
+          <div class="anim-stage">发送中<span class="home-login-sending-dot">.</span><span class="home-login-sending-dot">.</span><span class="home-login-sending-dot">.</span></div>
+        </article>
+        <article class="anim-card">
+          <h3>登录关闭钮旋转</h3>
+          <p>鼠标悬停关闭 · rotate 360deg</p>
+          <div class="anim-stage"><button class="home-login-close-mark" type="button"><span>×</span></button></div>
+        </article>
+        <article class="anim-card">
+          <h3>顶部公告走马灯</h3>
+          <p>顶栏长公告 · flashmuse-announcement-marquee</p>
+          <div class="anim-stage" style="padding:0">
+            <div class="marquee-wrap">
+              <div class="flashmuse-announcement-marquee">这是一条比较长的顶部公告，用来演示走马灯滚动。　　这是一条比较长的顶部公告，用来演示走马灯滚动。　　</div>
+            </div>
+          </div>
+        </article>
+        <article class="anim-card">
+          <h3>对话加载转圈</h3>
+          <p>LoadingSpinner 锥形环 · animate-spin</p>
+          <div class="anim-stage"><div class="spin-conic"></div></div>
+        </article>
+        <article class="anim-card">
+          <h3>通用边框转圈</h3>
+          <p>后台/资产库「正在加载中」· animate-spin</p>
+          <div class="anim-stage"><div class="spin-ring"></div></div>
+        </article>
+        <article class="anim-card">
+          <h3>三点弹跳</h3>
+          <p>另一套思考点 · animate-bounce</p>
+          <div class="anim-stage"><div class="bounce-row"><span class="bounce-dot"></span><span class="bounce-dot"></span><span class="bounce-dot"></span></div></div>
+        </article>
+        <article class="anim-card">
+          <h3>打字机光标闪</h3>
+          <p>流式出字末端圆点 · 0.55s 闪</p>
+          <div class="anim-stage"><span class="type-caret"></span></div>
+        </article>
+        <article class="anim-card">
+          <h3>进度条呼吸</h3>
+          <p>会话加载进度条 · animate-pulse</p>
+          <div class="anim-stage"><div class="pulse-line"></div></div>
+        </article>
+        <article class="anim-card">
+          <h3>打字机出字</h3>
+          <p>对话回复一个字一个字蹦 · TypewriterFormattedMessage</p>
+          <div class="anim-stage"><span id="typewriterDemo"></span></div>
+        </article>
+      </div>
+    </section>
+  </main>
+  <script>
+    document.querySelectorAll("#menu button[data-panel]").forEach((btn) => {
+      btn.onclick = function () {
+        document.querySelectorAll("#menu button[data-panel]").forEach((item) => item.classList.remove("active"));
+        document.querySelectorAll(".panel").forEach((item) => item.classList.remove("active"));
+        btn.classList.add("active");
+        const panel = document.getElementById("panel-" + btn.getAttribute("data-panel"));
+        if (panel) panel.classList.add("active");
+      };
+    });
+
+    const modelEl = document.getElementById("model");
+    const textEl = document.getElementById("text");
+    const sendEl = document.getElementById("send");
+    const boxEl = document.getElementById("box");
+    const statusEl = document.getElementById("status");
+    const items = [];
+    let reasonIdle = 0;
+
+    function makeThinking(tall) {
+      const wrap = document.createElement("div");
+      wrap.className = tall ? "thinking-wrap tall" : "thinking-wrap";
+      const row = document.createElement("div");
+      row.className = "thinking-row";
+      const grid = document.createElement("span");
+      grid.className = "yinzao-grid-loader yinzao-grid-loader-orbit";
+      const orbits = [0, 1, 2, 7, null, 3, 6, 5, 4];
+      for (let i = 0; i < 9; i++) {
+        const cell = document.createElement("span");
+        cell.className = "yinzao-grid-loader-cell";
+        if (orbits[i] != null) {
+          cell.setAttribute("data-orbit", "");
+          cell.style.setProperty("--orbit-index", String(orbits[i]));
+        }
+        grid.appendChild(cell);
+      }
+      const text = document.createElement("span");
+      text.className = "yinzao-thinking-shimmer";
+      text.textContent = "正在思考中...";
+      row.appendChild(grid);
+      row.appendChild(text);
+      wrap.appendChild(row);
+      return wrap;
+    }
+
+    function oneLine(text) {
+      return String(text || "").replace(/\s+/g, " ").trim();
+    }
+
+    function makeFold(segment, itemIndex, segIndex) {
+      const box = document.createElement("div");
+      box.className = "fold";
+      box.setAttribute("data-item", String(itemIndex));
+      box.setAttribute("data-seg", String(segIndex));
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = segment.open ? "fold-btn open" : "fold-btn";
+      btn.innerHTML = '<i class="ri-arrow-right-s-line"></i>';
+      btn.onclick = function () {
+        items[itemIndex].segments[segIndex].open = !items[itemIndex].segments[segIndex].open;
+        render({ stick: false });
+      };
+      const text = document.createElement("div");
+      text.className = segment.open ? "fold-text open" : "fold-text closed";
+      text.textContent = segment.open ? (segment.text || "思考过程") : (oneLine(segment.text) || "思考过程");
+      box.appendChild(btn);
+      box.appendChild(text);
+      return box;
+    }
+
+    function hideShortFolds() {
+      try {
+        boxEl.querySelectorAll(".fold").forEach(function (fold) {
+          const item = items[Number(fold.getAttribute("data-item"))];
+          const seg = item && item.segments && item.segments[Number(fold.getAttribute("data-seg"))];
+          const raw = (seg && seg.text) || "";
+          const textEl = fold.querySelector(".fold-text");
+          const btn = fold.querySelector(".fold-btn");
+          if (!textEl || !btn) return;
+          const multi = /[\n\r]/.test(raw);
+          const overflow = textEl.className.indexOf("closed") >= 0 && textEl.scrollWidth > textEl.clientWidth + 1;
+          if (!multi && !overflow) btn.style.display = "none";
+        });
+      } catch (e) {}
+    }
+
+    function flushLive(item) {
+      const text = String(item.liveReasoning || "");
+      item.reasoning = String(item.reasoning || "") + text;
+      item.liveReasoning = "";
+      if (item.reasoning && !item.segments.length) {
+        item.segments.push({ text: item.reasoning, open: false });
+      } else if (item.segments.length) {
+        item.segments[0].text = item.reasoning;
+      }
+    }
+
+    function visibleThinkOf(item) {
+      return (String(item.reasoning || "") + String(item.liveReasoning || "")).replace(/\u200b/g, "").trim();
+    }
+
+    function waitMs(ms) {
+      return new Promise(function (resolve) { setTimeout(resolve, ms); });
+    }
+
+    function collapseThink(item, started) {
+      if (item.thinkCollapsed) return Promise.resolve();
+      if (item._collapsing) return item._collapsing;
+      item._collapsing = (async function () {
+        flushLive(item);
+        if (item.firstMs == null) item.firstMs = Date.now() - (item.startedAt || started || Date.now());
+        if (!visibleThinkOf(item)) {
+          item.thinkCollapsed = true;
+          item.waiting = !item.content;
+          render();
+          return;
+        }
+        item.thinkCollapsed = false;
+        item.waiting = false;
+        render();
+        await waitMs(280);
+        item.thinkCollapsed = true;
+        item.waiting = !item.content;
+        render();
+        await waitMs(400);
+      })();
+      return item._collapsing;
+    }
+
+    function armReasonIdle(item, started) {
+      clearTimeout(reasonIdle);
+      reasonIdle = setTimeout(function () {
+        if (!item.content) void collapseThink(item, started);
+      }, 450);
+    }
+
+    function render(opts) {
+      const stick = !opts || opts.stick !== false;
+      if (!items.length) {
+        boxEl.textContent = "发一条看看";
+        return;
+      }
+      boxEl.innerHTML = "";
+      items.forEach((item, itemIndex) => {
+        const row = document.createElement("div");
+        row.className = "msg " + item.role;
+        const bubble = document.createElement("div");
+        bubble.className = "bubble " + item.role;
+        if (item.role === "assistant") {
+          const allThink = visibleThinkOf(item) || ((item.segments && item.segments[0] && item.segments[0].text) || "");
+          const hasThink = Boolean(String(allThink).replace(/\u200b/g, "").trim());
+          const thinkCollapsed = Boolean(item.thinkCollapsed);
+          const hasBody = Boolean(item.content);
+          const thinkLive = hasThink && !thinkCollapsed && !hasBody;
+          const showThinkBlock = hasThink || ((thinkCollapsed || hasBody) && item.firstMs != null);
+          const showLoading = !hasBody && !thinkLive;
+          if (showThinkBlock) {
+            const thinkMs = item.firstMs != null ? item.firstMs : (item.startedAt ? Date.now() - item.startedAt : 0);
+            const mark = document.createElement("div");
+            mark.className = "first-ms";
+            mark.textContent = "已思考 " + (thinkMs / 1000).toFixed(1) + "秒";
+            bubble.appendChild(mark);
+            if (hasThink && !thinkCollapsed) {
+              const live = document.createElement("div");
+              live.className = "think";
+              live.textContent = allThink;
+              bubble.appendChild(live);
+            } else if (hasThink) {
+              const segment = (item.segments && item.segments[0]) || { text: allThink, open: false };
+              if (!item.segments || !item.segments.length) item.segments = [segment];
+              segment.text = allThink;
+              bubble.appendChild(makeFold(segment, itemIndex, 0));
+            }
+          }
+          if (showLoading) bubble.appendChild(makeThinking(!showThinkBlock));
+          if (hasBody && !showLoading) {
+            bubble.appendChild(document.createTextNode(item.content));
+            if (item.streaming) {
+              const caret = document.createElement("span");
+              caret.className = "type-caret";
+              bubble.appendChild(caret);
+            }
+          }
+        } else {
+          bubble.textContent = item.content || "";
+        }
+        row.appendChild(bubble);
+        boxEl.appendChild(row);
+      });
+      hideShortFolds();
+      if (stick) boxEl.scrollTop = boxEl.scrollHeight;
+    }
+
+    async function send() {
+      const text = String(textEl.value || "").trim();
+      if (!text || sendEl.disabled) return;
+      items.push({ role: "user", content: text });
+      items.push({ role: "assistant", content: "", reasoning: "", liveReasoning: "", segments: [], waiting: true, startedAt: Date.now() });
+      textEl.value = "";
+      sendEl.disabled = true;
+      statusEl.textContent = "请求中…";
+      render();
+      const started = Date.now();
+      const last = items[items.length - 1];
+      try {
+        const response = await fetch("/api/tmp-openrouter", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            model: modelEl.value,
+            stream: true,
+            messages: items.slice(0, -1).map(function (item) {
+              return { role: item.role, content: item.content || "" };
+            }),
+          }),
+        });
+        if (!response.ok || !response.body) {
+          const data = await response.json().catch(function () { return {}; });
+          last.waiting = false;
+          flushLive(last);
+          last.content = data.error || ("HTTP " + response.status);
+          statusEl.textContent = "失败 " + response.status + " " + (Date.now() - started) + "ms";
+          sendEl.disabled = false;
+          render();
+          return;
+        }
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        while (true) {
+          const chunk = await reader.read();
+          if (chunk.done) break;
+          buffer += decoder.decode(chunk.value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+          for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            if (line.indexOf("data:") !== 0) continue;
+            const raw = line.slice(5).trim();
+            if (!raw) continue;
+            let data;
+            try { data = JSON.parse(raw); } catch (e) { continue; }
+            if (data.error) {
+              clearTimeout(reasonIdle);
+              last.waiting = false;
+              last.thinkCollapsed = true;
+              flushLive(last);
+              last.content = data.error;
+              statusEl.textContent = "失败 " + (Date.now() - started) + "ms";
+            } else if (data.reasoning) {
+              last.liveReasoning = (last.liveReasoning || "") + String(data.reasoning);
+              if (visibleThinkOf(last)) {
+                last.waiting = false;
+                last.firstMs = Date.now() - started;
+                statusEl.textContent = "思考中 " + (Date.now() - started) + "ms";
+                armReasonIdle(last, started);
+              }
+            } else if (typeof data.delta === "string" || typeof data.content === "string") {
+              clearTimeout(reasonIdle);
+              await collapseThink(last, started);
+              if (data.delta) last.content += data.delta;
+              else if (data.content && !data.done) last.content = data.content;
+              if (last.content) {
+                last.waiting = false;
+                last.streaming = true;
+                last.thinkCollapsed = true;
+                if (last.firstMs == null) last.firstMs = Date.now() - started;
+                statusEl.textContent = "出字中 " + (Date.now() - started) + "ms";
+              }
+            } else if (data.done) {
+              clearTimeout(reasonIdle);
+              await collapseThink(last, started);
+              last.waiting = false;
+              last.thinkCollapsed = true;
+              last.streaming = true;
+              if (last.firstMs == null) last.firstMs = Date.now() - started;
+              statusEl.textContent = "完成 " + (data.ms || (Date.now() - started)) + "ms";
+            }
+            render();
+          }
+        }
+      } catch (error) {
+        last.waiting = false;
+        flushLive(last);
+        last.content = String(error && error.message ? error.message : error);
+        statusEl.textContent = "失败 " + (Date.now() - started) + "ms";
+      }
+      clearTimeout(reasonIdle);
+      await collapseThink(last, started);
+      flushLive(last);
+      last.waiting = false;
+      last.streaming = true;
+      sendEl.disabled = false;
+      render();
+      setTimeout(function () {
+        last.streaming = false;
+        render({ stick: false });
+      }, 1600);
+    }
+
+    sendEl.onclick = function () { send(); };
+    document.getElementById("clear").onclick = function () {
+      items.length = 0;
+      statusEl.textContent = "已清空";
+      render();
+    };
+    textEl.onkeydown = function (event) {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        send();
+      }
+    };
+
+    (function loopTip() {
+      const tip = document.getElementById("tipDemo");
+      if (!tip) return;
+      setInterval(function () {
+        tip.className = tip.className.indexOf("enter") >= 0 ? "tip exit" : "tip enter";
+      }, 900);
+    })();
+
+    (function loopSlide() {
+      const stage = document.getElementById("loginSlideStage");
+      if (!stage) return;
+      setInterval(function () {
+        stage.innerHTML = '<div class="login-slide">登录面板</div>';
+      }, 1600);
+    })();
+
+    (function typewriter() {
+      const el = document.getElementById("typewriterDemo");
+      if (!el) return;
+      const full = "你好，这是打字机效果。";
+      const chars = Array.from(full);
+      function play() {
+        const duration = Math.min(8000, Math.max(1000, chars.length * 28));
+        const startedAt = performance.now();
+        function tick(now) {
+          const progress = Math.min(1, (now - startedAt) / duration);
+          const n = Math.min(chars.length, Math.max(1, Math.floor(chars.length * progress)));
+          el.textContent = chars.slice(0, n).join("");
+          const caret = document.createElement("span");
+          caret.className = "type-caret";
+          el.appendChild(caret);
+          if (n < chars.length) {
+            requestAnimationFrame(tick);
+            return;
+          }
+          setTimeout(function () {
+            el.textContent = "";
+            play();
+          }, 800);
+        }
+        requestAnimationFrame(tick);
+      }
+      play();
+    })();
+
+    (function marqueeSpeed() {
+      const el = document.querySelector(".flashmuse-announcement-marquee");
+      if (!el) return;
+      const shift = el.scrollWidth / 2;
+      el.style.setProperty("--flashmuse-marquee-shift", "-" + shift + "px");
+      el.style.animationDuration = (shift / 30) + "s";
+    })();
+  </script>
+</body>
+</html>

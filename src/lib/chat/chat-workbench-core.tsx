@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, CSSProperties, PointerEvent as ReactPointerEvent, ReactNode, RefObject, SVGProps } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, CSSProperties, Children, PointerEvent as ReactPointerEvent, ReactNode, RefObject, SVGProps, cloneElement, isValidElement } from "react";
 import Image from "next/image";
 import { createPortal } from "react-dom";
 import { IMAGE_UPLOAD_ACCEPT } from "@/lib/image-upload-validation";
@@ -100,6 +100,10 @@ export type Message = {
   gptImageOptimizationRetryingIndexes?: number[];
   mode?: WorkMode;
   generationMeta?: MessageGenerationMeta;
+  reasoning?: string;
+  thinkMs?: number;
+  thinkCollapsed?: boolean;
+  streaming?: boolean;
 };
 
 export type PromptDetail = {
@@ -554,6 +558,7 @@ export type ChatApiResponse = {
   suggestions?: SuggestionInput[];
   usage?: UsageMeta;
   credit?: CreditMeta;
+  reasoning?: string;
 };
 export type AgentPlanResponse = {
   intent?: "chat" | "image" | "video" | "clarify";
@@ -2905,18 +2910,59 @@ export function getDisplayDimensions(ratio: string, resolution: string, mode: Wo
   return isLandscape ? { width: longSide, height: shortSide } : { width: shortSide, height: longSide };
 }
 
-export function ThinkingIndicator() {
+const GRID_ORBIT_INDEX = [0, 1, 2, 7, null, 3, 6, 5, 4] as const;
+
+export function ThinkingIndicator({ compact = false }: { compact?: boolean }) {
   return (
-    <div className="flex min-h-[300px] items-start justify-start" role="status" aria-live="polite">
+    <div className={compact ? "flex items-start justify-start" : "flex min-h-[300px] items-start justify-start"} role="status" aria-live="polite">
       <div className="flex items-center gap-2 px-0 py-1 text-sm text-[#6f6f6f]">
-        <GridLoader className="mr-1" />
-        <span className="yinzao-thinking-shimmer">正在认真思考</span>
-        <span className="yinzao-thinking-dots flex items-center gap-1">
-          <span className="yinzao-thinking-dot h-1.5 w-1.5 rounded-full" />
-          <span className="yinzao-thinking-dot h-1.5 w-1.5 rounded-full" />
-          <span className="yinzao-thinking-dot h-1.5 w-1.5 rounded-full" />
-        </span>
+        <GridLoader className="mr-1" mode="orbit" />
+        <span className="yinzao-thinking-shimmer">正在思考中...</span>
       </div>
+    </div>
+  );
+}
+
+export function ThinkingProcessBlock({ reasoning, thinkMs, live = false }: { reasoning: string; thinkMs?: number; live?: boolean }) {
+  const [open, setOpen] = useState(false);
+  const [showToggle, setShowToggle] = useState(false);
+  const textRef = useRef<HTMLDivElement>(null);
+
+  useLayoutEffect(() => {
+    if (live) {
+      setShowToggle(false);
+      return;
+    }
+    const multi = /[\n\r]/.test(reasoning.replace(/\u200b/g, ""));
+    if (multi) {
+      setShowToggle(true);
+      return;
+    }
+    if (open) return;
+    const el = textRef.current;
+    setShowToggle(Boolean(el && el.scrollWidth > el.clientWidth + 1));
+  }, [reasoning, live, open]);
+
+  const text = reasoning.replace(/\u200b/g, "").trim();
+  if (!text && thinkMs == null) return null;
+
+  return (
+    <div className="mb-2">
+      {thinkMs != null ? <div className="mb-1.5 text-sm text-[#2563eb]">已思考 {(thinkMs / 1000).toFixed(1)}秒</div> : null}
+      {!text ? null : live ? (
+        <div className="whitespace-pre-wrap text-sm leading-7 text-[#b0b0b0]">{text}</div>
+      ) : (
+        <div className="flex items-start gap-0.5 text-sm leading-7 text-[#b0b0b0]">
+          {showToggle ? (
+            <button type="button" className={`mt-0.5 flex h-[22px] w-5 shrink-0 items-center justify-center text-[#b0b0b0] ${open ? "rotate-90" : ""}`} onClick={() => setOpen((current) => !current)} aria-label={open ? "收起思考过程" : "展开思考过程"}>
+              <RiArrowRightSLine className="h-[18px] w-[18px]" aria-hidden="true" />
+            </button>
+          ) : null}
+          <div ref={textRef} className={open ? "min-w-0 flex-1 whitespace-pre-wrap" : "min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap"}>
+            {open ? text : text.replace(/\s+/g, " ").trim()}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -2952,11 +2998,21 @@ const gridLoaderPatterns = {
 } as const;
 
 type GridLoaderPattern = keyof typeof gridLoaderPatterns;
-type GridLoaderMode = "pulse" | "stagger";
+type GridLoaderMode = "pulse" | "stagger" | "orbit";
 
 function GridLoader({ pattern = "sparkle", mode = "stagger", size = 16, color = "#367cee", className = "", decorative = true }: { pattern?: GridLoaderPattern; mode?: GridLoaderMode; size?: number; color?: string; className?: string; decorative?: boolean }) {
   const cells = gridLoaderPatterns[pattern];
   const style = { "--grid-loader-size": `${size}px`, "--grid-loader-color": color } as CSSProperties;
+
+  if (mode === "orbit") {
+    return (
+      <span className={`yinzao-grid-loader yinzao-grid-loader-orbit ${className}`} style={style} aria-hidden={decorative ? "true" : undefined} role={decorative ? undefined : "status"} aria-label={decorative ? undefined : "Loading"}>
+        {GRID_ORBIT_INDEX.map((orbit, index) => (
+          <span key={index} className="yinzao-grid-loader-cell" {...(orbit == null ? {} : { "data-orbit": "", style: { "--orbit-index": orbit } as CSSProperties })} />
+        ))}
+      </span>
+    );
+  }
 
   return (
     <span className={`yinzao-grid-loader yinzao-grid-loader-${mode} ${className}`} style={style} aria-hidden={decorative ? "true" : undefined} role={decorative ? undefined : "status"} aria-label={decorative ? undefined : "Loading"}>
@@ -2978,7 +3034,7 @@ export function InlineLoadingDots() {
 }
 
 export function HaloPulseIndicator() {
-  return <GridLoader pattern="sparkle" mode="stagger" />;
+  return <GridLoader mode="orbit" />;
 }
 
 export function FeedbackButton({
@@ -3045,6 +3101,7 @@ export function TypewriterFormattedMessage({
   onComplete,
   onTick,
   leadingIcon,
+  showCaret = false,
 }: {
   messageId: string;
   content: string;
@@ -3052,6 +3109,7 @@ export function TypewriterFormattedMessage({
   onComplete: (messageId: string) => void;
   onTick: () => void;
   leadingIcon?: ReactNode;
+  showCaret?: boolean;
 }) {
   const displayContent = sanitizeMessageContentForDisplay(content);
   const characters = splitGraphemes(displayContent);
@@ -3062,6 +3120,7 @@ export function TypewriterFormattedMessage({
     const contentCharacters = splitGraphemes(displayContent);
 
     if (isComplete) {
+      onComplete(messageId);
       return;
     }
 
@@ -3096,8 +3155,8 @@ export function TypewriterFormattedMessage({
 
   return (
     <>
-      <FormattedMessage content={visibleContent} leadingIcon={leadingIcon} />
-      {!isComplete ? <span className="ml-0.5 inline-block h-4 w-1 animate-pulse rounded-full bg-[#111111] align-[-2px]" aria-hidden="true" /> : null}
+      <FormattedMessage content={visibleContent} leadingIcon={leadingIcon} trailing={showCaret ? <span className="type-caret" aria-hidden="true" /> : null} />
+      {!showCaret && !isComplete ? <span className="ml-0.5 inline-block h-4 w-1 animate-pulse rounded-full bg-[#111111] align-[-2px]" aria-hidden="true" /> : null}
     </>
   );
 }
@@ -3442,6 +3501,7 @@ export function getPersistableSessions(sessions: WorkSession[]) {
 
         return {
           ...message,
+          streaming: undefined,
           suggestions: normalizeMessageSuggestions(message.suggestions as SuggestionInput[]),
           images: images && images.length > 0 ? images : undefined,
           imageReferences: imageReferences && imageReferences.length > 0 ? imageReferences : undefined,
@@ -3588,7 +3648,24 @@ export function getCorrectionMode(text: string): IntentMode | null {
 export function shouldPlanAgentTask(text: string) {
   if (getCorrectionMode(text)) return true;
   const normalized = normalizeIntentText(text);
-  return /(生图|生成图片|出图|做图|画一张|画个|生成一张|帮我画|来一张|做一张|出一张|生成视频|生视频|做视频|出视频|图生视频|做一段.{0,12}视频|生成一段.{0,12}视频|你能生图|能做视频|能不能生视频|可以生成图片|可以生图|能生图吗|能做视频吗|支持视频吗)/.test(normalized);
+  return /(生图|出图|做图|画图|绘图|配图|生成图片|生成.{0,16}图|画一|画个|画张|来一?张|做一?张|出一?张|生一?张|来张图|做张图|出张图|生成角色图|生成场景图|生成三视图|生成分镜图|图片分镜|生成视频|生视频|做视频|出视频|图生视频|做一段.{0,12}视频|生成一段.{0,12}视频|做成视频|让.{0,8}动起来|你能生图|能做视频|能不能生视频|可以生成图片|可以生图|能生图|能做视频|支持视频)/.test(normalized);
+}
+
+export function isExplicitImageGenerationRequest(text: string) {
+  const normalized = normalizeIntentText(text);
+  if (/(吗|嘛)$|能不能|可不可以|会不会|可以吗|支持吗|你能|你会/.test(normalized)) return false;
+  return /(生图|出图|做图|画图|生成图片|生成.{0,16}图|画一|画个|画张|来一?张|做一?张|出一?张|生一?张|来张图|做张图|出张图|生成角色图|生成场景图|生成三视图|生成分镜图)/.test(normalized);
+}
+
+export function isExplicitVideoGenerationRequest(text: string) {
+  const normalized = normalizeIntentText(text);
+  if (/(吗|嘛)$|能不能|可不可以|会不会|可以吗|支持吗|你能|你会/.test(normalized)) return false;
+  return /(生成视频|生视频|做视频|出视频|图生视频|做一段.{0,12}视频|生成一段.{0,12}视频|做成视频|让.{0,8}动起来)/.test(normalized);
+}
+
+export function suggestionRequestsGeneration(suggestion?: { assetTargetType?: AssetTargetType } | null) {
+  const type = suggestion?.assetTargetType;
+  return type === "character_image" || type === "scene_image" || type === "prop_image" || type === "shot_image" || type === "shot_video";
 }
 
 export function getLastUserMessage(messages: Message[]) {
@@ -5177,7 +5254,21 @@ export function InlineAssistantIcon({ message, activated = false, provider }: { 
   return <InlineAgentIcon activated={activated} variant={message.mode === "general" ? "general" : "agent"} />;
 }
 
-function FormattedMessage({ content, leadingIcon }: { content: string; leadingIcon?: ReactNode }) {
+function appendTrailing(node: ReactNode, trailing?: ReactNode): ReactNode {
+  if (!trailing) return node;
+  if (!isValidElement<{ children?: ReactNode }>(node)) return <>{node}{trailing}</>;
+  if (node.type === "hr") return <>{node}{trailing}</>;
+  const textHosts = new Set(["p", "h1", "h2", "h3", "h4", "span", "strong", "em", "a", "li"]);
+  if (typeof node.type === "string" && textHosts.has(node.type)) {
+    return cloneElement(node, undefined, <>{node.props.children}{trailing}</>);
+  }
+  const childArray = Children.toArray(node.props.children);
+  if (childArray.length === 0) return <>{node}{trailing}</>;
+  const last = childArray[childArray.length - 1];
+  return cloneElement(node, undefined, <>{childArray.slice(0, -1)}{appendTrailing(last, trailing)}</>);
+}
+
+function FormattedMessage({ content, leadingIcon, trailing }: { content: string; leadingIcon?: ReactNode; trailing?: ReactNode }) {
   const displayContent = sanitizeMessageContentForDisplay(content);
   const blocks = displayContent.split(/\n{2,}/).map((block) => block.trim()).filter(Boolean);
 
@@ -5283,6 +5374,7 @@ function FormattedMessage({ content, leadingIcon }: { content: string; leadingIc
               {lines.map((line, lineIndex) => {
                 const content = line.replace(/^[-*]\s+/, "");
                 const labeledItem = content.match(/^(.{2,30}?[：:])\s*([\s\S]*)$/);
+                const isLast = blockIndex === blocks.length - 1 && lineIndex === lines.length - 1;
 
                 return (
                   <li key={`${blockIndex}-${lineIndex}`} className="list-disc">
@@ -5295,6 +5387,7 @@ function FormattedMessage({ content, leadingIcon }: { content: string; leadingIc
                     ) : (
                       renderInlineFormatting(content)
                     )}
+                    {isLast ? trailing : null}
                   </li>
                 );
               })}
@@ -5304,7 +5397,10 @@ function FormattedMessage({ content, leadingIcon }: { content: string; leadingIc
 
         return (
           <div key={blockIndex} className="space-y-2">
-            {lines.map((line, lineIndex) => renderLine(line, `${blockIndex}-${lineIndex}`, blockIndex === 0 && lineIndex === 0 ? leadingIcon : undefined))}
+            {lines.map((line, lineIndex) => {
+              const isLast = blockIndex === blocks.length - 1 && lineIndex === lines.length - 1;
+              return appendTrailing(renderLine(line, `${blockIndex}-${lineIndex}`, blockIndex === 0 && lineIndex === 0 ? leadingIcon : undefined), isLast ? trailing : undefined);
+            })}
           </div>
         );
       })}

@@ -140,11 +140,13 @@ export function isUnauthenticatedError(value: unknown): boolean {
   return value instanceof Error && (value as Error & { code?: string }).code === UNAUTHENTICATED_ERROR_CODE;
 }
 
-export async function assertUserCanUseCredits(user: { credits?: number | null } | null, kind: CreditKind, metadata?: Prisma.InputJsonValue) {
+export async function assertUserCanUseCredits(user: { id?: string; credits?: number | null } | null, kind: CreditKind, metadata?: Prisma.InputJsonValue) {
   if (!user) throw createUnauthenticatedError();
 
   const settings = await getCreditSettings();
-  if (getChargeEnabled(settings, kind, metadata) && (user.credits ?? 0) <= 0) throw new Error("积分不足，请充值后再使用模型。");
+  if (!getChargeEnabled(settings, kind, metadata)) return;
+  const row = user.id ? await prisma.user.findUnique({ where: { id: user.id }, select: { credits: true } }) : null;
+  if ((row?.credits ?? user.credits ?? 0) <= 0) throw new Error("积分不足，请充值后再使用模型。");
 }
 
 function cleanNumber(value: unknown) {

@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
 import { assertUserCanUseCredits, chargeCredits, isUnauthenticatedError, recordCreditFailure, UNAUTHENTICATED_ERROR_MESSAGE } from "@/lib/credits";
 import { toUserErrorMessage } from "@/lib/error-message";
-import { sendToOpenRouter } from "@/lib/openrouter";
+import { extractAgentStreamContent, sendToOpenRouter } from "@/lib/openrouter";
 import { CONTENT_POLICY_ERROR_CODE, CONTENT_POLICY_ERROR_MESSAGE, enforceContentPolicy } from "@/lib/content-moderation";
 import { DEFAULT_CHAT_MODEL, isModelName } from "@/lib/models";
 import { createCodedApiError } from "@/lib/error-code";
@@ -48,9 +48,9 @@ export async function POST(request: Request) {
     originalPrompt?: string;
     conversationId?: string;
     conversationTitle?: string;
-    requestId?: string;
-    stream?: boolean;
+        requestId?: string;
     metadata?: Prisma.InputJsonValue;
+    stream?: boolean;
   } | undefined;
   let model = DEFAULT_CHAT_MODEL;
   let user: Awaited<ReturnType<typeof getCurrentUser>> = null;
@@ -69,10 +69,10 @@ export async function POST(request: Request) {
       originalPrompt?: string;
       conversationId?: string;
       conversationTitle?: string;
-      requestId?: string;
-      stream?: boolean;
-      metadata?: Prisma.InputJsonValue;
-    };
+        requestId?: string;
+        metadata?: Prisma.InputJsonValue;
+        stream?: boolean;
+      };
 
     model = body.model || DEFAULT_CHAT_MODEL;
     const chatModels = body.mode === "agent"
@@ -95,38 +95,65 @@ export async function POST(request: Request) {
     if (body.mode === "general" && !user?.generalModeEnabled) {
       return NextResponse.json({ error: "通用模式未开通" }, { status: 403 });
     }
-    await assertUserCanUseCredits(user, "text", body.metadata);
-
-    if (body.mode === "agent" || body.mode === "general") {
-      const moderationPrompt = [...(body.messages ?? [])].reverse().find((message) => message.role === "user")?.content ?? "";
-      const policy = await enforceContentPolicy({ prompt: moderationPrompt, userId: user?.id, requestId: body.requestId, kind: "chat", source: body.mode });
-      if (policy.blocked) return NextResponse.json({ error: CONTENT_POLICY_ERROR_MESSAGE, errorCode: CONTENT_POLICY_ERROR_CODE }, { status: 400 });
-    }
-
-    const unlockLimits = await resolveUnlockLimitsForUser(user?.id);
+    const shouldModerateChat = body.mode === "agent" || body.mode === "general";
+    const moderationPrompt = shouldModerateChat ? [...(body.messages ?? [])].reverse().find((message) => message.role === "user")?.content ?? "" : "";
+    const [, policy, unlockLimits] = await Promise.all([
+      assertUserCanUseCredits(user, "text", body.metadata),
+      shouldModerateChat
+        ? enforceContentPolicy({ prompt: moderationPrompt, userId: user?.id, requestId: body.requestId, kind: "chat", source: body.mode })
+        : Promise.resolve({ blocked: false as const }),
+      resolveUnlockLimitsForUser(user?.id),
+    ]);
+    if (policy.blocked) return NextResponse.json({ error: CONTENT_POLICY_ERROR_MESSAGE, errorCode: CONTENT_POLICY_ERROR_CODE }, { status: 400 });
     const creditLabel = body.mode === "agent" ? "Agent 回复" : body.mode === "general" ? "通用回复" : "提示词整理";
     const creditRequestId = body.requestId ? `${body.requestId}:chat` : undefined;
+    const shouldStream = Boolean(body.stream) && (body.mode === "agent" || body.mode === "general");
 
-    if (body.stream && (body.mode === "agent" || body.mode === "general")) {
+    if (shouldStream) {
+      const streamMode = body.mode;
+      const streamMessages = body.messages;
+      const streamSettings = body.settings;
+      const streamOriginalPrompt = body.originalPrompt;
+      const streamConversationId = body.conversationId;
+      const streamConversationTitle = body.conversationTitle;
+      const streamMetadata = body.metadata;
       const encoder = new TextEncoder();
       const stream = new ReadableStream({
         async start(controller) {
-          const send = (payload: Record<string, unknown>) => controller.enqueue(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`));
+          const send = (payload: unknown) => {
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`));
+          };
           try {
             let result: Awaited<ReturnType<typeof sendToOpenRouter>> | undefined;
             let lastError: unknown;
             let usedModel = model;
-            for (const chatModel of chatModels) {
+            const streamModels = [model];
+            for (const chatModel of streamModels) {
               try {
+                let streamedRaw = "";
+                let lastExtracted = "";
                 result = await sendToOpenRouter({
                   model: chatModel,
-                  mode: body!.mode!,
-                  messages: body!.messages!,
-                  settings: body!.settings,
-                  originalPrompt: body!.originalPrompt,
+                  mode: streamMode,
+                  messages: streamMessages,
+                  settings: streamSettings,
+                  originalPrompt: streamOriginalPrompt,
                   unlockLimits,
-                }, {
-                  onDelta: (text) => send({ type: "delta", text }),
+                  streamHandlers: {
+                    onReasoning: (piece) => send({ reasoning: piece }),
+                    onDelta: (piece) => {
+                      streamedRaw += piece;
+                      if (streamMode === "agent") {
+                        const extracted = extractAgentStreamContent(streamedRaw);
+                        if (extracted.startsWith(lastExtracted) && extracted.length > lastExtracted.length) {
+                          send({ delta: extracted.slice(lastExtracted.length) });
+                          lastExtracted = extracted;
+                        }
+                        return;
+                      }
+                      send({ delta: piece });
+                    },
+                  },
                 });
                 usedModel = chatModel;
                 lastError = undefined;
@@ -138,26 +165,28 @@ export async function POST(request: Request) {
               }
             }
             if (!result) throw lastError instanceof Error ? lastError : new Error("连接不到模型，请联系管理员！");
-            if (isPromptToolCreditSource(getCreditSource(body!.metadata)) && !result.content.trim()) throw new Error("服务器繁忙，请稍候再试！");
-            const credit = user ? await chargeCredits(user.id, "text", result.usage, { conversationId: body!.conversationId, conversationTitle: body!.conversationTitle, requestId: creditRequestId, label: creditLabel, model: usedModel, metadata: mergeChatCreditMetadata(body!.metadata, { outputPrompt: result.content ?? "" }) }) : undefined;
-            send({ type: "done", ...withChargedUsage(result, credit), credit });
-            controller.close();
+            if (isPromptToolCreditSource(getCreditSource(streamMetadata)) && !result.content.trim()) {
+              throw new Error("服务器繁忙，请稍候再试！");
+            }
+            const hasBillableUsage = (result.usage?.usd ?? 0) > 0;
+            const credit = user && hasBillableUsage ? await chargeCredits(user.id, "text", result.usage, { conversationId: streamConversationId, conversationTitle: streamConversationTitle, requestId: creditRequestId, label: creditLabel, model: usedModel, metadata: mergeChatCreditMetadata(streamMetadata, { outputPrompt: result.content ?? "" }) }) : undefined;
+            send({ done: true, ...withChargedUsage(result, credit), credit, model: usedModel });
           } catch (error) {
             if (isUnauthenticatedError(error)) {
-              send({ type: "error", error: UNAUTHENTICATED_ERROR_MESSAGE, status: 401 });
+              send({ error: UNAUTHENTICATED_ERROR_MESSAGE, status: 401 });
             } else {
-              const codedError = await createCodedApiError(error, "对话请求失败，请稍后再试。", `chat stream failed mode=${body?.mode ?? "unknown"} model=${model} requestId=${body?.requestId ?? ""}`);
-              send({ type: "error", error: codedError.error, errorCode: codedError.errorCode });
+              const codedError = await createCodedApiError(error, "对话请求失败，请稍后再试。", `chat request failed mode=${body?.mode ?? "unknown"} model=${model} requestId=${body?.requestId ?? ""}`);
+              send({ error: codedError.error ?? "对话请求失败，请稍后再试。", errorCode: codedError.errorCode });
             }
-            controller.close();
           }
+          controller.close();
         },
       });
       return new Response(stream, {
         headers: {
           "Content-Type": "text/event-stream; charset=utf-8",
           "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
-          Connection: "keep-alive",
+          "Connection": "keep-alive",
           "X-Accel-Buffering": "no",
         },
       });

@@ -785,10 +785,12 @@ export async function POST(request: Request) {
 
     const user = await getCurrentUser();
     currentUserId = user?.id;
-    await assertUserCanUseCredits(user, "video");
-    // ⭐ 审核只看「用户自己写的那句」（sourcePrompt），理由同 /api/image。
     const moderationPrompt = (typeof body.sourcePrompt === "string" && body.sourcePrompt.trim()) ? body.sourcePrompt.trim() : prompt;
-    const policy = await enforceContentPolicy({ prompt: moderationPrompt, userId: user?.id, requestId, kind: "video", source: creditSource?.startsWith("workflow_") ? "workflow" : creditSource === "agent_video_generation" ? "agent" : "conversation", recordEvent: !body.suppressContentModerationRecord });
+    const [, policy, unlockLimits] = await Promise.all([
+      assertUserCanUseCredits(user, "video"),
+      enforceContentPolicy({ prompt: moderationPrompt, userId: user?.id, requestId, kind: "video", source: creditSource?.startsWith("workflow_") ? "workflow" : creditSource === "agent_video_generation" ? "agent" : "conversation", recordEvent: !body.suppressContentModerationRecord }),
+      resolveUnlockLimitsForUser(user?.id),
+    ]);
     if (policy.blocked) return NextResponse.json({ error: { message: CONTENT_POLICY_ERROR_MESSAGE }, errorCode: CONTENT_POLICY_ERROR_CODE, status: "failed" }, { status: 400 });
     // ⭐ 提示词超字数：**只记日志、不拦**（用户拍板先观察）。唯一实现 lib/prompt-length-server.ts。
     logPromptLengthOverLimit({
@@ -799,9 +801,6 @@ export async function POST(request: Request) {
       model: body.model,
       creditSource,
     });
-    // 按账号的「解除限制」（后台「帐号功能管理」）。本 handler 下面 5 处创建视频任务共用这一个值，
-    // 拿不到用户时回落全局 BYTEPLUS_UNLOCK_LIMITS。
-    const unlockLimits = await resolveUnlockLimitsForUser(user?.id);
     // 参考图槽只接受真正的图片资产：@引用/附加时若把音频/视频（尤其历史 .bin 扩展名的音频）漏进了
     // referenceImages，这里按库里真实 mediaType 剔除，避免当图片发给 BytePlus（content[N].image_url
     // not an image）。对话流/工作流共用本路由，统一在服务端权威按 kind 归位，不靠文件扩展名猜。

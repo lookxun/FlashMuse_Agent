@@ -2,23 +2,28 @@
 
 > 历史 END-OF-SESSION 记录都在 `historical-handover-docs-last-used-2026-07-21/05-next-actions.md`（很长）。这里只留当前有效待办。
 
-## ✅ 当前状态（2026-08-24 第八十四次会话末）：**测服=正式服 `v1.0.1.6`**
+## ✅ 当前状态（2026-08-24 第九十次会话末）：**四方 `v1.0.1.7`**
 
 | | 版本 / 状态 |
 |---|---|
-| 测服 = 正式服 | **`v1.0.1.6`** |
+| 线上（测服=正式服） | **`v1.0.1.7`**。两服 OpenRouter 仍是闪念专用 key。 |
+| 本地 | **`v1.0.1.7`**（本会话 commit + push） |
 | 自查 | `tsc` 0 |
-| 回滚点 | 正式服 app `.../20260824-021441-presync-v1.0.1.6` |
+| 回滚点 | 正式服 app `.../20260824-205056-presync-v1.0.1.7` |
 
 ### 🎯 待办 0
 
-1. `modal.md` 别 `git add -A`。
-2. 上一批「带上传生成后看后台/预览参考」仍没端到端验。老成品没存过的参考补不回来。
-3. 语速别做。Kimi 别写成 MiniMax。⛔ 正式服公告别动。
+1. Agent 仍逼吐 JSON。闲聊改人话直出没拍板。提示词瘦身已否。
+2. `modal.md` / `tmp-openrouter` / `原型测试.url` 别 `git add -A`。上一批「带上传生成后看后台/预览参考」仍没端到端验。
+3. 语速别做。Kimi 别写成 MiniMax。⛔ 正式服公告别动。Fish 字数别拆成两个 key。
+4. 原型测试页以后加测试：左边菜单加一项，面板写在 `src/app/proto-test/view.html`。只本地（线上 404）。
+5. GPT Terra / Terra Pro **没有思考正文**（上游 `reasoning` 空、思考 token=0），只显示「已思考 xx秒」。别再当漏接。
+6. Agent 优先 K3。流式请求只打客户端指定的那一个模型，别再在服务端把整条链扩一遍。
+7. 流式没采到 `usage.usd` 时**不要写 0 分账本**（会把同 requestId 锁死白送）。判据：`text-provider-stream-missing-usage` 日志。
 
 ### ⚠️ 血泪教训（本对话框仍有效）
 
-写文件只用 edit/write。测服要把当次新内容全部测一遍；没说推正式服就别推。说了推正式服，到正式服用免费语音 `fish-audio/s2.1-pro-free` 测一下不崩即可。
+写文件只用 edit/write。正文没出来前都要「正在思考中」；只在思考/正文正在出字时藏。`\u200b` 不是可见思考。Gemini 加密块 `\u200b` 不能挡住后面的真思考；`reasoning_details` 可能是累计快照，只追加增量。解析 SSE 用 `parseLenientModelJson`。Agent 不要每次把整段 `content` 再推一遍（会出完再出一次）；只推 delta，出过的正文不许换成更短/另一段。思考三角只在收起时量宽度，展开后再量会以为不用三角。给列表行塞光标要递归进最后一个 `<p>`，别塞进 flex 外壳（光标会飞到最右）。`shouldPlanAgentTask` 旧正则漏「帮我生一张图」「生成角色图」→ 只聊天不调生图；引导按钮带 `assetTargetType` 也要走规划，规划回 chat 时明确生图/生视频要改回 image/video。Gemini 图标走 `GeminiIcon`（`modelId.includes("gemini")`），Veo 仍 `google/` Google 标。四个选模型菜单（对话流图/视频 + 工作流图/视频节点）不要 `max-h` / 滚动条，后台开着的全列出来。
 
 ---
 

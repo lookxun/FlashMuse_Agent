@@ -25,8 +25,54 @@ const MODERATION_REQUEST_TIMEOUT_MS = 20000;
 
 type ActiveTerm = { category: string; value: string; normalized: string };
 type SemanticReviewJob = { id: string; prompt: string };
+type ModerationCache = { terms: ActiveTerm[]; categoryEnabled: Map<string, boolean>; loadedAt: number };
 
 let queueRunning = false;
+let moderationCache: ModerationCache | undefined;
+let moderationCachePending: Promise<ModerationCache> | undefined;
+const MODERATION_CACHE_TTL_MS = 60_000;
+
+export function invalidateContentModerationCache() {
+  moderationCache = undefined;
+  moderationCachePending = undefined;
+}
+
+async function loadModerationCache(): Promise<ModerationCache> {
+  const [terms, groups] = await Promise.all([
+    prisma.$queryRaw<ActiveTerm[]>`
+      SELECT g."category", t."value", t."normalized"
+      FROM "ContentModerationRuleGroup" g
+      INNER JOIN "ContentModerationTerm" t ON t."groupId" = g."id"
+      WHERE g."enabled" = true
+      ORDER BY length(t."normalized") DESC
+    `,
+    prisma.$queryRaw<Array<{ category: string; enabled: boolean }>>`
+      SELECT "category", "enabled" FROM "ContentModerationRuleGroup"
+    `,
+  ]);
+  return {
+    terms,
+    categoryEnabled: new Map(groups.map((group) => [group.category, group.enabled])),
+    loadedAt: Date.now(),
+  };
+}
+
+async function getModerationCache() {
+  if (moderationCache && Date.now() - moderationCache.loadedAt < MODERATION_CACHE_TTL_MS) return moderationCache;
+  if (!moderationCachePending) {
+    moderationCachePending = loadModerationCache()
+      .then((next) => {
+        moderationCache = next;
+        moderationCachePending = undefined;
+        return next;
+      })
+      .catch((error) => {
+        moderationCachePending = undefined;
+        throw error;
+      });
+  }
+  return moderationCachePending;
+}
 
 export function normalizeContentModerationText(value: string) {
   return value
@@ -42,24 +88,16 @@ export function splitContentModerationTerms(value: string) {
 export async function findContentPolicyMatch(prompt: string) {
   const normalizedPrompt = normalizeContentModerationText(prompt);
   if (!normalizedPrompt) return undefined;
-  const terms = await prisma.$queryRaw<ActiveTerm[]>`
-    SELECT g."category", t."value", t."normalized"
-    FROM "ContentModerationRuleGroup" g
-    INNER JOIN "ContentModerationTerm" t ON t."groupId" = g."id"
-    WHERE g."enabled" = true
-    ORDER BY length(t."normalized") DESC
-  `;
+  const { terms } = await getModerationCache();
   return terms.find((term) => term.normalized.length > 0 && normalizedPrompt.includes(term.normalized));
 }
 
 async function isCategoryEnabled(category: string) {
-  const rows = await prisma.$queryRaw<Array<{ enabled: boolean }>>`
-    SELECT "enabled" FROM "ContentModerationRuleGroup" WHERE "category" = ${category} LIMIT 1
-  `;
-  return rows[0]?.enabled === true;
+  const { categoryEnabled } = await getModerationCache();
+  return categoryEnabled.get(category) === true;
 }
 
-async function createEvent(input: {
+function queueModerationEvent(input: {
   userId?: string;
   requestId?: string;
   kind: "image" | "video" | "chat" | "audio";
@@ -70,10 +108,10 @@ async function createEvent(input: {
   prompt: string;
   matchedTerm?: string;
 }) {
-  await prisma.$executeRaw`
+  void prisma.$executeRaw`
     INSERT INTO "ContentModerationEvent" ("id", "userId", "requestId", "kind", "source", "category", "action", "status", "prompt", "matchedTerm", "updatedAt")
     VALUES (${randomUUID()}, ${input.userId ?? null}, ${input.requestId ?? null}, ${input.kind}, ${input.source}, ${input.category}, ${input.action}, ${input.status}, ${input.prompt}, ${input.matchedTerm ?? null}, NOW())
-  `;
+  `.catch(() => undefined);
 }
 
 /**
@@ -84,13 +122,12 @@ async function createEvent(input: {
 export async function enforceContentPolicy(input: { prompt: string; userId?: string; requestId?: string; kind: "image" | "video" | "chat" | "audio"; source: string; recordEvent?: boolean }) {
   const match = await findContentPolicyMatch(input.prompt);
   if (match) {
-    if (input.recordEvent !== false) await createEvent({ ...input, category: match.category, action: "keyword_block", status: "blocked", matchedTerm: match.value });
+    if (input.recordEvent !== false) queueModerationEvent({ ...input, category: match.category, action: "keyword_block", status: "blocked", matchedTerm: match.value });
     return { blocked: true as const, category: match.category, matchedTerm: match.value };
   }
 
-  // Semantic review is observation-only for now. It is queued before generation so a process restart cannot lose it.
   if (input.recordEvent !== false && await isCategoryEnabled(SENSITIVE_POLITICS_CATEGORY)) {
-    await createEvent({ ...input, category: SENSITIVE_POLITICS_CATEGORY, action: "semantic_review", status: "pending" });
+    queueModerationEvent({ ...input, category: SENSITIVE_POLITICS_CATEGORY, action: "semantic_review", status: "pending" });
   }
   return { blocked: false as const };
 }

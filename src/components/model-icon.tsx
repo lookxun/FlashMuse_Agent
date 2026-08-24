@@ -6,6 +6,7 @@ import { MiniMaxIcon } from "@/components/minimax-icon";
 import { GrokIcon } from "@/components/grok-icon";
 import { KimiIcon } from "@/components/kimi-icon";
 import { RecraftIcon } from "@/components/recraft-icon";
+import { GeminiIcon } from "@/components/gemini-icon";
 import { QwenIcon } from "@/components/qwen-icon";
 import { FishAudioIcon } from "@/components/fish-audio-icon";
 
@@ -59,6 +60,7 @@ export function getGenerationModelIcon(modelId: string) {
   if (modelId.startsWith("deepseek/")) return DeepSeekIcon;
   if (modelId.startsWith("byteplus:") || modelId.startsWith("byteplus/") || modelId.startsWith("ep-")) return BytePlusIcon;
   if (modelId.startsWith("openai/")) return RiOpenaiFill;
+  if (modelId.includes("gemini")) return GeminiIcon;
   if (modelId.startsWith("google/")) return RiGoogleFill;
   if (modelId.startsWith("bytedance/") || modelId.startsWith("bytedance-seed/")) return RiTiktokFill;
   if (modelId.startsWith("minimax/")) return MiniMaxIcon;

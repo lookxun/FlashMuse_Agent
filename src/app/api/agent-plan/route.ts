@@ -47,15 +47,13 @@ export async function POST(request: Request) {
     if (body.mode === "general" && !user?.generalModeEnabled) {
       return NextResponse.json({ error: "通用模式未开通" }, { status: 403 });
     }
-    await assertUserCanUseCredits(user, "text");
-
-    // Agent / 通用模式对话也要走内容审核：命中词库直接拦，返回同一句红字（不带 B_xxx）、不调模型、不扣分。
-    // 审核只看用户自己最新那句话（sourcePrompt），别拿拼接后的上下文去匹配。
     const moderationPrompt = [...body.messages].reverse().find((message) => message.role === "user")?.content ?? "";
-    const policy = await enforceContentPolicy({ prompt: moderationPrompt, userId: user?.id, requestId: body.requestId, kind: "chat", source: body.mode === "general" ? "general" : "agent" });
+    const [, policy, unlockLimits] = await Promise.all([
+      assertUserCanUseCredits(user, "text"),
+      enforceContentPolicy({ prompt: moderationPrompt, userId: user?.id, requestId: body.requestId, kind: "chat", source: body.mode === "general" ? "general" : "agent" }),
+      resolveUnlockLimitsForUser(user?.id),
+    ]);
     if (policy.blocked) return NextResponse.json({ error: CONTENT_POLICY_ERROR_MESSAGE, errorCode: CONTENT_POLICY_ERROR_CODE }, { status: 400 });
-
-    const unlockLimits = await resolveUnlockLimitsForUser(user?.id);
     let result: Awaited<ReturnType<typeof planAgentTask>> | undefined;
     let lastError: unknown;
     let usedModel = requestedModel;

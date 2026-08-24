@@ -39,6 +39,47 @@ const authCookieDomain = process.env.AUTH_COOKIE_DOMAIN?.trim() || undefined;
  */
 const lastSeenWriteThrottleMs = 60 * 1000;
 const lastSeenWriteAt = new Map<string, number>();
+const SESSION_IDENTITY_TTL_MS = 10 * 60 * 1000;
+
+type CachedAuthSession = NonNullable<Awaited<ReturnType<typeof readSessionFromDatabase>>>;
+const sessionIdentityCache = new Map<string, { session: CachedAuthSession; expiresAtMs: number }>();
+
+function pruneSessionIdentityCache(now: number) {
+  if (sessionIdentityCache.size <= 2000) return;
+  for (const [key, item] of sessionIdentityCache) {
+    if (item.expiresAtMs <= now) sessionIdentityCache.delete(key);
+  }
+}
+
+function rememberSessionIdentity(hashes: string[], session: CachedAuthSession, now: number) {
+  pruneSessionIdentityCache(now);
+  const entry = { session, expiresAtMs: now + SESSION_IDENTITY_TTL_MS };
+  for (const hash of hashes) sessionIdentityCache.set(hash, entry);
+}
+
+function forgetSessionIdentityByHashes(hashes: string[]) {
+  for (const hash of hashes) sessionIdentityCache.delete(hash);
+}
+
+function forgetSessionIdentityByUserId(userId: string) {
+  for (const [key, item] of sessionIdentityCache) {
+    if (item.session.userId === userId) sessionIdentityCache.delete(key);
+  }
+}
+
+async function readSessionFromDatabase(hashes: string[]) {
+  const sessions = await prisma.session.findMany({
+    where: { tokenHash: { in: hashes } },
+    include: { user: true },
+  });
+  const now = new Date();
+  const session = sessions.find((item) => item.expiresAt > now && !item.user.disabled) ?? null;
+  const expiredSessionIds = sessions.filter((item) => item.expiresAt <= now).map((item) => item.id);
+  if (expiredSessionIds.length > 0) {
+    void prisma.session.deleteMany({ where: { id: { in: expiredSessionIds } } }).catch(() => null);
+  }
+  return session;
+}
 
 function shouldWriteLastSeen(sessionId: string, now: number) {
   const previous = lastSeenWriteAt.get(sessionId);
@@ -141,6 +182,7 @@ export async function createUserSession(userId: string) {
       },
     });
   });
+  forgetSessionIdentityByUserId(userId);
 
   const cookieStore = await cookies();
   setAuthCookie(cookieStore, token, sessionMaxAgeSeconds);
@@ -211,27 +253,30 @@ export async function getCurrentSession() {
   const tokens = getAuthCookieCandidates(cookieStore, rawCookieHeader);
   if (tokens.length === 0) return null;
 
-  const tokenByHash = new Map(tokens.map((token) => [hashSessionToken(token), token]));
-  const sessions = await prisma.session.findMany({
-    where: { tokenHash: { in: Array.from(tokenByHash.keys()) } },
-    include: { user: true },
-  });
-  const now = new Date();
-  const session = sessions.find((item) => item.expiresAt > now && !item.user.disabled) ?? null;
-
-  const expiredSessionIds = sessions.filter((item) => item.expiresAt <= now).map((item) => item.id);
-  if (expiredSessionIds.length > 0) {
-    await prisma.session.deleteMany({ where: { id: { in: expiredSessionIds } } }).catch(() => null);
+  const hashes = tokens.map((token) => hashSessionToken(token));
+  const nowMs = Date.now();
+  for (const hash of hashes) {
+    const cached = sessionIdentityCache.get(hash);
+    if (!cached || cached.expiresAtMs <= nowMs) continue;
+    if (cached.session.expiresAt.getTime() <= nowMs || cached.session.user.disabled) {
+      sessionIdentityCache.delete(hash);
+      continue;
+    }
+    if (shouldWriteLastSeen(cached.session.id, nowMs)) {
+      void prisma.session.update({ where: { id: cached.session.id }, data: { lastSeenAt: new Date() } }).catch(() => null);
+    }
+    return cached.session;
   }
 
+  const session = await readSessionFromDatabase(hashes);
   if (!session) {
+    forgetSessionIdentityByHashes(hashes);
     await clearAuthCookie();
     return null;
   }
 
-  // ⭐ A+B：这次写只是"签到"，跟"你是谁"无关 → 不 await（不占请求等待时间）+ 60 秒内不重复写。
-  // 详见文件顶部 lastSeenWriteAt 那段注释（含影响面）。⛔ 别改回 `await`。
-  if (shouldWriteLastSeen(session.id, now.getTime())) {
+  rememberSessionIdentity(hashes, session, nowMs);
+  if (shouldWriteLastSeen(session.id, nowMs)) {
     void prisma.session.update({ where: { id: session.id }, data: { lastSeenAt: new Date() } }).catch(() => null);
   }
   return session;
@@ -280,7 +325,9 @@ export async function clearCurrentSession() {
   const tokens = getAuthCookieCandidates(cookieStore, rawCookieHeader);
 
   if (tokens.length > 0) {
-    await prisma.session.deleteMany({ where: { tokenHash: { in: tokens.map(hashSessionToken) } } }).catch(() => null);
+    const hashes = tokens.map(hashSessionToken);
+    forgetSessionIdentityByHashes(hashes);
+    await prisma.session.deleteMany({ where: { tokenHash: { in: hashes } } }).catch(() => null);
   }
 
   await clearAuthCookie();

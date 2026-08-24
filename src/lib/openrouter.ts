@@ -33,6 +33,10 @@ export type ChatRequest = {
    * 不传 = 回落全局 `BYTEPLUS_UNLOCK_LIMITS`（保持改造前行为）。
    */
   unlockLimits?: boolean;
+  streamHandlers?: {
+    onReasoning?: (piece: string) => void;
+    onDelta?: (piece: string) => void;
+  };
 };
 
 export type IntentClassification = {
@@ -64,6 +68,7 @@ export type ChatResponse = {
   intent?: AgentReplyIntent;
   suggestions?: SuggestionItem[];
   usage?: UsageMeta;
+  reasoning?: string;
 };
 
 export type AgentPlan = {
@@ -552,103 +557,12 @@ async function postChatCompletion(url: string, headers: Record<string, string>, 
   }
 }
 
-type ChatStreamChunk = {
-  model?: string;
-  choices?: Array<{ delta?: { content?: string }; finish_reason?: string }>;
-  usage?: OpenRouterChatCompletionResponse["usage"];
-  error?: { message?: string };
-};
-
-async function* iterateSseJsonChunks(response: Response): AsyncGenerator<ChatStreamChunk> {
-  const reader = response.body?.getReader();
-  if (!reader) throw new Error("模型没有返回内容");
-  const decoder = new TextDecoder();
-  let buffer = "";
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split(/\r?\n/);
-    buffer = lines.pop() ?? "";
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith("data:")) continue;
-      const data = trimmed.slice(5).trim();
-      if (!data || data === "[DONE]") {
-        if (data === "[DONE]") return;
-        continue;
-      }
-      try {
-        yield JSON.parse(data) as ChatStreamChunk;
-      } catch {
-        continue;
-      }
-    }
-  }
-}
-
-async function streamChatCompletion(
-  url: string,
-  headers: Record<string, string>,
-  body: Record<string, unknown>,
-  fallback: string,
-  context: { requestId?: string; mode?: string; provider?: string; model?: string },
-  onDelta: (text: string) => void,
-): Promise<{ raw: string; model?: string; usage?: OpenRouterChatCompletionResponse["usage"] }> {
-  const startedAt = Date.now();
-  const streamBody = { ...body, stream: true, stream_options: { include_usage: true } };
-  void appendGenerationDiagnosticsLog({
-    event: "text-provider-stream-start",
-    requestId: context.requestId,
-    mode: context.mode,
-    provider: context.provider,
-    model: context.model,
-    extra: { url, messageCount: Array.isArray(body.messages) ? body.messages.length : undefined },
-  });
-
-  let response: Response;
-  try {
-    response = await fetch(url, { method: "POST", headers, body: JSON.stringify(streamBody) });
-  } catch (error) {
-    void appendGenerationDiagnosticsLog({ event: "text-provider-stream-fetch-error", requestId: context.requestId, mode: context.mode, provider: context.provider, model: context.model, durationMs: Date.now() - startedAt, error, extra: { url } });
-    throw error;
-  }
-
-  if (!response.ok) {
-    const responseText = await readResponseDiagnosticText(response);
-    void appendGenerationDiagnosticsLog({ event: "text-provider-stream-non-ok", requestId: context.requestId, mode: context.mode, provider: context.provider, model: context.model, status: response.status, durationMs: Date.now() - startedAt, upstream: { url, statusText: response.statusText, body: responseText } });
-    throw new Error(`${fallback}：${toUserErrorMessage(responseText)}`);
-  }
-
-  let raw = "";
-  let model = context.model;
-  let usage: OpenRouterChatCompletionResponse["usage"] | undefined;
-  try {
-    for await (const chunk of iterateSseJsonChunks(response)) {
-      if (chunk.error?.message) throw new Error(chunk.error.message);
-      if (chunk.model) model = chunk.model;
-      if (chunk.usage) usage = chunk.usage;
-      const delta = chunk.choices?.[0]?.delta?.content;
-      if (delta) {
-        raw += delta;
-        onDelta(delta);
-      }
-    }
-  } catch (error) {
-    void appendGenerationDiagnosticsLog({ event: "text-provider-stream-failed", requestId: context.requestId, mode: context.mode, provider: context.provider, model, durationMs: Date.now() - startedAt, error, extra: { url } });
-    throw error;
-  }
-
-  void appendGenerationDiagnosticsLog({ event: "text-provider-stream-success", requestId: context.requestId, mode: context.mode, provider: context.provider, model, durationMs: Date.now() - startedAt, extra: { characters: [...raw].length } });
-  return { raw, model, usage };
-}
-
 function looksLikeStructuredAgentJson(text: string) {
   const trimmed = text.trim();
   return trimmed.startsWith("{") && /"content"\s*:/.test(trimmed) && /"intent"\s*:/.test(trimmed);
 }
 
-function extractAgentStreamContent(raw: string) {
+export function extractAgentStreamContent(raw: string) {
   const data = parseLenientModelJson(raw) as StructuredAgentReply | undefined;
   if (data && typeof data === "object" && typeof data.content === "string") return cleanAgentReplyContent(data.content);
   const marker = raw.match(/"content"\s*:\s*"/);
@@ -915,7 +829,7 @@ async function getOpenRouterError(response: Response, fallback: string) {
   }
 }
 
-export async function sendToOpenRouter(request: ChatRequest, options?: { onDelta?: (text: string) => void }): Promise<ChatResponse> {
+export async function sendToOpenRouter(request: ChatRequest): Promise<ChatResponse> {
   const settingsText = request.settings
     ? [
         request.settings.ratio ? `比例：${request.settings.ratio}` : "",
@@ -965,31 +879,94 @@ export async function sendToOpenRouter(request: ChatRequest, options?: { onDelta
     temperature: 0.7,
   };
   let rawContent = "";
-  let responseModel: string | undefined;
-  let usage: UsageMeta | undefined;
-  if (options?.onDelta) {
-    let assembled = "";
-    let display = "";
-    const streamed = await streamChatCompletion(providerConfig.url, providerConfig.headers, body, "请求失败", { mode: request.mode, provider: providerConfig.provider, model: providerConfig.model }, (delta) => {
-      assembled += delta;
-      if (request.mode === "agent") {
-        const nextDisplay = extractAgentStreamContent(assembled);
-        if (nextDisplay.length > display.length) {
-          options.onDelta?.(nextDisplay.slice(display.length));
-          display = nextDisplay;
-        }
-        return;
-      }
-      options.onDelta?.(delta);
+  let responseModel = providerConfig.model;
+  let usageSource: Pick<OpenRouterChatCompletionResponse, "model" | "usage"> = { model: providerConfig.model };
+  let reasoningText = "";
+
+  if (request.streamHandlers) {
+    const response = await fetch(providerConfig.url, {
+      method: "POST",
+      headers: providerConfig.headers,
+      body: JSON.stringify({
+        ...body,
+        stream: true,
+        reasoning: { effort: "medium", exclude: false },
+        include_reasoning: true,
+        stream_options: { include_usage: true },
+      }),
     });
-    rawContent = streamed.raw;
-    responseModel = streamed.model;
-    usage = await getUsageMeta({ model: streamed.model, usage: streamed.usage }, providerConfig.provider === "openrouter" ? request.model : providerConfig.model, providerConfig.provider === "openrouter");
+    if (!response.ok || !response.body) {
+      const data = await postChatCompletion(providerConfig.url, providerConfig.headers, body, "请求失败", { mode: request.mode, provider: providerConfig.provider, model: providerConfig.model });
+      const fallbackMsg = data.choices?.[0]?.message;
+      rawContent = fallbackMsg?.content ?? "";
+      const fallbackThink = pickReasoningFromPart(fallbackMsg);
+      if (fallbackThink) {
+        reasoningText = fallbackThink;
+        request.streamHandlers.onReasoning?.(fallbackThink);
+      }
+      responseModel = data.model ?? responseModel;
+      usageSource = data;
+    } else {
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      const ingestStreamJson = (json: {
+        model?: string;
+        usage?: OpenRouterChatCompletionResponse["usage"];
+        error?: { message?: string } | string;
+        choices?: Array<{
+          delta?: StreamReasoningPart;
+          message?: StreamReasoningPart;
+        }>;
+      }) => {
+        const errorMessage = typeof json.error === "string" ? json.error : json.error?.message;
+        if (errorMessage) throw new Error(errorMessage);
+        if (json.model) responseModel = json.model;
+        if (json.usage) usageSource = { model: json.model ?? responseModel, usage: json.usage };
+        const think = pickStreamReasoning(json.choices?.[0]);
+        const thinkPiece = nextReasoningDelta(reasoningText, think);
+        if (thinkPiece) {
+          reasoningText = reasoningText === "\u200b" && thinkPiece !== "\u200b" ? thinkPiece : reasoningText + thinkPiece;
+          request.streamHandlers?.onReasoning?.(thinkPiece);
+        }
+        const piece = json.choices?.[0]?.delta?.content ?? "";
+        if (piece) {
+          rawContent += piece;
+          request.streamHandlers?.onDelta?.(piece);
+        }
+      };
+      while (true) {
+        const { value, done } = await reader.read();
+        buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = done ? "" : (lines.pop() ?? "");
+        for (const line of lines) {
+          if (!line.startsWith("data:")) continue;
+          const payload = line.slice(5).trim();
+          if (!payload || payload === "[DONE]") continue;
+          const json = parseLenientModelJson(payload) as Parameters<typeof ingestStreamJson>[0] | undefined;
+          if (!json || typeof json !== "object") continue;
+          ingestStreamJson(json);
+        }
+        if (done) break;
+      }
+    }
   } else {
     const data = await postChatCompletion(providerConfig.url, providerConfig.headers, body, "请求失败", { mode: request.mode, provider: providerConfig.provider, model: providerConfig.model });
     rawContent = data.choices?.[0]?.message?.content ?? "";
-    responseModel = data.model;
-    usage = await getUsageMeta(data, providerConfig.provider === "openrouter" ? request.model : providerConfig.model, providerConfig.provider === "openrouter");
+    responseModel = data.model ?? responseModel;
+    usageSource = data;
+  }
+
+  const usage = await getUsageMeta(usageSource, providerConfig.provider === "openrouter" ? request.model : providerConfig.model, providerConfig.provider === "openrouter");
+  if (request.streamHandlers && rawContent.trim() && !(usage?.usd && usage.usd > 0)) {
+    void appendGenerationDiagnosticsLog({
+      event: "text-provider-stream-missing-usage",
+      mode: request.mode,
+      provider: providerConfig.provider,
+      model: providerConfig.model,
+      extra: { hasUsage: Boolean(usageSource.usage), promptTokens: usage?.promptTokens, completionTokens: usage?.completionTokens },
+    });
   }
 
   if (request.mode === "agent") {
@@ -999,6 +976,7 @@ export async function sendToOpenRouter(request: ChatRequest, options?: { onDelta
       ...parsed,
       model: responseModel,
       usage,
+      reasoning: reasoningText || undefined,
     };
   }
 
@@ -1006,7 +984,138 @@ export async function sendToOpenRouter(request: ChatRequest, options?: { onDelta
     content: cleanModelText(rawContent),
     model: responseModel,
     usage,
+    reasoning: reasoningText || undefined,
   };
+}
+
+type StreamReasoningPart = {
+  content?: string;
+  reasoning?: string | { text?: string; summary?: string };
+  reasoning_content?: string;
+  reasoning_details?: Array<{ type?: string; text?: string; summary?: string; reasoning?: string; content?: string; data?: string; thought?: string }>;
+};
+
+function extractReasoningDetailText(item?: NonNullable<StreamReasoningPart["reasoning_details"]>[number]) {
+  if (!item || item.type === "reasoning.encrypted") return "";
+  return item.text || item.summary || (typeof item.reasoning === "string" ? item.reasoning : "") || (typeof item.content === "string" ? item.content : "") || (typeof item.thought === "string" ? item.thought : "");
+}
+
+function pickReasoningFromPart(part?: StreamReasoningPart) {
+  if (!part) return "";
+  if (typeof part.reasoning === "string" && part.reasoning.trim()) return part.reasoning;
+  if (part.reasoning && typeof part.reasoning === "object") {
+    if (typeof part.reasoning.text === "string" && part.reasoning.text) return part.reasoning.text;
+    if (typeof part.reasoning.summary === "string" && part.reasoning.summary) return part.reasoning.summary;
+  }
+  if (typeof part.reasoning_content === "string" && part.reasoning_content.trim()) return part.reasoning_content;
+  if (Array.isArray(part.reasoning_details)) {
+    const texts = part.reasoning_details.map(extractReasoningDetailText).join("");
+    if (texts) return texts;
+    if (part.reasoning_details.some((item) => item.type === "reasoning.encrypted" || Boolean(item.data))) return "\u200b";
+  }
+  return "";
+}
+
+function pickStreamReasoning(choice?: { delta?: StreamReasoningPart; message?: StreamReasoningPart }) {
+  if (!choice) return "";
+  const fromDelta = pickReasoningFromPart(choice.delta);
+  const fromMessage = pickReasoningFromPart(choice.message);
+  const realDelta = fromDelta && fromDelta !== "\u200b" ? fromDelta : "";
+  const realMessage = fromMessage && fromMessage !== "\u200b" ? fromMessage : "";
+  return realDelta || realMessage || fromDelta || fromMessage || "";
+}
+
+function nextReasoningDelta(prev: string, incoming: string) {
+  if (!incoming) return "";
+  if (incoming === "\u200b") return prev ? "" : "\u200b";
+  const prevVisible = prev === "\u200b" ? "" : prev;
+  if (!prevVisible) return incoming;
+  if (incoming === prevVisible) return "";
+  if (incoming.startsWith(prevVisible)) return incoming.slice(prevVisible.length);
+  if (prevVisible.endsWith(incoming)) return "";
+  return incoming;
+}
+
+export async function sendPlainOpenRouterMessages(request: {
+  model: string;
+  messages: Array<{ role: "user" | "assistant"; content: string }>;
+  onDelta?: (piece: string) => void;
+  onReasoning?: (piece: string) => void;
+}) {
+  const providerConfig = getTextProviderConfig(request.model, "chat");
+  const startedAt = Date.now();
+  const response = await fetch(providerConfig.url, {
+    method: "POST",
+    headers: providerConfig.headers,
+    body: JSON.stringify({
+      model: providerConfig.model,
+      messages: request.messages,
+      temperature: 0.7,
+      stream: true,
+      reasoning: { effort: "medium", exclude: false },
+      include_reasoning: true,
+    }),
+  });
+  if (!response.ok || !response.body) {
+    const data = await postChatCompletion(
+      providerConfig.url,
+      providerConfig.headers,
+      { model: providerConfig.model, messages: request.messages, temperature: 0.7 },
+      "请求失败",
+      { mode: "chat", provider: providerConfig.provider, model: providerConfig.model },
+    );
+    const fallbackMsg = data.choices?.[0]?.message;
+    const fallback = fallbackMsg?.content ?? "";
+    const fallbackThink = pickReasoningFromPart(fallbackMsg);
+    if (fallbackThink) request.onReasoning?.(fallbackThink);
+    if (fallback) request.onDelta?.(fallback);
+    return {
+      content: fallback,
+      model: data.model,
+      firstMs: Date.now() - startedAt,
+    };
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let content = "";
+  let reasoningText = "";
+  let firstMs: number | undefined;
+  let model = providerConfig.model;
+  while (true) {
+    const { value, done } = await reader.read();
+    buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = done ? "" : (lines.pop() ?? "");
+    for (const line of lines) {
+      if (!line.startsWith("data:")) continue;
+      const data = line.slice(5).trim();
+      if (!data || data === "[DONE]") continue;
+      const json = parseLenientModelJson(data) as {
+        model?: string;
+        choices?: Array<{
+          delta?: StreamReasoningPart;
+          message?: StreamReasoningPart;
+        }>;
+      } | undefined;
+      if (!json || typeof json !== "object") continue;
+      if (json.model) model = json.model;
+      const think = pickStreamReasoning(json.choices?.[0]);
+      const thinkPiece = nextReasoningDelta(reasoningText, think);
+      if (thinkPiece) {
+        reasoningText = reasoningText === "\u200b" && thinkPiece !== "\u200b" ? thinkPiece : reasoningText + thinkPiece;
+        if (firstMs == null) firstMs = Date.now() - startedAt;
+        request.onReasoning?.(thinkPiece);
+      }
+      const piece = json.choices?.[0]?.delta?.content ?? "";
+      if (!piece) continue;
+      if (firstMs == null) firstMs = Date.now() - startedAt;
+      content += piece;
+      request.onDelta?.(piece);
+    }
+    if (done) break;
+  }
+  return { content, model, firstMs };
 }
 
 function parseOptimizedPromptText(text: string) {

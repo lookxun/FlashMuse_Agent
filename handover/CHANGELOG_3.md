@@ -14,38 +14,358 @@
 >   ④ 把旧卷标题改成「卷 N · 已归档只读」并在顶部加指向新卷的提示 ⑤ 更新 `00-README.md` 文档索引里的 CHANGELOG 行。
 > - 判据不变：**版本号一样 = 测试服和正式服代码一样**（本项目核心约定，见 `AGENTS.md`）。
 
-## 📌 当前状态摘要（2026-08-24 第八十四次会话末）：**线上四方 `v1.0.1.6`**
+## 📌 当前状态摘要（2026-08-24 第九十次会话末）：**四方 `v1.0.1.7`**
 
 | | 版本 / 状态 |
 |---|---|
-| 测服 = 正式服 | **`v1.0.1.6`** |
+| 线上（测服=正式服） | **`v1.0.1.7`**。两服 OpenRouter 仍是闪念专用 key。 |
+| 本地 | **`v1.0.1.7`**（本会话 commit + push） |
+| 自查 | `tsc` 0 |
+| 迁移 | 无新迁移 |
+| 回滚点 | 正式服 app `/opt/flashmuse/app-backups/20260824-205056-presync-v1.0.1.7` |
+
+---
+
+## 🗒️ 第九十次会话（2026-08-24）：审 85～89 + 修 4 个 bug + 测服/正式服 `v1.0.1.7`
+
+**用户诉求**：检查本地这批有没有问题 → 没问题就部署测服 → 上号测新内容、看主链路和扣费 → 有问题就修 → 全过再推正式服 → 最后 push GitHub。
+
+### 一、上线前修的 4 个真问题
+
+1. 流式尾巴不 flush、不认 SSE `error` → usage 可能丢；丢了还写 0 分账本会把同 requestId 锁死白送。现已 flush leftover、抛 error、缺 `usage.usd` 不写 0 分账本，并打 `text-provider-stream-missing-usage`。
+2. `/api/chat` 流式少了 `X-Accel-Buffering: no` → 测服/正式服 nginx 会整段缓冲，思考/正文一次砸出来。已加回。
+3. 规划回 clarify 时正文走 `isComplete` 打字机，`onComplete` 不跑 → 引导按钮/反馈条永远不出现。`TypewriterFormattedMessage` 在 `isComplete` 时补调 `onComplete`。
+4. `streaming` 会落库，刷新后光标一直闪。`getPersistableSessions` 剥掉，契约测试加进 `FORBIDDEN_KEYS`。
+
+顺带：裸「角色图/场景图/分镜图」不再强行改成生图（「帮我生一张图」「生成角色图」仍走生图）。
+
+### 二、测服验收（`12424740@qq.com`）
+
+- Agent 闲聊：思考收起、正文只出一次、无 JSON 原文、引导按钮在。账本 `Agent 回复` K3 **1 分** / $0.0076。
+- 「帮我生一张图…小猫」：走 `/api/agent-plan` + `/api/image`，出图。账本规划 0 分（不足 1 分走 remainder）、图片 Seedream 4.5 **3 分** / $0.04。
+- 选模型菜单铺开、Gemini 是 LobeHub 星标。`/proto-test` 线上 404。
+
+### 三、正式服
+
+四域名 200，`/api/health` = v1.0.1.7。免费语音 `fish-audio/s2.1-pro-free` 出了 mp3，扣 **0 分**，页面不崩。⛔ 没动公告。
+
+### 四、下一个 AI
+
+1. Agent 改人话直出等拍板。语速别做。正式服公告别动。
+2. `modal.md` / `tmp-openrouter` 别 commit。
+3. 流式缺 usage 看 `text-provider-stream-missing-usage`，别再写 0 分账本。
+
+---
+
+## 📌 上一状态摘要（2026-08-24 第八十九次会话末）：**线上代码仍 `v1.0.1.6`；本地未提交**
+
+---
+
+## 🗒️ 第八十九次会话（2026-08-24）：Agent/通用对话流程 + Gemini 解析 + 生图规划 + 图标/菜单
+
+**用户诉求**：看交接继续 Agent/通用 → 定完整对话流程 → 部分模型不对再统一 → Gemini 等很久一次砸出思考+正文 → Agent 出完正文又重出一次 → 思考三角点开消失收不回 → 引导按钮出的正文光标飞到最右 → 问 Agent 为何不调生图 → Gemini 图标换 LobeHub → 问选模型菜单高度/字号 → 对话流菜单试 400px → 四个菜单去掉滚动条铺开 → 写交接。
+
+### 一、对话流程（产品口径，别改回去）
+
+发消息 → 「正在思考中...」→ 流式出思考（这时藏 loading）→ 思考出完收起 → 再显示「正在思考中...」→ 流式出正文带圆点光标。
+
+「正在思考中」= loading。对话没结束就要有；画面上在出字（思考或正文）时临时藏。正文没出来之前理论上都要显示。
+
+### 二、流式 / 思考解析
+
+- 思考停 200ms 后收起；收起后再留约 400ms loading 再出正文。`\u200b` 不当可见思考。
+- Gemini：加密 `reasoning.encrypted` 的 `\u200b` 不能挡住后面真文；`reasoning_details` 当累计快照只追加增量；SSE 用 `parseLenientModelJson`。请求带 `reasoning.exclude=false` + `include_reasoning:true`。
+- Agent 优先 K3。流式 `/api/chat` 只打客户端指定的那一个模型，别再服务端扩整条链。
+- Agent 正文只推 **delta**（`extractAgentStreamContent` 比上次长才推增量）。出过的正文不许换成更短/另一段。收尾有正文就不再 `revealBody` 覆盖。
+- 原型页 `/proto-test` 同步了同一套 loading/收起。
+
+### 三、界面小修
+
+- 思考三角：只在收起时量是否超一行；展开后再量会以为不用三角、按钮消失。
+- 光标：`appendTrailing` 递归进最后一个 `<p>`/`li` 等文字节点，别塞进列表 flex 外壳。
+- Gemini 图标：`src/components/gemini-icon.tsx`（LobeHub 星标）。`getGenerationModelIcon`：`modelId.includes("gemini")` → GeminiIcon；Veo 仍 `google/` + `RiGoogleFill`。
+- 选模型菜单：对话流图/视频 + 工作流图/视频节点 去掉 `max-h` / `overflow-y-auto` / `yinzao-scrollbar-always`，后台开着的全列出来。字号：对话流模型名 13px、工作流名跟按钮 14px；标题 12、灰字 11。
+
+### 四、Agent 生图
+
+- 旧 `shouldPlanAgentTask` 只认「生图/生成一张」等，漏「帮我生一张图」「生成角色图」。
+- 新：放宽正则 + `isExplicitImageGenerationRequest` / `isExplicitVideoGenerationRequest` + `suggestionRequestsGeneration`。
+- 引导按钮带 `character_image`/`scene_image`/`shot_image`/`shot_video` 也走规划；规划回 chat/clarify 时，明确生图/生视频或带类型的按钮要改回 image/video。
+
+### 五、主要文件
+
+`openrouter.ts`、`api/chat/route.ts`、`chat-workbench.tsx`、`chat-workbench-core.tsx`、`workflow-tldraw-canvas-inner.tsx`、`gemini-icon.tsx`、`model-icon.tsx`、`proto-test/view.html`。
+
+### 六、下一个 AI
+
+1. 要上线先问。85～89 都在本地。
+2. 别动正式服公告。别做语速。别把测试页放 `public/`。
+3. GPT 没思考正文是上游如此。Agent 改人话直出等拍板。
+4. Agent 仍逼吐 JSON。生图要真走界面验一句「帮我生一张图」和点引导按钮。
+
+---
+
+## 📌 上一状态摘要（2026-08-24 第八十八次会话末）：**线上代码仍 `v1.0.1.6`；本地未提交**
+
+| | 版本 / 状态 |
+|---|---|
+| 线上（测服=正式服=GitHub） | 代码仍 **`v1.0.1.6`**（`e532b50`）。两服 OpenRouter 已换闪念专用 key 并启用。 |
+| 本地 | **`v1.0.1.6` + 第 85、86、87、88 次未提交**（⛔ 未 bump、未部署、未 commit） |
 | 自查 | `tsc` 0 |
 | 迁移 | 无新迁移 |
 | 回滚点 | 正式服 app `/opt/flashmuse/app-backups/20260824-021441-presync-v1.0.1.6` |
 
 ---
 
-## 🗒️ 第八十四次会话（2026-08-24）：音色试听缓存 + 后台语音上传规则 + 改部署口径 + 两服上线
+## 🗒️ 第八十八次会话（2026-08-24）：闪念 key + 真流式 + 思考/正文错开 + 圆点光标
 
-**用户诉求**：音色试听每次悬停从头播、登录期内加载过不再加载；后台上传规则加语音模型（官方字数减半做默认）；Fish 克隆 1 段音频单独一行；收费免费共用两行；重写下方说明表；先写部署规则再上测服，测这批+上一批没测的，没问题推正式服再 push GitHub。
+**用户诉求**：看交接 → 填闪念专用 OpenRouter key（本地/测服/正式服）→ Agent/通用去掉打字机改流式 → 缩小用户字和模型字间距 → 查 GPT/Gemini 为何没思考 → GPT 也要已思考秒数 → 原型页圆点光标 → 思考先出完再收起再正文 → 接到项目 → 出思考时不要「正在思考中」→ hr 崩了修好 → 写交接。
 
-### 产品
+### 一、OpenRouter 闪念专用 key
 
-- 悬停试听每次 `play(0)`。切过的语种面板不卸。`audio-waveform-cache.ts` 会话级缓存 blob+波形。
-- 后台：Fish 文本转换 / Fish 音色克隆 / Qwen / MiniMax。Fish 字数 key `fish-audio:s2.1`。默认 5000 / 10000 / 5000。
-- 下方说明表按现行 `upload-rules.ts` 重写。
+- 源：`E:\project\【1】Api key\openRouter\openRouter API key.txt` 的「闪念专用 key」。
+- 本地 `.env.local`、测服 `/opt/flashmuse-staging/data/.env.local`、正式服 `/opt/flashmuse/data/.env.local` 都已换成这份，`OPENROUTER_API_KEY_ENABLED=true`。
+- 两服是单文件 bind-mount，原地写不换 inode。容器里读到的尾号已对上。⛔ 全文别写进交接。
 
-### 部署口径（2026-08-24 拍板）
+### 二、Agent / 通用出字
 
-测服必须把当次新内容全部测一遍，有问题当场修。没说推正式服就别推。说了推正式服，到正式服用免费语音测一下不崩即可。
+- 去掉打字机，正文跟 SSE 走。`/api/chat` 推 `delta` / Agent 推抽出的 `content`。
+- 对话消息间距 `space-y-12` → `space-y-3`（跟原型 12px）。
+- 顺序：思考流完 → `flushSync` 收起 → 短停 → 再出正文。有思考过程时不叠「正在思考中...」。
+- 流式末尾圆点光标（11px、0.55s 闪），塞在最后一行字后面。`<hr>` 不能 clone 进子节点（已修，崩过一次）。
 
-### 测服验
+### 三、各模型思考（直打上游）
 
-音色切回普通话没有第二次拉 mp3。后台表有 Fish 两行 + Recraft/Hailuo/编辑延长。免费语音发出去了。上一批「滚到顶加载更早」那条对话没有更多页，没触发加载。带上传生图看后台参考没跑（正式服按新口径只用免费语音）。
+- **有思考正文**：Grok、Kimi、Gemini、DeepSeek、Seed Lite。
+- **没有**：GPT-5.6 Terra / Terra Pro（`reasoning` 空、思考 token=0）。只显示「已思考 xx秒」（发问到第一字）。
+- Gemini 坑：`delta.reasoning` 常是空串，正文在 `reasoning_details[].text`。`pickReasoningFromPart` 空串必须往下读 details。
+- GPT 会流式，只是先憋很久再快出。
 
-### 正式服
+### 四、原型页 `/proto-test`
 
-免费语音发了「你好。」，工作区没崩。公告没动。测试号 `12424740@qq.com`。
+- 圆点光标、GPT 也出秒数、思考先出再收起再正文、出思考时不叠「正在思考中」。只本地。
+
+### 五、主要文件
+
+`openrouter.ts`、`api/chat/route.ts`、`chat-workbench.tsx`、`chat-workbench-core.tsx`、`globals.css`、`proto-test/view.html`、三处 `.env.local`。
+
+### 六、下一个 AI
+
+1. 要上线先问。85～88 都在本地。
+2. 别动正式服公告。别做语速。别把测试页放 `public/`。
+3. GPT 没思考正文是上游如此，别再当漏接。
+4. Agent 改人话直出等拍板。
+
+---
+
+## 📌 上一状态摘要（2026-08-24 第八十七次会话末）：**线上仍 `v1.0.1.6`；本地未提交**
+
+| | 版本 / 状态 |
+|---|---|
+| 线上（测服=正式服=GitHub） | 仍 **`v1.0.1.6`**（`e532b50`） |
+| 本地 | **`v1.0.1.6` + 第 85、86、87 次未提交**（⛔ 未 bump、未部署、未 commit） |
+| 自查 | `tsc` 0 |
+| 迁移 | 无新迁移 |
+| 回滚点 | 正式服 app `/opt/flashmuse/app-backups/20260824-021441-presync-v1.0.1.6` |
+
+---
+
+## 🗒️ 第八十七次会话（2026-08-24）：思考过程 + 转圈动画 + 踢首页修复
+
+**用户诉求**：问 Agent 逼吐的 JSON 是啥、有没有流式+打字机、OpenCode 怎么出字 → 原型页加真流式和思考过程 → 对齐布局/收起/动画 → 接到 Agent 和通用 → 查进工作台被踢回首页 → 左侧生成动画统一 → 写交接。
+
+### 一、结论（产品口径）
+
+- OpenCode 是真流式，没有另做打字机。
+- 咱们以前觉得慢，很大一块是没把思考过程画出来；Grok 思考常只给摘要，后面空很久是上游不吐全文。
+- **正文仍打字机**。思考用流式先画。Agent 还逼吐 JSON（`intent`/`content`/`suggestions`），闲聊改人话没拍板。
+- 提示词瘦身第 85 次已否。语速别做。
+
+### 二、原型测试页（只本地 `/proto-test`）
+
+- `/api/tmp-openrouter` 真 SSE。用户右对齐、模型左对齐，气泡约八成宽。
+- 顺序：先「正在思考中...」→ 已思考 xx秒（蓝）+ 思考全文（灰）→ 思考结束才收成一行；超一行才出 `arrow-right-s-line`，原地展开。
+- 不要边流边收。同一条回复的思考拼成一块，别把中间的 `.` 拆成新行。
+- 新动画：九宫格沿方形转圈+拖尾+淡蓝底，文案「正在思考中...」，不要三个点。扫光首尾要接上。错开动画样式保留。
+
+### 三、接到 Agent / 通用（正式对话）
+
+- `/api/chat` 在 agent/general 且 `stream:true` 时推思考 SSE；正文到齐再打字机。
+- `Message.reasoning` / `thinkMs`。组件：`ThinkingIndicator`（orbit）、`ThinkingProcessBlock`。
+- `HaloPulseIndicator` 改 orbit → 左侧生成中统一转圈。
+- 生图生视频路径没改。
+
+### 四、踢回首页（已修）
+
+- 第 85 次身份缓存把 `activeWorkspaceInstanceId` 也缓存了。认领成功后 2 秒再查读到旧 ID → 当成被别的页抢走 → `location.replace("/")`。
+- 修：`/api/auth/workspace-instance` 认领状态每次查库。
+
+### 五、主要文件
+
+`proto-test/view.html`、`api/tmp-openrouter`、`api/chat`、`openrouter.ts`、`auth/workspace-instance`、`chat-workbench.tsx`、`chat-workbench-core.tsx`、`globals.css`。
+
+### 六、下一个 AI
+
+1. 要上线先问。85+86+87 都在本地。
+2. 别动正式服公告。别做语速。别把测试页放 `public/`。
+3. Agent 改人话直出等拍板。
+
+---
+
+## 📌 上一状态摘要（2026-08-24 第八十六次会话末）：**线上仍 `v1.0.1.6`；本地未提交**
+
+| | 版本 / 状态 |
+|---|---|
+| 线上（测服=正式服=GitHub） | 仍 **`v1.0.1.6`**（`e532b50`） |
+| 本地 | **`v1.0.1.6` + 第 85、86 次未提交**（⛔ 未 bump、未部署、未 commit） |
+| 自查 | `tsc` 0 |
+| 迁移 | 无新迁移 |
+| 回滚点 | 正式服 app `/opt/flashmuse/app-backups/20260824-021441-presync-v1.0.1.6` |
+
+---
+
+## 🗒️ 第八十六次会话（2026-08-24）：长对话 30 条 + 出字慢查清 + 原型测试页
+
+**用户诉求**：看交接 → 问分页当初藏多少、为什么做 → 修长对话一次全出来 → 问慢是不是路远、跟 OpenCode/Grok 秒回比 → 本地测 → 做直连 OpenRouter 临时页 → 改成原型测试页（对话模型+动画）→ 只许本地开 → 写交接。
+
+### 一、长对话只显示 30 条（已改）
+
+- 分页权威：`DEFAULT_WORKSPACE_MESSAGE_LIMIT = 30`（2026-07-30 从 50 降到 30，为了打开工作台别扛全部历史）。
+- 第 83 次改成 `scrollTop < 160` 自动加载。打开时还在顶部会连拉完。
+- 修法：`canLoadOlderByScrollRef`。切对话/面板先关，滚到底后再开。只有用户自己滚到顶才 `loadOlderMessages`。
+- 文件：`src/components/chat-workbench.tsx`。
+
+### 二、出字慢（查清，产品没改打字机口径）
+
+- 用户要比的是 **OpenCode / Grok 秒回**，不是咱们自己 Agent vs Grok。
+- 本地直打本机：Agent「你好」整段 **9.5s**，通用 Grok **6.2s**（当时已去掉流式，等全部写完才打字机）。
+- 同机走代理、流式、只发「你好」：Grok 首字 **约 2s**。套上 Agent 系统提示+必须 JSON：Kimi 首字 **18～26s**，Grok 约 **10s**。
+- 结论：不是路远，不是 Grok 废。最大头是 **Agent 逼先吐 JSON**；其次本地要 **等整段再开打字机**。
+- 用户口径：以前用过流式，K3 整段砸、Grok 一段一段，都不是打字机。**前端要打字机**。流式只负责早点拿到字。Agent 不改 JSON，流式也救不了第一个能播的字。
+- 提示词瘦身第 85 次已否。Agent 改人话直出没拍板。
+
+### 三、原型测试页（只本地）
+
+- 打开：http://127.0.0.1:3000/proto-test 或项目根 **`原型测试.url`**。`临时OpenRouter.url` 已删。
+- 左边菜单：① 对话模型测试 ② 动画。以后加测试就加菜单+面板，写在 `src/app/proto-test/view.html`。
+- 对话模型：和项目同一条 OpenRouter 发送（`sendPlainOpenRouterMessages`），**不带系统提示词**，用项目 Key。模型回复前红字是这句**第一个字**几秒出。对话区高 600px 可滚。
+- 动画：项目里在用的都摆上了，速度按线上（思考扫光 3.2s、三点 2.1s、打字机 `字数×28ms` 夹在 1～8s、公告 30px/秒）。思考底用白。
+- ⛔ **只能本地**：`isLocalProtoTestEnabled()` = `NODE_ENV !== "production"`。页面 GET 和 `/api/tmp-openrouter` 线上 404。html **不放 `public/`**（放了会跟着静态上线）。
+- 其它：`src/app/proto-test/route.ts`、`src/app/proto-test.html/route.ts`、`src/lib/proto-test-local.ts`、`src/lib/openrouter.ts` 的 `sendPlainOpenRouterMessages`。旧 React 页 `/tmp-openrouter` 本地会跳到 `/proto-test`。
+
+### 四、下一个 AI
+
+1. 要上线先问。长对话 30 条和 85 次那批出字前优化都还在本地。
+2. 别把测试页放回 `public/`。别做语速。别动正式服公告。别把 Kimi 写成 MiniMax。
+3. Agent 出字若要再快，等用户拍板：打字机+流式，和/或去掉闲聊必须 JSON。
+
+---
+
+## 📌 上一状态摘要（2026-08-24 第八十五次会话末）：**线上仍 `v1.0.1.6`；本地未提交**
+
+| | 版本 / 状态 |
+|---|---|
+| 线上（测服=正式服=GitHub） | 仍 **`v1.0.1.6`**（`e532b50`） |
+| 本地 | **`v1.0.1.6` + 本会话未提交**（⛔ 未 bump、未部署、未 commit） |
+| 自查 | `tsc` 0 |
+| 迁移 | 无新迁移 |
+| 回滚点 | 正式服 app `/opt/flashmuse/app-backups/20260824-021441-presync-v1.0.1.6` |
+
+---
+
+## 🗒️ 第八十五次会话（2026-08-24）：去掉流式改打字机 + 出字前加速 + 正式服掐表
+
+**用户诉求**：看交接 → Agent 一次出全字、长对话一次全加载查原因 → 通用 Grok 一段一段出、流式没变快、问为何 OpenCode 秒回闪念愣很久 → 去掉流式改回打字机并说还能怎么快（路远先不管） → 做优化 1/2 → 身份别每句查库 → 看系统提示词 → 否掉「提示词太长」 → 正式服掐表看慢在哪 → 写交接。
+
+### 一、两个界面问题（查清，长对话那条没修）
+
+1. **Agent/通用一次出全字**：闲聊走 SSE，但空回复插进去后打字机不启动，流式时 `isComplete=true`。字全靠抽 JSON 的 `content`。`content` 没开头只显示思考，一出来整段贴上。Kimi/Grok 常整包到。
+2. **长对话一次全出来**：第 83 次去掉「加载更早」按钮，改成 `scrollTop < 160` 自动加载。打开/切换对话时列表先在顶部，还没滚到底就开拉；一屏装不满就一直拉完。⚠️ **只定位，没改。**
+
+### 二、为啥觉得慢（后被正式服数字坐实）
+
+流式只改第一个字之后怎么长，不改「开始出字」。真正扣积分也是模型跑完再记。出字前多的是认人、余额预检、审核。OpenRouter 认的是 API Key（内存），我们原来每次 cookie→查会话→查用户。
+
+### 三、本地已改（未上线）
+
+1. **去掉流式，改回打字机**：`/api/chat` 不再 SSE；`sendToOpenRouter` 去掉 `onDelta`；前端整段回来再 `appendAssistantMessage`，打字机播。
+2. **优化 1 词库缓存**：`content-moderation.ts` 词表+开关进内存，60 秒 TTL；后台保存调 `invalidateContentModerationCache`。写审核记录 `void`，不挡返回。
+3. **优化 2 出字前并行**：chat / agent-plan / image / video / audio 里积分预检、审核、解锁 `Promise.all`。
+4. **身份 10 分钟缓存**：`getCurrentSession` 按 cookie 哈希记会话+用户。登出/重新登录清掉。`assertUserCanUseCredits` 每句仍查余额。封号最多晚 10 分钟。
+
+### 四、提示词 3/4
+
+把 Agent/通用系统提示 + 文末叮嘱摊给用户看。🗣️ 用户：这点字对模型不算长，读完不过毫秒级。已承认把第 3 条说重了，**提示词瘦身先不做**。第 4 条（Agent 别逼吐 JSON）没拍板。
+
+### 五、正式服掐表（`main.venusface.com` 腾讯直连，测试号新建「新对话」）
+
+线上仍是 v1.0.1.6 流式。Agent「你好」：等第一个字 **3.6s**，再流 1.5s，没走 `/api/agent-plan`。通用 Grok 4.6「你好」：等第一个字 **9.6s**，后面 0.4s。同一条路差 6 秒 = **模型**，不是路。走阿里还会再加一截。
+
+### 六、主要文件（均未上线）
+
+`chat-workbench.tsx`、`api/chat/route.ts`、`openrouter.ts`、`content-moderation.ts`、`admin/api/content-moderation/route.ts`、`auth.ts`、`credits.ts`、`api/agent-plan` / `image` / `video` / `audio`。
+
+### 七、下一个 AI
+
+1. 🎯 **先修长对话一次全出来**（第 85 次只定位没改）。打开时 `scrollTop=0` 会连拉。先滚到底，用户自己往上滚再加载。
+2. 本地 ≠ 线上。要上线先问。
+3. 别做提示词瘦身（用户否了）。Agent 改人话直出等拍板。
+4. 别把归档点名称弹窗加回来。语速别做。Kimi 别写成 MiniMax。正式服公告别动。
+
+---
+
+## 📌 上一状态摘要（2026-08-24 第八十四次会话末）：**线上四方 `v1.0.1.6`**
+
+| | 版本 / 状态 |
+|---|---|
+| 测服 = 正式服 = GitHub | **`v1.0.1.6`**（`e532b50`） |
+| 自查 | `tsc` 0 |
+| 迁移 | 无新迁移 |
+| 回滚点 | 正式服 app `/opt/flashmuse/app-backups/20260824-021441-presync-v1.0.1.6` |
+
+---
+
+## 🗒️ 第八十四次会话（2026-08-24）：音色试听 + 后台语音规则 + 部署口径 + 两服上线
+
+**用户诉求**：看交接 → 音色试听每次悬停从头播、登录期内加载过不再加载（关弹窗再开也不行）→ 问副作用 → 后台上传规则加四个语音模型（官方字数减半做默认）→ 补 Fish 克隆 1 段音频 → 和 Fish 排一起、收费免费只要两行 → 重写下方说明表 → 先写部署规则再上测服，测这批+上一批没测的，没问题推正式服再 push GitHub → 写交接。
+
+### 一、音色试听
+
+1. **每次鼠标碰上去从头播**：`AudioWaveformPlayer` 加 `restartOnHover`，`play(0)`。只给音色弹窗开。资产库/@引用卡仍从停的地方续。
+2. **切左边语种再回来不重载**：`AudioVoicePicker` 切过的语种面板 `hidden` 不卸；切走时 `suspendPlayback` 停播。
+3. **这次登录加载过就不再加载**：`src/lib/audio-waveform-cache.ts` 会话级缓存 blob + 波形 peaks。关掉弹窗再开、@引用资产切分类再回来，都走这份。刷新/重新登录会清。
+4. `@引用资产` 同样：切过的分类不卸。关闭再开靠波形缓存，不靠一直挂着播放器。
+5. 副作用（已告诉用户）：浏览过的音频占一点内存；弹窗开着时切过的分类还挂着；同一 URL 文件被换掉才会播到旧的（咱们文件名带哈希，一般碰不到）。资产库/工作流同一套播放器也会变快。
+
+### 二、后台「上传规则」加语音
+
+- 开关表加语音行。Fish 收费+免费共用两行：**文本转换**、**音色克隆**（克隆 key 仍是 `fish-audio:clone`，1 个参考音频 10-60 秒）。下面是 Qwen、MiniMax。
+- 字数默认 = 查到的官方上限减半：MiniMax 10000→**5000**；Qwen-Audio 按 CosyVoice 系约 20000→**10000**；Fish 文档没写死上限、按 10000 估→**5000**。Fish 字数 key **`fish-audio:s2.1`**（`getPromptLengthOverrideKey` 对 `isFishAudioModel` 走这条，⛔ 别再拆成两个 model id）。
+- 下方只读说明表按现行 `upload-rules.ts` 重写：去掉 heic/未做实；补 GPT 16 张、Recraft 1 张、Hailuo 只图、Fish 克隆、2.5 编辑/延长。图片格式写死 jpg/jpeg/png/webp。
+
+### 三、部署口径（2026-08-24 拍板，已写 `AGENTS.md` + `03`）
+
+1. **测服**：部署完必须把**当次更新的新内容全部测一遍**，有问题当场修。⛔ 别再例行点对话/工作流/资产库/付费生图/后台全套。
+2. **正式服**：用户没明确说「推正式服 / 上正式服」就**不许推**。说了才推；到正式服只用免费语音 **`fish-audio/s2.1-pro-free`** 测一下不崩即可。
+3. ⛔ 别再拿付费生图当默认冒烟。
+
+### 四、部署与验收
+
+- bump `v1.0.1.5` → `v1.0.1.6`。无新迁移、无 compose/nginx。
+- 测服：切回普通话 **没有第二次**拉 `chinese-mandarin-*.mp3`；后台有 Fish 两行 + Recraft/Hailuo/编辑延长；免费语音「你好，这是测试服巡检。」发出去了（积分 94328 没动）。上一批「滚到顶加载更早」打开的对话没有更多页，没触发加载。带上传生图看后台参考**没跑**。
+- 正式服：工作区没崩；免费语音点了发送。⛔ 公告没动。测试号 `12424740@qq.com`。
+- commit **`e532b50`** 已 push。回滚：`/opt/flashmuse/app-backups/20260824-021441-presync-v1.0.1.6`。
+- 工作区还剩 `modal.md`，别 `git add -A`。
+
+### 五、主要文件
+
+`audio-waveform-cache.ts`、`audio-waveform-player.tsx`、`audio-voice-picker.tsx`、`asset-mention-picker.tsx`、`prompt-length.ts`、`admin-upload-rules-panel.tsx`、`admin/page.tsx`、`AGENTS.md`、`03-deploy-and-servers.md`。
+
+### 六、下一个 AI
+
+1. 没说推正式服就别推。测服测当次新内容。正式服用免费语音冒烟。
+2. 上一批「带上传生成后看后台/预览参考」仍没端到端验。
+3. 别把归档点名称弹窗加回来。语速别做。Kimi 别写成 MiniMax。正式服公告别动。
 
 ---
 

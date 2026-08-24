@@ -135,10 +135,11 @@ export async function POST(request: Request) {
     }
 
     const user = await getCurrentUser();
-    await assertUserCanUseCredits(user, "audio");
-
     const moderationPrompt = (typeof body?.sourcePrompt === "string" && body.sourcePrompt.trim()) ? body.sourcePrompt.trim() : text;
-    const policy = await enforceContentPolicy({ prompt: moderationPrompt, userId: user?.id, requestId: body?.requestId, kind: "audio", source: "conversation" });
+    const [, policy] = await Promise.all([
+      assertUserCanUseCredits(user, "audio"),
+      enforceContentPolicy({ prompt: moderationPrompt, userId: user?.id, requestId: body?.requestId, kind: "audio", source: "conversation" }),
+    ]);
     if (policy.blocked) return NextResponse.json({ error: CONTENT_POLICY_ERROR_MESSAGE, errorCode: CONTENT_POLICY_ERROR_CODE }, { status: 400 });
 
     if (!user) return NextResponse.json({ error: UNAUTHENTICATED_ERROR_MESSAGE }, { status: 401 });
