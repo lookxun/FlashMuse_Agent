@@ -1,9 +1,16 @@
 # FlashMuse Handover（2026-07-21 重建）
 
-> 🎯🎯🎯 **2026-08-26 第九十三次会话末—— 接手先看这几行**
-> 1. ✅ **四方同步 `v1.0.1.10`**（本地 = 测试服 = 正式服，已 push GitHub）。`tsc` 0、无迁移、无 compose/nginx。回滚点 `/opt/flashmuse/app-backups/20260826-154406-presync-v1.0.1.10`。
-> 2. 本批 = 审计 v1.0.1.9 → 修「切模式不清 sticky」→ 测服上号验 sticky → 推正式服 + GitHub。
-> 3. ⛔ 正式服公告别动、语速别做。`modal.md` / `tmp-openrouter` / `原型测试.url` 别 `git add -A`。细节 → `CHANGELOG_3.md` 第九十三次。
+> 🎯🎯🎯 **2026-08-26 第九十六次会话末—— 接手先看这几行**
+> 1. ✅ **四方同步 `v1.0.1.11`**（测服=正式服=GitHub）。无迁移、无 compose/nginx。回滚点正式服 app `.../20260826-205720-presync-v1.0.1.11`。staging→prod `src` md5 = `236c959642c793ed2ff1b769c1ba5e9c`。
+> 2. 本批 = 94 做法B + 95 跟随/回滚/重新生成，已审、已上测服真走界面、已推正式服、已 push。
+> 3. ⭐ 跟随钉 `scrollTop=scrollHeight`，取消只认离底 >96px。回滚函数 `scrollFollowRoundToUserMessage` 里必须有 `scroller.scrollTo`。重新生成历史 `slice` 到 previousUser（含它），别带到旧回答。同一 request 用模块级 `inflightGenerationRequestIds`/`finishedGenerationRequestIds`。
+> 4. ⛔ 正式服公告别动、语速别做。`modal.md` / `tmp-openrouter` / `原型测试.url` 别 `git add -A`。细节 → `CHANGELOG_3.md` 第九十六次。
+>
+> ⏪ **上一批（2026-08-26 第九十五次会话）**：跟随钉底 + 回滚锚点 + 重新生成（当时全本地未部署）。
+>
+> ⏪ **上一批（2026-08-26 第九十四次会话）**：做法B 纯人话流式 + 思考动画 + 跟随回滚第一版（当时跟不到底、未部署）。
+>
+> ⏪ **上一批（2026-08-26 第九十三次会话）**：四方 `v1.0.1.10`（`def0561`，已 push）。审计 v1.0.1.9 → 修「切模式不清 sticky」→ 测服上号验 → 推正式服 + GitHub。sticky 口径：后台优先模型是老大、`lastAgentChatModel` 只活内存、切 `activePanel`/`sessionId`/`mode` 都清。
 >
 > ⏪ **上一批（2026-08-26 第九十二次会话）**：测服 `v1.0.1.9`，正式服仍 `v1.0.1.7`。Agent sticky 改成本轮缓存，当时没真机走界面。
 >

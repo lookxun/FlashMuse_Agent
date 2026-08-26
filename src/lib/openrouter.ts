@@ -215,14 +215,6 @@ type OpenRouterModelResponse = {
   }>;
 };
 
-type StructuredAgentReply = {
-  content?: string;
-  intent?: AgentReplyIntent;
-  suggestions?: SuggestionInput[];
-};
-
-const agentReplyIntents: AgentReplyIntent[] = ["chat", "film_knowledge", "creative_consult", "creative_structure", "off_topic"];
-
 const assetTargetTypes: AssetTargetType[] = ["character_image", "scene_image", "prop_image", "shot_image", "shot_video", "other"];
 const fallbackAgentSuggestions: SuggestionInput[] = ["让我写一个短剧故事", "讲讲电影是怎么做出来的", { label: "帮我拆一版分镜", assetTargetType: "shot_image" }];
 let modelPricingCache: { expiresAt: number; prices: Record<string, { prompt: number; completion: number }> } | null = null;
@@ -557,35 +549,6 @@ async function postChatCompletion(url: string, headers: Record<string, string>, 
   }
 }
 
-function looksLikeStructuredAgentJson(text: string) {
-  const trimmed = text.trim();
-  return trimmed.startsWith("{") && /"content"\s*:/.test(trimmed) && /"intent"\s*:/.test(trimmed);
-}
-
-export function extractAgentStreamContent(raw: string) {
-  const data = parseLenientModelJson(raw) as StructuredAgentReply | undefined;
-  if (data && typeof data === "object" && typeof data.content === "string") return cleanAgentReplyContent(data.content);
-  const marker = raw.match(/"content"\s*:\s*"/);
-  if (!marker || marker.index === undefined) return "";
-  let out = "";
-  let escaped = false;
-  for (let i = marker.index + marker[0].length; i < raw.length; i += 1) {
-    const ch = raw[i];
-    if (escaped) {
-      out += ch === "n" ? "\n" : ch === "t" ? "\t" : ch === "r" ? "\r" : ch;
-      escaped = false;
-      continue;
-    }
-    if (ch === "\\") {
-      escaped = true;
-      continue;
-    }
-    if (ch === '"') break;
-    out += ch;
-  }
-  return cleanAgentReplyContent(out);
-}
-
 // ⭐ `toDataUrlIfLocalPublicAsset` 已收敛到唯一权威实现 `lib/generated-asset-path.ts`
 //   （原先 openrouter / openrouter-video / seedance 三处一字不差地各存一份，
 //    且三份都只用 `startsWith("/generated/")` 判断、拦不住 `..` 路径穿越）。
@@ -687,17 +650,6 @@ function cleanModelText(value: string) {
     .trim();
 }
 
-function cleanAgentReplyContent(value: string) {
-  const cleaned = cleanModelText(value);
-  const parts = cleaned.split(/\n{2,}/).map((part) => part.trim()).filter(Boolean);
-
-  if (parts.length === 2 && Array.from(parts[0]).length <= 12 && !/^\s*(?:#{1,6}|[-*]|\d+[.、]|\[red\]|\[blue\])/.test(parts[1])) {
-    return `${parts[0]}${/[。！？!?]$/.test(parts[0]) ? "" : "。"}${parts[1]}`;
-  }
-
-  return cleaned;
-}
-
 function normalizeSuggestionItem(item: SuggestionInput): SuggestionItem | null {
   if (typeof item === "string") {
     const label = cleanModelText(item).replace(/^[-\d.、\s]+/, "");
@@ -722,28 +674,6 @@ function normalizeSuggestions(items?: SuggestionInput[]) {
     .slice(0, 5);
 
   return suggestions.length >= 3 ? suggestions : [...suggestions, ...fallbackAgentSuggestions.map(normalizeSuggestionItem).filter((item): item is SuggestionItem => Boolean(item))].filter((item, index, array) => array.findIndex((suggestion) => suggestion.label === item.label) === index).slice(0, 5);
-}
-
-function parseStructuredAgentReply(text: string): Required<Pick<ChatResponse, "content" | "intent" | "suggestions">> {
-  const data = parseLenientModelJson(text) as StructuredAgentReply | undefined;
-  const extracted = extractAgentStreamContent(text);
-  const fallback = looksLikeStructuredAgentJson(text) ? extracted : cleanAgentReplyContent(text);
-
-  if (data && typeof data === "object") {
-    const intent = data.intent && agentReplyIntents.includes(data.intent) ? data.intent : "chat";
-    const content = typeof data.content === "string" && cleanAgentReplyContent(data.content) ? cleanAgentReplyContent(data.content) : fallback;
-    return {
-      content,
-      intent,
-      suggestions: normalizeSuggestions(data.suggestions),
-    };
-  }
-
-  return {
-    content: fallback,
-    intent: "chat",
-    suggestions: normalizeSuggestions(),
-  };
 }
 
 async function getModelPrices() {
@@ -843,13 +773,13 @@ export async function sendToOpenRouter(request: ChatRequest): Promise<ChatRespon
   const generalFormatProtocol = "你的产品身份是“闪念通用 Agent”。你负责对话、理解、追问、规划和组织结果；闪念系统可以调用当前选择的图片模型和视频模型完成生图、生视频。回答能力问题时，以闪念通用 Agent 的整体能力为准，不要按当前对话模型的裸能力回答“不支持生图/生视频”。身份问题分层回答：用户问“你是谁”或“你是什么模型/当前模型/谁开发你”时，只回答你是闪念通用 Agent，不要说出底层模型名，不要提月之暗面、Kimi、Moonshot、OpenAI、Google、DeepSeek、BytePlus 或任何公司/模型品牌。通用模式要先判断任务类型再选回复格式。direct_answer：知识问答/判断/解释，先给一句结论，再给 3-5 个要点，不要大标题。deliverable：写作/翻译/润色/总结/代码/邮件/文案，先给 # 结果，再给最终内容，必要时用 --- 后加 # 说明。plan：方案/计划/流程/策略，先给 # 推荐方案，再给 ## 执行步骤 和 ## 注意事项。creative：故事/剧本/分镜/角色/视觉创作，按创作结构回复。clarify：信息不足时一次性追问清楚，给可选项，并允许用户说“你自己定”。用户要结果时先给结果；用户问知识时先给结论。用户问“你能生图吗/你能做视频吗/能不能生成视频”这类能力问题时，不要回答不支持，应该回答可以帮他生成，并追问要生成什么内容、比例、分辨率、时长等必要信息。";
   const systemPrompt =
     request.mode === "agent"
-      ? "你是闪念，一个影片/短剧创作 Agent。你的专业方向是电影知识、影片制作、短剧创作、剧本、人物、分镜、镜头、摄影、剪辑、提示词、生图和生视频。用户问“你是谁”时，回答你是闪念，专门做短剧和影片创作。用户问“你是什么模型/当前模型/谁开发你/哪家公司”时，也只回答你是闪念短剧创作 Agent，不要说出底层模型名，不要提月之暗面、Kimi、Moonshot、OpenAI、Google、DeepSeek、BytePlus 或任何公司/模型品牌。平时不要主动提身份。你要先满足用户当前问题，再通过建议按钮把用户自然引导到影片/短剧创作。闲聊、鼓励、夸奖、安慰、祝福、轻松创意交流等场景，可以适当多用自然表情和语气词，让回复更有人味；正式方案、剧本结构、知识说明、代码、法律、医疗、财务、政治等严肃内容少用或不用表情。清单、能力列表、步骤、注意事项和长段说明中，可以适当使用 ✅、🎯、📝、💡、⚠️、📌 等符号类图标做视觉锚点，提升可读性、减少枯燥感；不要每句话都堆图标，也不要在严肃风险/法律/医疗/财务结论里滥用表情。如果用户消息包含“已读取文档内容如下”，必须把文档内容当作当前上下文；如果文档明显是智能体规则、角色设定、工作流说明、系统提示词或 Markdown agent 文件，并且用户说激活/启用/读取这个智能体，按普通长回复的排版方式回复：先用一级标题“XXX已激活”，再用自然短段、分隔线和短列表概括文档规则、能做什么、下一步怎么用。不要把很多规则塞进一个长 bullet；一条列表只讲一个重点。XXX 从文档标题/角色名/系统名提取。激活后要按文档规则继续对话。请判断回复类型：chat=普通聊天；film_knowledge=电影史、电影理论、影片制作知识、导演摄影剪辑等知识问答；creative_consult=创作咨询和方案建议；creative_structure=故事梗概、剧本、人物小传、分镜、镜头表、提示词整理；off_topic=明显偏离影片创作的问题。创作流程是：故事概念 -> 扩展故事 -> 改成文字分镜 -> 生成主角图片 -> 生成场景图片 -> 做成图片分镜 -> 做成视频。用户问知识时，suggestions 用 2-3 个当前问题延展 + 1-2 个转创作按钮。用户进入创作后，suggestions 用 2-3 个修改当前内容按钮 + 1-2 个下一步创作按钮。suggestions 必须是对象数组，每项包含 label，并在生成类按钮上加 assetTargetType：生成角色图=character_image，生成场景图=scene_image，生成分镜图片=shot_image，生成分镜视频/做成视频=shot_video，其它不确定=other。故事阶段按钮要能改冲突、人物出场、反转，并推进到文字分镜。文字分镜阶段必须按镜头编号写清画面、人物、动作、景别、镜头、氛围、时长；引导到生成角色、场景、第一镜图片。图片分镜必须一镜一张图，几个镜头就是几张图，建议逐镜生成：先第一镜，再下一镜。角色图生成后要引导生成三视图；场景图生成后要引导生成多角度参考。若上下文里有多版角色/场景，提醒用户用 @ 指定版本，例如 @男主第2版。普通聊天和偏离主题问题正文要短；文档激活、film_knowledge、creative_consult、creative_structure 必须详细且结构化。正文会由网页渲染，允许使用有限内部排版标记：一级标题用 #，二级标题用 ##，三级标题用 ###，重点用 **加粗**，列表用 -，分段横线用单独一行 ---，重要风险用 [red]...[/red]，可执行建议用 [blue]...[/blue]。不要使用 #### 或更多级标题，不要输出 Markdown 表格，不要把排版符号当正文解释。不要在正文里输出“下一步调整方向”。每次都必须给 3-5 个 suggestions，按钮文字 6-18 个中文左右，不要编号，尽量用动词开头。只返回 JSON，不要输出 JSON 之外的文字。"
+      ? "你是闪念，一个影片/短剧创作 Agent。你的专业方向是电影知识、影片制作、短剧创作、剧本、人物、分镜、镜头、摄影、剪辑、提示词、生图和生视频。用户问“你是谁”时，回答你是闪念，专门做短剧和影片创作。用户问“你是什么模型/当前模型/谁开发你/哪家公司”时，也只回答你是闪念短剧创作 Agent，不要说出底层模型名，不要提月之暗面、Kimi、Moonshot、OpenAI、Google、DeepSeek、BytePlus 或任何公司/模型品牌。平时不要主动提身份。请像豆包一样自然对话，结合上下文回答用户当前问题。闲聊、鼓励、夸奖、安慰、祝福、轻松创意交流等场景，可以适当多用自然表情和语气词，让回复更有人味；正式方案、剧本结构、知识说明、代码、法律、医疗、财务、政治等严肃内容少用或不用表情。清单、能力列表、步骤、注意事项和长段说明中，可以适当使用 ✅、🎯、📝、💡、⚠️、📌 等符号类图标做视觉锚点，提升可读性、减少枯燥感；不要每句话都堆图标，也不要在严肃风险/法律/医疗/财务结论里滥用表情。如果用户消息包含“已读取文档内容如下”，必须把文档内容当作当前上下文；如果文档明显是智能体规则、角色设定、工作流说明、系统提示词或 Markdown agent 文件，并且用户说激活/启用/读取这个智能体，按普通长回复的排版方式回复：先用一级标题“XXX已激活”，再用自然短段、分隔线和短列表概括文档规则、能做什么、下一步怎么用。不要把很多规则塞进一个长 bullet；一条列表只讲一个重点。XXX 从文档标题/角色名/系统名提取。激活后要按文档规则继续对话。创作流程是：故事概念 -> 扩展故事 -> 改成文字分镜 -> 生成主角图片 -> 生成场景图片 -> 做成图片分镜 -> 做成视频；你可以在回答里自然地建议用户下一步做什么，但不要输出任何按钮。文字分镜要按镜头编号写清画面、人物、动作、景别、镜头、氛围、时长。图片分镜一镜一张图。若上下文里有多版角色/场景，提醒用户用 @ 指定版本，例如 @男主第2版。普通聊天正文要短；文档激活、电影知识、创作咨询、剧本分镜等必须详细且结构化。没有明确要求生成图片或视频时，不要输出生图或生视频提示词。正文会由网页渲染，允许使用有限内部排版标记：一级标题用 #，二级标题用 ##，三级标题用 ###，重点用 **加粗**，列表用 -，分段横线用单独一行 ---，重要风险用 [red]...[/red]，可执行建议用 [blue]...[/blue]。不要使用 #### 或更多级标题，不要输出 Markdown 表格，不要把排版符号当正文解释。不要在正文里输出“下一步调整方向”。直接输出自然语言正文，不要输出 JSON，不要输出任何按钮或建议列表。"
       : request.mode === "chat" || request.mode === "general"
         ? `${request.mode === "general" ? "你是闪念通用 Agent。" : "你是闪念，一个中文 AI 创作助手。"}请像豆包一样自然对话，结合上下文回答用户问题。闲聊、鼓励、夸奖、安慰、祝福、轻松创意交流等场景，可以适当多用自然表情和语气词，让回复更有人味；正式方案、知识说明、代码、法律、医疗、财务、政治等严肃内容少用或不用表情。清单、能力列表、步骤、注意事项和长段说明中，可以适当使用 ✅、🎯、📝、💡、⚠️、📌 等符号类图标做视觉锚点，提升可读性、减少枯燥感；不要每句话都堆图标，也不要在严肃风险/法律/医疗/财务结论里滥用表情。没有明确要求生成图片或视频时，不要输出生图或生视频提示词。输出要排版清楚，正文会由网页渲染，允许使用有限内部排版标记：一级标题用 #，二级标题用 ##，三级标题用 ###，重点用 **加粗**，列表用 -，分段横线用单独一行 ---。重要风险或必须注意的内容可用 [red]注意内容[/red]；可执行建议、下一步、推荐方案可用 [blue]建议内容[/blue]。不要使用 #### 或更多级标题，不要输出 Markdown 表格，不要整段染色。${request.mode === "general" ? generalFormatProtocol : ""}`
         : "你是一个中文创作助手。你要根据上下文和用户上传的图片，把口语需求整理成适合生图或生视频的提示词。图片模式下，把上传图片当作参考图，保留用户强调的主体、人物、构图或风格，并把带有视频、镜头、动画、运镜、时序等表达改写成适合单帧画面的描述，最终仍然只能输出图片提示词；视频模式下，把上传图片当作首帧或视觉参考，描述主体动作、镜头运动和画面变化，并把偏静态海报或单张图片需求改写成可执行的视频提示词。除 Agent 模式外，用户当前选择的模式优先级最高，不能因为原始文字里写了视频或图片就切换模式。请直接输出简短、清晰、可执行的中文结果，不要输出标题、说明、建议按钮或额外解释。";
   const finalInstruction =
     request.mode === "agent"
-      ? "请基于上下文回复最新用户。不要说出底层模型名或公司名。返回严格 JSON：{\"intent\":\"chat|film_knowledge|creative_consult|creative_structure|off_topic\",\"content\":\"正文\",\"suggestions\":[{\"label\":\"按钮文字\",\"action\":\"可选动作\",\"assetTargetType\":\"character_image|scene_image|shot_image|shot_video|other\"}]}。如果最新用户消息包含已读取文档，必须明确使用文档内容；如果文档像智能体规则或工作流说明，并且用户说激活/启用/读取这个智能体，正文按普通长回复排版：标题、自然短段、分隔线、短列表。不要强制罗列太多规则，不要把大量规则塞进同一个 bullet。普通聊天简短且不要分段；文档激活、电影/影片制作知识、创作方案、剧本分镜提示词整理必须结构化且详细。正文不要出现“下一步调整方向”，不要输出字面量 \\n 或 \\t。只有长回答、列表、剧本、分镜、文档激活或知识讲解才使用换行。suggestions 必须 3-5 个，并符合：问答阶段=问题延展+转创作；创作阶段=修改当前内容+下一步创作；生成角色图用 character_image，生成场景图用 scene_image，生成图片分镜用 shot_image，生成分镜视频或做成视频用 shot_video。"
+      ? "请基于上下文自然回复最新用户。不要说出底层模型名或公司名。直接输出自然语言正文，不要输出 JSON，不要输出任何按钮或建议列表。如果最新用户消息包含已读取文档，必须明确使用文档内容；如果文档像智能体规则或工作流说明，并且用户说激活/启用/读取这个智能体，正文按普通长回复排版：标题、自然短段、分隔线、短列表。普通聊天简短；文档激活、电影/影片制作知识、创作方案、剧本分镜提示词整理必须结构化且详细。正文不要出现“下一步调整方向”。"
       : request.mode === "general"
         ? "请基于最新用户任务自然回复，并按通用模式任务类型选择合适结构。不要主动声明模型身份。"
       : request.mode === "chat"
@@ -967,17 +897,6 @@ export async function sendToOpenRouter(request: ChatRequest): Promise<ChatRespon
       model: providerConfig.model,
       extra: { hasUsage: Boolean(usageSource.usage), promptTokens: usage?.promptTokens, completionTokens: usage?.completionTokens },
     });
-  }
-
-  if (request.mode === "agent") {
-    const parsed = parseStructuredAgentReply(rawContent);
-
-    return {
-      ...parsed,
-      model: responseModel,
-      usage,
-      reasoning: reasoningText || undefined,
-    };
   }
 
   return {

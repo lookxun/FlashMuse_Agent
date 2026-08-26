@@ -8,7 +8,7 @@ import { computeFileContentHashHex, precheckUploadedFileDedup } from "@/lib/uplo
 import { shouldChunkUpload, uploadFileInChunks } from "@/lib/chunked-upload";
 import { markRecentUploadOrigin } from "@/lib/recent-upload-origin";
 import { defaultProductionUploadApiBaseUrl, getStaticMediaUrl, shouldUseStaticAssetBaseUrl, toLocalGeneratedUrl, uploadApiBaseUrl } from "@/lib/static-media-url";
-import { RiAddLargeLine, RiArrowLeftSLine, RiArrowRightSLine, RiArrowDownSLine, RiArrowUpSLine, RiAtLine, RiCheckLine, RiChat3Line, RiChatDeleteFill, RiCheckboxCircleLine, RiCheckboxMultipleBlankLine, RiCloseLine, RiCopperDiamondLine, RiDeleteBinLine, RiEmotionUnhappyFill, RiEmotionSadLine, RiFolderLine, RiBellLine, RiLandscapeLine, RiImageLine, RiMoreLine, RiMusic2Line, RiMultiImageLine, RiEditBoxLine, RiResetLeftLine, RiRefreshLine, RiResetRightLine, RiShining2Line, RiUpload2Line, RiVipCrown2Line, RiVipDiamondLine, RiVideoLine, RiVideoOnLine, RiVoiceprintLine, RiQuillPenAiLine, RiAccountBoxLine, RiFilmLine, RiInformationLine, RiGitPullRequestLine, RiFilmAiLine, RiImageAddLine, RiImageAiLine, RiMicAiLine, RiMicLine, RiDownloadLine, RiTBoxLine, RiTerminalWindowFill } from "react-icons/ri";
+import { RiAddLargeLine, RiArrowLeftSLine, RiArrowRightSLine, RiArrowDownSLine, RiArrowUpSLine, RiAtLine, RiCheckLine, RiChat3Line, RiChatDeleteFill, RiCheckboxCircleLine, RiCheckboxMultipleBlankLine, RiCloseLine, RiCopperDiamondLine, RiDeleteBinLine, RiEmotionUnhappyFill, RiEmotionSadLine, RiFolderLine, RiBellLine, RiLandscapeLine, RiImageLine, RiMoreLine, RiMusic2Line, RiMultiImageLine, RiEditBoxLine, RiResetLeftLine, RiRefreshLine, RiResetRightLine, RiShining2Line, RiUpload2Line, RiVipCrown2Line, RiVipDiamondLine, RiVideoLine, RiVideoOnLine, RiVoiceprintLine, RiQuillPenAiLine, RiAccountBoxLine, RiFilmLine, RiInformationLine, RiGitPullRequestLine, RiFilmAiLine, RiImageAddLine, RiImageAiLine, RiMicAiLine, RiMicLine, RiDownloadLine, RiTBoxLine, RiTerminalWindowFill, RiLightbulbLine } from "react-icons/ri";
 import { ADVANCED_CHAT_MODEL, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, DEFAULT_AUDIO_MODEL, audioGenerationModels, classifyImageResolutionByModel, bytePlusVideoGenerationModels, frontendConversationModels, frontendImageGenerationModels, getExpectedImageDimensions, getExpectedVideoDimensions, getImageQualityBadgeLabel, getSupportedImageResolutions, getSupportedVideoRatios, getSupportedVideoResolutions, isNonStandardVideoSize, normalizeImageResolutionForModel, normalizeVideoRatioForModel, normalizeVideoResolutionForModel, videoGenerationModels, GenerationModel, ModelName } from "@/lib/models";
 import { toUserErrorMessage } from "@/lib/error-message";
 import { type AudioReferenceMode, type VideoReferenceMode } from "@/lib/upload-rules";
@@ -2943,44 +2943,30 @@ export function ThinkingIndicator({ compact = false }: { compact?: boolean }) {
 
 export function ThinkingProcessBlock({ reasoning, thinkMs, live = false }: { reasoning: string; thinkMs?: number; live?: boolean }) {
   const [open, setOpen] = useState(false);
-  const [showToggle, setShowToggle] = useState(false);
-  const textRef = useRef<HTMLDivElement>(null);
-
-  useLayoutEffect(() => {
-    if (live) {
-      setShowToggle(false);
-      return;
-    }
-    const multi = /[\n\r]/.test(reasoning.replace(/\u200b/g, ""));
-    if (multi) {
-      setShowToggle(true);
-      return;
-    }
-    if (open) return;
-    const el = textRef.current;
-    setShowToggle(Boolean(el && el.scrollWidth > el.clientWidth + 1));
-  }, [reasoning, live, open]);
 
   const text = reasoning.replace(/\u200b/g, "").trim();
   if (!text && thinkMs == null) return null;
 
   return (
     <div className="mb-2">
-      {thinkMs != null ? <div className="mb-1.5 text-sm text-[#2563eb]">已思考 {(thinkMs / 1000).toFixed(1)}秒</div> : null}
-      {!text ? null : live ? (
-        <div className="whitespace-pre-wrap text-sm leading-7 text-[#b0b0b0]" data-no-translate="true">{text}</div>
-      ) : (
-        <div className="flex items-start gap-0.5 text-sm leading-7 text-[#b0b0b0]">
-          {showToggle ? (
-            <button type="button" className={`mt-0.5 flex h-[22px] w-5 shrink-0 items-center justify-center text-[#b0b0b0] ${open ? "rotate-90" : ""}`} onClick={() => setOpen((current) => !current)} aria-label={open ? "收起思考过程" : "展开思考过程"}>
+      {thinkMs != null ? (
+        <div className="mb-1.5 flex items-center gap-1 text-sm text-[#b0b0b0]">
+          <RiLightbulbLine className="h-4 w-4 shrink-0" aria-hidden="true" />
+          <span>已思考 {(thinkMs / 1000).toFixed(1)}秒</span>
+          {!live && text ? (
+            <button type="button" className={`flex h-[22px] w-5 shrink-0 items-center justify-center text-[#b0b0b0] transition ${open ? "rotate-90" : ""}`} onClick={() => setOpen((current) => !current)} aria-label={open ? "收起思考过程" : "展开思考过程"}>
               <RiArrowRightSLine className="h-[18px] w-[18px]" aria-hidden="true" />
             </button>
           ) : null}
-          <div ref={textRef} className={open ? "min-w-0 flex-1 whitespace-pre-wrap" : "min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap"} data-no-translate="true">
-            {open ? text : text.replace(/\s+/g, " ").trim()}
+        </div>
+      ) : null}
+      {text ? (
+        <div className={`grid transition-[grid-template-rows] duration-500 ease-in-out ${live || open ? "grid-rows-[1fr]" : "grid-rows-[0fr]"}`}>
+          <div className="min-h-0 overflow-hidden">
+            <div className="whitespace-pre-wrap text-sm leading-7 text-[#b0b0b0]" data-no-translate="true">{text}</div>
           </div>
         </div>
-      )}
+      ) : null}
     </div>
   );
 }
@@ -3139,6 +3125,7 @@ export function TypewriterFormattedMessage({
 
     if (isComplete) {
       onComplete(messageId);
+      onTick();
       return;
     }
 

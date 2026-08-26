@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
 import { assertUserCanUseCredits, chargeCredits, isUnauthenticatedError, recordCreditFailure, UNAUTHENTICATED_ERROR_MESSAGE } from "@/lib/credits";
 import { toUserErrorMessage } from "@/lib/error-message";
-import { extractAgentStreamContent, sendToOpenRouter } from "@/lib/openrouter";
+import { sendToOpenRouter } from "@/lib/openrouter";
 import { CONTENT_POLICY_ERROR_CODE, CONTENT_POLICY_ERROR_MESSAGE, enforceContentPolicy } from "@/lib/content-moderation";
 import { DEFAULT_CHAT_MODEL, isModelName } from "@/lib/models";
 import { createCodedApiError } from "@/lib/error-code";
@@ -130,8 +130,6 @@ export async function POST(request: Request) {
             const streamModels = [model];
             for (const chatModel of streamModels) {
               try {
-                let streamedRaw = "";
-                let lastExtracted = "";
                 result = await sendToOpenRouter({
                   model: chatModel,
                   mode: streamMode,
@@ -142,15 +140,6 @@ export async function POST(request: Request) {
                   streamHandlers: {
                     onReasoning: (piece) => send({ reasoning: piece }),
                     onDelta: (piece) => {
-                      streamedRaw += piece;
-                      if (streamMode === "agent") {
-                        const extracted = extractAgentStreamContent(streamedRaw);
-                        if (extracted.startsWith(lastExtracted) && extracted.length > lastExtracted.length) {
-                          send({ delta: extracted.slice(lastExtracted.length) });
-                          lastExtracted = extracted;
-                        }
-                        return;
-                      }
                       send({ delta: piece });
                     },
                   },

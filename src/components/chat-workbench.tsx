@@ -434,6 +434,16 @@ import {
 } from "@/lib/chat/chat-workbench-core";
 import { VideoDurationSlider } from "@/components/video-duration-slider";
 
+const inflightGenerationRequestIds = new Set<string>();
+const finishedGenerationRequestIds = new Set<string>();
+
+function rememberFinishedGenerationRequest(requestId: string) {
+  finishedGenerationRequestIds.add(requestId);
+  if (finishedGenerationRequestIds.size <= 200) return;
+  const oldest = finishedGenerationRequestIds.values().next().value;
+  if (oldest) finishedGenerationRequestIds.delete(oldest);
+}
+
 export function ChatWorkbench() {
   const workspaceInstanceIdRef = useRef(createClientId());
   const workspaceInstanceClaimedRef = useRef(false);
@@ -763,6 +773,12 @@ export function ChatWorkbench() {
   const [canScrollAssetGenerateReferences, setCanScrollAssetGenerateReferences] = useState({ left: false, right: false });
   const messageEndRef = useRef<HTMLDivElement | null>(null);
   const chatScrollRef = useRef<HTMLDivElement | null>(null);
+  // 正文流式跟随：记录本轮要回滚到的 user 消息 id（null = 不跟随/已被用户手动滚动取消）
+  const followRoundUserMsgIdRef = useRef<string | null>(null);
+  const followPendingAssistantRequestIdRef = useRef<string | null>(null);
+  // 标记"这次滚动是程序触发的"，用于在 onScroll 里区分用户手动滚动
+  const programmaticScrollRef = useRef(false);
+  const programmaticScrollUntilRef = useRef(0);
   const pendingOlderMessagesScrollRef = useRef<{ prevHeight: number; prevTop: number } | null>(null);
   const suppressChatScrollToBottomRef = useRef(false);
   const canLoadOlderByScrollRef = useRef(false);
@@ -2514,7 +2530,59 @@ export function ChatWorkbench() {
     });
   }, []);
 
-  const keepTypingInPlace = useCallback(() => undefined, []);
+  const beginFollowRound = useCallback((msgId?: string) => {
+    followPendingAssistantRequestIdRef.current = null;
+    if (!msgId) return;
+    followRoundUserMsgIdRef.current = msgId;
+    programmaticScrollRef.current = false;
+    programmaticScrollUntilRef.current = 0;
+  }, []);
+
+  const beginFollowRoundForAssistant = useCallback((requestId?: string) => {
+    if (!requestId) return;
+    followPendingAssistantRequestIdRef.current = requestId;
+    followRoundUserMsgIdRef.current = requestId;
+    programmaticScrollRef.current = false;
+    programmaticScrollUntilRef.current = 0;
+  }, []);
+
+  const clearFollowRound = useCallback(() => {
+    followRoundUserMsgIdRef.current = null;
+    followPendingAssistantRequestIdRef.current = null;
+  }, []);
+
+  const pinFollowRoundToBottom = useCallback(() => {
+    if (!followRoundUserMsgIdRef.current) return;
+    const scroller = chatScrollRef.current;
+    if (!scroller) return;
+    programmaticScrollRef.current = true;
+    programmaticScrollUntilRef.current = Date.now() + 160;
+    scroller.scrollTop = scroller.scrollHeight;
+  }, []);
+
+  const keepTypingInPlace = useCallback(() => {
+    if (!followRoundUserMsgIdRef.current) return;
+    if (typingScrollFrameRef.current !== null) return;
+    typingScrollFrameRef.current = window.requestAnimationFrame(() => {
+      pinFollowRoundToBottom();
+      typingScrollFrameRef.current = null;
+    });
+  }, [pinFollowRoundToBottom]);
+
+  // 正文流式结束后，平滑（约半秒）把本轮 user 提问滚到视口顶部
+  const scrollFollowRoundToUserMessage = useCallback(() => {
+    const userMsgId = followRoundUserMsgIdRef.current;
+    clearFollowRound();
+    if (!userMsgId) return;
+    const scroller = chatScrollRef.current;
+    if (!scroller) return;
+    const target = scroller.querySelector<HTMLElement>(`[data-message-id="${userMsgId}"]`);
+    if (!target) return;
+    const top = target.offsetTop - 16;
+    programmaticScrollRef.current = true;
+    programmaticScrollUntilRef.current = Date.now() + 700;
+    scroller.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+  }, [clearFollowRound]);
 
   const rememberIntentCorrection = useCallback((source: string, targetMode: IntentMode) => {
     setIntentMemoryRules((current) => upsertIntentMemoryRule(current, source, targetMode));
@@ -3612,8 +3680,16 @@ export function ChatWorkbench() {
     const thinkingJustEnded = wasThinkingRef.current && !isThinking;
     wasThinkingRef.current = isThinking;
     if (thinkingJustEnded) return;
+    programmaticScrollRef.current = true;
+    programmaticScrollUntilRef.current = Date.now() + 160;
     messageEndRef.current?.scrollIntoView({ behavior: "auto", block: "end" });
   }, [activePanel, activeSessionId, messages.length, isThinking]);
+
+  const lastFollowTail = `${messages[messages.length - 1]?.id ?? ""}:${messages[messages.length - 1]?.content?.length ?? 0}:${(messages[messages.length - 1]?.reasoning ?? "").length}:${messages[messages.length - 1]?.thinkCollapsed ? 1 : 0}`;
+  useLayoutEffect(() => {
+    if (activePanel !== "chat") return;
+    pinFollowRoundToBottom();
+  }, [activePanel, lastFollowTail, pinFollowRoundToBottom]);
 
   useEffect(() => {
     if (activePanel !== "assets") return;
@@ -3650,6 +3726,16 @@ export function ChatWorkbench() {
   const updateScrollToBottomButton = () => {
     const element = chatScrollRef.current;
     if (!element) return;
+
+    // 本轮正文流式跟随期间，用户一旦手动滚动就取消本轮的跟随与回滚
+    if (followRoundUserMsgIdRef.current) {
+      const away = element.scrollHeight - element.scrollTop - element.clientHeight;
+      if (programmaticScrollRef.current || Date.now() < programmaticScrollUntilRef.current || away <= 96) {
+        programmaticScrollRef.current = false;
+      } else {
+        clearFollowRound();
+      }
+    }
 
     const distanceToBottom = element.scrollHeight - element.scrollTop - element.clientHeight;
     if (activePanel === "assets") {
@@ -5232,6 +5318,10 @@ export function ChatWorkbench() {
           : session,
       ),
     );
+    if (payload.requestId && followPendingAssistantRequestIdRef.current === payload.requestId) {
+      followRoundUserMsgIdRef.current = messageId;
+      followPendingAssistantRequestIdRef.current = null;
+    }
     return messageId;
   }, []);
 
@@ -6111,11 +6201,11 @@ export function ChatWorkbench() {
   }, [addGeneratedAssets, addSessionGeneratedMediaCount, addSessionUsage, appendVideoToAssistantMessage, applyVideoPreviewToMessage, applyCreditResult, markAssistantVideoFailure, reserveMediaSystemNames, sessions, recoveryTick]);
 
   const runGeneration = useCallback(async (sessionId: string, pendingRequest: PendingGeneration) => {
-    if (runningRequestIdsRef.current.has(pendingRequest.id)) return;
-    // 提交生成后尽快把状态落库（下一次保存改为立即），缩短"点完就关"导致状态没保存的窗口。
+    if (runningRequestIdsRef.current.has(pendingRequest.id) || inflightGenerationRequestIds.has(pendingRequest.id) || finishedGenerationRequestIds.has(pendingRequest.id)) return;
     flushNextWorkspaceSaveRef.current = true;
 
     runningRequestIdsRef.current.add(pendingRequest.id);
+    inflightGenerationRequestIds.add(pendingRequest.id);
     const abortController = new AbortController();
     requestAbortControllersRef.current.set(pendingRequest.id, abortController);
     try {
@@ -6367,17 +6457,10 @@ export function ChatWorkbench() {
                     if (abortController.signal.aborted) throw new DOMException("aborted", "AbortError");
                     thinkCollapsed = true;
                     flushSync(() => syncThinkMessage(true));
-                    await waitMs(400);
+                    await waitMs(550);
                     if (abortController.signal.aborted) throw new DOMException("aborted", "AbortError");
                   })();
                   return collapsePromise;
-                };
-                let thinkIdleTimer: number | undefined;
-                const armThinkIdle = () => {
-                  window.clearTimeout(thinkIdleTimer);
-                  thinkIdleTimer = window.setTimeout(() => {
-                    void collapseThink();
-                  }, 200);
                 };
                 const revealBody = async (text: string) => {
                   if (!text) return;
@@ -6389,7 +6472,6 @@ export function ChatWorkbench() {
                   const decoder = new TextDecoder();
                   let buffer = "";
                   data = {};
-                  try {
                   while (true) {
                     const chunk = await reader.read();
                     buffer += chunk.done ? decoder.decode() : decoder.decode(chunk.value, { stream: true });
@@ -6418,13 +6500,11 @@ export function ChatWorkbench() {
                         }
                         if (visibleThinkText() && !thinkCollapsed) {
                           updateAssistantMessageByRequestId(sessionId, pendingRequest.id, { reasoning: liveReasoning, thinkMs: thinkMsNow(), thinkCollapsed: false });
-                          armThinkIdle();
                         }
                       }
                       const incomingDelta = typeof event.delta === "string" ? event.delta : "";
                       const incomingReplace = typeof event.content === "string" ? event.content : "";
                       if (incomingDelta || incomingReplace) {
-                        window.clearTimeout(thinkIdleTimer);
                         if (incomingDelta) liveContent += incomingDelta;
                         else if (!liveContent || incomingReplace.startsWith(liveContent)) liveContent = incomingReplace;
                         if (liveContent) await revealBody(liveContent);
@@ -6432,9 +6512,6 @@ export function ChatWorkbench() {
                       }
                     }
                     if (chunk.done) break;
-                  }
-                  } finally {
-                    window.clearTimeout(thinkIdleTimer);
                   }
                   if (!visibleThinkText() && typeof data.reasoning === "string") liveReasoning = data.reasoning;
                   if (visibleThinkText()) await collapseThink();
@@ -6450,6 +6527,8 @@ export function ChatWorkbench() {
                 updateAssistantMessageByRequestId(sessionId, pendingRequest.id, { suggestions: data.suggestions, reasoning: liveReasoning || data.reasoning, thinkMs: finishThinkMs(), thinkCollapsed: true, streaming: true });
                 window.setTimeout(() => {
                   updateAssistantMessageByRequestId(sessionId, pendingRequest.id, { streaming: false });
+                  // 正文全部显示完，平滑滚回本轮用户提问位置（若用户中途手动滚过则已取消）
+                  scrollFollowRoundToUserMessage();
                 }, 1600);
                 prompt = assembled;
                 updatePendingRequest(sessionId, pendingRequest.id, { prompt, model: chatModel as ModelName });
@@ -6467,6 +6546,7 @@ export function ChatWorkbench() {
                  }
                 const message = error instanceof Error ? error.message : String(error);
                 if (message.includes("不符合平台规则")) {
+                  clearFollowRound();
                   updateAssistantMessageByRequestId(sessionId, pendingRequest.id, { content: toUserErrorMessage(error), error: toUserErrorMessage(error), mode: pendingRequest.mode });
                   return;
                 }
@@ -6474,11 +6554,13 @@ export function ChatWorkbench() {
               }
             }
             if (!prompt) {
+                  clearFollowRound();
               const message = toUserErrorMessage(lastChatError);
               updateAssistantMessageByRequestId(sessionId, pendingRequest.id, { content: message, error: message, mode: pendingRequest.mode });
               return;
             }
           } catch (error) {
+              clearFollowRound();
             if (stoppedRequestIdsRef.current.has(pendingRequest.id) || (error instanceof DOMException && error.name === "AbortError")) throw error;
             const message = toUserErrorMessage(error);
             updateAssistantMessageByRequestId(sessionId, pendingRequest.id, { content: message, error: message, mode: pendingRequest.mode });
@@ -6955,6 +7037,8 @@ export function ChatWorkbench() {
         appendSystemMessage(sessionId, { content: message, error: message, mode: pendingRequest.mode });
       }
     } finally {
+      rememberFinishedGenerationRequest(pendingRequest.id);
+      inflightGenerationRequestIds.delete(pendingRequest.id);
       clearPendingRequest(sessionId, pendingRequest.id);
       runningRequestIdsRef.current.delete(pendingRequest.id);
       requestAbortControllersRef.current.delete(pendingRequest.id);
@@ -7282,6 +7366,10 @@ export function ChatWorkbench() {
     }
     const userMessage: Message = { id: createClientId(), role: "user", content: rawTextWithMediaMentions, createdAt: nowTimestamp(), images: referenceImages.length > 0 ? referenceImages : undefined, imageReferences: displayImageReferences.length > 0 ? displayImageReferences : undefined, uploadedFiles: availableUploadedFiles.length > 0 ? availableUploadedFiles : undefined };
     const payloadUserMessage: Message = { ...userMessage, content: text };
+    // agent/general 文字回复：本轮开启"正文流式跟随、结束后回滚到本轮提问"
+    if (submitMode === "agent" || submitMode === "general") {
+      beginFollowRound(userMessage.id);
+    }
     const messagesWithoutSuggestions = sessionForSend.messages.map((message) => (message.suggestions ? { ...message, suggestions: undefined } : message));
     const optimisticMessages = [...messagesWithoutSuggestions, payloadUserMessage];
     const visibleOptimisticMessages = [...messagesWithoutSuggestions, userMessage];
@@ -7732,19 +7820,20 @@ export function ChatWorkbench() {
     const replayMeta = message.generationMeta;
     const messageIndex = activeSession.messages.findIndex((item) => item.id === message.id);
     if (messageIndex < 0) return;
-    const generationMode: WorkMode = replayMeta?.mode ?? (message.videoUrl ? "video" : message.images?.length || message.statusText || message.error ? "image" : message.mode === "agent" ? "agent" : mode);
+    const generationMode: WorkMode = replayMeta?.mode ?? (message.videoUrl ? "video" : message.images?.length || message.statusText || message.error ? "image" : message.mode === "agent" || message.mode === "general" ? message.mode : mode);
     const previousUserMessage = [...activeSession.messages.slice(0, messageIndex)].reverse().find((item) => item.role === "user");
     const replayPrompt = generationMode === "image" || generationMode === "video" || generationMode === "audio" ? (replayMeta?.originalPrompt ?? message.content).trim() : (previousUserMessage?.content ?? "").trim();
     if (!replayPrompt) return;
-    if (generationMode === "agent" && !previousUserMessage) return;
+    if ((generationMode === "agent" || generationMode === "general") && !previousUserMessage) return;
 
     const sessionId = activeSession.id;
     const replaySettings = replayMeta?.settings;
     const replayUploadedFiles = message.uploadedFiles ?? [];
     const replayReferenceVideos = getUploadedMediaReferences(replayUploadedFiles).filter((reference) => reference.mediaKind === "video").map((reference) => reference.url);
     const replayReferenceAudios = getUploadedMediaReferences(replayUploadedFiles).filter((reference) => reference.mediaKind === "audio").map((reference) => reference.url);
+    const previousUserIndex = previousUserMessage ? activeSession.messages.findIndex((item) => item.id === previousUserMessage.id) : -1;
     const replayMessages: ChatPayloadMessage[] = activeSession.messages
-      .slice(0, messageIndex)
+      .slice(0, previousUserIndex >= 0 ? previousUserIndex + 1 : messageIndex)
       .filter((item) => item.id !== "seed-1" && item.role !== "system")
       .map((item) => ({ role: item.role === "assistant" ? "assistant" : "user", content: item.content, images: item.images }));
     const replayImageReferences = message.imageReferences?.length
@@ -7848,6 +7937,9 @@ export function ChatWorkbench() {
         uploadedFiles: replayUploadedFiles.length > 0 ? replayUploadedFiles : undefined,
         generationMeta: { mode: "audio", model: pendingRequest.model, settings: pendingRequest.settings, preserveOriginalInput: pendingRequest.preserveOriginalInput, originalPrompt: pendingRequest.originalPrompt, agentGenerated: pendingRequest.agentGenerated, voice: pendingRequest.voice, emotion: isAudioEmotionSelectable(pendingRequest.model) ? normalizeAudioEmotionForModel(pendingRequest.model, pendingRequest.emotion) : undefined, audioReferenceMode: pendingRequest.audioReferenceMode },
       });
+    }
+    if (generationMode === "agent" || generationMode === "general") {
+      beginFollowRoundForAssistant(pendingRequest.id);
     }
     void runGeneration(sessionId, pendingRequest);
   };
@@ -10184,7 +10276,7 @@ export function ChatWorkbench() {
                   <span>加载更早的消息</span>
                 </div>
               ) : null}
-              {messages.map((message) => {
+              {messages.map((message, messageIndex) => {
                 const isLegacyAgentErrorNotice = message.role === "assistant" && message.mode === "agent" && Boolean(message.error) && message.content === message.error;
 
                 if (message.role === "system" || isLegacyAgentErrorNotice) {
@@ -10300,9 +10392,11 @@ export function ChatWorkbench() {
                 const thinkLive = Boolean(visibleThinkText) && !message.thinkCollapsed && !hasAssistantBody;
                 const showThinkBlock = Boolean(visibleThinkText) || ((Boolean(message.thinkCollapsed) || hasAssistantBody) && message.thinkMs != null);
                 const showThinkLoading = !message.error && !hasAssistantBody && !thinkLive;
+                const previousMessage = messages[messageIndex - 1];
+                const isRegeneratedReply = message.role === "assistant" && (message.mode === "agent" || message.mode === "general") && previousMessage?.role === "assistant" && (previousMessage.mode === "agent" || previousMessage.mode === "general");
 
                 return (
-                <div key={message.id} className={message.role === "user" ? "group flex justify-end" : "flex justify-start"}>
+                <div key={message.id} data-message-id={message.id} className={message.role === "user" ? "group flex justify-end" : isRegeneratedReply ? "flex justify-start pt-14" : "flex justify-start"}>
                   <div className={message.role === "user" ? "max-w-[92%]" : isAgentMediaMessage ? "flex w-full max-w-full" : "flex max-w-full"}>
                     {false && message.role === "assistant" ? (
                       <div className="mt-3 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-[#e5ddff] bg-[#f1ecff] text-[#6d4aff]">

@@ -14,49 +14,212 @@
 >   ④ 把旧卷标题改成「卷 N · 已归档只读」并在顶部加指向新卷的提示 ⑤ 更新 `00-README.md` 文档索引里的 CHANGELOG 行。
 > - 判据不变：**版本号一样 = 测试服和正式服代码一样**（本项目核心约定，见 `AGENTS.md`）。
 
-## 📌 当前状态摘要（2026-08-26 第九十三次会话末）：**四方 `v1.0.1.10`，已 push**
+## 📌 当前状态摘要（2026-08-26 第九十六次会话末）：**四方同步 `v1.0.1.11`**
 
 | | 版本 / 状态 |
 |---|---|
-| 本地 = 测试服 = 正式服 = GitHub | **`v1.0.1.10`** |
+| 本地 / 测试服 / 正式服 / GitHub | **`v1.0.1.11`** |
 | 自查 | `tsc` 0 |
-| 迁移 | 无新迁移、无 compose/nginx |
+| 迁移 / 基建 | 无新迁移、无 compose/nginx |
+| 回滚点 | 正式服 app `/opt/flashmuse/app-backups/20260826-205720-presync-v1.0.1.11` |
+| 判据 | staging→prod `src` md5 = `236c959642c793ed2ff1b769c1ba5e9c` |
+| 本会话改动文件 | `src/components/chat-workbench.tsx`、`src/lib/chat/chat-workbench-core.tsx`、`src/lib/openrouter.ts`、`src/app/api/chat/route.ts`、`src/lib/app-version.ts` + 交接 |
+
+---
+
+## 🗒️ 第九十六次会话（2026-08-26）：审计 94+95 → 测服验界面 → 正式服 + GitHub `v1.0.1.11`
+
+**用户诉求**：当前本地这一批先审计，没问题部署测试服，上号走测试，有问题修、没问题推正式服，测不崩。全做完 push GitHub，再把本对话框写进交接。
+
+### 一、审计（94 做法B + 95 跟随/回滚/重新生成）
+
+4 个源码文件，干净，`tsc` 0。
+- `openrouter.ts` / `api/chat/route.ts`：闲聊不再逼 JSON、不再抽 suggestions；`planAgentTask` 仍保留 JSON 意图 + `normalizeSuggestions`。
+- `chat-workbench-core.tsx`：思考默认收起、灯泡+灰字秒数、`grid-rows` 0.5s 高度收缩；`isComplete` 也调 `onTick`。
+- `chat-workbench.tsx`：跟随钉 `scrollTop=scrollHeight`，取消只认离底 >96px；回滚 `scrollTo`；重新生成锚到新回答、历史只带到 previousUser；模块级 inflight/finished 锁；连续两条回答 `pt-14`。
+
+### 二、测服 v1.0.1.11
+
+bump 1.10→1.11 → 5 个源码文件 tgz → build → sync-ali `_next/static` 42 → 发布信号。health / x-app-version / 8080 / https 全 v1.0.1.11。
+
+上号 `12424740@qq.com`（HTTPS `staging-static.venusface.com`）：
+- Agent 闲聊「v10111巡检：你好，用三句话介绍你自己，并写一段120字左右的短剧开头。」→ 只打 `/api/chat`、纯人话、无引导按钮、思考收起、写完回滚到本轮提问（`userNearChatTop`）、单篇不覆盖。
+- 点重新生成 → 新回答是重写（新故事，不是接着旧回答聊）、`pt-14=56px`、回滚到新回答不是用户原话。
+- 通用「v10111巡检通用：用四句话介绍你自己。」→ 纯人话、无按钮、回滚到提问。
+- console 全程 0 error。⛔ 没动公告、没付费生图。
+
+### 三、正式服 + GitHub
+
+备份 `20260826-205720-presync-v1.0.1.11` → staging→prod rsync（`src` md5 双方 `236c959642c793ed2ff1b769c1ba5e9c`）→ build → 阿里正式静态 42=42 → 发布信号。四域名 200，health / x-app-version = v1.0.1.11。⛔ 没动公告。
+
+冒烟：`12424740@qq.com` 新建对话，免费语音 `fish-audio/s2.1-pro-free` 文本转换「v10111巡检，你好。」`/api/audio` 200，有「下载语音」，console 0 error。
+
+### 四、测试留痕（⛔ 别当用户数据）
+
+- 测服：对话「v10111巡检：你好，用三句话…」（1 发 + 1 重新生成）+「v10111巡检通用：用四句话介绍你自己。」
+- 正式服：对话「v10111巡检，你好。」（1 条免费语音）
+
+### 五、下一个 AI
+
+1. 四方已是 v1.0.1.11。改代码要上线先 bump。
+2. 语速别做。⛔ 正式服公告别动。`modal.md` / `tmp-openrouter` / `原型测试.url` 别 `git add -A`。
+3. 别删 `scrollFollowRoundToUserMessage` 里的 `scroller.scrollTo`。别把重新生成历史再改回 `slice(0, messageIndex)`。别删 `normalizeSuggestions`。
+
+---
+
+## 📌 上一状态摘要（2026-08-26 第九十五次会话末）：**本地 = `v1.0.1.10` + 未提交（跟随/回滚/重新生成）；测试服/正式服/GitHub 仍 `v1.0.1.10`（`def0561`）**
+
+| | 版本 / 状态 |
+|---|---|
+| 本地 | **`v1.0.1.10` + 未提交**（94 做法B + 本批跟随钉底、回滚、重新生成）；⛔ 未 bump、未部署、未 commit |
+| 测试服 / 正式服 / GitHub | 仍 **`v1.0.1.10`**（`def0561`）|
+| 自查 | `tsc` 0 |
+| 迁移 / 基建 | 无新迁移、无 compose/nginx |
 | 回滚点 | 正式服 app `/opt/flashmuse/app-backups/20260826-154406-presync-v1.0.1.10` |
+| 本会话改动文件 | `src/components/chat-workbench.tsx`、`src/lib/chat/chat-workbench-core.tsx` |
+
+⚠️ **本地 ≠ 线上**。要上线先 `node scripts/bump-version.mjs`（→ v1.0.1.11）再走测服→正式服。
+
+---
+
+## 🗒️ 第九十五次会话（2026-08-26）：跟随钉底 + 回滚锚点 + 重新生成（全本地未部署）
+
+**用户诉求**：94 的「跟着滚再回滚提问」没跟到底；要对齐原型一直跟到底、全文出完再回滚。随后：同一句像请求了两次、后一篇盖前一篇；重新生成也要同一套跟随/回滚；重新生成回滚应到新回答不是用户原话；新回答和上面空两行；后两次重新生成没重写梗概而是接着聊；普通对话和重新生成回滚都没了。
+
+### 一、跟随跟不到底
+
+- agent/general 正文 `isComplete` 写死 true，`TypewriterFormattedMessage` 原先不调 `onTick` → 只在加消息时滚一次。
+- 加消息那次 `scrollIntoView` 触发 `onScroll`，被当成手滑，`followRoundUserMsgIdRef` 立刻清空。
+- 正解：思考/正文每长一点 `chatScrollRef.scrollTop = scrollHeight`（`useLayoutEffect` 盯 last 消息 content/reasoning）。取消只认离底 >96px。`isComplete` 时也要 `onTick`。
+
+### 二、同一句跑两遍盖正文
+
+- 本地会话「来一个300字左右的小说」：先写完一篇，又来一篇把原文盖掉。
+- 根因：`sendMessage` 调 `runGeneration`，`sessions`/`runGeneration` 变了 effect 再调一次；dev 重挂会清空组件 ref。`appendAssistantMessage` 同 requestId 不新建气泡，于是第二遍 `revealBody` 覆盖。
+- 正解：模块级 `inflightGenerationRequestIds` + `finishedGenerationRequestIds`（重挂也还在）。重试/再生成用新 `createClientId`，不受影响。
+
+### 三、重新生成
+
+- 反馈「重新生成」原先没开跟随。Agent/通用都开。
+- 回滚锚点：新发 → 本轮用户提问；重新生成 → 新 assistant（`beginFollowRoundForAssistant`，`appendAssistantMessage` 把 ref 从 requestId 换成 messageId）。
+- 和上面空两行：连续两条 agent/general 回答时 `pt-14`（两行 `leading-7`）。
+- 历史：原先 `slice(0, messageIndex)` 会带上旧回答，模型当成已经写过、接着聊。改成只带到 previousUser（含它）。本地会话「帮我写10个不同风格的故事梗概」后两次短评就是这个。
+
+### 四、回滚整段消失
+
+- 改锚点时 `scrollFollowRoundToUserMessage` 丢了 `scroller.scrollTo(...)`，新发和重新生成都不滚。已补回。⛔ 别再删这一行。
+
+### 五、下一个 AI 衔接
+
+1. 本地 ≠ 线上。上线 bump → v1.0.1.11 → 测服验上面几条 → 正式服。
+2. 94 做法B 仍在工作区未提交，别回滚那些文件。
+3. 语速别做。正式服公告别动。`modal.md` / `tmp-openrouter` / `原型测试.url` 别 `git add -A`。
+
+---
+
+## 🗒️ 第九十四次会话（2026-08-26）：Agent/通用改「纯人话流式」+ 思考流程动画 + 正文流式跟随回滚（全本地未部署）
+
+**用户诉求**：把 Agent 文字回复彻底改成和通用模式一样的纯人话流式（不逼 JSON、无引导按钮）；打磨"流式思考 → 收起 → 流式正文"这套动态过程；最后写进交接。全程只改本地代码、`tsc` 自查，未部署未测试。
+
+### 一、做法B：Agent 文字回复 = 纯人话直出流式（不再逼 JSON、无引导按钮）
+
+- `src/lib/openrouter.ts`：
+  - agent **系统提示词**改人话版（保留闪念短剧身份 / 不暴露模型名 / 排版图标 / 创作流程建议，明确"直接输出自然语言、不输出 JSON、不输出按钮"）。
+  - `finalInstruction` 的 agent 分支同样去掉"返回严格 JSON / suggestions"。
+  - agent 返回**不再走 `parseStructuredAgentReply`**，与普通模式一样 `cleanModelText(rawContent)`。
+  - **删死代码**：`parseStructuredAgentReply` / `extractAgentStreamContent` / `looksLikeStructuredAgentJson` / `cleanAgentReplyContent` / `StructuredAgentReply` / `agentReplyIntents`。
+  - **保留**：`normalizeSuggestions` / `fallbackAgentSuggestions` / `normalizeSuggestionItem`（`planAgentTask` 生图/生视频路径仍用）。
+- `src/app/api/chat/route.ts`：流式 `onDelta` 直接透传 piece；删 `extractAgentStreamContent` import、`streamedRaw`、`lastExtracted`。
+- **前端无需改**：闲聊时 `data.suggestions` 自然为 undefined → 按钮不渲染；只有生成场景（planAgentTask）和 clarify 追问仍保留按钮。
+
+### 二、思考流程组件样式（`ThinkingProcessBlock`，`chat-workbench-core.tsx` ~L2944）
+
+- "已思考 xx 秒"由蓝 `#2563eb` 改灰 `#b0b0b0`；前面加 `RiLightbulbLine` 图标；展开三角移到"已思考 xx 秒"同一行右侧；收起时隐藏全部思考正文（默认 `open=false`）。
+- 删 `showToggle` state、溢出检测 `useLayoutEffect`、`textRef`。
+
+### 三、思考流式时机（`chat-workbench.tsx` ~L6375）
+
+- 删 `armThinkIdle`（原"停顿 200ms 就提前收起"触发器）及调用/clearTimeout。现在思考**一直流式显示，直到正文第一个 delta 到达**才收起（`revealBody`→`collapseThink`）。用户拍板要这个"确认思考全部完成才收起"的口径。
+
+### 四、思考收起加 0.5 秒高度收缩动画（本会话新增，用户明确要）
+
+- 思考正文改用 `grid`：外层 `grid transition-[grid-template-rows] duration-500 ease-in-out`，展开 `grid-rows-[1fr]` / 收起 `grid-rows-[0fr]`，内层 `min-h-0 overflow-hidden`。**纯高度往上缩、无透明度**（用户明确说不要透明度渐变）。
+- 配合把 `collapseThink` 里标记收起后的等待 **400ms → 550ms**（略大于 500ms 动画），保证"缩完再出正文"。
+- ⭐ 首次挂载时思考已是展开态（`live=true`），React 不触发过渡起点 → 思考出现无异常展开动画；只有 1fr→0fr 收起才有 500ms 过渡。
+
+### 五、正文流式跟随 + 完成后回滚到本轮提问（本会话新增）
+
+用户诉求：正文流式时画面**跟着往下滚**看最新的字，显示完后**平滑（约半秒）滚回**，让本轮用户提问回到视口顶部。
+
+- 新增两个 ref（`chat-workbench.tsx` ~L766）：`followRoundUserMsgIdRef`（本轮要回滚到的 user 消息 id，null=不跟随/已取消）、`programmaticScrollRef`（区分程序滚动 vs 用户手动滚动）。
+- message 最外层 `<div>` 加 `data-message-id={message.id}` 锚点（~L10292）。
+- 发送时（`sendMessage` userMessage 创建后，~L7308）：`submitMode` 是 `agent`/`general` 就 `followRoundUserMsgIdRef.current = userMessage.id`。
+- `keepTypingInPlace`（agent/general 正文的 `onTick`，~L2517）：从空函数改成"本轮跟随中就 `scrollIntoView(block:"end")` 跟到底"，且设 `programmaticScrollRef=true`。
+- 新增 `scrollFollowRoundToUserMessage`：`querySelector([data-message-id=…])` 找本轮 user 气泡，`scrollTo({ top: offsetTop-16, behavior:"smooth" })` 半秒平滑滚回置顶（函数内先读后置 null）。
+- 触发回滚：正文全部显示完那刻（流式结束 `setTimeout(…,1600)` 里 `streaming:false` 之后，~L6474）调它。
+- **用户手动滚动取消本轮**：`updateScrollToBottomButton`（onScroll，~L3681）开头判断——本轮跟随中若这次 scroll 不是程序触发（`programmaticScrollRef` 为 false）→ `followRoundUserMsgIdRef.current = null`，跟随和回滚全取消。
+- 各错误/中止路径（违规、全失败、外层 catch，~L6492/6499/6505）清 `followRoundUserMsgIdRef`，防污染下一轮。
+- ⭐ 用户确认口径：回滚落点=本轮 user 提问置顶；长回答照样置顶（回答往下延伸，能滚就滚）；本轮流式中一旦手动滚动→跟随+回滚全取消；半秒用原生 `behavior:"smooth"`（各浏览器约 300~600ms，够用）。
+
+### 六、关键机制澄清（下一个 AI 必读，避免重复排查）
+
+- ⭐⭐ **agent/general 正文其实"没有打字机效果"**：渲染那行（`chat-workbench.tsx` ~L10314）用 `<TypewriterFormattedMessage … isComplete … />`，`isComplete` **写死 true** → 组件直接整段显示当前累积文本、**不跑打字机动画**。看起来"逐段出字"是**模型真实流式吐 token**（前端每收一段 delta 就整段刷新 `message.content`）。
+- 打字机那套（`getTypingDuration` = `length*28`ms、`MIN_TYPING_DURATION_MS=1000`/`MAX=8000`）**只在 `isComplete=false` 时生效**，agent/general 永远传 true → 改这些参数对 agent/general **无效**。
+- ⭐ 所以"正文出字速度"由模型吐字速度决定，**前端没有可调的匀速旋钮**。用户已认可"真流式改不了速度就不改"。
+- ⛔ 之前那个"卡一下突然出一坨再流式"的观感来自 `revealBody` 里 `await collapseThink()`——收起动画期间（最多约1.6s）正文 delta 被 `await` 挡住积压，动画结束一次性吐出。这是**故意的**（保证"思考收起后才出正文"），本会话未改这个阻塞逻辑，只是把等待从 400→550ms 对齐动画。
+
+### 七、下一个 AI 衔接
+
+1. ⚠️ **本地 ≠ 线上**：本批全在本地、`tsc` 0、**未走界面验**。要上线先 `node scripts/bump-version.mjs`（→ v1.0.1.11）→ 测服 → 真走界面验 → 正式服（不再 bump）。
+2. **真走界面必验**（agent + general 都要）：① 引导按钮已消失、闲聊纯人话；② 思考流式→思考完 0.5s 高度收缩收起→出正文；③ 正文流式时画面跟着往下滚；④ 显示完半秒平滑滚回本轮提问置顶；⑤ 流式中手动滚一下→跟随和回滚都停；⑥ 生图/生视频（planAgentTask）和 clarify 追问的按钮**仍在**（做法B 只去掉闲聊按钮，别把生成按钮也搞没）；⑦ console 0 error、无 JSON 泄露成正文。
+3. ⚠️ **回归风险点**：老对话里已存成结构化 JSON 的旧 agent 消息不会自动变（只影响新回复）；`planAgentTask` 仍保留 JSON 意图解析，别顺手删 `normalizeSuggestions` 那几个。
+4. 调参：思考收缩动画时长改 `duration-500`；回滚落点边距改 `offsetTop - 16`。语速别做。⛔ 正式服公告别动。`modal.md` / `tmp-openrouter` / `原型测试.url` 别 `git add -A`。
 
 ---
 
 ## 🗒️ 第九十三次会话（2026-08-26）：审计测服 v1.0.1.9 → 修切模式 sticky → 四方 `v1.0.1.10`
 
-**用户诉求**：测试服这一批改动审计代码，上号测试，没问题推正式服，最后 push GitHub。
+**用户诉求**：① 看交接，先说做到哪、接下来做啥。② 测试服这一批改动审计代码，上号测试，没问题推正式服，最后 push GitHub。③ 把本对话框写进交接。
 
-### 一、审计
+### 一、接手时的状态
 
-v1.0.1.7→v1.0.1.9 那批（后台开关表 / Agent 优先 / 积分语音 / M041/M038/M039 / sticky 本轮缓存）整体干净。抓到 1 个真缺口：用户拍板「切模式也清 sticky」，但 effect 只看 `activePanel`+`activeSessionId`，对话里 Agent↔图片 不清。
+当时本地=测服 `v1.0.1.9`，正式服/GitHub 仍 `v1.0.1.7`（`7ea342c`），未 commit。第九十二次把 Agent sticky 改成「本轮缓存」，只验了函数、没真走界面。
 
-**修法**：scope 改成 `` `${activePanel}::${activeSessionId}::${mode}` ``。
+### 二、审计（v1.0.1.7→v1.0.1.9）
 
-### 二、测服 v1.0.1.10
+后台开关表 / Agent 优先 / 积分语音 / M041/M038/M039 / sticky 不持久化，整体干净。`getReferencedAssets` 调用方已先按输入框已附加 url 过滤，不会从整个资产库捞图。
 
-bump 1.9→1.10 → 10 文件 tgz → build → sync-ali（42 chunk，generated 已齐）→ 发布信号。health / x-app-version / 8080 全 v1.0.1.10。
+抓到 1 个真缺口：用户拍板「切模式也清 sticky」，但 effect 只看 `activePanel`+`activeSessionId`，对话里 Agent↔图片 不清。
 
-上号 `12424740@qq.com`：
-- 新建对话发闲聊 → `/api/chat` model = **deepseek/deepseek-v4-pro**
+**修法**（`chat-workbench.tsx`）：scope 改成 `` `${activePanel}::${activeSessionId}::${mode}` ``。sticky 仍不写 `inputSettings`。
+
+### 三、测服 v1.0.1.10
+
+bump 1.9→1.10 → 10 个源码文件 tgz → build → sync-ali（`_next/static` 42，generated 已齐）→ 发布信号。health / x-app-version / 8080 全 v1.0.1.10。
+
+上号 `12424740@qq.com`（HTTPS `staging-static.venusface.com`）：
+- 新建对话闲聊「v10110巡检：你好，用一句话介绍你自己」→ `/api/chat` model = **deepseek/deepseek-v4-pro**
 - 切到旧对话「v1018巡检」（以前 sticky 过 kimi）再发 → 仍是 **deepseek**（证明不再从 inputSettings 恢复）
 - Agent→图片生成→Agent，console 0 error，无 JSON 泄露
 
-测服留痕：新对话「v10110巡检：你好，用一句话介绍你自己」；旧对话 v1018 多了一句。
+测服留痕：新对话「v10110巡检：你好，用一句话介绍你自己」；旧对话 v1018 多了一句「再回一句：你现在用的是哪家模型？只说闪念。」
 
-### 三、正式服
+### 四、正式服 + GitHub
 
 备份 `20260826-154406-presync-v1.0.1.10` → staging→prod rsync（不再 bump）→ build → 阿里正式静态 42=42 → 发布信号。四域名 200，health / x-app-version = v1.0.1.10。⛔ 没动公告。
 
 冒烟：`12424740@qq.com` 新建对话，免费语音 `fish-audio/s2.1-pro-free` 文本转换「v10110巡检，你好。」`/api/audio` 200，有「下载语音」，console 0 error。
 
-### 四、下一个 AI
+commit `def0561` 已 push。工作区还剩 `modal.md` / `tmp-openrouter` / `原型测试.url`，没进仓库。
 
-1. 四方已是 v1.0.1.10。改代码要上线先 bump。
+本批源码：`admin-system-settings-panel.tsx`、`system-settings` 前后端、`credits/me`、`model-availability`、`announcement-banner`、`chat-workbench.tsx`、`chat-workbench-core.tsx`、`mention-text.ts`、`app-version.ts`。
+
+### 五、下一个 AI
+
+1. 四方已是 v1.0.1.10（`def0561`）。改代码要上线先 bump。
 2. Agent 仍逼吐 JSON。闲聊改人话直出没拍板。语速别做。⛔ 正式服公告别动。
 3. `modal.md` / `tmp-openrouter` / `原型测试.url` 别 `git add -A`。
+4. sticky 口径：后台优先模型是老大；接通后本轮沿用；新建/切会话/切模式清掉重探。scope 漏 `mode` 会再踩同一坑。
 
 ---
 

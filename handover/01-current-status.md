@@ -2,16 +2,48 @@
 
 > 本批交接文档 2026-07-21 重建。更早的详细流水在 `historical-handover-docs-last-used-2026-07-21/`（尤其 `CHANGELOG.md` 580KB、`01-current-status.md`、`05-next-actions.md`）。遇到需要历史上下文的难题再翻归档。
 
-## ✅ 当前状态（2026-08-26 第九十三次会话末：**四方 `v1.0.1.10`，已 push**）
+## ✅ 当前状态（2026-08-26 第九十六次会话末：**四方 `v1.0.1.11`**）
 
   | | 版本 / 状态 |
   |---|---|
-  | 本地 = 测试服 = 正式服 = GitHub | **`v1.0.1.10`** |
+  | 本地 = 测试服 = 正式服 = GitHub | **`v1.0.1.11`** |
+  | 自查 | `tsc` 0 |
+  | 迁移 / 基建 | 无新迁移、无 compose/nginx |
+  | 回滚点 | 正式服 app `/opt/flashmuse/app-backups/20260826-205720-presync-v1.0.1.11` |
+  | 判据 | staging→prod `src` md5 = `236c959642c793ed2ff1b769c1ba5e9c` |
+  | 本会话改动文件 | `chat-workbench.tsx`、`chat-workbench-core.tsx`、`openrouter.ts`、`api/chat/route.ts`、`app-version.ts` + 交接 |
+
+**本对话框：** 审 94+95 本地改动 → bump v1.0.1.11 → 测服上号验跟随/回滚/重新生成/纯人话 → 推正式服 → 免费语音冒烟 → push GitHub。细节 → `CHANGELOG_3.md` 第九十六次。
+
+---
+
+## ⏪ 上一状态（2026-08-26 第九十五次会话末：**本地 `v1.0.1.10` + 未提交（跟随/回滚/重新生成）；线上仍 `v1.0.1.10`（`def0561`）**）
+
+  | | 版本 / 状态 |
+  |---|---|
+  | 本地 | **`v1.0.1.10` + 未提交**（94 做法B + 本批跟随钉底、回滚、重新生成）；⛔ 未 bump、未部署、未 commit |
+  | 测试服 = 正式服 = GitHub | 仍 **`v1.0.1.10`**（`def0561`） |
   | 自查 | `tsc` 0 |
   | 迁移 / 基建 | 无新迁移、无 compose/nginx |
   | 回滚点 | 正式服 app `/opt/flashmuse/app-backups/20260826-154406-presync-v1.0.1.10` |
+  | 本会话改动文件 | `src/components/chat-workbench.tsx`、`src/lib/chat/chat-workbench-core.tsx` |
 
-**本对话框：** 审计测服 v1.0.1.9 → 修切模式不清 sticky → bump v1.0.1.10 测服上号验（新建对话/切旧会话都走 deepseek）→ 推正式服（免费语音冒烟过）→ push GitHub。细节 → `CHANGELOG_3.md` 第九十三次。
+**本对话框（本地，用户自己在界面上看过跟随）：** ① 跟随跟不到底：`isComplete` 不调 `onTick` + 加消息那次滚动被当成手滑把跟随关了 → 改成每长一点钉 `scrollTop=scrollHeight`，只有离底 >96px 才取消。② 同一句请求跑两遍盖掉正文：dev 重挂 + pending effect → 模块级 `inflightGenerationRequestIds` / `finishedGenerationRequestIds`。③ 重新生成也要跟随；回滚锚到**新回答**不是用户原话。④ 新回答和上面 `pt-14`（两行 `leading-7`）。⑤ 重新生成历史只带到那句用户提问，否则模型接着旧回答往下聊。⑥ 回滚一度整段没了：`scrollFollowRoundToUserMessage` 丢了 `scrollTo`，已补回。细节 → `CHANGELOG_3.md` 第九十五次。
+
+---
+
+## ⏪ 上一状态（2026-08-26 第九十四次会话末：**本地 `v1.0.1.10` + 一批未提交（Agent/通用对话体验）；线上仍 `v1.0.1.10`（`def0561`）**）
+
+  | | 版本 / 状态 |
+  |---|---|
+  | 本地 | **`v1.0.1.10` + 未提交**（做法B 纯人话流式 + 思考流程 + 正文流式跟随回滚）；⛔ 未 bump、未部署、未 commit |
+  | 测试服 = 正式服 = GitHub | 仍 **`v1.0.1.10`**（`def0561`） |
+  | 自查 | `tsc` 0 |
+  | 迁移 / 基建 | 无新迁移、无 compose/nginx |
+  | 回滚点 | 正式服 app `/opt/flashmuse/app-backups/20260826-154406-presync-v1.0.1.10` |
+  | 本会话改动文件 | `src/lib/openrouter.ts`、`src/app/api/chat/route.ts`、`src/lib/chat/chat-workbench-core.tsx`、`src/components/chat-workbench.tsx` |
+
+**本对话框（全本地、未部署、未走界面）：** ① 做法B——Agent 文字回复改纯人话流式（系统提示词人话化、不逼 JSON、不返 suggestions、走 `cleanModelText`，删结构化解析死代码；`planAgentTask` 生图/生视频仍保留 JSON 意图）。② 思考流程：图标+灰字「已思考xx秒」、三角同行、默认收起、思考一直流式到正文第一个 delta 才收起。③ 思考收起加 0.5s 高度收缩动画（`grid-rows-[1fr↔0fr]` `duration-500`，纯高度无透明度；`collapseThink` 等待 400→550ms）。④ 正文流式跟随 + 完成后半秒平滑滚回本轮提问置顶（`followRoundUserMsgIdRef`/`programmaticScrollRef`/`data-message-id`；手动滚动即取消本轮）。⑤ 澄清：agent/general 正文没有打字机（`isComplete` 写死 true），是真流式、出字速度不可调。细节 → `CHANGELOG_3.md` 第九十四次。
 
 ---
 

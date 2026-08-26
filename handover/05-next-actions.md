@@ -2,25 +2,56 @@
 
 > 历史 END-OF-SESSION 记录都在 `historical-handover-docs-last-used-2026-07-21/05-next-actions.md`（很长）。这里只留当前有效待办。
 
-## ✅ 当前状态（2026-08-26 第九十三次会话末）：**四方 `v1.0.1.10`，已 push**
+## ✅ 当前状态（2026-08-26 第九十六次会话末）：**四方 `v1.0.1.11`**
 
 | | 版本 / 状态 |
 |---|---|
-| 本地 = 测试服 = 正式服 = GitHub | **`v1.0.1.10`** |
+| 本地 = 测试服 = 正式服 = GitHub | **`v1.0.1.11`** |
 | 自查 | `tsc` 0 |
 | 迁移 / 基建 | 无新迁移、无 compose/nginx |
-| 回滚点 | 正式服 app `.../20260826-154406-presync-v1.0.1.10` |
+| 回滚点 | 正式服 app `.../20260826-205720-presync-v1.0.1.11` |
+| 本会话改动文件 | `chat-workbench.tsx`、`chat-workbench-core.tsx`、`openrouter.ts`、`api/chat/route.ts`、`app-version.ts` + 交接 |
 
 ### 🎯 待办 0
 
-1. ✅ sticky 已真机走界面：新建对话 / 切到旧会话（以前 sticky 过 kimi）都先走后台优先 deepseek。切模式也写入 scope。
-2. Agent 仍逼吐 JSON。闲聊改人话直出没拍板。语速别做。⛔ 正式服公告别动。
-3. `modal.md` / `tmp-openrouter` / `原型测试.url` 别 `git add -A`。
-4. `@名` 只认输入框已有素材。单独 `@xxx` 当普通字。M041/M038/M039 已在测服验过。流式缺 usage 不许写 0 分账本。
+1. 四方已是 v1.0.1.11。改代码要上线先 bump。
+2. 语速别做。⛔ 正式服公告别动。`modal.md` / `tmp-openrouter` / `原型测试.url` 别 `git add -A`。
+3. `@名` 只认输入框已有素材。流式缺 usage 不许写 0 分账本。agent/general 正文是真流式，`isComplete` 写死 true，别去调打字机时长。别删 `normalizeSuggestions` 那几个。别删 `scrollFollowRoundToUserMessage` 里的 `scroller.scrollTo`。别把重新生成历史再改回 `slice(0, messageIndex)`。
 
 ### ⚠️ 血泪教训（本对话框仍有效）
 
-写文件只用 edit/write。Agent 优先不再写死 K3，后台「AI聊天对话」最下一行下拉+开关。开关开着下拉禁用。接上后粘 `lastAgentChatModel`，失败才按优先→原顺序再找。删 @名 和解析 @名 的终止符必须含 `@`（`@000@A_old`）。`@名` 有效 = 输入框已有对应图/视频/音频；禁止再按 @名 从整个资产库捞图。用户内容标 `data-no-translate`；繁体过期字靠 converted WeakMap，当前值等于已转换结果才跳过。积分表「图片/视频/语音」。
+写文件只用 edit/write。跟随钉 `scrollTop=scrollHeight`，取消只认离底 >96px。同一 request 用模块级 inflight/finished 锁。重新生成历史只带到 previousUser。回滚函数改完必须还在 `scrollTo`。做法B：不逼 JSON。思考收起 `grid-rows` + 550ms。`lastAgentChatModel` 只活内存。
+
+---
+
+## ⏪ 上一状态（2026-08-26 第九十五次会话末）：**本地 `v1.0.1.10` + 未提交（跟随/回滚/重新生成）；线上仍 `v1.0.1.10`（`def0561`）**
+
+| | 版本 / 状态 |
+|---|---|
+| 本地 | **`v1.0.1.10` + 未提交**（94 做法B + 本批跟随钉底、回滚、重新生成）；⛔ 未 bump、未部署、未 commit |
+| 测试服 = 正式服 = GitHub | 仍 **`v1.0.1.10`**（`def0561`）|
+| 自查 | `tsc` 0 |
+| 迁移 / 基建 | 无新迁移、无 compose/nginx |
+| 回滚点 | 正式服 app `.../20260826-154406-presync-v1.0.1.10` |
+| 本会话改动文件 | `src/components/chat-workbench.tsx`、`src/lib/chat/chat-workbench-core.tsx` |
+
+### 🎯 待办 0（最优先）
+
+⚠️ **本地 ≠ 线上**。要上线先 `node scripts/bump-version.mjs`（→ v1.0.1.11）→ 测服 → 真走界面验 → 正式服（不再 bump）。细节 → `CHANGELOG_3.md` 第九十五次。
+
+1. **测服必验（agent + general）**：① 思考/正文一直跟到底，手滑才停。② 新发写完半秒滚回**本轮提问**。③ 重新生成写完滚回**新回答**（不要滚到用户原话上面）。④ 重新生成是重写那句提问，不是接着旧回答聊。⑤ 新回答和上面空两行。⑥ 同一句不要出两篇互相覆盖。⑦ 94 那批：闲聊纯人话、无引导按钮、生图按钮还在。
+2. 调参：思考收缩 `duration-500`；回滚边距 `offsetTop - 16`；空两行是 `pt-14`。
+3. 别删 `scrollFollowRoundToUserMessage` 里的 `scroller.scrollTo`。别把重新生成历史再改回 `slice(0, messageIndex)`。
+
+### 🎯 待办 0-b（延续）
+
+1. 语速别做。⛔ 正式服公告别动。`modal.md` / `tmp-openrouter` / `原型测试.url` 别 `git add -A`。
+2. `@名` 只认输入框已有素材。M041/M038/M039 已上正式服。流式缺 usage 不许写 0 分账本。
+3. agent/general 正文是真流式，`isComplete` 写死 true，别去调打字机时长。别删 `normalizeSuggestions` 那几个。
+
+### ⚠️ 血泪教训（本对话框仍有效）
+
+写文件只用 edit/write。跟随钉 `scrollTop=scrollHeight`，取消只认离底 >96px；加消息那次 `scrollIntoView` 不能当成手滑。同一 request 用模块级 inflight/finished 锁，光靠组件 ref 挡不住 dev 重挂。重新生成历史只带到 previousUser。回滚函数改完必须还在 `scrollTo`。做法B：不逼 JSON。思考收起 `grid-rows` + 550ms。`lastAgentChatModel` 只活内存。
 
 ---
 
