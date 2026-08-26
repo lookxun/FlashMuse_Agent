@@ -67,6 +67,7 @@ export function AnnouncementBar({ content, canDismiss = false, onDismiss }: { co
     <div
       className="flex w-full shrink-0 items-center overflow-hidden bg-[#e1ff67] text-[15px] font-medium text-slate-900"
       style={{ height: ANNOUNCEMENT_BAR_HEIGHT_PX, lineHeight: `${ANNOUNCEMENT_BAR_HEIGHT_PX}px` }}
+      data-no-translate="true"
     >
       {/*
         滚动区：⛔⛔ 给右侧的 × 留位**只能靠 flex 兄弟节点真正占宽**，

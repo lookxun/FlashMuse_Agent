@@ -499,6 +499,7 @@ export type UserCreditConversation = {
   totalTokens?: number;
   imageCount: number;
   videoCount: number;
+  audioCount?: number;
   lastActiveAt: string;
 };
 
@@ -630,7 +631,6 @@ export type StoredInputSettings = {
   generalImageResolution?: string;
   generalVideoRatio?: string;
   generalVideoResolution?: string;
-  lastAgentChatModel?: string;
 };
 export type AgentModelTier = "normal" | "advanced";
 
@@ -1553,7 +1553,9 @@ export function getLanguageDisplayName(option: UserLanguage) {
 }
 
 const originalTextNodeValues = new WeakMap<Text, string>();
+const convertedTextNodeValues = new WeakMap<Text, string>();
 const originalAttributeValues = new WeakMap<Element, Map<string, string>>();
+const convertedAttributeValues = new WeakMap<Element, Map<string, string>>();
 const translatableAttributeNames = ["placeholder", "title", "aria-label", "alt"];
 
 const globalTraditionalPhrases = [
@@ -1590,9 +1592,13 @@ function applyLanguageToTextNode(node: Text, language: UserLanguage) {
   if (!parent || parent.closest('script, style, noscript, textarea, input, [contenteditable="true"], [data-no-translate="true"]')) return;
 
   if (language === "繁体中文") {
-    if (!originalTextNodeValues.has(node)) originalTextNodeValues.set(node, node.nodeValue ?? "");
-    const converted = convertSimplifiedToTraditional(originalTextNodeValues.get(node) ?? "");
-    if (node.nodeValue !== converted) node.nodeValue = converted;
+    const current = node.nodeValue ?? "";
+    const storedConverted = convertedTextNodeValues.get(node);
+    if (storedConverted !== undefined && current === storedConverted) return;
+    originalTextNodeValues.set(node, current);
+    const converted = convertSimplifiedToTraditional(current);
+    convertedTextNodeValues.set(node, converted);
+    if (current !== converted) node.nodeValue = converted;
     return;
   }
 
@@ -1607,6 +1613,7 @@ function applyLanguageToTextNode(node: Text, language: UserLanguage) {
   if (original === undefined) return;
   if (node.nodeValue !== original) node.nodeValue = original;
   originalTextNodeValues.delete(node);
+  convertedTextNodeValues.delete(node);
 }
 
 function applyLanguageToElementAttributes(element: Element, language: UserLanguage) {
@@ -1622,9 +1629,16 @@ function applyLanguageToElementAttributes(element: Element, language: UserLangua
         originalAttributes = new Map();
         originalAttributeValues.set(element, originalAttributes);
       }
-      if (!originalAttributes.has(attributeName)) originalAttributes.set(attributeName, value);
-      const converted = convertSimplifiedToTraditional(originalAttributes.get(attributeName) ?? value);
-      if (element.getAttribute(attributeName) !== converted) element.setAttribute(attributeName, converted);
+      let convertedAttributes = convertedAttributeValues.get(element);
+      if (!convertedAttributes) {
+        convertedAttributes = new Map();
+        convertedAttributeValues.set(element, convertedAttributes);
+      }
+      if (convertedAttributes.get(attributeName) === value) continue;
+      originalAttributes.set(attributeName, value);
+      const converted = convertSimplifiedToTraditional(value);
+      convertedAttributes.set(attributeName, converted);
+      if (value !== converted) element.setAttribute(attributeName, converted);
     } else {
       // ⛔ 同上：简体是源语言，只还原存下来的原文，没存过就原样不动（绝不做繁→简替换）。
       const originalAttributes = originalAttributeValues.get(element);
@@ -1632,6 +1646,7 @@ function applyLanguageToElementAttributes(element: Element, language: UserLangua
       if (original === undefined) continue;
       if (element.getAttribute(attributeName) !== original) element.setAttribute(attributeName, original);
       originalAttributes?.delete(attributeName);
+      convertedAttributeValues.get(element)?.delete(attributeName);
     }
   }
 }
@@ -1772,10 +1787,13 @@ function getPreferredAvailableGenerationModel(generationMode: "image" | "video",
   return desiredModels[0];
 }
 
-export function getAgentAutoChatModelChain(enabledIds: string[]) {
-  const kimiId = "moonshotai/kimi-k3";
-  const rest = [...enabledIds].reverse().filter((id) => id !== kimiId);
-  return enabledIds.includes(kimiId) ? [kimiId, ...rest] : rest;
+export function getAgentAutoChatModelChain(enabledIds: string[], preferred?: string, sticky?: string) {
+  const priorityId = preferred?.trim() ?? "";
+  const stickyId = sticky?.trim() ?? "";
+  const rest = [...enabledIds].reverse().filter((id) => id !== priorityId && id !== stickyId);
+  const withPriority = priorityId && enabledIds.includes(priorityId) ? [priorityId, ...rest] : rest;
+  if (stickyId && enabledIds.includes(stickyId)) return [stickyId, ...withPriority.filter((id) => id !== stickyId)];
+  return withPriority;
 }
 
 export function getAgentGenerationModel(agentTier: AgentModelTier, generationMode: WorkMode, selectedGenerationModels: Record<"image" | "video", ModelName>, options?: { sourceText?: string; session?: WorkSession; feedbackLogs?: FeedbackLogEntry[]; enabledModels?: Record<"image" | "video", string[]>; fallbackModels?: Record<"image" | "video", string[]> }) {
@@ -2950,7 +2968,7 @@ export function ThinkingProcessBlock({ reasoning, thinkMs, live = false }: { rea
     <div className="mb-2">
       {thinkMs != null ? <div className="mb-1.5 text-sm text-[#2563eb]">已思考 {(thinkMs / 1000).toFixed(1)}秒</div> : null}
       {!text ? null : live ? (
-        <div className="whitespace-pre-wrap text-sm leading-7 text-[#b0b0b0]">{text}</div>
+        <div className="whitespace-pre-wrap text-sm leading-7 text-[#b0b0b0]" data-no-translate="true">{text}</div>
       ) : (
         <div className="flex items-start gap-0.5 text-sm leading-7 text-[#b0b0b0]">
           {showToggle ? (
@@ -2958,7 +2976,7 @@ export function ThinkingProcessBlock({ reasoning, thinkMs, live = false }: { rea
               <RiArrowRightSLine className="h-[18px] w-[18px]" aria-hidden="true" />
             </button>
           ) : null}
-          <div ref={textRef} className={open ? "min-w-0 flex-1 whitespace-pre-wrap" : "min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap"}>
+          <div ref={textRef} className={open ? "min-w-0 flex-1 whitespace-pre-wrap" : "min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap"} data-no-translate="true">
             {open ? text : text.replace(/\s+/g, " ").trim()}
           </div>
         </div>
@@ -4590,10 +4608,10 @@ export function getConversationImageReferences(messages: Message[]) {
   return references;
 }
 
-export function getOrderedExplicitImageReferences(text: string, assets: AssetItem[], uploadedImages: UploadedImage[], conversationReferences: ImageReference[]) {
+export function getOrderedExplicitImageReferences(text: string, _assets: AssetItem[], uploadedImages: UploadedImage[], conversationReferences: ImageReference[]) {
+  void _assets;
   const uploadedReferences = uploadedImages.map((image) => ({ name: getUploadedImageReferenceName(image, uploadedImages), url: image.url }));
-  const assetReferences = assets.filter((asset) => !isVideoAsset(asset) && !isAudioAsset(asset) && !isNonDisplayableFileAsset(asset.url)).map((asset) => ({ name: asset.name, url: asset.url }));
-  const availableReferences = [...uploadedReferences, ...conversationReferences, ...assetReferences];
+  const availableReferences = [...uploadedReferences, ...conversationReferences];
   const references: ImageReference[] = [];
 
   getMentionNames(text).forEach((name) => {
@@ -5363,7 +5381,7 @@ function FormattedMessage({ content, leadingIcon, trailing }: { content: string;
   };
 
   return (
-    <div className="space-y-3">
+    <div className="space-y-3" data-no-translate="true">
       {blocks.map((block, blockIndex) => {
         const lines = block.split(/\n/).map((line) => line.trim()).filter(Boolean);
         const isList = lines.every((line) => /^[-*]\s+/.test(line));
@@ -5414,7 +5432,7 @@ export function SuggestionButtons({ suggestions, onSelect }: { suggestions?: Sug
   if (!safeSuggestions) return null;
 
   return (
-    <div className="mt-3 flex flex-wrap gap-2">
+    <div className="mt-3 flex flex-wrap gap-2" data-no-translate="true">
       {safeSuggestions.map((suggestion) => (
         <button
           key={`${suggestion.label}-${suggestion.assetTargetType ?? "none"}`}
@@ -5726,7 +5744,7 @@ export function ReferencedTextContent({ content, references, mediaReferences }: 
   if (cursor < normalizedContent.length) parts.push({ text: normalizedContent.slice(cursor) });
 
   return (
-    <span className="align-middle">
+    <span className="align-middle" data-no-translate="true">
       {parts.map((part, index) => {
         const reference = part.reference;
 
@@ -7158,7 +7176,7 @@ export function DocumentPreviewPanel({ file, width, onResizeStart, onClose }: { 
           </button>
         </div>
       </div>
-      <div className="h-[calc(100vh-58px)] overflow-y-auto overscroll-contain px-8 py-8 text-[15px] leading-8 text-[#111111]">
+      <div className="h-[calc(100vh-58px)] overflow-y-auto overscroll-contain px-8 py-8 text-[15px] leading-8 text-[#111111]" data-no-translate="true">
         {text ? (
           isUploadedMarkdownFile(file) ? <FormattedMessage content={text} /> : <pre className="whitespace-pre-wrap break-words font-sans text-[15px] leading-8 text-[#111111]">{text}</pre>
         ) : (

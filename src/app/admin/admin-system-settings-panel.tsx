@@ -1,10 +1,11 @@
 "use client";
 
-import { useState, useTransition } from "react";
-import { ADVANCED_CHAT_MODEL, DEFAULT_CHAT_MODEL, audioGenerationModels, imageGenerationModels, models, videoGenerationModels } from "@/lib/models";
+import { useEffect, useRef, useState, useTransition, type ComponentType, type ReactNode, type SVGProps } from "react";
+import { RiArrowDropDownFill, RiFilmAiLine, RiImageAiLine, RiMicAiLine, RiQuillPenAiLine, RiShieldCheckLine } from "react-icons/ri";
+import { ADVANCED_CHAT_MODEL, DEFAULT_CHAT_MODEL, audioGenerationModels, frontendConversationModels, imageGenerationModels, models, videoGenerationModels } from "@/lib/models";
 import type { AdminSystemSettings } from "@/lib/system-settings";
 import { BytePlusIcon } from "@/components/byteplus-icon";
-import { ModelIcon } from "@/components/model-icon";
+import { AiAgentLineIcon, ModelIcon } from "@/components/model-icon";
 
 
 const extraModelLabels: Record<string, string> = {
@@ -37,6 +38,7 @@ type ModelUsageItem = {
 
 type ModelUsageGroup = {
   title: string;
+  icon: ComponentType<SVGProps<SVGSVGElement>>;
   note: string;
   // 作用位置：该组开关实际影响的功能位置（显示为黑字圆点列表）。
   usageLocations: string[];
@@ -73,7 +75,21 @@ function getOpenRouterOnlyProviderKey(groupTitle: string, item: ModelUsageItem) 
 
 const modelUsageGroups: ModelUsageGroup[] = [
   {
+    title: "AI聊天对话",
+    icon: AiAgentLineIcon,
+    note: "",
+    usageLocations: ["通用模式对话", "Agent 模式对话规划"],
+    providerGroup: "通用模式 / Agent 规划 / 意图识别",
+    additive: true,
+    models: [
+      ...models.filter((model) => model.id !== DEFAULT_CHAT_MODEL).map((model) => ({ provider: "openrouter" as const, badge: "", modelId: model.id })),
+      { provider: "byteplus", badge: "", modelId: "", providerKey: "general.seed-2-0-lite", bytePlusStatic: bytePlusChatModels[0] },
+      { provider: "byteplus", badge: "", modelId: "", providerKey: "general.seed-2-0-pro", bytePlusStatic: bytePlusChatModels[1] },
+    ],
+  },
+  {
     title: "图片生成",
+    icon: RiImageAiLine,
     note: "",
     usageLocations: ["通用模式生图", "Agent 模式生图", "对话流图片模式", "工作流图片节点", "资产库生图"],
     providerGroup: "对话流图片生成",
@@ -87,6 +103,7 @@ const modelUsageGroups: ModelUsageGroup[] = [
   },
   {
     title: "视频生成",
+    icon: RiFilmAiLine,
     note: "",
     usageLocations: ["通用模式生视频", "Agent 模式生视频", "对话流视频", "工作流视频节点"],
     providerGroup: "对话流视频生成",
@@ -101,6 +118,7 @@ const modelUsageGroups: ModelUsageGroup[] = [
   },
   {
     title: "语音生成",
+    icon: RiMicAiLine,
     note: "",
     usageLocations: ["对话流语音生成"],
     providerGroup: "对话流语音生成",
@@ -108,19 +126,8 @@ const modelUsageGroups: ModelUsageGroup[] = [
     models: audioGenerationModels.map((model) => ({ provider: "openrouter" as const, badge: "", modelId: model.id })),
   },
   {
-    title: "通用模式",
-    note: "",
-    usageLocations: ["通用模式对话", "Agent 模式对话规划"],
-    providerGroup: "通用模式 / Agent 规划 / 意图识别",
-    additive: true,
-    models: [
-      ...models.filter((model) => model.id !== DEFAULT_CHAT_MODEL).map((model) => ({ provider: "openrouter" as const, badge: "", modelId: model.id, hint: model.id === "moonshotai/kimi-k3" ? "Agent优先" : undefined })),
-      { provider: "byteplus", badge: "", modelId: "", providerKey: "general.seed-2-0-lite", bytePlusStatic: bytePlusChatModels[0] },
-      { provider: "byteplus", badge: "", modelId: "", providerKey: "general.seed-2-0-pro", bytePlusStatic: bytePlusChatModels[1] },
-    ],
-  },
-  {
     title: "反推提示词 / 优化提示词",
+    icon: RiQuillPenAiLine,
     note: "五个模型都开启时，按 GPT-5.6 Terra Pro → Kimi K3 → Grok 4.6 → Seed 2.0 Pro → Seed 2.0 Lite 顺序兜底，前一个失败/关闭再用下一个。",
     usageLocations: ["反推提示词", "优化提示词"],
     additive: true,
@@ -134,6 +141,7 @@ const modelUsageGroups: ModelUsageGroup[] = [
   },
   {
     title: "内容审核语义模型",
+    icon: RiShieldCheckLine,
     note: "五个模型都开启时，按 GPT-5.6 Terra Pro → Kimi K3 → Grok 4.6 → Seed 2.0 Pro → Seed 2.0 Lite 顺序兜底，前一个失败/关闭再用下一个。全部关闭时语义审核不再执行（关键词拦截不受影响）。",
     usageLocations: ["内容审核语义审核"],
     additive: true,
@@ -186,6 +194,61 @@ const videoEditFunctionRows: Array<{ key: string; name: string; rule: string; ch
 ];
 
 
+
+function AgentPriorityModelMenu({ value, disabled, onChange, trailing }: { value: string; disabled?: boolean; onChange: (modelId: string) => void; trailing?: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const selected = frontendConversationModels.find((model) => model.id === value) ?? frontendConversationModels[0];
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    window.addEventListener("pointerdown", onPointerDown);
+    return () => window.removeEventListener("pointerdown", onPointerDown);
+  }, [open]);
+
+  return (
+    <div ref={rootRef} className="relative w-full">
+      <div className="inline-flex h-8 w-full items-center gap-2 rounded-[7px] bg-[#f4f6fb] px-2.5 text-[12px] text-[#333333]">
+        <button
+          type="button"
+          disabled={disabled}
+          aria-expanded={open}
+          aria-haspopup="listbox"
+          onClick={() => setOpen((current) => !current)}
+          className="inline-flex min-w-0 flex-1 items-center gap-2 text-left disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          <ModelIcon modelId={selected?.id ?? ""} />
+          <span className="min-w-0 flex-1 truncate font-medium">{selected?.label ?? ""}</span>
+          <RiArrowDropDownFill className="h-5 w-5 shrink-0 text-[#888888]" aria-hidden="true" />
+        </button>
+        {trailing}
+      </div>
+      {open && !disabled ? (
+        <div role="listbox" className="absolute left-0 top-full z-20 mt-1 w-full overflow-hidden rounded-[8px] border border-[#e5e5e5] bg-white py-1 shadow-[0_10px_24px_rgba(0,0,0,0.08)]">
+          {frontendConversationModels.map((model) => (
+            <button
+              key={model.id}
+              type="button"
+              role="option"
+              aria-selected={model.id === selected?.id}
+              onClick={() => {
+                onChange(model.id);
+                setOpen(false);
+              }}
+              className={`flex h-8 w-full items-center gap-2 px-2.5 text-left text-[12px] ${model.id === selected?.id ? "bg-[#eef4ff] text-[#222222]" : "text-[#333333] hover:bg-[#f6f7fb]"}`}
+            >
+              <ModelIcon modelId={model.id} />
+              <span className="min-w-0 truncate font-medium">{model.label}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 function SettingSwitch({ checked, disabled, onChange, ariaLabel }: { checked: boolean; disabled?: boolean; onChange: (checked: boolean) => void; ariaLabel: string }) {
   return (
@@ -258,6 +321,8 @@ export function AdminSystemSettingsPanel({ settings, adminEmailCount }: { settin
   const [modelProviderPreferences, setModelProviderPreferences] = useState(settings.modelProviderPreferences);
   const [bytePlusModelSelections, setBytePlusModelSelections] = useState(settings.bytePlusModelSelections);
   const [editModelToggles, setEditModelToggles] = useState(settings.editModelToggles);
+  const [agentPriorityModelId, setAgentPriorityModelId] = useState(settings.agentPriorityModelId || "deepseek/deepseek-v4-pro");
+  const [agentPriorityEnabled, setAgentPriorityEnabled] = useState(settings.agentPriorityEnabled);
   const [message, setMessage] = useState("");
   const [isPending, startTransition] = useTransition();
 
@@ -271,6 +336,8 @@ export function AdminSystemSettingsPanel({ settings, adminEmailCount }: { settin
     const nextModelProviderPreferences = nextSettings?.modelProviderPreferences ?? modelProviderPreferences;
     const nextBytePlusModelSelections = nextSettings?.bytePlusModelSelections ?? bytePlusModelSelections;
     const nextEditModelToggles = nextSettings?.editModelToggles ?? editModelToggles;
+    const nextAgentPriorityModelId = nextSettings?.agentPriorityModelId ?? agentPriorityModelId;
+    const nextAgentPriorityEnabled = nextSettings?.agentPriorityEnabled ?? agentPriorityEnabled;
     if (nextOpenRouterEnabled && !nextOpenRouterKey) {
       setMessage("请输入 OpenRouter API Key");
       return;
@@ -287,13 +354,15 @@ export function AdminSystemSettingsPanel({ settings, adminEmailCount }: { settin
     setModelProviderPreferences(nextModelProviderPreferences);
     setBytePlusModelSelections(nextBytePlusModelSelections);
     setEditModelToggles(nextEditModelToggles);
+    setAgentPriorityModelId(nextAgentPriorityModelId);
+    setAgentPriorityEnabled(nextAgentPriorityEnabled);
     setMessage("");
     startTransition(async () => {
       try {
         const response = await fetch("/admin/api/system-settings", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ openRouterApiKey: nextOpenRouterKey, openRouterApiKeyEnabled: nextOpenRouterEnabled, bytePlusApiKey: nextBytePlusKey, bytePlusApiKeyEnabled: nextBytePlusEnabled, bytePlusUnlockLimits: nextBytePlusUnlockLimits, bytePlusRegion: nextBytePlusRegion, modelProviderPreferences: nextModelProviderPreferences, bytePlusModelSelections: nextBytePlusModelSelections, editModelToggles: nextEditModelToggles }),
+          body: JSON.stringify({ openRouterApiKey: nextOpenRouterKey, openRouterApiKeyEnabled: nextOpenRouterEnabled, bytePlusApiKey: nextBytePlusKey, bytePlusApiKeyEnabled: nextBytePlusEnabled, bytePlusUnlockLimits: nextBytePlusUnlockLimits, bytePlusRegion: nextBytePlusRegion, modelProviderPreferences: nextModelProviderPreferences, bytePlusModelSelections: nextBytePlusModelSelections, editModelToggles: nextEditModelToggles, agentPriorityModelId: nextAgentPriorityModelId, agentPriorityEnabled: nextAgentPriorityEnabled }),
         });
         const data = (await response.json().catch(() => ({}))) as { error?: string; settings?: AdminSystemSettings };
         if (!response.ok || !data.settings) throw new Error(data.error || "保存失败");
@@ -306,6 +375,8 @@ export function AdminSystemSettingsPanel({ settings, adminEmailCount }: { settin
         setModelProviderPreferences(data.settings.modelProviderPreferences);
         setBytePlusModelSelections(data.settings.bytePlusModelSelections);
         setEditModelToggles(data.settings.editModelToggles);
+        setAgentPriorityModelId(data.settings.agentPriorityModelId);
+        setAgentPriorityEnabled(data.settings.agentPriorityEnabled);
         setMessage("");
       } catch (error) {
         setMessage(error instanceof Error ? error.message : "保存失败");
@@ -386,9 +457,8 @@ export function AdminSystemSettingsPanel({ settings, adminEmailCount }: { settin
       </section>
 
       <section className="mt-8 min-w-[1180px] overflow-hidden rounded-[10px] border border-[#eeeeee] bg-white text-[13px] shadow-[0_10px_28px_rgba(0,0,0,0.04)]">
-        <div className="grid grid-cols-[200px_170px_1fr] border-b border-[#eeeeee] bg-[#fafafa] text-[12px] text-[#777777]">
+        <div className="grid grid-cols-[220px_1fr] border-b border-[#eeeeee] bg-[#fafafa] text-[12px] text-[#777777]">
           <div className="px-5 py-3 font-medium">功能模块</div>
-          <div className="px-5 py-3 font-medium">作用位置</div>
           <div className="grid grid-cols-[360px_70px_360px] px-5 py-3">
             <div className="font-medium">OpenRouter</div>
             <div className="text-center font-medium">说明</div>
@@ -396,21 +466,29 @@ export function AdminSystemSettingsPanel({ settings, adminEmailCount }: { settin
           </div>
         </div>
         {modelUsageGroups.map((group) => (
-          <div key={group.title} className="grid grid-cols-[200px_170px_1fr] border-b border-[#f2f2f2] last:border-b-0">
-            <div className="px-5 py-4">
-              <div className="font-medium text-[#222222]">{group.title}</div>
-              {group.note ? <div className="mt-1 text-[12px] leading-5 text-[#888888]">{group.note}</div> : null}
-            </div>
-            <div className="flex flex-col gap-1.5 px-5 py-4 text-[13px] text-[#222222]">
+          <div key={group.title} className="grid grid-cols-[220px_1fr] border-b border-[#f2f2f2] last:border-b-0">
+            <div className="flex flex-col gap-1.5 px-5 py-4">
+              <div className="flex items-center gap-1.5 font-bold text-[#222222]">
+                <group.icon className="h-4 w-4 shrink-0 text-[#555555]" aria-hidden="true" />
+                <span>{group.title}</span>
+              </div>
+              {group.note ? <div className="text-[12px] leading-5 text-[#888888]">{group.note}</div> : null}
               {group.usageLocations.map((location) => (
-                <div key={location} className="flex items-start gap-2">
+                <div key={location} className="flex items-start gap-2 text-[13px] text-[#222222]">
                   <span className="mt-[7px] h-1 w-1 shrink-0 rounded-full bg-[#367cee]" />
                   <span>{location}</span>
                 </div>
               ))}
+              {group.title === "AI聊天对话" ? (
+                <div className="mt-auto flex h-8 items-center gap-2 text-[13px] text-[#222222]">
+                  <span className="h-1 w-1 shrink-0 rounded-full bg-[#367cee]" />
+                  <span>Agent优先</span>
+                </div>
+              ) : null}
             </div>
             <div className="px-5 py-4">
               {group.additive ? (
+                <div className="flex h-full flex-col gap-2">
                 <div className="grid grid-cols-[360px_70px_360px]">
                   <div className="flex flex-col gap-2">
                     {group.models.filter((model) => model.provider === "openrouter").map((model, index) => {
@@ -426,6 +504,19 @@ export function AdminSystemSettingsPanel({ settings, adminEmailCount }: { settin
                       <BytePlusModelTag key={`${group.title}-bp-${index}-${model.modelId}`} item={model} selectedEndpointId={model.providerKey ? bytePlusModelSelections[model.providerKey] : ""} selectedProvider={model.providerKey ? modelProviderPreferences[model.providerKey] ?? "openrouter" : "openrouter"} onToggle={(value) => model.providerKey && updateProvider(model.providerKey, value ? "byteplus" : "openrouter")} onChange={(endpointId) => model.providerKey && updateBytePlusModel(model.providerKey, endpointId)} />
                     ))}
                   </div>
+                </div>
+                {group.title === "AI聊天对话" ? (
+                  <div className="mt-auto grid grid-cols-[360px_70px_360px] items-center">
+                    <AgentPriorityModelMenu
+                      value={agentPriorityModelId}
+                      disabled={agentPriorityEnabled || isPending}
+                      onChange={(modelId) => saveSettings({ agentPriorityModelId: modelId })}
+                      trailing={<SettingSwitch checked={agentPriorityEnabled} disabled={isPending} onChange={(value) => saveSettings({ agentPriorityEnabled: value })} ariaLabel="Agent优先模型开关" />}
+                    />
+                    <span />
+                    <span />
+                  </div>
+                ) : null}
                 </div>
               ) : (
                 <div className="flex flex-col gap-2">

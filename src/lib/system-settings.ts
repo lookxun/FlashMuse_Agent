@@ -60,6 +60,8 @@ export type AdminSystemSettings = {
   // 图片编辑类（高清/橡皮）模型候选链开关：key=`${func}:${modelId}`，值=是否启用。
   // 关掉首选自动用下一个启用的模型；全关时前端回落到完整候选链（不至于无法使用）。
   editModelToggles: Record<string, boolean>;
+  agentPriorityModelId: string;
+  agentPriorityEnabled: boolean;
   imageCompressionEnabled: boolean;
   imageCompressionQuality: CompressionQuality;
   videoCompressionEnabled: boolean;
@@ -267,6 +269,8 @@ export function getAdminSystemSettings(): AdminSystemSettings {
     modelProviderPreferences: { ...DEFAULT_MODEL_PROVIDER_PREFERENCES, ...getJsonEnvValue<Record<string, "openrouter" | "byteplus">>("MODEL_PROVIDER_PREFERENCES", {}) },
     bytePlusModelSelections: { ...DEFAULT_BYTEPLUS_MODEL_SELECTIONS, ...getJsonEnvValue<Record<string, string>>("BYTEPLUS_MODEL_SELECTIONS", {}) },
     editModelToggles: { ...DEFAULT_EDIT_MODEL_TOGGLES, ...getJsonEnvValue<Record<string, boolean>>("EDIT_MODEL_TOGGLES", {}) },
+    agentPriorityModelId: getLocalEnvValue("AGENT_PRIORITY_MODEL_ID") ?? process.env.AGENT_PRIORITY_MODEL_ID ?? "deepseek/deepseek-v4-pro",
+    agentPriorityEnabled: getBooleanEnvValue("AGENT_PRIORITY_ENABLED", true),
     imageCompressionEnabled: getBooleanEnvValue("IMAGE_COMPRESSION_ENABLED", true),
     imageCompressionQuality: getCompressionQualityEnvValue("IMAGE_COMPRESSION_QUALITY", "standard"),
     videoCompressionEnabled: getBooleanEnvValue("VIDEO_COMPRESSION_ENABLED", true),
@@ -387,16 +391,22 @@ export function rememberAgentChatModelSkip(modelId: string, error: unknown) {
   agentChatSkipUntil.set(modelId, Date.now() + 30 * 60 * 1000);
 }
 
+export function getAgentPriorityModelId() {
+  const settings = getAdminSystemSettings();
+  return settings.agentPriorityEnabled ? settings.agentPriorityModelId.trim() : "";
+}
+
 export function getAgentAutoChatModelIds(preferred?: string) {
-  const kimiId = "moonshotai/kimi-k3";
+  const stickyId = preferred?.trim() ?? "";
+  const priorityId = getAgentPriorityModelId();
   const chain = getEnabledGeneralTextModelIds().slice().reverse();
   const now = Date.now();
   const available = chain.filter((id) => (agentChatSkipUntil.get(id) ?? 0) <= now);
   const ordered = available.length > 0 ? available : chain;
-  const rest = ordered.filter((id) => id !== kimiId);
-  const head = ordered.includes(kimiId) ? [kimiId] : [];
-  void preferred;
-  return [...head, ...rest];
+  const rest = ordered.filter((id) => id !== priorityId && id !== stickyId);
+  const mid = priorityId && ordered.includes(priorityId) && priorityId !== stickyId ? [priorityId] : [];
+  const head = stickyId && ordered.includes(stickyId) ? [stickyId] : [];
+  return [...head, ...mid, ...rest];
 }
 
 export function isRetryableAgentChatError(error: unknown) {
@@ -550,6 +560,8 @@ export async function updateAdminSystemSettings(settings: AdminSystemSettings) {
     ["MODEL_PROVIDER_PREFERENCES", formatEnvValue(JSON.stringify(settings.modelProviderPreferences))],
     ["BYTEPLUS_MODEL_SELECTIONS", formatEnvValue(JSON.stringify(settings.bytePlusModelSelections))],
     ["EDIT_MODEL_TOGGLES", formatEnvValue(JSON.stringify(settings.editModelToggles))],
+    ["AGENT_PRIORITY_MODEL_ID", formatEnvValue(settings.agentPriorityModelId.trim())],
+    ["AGENT_PRIORITY_ENABLED", settings.agentPriorityEnabled ? "true" : "false"],
     ["IMAGE_COMPRESSION_ENABLED", settings.imageCompressionEnabled ? "true" : "false"],
     ["IMAGE_COMPRESSION_QUALITY", settings.imageCompressionQuality],
     ["VIDEO_COMPRESSION_ENABLED", settings.videoCompressionEnabled ? "true" : "false"],
@@ -567,6 +579,8 @@ export async function updateAdminSystemSettings(settings: AdminSystemSettings) {
   process.env.MODEL_PROVIDER_PREFERENCES = JSON.stringify(settings.modelProviderPreferences);
   process.env.BYTEPLUS_MODEL_SELECTIONS = JSON.stringify(settings.bytePlusModelSelections);
   process.env.EDIT_MODEL_TOGGLES = JSON.stringify(settings.editModelToggles);
+  process.env.AGENT_PRIORITY_MODEL_ID = settings.agentPriorityModelId.trim();
+  process.env.AGENT_PRIORITY_ENABLED = settings.agentPriorityEnabled ? "true" : "false";
   process.env.IMAGE_COMPRESSION_ENABLED = settings.imageCompressionEnabled ? "true" : "false";
   process.env.IMAGE_COMPRESSION_QUALITY = settings.imageCompressionQuality;
   process.env.VIDEO_COMPRESSION_ENABLED = settings.videoCompressionEnabled ? "true" : "false";

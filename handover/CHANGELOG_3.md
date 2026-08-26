@@ -14,12 +14,156 @@
 >   ④ 把旧卷标题改成「卷 N · 已归档只读」并在顶部加指向新卷的提示 ⑤ 更新 `00-README.md` 文档索引里的 CHANGELOG 行。
 > - 判据不变：**版本号一样 = 测试服和正式服代码一样**（本项目核心约定，见 `AGENTS.md`）。
 
-## 📌 当前状态摘要（2026-08-24 第九十次会话末）：**四方 `v1.0.1.7`**
+## 📌 当前状态摘要（2026-08-26 第九十三次会话末）：**四方 `v1.0.1.10`，已 push**
 
 | | 版本 / 状态 |
 |---|---|
-| 线上（测服=正式服） | **`v1.0.1.7`**。两服 OpenRouter 仍是闪念专用 key。 |
-| 本地 | **`v1.0.1.7`**（本会话 commit + push） |
+| 本地 = 测试服 = 正式服 = GitHub | **`v1.0.1.10`** |
+| 自查 | `tsc` 0 |
+| 迁移 | 无新迁移、无 compose/nginx |
+| 回滚点 | 正式服 app `/opt/flashmuse/app-backups/20260826-154406-presync-v1.0.1.10` |
+
+---
+
+## 🗒️ 第九十三次会话（2026-08-26）：审计测服 v1.0.1.9 → 修切模式 sticky → 四方 `v1.0.1.10`
+
+**用户诉求**：测试服这一批改动审计代码，上号测试，没问题推正式服，最后 push GitHub。
+
+### 一、审计
+
+v1.0.1.7→v1.0.1.9 那批（后台开关表 / Agent 优先 / 积分语音 / M041/M038/M039 / sticky 本轮缓存）整体干净。抓到 1 个真缺口：用户拍板「切模式也清 sticky」，但 effect 只看 `activePanel`+`activeSessionId`，对话里 Agent↔图片 不清。
+
+**修法**：scope 改成 `` `${activePanel}::${activeSessionId}::${mode}` ``。
+
+### 二、测服 v1.0.1.10
+
+bump 1.9→1.10 → 10 文件 tgz → build → sync-ali（42 chunk，generated 已齐）→ 发布信号。health / x-app-version / 8080 全 v1.0.1.10。
+
+上号 `12424740@qq.com`：
+- 新建对话发闲聊 → `/api/chat` model = **deepseek/deepseek-v4-pro**
+- 切到旧对话「v1018巡检」（以前 sticky 过 kimi）再发 → 仍是 **deepseek**（证明不再从 inputSettings 恢复）
+- Agent→图片生成→Agent，console 0 error，无 JSON 泄露
+
+测服留痕：新对话「v10110巡检：你好，用一句话介绍你自己」；旧对话 v1018 多了一句。
+
+### 三、正式服
+
+备份 `20260826-154406-presync-v1.0.1.10` → staging→prod rsync（不再 bump）→ build → 阿里正式静态 42=42 → 发布信号。四域名 200，health / x-app-version = v1.0.1.10。⛔ 没动公告。
+
+冒烟：`12424740@qq.com` 新建对话，免费语音 `fish-audio/s2.1-pro-free` 文本转换「v10110巡检，你好。」`/api/audio` 200，有「下载语音」，console 0 error。
+
+### 四、下一个 AI
+
+1. 四方已是 v1.0.1.10。改代码要上线先 bump。
+2. Agent 仍逼吐 JSON。闲聊改人话直出没拍板。语速别做。⛔ 正式服公告别动。
+3. `modal.md` / `tmp-openrouter` / `原型测试.url` 别 `git add -A`。
+
+---
+
+## 📌 上一状态摘要（2026-08-26 第九十二次会话末）：**已部署测试服 `v1.0.1.9`；正式服 / GitHub 仍 `v1.0.1.7`，未 commit**
+
+| | 版本 / 状态 |
+|---|---|
+| 本地 = 测试服 | **`v1.0.1.9`**（10 个改动文件逐字节 md5 一致）|
+| 正式服 / GitHub | 仍 **`v1.0.1.7`**（`7ea342c`） |
+| 自查 | `tsc` 0 |
+| 迁移 | 无新迁移、无 compose/nginx |
+| 回滚点 | 正式服 app `/opt/flashmuse/app-backups/20260824-205056-presync-v1.0.1.7` |
+
+⛔ **当时未 commit、未上正式服**。
+
+---
+
+## 🗒️ 第九十二次会话（2026-08-26）：审计第九十一次那批（v1.0.1.8）→ 改 Agent 优先 sticky 逻辑（v1.0.1.9）
+
+**用户诉求**：把第九十一次攒的本地改动全部审计，有问题就修，没问题直接部署测试服并上号测更新内容。
+
+### 一、审计结论：8 个源码文件改动干净，一行没改
+
+逐个核过，都符合第九十一次会话的意图、`tsc` 0（tsconfig 没开 noUnusedLocals）：
+- **M038**（`mention-text.ts`）：删/解析 @名的终止符三处对称含 `@`，`@000@A_old` 处理正确。
+- **M039**（`chat-workbench.tsx` + `core`）：所有「按 @名从整个资产库捞图」的回退全删（`getOrderedExplicitImageReferences` 去掉 assets 派生、`previewPromptReferences`/`validReferenceNames`/`getReferencedAssets` 全改成只认输入框已附加素材）。「使用提示词」改成从消息/任务参考包带图。
+- **M041**（`core` 简繁转换）：改成「当前值 === 已转换结果才跳过」，内容变了按新原文重转；聊天/思考/建议/引用/文档/公告/侧栏标题/素材名都加 `data-no-translate`。
+- **Agent 优先**：前后端 `getAgentAutoChatModelChain`/`getAgentAutoChatModelIds` 顺序一致（sticky→priority→原顺序），默认 DeepSeek V4 Pro（在模型列表里），开关开着时后台下拉禁用。
+- **积分表**：加语音列，audioCount 从对话 `audios` + 账本 `kind=audio`。
+
+### 二、部署测试服 v1.0.1.8（无迁移、无 compose/nginx）
+
+bump v1.0.1.7→v1.0.1.8 → 打 10 个改动源码 tgz → scp → 解压 → grep 确认新字面量（AI聊天对话/AGENT_PRIORITY_MODEL_ID/audioCount 都在）→ build DONE → `sync-ali.sh --stack=staging`（42 chunk）→ `PUBLISHED_APP_VERSION=v1.0.1.8` + force-recreate。判据：health / x-app-version / 8080 入口全 v1.0.1.8。
+
+### 三、上号验收（全过，console 0 error）
+
+- **后台模型开关表改版**（`lookxun@163.com`）：AI聊天对话组在最上、作用位置并进功能列、各组有图标、最下一行「Agent优先」下拉显示 DeepSeek V4 Pro 且 disabled + 开关 pressed。关开关 → 下拉变可用 → 下拉列全 8 个模型 → 选 Grok 保存 → `.env.local` 写成 `x-ai/grok-4.6`/`false`、`/api/model-availability` 同步。**测完已改回默认**（deepseek/true）。
+- **积分表**（`12424740@qq.com`）：表头「图片/视频/语音」，数据三段显示，有一行 `0/0/1`（第 90 次跑的免费语音）证明语音列真统计。
+- **@名逻辑（M039）**：输入 `@小猫 你好呀` 当普通文字，**不自动冒缩略图卡**、不捞图、不崩、计数器正常。
+- **Agent 优先真实生效**：发一条闲聊，走 `/api/chat` 流式，实际模型 = **kimi-k3**（不是 deepseek）—— ⭐ **这是正确的**：sticky（`lastAgentChatModel` 存在这个测试号历史 `inputSettings` 里 = kimi）优先级高于 priority，符合「第一次接上哪个就一直用」。浏览器里跑 `getAgentAutoChatModelChain` 三例证明：sticky 空 → deepseek、sticky=kimi → kimi、priority 关 → terra-pro，全对。Agent 回复思考+正文正常、无 JSON 泄露、引导按钮在。
+
+### 四、（已解决）Agent 优先 sticky 改成「本轮缓存」—— v1.0.1.9
+
+🗣️ **用户拍板**：后台选了哪个优先模型就优先用哪个，能接上就永远先接优先的；本轮接上某个模型后别每句话都重新找，直接沿用。**但 sticky 只是「本轮省得重探」的缓存，不是永久记住上次用啥** —— 新建对话 / 切会话 / 切模式 = 新一轮，清 sticky、重新从后台优先模型试起。
+
+**改法**（`chat-workbench.tsx` + `chat-workbench-core.tsx`）：
+1. `lastAgentChatModel` **不再持久化**：删掉从 `inputSettings` 恢复、写进 `inputSettings`、以及 `InputSettings` 类型字段。它现在只活在内存。
+2. 新增 effect：`agentStickyScopeRef` 记录 `${activePanel}::${activeSessionId}`，scope 一变就 `setLastAgentChatModel("")`。
+3. 逻辑：sticky 空 → chain[0]=后台优先模型；本轮优先接不上落到 grok → 本轮沿用 grok；切会话/新建/切模式 → 清 sticky → 又先试优先模型。
+
+⚠️ 只做了代码 + 浏览器跑函数验证，**还没真机走界面**。
+
+### 五、下一个 AI
+
+1. 要上正式服等用户拍板（无迁移、无 compose/nginx，staging→prod 原样同步、不再 bump）。测试服现在是 **v1.0.1.9**（含第四节 sticky 逻辑），本地 = 测试服（10 文件 md5 逐字节一致）。
+2. ⚠️ sticky 逻辑上正式服前建议真走一遍界面：进对话A 发一句（应先用后台优先 deepseek）→ 切到对话B/新建/切模式 → 再发（应又从 deepseek 试起）。
+3. ⛔ 正式服公告别动、语速别做。`modal.md` / `tmp-openrouter` / `原型测试.url` 别 `git add -A`。
+4. 本批未 commit。测试留痕：测试服新对话「v1018巡检：你好，用一句话介绍你自己」（Agent 闲聊 1 条）。后台 Agent 优先开关动过已改回默认（deepseek/开）。
+
+---
+
+## 🗒️ 第九十一次会话（2026-08-26）：后台模型开关 + Agent 优先可选手动选 + M041/M038/M039
+
+**用户诉求**：看交接继续 → 后台模型开关小改 → Agent 优先别写死 K3、可选手动选 → 接不上按原顺序 → 第一次接上后粘住直到失败再换 → 积分表加语音 → 备忘 M041/M038/M039 → 写交接。
+
+### 一、后台「模型开关」
+
+- 「功能模块」和「作用位置」并成一列；第一行加粗模块名，下面蓝点列表。
+- 标题前加前台同一套图标。
+- 「通用模式」改成「AI聊天对话」，整块挪到表最上面。
+- 最下面一行：下拉（全部语言模型，图标在菜单里，右侧下三角，宽 360）+ 开关。「Agent优先」写在左边那列，和菜单/开关同一行对齐。开关打开后下拉禁用。
+
+### 二、Agent 优先模型
+
+- 不再写死 K3。存 `AGENT_PRIORITY_MODEL_ID` / `AGENT_PRIORITY_ENABLED`。
+- **默认开、默认 DeepSeek V4 Pro**。刷新还是 K3 = `.env.local` 里旧值，已改成 DeepSeek。
+- 优先接不上 → 按原来的候选顺序试后面的（审核拦截、用户点停不换）。
+- 第一次接上哪个，后面一直用（`lastAgentChatModel` 排链头）；接不上才再按优先→原顺序找。
+
+### 三、积分表
+
+用户中心「我的积分」那列改成「图片/视频/语音」。语音条数从对话消息 `audios` + 账本 `kind=audio` 来。无新迁移。
+
+### 四、备忘
+
+- **M041 已修**：用户内容标 `data-no-translate`（聊天/提示词/公告/文档预览/对话工作流名/素材名）。繁体过期字：当前值等于已转换结果才跳过，内容变了按新原文再转。
+- **M038 已修**：删/替换 @名 的 lookahead 加上 `@`。`@000@A_old` 能删其中一个；`@000_2` 不误伤。
+- **M039 已修（产品口径）**：有图没 @ 正常；有图有对应 @ 才有效；单独 @ 当普通字。**禁止按 @名 从整个资产库捞图。** 使用提示词从那条消息/生成任务带当时的参考，带不回来就只填文字。
+
+### 五、主要文件
+
+`admin-system-settings-panel.tsx`、`system-settings.ts`、`admin/api/system-settings/route.ts`、`api/model-availability/route.ts`、`chat-workbench.tsx`、`chat-workbench-core.tsx`、`mention-text.ts`、`announcement-banner.tsx`、`api/credits/me/route.ts`。
+
+### 六、下一个 AI
+
+1. 要上线先问。别动正式服公告。别做语速。
+2. Agent 改人话直出等拍板。
+3. 别 `git add -A` 那些临时文件。
+
+---
+
+## 📌 上一状态摘要（2026-08-24 第九十次会话末）：**四方 `v1.0.1.7`**
+
+| | 版本 / 状态 |
+|---|---|
+| 线上（测服=正式服=GitHub） | **`v1.0.1.7`**（`7ea342c`）。两服 OpenRouter 仍是闪念专用 key。 |
+| 本地 | **`v1.0.1.7`**（已 commit + push；工作区还剩 `modal.md` / `tmp-openrouter` / `原型测试.url`） |
 | 自查 | `tsc` 0 |
 | 迁移 | 无新迁移 |
 | 回滚点 | 正式服 app `/opt/flashmuse/app-backups/20260824-205056-presync-v1.0.1.7` |
@@ -28,7 +172,7 @@
 
 ## 🗒️ 第九十次会话（2026-08-24）：审 85～89 + 修 4 个 bug + 测服/正式服 `v1.0.1.7`
 
-**用户诉求**：检查本地这批有没有问题 → 没问题就部署测服 → 上号测新内容、看主链路和扣费 → 有问题就修 → 全过再推正式服 → 最后 push GitHub。
+**用户诉求**：看交接继续项目 → 检查本地这批有没有问题 → 没问题就部署测服 → 上号测新内容、看主链路和扣费 → 有问题就修 → 全过再推正式服 → 最后 push GitHub → 把本对话框写进交接。
 
 ### 一、上线前修的 4 个真问题
 
@@ -39,21 +183,32 @@
 
 顺带：裸「角色图/场景图/分镜图」不再强行改成生图（「帮我生一张图」「生成角色图」仍走生图）。
 
-### 二、测服验收（`12424740@qq.com`）
+图片/视频/音频扣费公式没动。`assertUserCanUseCredits` 改回库读余额（配合身份 10 分钟缓存），是堵白送不是改价。
 
-- Agent 闲聊：思考收起、正文只出一次、无 JSON 原文、引导按钮在。账本 `Agent 回复` K3 **1 分** / $0.0076。
-- 「帮我生一张图…小猫」：走 `/api/agent-plan` + `/api/image`，出图。账本规划 0 分（不足 1 分走 remainder）、图片 Seedream 4.5 **3 分** / $0.04。
+### 二、测服验收（`12424740@qq.com`，对话「v1017巡检」）
+
+- Agent 闲聊「你好，用一句话介绍你自己」：思考收起（可展开再收）、正文只出一次、无 JSON 原文、引导按钮在。账本 `Agent 回复` K3 **1 分** / $0.0076212。
+- 「帮我生一张图，一只灰色小猫趴在窗台上晒太阳」：走 `/api/agent-plan` + `/api/image`，出图。账本规划 K3 **0 分**（$0.0077442，不足 1 分走 remainder）、图片 Seedream 4.5 **3 分** / $0.04。积分 94328 → 94324。
 - 选模型菜单铺开、Gemini 是 LobeHub 星标。`/proto-test` 线上 404。
 
 ### 三、正式服
 
-四域名 200，`/api/health` = v1.0.1.7。免费语音 `fish-audio/s2.1-pro-free` 出了 mp3，扣 **0 分**，页面不崩。⛔ 没动公告。
+四域名 200，`/api/health` = v1.0.1.7。免费语音 `fish-audio/s2.1-pro-free` 文本转换「v1017巡检，你好。」出了 `audio_1_d63`，扣 **0 分**，余额 8196 不变，页面不崩。⛔ 没动公告。
 
-### 四、下一个 AI
+### 四、提交
+
+`7ea342c` `v1.0.1.7 Agent/通用真流式与思考流程上线`。27 个文件。**没带**：`modal.md`、`src/app/tmp-openrouter/`、`src/app/api/tmp-openrouter/`、`原型测试.url`（工作区还在，别 `git add -A`）。
+
+### 五、主要文件
+
+`openrouter.ts`、`api/chat/route.ts`、`chat-workbench.tsx`、`chat-workbench-core.tsx`、`credits.ts`、`gemini-icon.tsx`、`model-icon.tsx`、`persistable-contract.test.ts`、`proto-test/*`。
+
+### 六、下一个 AI
 
 1. Agent 改人话直出等拍板。语速别做。正式服公告别动。
-2. `modal.md` / `tmp-openrouter` 别 commit。
+2. `modal.md` / `tmp-openrouter` / `原型测试.url` 别 commit。
 3. 流式缺 usage 看 `text-provider-stream-missing-usage`，别再写 0 分账本。
+4. 本批交接补哈希后若还要四方一致，再 commit 一次交接即可（代码已在 `7ea342c`）。
 
 ---
 

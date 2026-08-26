@@ -516,8 +516,13 @@ export function ChatWorkbench() {
   const [generalVideoRatio, setGeneralVideoRatio] = useState("智能比例");
   const [generalVideoResolution, setGeneralVideoResolution] = useState(() => normalizeVideoResolutionForModel(DEFAULT_VIDEO_MODEL, "720p"));
   const [enabledGeneralChatModelIds, setEnabledGeneralChatModelIds] = useState<string[]>(frontendConversationModels.map((model) => model.id));
+  const [agentPriorityModelId, setAgentPriorityModelId] = useState("deepseek/deepseek-v4-pro");
+  const [agentPriorityEnabled, setAgentPriorityEnabled] = useState(true);
+  // ⭐ Agent「本轮已接通模型」缓存：只为省掉"每句话都从优先模型重新探测"，不持久化。
+  //   一旦新建对话 / 切会话 / 切模式（见下方 effect），就清空回到"先试后台优先模型"。
   const [lastAgentChatModel, setLastAgentChatModel] = useState<string>("");
-  const selectedModel: ModelName = (getAgentAutoChatModelChain(enabledGeneralChatModelIds)[0] as ModelName | undefined) ?? DEFAULT_CHAT_MODEL;
+  const agentStickyScopeRef = useRef<string>("");
+  const selectedModel: ModelName = (getAgentAutoChatModelChain(enabledGeneralChatModelIds, agentPriorityEnabled ? agentPriorityModelId : undefined, lastAgentChatModel)[0] as ModelName | undefined) ?? DEFAULT_CHAT_MODEL;
   const [generalModelProviders, setGeneralModelProviders] = useState<Record<string, "openrouter" | "byteplus">>({});
   const [enabledAgentChatModelIds, setEnabledAgentChatModelIds] = useState<string[]>(["byteplus:chat.seed-2-0-pro", "openai/gpt-5.6-terra-pro"]);
   const [agentChatModelProviders, setAgentChatModelProviders] = useState<Record<string, "openrouter" | "byteplus">>({});
@@ -562,6 +567,14 @@ export function ChatWorkbench() {
   const [runningWorkflowIds, setRunningWorkflowIds] = useState<string[]>([]);
   const hydratingWorkflowIdsRef = useRef<Set<string>>(new Set());
   const [activeSessionId, setActiveSessionId] = useState("");
+  // ⭐ 新一轮 = 换了对话 / 切会话 / 切模式 → 清「本轮已接通模型」，下句从后台优先模型重新试起。
+  //   （同一对话、同一模式内连续对话则复用本轮接通的模型，不每句重探测。）
+  useEffect(() => {
+    const scope = `${activePanel}::${activeSessionId}::${mode}`;
+    if (agentStickyScopeRef.current === scope) return;
+    agentStickyScopeRef.current = scope;
+    setLastAgentChatModel("");
+  }, [activePanel, activeSessionId, mode]);
   const [loadingSessionIds, setLoadingSessionIds] = useState<Set<string>>(() => new Set());
   const [loadingOlderMessageSessionIds, setLoadingOlderMessageSessionIds] = useState<Set<string>>(() => new Set());
   const [loadingSessionStartedAt, setLoadingSessionStartedAt] = useState<Record<string, number>>({});
@@ -1408,12 +1421,8 @@ export function ChatWorkbench() {
     const session = previewAsset?.sessionId ? sessions.find((item) => item.id === previewAsset.sessionId) : undefined;
     const message = session?.messages.find((item) => item.id === previewAsset?.messageId);
     if (message?.imageReferences?.length) return message.imageReferences;
-    // 回退：会话不在内存(从资产库打开)且 DB 也没查到时，按 sourcePrompt 的 @名从资产库解析。
-    const content = message?.content || previewAsset?.sourcePrompt || "";
-    if (!content) return [];
-    const conversationRefs = session ? getConversationImageReferences(session.messages) : [];
-    return getOrderedExplicitImageReferences(content, assets, [], conversationRefs);
-  }, [previewAsset, sessions, assets, previewJobReferences]);
+    return [];
+  }, [previewAsset, sessions, previewJobReferences]);
   const previewPromptMediaReferences = useMemo<MediaFileReference[]>(() => {
     // 权威优先：数据库里这张图真正用过的参考视频/音频（GenerationJob）。
     const jobMedia = previewJobReferences.filter((item) => item.kind === "video" || item.kind === "audio");
@@ -1424,22 +1433,17 @@ export function ChatWorkbench() {
     const messageIndex = session ? session.messages.findIndex((item) => item.id === previewAsset?.messageId) : -1;
     const message = messageIndex >= 0 && session ? session.messages[messageIndex] : undefined;
     const previousUser = session && messageIndex > 0 ? [...session.messages.slice(0, messageIndex)].reverse().find((item) => item.role === "user") : undefined;
-    const fromMessage = message ? getUploadedMediaReferences(message.uploadedFiles?.length ? message.uploadedFiles : previousUser?.uploadedFiles) : [];
-    if (fromMessage.length > 0) return fromMessage;
-    const content = message?.content || previewAsset?.sourcePrompt || "";
-    if (!content) return [];
-    const mentionedFiles = getMentionedAssets(content, assets).map(toUploadedFileAssetReference).filter((file): file is UploadedDocumentFile => Boolean(file));
-    return getUploadedMediaReferences(mentionedFiles);
-  }, [previewAsset, sessions, assets, previewJobReferences]);
+    return message ? getUploadedMediaReferences(message.uploadedFiles?.length ? message.uploadedFiles : previousUser?.uploadedFiles) : [];
+  }, [previewAsset, sessions, previewJobReferences]);
   const canReversePreviewPrompt = Boolean(previewAsset && !isVideoAsset(previewAsset) && previewIsUploadedAsset && !previewHasUsablePrompt);
   const previewPromptErrorText = previewPromptError && previewPromptError.assetId === previewAssetId ? previewPromptError.message : "";
-  const validReferenceNames = new Set([...getValidReferenceNames(assets, activeUploadedImages, activeConversationImageReferences), ...getUploadedMediaReferences(activeUploadedFiles).map((reference) => reference.name)]);
+  const validReferenceNames = new Set([...getValidReferenceNames([], activeUploadedImages, []), ...getUploadedMediaReferences(activeUploadedFiles).map((reference) => reference.name)]);
   const hasAnyConversationRunning = resolvingSessionIds.size > 0 || sessions.some((session) => getSessionPendingRequests(session).length > 0) || Boolean(modelInfoSessionId);
   const hasAnyAssetGenerating = assetGenerateJobs.some((job) => job.result.status === "generating");
   // 判定口径统一在 isWorkflowItemRunning()：已加载画布的看自己的 isRunning，只发标题的看服务端 runningWorkflowIds。
   const hasAnyWorkflowGenerating = activeWorkflowItems.some((workflow) => isWorkflowItemRunning(workflow, runningWorkflowIds));
   const hasAnyGenerationRunning = hasAnyConversationRunning || hasAnyAssetGenerating || hasAnyWorkflowGenerating;
-  const characterValidReferenceNames = getValidReferenceNames(assets, [], []);
+  const characterValidReferenceNames = new Set((assetGenerateReferenceDrafts[assetGenerateType] ?? []).map((reference) => reference.name));
   const assetGenerateReferenceImages = assetGenerateReferenceDrafts[assetGenerateType] ?? [];
   const characterAtQuery = getAtQueryAtCursor(characterGeneratePrompt, characterPromptCursorOffset);
   const characterAtAssetSearch = characterAtQuery?.query ?? "";
@@ -2175,13 +2179,8 @@ export function ChatWorkbench() {
     // 有显式 restore（使用提示词/预览还原）= 该媒体自己出生时钉下的完整引用包就是唯一权威，
     // 只用它，绝不再拿提示词文字里的 @名去当前资产库重新派生卡片（否则删了又被@文字重造、或库里换了名会串）。
     const hasExplicitRestore = restore !== undefined;
-    const mentionedAssets = hasExplicitRestore ? [] : getMentionedAssets(nextValue, assets);
-    const mentionedConversationImages = hasExplicitRestore ? [] : getMentionNames(nextValue)
-      .map((name) => activeConversationImageReferences.find((reference) => reference.name === name))
-      .filter((reference): reference is ImageReference => Boolean(reference))
-      .map((reference) => ({ id: createClientId(), name: reference.name, referenceName: reference.name, url: reference.url, source: "asset" as const }));
-    const mentionedImages = [...mentionedAssets.filter((asset) => !isVideoAsset(asset) && !isAudioAsset(asset) && !isNonDisplayableFileAsset(asset.url)).map(toUploadedAssetReference), ...mentionedConversationImages];
-    const mentionedFiles = mentionedAssets.map(toUploadedFileAssetReference).filter((file): file is UploadedDocumentFile => Boolean(file));
+    const mentionedImages: UploadedImage[] = [];
+    const mentionedFiles: UploadedDocumentFile[] = [];
     // Restore items (from the source message's real attachments) take priority over re-derived @-mentions.
     const restoreImages = restore?.images ?? [];
     const restoreFiles = restore?.files ?? [];
@@ -2205,7 +2204,7 @@ export function ChatWorkbench() {
       });
       return { ...session, draftInput: nextValue, uploadedImages: nextImages, uploadedFiles: nextFiles, updatedAt: Date.now() };
     }));
-  }, [activeConversationImageReferences, activeSessionId, assets, currentUploadRule.image.maxCount, showInputTip]);
+  }, [activeSessionId, currentUploadRule.image.maxCount, showInputTip]);
 
   const addSessionUsage = useCallback((sessionId: string, usage?: UsageMeta) => {
     if (!usage) return;
@@ -2921,7 +2920,8 @@ export function ChatWorkbench() {
           if (typeof parsedInputSettings.generalImageResolution === "string") setGeneralImageResolution(normalizeImageResolutionForModel(nextGeneralModels.image, parsedInputSettings.generalImageResolution));
           if (typeof parsedInputSettings.generalVideoRatio === "string") setGeneralVideoRatio(parsedInputSettings.generalVideoRatio === "智能比例" ? "智能比例" : normalizeVideoRatioForModel(nextGeneralModels.video, parsedInputSettings.generalVideoRatio, normalizeVideoResolutionForModel(nextGeneralModels.video, parsedInputSettings.generalVideoResolution)));
           if (typeof parsedInputSettings.generalVideoResolution === "string") setGeneralVideoResolution(normalizeVideoResolutionForModel(nextGeneralModels.video, parsedInputSettings.generalVideoResolution));
-          if (typeof parsedInputSettings.lastAgentChatModel === "string") setLastAgentChatModel(parsedInputSettings.lastAgentChatModel);
+          // ⭐ lastAgentChatModel 是"本轮已接通模型"的临时缓存，故意不持久化、不从 inputSettings 恢复：
+          //   新建对话/切会话/切模式都会清空它，回到"先试后台优先模型"。
           setSelectedRatios((current) => ({
             ...mergeValidModeSettings(current, parsedInputSettings.selectedRatios, { general: ratioOptions, agent: ratioOptions, image: ["智能比例", ...getSupportedImageRatios(nextImageModel)], video: ["智能比例", ...getSupportedVideoRatios(nextVideoModel)], audio: ratioOptions }),
             image: normalizeImageRatioForModel(nextImageModel, parsedInputSettings.selectedRatios?.image),
@@ -3049,7 +3049,7 @@ export function ChatWorkbench() {
     const loadModelAvailability = async () => {
       try {
         const response = await fetch("/api/model-availability", { cache: "no-store" });
-        const data = (await response.json()) as { generalModels?: string[]; generalModelProviders?: Record<string, "openrouter" | "byteplus">; chatModels?: string[]; chatModelProviders?: Record<string, "openrouter" | "byteplus">; imageModels?: string[]; assetImageModels?: string[]; videoModels?: string[]; audioModels?: string[]; agentImageModels?: string[]; agentVideoModels?: string[]; uploadRuleOverrides?: UploadRuleOverrides; promptLengthOverrides?: PromptLengthOverrides; editModelToggles?: Record<string, boolean>; creditRate?: { usdToCnyRate?: number; creditsPerCny?: number } };
+        const data = (await response.json()) as { generalModels?: string[]; generalModelProviders?: Record<string, "openrouter" | "byteplus">; chatModels?: string[]; chatModelProviders?: Record<string, "openrouter" | "byteplus">; imageModels?: string[]; assetImageModels?: string[]; videoModels?: string[]; audioModels?: string[]; agentImageModels?: string[]; agentVideoModels?: string[]; uploadRuleOverrides?: UploadRuleOverrides; promptLengthOverrides?: PromptLengthOverrides; editModelToggles?: Record<string, boolean>; agentPriorityModelId?: string; agentPriorityEnabled?: boolean; creditRate?: { usdToCnyRate?: number; creditsPerCny?: number } };
         if (cancelled) return;
         const next = {
           image: Array.isArray(data.imageModels) ? data.imageModels : [],
@@ -3074,6 +3074,8 @@ export function ChatWorkbench() {
           video: next.video.includes(current.video) ? current.video : next.video[0] as ModelName | undefined ?? current.video,
         }));
         setEnabledGeneralChatModelIds(Array.isArray(data.generalModels) ? data.generalModels : []);
+        setAgentPriorityModelId(typeof data.agentPriorityModelId === "string" && data.agentPriorityModelId ? data.agentPriorityModelId : "deepseek/deepseek-v4-pro");
+        setAgentPriorityEnabled(data.agentPriorityEnabled !== false);
         setGeneralModelProviders(data.generalModelProviders && typeof data.generalModelProviders === "object" ? data.generalModelProviders : {});
         setEnabledAgentChatModelIds(Array.isArray(data.chatModels) ? data.chatModels : []);
         setAgentChatModelProviders(data.chatModelProviders && typeof data.chatModelProviders === "object" ? data.chatModelProviders : {});
@@ -3346,7 +3348,6 @@ export function ChatWorkbench() {
         generalImageResolution,
         generalVideoRatio,
         generalVideoResolution,
-        lastAgentChatModel,
       },
       intentMemoryRules: intentMemoryRules.slice(0, MAX_INTENT_MEMORY_RULES),
       feedbackLogs: feedbackLogs.slice(0, MAX_FEEDBACK_LOGS),
@@ -3393,7 +3394,7 @@ export function ChatWorkbench() {
     };
     // ⛔ 依赖里不许再放 assets / assetScrollTopByFilter：assets 不在载荷里（变了白发一次全量 PUT），
     //   assetScrollTopByFilter 是资产库滚动位置（滚一下整体重写几百 KB）。见载荷处的注释。
-  }, [activePanel, activeSessionId, activeWorkflowId, agentModelTier, assetFilter, assetGenerateJobs, assetsLoadStatus, feedbackLogs, generalImageRatio, generalImageResolution, generalPreferenceAuto, generalPreferenceKind, generalVideoRatio, generalVideoResolution, intentMemoryRules, isLoaded, lastAgentChatModel, mode, nextConversationNumber, nextWorkflowNumber, selectedAudioEmotion, selectedAudioReferenceMode, selectedAudioVoice, selectedDurations, selectedGeneralModels, selectedGenerationModels, selectedImageCounts, selectedRatios, selectedResolutions, sessions, workflowItems, workspaceLoadStatus, workspaceStorageMode]);
+  }, [activePanel, activeSessionId, activeWorkflowId, agentModelTier, assetFilter, assetGenerateJobs, assetsLoadStatus, feedbackLogs, generalImageRatio, generalImageResolution, generalPreferenceAuto, generalPreferenceKind, generalVideoRatio, generalVideoResolution, intentMemoryRules, isLoaded, mode, nextConversationNumber, nextWorkflowNumber, selectedAudioEmotion, selectedAudioReferenceMode, selectedAudioVoice, selectedDurations, selectedGeneralModels, selectedGenerationModels, selectedImageCounts, selectedRatios, selectedResolutions, sessions, workflowItems, workspaceLoadStatus, workspaceStorageMode]);
 
   useEffect(() => {
     if (!isLoaded || workspaceStorageMode !== "user") return;
@@ -6148,6 +6149,7 @@ export function ChatWorkbench() {
               }),
             }).then((response) => readJson<AgentPlanResponse>(response));
             pendingRequest = { ...pendingRequest, model: chatModel as ModelName };
+            if (pendingRequest.mode === "agent") setLastAgentChatModel(chatModel);
             break;
           } catch (error) {
             lastPlanError = error;
@@ -7147,7 +7149,7 @@ export function ChatWorkbench() {
       sendUploadedImages = availableUploadedImages;
     }
 
-    const explicitImageReferences = getOrderedExplicitImageReferences(rawTextWithMediaMentions, assets, sendUploadedImages, activeConversationImageReferences);
+    const explicitImageReferences = getOrderedExplicitImageReferences(rawTextWithMediaMentions, assets, sendUploadedImages, []);
     const uploadedImageReferences = sendUploadedImages.map((image) => ({ name: getUploadedImageReferenceName(image, sendUploadedImages), url: image.url }));
     // 统一规则：有缩略图的一定发，@名只管顺序/意图。以被@命中的顺序排前面，未被@的缩略图按原顺序补在后面，不再因“别的图有@名”就丢弃无@名的缩略图。
     const sourceImageReferences: ImageReference[] = [...explicitImageReferences];
@@ -7212,7 +7214,8 @@ export function ChatWorkbench() {
       if (matchedAsset?.bytePlusAssetStatus === "Active" && matchedAsset.bytePlusAssetId) return `asset://${matchedAsset.bytePlusAssetId}`;
       return reference.url;
     });
-    const referencedAssets = getReferencedAssets(rawTextWithMediaMentions, assets);
+    const attachedUrls = new Set([...sendUploadedImages.map((image) => normalizeMediaUrlForMatch(image.url)), ...uploadedVideoFiles.map((file) => normalizeMediaUrlForMatch(getUploadedMediaFileUrl(file))), ...uploadedAudioFiles.map((file) => normalizeMediaUrlForMatch(getUploadedMediaFileUrl(file)))].filter(Boolean));
+    const referencedAssets = getReferencedAssets(rawTextWithMediaMentions, assets.filter((asset) => attachedUrls.has(normalizeMediaUrlForMatch(asset.url))));
     const displayImageReferences = (namedImageReferences.length > 0 ? namedImageReferences : referenceImages.map((url, index) => ({ name: `图片${index + 1}`, url }))).slice(0, currentMaxReferenceImages);
     const text = rawTextWithMediaMentions || getImageOnlyPrompt(submitMode);
     // 语音生成：必须有文字（不能把空文本发去 TTS），且不吃"仅图片"那套占位提示。
@@ -7318,7 +7321,7 @@ export function ChatWorkbench() {
         }
       }
 
-      const agentChatModelChain = getAgentAutoChatModelChain(enabledGeneralChatModelIds);
+      const agentChatModelChain = getAgentAutoChatModelChain(enabledGeneralChatModelIds, agentPriorityEnabled ? agentPriorityModelId : undefined, lastAgentChatModel);
       if (agentChatModelChain.length === 0) {
         showInputTip("连接不到模型，请联系管理员！");
         setSessionSending(sessionId, false);
@@ -7747,7 +7750,7 @@ export function ChatWorkbench() {
     const replayImageReferences = message.imageReferences?.length
       ? message.imageReferences
       : generationMode === "image" || generationMode === "video"
-        ? getOrderedExplicitImageReferences(replayPrompt, assets, [], getConversationImageReferences(activeSession.messages.slice(0, messageIndex)))
+        ? getOrderedExplicitImageReferences(replayPrompt, assets, [], [])
         : previousUserMessage?.imageReferences;
     const referenceImages = replayImageReferences?.map((reference) => reference.url).filter(Boolean) ?? previousUserMessage?.images?.filter(Boolean);
     const replayModel = generationMode === "image" || generationMode === "video"
@@ -8607,7 +8610,7 @@ export function ChatWorkbench() {
     setAssetGenerateType(job.type);
     setCharacterGeneratePrompt(job.prompt);
     // 恢复历史任务时按提示词里的 @文件名 重建该类型的参考图缩略图状态。
-    setAssetGenerateReferenceDrafts((current) => ({ ...current, [job.type]: getOrderedExplicitImageReferences(job.prompt, assets, [], []) }));
+    setAssetGenerateReferenceDrafts((current) => ({ ...current, [job.type]: current[job.type] ?? [] }));
     setCharacterPromptCursorOffset(job.prompt.length);
     setCharacterGenerateRatio(job.ratio);
     setCharacterGenerateStyle(job.style);
@@ -8638,7 +8641,8 @@ export function ChatWorkbench() {
     try {
       setIsCharacterAtAssetMenuOpen(false);
       setOpenControlMenu("");
-      const referencedAssets = getReferencedAssets(rawPrompt, assets);
+      const draftReferenceUrls = new Set(getCharacterPromptReferences().map((reference) => normalizeMediaUrlForMatch(reference.url)));
+      const referencedAssets = getReferencedAssets(rawPrompt, assets.filter((asset) => draftReferenceUrls.has(normalizeMediaUrlForMatch(asset.url))));
       const optimizeModels = [...PROMPT_TOOL_MODEL_CHAIN];
       let data: ChatApiResponse | undefined;
       let nextPrompt = "";
@@ -8966,7 +8970,8 @@ export function ChatWorkbench() {
     setIsInputPromptOptimizing(true);
     try {
       closeInputMenus();
-      const referencedAssets = getReferencedAssets(rawPrompt, assets);
+      const attachedOptimizeUrls = new Set([...activeUploadedImages.map((image) => normalizeMediaUrlForMatch(image.url)), ...activeUploadedFiles.map((file) => normalizeMediaUrlForMatch(getUploadedMediaFileUrl(file)))].filter(Boolean));
+      const referencedAssets = getReferencedAssets(rawPrompt, assets.filter((asset) => attachedOptimizeUrls.has(normalizeMediaUrlForMatch(asset.url))));
       const optimizeModels = [...PROMPT_TOOL_MODEL_CHAIN];
       let data: ChatApiResponse | undefined;
       let nextPrompt = "";
@@ -9369,7 +9374,7 @@ export function ChatWorkbench() {
                         return (
                           <div key={item.id} className="relative">
                             <button type="button" onClick={() => { setActiveWorkflowId(item.id); setOpenWorkflowMenuId(""); setIsCollapsedHistoryMenuOpen(false); }} className={item.id === activeWorkflow?.id ? "flex h-9 w-full items-center rounded-lg bg-[#ececec] px-3 pr-10 text-left" : "flex h-9 w-full items-center rounded-lg px-3 pr-10 text-left transition hover:bg-[#ececec]"}>
-                              <div className={item.id === activeWorkflow?.id ? "min-w-0 truncate text-[13px] font-medium leading-[1.2] text-[#111111]" : "min-w-0 truncate text-[13px] font-medium leading-[1.2] text-[#333333]"}>{item.title}</div>
+                              <div className={item.id === activeWorkflow?.id ? "min-w-0 truncate text-[13px] font-medium leading-[1.2] text-[#111111]" : "min-w-0 truncate text-[13px] font-medium leading-[1.2] text-[#333333]"} data-no-translate="true">{item.title}</div>
                             </button>
                             {isWorkflowRunning ? (
                               <div className="absolute right-2 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center" aria-label="工作流生成中"><HaloPulseIndicator /></div>
@@ -9405,7 +9410,7 @@ export function ChatWorkbench() {
                               }}
                               className={isActive ? "flex h-9 w-full items-center rounded-lg bg-[#ececec] px-3 pr-10 text-left" : "flex h-9 w-full items-center rounded-lg px-3 pr-10 text-left transition hover:bg-[#ececec]"}
                             >
-                              <div className={isActive ? "min-w-0 truncate text-[13px] font-medium leading-[1.2] text-[#111111]" : "min-w-0 truncate text-[13px] font-medium leading-[1.2] text-[#333333]"}>{session.title}{loadingSessionIds.has(session.id) ? " · 加载中" : ""}</div>
+                              <div className={isActive ? "min-w-0 truncate text-[13px] font-medium leading-[1.2] text-[#111111]" : "min-w-0 truncate text-[13px] font-medium leading-[1.2] text-[#333333]"} data-no-translate="true">{session.title}{loadingSessionIds.has(session.id) ? " · 加载中" : ""}</div>
                             </button>
 
                             {isSessionRunning ? (
@@ -9476,7 +9481,7 @@ export function ChatWorkbench() {
                       onClick={() => { setActiveWorkflowId(item.id); setOpenWorkflowMenuId(""); }}
                       className={item.id === activeWorkflow?.id ? "flex h-9 w-full items-center rounded-lg bg-[#ececec] px-3 pr-10 text-left" : "flex h-9 w-full items-center rounded-lg px-3 pr-10 text-left transition hover:bg-[#ececec]"}
                     >
-                      <div className={item.id === activeWorkflow?.id ? "min-w-0 truncate text-[13px] font-medium leading-[1.2] text-[#111111]" : "min-w-0 truncate text-[13px] font-medium leading-[1.2] text-[#333333]"}>{item.title}</div>
+                      <div className={item.id === activeWorkflow?.id ? "min-w-0 truncate text-[13px] font-medium leading-[1.2] text-[#111111]" : "min-w-0 truncate text-[13px] font-medium leading-[1.2] text-[#333333]"} data-no-translate="true">{item.title}</div>
                     </button>
 
                     {isWorkflowRunning ? (
@@ -9546,7 +9551,7 @@ export function ChatWorkbench() {
                       : "flex h-9 w-full items-center rounded-lg px-3 pr-10 text-left transition hover:bg-[#ececec]"
                   }
                 >
-                  <div className={isActive ? "min-w-0 truncate text-[13px] font-medium leading-[1.2] text-[#111111]" : "min-w-0 truncate text-[13px] font-medium leading-[1.2] text-[#333333]"}>{session.title}{loadingSessionIds.has(session.id) ? " · 加载中" : ""}</div>
+                  <div className={isActive ? "min-w-0 truncate text-[13px] font-medium leading-[1.2] text-[#111111]" : "min-w-0 truncate text-[13px] font-medium leading-[1.2] text-[#333333]"} data-no-translate="true">{session.title}{loadingSessionIds.has(session.id) ? " · 加载中" : ""}</div>
                 </button>
 
                 {isSessionRunning ? (
@@ -10108,7 +10113,7 @@ export function ChatWorkbench() {
                                       ) : poster ? <img src={poster} alt={asset.systemName || asset.name} draggable={false} className="h-full w-full object-cover" /> : <div className="flex h-full w-full items-center justify-center text-[12px] text-[#aaa]">无预览</div>}
                                       {isVideo ? <VideoPlayBadge size="md" /> : null}
                                       <div className="pointer-events-none absolute inset-x-0 bottom-0 z-10 h-10 bg-gradient-to-t from-black/75 to-transparent" />
-                                      <span className="pointer-events-none absolute bottom-2 left-2 z-20 max-w-[calc(100%-16px)] truncate text-[13px] font-medium leading-none text-white">@{asset.systemName || asset.name}</span>
+                                      <span className="pointer-events-none absolute bottom-2 left-2 z-20 max-w-[calc(100%-16px)] truncate text-[13px] font-medium leading-none text-white" data-no-translate="true">@{asset.systemName || asset.name}</span>
                                       <span className={`absolute right-2 top-2 z-50 flex h-5 w-5 items-center justify-center rounded-full border ${selected ? "border-[#2f80ed] bg-[#2f80ed] text-white" : "border-white bg-black/25 text-transparent"}`}><RiCheckLine className="h-3.5 w-3.5" /></span>
                                       {selected ? <span className="pointer-events-none absolute inset-0 z-50 border-2 border-[#2f80ed]" /> : null}
                                     </button>
@@ -10257,7 +10262,7 @@ export function ChatWorkbench() {
                 const isActiveMediaPending = isActiveVideoPending || isActiveImagePending;
                 const userImageReferences = message.role === "user" ? getDisplayImageReferences(message) : undefined;
                 const isAgentMediaMessage = message.role === "assistant" && isAgentGeneratedMedia(message);
-                const mediaPromptReferences = message.role === "assistant" && (message.mode === "image" || message.mode === "video") ? (message.imageReferences?.length ? message.imageReferences : getOrderedExplicitImageReferences(message.content, assets, [], activeConversationImageReferences)) : undefined;
+                const mediaPromptReferences = message.role === "assistant" && (message.mode === "image" || message.mode === "video") ? (message.imageReferences?.length ? message.imageReferences : undefined) : undefined;
                 const imageVariantGroups = message.role === "assistant" && message.mode === "image" && !isAgentMediaMessage ? getImageVariantPages(message) : [];
                 const imageVariantCount = imageVariantGroups.length;
                 const selectedImageVariantIndex = imageVariantCount > 0 ? Math.min(imageVariantIndexes[message.id] ?? 0, imageVariantCount - 1) : 0;
@@ -11409,7 +11414,7 @@ export function ChatWorkbench() {
                             <th className="border-r border-[#dddddd] px-3 py-2 font-medium">积分来源</th>
                             <th className="w-[110px] border-r border-[#dddddd] px-3 py-2 text-right font-medium">积分变动</th>
                             <th className="w-[110px] border-r border-[#dddddd] px-3 py-2 text-right font-medium">对话Token</th>
-                            <th className="w-[110px] border-r border-[#dddddd] px-3 py-2 text-right font-medium">图片/视频</th>
+                            <th className="w-[128px] border-r border-[#dddddd] px-3 py-2 text-right font-medium">图片/视频/语音</th>
                             <th className="w-[86px] whitespace-nowrap px-2 py-2 text-right font-medium">最后活跃</th>
                           </tr>
                         </thead>
@@ -11422,6 +11427,7 @@ export function ChatWorkbench() {
                             const tokenCount = Math.max(0, Math.floor(row.totalTokens ?? 0));
                             const imageText = isIncreaseRow || isTextOnlySource ? "--" : row.imageCount.toLocaleString("en-US");
                             const videoText = isIncreaseRow || ((isImageGenerationSource || isTextOnlySource) && row.videoCount === 0) ? "--" : row.videoCount.toLocaleString("en-US");
+                            const audioText = isIncreaseRow || ((isImageGenerationSource || isTextOnlySource) && (row.audioCount ?? 0) === 0) ? "--" : (row.audioCount ?? 0).toLocaleString("en-US");
                             const sourceTitle = userCreditSourceLabels[row.source ?? "conversation"] ?? row.title;
                             const creditValue = Math.trunc(row.credits);
                             const creditDisplay = creditValue === 0 ? "0" : isIncreaseRow && creditValue > 0 ? `+${creditValue.toLocaleString("en-US")}` : creditValue < 0 ? `-${Math.abs(creditValue).toLocaleString("en-US")}` : `-${creditValue.toLocaleString("en-US")}`;
@@ -11431,12 +11437,12 @@ export function ChatWorkbench() {
                                 <td className="border-r border-[#eeeeee] px-3 py-2 text-[#333333]">
                                   <div className="flex min-w-0 items-center gap-1.5">
                                     <SourceIcon className="h-4 w-4 shrink-0 text-[#555555]" aria-hidden="true" />
-                                    <span className="min-w-0 truncate">{sourceTitle}</span>
+                                    <span className="min-w-0 truncate" data-no-translate={row.source === "conversation" || row.source === "workflow" ? "true" : undefined}>{sourceTitle}</span>
                                   </div>
                                 </td>
                                 <td className={`border-r border-[#eeeeee] px-3 py-2 text-right font-semibold ${creditClassName}`}>{creditDisplay}</td>
                                 <td className="border-r border-[#eeeeee] px-3 py-2 text-right text-[#555555]">{tokenCount > 0 ? tokenCount.toLocaleString("en-US") : "--"}</td>
-                                <td className="border-r border-[#eeeeee] px-3 py-2 text-right text-[#555555]">{imageText}/{videoText}</td>
+                                <td className="border-r border-[#eeeeee] px-3 py-2 text-right text-[#555555]">{imageText}/{videoText}/{audioText}</td>
                                 <td className="whitespace-nowrap px-2 py-2 text-right text-[#777777]">{formatCreditLastActiveTime(row.lastActiveAt)}</td>
                               </tr>
                             );
@@ -11555,7 +11561,7 @@ export function ChatWorkbench() {
                       {rows.length > 0 ? rows.map((row) => (
                         <div key={`${row.kind}-${row.id}`} className="flex min-h-11 items-center gap-2">
                           <div className="flex min-h-11 min-w-0 flex-1 items-center gap-4 rounded-[10px] bg-[#f7f7f7] px-4">
-                            <div className="min-w-0 flex-1 truncate text-[14px] text-[#333333]">{row.title}</div>
+                            <div className="min-w-0 flex-1 truncate text-[14px] text-[#333333]" data-no-translate="true">{row.title}</div>
                             <div className="shrink-0 text-[14px] text-[#9a9a9a]">{formatMessageTime(row.at)}</div>
                           </div>
                           <BlackHoverTooltip label={<span className="text-[16px] font-medium">恢复</span>}>
@@ -12033,7 +12039,9 @@ export function ChatWorkbench() {
                         if (sourceMessage) {
                           void copyPrompt(sourceMessage);
                         } else {
-                          setActiveDraftInputWithMentionCards(previewAsset.sourcePrompt);
+                          const restoreImages = previewPromptReferences.filter((reference) => Boolean(reference.url)).map((reference) => toUploadedAssetReference({ name: reference.name, url: reference.url }));
+                          const restoreFiles = previewPromptMediaReferences.flatMap((reference) => typeof reference.file === "string" ? [] : [{ ...reference.file, id: createClientId() }]);
+                          setActiveDraftInputWithMentionCards(previewAsset.sourcePrompt, { images: restoreImages, files: restoreFiles });
                         }
                         setActivePanel("chat");
                         setPreviewAsset(null);

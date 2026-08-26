@@ -40,7 +40,7 @@ function isWorkflowLedger(item: { workspaceKind: string | null; metadata: unknow
 }
 
 function getWorkspaceSessionUsageMap(state: unknown) {
-  const map = new Map<string, { totalTokens: number; credits: number; imageCount: number; videoCount: number }>();
+  const map = new Map<string, { totalTokens: number; credits: number; imageCount: number; videoCount: number; audioCount: number }>();
   if (!state || typeof state !== "object" || Array.isArray(state)) return map;
 
   const sessions = (state as { sessions?: unknown }).sessions;
@@ -58,7 +58,7 @@ function getWorkspaceSessionUsageMap(state: unknown) {
     const safeCredits = typeof credits === "number" && Number.isFinite(credits) ? Math.max(0, Math.floor(credits)) : 0;
     const messages = (session as { messages?: unknown }).messages;
     const mediaCounts = getWorkspaceSessionMediaCounts(messages);
-    if (safeTokens > 0 || safeCredits > 0 || mediaCounts.imageCount > 0 || mediaCounts.videoCount > 0) map.set(id, { totalTokens: safeTokens, credits: safeCredits, ...mediaCounts });
+    if (safeTokens > 0 || safeCredits > 0 || mediaCounts.imageCount > 0 || mediaCounts.videoCount > 0 || mediaCounts.audioCount > 0) map.set(id, { totalTokens: safeTokens, credits: safeCredits, ...mediaCounts });
   }
 
   return map;
@@ -67,10 +67,12 @@ function getWorkspaceSessionUsageMap(state: unknown) {
 function getWorkspaceSessionMediaCounts(messages: unknown) {
   let imageCount = 0;
   let videoCount = 0;
+  let audioCount = 0;
   const imageUrls = new Set<string>();
   const videoUrls = new Set<string>();
+  const audioUrls = new Set<string>();
 
-  if (!Array.isArray(messages)) return { imageCount, videoCount };
+  if (!Array.isArray(messages)) return { imageCount, videoCount, audioCount };
 
   for (const message of messages) {
     if (!message || typeof message !== "object" || Array.isArray(message)) continue;
@@ -99,11 +101,17 @@ function getWorkspaceSessionMediaCounts(messages: unknown) {
 
     const videoUrl = (message as { videoUrl?: unknown }).videoUrl;
     if (typeof videoUrl === "string" && videoUrl) videoUrls.add(videoUrl);
+
+    const audios = (message as { audios?: unknown }).audios;
+    if (Array.isArray(audios)) {
+      for (const url of audios) if (typeof url === "string" && url) audioUrls.add(url);
+    }
   }
 
   imageCount = imageUrls.size;
   videoCount = videoUrls.size;
-  return { imageCount, videoCount };
+  audioCount = audioUrls.size;
+  return { imageCount, videoCount, audioCount };
 }
 
 async function getWorkspaceAssetGenerationCounts(userId: string) {
@@ -169,6 +177,7 @@ export async function GET() {
     totalTokens: number;
     imageCount: number;
     videoCount: number;
+    audioCount: number;
     lastActiveAt: string;
   }>();
   const increaseRows: Array<{
@@ -180,6 +189,7 @@ export async function GET() {
     totalTokens: number;
     imageCount: number;
     videoCount: number;
+    audioCount: number;
     lastActiveAt: string;
   }> = [];
 
@@ -196,6 +206,7 @@ export async function GET() {
         totalTokens: 0,
         imageCount: 0,
         videoCount: 0,
+        audioCount: 0,
         lastActiveAt: item.createdAt.toISOString(),
       });
       continue;
@@ -216,6 +227,7 @@ export async function GET() {
       totalTokens: 0,
       imageCount: 0,
       videoCount: 0,
+      audioCount: 0,
       lastActiveAt: item.createdAt.toISOString(),
     };
 
@@ -223,6 +235,7 @@ export async function GET() {
     current.totalTokens += item.totalTokens;
     current.imageCount += item.imageCount;
     current.videoCount += item.videoCount;
+    current.audioCount += item.kind === "audio" ? 1 : 0;
     if (item.createdAt > new Date(current.lastActiveAt)) current.lastActiveAt = item.createdAt.toISOString();
     map.set(key, current);
   }
@@ -231,6 +244,7 @@ export async function GET() {
     if (item.source === "character_image_generation" || item.source === "scene_image_generation" || item.source === "prop_image_generation" || item.source === "shot_image_generation") {
       item.imageCount = workspaceAssetGenerationCounts[item.source];
       item.videoCount = 0;
+      item.audioCount = 0;
       continue;
     }
     if (item.source !== "conversation") continue;
@@ -239,6 +253,7 @@ export async function GET() {
     if (workspaceUsage.totalTokens > item.totalTokens) item.totalTokens = workspaceUsage.totalTokens;
     item.imageCount = workspaceUsage.imageCount;
     item.videoCount = workspaceUsage.videoCount;
+    item.audioCount = workspaceUsage.audioCount;
   }
 
   return Response.json({

@@ -88,7 +88,7 @@ export function getMentionNames(text: string): string[] {
 export function removeMentionName(text: string, referenceName: string, options?: { trim?: boolean }): string {
   if (!text || !referenceName) return text;
   let next = text
-    .replace(new RegExp(`@${escapeMentionRegExp(referenceName)}(?=$|[\\s，。！？；;、])`, "g"), "")
+    .replace(new RegExp(`@${escapeMentionRegExp(referenceName)}(?=$|[@\\s，。！？；;、])`, "g"), "")
     .replace(/[ \t]{2,}/g, " ");
   if (options?.trim) {
     next = next.replace(/\s+$/g, "").replace(/^\s+/g, "");
@@ -99,7 +99,7 @@ export function removeMentionName(text: string, referenceName: string, options?:
 // 把某个引用名的【所有】@出现替换成给定文本（发给模型前清洗 @资产名 用）。
 export function replaceMentionName(text: string, referenceName: string, replacement: string): string {
   if (!text || !referenceName) return text;
-  return text.replace(new RegExp(`@${escapeMentionRegExp(referenceName)}(?=$|[\\s，。！？；;、])`, "g"), replacement);
+  return text.replace(new RegExp(`@${escapeMentionRegExp(referenceName)}(?=$|[@\\s，。！？；;、])`, "g"), replacement);
 }
 
 // ============ contenteditable 选区引擎（对话流输入框 / 工作流节点输入框共用） ============

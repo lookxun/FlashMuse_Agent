@@ -2,28 +2,25 @@
 
 > 历史 END-OF-SESSION 记录都在 `historical-handover-docs-last-used-2026-07-21/05-next-actions.md`（很长）。这里只留当前有效待办。
 
-## ✅ 当前状态（2026-08-24 第九十次会话末）：**四方 `v1.0.1.7`**
+## ✅ 当前状态（2026-08-26 第九十三次会话末）：**四方 `v1.0.1.10`，已 push**
 
 | | 版本 / 状态 |
 |---|---|
-| 线上（测服=正式服） | **`v1.0.1.7`**。两服 OpenRouter 仍是闪念专用 key。 |
-| 本地 | **`v1.0.1.7`**（本会话 commit + push） |
+| 本地 = 测试服 = 正式服 = GitHub | **`v1.0.1.10`** |
 | 自查 | `tsc` 0 |
-| 回滚点 | 正式服 app `.../20260824-205056-presync-v1.0.1.7` |
+| 迁移 / 基建 | 无新迁移、无 compose/nginx |
+| 回滚点 | 正式服 app `.../20260826-154406-presync-v1.0.1.10` |
 
 ### 🎯 待办 0
 
-1. Agent 仍逼吐 JSON。闲聊改人话直出没拍板。提示词瘦身已否。
-2. `modal.md` / `tmp-openrouter` / `原型测试.url` 别 `git add -A`。上一批「带上传生成后看后台/预览参考」仍没端到端验。
-3. 语速别做。Kimi 别写成 MiniMax。⛔ 正式服公告别动。Fish 字数别拆成两个 key。
-4. 原型测试页以后加测试：左边菜单加一项，面板写在 `src/app/proto-test/view.html`。只本地（线上 404）。
-5. GPT Terra / Terra Pro **没有思考正文**（上游 `reasoning` 空、思考 token=0），只显示「已思考 xx秒」。别再当漏接。
-6. Agent 优先 K3。流式请求只打客户端指定的那一个模型，别再在服务端把整条链扩一遍。
-7. 流式没采到 `usage.usd` 时**不要写 0 分账本**（会把同 requestId 锁死白送）。判据：`text-provider-stream-missing-usage` 日志。
+1. ✅ sticky 已真机走界面：新建对话 / 切到旧会话（以前 sticky 过 kimi）都先走后台优先 deepseek。切模式也写入 scope。
+2. Agent 仍逼吐 JSON。闲聊改人话直出没拍板。语速别做。⛔ 正式服公告别动。
+3. `modal.md` / `tmp-openrouter` / `原型测试.url` 别 `git add -A`。
+4. `@名` 只认输入框已有素材。单独 `@xxx` 当普通字。M041/M038/M039 已在测服验过。流式缺 usage 不许写 0 分账本。
 
 ### ⚠️ 血泪教训（本对话框仍有效）
 
-写文件只用 edit/write。正文没出来前都要「正在思考中」；只在思考/正文正在出字时藏。`\u200b` 不是可见思考。Gemini 加密块 `\u200b` 不能挡住后面的真思考；`reasoning_details` 可能是累计快照，只追加增量。解析 SSE 用 `parseLenientModelJson`。Agent 不要每次把整段 `content` 再推一遍（会出完再出一次）；只推 delta，出过的正文不许换成更短/另一段。思考三角只在收起时量宽度，展开后再量会以为不用三角。给列表行塞光标要递归进最后一个 `<p>`，别塞进 flex 外壳（光标会飞到最右）。`shouldPlanAgentTask` 旧正则漏「帮我生一张图」「生成角色图」→ 只聊天不调生图；引导按钮带 `assetTargetType` 也要走规划，规划回 chat 时明确生图/生视频要改回 image/video。Gemini 图标走 `GeminiIcon`（`modelId.includes("gemini")`），Veo 仍 `google/` Google 标。四个选模型菜单（对话流图/视频 + 工作流图/视频节点）不要 `max-h` / 滚动条，后台开着的全列出来。
+写文件只用 edit/write。Agent 优先不再写死 K3，后台「AI聊天对话」最下一行下拉+开关。开关开着下拉禁用。接上后粘 `lastAgentChatModel`，失败才按优先→原顺序再找。删 @名 和解析 @名 的终止符必须含 `@`（`@000@A_old`）。`@名` 有效 = 输入框已有对应图/视频/音频；禁止再按 @名 从整个资产库捞图。用户内容标 `data-no-translate`；繁体过期字靠 converted WeakMap，当前值等于已转换结果才跳过。积分表「图片/视频/语音」。
 
 ---
 

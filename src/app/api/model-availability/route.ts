@@ -27,5 +27,7 @@ export async function GET() {
     // 菜单「约X积分/张」按真实后台汇率算，随这趟车下发（不新增请求）。
     creditRate: { usdToCnyRate: creditSettings.usdToCnyRate, creditsPerCny: creditSettings.creditsPerCny },
     editModelToggles: getAdminSystemSettings().editModelToggles,
+    agentPriorityModelId: getAdminSystemSettings().agentPriorityModelId,
+    agentPriorityEnabled: getAdminSystemSettings().agentPriorityEnabled,
   });
 }
