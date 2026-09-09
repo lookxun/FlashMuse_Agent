@@ -1,4 +1,5 @@
 import { MEMBERSHIP_PERIOD_LABELS, getMembershipTierConfig, type MembershipTier } from "@/lib/membership";
+import { formatBeijingDateTime } from "@/lib/beijing-time";
 
 export const DEMO_RECHARGE_EMAILS = ["lookxun@163.com", "176107103@qq.com"];
 
@@ -27,7 +28,7 @@ export type CreditChargeRecord = {
 };
 
 export function formatMembershipDateTime(value: Date | string) {
-  return new Date(value).toLocaleString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).replace(/\//g, "-");
+  return formatBeijingDateTime(value);
 }
 
 export function getDemoRechargeHistory(email: string): { membership: MembershipChargeRecord[]; credits: CreditChargeRecord[] } {

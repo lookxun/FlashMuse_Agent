@@ -2,6 +2,7 @@
 
 import { Fragment, useMemo, useState } from "react";
 import { RiArrowDownSLine, RiArrowRightSLine, RiSearchLine } from "react-icons/ri";
+import { formatBeijingDateTime } from "@/lib/beijing-time";
 import { getCachedAdminDetail, setCachedAdminDetail } from "./admin-detail-cache";
 import { AdminDetailLoading, AdminHistoryDialog, AdminMediaDialog, DetailItem, SmallStat, type AdminMediaDialogType, type AdminMediaItem, type AdminUserRow } from "./admin-users-panel";
 import { CreditCategoryDialog, CreditFlowDialog, type AdminCreditCategoryDetail, type AdminCreditFlowItem, type AdminCreditUser } from "./admin-credits-panel";
@@ -113,7 +114,7 @@ function mediaItemToFlowItem(item: AdminMediaItem, index: number, creditLookup?:
     isReversePrompt: item.isReversePrompt,
     promptText: item.prompt,
     promptConstraints: item.promptConstraints,
-    createdAtLabel: item.createdAtTs ? new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(item.createdAtTs)) : "-",
+    createdAtLabel: item.createdAtTs ? formatBeijingDateTime(item.createdAtTs, { short: true }) : "-",
     createdAtTs: item.createdAtTs ?? 0,
   };
 }

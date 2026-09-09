@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { formatBeijingDateTime } from "@/lib/beijing-time";
 
 type ServerInfoRow = {
   title: string;
@@ -48,7 +49,7 @@ export function AdminServerInfoPanel() {
       const data = (await response.json().catch(() => ({}))) as { error?: string; rows?: ServerInfoRow[]; refreshedAt?: string };
       if (!response.ok || !Array.isArray(data.rows)) throw new Error(data.error || "读取服务器信息失败");
       setRows(data.rows);
-      setRefreshedAt(data.refreshedAt ? new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" }).format(new Date(data.refreshedAt)) : "");
+      setRefreshedAt(data.refreshedAt ? formatBeijingDateTime(data.refreshedAt, { short: true, withSeconds: true }) : "");
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "读取服务器信息失败");
     } finally {

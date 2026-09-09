@@ -5,6 +5,7 @@ import { getCreditSettings } from "@/lib/credits";
 import { audioGenerationModels, bytePlusImageGenerationModels, bytePlusVideoGenerationModels, imageGenerationModels, videoGenerationModels } from "@/lib/models";
 import { buildJobReferenceItems, parseStoredInputReferences } from "@/lib/generation-jobs";
 import { prisma } from "@/lib/prisma";
+import { formatBeijingDateTime } from "@/lib/beijing-time";
 import { Prisma } from "@prisma/client";
 import type { AdminCreditCategoryDetail, AdminCreditConversationDetail, AdminCreditFlowItem, AdminCreditUser } from "../../../admin-credits-panel";
 import type { AdminConversation, AdminConversationMessage, AdminMediaItem, AdminUserRow } from "../../../admin-users-panel";
@@ -39,12 +40,11 @@ function getStringArray(value: unknown) {
 }
 
 function formatDate(value: Date | null | undefined) {
-  if (!value) return "-";
-  return new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(value);
+  return formatBeijingDateTime(value);
 }
 
 function formatShortDate(value: Date) {
-  return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(value);
+  return formatBeijingDateTime(value, { short: true });
 }
 
 function formatTimestamp(value: unknown) {

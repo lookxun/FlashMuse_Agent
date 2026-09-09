@@ -114,6 +114,7 @@ function RechargeHistoryDialog({
   const [adminGrants, setAdminGrants] = useState<MembershipChargeRecord[] | null>(null);
   const [paidCredits, setPaidCredits] = useState<CreditChargeRecord[] | null>(null);
   const [copiedOrderNo, setCopiedOrderNo] = useState("");
+  const [creditPage, setCreditPage] = useState(1);
   const copyOrderNo = (orderNo: string) => {
     void navigator.clipboard?.writeText(orderNo).then(() => {
       setCopiedOrderNo(orderNo);
@@ -139,6 +140,7 @@ function RechargeHistoryDialog({
   }, [kind, user.id]);
   useEffect(() => {
     if (kind !== "credits") return;
+    setCreditPage(1);
     let cancelled = false;
     void fetch(`/admin/api/membership/credit-orders?userId=${encodeURIComponent(user.id)}`, { cache: "no-store" })
       .then((response) => response.json())
@@ -155,6 +157,12 @@ function RechargeHistoryDialog({
   }, [kind, user.id]);
   const membershipRows = [...history.membership, ...(adminGrants ?? [])].sort((left, right) => right.at.localeCompare(left.at));
   const creditRows = paidCredits ?? [];
+  const creditPageSize = 12;
+  const creditTotalPages = Math.max(1, Math.ceil(creditRows.length / creditPageSize));
+  const creditCurrentPage = Math.min(creditPage, creditTotalPages);
+  const pagedCreditRows = creditRows.slice((creditCurrentPage - 1) * creditPageSize, creditCurrentPage * creditPageSize);
+  const creditRangeStart = creditRows.length > 0 ? (creditCurrentPage - 1) * creditPageSize + 1 : 0;
+  const creditRangeEnd = Math.min(creditCurrentPage * creditPageSize, creditRows.length);
   const title = kind === "membership" ? "会员充值" : "积分充值";
   const displayName = user.nickname || user.email;
   return (
@@ -213,7 +221,7 @@ function RechargeHistoryDialog({
                 </tr>
               </thead>
               <tbody>
-                {creditRows.map((item) => {
+                {pagedCreditRows.map((item) => {
                   const payStatus = item.payStatus ?? "unpaid";
                   const payLabel = payStatus === "paid" ? "付款成功" : payStatus === "pending" ? "待支付" : "未付款";
                   const payClass = payStatus === "paid" ? "text-[#22a06b]" : payStatus === "pending" ? "text-[#d4a017]" : "text-[#e24c4c]";
@@ -237,8 +245,22 @@ function RechargeHistoryDialog({
                 })}
               </tbody>
             </table>
-          ) : <div className="py-16 text-center text-[13px] text-[#999999]">暂无积分充值</div>}
+           ) : <div className="py-16 text-center text-[13px] text-[#999999]">暂无积分充值</div>}
         </div>
+        {kind === "credits" && creditRows.length > 0 ? (
+          <div className="flex shrink-0 items-center justify-between border-t border-[#eeeeee] px-6 py-3 text-[13px] text-[#777777]">
+            <div>共 {formatNumber(creditRows.length)} 条，当前显示 {creditRangeStart}-{creditRangeEnd} 条</div>
+            <div className="flex items-center gap-2">
+              <button type="button" disabled={creditCurrentPage <= 1} onClick={() => setCreditPage((value) => Math.max(1, value - 1))} className="h-8 rounded-[8px] border border-[#e7e7e7] bg-white px-3 text-[#555555] transition hover:border-[#367cee] hover:text-[#367cee] disabled:cursor-not-allowed disabled:text-[#c5c5c5] disabled:hover:border-[#e7e7e7]">
+                <span style={{ fontSize: 13 }}>上一页</span>
+              </button>
+              <div className="min-w-[72px] text-center text-[#333333]">{creditCurrentPage} / {creditTotalPages}</div>
+              <button type="button" disabled={creditCurrentPage >= creditTotalPages} onClick={() => setCreditPage((value) => Math.min(creditTotalPages, value + 1))} className="h-8 rounded-[8px] border border-[#e7e7e7] bg-white px-3 text-[#555555] transition hover:border-[#367cee] hover:text-[#367cee] disabled:cursor-not-allowed disabled:text-[#c5c5c5] disabled:hover:border-[#e7e7e7]">
+                <span style={{ fontSize: 13 }}>下一页</span>
+              </button>
+            </div>
+          </div>
+        ) : null}
       </div>
     </div>
   );

@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/prisma";
+import { addBeijingDays, beijingDayKey, beijingDayLabel, formatBeijingDateTime, startOfBeijingDay } from "@/lib/beijing-time";
 import { bytePlusImageGenerationModels, bytePlusVideoGenerationModels, imageGenerationModels, videoGenerationModels } from "@/lib/models";
 
 /**
@@ -156,29 +157,24 @@ function num(value: unknown) {
 }
 
 function startOfLocalDay(value = new Date()) {
-  const date = new Date(value);
-  date.setHours(0, 0, 0, 0);
-  return date;
+  return startOfBeijingDay(value);
 }
 
 function addDays(value: Date, days: number) {
-  const date = new Date(value);
-  date.setDate(date.getDate() + days);
-  return date;
+  return addBeijingDays(value, days);
 }
 
 function dayKey(value: Date) {
-  return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(value.getDate()).padStart(2, "0")}`;
+  return beijingDayKey(value);
 }
 
 function dayLabel(value: Date) {
-  return `${String(value.getMonth() + 1).padStart(2, "0")}/${String(value.getDate()).padStart(2, "0")}`;
+  return beijingDayLabel(value);
 }
 
 /** ⚠️ 只在服务端调用（见 FailureTriageReason 上的注释：客户端 format 会触发 hydration mismatch）。 */
 function dateTimeLabel(value: Date | null) {
-  if (!value) return "-";
-  return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(value);
+  return formatBeijingDateTime(value, { short: true });
 }
 
 function agoLabel(value: Date | null) {
@@ -246,8 +242,8 @@ export async function getAdminFailureTriageData(): Promise<FailureTriageData> {
     safeRows(() => prisma.$queryRawUnsafe<Array<{ kind: string; status: string; count: bigint }>>(
       `SELECT "kind", "status", COUNT(*)::bigint AS count FROM "GenerationEvent" GROUP BY 1,2`,
     )),
-    safeRows(() => prisma.$queryRawUnsafe<Array<{ day: Date; kind: string; count: bigint }>>(
-      `SELECT date_trunc('day', "createdAt") AS day, "kind", COUNT(*)::bigint AS count
+    safeRows(() => prisma.$queryRawUnsafe<Array<{ day: string; kind: string; count: bigint }>>(
+      `SELECT to_char("createdAt" AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD') AS day, "kind", COUNT(*)::bigint AS count
        FROM "GenerationEvent"
        WHERE "status" = 'failed' AND "createdAt" >= $1
        GROUP BY 1,2`,
@@ -379,7 +375,7 @@ export async function getAdminFailureTriageData(): Promise<FailureTriageData> {
   // ---- 趋势 ----
   const trendMap = new Map<string, { image: number; video: number; audio: number }>();
   for (const row of trendRows) {
-    const key = dayKey(new Date(row.day));
+    const key = row.day;
     const entry = trendMap.get(key) ?? { image: 0, video: 0, audio: 0 };
     if (row.kind === "audio") entry.audio += num(row.count);
     else if (row.kind === "video") entry.video += num(row.count);

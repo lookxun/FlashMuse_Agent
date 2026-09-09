@@ -28,6 +28,7 @@ import {
   type MembershipUpgradeQuote,
 } from "@/lib/membership";
 import { getSupportedImageResolutions, getSupportedVideoResolutions } from "@/lib/models";
+import { formatBeijingDateTime } from "@/lib/beijing-time";
 import type { CreditChargeRecord, MembershipChargeRecord } from "@/lib/membership-purchase-records";
 
 /** `/api/membership/quote` 的返回（服务端算好的钱和积分，前端只显示）。 */
@@ -106,7 +107,7 @@ function formatMembershipDate(value?: string | Date | null) {
   if (!value) return "—";
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) return "—";
-  return date.toLocaleString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).replace(/\//g, "-");
+  return formatBeijingDateTime(date);
 }
 
 function membershipRemainingDays(expiresAt?: string | null) {
@@ -281,7 +282,7 @@ export function MembershipModal({
                 <span className="inline-flex items-center gap-1">
                   {(() => { const Icon = membershipCardStyles[currentTier].Icon; return <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />; })()}
                   {getMembershipLabel(currentTier)}
-                  {currentTier !== "free" && currentExpiresAt ? <span className="text-[#111111]"> {new Date(currentExpiresAt).toLocaleString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).replace(/\//g, "-")}</span> : null}
+                  {currentTier !== "free" && currentExpiresAt ? <span className="text-[#111111]"> {formatBeijingDateTime(currentExpiresAt)}</span> : null}
                   {currentTier !== "free" && currentExpiresAt ? " 到期" : ""}
                 </span>
                 <span className="h-3 w-px shrink-0 bg-[#d8d8d8]" />
@@ -556,7 +557,7 @@ export function MembershipModal({
                   <div className="mt-0.5 flex min-w-0 items-center gap-1 text-[13px] text-[#888888]">
                     {(() => { const Icon = membershipCardStyles[currentTier].Icon; return <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />; })()}
                     {getMembershipLabel(currentTier)}
-                    {currentTier !== "free" && currentExpiresAt ? <span className="text-[#111111]"> {new Date(currentExpiresAt).toLocaleString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false }).replace(/\//g, "-")}</span> : null}
+                    {currentTier !== "free" && currentExpiresAt ? <span className="text-[#111111]"> {formatBeijingDateTime(currentExpiresAt)}</span> : null}
                     {currentTier !== "free" && currentExpiresAt ? " 到期" : ""}
                   </div>
                 </div>

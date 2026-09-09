@@ -2,13 +2,21 @@ import { NextResponse } from "next/server";
 import { getCurrentUser, jsonError } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { getDemoRechargeHistory, ledgerToMembershipCharge } from "@/lib/membership-purchase-records";
-import { listPaidCreditRecords } from "@/lib/payment-orders";
+import { listPaidCreditRecords, reconcileRecentCreditOrders } from "@/lib/payment-orders";
+import { rateLimitAllow } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
 
 export async function GET() {
   const user = await getCurrentUser();
   if (!user) return jsonError("请先登录", 401);
+
+  // ⭐ 打开充值页 = 用户最可能来看账的时刻，顺手把"付了钱但通知丢了"的单补上。
+  //   （异步通知可能因为地址配错/网关不通/我们在重启而丢，而前端轮询只在弹层开着时跑。）
+  //   ⚠️ 限流 + fail-open：补单失败绝不能让充值记录打不开。
+  if (rateLimitAllow(`pay-reconcile:user:${user.id}`, 10, 5 * 60_000)) {
+    await reconcileRecentCreditOrders(user.id).catch(() => undefined);
+  }
 
   const [grantRows, monthlyGrants] = await Promise.all([
     prisma.creditLedger.findMany({

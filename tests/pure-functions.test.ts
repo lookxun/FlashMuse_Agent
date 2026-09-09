@@ -42,8 +42,8 @@ describe("formatElapsedTime", () => {
 });
 
 describe("formatMessageTime", () => {
-  it("输出 yyyy/M/d HH:mm", () => {
-    const ts = new Date(2026, 7, 2, 9, 5).getTime();
+  it("输出北京时间 yyyy/M/d HH:mm", () => {
+    const ts = Date.UTC(2026, 7, 2, 1, 5);
     expect(formatMessageTime(ts)).toBe("2026/8/2 09:05");
   });
 });

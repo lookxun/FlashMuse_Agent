@@ -37,6 +37,7 @@ import { MediaDurationBadge } from "@/components/media-duration-badge";
 import { parseChineseDurationSeconds } from "@/lib/media-duration-format";
 import { WorkflowCanvasState, WorkflowNode } from "@/components/workflow-tldraw-canvas";
 import { sanitizeModelOutputText } from "@/lib/text-cleanup";
+import { formatBeijingCreditLastActiveTime, formatBeijingMessageTime } from "@/lib/beijing-time";
 export const HISTORY_INITIAL_SESSION_COUNT = 8;
 export const HISTORY_LOAD_MORE_COUNT = 5;
 export const WORKFLOW_INITIAL_ITEM_COUNT = 10;
@@ -3543,28 +3544,11 @@ export function getSessionTitle(text: string) {
 }
 
 export function formatMessageTime(value?: number) {
-  const date = new Date(value ?? Date.now());
-  const pad = (item: number) => String(item).padStart(2, "0");
-
-  return `${date.getFullYear()}/${date.getMonth() + 1}/${date.getDate()} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  return formatBeijingMessageTime(value);
 }
 
 export function formatCreditLastActiveTime(value: string) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "--";
-
-  const now = Date.now();
-  const elapsed = now - date.getTime();
-  if (elapsed >= 0 && elapsed < 24 * 60 * 60 * 1000) {
-    return date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false });
-  }
-
-  const currentYear = new Date(now).getFullYear();
-  if (date.getFullYear() === currentYear) {
-    return date.toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" });
-  }
-
-  return String(date.getFullYear());
+  return formatBeijingCreditLastActiveTime(value);
 }
 
 export function formatElapsedTime(startedAt?: number, now = Date.now()) {

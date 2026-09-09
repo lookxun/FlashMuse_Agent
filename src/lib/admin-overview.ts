@@ -2,6 +2,7 @@ import { prisma } from "@/lib/prisma";
 import { bytePlusImageGenerationModels, bytePlusVideoGenerationModels, audioGenerationModels, imageGenerationModels, videoGenerationModels } from "@/lib/models";
 import { FAILURE_REASON_SQL } from "@/lib/admin-failure-triage";
 import { ONLINE_WINDOW_MS } from "@/lib/online-users";
+import { addBeijingDays, beijingDayKey, beijingDayLabel, formatBeijingMdHm, startOfBeijingDay } from "@/lib/beijing-time";
 
 /**
  * 运营概览（概览页）真实数据聚合。
@@ -54,20 +55,16 @@ export type AdminOverviewData = {
 };
 
 function startOfLocalDay(value = new Date()) {
-  const date = new Date(value);
-  date.setHours(0, 0, 0, 0);
-  return date;
+  return startOfBeijingDay(value);
 }
 function addDays(value: Date, days: number) {
-  const date = new Date(value);
-  date.setDate(date.getDate() + days);
-  return date;
+  return addBeijingDays(value, days);
 }
 function dayKey(value: Date) {
-  return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(value.getDate()).padStart(2, "0")}`;
+  return beijingDayKey(value);
 }
 function dayLabel(value: Date) {
-  return `${String(value.getMonth() + 1).padStart(2, "0")}/${String(value.getDate()).padStart(2, "0")}`;
+  return beijingDayLabel(value);
 }
 function recentDays(count: number) {
   const today = startOfLocalDay();
@@ -171,8 +168,8 @@ export async function getAdminOverviewData(): Promise<AdminOverviewData> {
   }
 
   // ---- 生成趋势（MediaAsset 按天） ----
-  const mediaTrendRows = await prisma.$queryRaw<Array<{ day: Date; mediatype: string; bucket: string; count: bigint }>>`
-    SELECT date_trunc('day', "firstSeenAt") AS day,
+  const mediaTrendRows = await prisma.$queryRaw<Array<{ day: string; mediatype: string; bucket: string; count: bigint }>>`
+    SELECT to_char("firstSeenAt" AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD') AS day,
       "mediaType" AS mediatype,
       CASE WHEN "workspaceKind" = 'workflow' THEN 'workflow' ELSE 'conversation' END AS bucket,
       COUNT(*)::bigint AS count
@@ -186,7 +183,7 @@ export async function getAdminOverviewData(): Promise<AdminOverviewData> {
   const videoTrendMap = new Map<string, { conversation: number; workflow: number }>();
   const audioTrendMap = new Map<string, { conversation: number; workflow: number }>();
   for (const row of mediaTrendRows) {
-    const key = dayKey(new Date(row.day));
+    const key = row.day;
     const map = row.mediatype === "audio" ? audioTrendMap : row.mediatype === "video" ? videoTrendMap : imageTrendMap;
     const entry = map.get(key) ?? { conversation: 0, workflow: 0 };
     if (row.bucket === "workflow") entry.workflow += num(row.count); else entry.conversation += num(row.count);
@@ -350,10 +347,10 @@ export async function getAdminOverviewData(): Promise<AdminOverviewData> {
     last_seen AS (SELECT "userId", MAX("lastSeenAt") AS seen FROM "Session" GROUP BY "userId")
     SELECT d.days,
       COUNT(u.id)::bigint AS cohort,
-      COUNT(u.id) FILTER (WHERE ls.seen >= (date_trunc('day', u."createdAt") + (d.days || ' days')::interval))::bigint AS retained
+      COUNT(u.id) FILTER (WHERE ls.seen >= (((date_trunc('day', u."createdAt" AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai') + (d.days || ' days')::interval) AT TIME ZONE 'Asia/Shanghai') AT TIME ZONE 'UTC'))::bigint AS retained
     FROM d
-    JOIN "User" u ON u."createdAt" >= (${todayStart}::timestamp - (d.days || ' days')::interval)
-      AND u."createdAt" < (${todayStart}::timestamp - (d.days || ' days')::interval + '1 day'::interval)
+    JOIN "User" u ON u."createdAt" >= (${todayStart} - (d.days || ' days')::interval)
+      AND u."createdAt" < (${todayStart} - (d.days || ' days')::interval + '1 day'::interval)
     LEFT JOIN last_seen ls ON ls."userId" = u.id
     GROUP BY d.days ORDER BY d.days`;
   const retentionLabelMap: Record<number, string> = { 1: "次日留存", 3: "3日留存", 7: "7日留存", 30: "30日留存" };
@@ -400,29 +397,29 @@ export async function getAdminOverviewData(): Promise<AdminOverviewData> {
   topConsumeIds.forEach((id) => userIds.add(id));
   const userInfoRows = await prisma.user.findMany({ where: { id: { in: Array.from(userIds) } }, select: { id: true, email: true, nickname: true } });
   const userInfo = new Map(userInfoRows.map((u) => [u.id, u.nickname || u.email]));
-  const fmtTime = (d: Date) => `${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  const fmtTime = (d: Date) => formatBeijingMdHm(d);
   const activeUserTop: RankItem[] = topActiveIds.map((id) => ({ label: userInfo.get(id) || id, value: fmtTime(activeSeen.get(id) as Date), note: id }));
   const creditUserTop: RankItem[] = topConsumeIds.map((id) => ({ label: userInfo.get(id) || id, value: (userConsumeMap.get(id) ?? 0).toLocaleString("en-US"), note: id }));
 
   // ---- 活跃/新增趋势 ----
   const [sessionDailyRows, userDailyRows] = await Promise.all([
-    prisma.$queryRaw<Array<{ day: Date; users: bigint }>>`
-      SELECT date_trunc('day', "lastSeenAt") AS day, COUNT(DISTINCT "userId")::bigint AS users
+    prisma.$queryRaw<Array<{ day: string; users: bigint }>>`
+      SELECT to_char("lastSeenAt" AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD') AS day, COUNT(DISTINCT "userId")::bigint AS users
       FROM "Session" WHERE "lastSeenAt" >= ${thirtyDaysAgo} GROUP BY 1`,
-    prisma.$queryRaw<Array<{ day: Date; users: bigint }>>`
-      SELECT date_trunc('day', "createdAt") AS day, COUNT(*)::bigint AS users
+    prisma.$queryRaw<Array<{ day: string; users: bigint }>>`
+      SELECT to_char("createdAt" AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD') AS day, COUNT(*)::bigint AS users
       FROM "User" WHERE "createdAt" >= ${thirtyDaysAgo} GROUP BY 1`,
   ]);
-  const activeByDay = new Map(sessionDailyRows.map((row) => [dayKey(new Date(row.day)), num(row.users)]));
-  const newByDay = new Map(userDailyRows.map((row) => [dayKey(new Date(row.day)), num(row.users)]));
+  const activeByDay = new Map(sessionDailyRows.map((row) => [row.day, num(row.users)]));
+  const newByDay = new Map(userDailyRows.map((row) => [row.day, num(row.users)]));
   const activeTrend: TrendPoint[] = days30.map((day) => ({ label: dayLabel(day), value: activeByDay.get(dayKey(day)) ?? 0, secondaryValue: newByDay.get(dayKey(day)) ?? 0 }));
 
   // ---- 成本消耗趋势 ----
-  const costDailyRows = await prisma.$queryRaw<Array<{ day: Date; credits: bigint; usd: number }>>`
-    SELECT date_trunc('day', "createdAt") AS day, SUM("credits")::bigint AS credits, SUM("usd") AS usd
+  const costDailyRows = await prisma.$queryRaw<Array<{ day: string; credits: bigint; usd: number }>>`
+    SELECT to_char("createdAt" AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai', 'YYYY-MM-DD') AS day, SUM("credits")::bigint AS credits, SUM("usd") AS usd
     FROM "CreditLedger" WHERE "direction" = 'consume' AND "createdAt" >= ${thirtyDaysAgo} GROUP BY 1`;
-  const creditsByDay = new Map(costDailyRows.map((row) => [dayKey(new Date(row.day)), num(row.credits)]));
-  const usdByDay = new Map(costDailyRows.map((row) => [dayKey(new Date(row.day)), Number(num(row.usd).toFixed(2))]));
+  const creditsByDay = new Map(costDailyRows.map((row) => [row.day, num(row.credits)]));
+  const usdByDay = new Map(costDailyRows.map((row) => [row.day, Number(num(row.usd).toFixed(2))]));
   const costTrend: TrendPoint[] = days30.map((day) => ({ label: dayLabel(day), credits: creditsByDay.get(dayKey(day)) ?? 0, usd: usdByDay.get(dayKey(day)) ?? 0 }));
 
   // ---- 占比/分布 ----

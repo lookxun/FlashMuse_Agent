@@ -6,6 +6,11 @@ function readPem(value: string | undefined) {
   return (value ?? "").replace(/\\n/g, "\n").trim();
 }
 
+/** 本应用的支付宝 appId（回调里校验 `app_id` 用；没配时返回空串）。 */
+export function getAlipayAppId() {
+  return (process.env.ALIPAY_APP_ID ?? "").trim();
+}
+
 export function getAlipayNotifyUrl() {
   const configured = (process.env.ALIPAY_NOTIFY_URL ?? "").trim();
   if (configured) return configured;
@@ -55,6 +60,19 @@ export async function alipayPrecreate(params: { orderNo: string; payCny: number;
   return qrCode;
 }
 
+/**
+ * 查单（`alipay.trade.query`）。
+ *
+ * ⭐⭐ **这是「这笔钱到底付没付」的唯一权威判据**：它是我们用自己的私钥签名发起的
+ *   server-to-server 调用，且 alipay-sdk 会用「支付宝公钥」对 v3 响应做验签
+ *   （`alipay-timestamp\nalipay-nonce\nbody\n`，见 alipay.js 的 `verifySignatureV3`）。
+ *   ⛔ **绝不许拿异步通知报文里的 `trade_status` / `total_amount` 直接加分** ——
+ *   那份报文是外网任何人都能 POST 过来的，只有验签能挡；而验签方式将来一变就成了洞。
+ *   所以链路设计成：收到通知只当"去查一下"的触发器，加分永远看这个查单结果。
+ *
+ * ⚠️ 交易不存在（用户压根没扫码）时上游返回 4xx，SDK 会 **throw**（不是返回空）→
+ *   调用方必须 try/catch，并且**不能把 throw 当成"没付钱"的证据**（网络抖动也走这里）。
+ */
 export async function alipayQuery(orderNo: string) {
   const sdk = getAlipaySdk();
   const result = await sdk.curl<{
@@ -80,3 +98,32 @@ export async function alipayQuery(orderNo: string) {
 export function verifyAlipayNotify(payload: Record<string, string>) {
   return getAlipaySdk().checkNotifySignV2(payload);
 }
+
+/**
+ * 解析支付宝异步通知的报文体（唯一实现，放在 lib 里是为了能写纯函数回归）。
+ *
+ * ⭐ 先按 `application/x-www-form-urlencoded` 解（v1 经典通知就是这种），
+ *   解不出 `out_trade_no` 再试 JSON（万一将来换成 v3 那套 JSON 通知，我们不会直接 400）。
+ * ⚠️ **form 解析必须只 decode 一次**：`URLSearchParams` 已经解码过，所以验签要用
+ *   `checkNotifySignV2`（raw=true，内部不再 decodeURIComponent）。⛔ 用 `checkNotifySign`
+ *   会二次解码、含 `%` 或中文的报文验签必挂。
+ */
+export function parseAlipayNotifyBody(raw: string, contentType = ""): Record<string, string> {
+  const payload: Record<string, string> = {};
+  if (!contentType.includes("json")) {
+    for (const [key, value] of new URLSearchParams(raw).entries()) payload[key] = value;
+    if (payload.out_trade_no) return payload;
+  }
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+        if (typeof value === "string" || typeof value === "number") payload[key] = String(value);
+      }
+    }
+  } catch {
+    // 不是 JSON：保留上面 form 解析出来的内容
+  }
+  return payload;
+}
+

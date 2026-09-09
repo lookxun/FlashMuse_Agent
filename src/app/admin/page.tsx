@@ -18,6 +18,7 @@ import { AdminOverview2 } from "./admin-overview-2";
 import { AdminFailureTriagePanel } from "./admin-failure-triage-panel";
 import { getAdminOverviewData } from "@/lib/admin-overview";
 import { getAdminFailureTriageData } from "@/lib/admin-failure-triage";
+import { formatBeijingDateTime, startOfBeijingDay } from "@/lib/beijing-time";
 import { getOnlineUserIds } from "@/lib/online-users";
 import { AdminUsersPanel, type AdminUserRow } from "./admin-users-panel";
 import { AdminAccountFeaturesPanel, type AdminAccountFeatureRow } from "./admin-account-features-panel";
@@ -58,18 +59,11 @@ function getAdminTab(value: string | string[] | undefined): AdminTab {
 }
 
 function formatDate(value: Date | null | undefined) {
-  if (!value) return "-";
-  return new Intl.DateTimeFormat("zh-CN", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(value);
+  return formatBeijingDateTime(value);
 }
 
 function formatShortDate(value: Date) {
-  return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(value);
+  return formatBeijingDateTime(value, { short: true });
 }
 
 function getUserLatestLoginActivity(user: { lastLoginAt: Date | null; sessions: Array<{ lastSeenAt: Date }> }) {
@@ -510,7 +504,9 @@ export default async function AdminPage({ searchParams }: { searchParams?: Promi
         },
       }),
       prisma.user.count(),
-      prisma.user.count({ where: { createdAt: { gte: new Date(new Date().setHours(0, 0, 0, 0)) } } }),
+      // ⛔ 别用 `new Date().setHours(0,0,0,0)`：服务端容器是 UTC，那样拿到的是「UTC 当天 0 点」，
+      // 「今日新增」会比北京日历日错 8 小时（唯一权威 startOfBeijingDay，见 beijing-time.ts）。
+      prisma.user.count({ where: { createdAt: { gte: startOfBeijingDay() } } }),
       prisma.user.count({ where: { disabled: true } }),
       prisma.user.aggregate({ _sum: { credits: true } }),
       // 「在线」判定与概览页共用同一份口径（src/lib/online-users.ts）。
