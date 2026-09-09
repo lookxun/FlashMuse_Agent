@@ -14,7 +14,77 @@
 >   ④ 把旧卷标题改成「卷 N · 已归档只读」并在顶部加指向新卷的提示 ⑤ 更新 `00-README.md` 文档索引里的 CHANGELOG 行。
 > - 判据不变：**版本号一样 = 测试服和正式服代码一样**（本项目核心约定，见 `AGENTS.md`）。
 
-## 📌 当前状态摘要（2026-09-09 第一百一十六次会话末）：**测试服 = 本地 = GitHub = `v1.0.1.17`；正式服仍 `v1.0.1.11`（未推）**
+## 📌 当前状态摘要（2026-09-09 第一百一十七次会话末）：**测试服 = 本地 = GitHub = `v1.0.1.19`；正式服仍 `v1.0.1.11`（未推）**
+
+| | 版本 / 状态 |
+|---|---|
+| 本地 | **`v1.0.1.19`**（已 commit `626a36e` + 已推 GitHub） |
+| 测试服 | **`v1.0.1.19`**（2026-09-09 已部署，health/x-app-version/8080 均过） |
+| GitHub | **`v1.0.1.19`**（`626a36e`，`origin/main`） |
+| 正式服 | 仍 **`v1.0.1.11`**（`a8121cd`）—— **未推正式服**（用户明确说下次再推） |
+| 自查 | `tsc` 0 |
+| 迁移 | 本批无新迁移。正式库还没跑会员 6 + PaymentOrder 那 7 个 |
+
+---
+
+## 🗒️ 第一百一十七次会话（2026-09-09）：支付宝审核已通 + 后台积分设置 + 充值记录三种付款状态 → 测试服 `v1.0.1.19` + 推 GitHub
+
+> ⭐ **最终状态**：测试服 = 本地 = GitHub = `v1.0.1.19`（commit `626a36e`）；**未推正式服**（用户明确说下次再推）。
+
+### 一、支付宝审核已通，本地/测试服都能出码付钱
+
+- 容器内用 PEM 包装私钥打 `alipay.trade.precreate`，返回真码 `https://qr.alipay.com/bax071…`，不再是 `not-online-app`。
+- 用户在本地付了真钱，积分到账。
+- ⭐ **本地能付成功不靠测试服回调**：前端每 2.5s 轮询 `/api/pay/credit-order/status` → 本地去支付宝查单。开放平台「应用网关」填的测试服地址，只影响关了弹层之后的异步通知。
+- ⭐ **应用网关 ≠ 回调地址**：那页只能填一个网关。下单时代码带 `notify_url`（env `ALIPAY_NOTIFY_URL`），测试服单仍通知测试服。上正式服：正式 env 填 `https://ali.venusface.com/api/pay/alipay/notify`，应用网关改正式地址。测试服 env 继续填 staging。
+- 查了开放平台文档：**没有「用户扫没扫码」接口**，也接不到商户后台。我们只能知道出码了、付没付成功。`WAIT_BUYER_PAY` 默认关，开了也只是「订单建了等付钱」，不是扫码事件。
+
+### 二、后台「用户充值」加第三个 tab「积分设置」
+
+- 8 档价格/积分可调，默认仍是 ¥50=250 … ¥5000=25000，默认锁定。
+- 开关开着不能改；关上才能输。价格和积分输入框挨着。开关后面「1元=xx积分」跟着输入框实时变，不用等保存。
+- 存 env `CREDIT_PACK_SETTINGS`（`writeLocalEnvValues` 只改这一行）。空=默认。
+- 下单改收 **`packIndex`**（0–7），钱和积分服务端读设置。`payCny` 可以是 0.01。加分认订单当时记下的 `credits`，不回头用当前设置复算（避免改档后把已付单卡死）。
+- 接口：`GET /api/credit-packs`（前台）、`GET/POST /admin/api/credit-pack-settings`（后台，会员关着也能改）。
+
+### 三、后台积分充值弹窗三种单都显示 + 付款情况列
+
+- 绿「付款成功」/ 黄「待支付」（15 分钟内）/ 红「未付款」（超时或 closed）。
+- 订单号后面复制按钮（点一下变对勾）。
+- 展开「X 笔」= 全部下单数（含未付）；「充值积分」仍只加已付成功的积分。
+- 前台充值记录仍只显示成功单。第一行「xx积分充值」加大，右侧绿色「付款成功」。
+
+### 四、去掉 `12424740@qq.com` 演示假数据
+
+- `DEMO_RECHARGE_EMAILS` 不再含这个测试号。连续包年/会员充值假 3 笔都没了。后台会员充值若还有笔数，只可能是真实后台赠送。
+
+### 五、部署
+
+- 中途曾把测试服最低档临时改 0.01（`v1.0.1.18`），本批用后台可调替代，硬编码已撤。
+- bump `v1.0.1.18` → `v1.0.1.19`。打包 12 文件校验一致。health / x-app-version / 8080 = v1.0.1.19。
+- commit `626a36e` 已 push。密钥扫描未纳入私钥。
+
+### 下次接着做
+
+1. 等用户说才推正式服。带 7 个迁移；正式 `.env.local` 只追加 `ALIPAY_*`；应用网关改正式 notify；⛔ 不配 `LOCAL_MEDIA_PROXY`。
+2. 测 1 分钱：后台积分设置把第 1 档开关关掉，价格改 0.01，积分可仍填 250。测完改回并锁上。
+3. 会员继续关。推正式服时顺带归档那 63 条兜底桶。
+
+### 改了哪些文件
+
+- `src/lib/membership.ts`（CreditPack / sanitize / packIndex）
+- `src/lib/system-settings.ts`（CREDIT_PACK_SETTINGS 读写）
+- `src/lib/payment-orders.ts`（按下标下单、后台三种单、付款状态）
+- `src/app/api/pay/credit-order/route.ts`、`src/app/api/credit-packs/route.ts`
+- `src/app/admin/api/credit-pack-settings/route.ts`、`src/app/admin/api/membership/credit-orders/route.ts`
+- `src/app/admin/admin-membership-panel.tsx`、`src/app/admin/page.tsx`
+- `src/components/credit-recharge-modal.tsx`
+- `src/lib/membership-purchase-records.ts`（去掉 12424740 假数据）
+- `.env.example`
+
+---
+
+## 📌 上一状态摘要（2026-09-09 第一百一十六次会话末）：**测试服 = 本地 = GitHub = `v1.0.1.17`；正式服仍 `v1.0.1.11`（未推）**
 
 | | 版本 / 状态 |
 |---|---|
