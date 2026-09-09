@@ -123,6 +123,19 @@ sudo /opt/flashmuse/scripts/flashmuse-db-backup.sh --stack prod --label pre-depl
   1. **测服**：部署完必须把**当次更新的新内容全部测一遍**，有问题当场修。⛔ 别再例行点对话/工作流/资产库/付费生图/后台全套。
   2. **正式服**：用户没明确说「推正式服 / 上正式服」就**不许推**。说了才推；到正式服只用免费语音 **`fish-audio/s2.1-pro-free`** 测一下不崩即可。
   3. ⛔ 别再拿付费生图当默认冒烟。没动视频链路就别真跑生视频。
+  - 🔴🔴 **2026-09-10 更新：上面第 2 条的「免费语音冒烟」已失效** ——
+    **OpenRouter 把 fish-audio 全系下架了**（`GET /api/v1/models` 里一个 `fish` 都没有，只剩
+    `openai/gpt-audio` / `openai/gpt-audio-mini`；直打 `fish-audio/s2.1-pro-free` 返回
+    `404 No endpoints found`，测试服和正式服一致 → 供应商问题，不是我们的代码）。
+    现在点语音必得红字 `(B_498)`，**没法用它证明"没崩"**。
+  - ⭐ **替代的零成本冒烟（2026-09-10 实操，下次照抄）**，挑与本批改动相关的、且**不花钱**的：
+    ① **后台运营概览 / 失败排查页能打开 + console 0 error**（本批改了后台就必测）；
+    ② **改了按天统计就「界面每格 vs SQL 真值逐格对」**（见 AGENTS.md 那条铁律）；
+    ③ **改了支付就打开充值页 → 勾协议 → 出码（⛔ 绝不扫码付钱）**，然后回库确认
+       `qrCode` 是 `https://qr.alipay.com/...` 真码、`CreditLedger` recharge 行数没变、账户积分没变
+       —— 这一条同时验了 env 装配、precreate、订单号时间戳、审计日志属主，成本为 0；
+    ④ 登录 + `/api/auth/me` 能返回自己（证明会话链路活着）。
+    ⚠️ 出码会留一条 pending 订单（15 分钟后自动 `closed`）→ **必须写进交接文档的「留痕」节**。
 
 ---
 
@@ -279,6 +292,14 @@ sudo /opt/flashmuse/scripts/flashmuse-db-backup.sh --stack prod --label pre-depl
 6. **健康检查**：四域名 200。写成 `/tmp/health.sh`：循环 `curl -s -o /dev/null -w '%{http_code}' https://{main,api,ali,static}.venusface.com/`。
 6.5. ⭐ **发布版本信号（提示条门控，同测试服）**：正式 compose `/opt/flashmuse/docker-compose.yml` 也需有 `PUBLISHED_APP_VERSION: ""` 环境变量行（首次上此功能要手动加，位置同测试服 DATABASE_URL 行后）。**静态同步阿里正式镜像（第5步）完成后**，sed 改成本次新版 + `sudo docker compose up -d --force-recreate flashmuse-app`。保证正式服提示条弹出时静态已就绪、刷新不白屏。
 7. **env 数据**：`UPLOAD_RULE_OVERRIDES` 等是正式服独立 env（`/opt/flashmuse/data/.env.local`），不随代码同步；需要时手改 + `docker compose up -d --force-recreate flashmuse-app`。
+   ⭐⭐⭐ **支付这一批（v1.0.1.20 起）首次上正式服时额外要做 4 件事，漏一件就是收了钱不加分：**
+   - `.env.local` **只追加** `ALIPAY_APP_ID` / `ALIPAY_PRIVATE_KEY` / `ALIPAY_PUBLIC_KEY` / `ALIPAY_NOTIFY_URL=https://ali.venusface.com/api/pay/alipay/notify`
+     （⛔ 只改这几行，写完立刻断言 `OPENROUTER_API_KEY` / `BYTEPLUS_API_KEY` 长度没变）。
+    - 支付宝开放平台的**「应用网关」**改成正式地址（测试服 env 里的 `ALIPAY_NOTIFY_URL` 继续填 staging）。
+      ⭐ 用户走 `main.venusface.com`（腾讯直连）照样能充：出码/查单/加分都在腾讯 app；通知是支付宝服务器打我们，不走用户浏览器。
+   - **预置支付审计日志的属主**：`sudo touch /opt/flashmuse/data/runtime/payment-diagnostics-log.jsonl && sudo chown 1000:1000 <它>`
+     —— 否则 root 先建出 root 属主的文件，容器里的 app（uid 1000）从此写不进去、还静默无声。
+   - ⛔ **不配 `LOCAL_MEDIA_PROXY`**（生产直连火山本来就快，代码里 production 已恒 undefined，这是双保险）。
 8. commit + push GitHub（保持四方同步）。
 9. ⭐⭐ **必做：正式服也要上号，只测本批更新的内容**（正式服崩了直接影响真实用户）。
    **崩了立刻修**：能马上改就改（走"先测试服再正式服"顺序），修不了就用 `/opt/flashmuse/app-backups/<ts>-presync-vXX`

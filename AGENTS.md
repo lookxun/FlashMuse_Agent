@@ -4,6 +4,160 @@
 This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code. Heed deprecation notices.
 <!-- END:nextjs-agent-rules -->
 
+# 铁律⭐⭐⭐：Prisma 的 `DateTime` 列是 **`timestamp without time zone`（裸 UTC）** —— SQL 里转北京必须绕两步，⛔ 单次 `AT TIME ZONE 'Asia/Shanghai'` 是**反方向**（2026-09-10 抓到，上一批"改成北京时间"把 6 处按天统计改得比原来更错）
+
+Postgres 的 `AT TIME ZONE` 对两种列语义**完全相反**：
+- 对 `timestamp`（无时区，本项目 Prisma `DateTime` 全是这种，存的是裸 UTC 值）：
+  `AT TIME ZONE 'Asia/Shanghai'` = 「把这个裸值**当成**北京时间」→ 结果**减 8 小时**；
+- 对 `timestamptz`：`AT TIME ZONE 'Asia/Shanghai'` = 「转换成北京本地时间」→ 结果**加 8 小时**（这才是直觉）。
+
+⭐⭐ **本项目正确写法（唯一）**：`"createdAt" AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai'`
+（先声明"它是 UTC"、再转北京）。判据一行、二值：
+
+```sql
+WITH t AS (SELECT '2026-09-09 16:08:55'::timestamp AS ts)   -- 存的 UTC 值 = 北京 09-10 00:08
+SELECT to_char(ts,'MM-DD HH24:MI')                                        AS old_utc_way,      -- 09-09 16:08
+       to_char(ts AT TIME ZONE 'Asia/Shanghai','MM-DD HH24:MI')           AS wrong_way,        -- 09-09 08:08 ❌
+       to_char(ts AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai','MM-DD HH24:MI') AS right_way -- 09-10 00:08 ✅
+FROM t;
+```
+
+- ⭐⭐ **最值钱的一点：改错方向比不改更糟。** 原来按 UTC 分桶只有「北京 00:00–08:00」的事件归错天（错 8 小时窗口）；
+  改成单次 `AT TIME ZONE` 之后变成「北京 08:00–24:00」都归到前一天（错 **16** 小时窗口）。
+  → **凡是"调时区"的改动，必须同时算出「改前偏差」和「改后偏差」两个数**，⛔ 别只确认"我加了时区参数"。
+- ⭐ **动手前先查列类型**（一行、决定性）：
+  `SELECT table_name, column_name, data_type FROM information_schema.columns WHERE ...`；
+  再顺手查一遍「全库还有哪些 timestamptz」：
+  `SELECT table_name, column_name FROM information_schema.columns WHERE data_type='timestamp with time zone' AND table_schema='public'`。
+  本项目实测：**全库唯一的 `timestamptz` 只有 `_prisma_migrations` 的 `started_at`/`finished_at`/`rolled_back_at`**
+  → ⛔ 给那张表写诊断 SQL 时**不能**加 `AT TIME ZONE 'UTC'` 前置（我自己就因此把迁移完成时间看错了 8 小时）。
+- ⭐ **`date_trunc` 夹在中间时两头都要转**（留存 SQL 那种）：
+  `((date_trunc('day', c AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai') + N days) AT TIME ZONE 'Asia/Shanghai') AT TIME ZONE 'UTC'`
+  —— 最后必须**转回裸 UTC**，才能和同为裸 UTC 的列做比较。
+- ⭐ **服务端算「北京当天 0 点」只许用 `startOfBeijingDay()`**（`src/lib/beijing-time.ts` 唯一权威）。
+  ⛔ `new Date(new Date().setHours(0,0,0,0))` 在 UTC 容器里拿到的是「UTC 当天 0 点」，不是北京 0 点。
+- ⭐ **JS 层和 SQL 层要分开数一遍**：本次 JS 层（`beijing-time.ts` 那 5 个格式化函数 + 所有委托它的 `formatDate`）
+  **一处没错**，错的全在 SQL 层 + 一处 `setHours`。
+  ⛔ 别因为"格式化函数都带了 timeZone"就以为整批改对了。
+  ⭐ 排查清单（grep 这些就够）：`AT TIME ZONE` / `date_trunc` / `setHours` / `getHours` / `getDate()` /
+  `toISOString().slice` / `toLocaleString`（注意 `toLocaleString("en-US")` 多半是**数字千分位**、跟时间无关）。
+
+# 铁律⭐⭐：验「按天分桶的图表」只认「界面每一格 vs SQL 真值逐格相等」，且先搞清 `innerText` 里数字的排列顺序（2026-09-10 加）
+
+后台趋势图是 SVG，`innerText` 会把数字标签按 **DOM 顺序**吐出来 ——
+本项目「对话流 / 工作流」双系列柱状图是**按天交替**的（`day1-conv, day1-wf, day2-conv, day2-wf, …`），
+⛔ **不是**「先一整行对话流、再一整行工作流」。我第一次按后者数，得出的结论完全错。
+
+- ⭐ **判据**：拿同一条件的 SQL 真值（`GROUP BY 北京日, bucket`）和界面那串数字**逐格并排比**，
+  全等才算过。本次正式服 7 天 × 2 系列 = **14 格全部相等**才敢说修好了。
+- ⭐ **顺手把"改之前那种写法"的 SQL 也跑一遍当对照组** —— 两份分布明显不同，才能证明"确实是这个改动起了作用"
+  （本次旧写法把 09/04 的 43 张拆成 09/03 的 39 + 09/04 的 4，一眼看出）。
+- ⭐ **优先挑"只有一种解释"的数据点**：本次用「我今天北京 01:14 登录 → `Session.lastSeenAt` 必须归到 09/10」
+  （旧写法会归到 09/09），比看一堆历史数字快得多。
+
+# 铁律⭐⭐：归档「兜底桶」的完整姿势 —— 回日志捞原文 + 用 `npx tsx` 喂真实 `toUserErrorMessage` 判定「现在还会不会落桶」（2026-09-10 实操，63 → 15）
+
+`07-red-error-triage-and-archive.md` 讲了方法论，这条补**可照抄的操作序列**：
+
+1. **从 DB 取兜底桶全部 requestId**（两个桶一起取：`failureReason LIKE '%服务器繁忙，请稍候再试%' OR LIKE '%请求失败，请稍后再试%'`），
+   顺手按 `model` / 按北京日 分组看分布 —— 集中在某个模型/某几天，往往一眼看出根因族。
+2. ⭐ **在容器里**用 node 扫日志（⛔ 宿主机路径进不去容器）：容器内是 **`/app/.runtime/`**，
+   要一起扫 `generation-diagnostics-log.jsonl` + **`.1` / `.2`**（轮转档）+ `video-diagnostics-log.jsonl`；
+   匹配时**按 requestId 前缀**（日志里带 `:image:0` 之类后缀）；取 `upstream.body` / `error.message` 归一化后聚类。
+   ⚠️ 跑法 `sudo docker exec -w /app <app容器> node scripts/xxx.mjs`（⛔ 宿主机 `sudo node` 没有 node）。
+3. ⭐⭐ **决定"能不能归档"的唯一依据 = 把每条真实原文喂真正的 `toUserErrorMessage`**（本地 `npx tsx`，几秒、零成本），
+   看它现在**还落不落兜底桶**；顺手连跑三遍验幂等。
+   本次 8 类原文里 **3 类仍落桶** → 那 15 条一条都不归档（铁律：还在桶里 = 留着亮）。
+- ⭐ **"日志被轮转裁掉"要单独一条规则 + 一个人工实测的时间下限**：
+  本项目新增 `rotated-log-unknowable` + `ROTATED_LOG_WINDOW_START`（当前 `2026-08-11`，
+  实测依据 = 「能捞到原文的最早 08-12、捞不到的最晚 08-10」）。
+  ⛔⛔ **别把它写成"当前时间减 31 天"这种动态值** —— 那会让每次跑归档都顺手抹掉一批"其实还能查"的事件。
+  下次归档前**重新实测一次**再更新这个常量。
+- ⭐ **同一族但日期窗口不同 → 必须另写一条规则**：本次 402 余额那族已有规则 `before: 2026-07-27`，
+  而新捞到的 2 条发生在 09-01、超出窗口匹配不上 → 单独加 `provider-402-inflight-credits`（match 更精确、`before` 用新日期）。
+- ⭐ **`before` 取"映射代码真正上到那台服务器的时刻"，不是"代码写好的时刻"**：
+  本次 Recraft 映射代码上一批就写好了，但**正式服直到本批 v1.0.1.22 才带上它** → `before` 用本批部署时刻。
+- ⭐ `--apply` 前**必须逐条看 dry-run 打出的样本 `failureReason`**，确认全是兜底文案、没有混进已映射的新文案。
+- ⚠️ 归档后**顺手把改动过的脚本同步到两台服务器的 `app/scripts/`**（`docker cp` 进容器的那份重启就没了），
+  并对齐三方 md5，否则下次 build 会退回旧规则。
+
+# 铁律⛔：`.mjs` / `.ts` 里用双引号包的长中文说明，内部**不许出现英文双引号**（2026-09-10 踩到）
+
+给归档规则写 `note: "…根因属"用户的图不合规"、我们不帮改图…"` → 字符串提前闭合，
+`node --check` 报 `SyntaxError: Unexpected identifier`，而**从报错完全看不出是引号的问题**。
+- ⭐ 一律用中文引号「」或『』；**加完规则先 `node --check <文件>`** 再往服务器传。
+- ⭐ 同源提醒（本文件另有一条）：块注释里别让连续星号紧邻斜杠，会把注释提前闭合。
+<!-- END:nextjs-agent-rules-anchor-do-not-remove -->
+
+# 铁律⭐⭐⭐：真钱链路里「钱到没到」的唯一权威 = **我们自己发起的服务端查询**，⛔ 永远不是对方 POST 过来的那份报文（2026-09-09 支付审计加）
+
+支付宝异步通知 `/api/pay/alipay/notify` 是**公网可达、任何人都能 POST** 的地址。
+原来的写法是「验签通过 → 按报文里的 `trade_status` / `total_amount` 加分」——**唯一防线只有验签**。
+问题在于：**这条验签到目前为止从没被真正跑过**（线上加分全是前端轮询 `alipay.trade.query` 完成的），
+而 alipay-sdk 有 `checkNotifySign`（会二次 decode）和 `checkNotifySignV2`（不 decode）两个变体，
+选错一个就全部验签失败；将来支付宝换 v3 JSON 通知格式同样会失效。**验签是"从没验证过的单点"。**
+
+- ⭐⭐ **正解（已实现）**：通知接口降级成**"去查一下"的触发器**。
+  ① 验签通过 + `app_id` 是我们的 + `trade_status` 成功 → 走快路结算（正常情况，快）；
+  ② 验签没过 / app_id 不对 / 格式不认识 → **报文一个字都不信**，改用我们自己的私钥打
+     `alipay.trade.query`（alipay-sdk 会用支付宝公钥验 v3 响应签名 `alipay-timestamp\nalipay-nonce\nbody\n`）
+     → 查到真付了才加分。**最坏只是慢一点，绝不可能靠伪造报文白拿积分。**
+- ⭐ **触发器路径必须限流**：否则有人拿真实订单号高频打我们的通知地址 = 把我们对支付宝的查单调用放大成 DDoS。
+  现在 `pay-notify:order:<no>` 30/min、`pay-notify:ip:<ip>` 600/min（远高于支付宝真实重试频率）。
+- ⭐ **前端轮询查单也要节流**：同一订单号对支付宝**最多 2 秒查一次**（`pay-query:<no>`），
+  被节流时只读库、不打上游，前端 2.5s 轮询照常工作。
+- ⛔ **不是我们的订单号一律回 `success`**（别让支付宝对着别人的单一直重试）；只有「金额比订单少」才回 failure。
+
+# 铁律⭐⭐⭐：**「本地把订单标成过期」绝不等于「对方那边不能再付」** —— 关单前必须先查，且已关的单仍须允许补加分（2026-09-09 支付审计抓到，差点钱收了不加分）
+
+`PAYMENT_ORDER_EXPIRE_MS = 15min` 只是**我们界面上**的过期。支付宝那边的订单**还能被付掉**（precreate 没设 `timeout_express`）。
+原来的代码是「本地一超 15 分钟 → 先 `status='closed'` → 再去查单」，而 `fulfillPaidCreditOrder` 又**拒绝 closed 的单**：
+
+- 🔴 于是「14:59 付的、15:01 才轮询到」这一笔 → 订单先被关 → 加分被拒 → 通知还返回 `success` 让支付宝别再重试
+  → **钱真收了、积分一分不给、还静默无痕**。这比多送一点积分严重得多。
+- ⭐ **两头都堵（已实现）**：
+  ① `syncAlipayCreditOrder` **先查支付宝、确认没付成功之后才敢关单**
+     （⚠️ 查单 throw 分不清"交易不存在"和"网络抖动"，所以 throw 时仍按本地过期关单 —— 靠下面第 ② 条兜住）；
+  ② `fulfillPaidCreditOrder` **允许 `pending` 和 `closed` 两种状态继续加分**（钱真到了就必须给）。
+- ⭐ **还要有补单入口**：异步通知会丢（地址配错 / 网关不通 / 我们刚好在重启），而前端轮询只在充值弹层开着时跑。
+  现在 `reconcileRecentCreditOrders(userId)` 挂在「打开充值页拉充值记录」那一下：
+  取最近 24h、**出过码**（`qrCode != null`，没出码支付宝那边压根没这笔交易）、还没付成功的单，最多 3 条，逐条再查一次。
+  ⭐ 限流 10 次/5min + 全程 fail-open（补单失败绝不能让充值记录打不开）。
+- ⭐ **判据（一句话）**：把「用户在我们关单之后才付钱」当必测用例，问一句
+  「这笔钱最终会不会变成积分？」不会 → 就是事故。
+
+# 铁律⭐⭐：加分必须有「三道幂等」+ 一条审计日志；⛔ 只靠代码里的 if 不算（2026-09-09 支付审计加）
+
+`fulfillPaidCreditOrder` 的三道保险，缺一不可：
+① `SELECT ... FOR UPDATE` 行锁（通知和前端轮询同时到达时按订单串行化）；
+② 订单 `status === 'paid'` 直接返回；
+③ **`CreditLedger` 的 `@@unique([requestId, kind])`**（requestId = 订单号、kind = `recharge`）——
+  上面两道全被绕过时，数据库把第二次插入打回来、整个事务回滚。
+⭐ 判据：迁移里真的有那个唯一索引（`CreditLedger_requestId_kind_key`，`20260522120000_credit_system`），
+⛔ 别只看 `schema.prisma`。
+
+- ⭐⭐ **必须有支付审计日志**（唯一实现 `src/lib/payment-log.ts` → `.runtime/payment-diagnostics-log.jsonl`）：
+  只落库的话，**被拒的请求（验签失败、金额不符、限流）压根不留痕** —— 「有没有人在打我们的回调地址」永远查不出来。
+  事件：`order-created` / `order-credited` / `order-credit-duplicated` / `order-amount-mismatch` /
+  `order-closed` / `notify-received` / `notify-unverified` / `notify-throttled` / `credit-pack-settings-changed`。
+  ⛔⛔ **禁止把 `sign` / 私钥 / 完整报文 / 买家账号写进这个日志。**
+  ⚠️ 服务器上这个文件属主必须是 uid 1000（⛔ 别用 root 跑脚本创建它，见本文件那条 root 建日志的铁律）。
+- ⭐ **金额校验只拒「少付」，不拒「多付」**（`isPaidAmountEnough`：`paid + 0.009 >= orderPayCny`）：
+  订单码金额是 precreate 时写死的、付款人改不了 → 多付现实中不会发生；
+  但把多付判成失败就成了"钱收了不加分"。⛔ 别改回 `Math.abs(diff) < 0.009`。
+
+# 铁律⭐⭐：后台那种「整份覆盖」的配置接口，必须显式校验请求体是数组/对象，⛔ 别让 sanitize 的默认值把配置静默重置（2026-09-09 支付审计加）
+
+`POST /admin/api/credit-pack-settings` 原来直接 `sanitizeCreditPacks(body.packs)`，而
+`sanitizeCreditPacks(undefined)` **返回默认 8 档** → 一个空 body 就把管理员调好的价格全部重置回默认值（静默改价）。
+- ⭐ **判据**：sanitize 函数「传 undefined / 传垃圾」时返回什么？返回**一份看起来合法的默认值** = 这个接口能被空请求体改掉线上配置。
+  → 接口层必须 `if (!Array.isArray(body.packs)) return 400`。
+- ⭐ 同源：`updateCreditPackSettings` 只改 `.env.local` 的那一行（走 `writeLocalEnvValues`），已符合本文件「只改那一个 key」的铁律。
+- ⚠️ **运营红线**：为测 1 分钱把某档改成 `¥0.01`，**积分也要一起改小**（例如 0.01 元 = 1 积分）。
+  改成「0.01 元 = 250 积分」并忘记改回，就是持续漏钱。测完必须改回 + 重新锁上，
+  判据 = `grep credit-pack-settings-changed .runtime/payment-diagnostics-log.jsonl` 的最后一行。
+
+
 # 铁律⭐⭐：本地「资产保存中」不落地，先看 `.runtime/media-save-jobs.json` 那条 job 的 `status`，⛔ 别看预览能不能播（2026-09-09 加，为此折腾一整轮）
 
 「资产保存中」角标 = **后台 Node 把整份文件下到本机硬盘**才算完；预览页能播是**浏览器直连火山 CDN 边下边播**，两条完全不同的路。诊断唯一权威是那条 job 的 `status`（`downloading`/`failed`/`pending`/`saved`），别拿「预览能播」当「已保存」。
@@ -1857,6 +2011,21 @@ nginx 配置在仓库里有副本（`nginx/flashmuse.conf`、`deploy/staging/*.c
   - **`src/components/credit-recharge-modal.tsx`** —— 积分充值独立全屏页（**已上线、会收真钱**）；
     **`src/components/fake-pay-qr-code.tsx`** —— 假二维码唯一实现
     （⛔ 充值页禁止 import `membership-modal.tsx`，那会把整个会员页打进生产前端包）。
+  - ⭐⭐⭐ **支付宝真钱链路（2026-09-09 审计后收敛，改钱相关代码必须先看这一组）**：
+    - **`src/lib/alipay.ts`** —— SDK 装配 + `getAlipayAppId` / `alipayPrecreate` /
+      **`alipayQuery`（「钱到没到」唯一权威）** / `verifyAlipayNotify` / `parseAlipayNotifyBody`。
+    - **`src/lib/payment-orders.ts`** —— `PAYMENT_ORDER_NO_PATTERN`（订单号正则唯一权威）/
+      `createPaymentOrderNo` / `createAlipayCreditOrder`（只收 packIndex）/
+      **`fulfillPaidCreditOrder`（唯一加分入口，三道幂等，允许 pending+closed）** /
+      `syncAlipayCreditOrder`（先查再关）/ `reconcileRecentCreditOrders`（补单）/
+      `isPaidAmountEnough`（只拒少付）/ `getCreditOrderPayStatus`。
+    - **`src/lib/payment-log.ts`** —— 支付审计日志唯一实现（`.runtime/payment-diagnostics-log.jsonl`）。
+    - 三个接口：`POST /api/pay/credit-order`（下单，限流 8/10min·用户）、
+      `GET /api/pay/credit-order/status`（查单，限流 + 同订单号对上游 2 秒 1 次）、
+      `POST /api/pay/alipay/notify`（通知 = 触发器，限流 30/min·订单号）；
+      `GET /api/credit-packs`（前台 8 档）、`GET|POST /admin/api/credit-pack-settings`（后台改价，必须校验请求体是数组）。
+    - **回归**：`npx tsx scripts/verify-payment-rules.ts`（48 条，一半反向）—— 改上面这些纯函数前必跑。
+
   - **`src/lib/membership-purchase-records.ts`** —— 购买/充值记录；演示假数据只许在非生产环境下发。
   - `src/app/api/membership/quote`（会员报价，关闭时 403）、`src/app/api/membership/purchases`（记录）、
     `src/app/admin/api/membership/grant` + `membership-settings`（后台写接口，关闭时 403）。

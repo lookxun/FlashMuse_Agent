@@ -28,6 +28,14 @@
   ⚠️ **2026-07-29 起只有工作流会往里写**（对话流/资产库的 AI 改写已整体撤掉，原因见 `01-current-status.md` 第十四次会话）。
 - `GenerationEvent`：**每次生成的埋点事件**（kind/source/model/provider/status/`failureReason`/`failureCode`/moderation/durationMs/参考素材数量）= 后台运营概览的数据源。⭐ 2026-07-27 新增 `resolvedAt` + `resolvedNote`：**失败原因「已归档」标记**（根因查清并修掉后打上，后台把那条原因划掉且不再计入待排查数量）。归档流程见 `07-red-error-triage-and-archive.md`。⚠️ **`failureReason` 存的是给用户看的文案，不是根因**（"服务器繁忙"是兜底），真实原因只在 `.runtime/*-diagnostics-log.jsonl`。
 - `UploadEvent`：上传埋点（status/reason/bytes）。
+- ⭐⭐⭐ **`PaymentOrder`（2026-09-08 新增，`20260908010000_payment_order`）= 支付宝充值订单**。
+  一行 = 一次下单。`orderNo @unique`（`C`+14 位时间戳+6 位随机）、`userId`、`channel='alipay'`、
+  `kind='credit_pack'`、`status`（`pending` / `paid` / `closed`）、`packCny`(Int，只用于展示)、
+  `payCny`(Float，真实收款额，可以是 0.01)、**`credits`（下单那一刻写死的到账积分，加分只认它）**、
+  `qrCode`（precreate 返回的码，**为 null = 支付宝那边压根没这笔交易**）、`alipayTradeNo`、
+  `paidAt` / `creditedAt` / `closedAt`、`notifyPayload`(Json)。
+  ⚠️ **`status='closed'` 只代表"我们界面上过期了"，不代表支付宝那边不能付** → 它仍可被加分（见下面支付链路专节）。
+  唯一逻辑在 `src/lib/payment-orders.ts`；⛔ 别在别处直接改这张表的 status/credits。
 - ⭐⭐ **`GenerationReservation`（2026-08-30 新增，2026-09-05 首次部署到测试服）= 生成额度预占**。
   一行 = 「某个 requestId 正在跑，事前预估要花 `estCredits` 积分」。
   存在的理由：并发上限和"积分够不够"原来都是「先查再放」（TOCTOU）→ 20 个请求同时进来会全部查到 0
@@ -51,6 +59,14 @@
 - `CreditSetting` 新增 `chargeAudio`（后台「积分管理」里的「语音」开关，默认 true）。
 
 **数据权威**：媒体固定事实→`MediaAsset`；用户可变状态→`UserAssetState`；对话→`WorkspaceSession+Message`；计费→`CreditLedger`。新生成/上传媒体统一走 `src/lib/media-asset-record.ts`（`buildMediaAssetRecord`/`classifyAsset`）入库；出生即冻结，之后只有改名/移动/删除（只写 `UserAssetState`）。
+
+## ⭐ 显示时间唯一权威 = 北京时间（2026-09-10 加）
+
+容器是 UTC。服务端 `toLocaleString("zh-CN")` 不带时区 = 比用户少 8 小时（真实事故：充值记录/后台时间和「我的积分」对不上）。
+
+⭐ **唯一实现 `src/lib/beijing-time.ts`**：`formatBeijingDateTime` / `formatBeijingMessageTime` / `formatBeijingStamp` / `startOfBeijingDay` / `beijingDayKey`。
+后台「今日」和按天图表的 SQL 用 `AT TIME ZONE 'Asia/Shanghai'`，⛔ 别再 `date_trunc('day', col)`（那是 UTC 日历日）。
+⛔ 新增显示时间一律走这个文件，别再自己 `Intl.DateTimeFormat("zh-CN")` 不带 `timeZone`。
 
 ## ⭐⭐ 工作流的下发与保存：「点哪个读哪个」（2026-07-30 第二十一次会话加，改这块前必读）
 
@@ -597,6 +613,69 @@
 **分桶并发 rsync（8 桶）**，最后再单流跑一次 `--delete` 对齐。
 ⛔⛔ **`--delete` 绝不能放进分桶里** —— 每个桶只看得见自己那份清单，会把别的桶的文件当"多余的"删掉。
 `generated` 则交给 backfill 脚本（分桶只能并发到「文件」粒度，治不了单个大视频）。
+
+## ⭐⭐⭐ 支付 / 积分充值链路（2026-09-09 安全审计后重写，**改钱相关代码必读**）
+
+**一句话**：用户只能选"第几档"，钱和积分全在服务端算；**「钱到没到」唯一由我们自己去问支付宝**。
+
+### 数据流（正常那条路）
+
+1. 用户在充值页选档 → `POST /api/pay/credit-order`，**请求体只有 `packIndex`（0–7）**。
+   服务端读 `CREDIT_PACK_SETTINGS`（后台「用户充值 → 积分设置」写的 env，空 = 默认 8 档 ¥50=250…¥5000=25000），
+   建 `PaymentOrder`（**把当时的 `payCny` / `credits` 写死进订单行**）→ 调 `alipay.trade.precreate` 拿二维码。
+   ⛔ 前端传 `payCny` / `credits` 一律不看（实测传了照样 400）。
+   ⛔ 加分认的是**订单行里那份 credits**，不回头用"当前设置"复算（否则管理员改一次价，已付的老单就对不上了）。
+2. 前端每 2.5 秒轮询 `GET /api/pay/credit-order/status?orderNo=` → `syncAlipayCreditOrder(orderNo, user.id)`
+   → 打 `alipay.trade.query` → 成功就加分。**归属校验在这里**（不是自己的单一律当"不存在"→404）。
+3. 支付宝异步通知 `POST /api/pay/alipay/notify` 是**兜底**（用户关了页面时靠它）。
+
+### 三条铁的设计（⛔ 别改回去，都有真实事故背书）
+
+- ⭐⭐⭐ **「钱到没到」唯一权威 = `alipayQuery`（我方私钥签名的 server-to-server 调用，SDK 会用支付宝公钥验 v3 响应签名）。**
+  异步通知只是"去查一下"的触发器：验签通过 + `app_id` 对 + 状态成功 → 快路结算；
+  验签没过 / app_id 不对 / 格式不认识 → **报文一个字都不信**，改走自查。
+  背景：线上加分至今全是走前端轮询查单完成的，**那条验签从没被真正跑过**，把它当唯一防线太危险。
+- ⭐⭐⭐ **本地"过期"≠ 对方不能付**：`PAYMENT_ORDER_EXPIRE_MS = 15min` 只是界面上的过期
+  （precreate 没设 `timeout_express`）。所以 ① `syncAlipayCreditOrder` **先查支付宝、确认没付才敢关单**；
+  ② `fulfillPaidCreditOrder` **允许 `pending` 和 `closed` 都加分**；
+  ③ 打开充值页（`/api/membership/purchases`）时跑 `reconcileRecentCreditOrders` 补单
+  （最近 24h、出过码、未付成功的单最多 3 条，限流 10 次/5min，fail-open）。
+- ⭐⭐ **加分三道幂等**：`SELECT ... FOR UPDATE` 行锁 → 订单 `status==='paid'` 早退 →
+  `CreditLedger` 的 `@@unique([requestId, kind])`（requestId = 订单号、kind = `recharge`；
+  **迁移 `20260522120000_credit_system` 里确实有这个唯一索引**）。
+
+### 限流（进程内 Map，多实例以后要换 Redis）
+
+| 位置 | 限额 |
+|---|---|
+| 下单 | 8/10min·用户、20/10min·IP |
+| 查单 | 900/15min·用户、3000/15min·IP；**同一订单号对支付宝最多 2 秒 1 次**（被节流时只读库） |
+| 通知 | 30/min·订单号、600/min·IP（远高于支付宝真实重试频率） |
+
+### 审计日志
+
+`src/lib/payment-log.ts` → `.runtime/payment-diagnostics-log.jsonl`（走统一 20MB×7 轮转）。
+事件：`order-created` / `order-create-failed` / `order-credited` / `order-credit-duplicated` /
+`order-amount-mismatch` / `order-closed` / `notify-received` / `notify-unverified` / `notify-ignored` /
+`notify-throttled` / `credit-pack-settings-changed`。
+⛔⛔ **禁止写 `sign` / 私钥 / 完整报文 / 买家账号**。
+⚠️ 服务器上这个文件属主必须是 uid 1000（⛔ 别用 root 跑脚本创建它）。
+
+### 其它口径
+
+- **金额只拒少付**（`isPaidAmountEnough`：`paid + 0.009 >= payCny`）。多付放行 —— 订单码金额是 precreate 写死的，
+  付款人改不了；把多付判成失败就成了"钱收了不加分"。
+- **加分/查单都校验 `kind = 'credit_pack'`**（将来加会员订单不会串）。
+- **订单号** = `C` + 14 位**北京时间**戳 + 6 位 `crypto.randomInt`（`formatBeijingStamp`，不再用服务器本地时区）；
+  唯一权威正则 `PAYMENT_ORDER_NO_PATTERN = /^C\d{14,24}$/`（老单 C+18 位仍匹配，有回归用例守着）。
+- ⭐ **应用网关填阿里地址 ≠ 腾讯入口的人充不了值**（2026-09-10 用户问过）：出码/查单/加分都在腾讯 app；
+  `main.venusface.com` 直连腾讯、`ali.venusface.com` 反代回腾讯，同一份后端。支付宝通知是支付宝服务器打我们，
+  不走用户浏览器。正式服应用网关仍改 `https://ali.venusface.com/api/pay/alipay/notify`。
+- **后台改价接口必须校验请求体是数组** —— `sanitizeCreditPacks(undefined)` 返回默认 8 档，
+  一个空 body 就能把管理员调好的价格静默重置。
+- ⚠️ **运营红线**：测 1 分钱时**积分要一起改小**（0.01 元 = 1 积分）。忘了改回 = 持续漏钱。
+- ⚠️ **没有退款处理**（当面付/订单码退款只能商户自己发起，用户点不到 → 暂不做）。
+- 回归：`npx tsx scripts/verify-payment-rules.ts`（48 条，一半反向），**改上面这些纯函数前必跑**。
 
 ## 跨境链路固有软肋
 

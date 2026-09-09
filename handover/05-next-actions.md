@@ -2,7 +2,155 @@
 
 > 历史 END-OF-SESSION 记录都在 `historical-handover-docs-last-used-2026-07-21/05-next-actions.md`（很长）。这里只留当前有效待办。
 
-## ✅ 当前状态（2026-09-09 第一百一十七次会话末）：**测试服 = 本地 = GitHub = `v1.0.1.19`；正式服仍 `v1.0.1.11`（未推）**
+## ✅ 当前状态（2026-09-10 第一百二十次会话末）：**四方同步 `v1.0.1.22`**（本地 = 测试服 = 正式服 = GitHub）
+
+| | 版本 / 状态 |
+|---|---|
+| 本地 | **`v1.0.1.22`**（代码已 commit `7d47d7b` + 已推；归档脚本 + 本批文档待 commit） |
+| 测试服 | **`v1.0.1.22`** |
+| 正式服 | **`v1.0.1.22`**（支付这一批首次上线） |
+| GitHub | **`v1.0.1.22`**（`7d47d7b`） |
+| 自查 | `tsc` 0、`verify-payment-rules.ts` 48/48 |
+| 迁移 | 正式库 45 → **52**（7 个已 Applying、0 失败） |
+| 回滚点 | 正式服 app `/opt/flashmuse/app-backups/20260910-020202-presync-v1.0.1.11` + 库备份 11M + `.env.local.bak-20260910-020202` |
+
+### 🎯 待办 0（最优先）
+
+1. 🟠🟠 **只有你能做的一件事：去支付宝开放平台把「应用网关」改成 `https://ali.venusface.com/api/pay/alipay/notify`**
+   （现在还指向 staging）。不改也不致命 —— 出码/查单/加分都在腾讯 app，前端轮询查单 + 「打开充值页自动补单」能兜住；
+   但异步通知收不到就少了一道保险。⚠️ 测试服 env 的 `ALIPAY_NOTIFY_URL` 继续填 staging，别动。
+2. 🔴🔴 **语音功能全站挂了，要拍板**：OpenRouter 把 **fish-audio 全系下架**
+   （`GET /api/v1/models` 里一个 `fish` 都没有，只剩 `openai/gpt-audio` / `openai/gpt-audio-mini`；
+   直打 `fish-audio/s2.1-pro-free` 返回 `404 No endpoints found`，两服一致 → 供应商问题，不是我们的代码）。
+   现在菜单里 `fish-audio/s2.1-pro`（付费）+ `-free`（免费）**都不可用**，用户点了就是 `(B_498)`。
+   - 选项：① 换成 `openai/gpt-audio`（要重新对接参数 + 按铁律验三条扣费判据，单独排一批）
+     ② 先把语音入口藏起来 ③ 先不管。
+   - ⛔ **连带影响**：`03-deploy-and-servers.md` 里「正式服用免费语音 `fish-audio/s2.1-pro-free` 冒烟」这条判据**已失效**。
+     本次改用「后台趋势图逐格对 SQL + 充值页出真码不付钱」当零成本冒烟，下次照抄。
+3. ⭐ **先把归档脚本改动 + 本批交接文档 commit + push**（代码那部分已经是 `7d47d7b`）。
+4. ⭐ **兜底桶还剩 15 条，根因已经查清了，等你决定要不要修**（详见 `CHANGELOG_3.md` 第一百二十次 · 第七节）：
+   - **13 条 `403 The request is prohibited due to a violation of provider Terms Of Service.`**
+     —— 裸 JSON 其实能映射成「当前模型在你的地区不可用」，但真实链路走的是 **curl 兜底那条路**，
+     那条路把上游原文丢了、只剩「请求失败，请稍后再试。」→ 要改 `openrouter.ts` 的 curl 兜底让它保留原文。
+     ⚠️ 那是核心生图链路，改动要谨慎、要单独一批。
+   - **1 条** `图片平台没有返回图片，且没有返回可用原因。`（仍落兜底桶）
+   - **1 条** 上游 500 `An error occurred while processing your request…`（仍落兜底桶）
+   - ⭐ 这 15 条「今日 0 · 近 7 天 0」= 全是历史、不再流血，不急。
+5. ⭐ **Recraft 参考图边长可以做前置校验**（本批只做了错误映射，没做前置拦截）：
+   Recraft 要求 **256~4096px**，比 BytePlus 的 300~6000px 更严，而我们上传**只压体积、不缩像素**
+   → 用户拿 5000px 的图当参考图仍会被上游拒（现在至少有明确文案了）。
+   要彻底解决就往 `upload-rules.ts` / 发送前校验里加 Recraft 专属的边长区间
+   （现成先例：`video-reference-image-rules.ts` 的 `videoModelEnforcesReferenceImageSizeRules`）。
+6. **会员先关**：`MEMBERSHIP_SYSTEM_ENABLED` 改 `true` 才恢复。会员购买先别接支付。
+7. ⭐ **预估表要定期回校**（SQL 见下文）。
+8. ⚠️ **用户中心积分表滚动**仍没复现、没改。
+
+### ✅ 本批核销掉的老待办
+
+- ~~等用户说才推正式服~~ → **已推，四方同步 v1.0.1.22**（7 个迁移 + ALIPAY env + 支付日志属主 + 不配 `LOCAL_MEDIA_PROXY` 全部做完）。
+- ~~测 1 分钱后记得改回~~ → 用户自己改回来了，正式服充值页第一档是 **¥50 = 250 积分**（默认档位，正式服 env 没配 `CREDIT_PACK_SETTINGS`）。
+- ~~归档那 63 条兜底桶~~ → **归档 48 条，剩 15 条**（见待办 4）。
+- ~~归档脚本先加 Recraft 尺寸规则~~ → 已加 `recraft-reference-image-dimension`（带 `before`）。
+
+### 🧾 本批留痕（⛔ 别当成用户数据）
+
+**正式服**：
+- 新对话「v1.0.1.22 正式服冒烟，...」（`12424740@qq.com` / ID_636611），含 1 张语音失败卡 `B_498`，**未扣分**（8101 前后不变）。
+- pending 订单 **`C20260910022417325530`**（¥50 / 250 积分）—— **没付钱**，15 分钟后自动 `closed`。审计日志 1 条 `order-created`。
+- 48 条失败事件被打上 `resolvedAt` + `resolvedNote`（文字保留可追溯；要撤销跑 `--undo`）。
+- ⚠️ 归档样本里 `verify-cm-1786145944020` / `verify-ok-1786146170941`（B_193/B_194）是**我们自己内容审核验证的探针**，不是用户问题。
+
+**测试服**：无新增（只读核对）。
+
+### ⛔ 本批立的规矩（别改回去）
+
+1. ⭐⭐⭐ **Prisma 的 `DateTime` 列是 `timestamp without time zone`（裸 UTC）**：
+   SQL 里要转北京**必须** `AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai'`。
+   ⛔ **单次 `AT TIME ZONE 'Asia/Shanghai'` 是反方向（等于减 8 小时）**。
+   唯一例外：`_prisma_migrations` 那三列是 `timestamptz`，对它**不能**加 `AT TIME ZONE 'UTC'` 前置。
+2. ⭐⭐ **服务端算「北京当天 0 点」只许用 `startOfBeijingDay()`**，⛔ 别用 `new Date().setHours(0,0,0,0)`（容器是 UTC）。
+3. ⭐ **归档规则里 `ROTATED_LOG_WINDOW_START` 是人工实测值**（当前 `2026-08-11`）：
+   ⛔ 别改成"当前时间减 31 天"这种动态值，那会每次归档都抹掉一批"其实还能查"的事件。
+   下次归档前重新实测一次「日志能捞到的最早时间」再更新它。
+4. ⭐ **验证界面上的趋势图数字**：`innerText` 里那串数字是**按天交替**（`day1-conv, day1-wf, day2-conv…`），
+   不是「先一整行对话流再一整行工作流」。数错格会得出完全错误的结论 —— 必须对 SQL 真值。
+
+### ⛔ 支付规矩（上两批立的，继续有效）
+
+1. ⭐⭐⭐ **「钱到没到」唯一权威 = 我们自己发起的 `alipay.trade.query`**，⛔ 不是对方 POST 过来的报文。
+2. ⭐⭐⭐ **本地关单 ≠ 对方不能付**：先查再关；`fulfillPaidCreditOrder` **允许 `pending` 和 `closed` 都加分**。
+3. ⭐⭐ **加分三道幂等**（`FOR UPDATE` + `status==='paid'` + `CreditLedger_requestId_kind_key`）
+   —— ⭐ 本批已确认那个唯一索引**真的存在于正式库**。
+4. ⭐ **金额只拒少付**；⭐ 加分/查单都校验 `kind='credit_pack'`；⭐ 限流三处；⭐ 订单号走 `PAYMENT_ORDER_NO_PATTERN`。
+5. ⭐⭐ **支付审计日志** `.runtime/payment-diagnostics-log.jsonl`（⛔ 不写 sign/私钥/完整报文/买家账号；属主必须 uid 1000）。
+6. ⭐ 改支付纯函数 → **先跑 `npx tsx scripts/verify-payment-rules.ts`（48 条）再部署**。
+7. ⭐ **改 `.env.local` 只许动目标那几行**，写完立刻断言 `OPENROUTER_API_KEY` / `BYTEPLUS_API_KEY` / `AUTH_SECRET` / `DATABASE_URL` 整行长度没变
+   （本批正式服实测 120/61/92/63，改前改后一致）。
+
+---
+
+## ⏪ 上一状态（2026-09-10 第一百一十九次会话末）：**本地 = 测试服 = `v1.0.1.21`；GitHub 仍 `v1.0.1.19`；正式服仍 `v1.0.1.11`**
+
+| | 版本 / 状态 |
+|---|---|
+| 本地 | **`v1.0.1.21` + 未提交**（北京时间 + 积分充值弹窗翻页 + 上一批支付审计；⛔ 未 commit） |
+| 测试服 | **`v1.0.1.21`**（2026-09-10 已部署） |
+| GitHub | 仍 **`v1.0.1.19`**（`626a36e`） |
+| 正式服 | 仍 **`v1.0.1.11`**（`a8121cd`） |
+| 自查 | `tsc` 0 |
+| 迁移 | 本批无新迁移 |
+| 回滚点 | 正式服 app `.../20260826-205720-presync-v1.0.1.11` |
+
+### 🎯 待办 0（最优先）
+
+1. ⭐⭐ **等用户说才推正式服**。推的时候：
+   - 带 7 个迁移（会员 6 + PaymentOrder）；正式服 `.env.local` 只追加 `ALIPAY_*` 四行；
+     **应用网关**改 `https://ali.venusface.com/api/pay/alipay/notify`（⭐ 用户走腾讯入口照样能充，通知是支付宝服务器打我们，不走用户浏览器）；⛔ 不配 `LOCAL_MEDIA_PROXY`。
+   - ⚠️ `.runtime/payment-diagnostics-log.jsonl` **别用 root 创建**（属主必须 uid 1000）。
+   - 到正式服只用免费语音冒烟不崩即可；顺带归档那 63 条兜底桶（归档脚本先加 Recraft 尺寸规则）。
+   - ⭐ **推之前先 commit + push GitHub**（现在 GitHub 落后两版：19→20→21）。
+2. ✅ **真付钱两条已在测试服验过**（用户本批自己付的）：最小档到账 + 超 15 分钟后再付仍加分。不用再拿这当阻塞项。
+3. ⭐ **测 1 分钱后记得改回**：后台「用户充值 → 积分设置」测完把第 1 档改回并锁上；
+   ⚠️⚠️ **积分必须和价格一起改**（0.01 元 = 1 积分），忘了改回就是持续漏钱。
+   判据 = `grep credit-pack-settings-changed .runtime/payment-diagnostics-log.jsonl | tail -1`。
+4. **会员先关**：`MEMBERSHIP_SYSTEM_ENABLED` 改 `true` 才恢复。会员购买先别接支付。
+5. ⭐ **预估表要定期回校**（SQL 见下文）。
+6. ⚠️ **用户中心积分表滚动**仍没复现、没改。
+
+### 🧾 测试服本批留痕（别当成用户数据）
+
+- `.runtime/payment-diagnostics-log.jsonl`：32 条 `notify-received` / 32 条 `notify-unverified` /
+  7 条 `notify-throttled` / 2 条 `order-closed` / 1 条 `credit-pack-settings-changed`（全是审计打出来的）。
+- 两笔 pending 单 `C202609090925094466`、`C202609090912443352` 被正常关成 `closed`（查单确认没付 + 本地已过期）。
+- 归属校验探针单 `C99990101010101000001`（id=`verifyonly_ownership_probe`）**验完已删**。
+- ⛔ 本批**没真付钱**。
+
+### ⛔ 本批立的规矩（别改回去）
+
+1. ⭐⭐ **显示时间唯一权威 `src/lib/beijing-time.ts`**。服务端格式化必须带 `Asia/Shanghai`。
+   后台「今日」/按天图表用 `startOfBeijingDay` + SQL `AT TIME ZONE 'Asia/Shanghai'`，⛔ 别退回 `date_trunc('day', col)`（UTC 日历日）。
+   订单号时间戳走 `formatBeijingStamp`。
+2. ⭐ **应用网关填阿里 ≠ 腾讯入口充不了**。正式服应用网关仍改阿里地址。
+
+### ⛔ 支付规矩（上一批立的，别改回去）
+
+1. ⭐⭐⭐ **「钱到没到」唯一权威 = 我们自己发起的 `alipay.trade.query`**，⛔ 不是对方 POST 过来的报文。
+   通知接口只是"去查一下"的触发器：验签通过走快路，验签没过/格式不认识 → 一律改走自查。
+2. ⭐⭐⭐ **本地关单 ≠ 对方不能付**：`syncAlipayCreditOrder` 先查再关；
+   `fulfillPaidCreditOrder` **允许 `pending` 和 `closed` 都加分**。⛔ 别把 closed 改回拒绝。
+3. ⭐⭐ **加分三道幂等**（`FOR UPDATE` + `status==='paid'` + `CreditLedger` 唯一索引）一个都不许少。
+4. ⭐ **金额只拒少付**（`isPaidAmountEnough`），⛔ 别改回 `Math.abs(diff) < 0.009`（多付会变成"钱收了不加分"）。
+5. ⭐ **加分/查单都要校验订单 `kind = 'credit_pack'`**（将来加会员订单不会串）。
+6. ⭐ **限流三处**：下单 8/10min·用户；查单 900/15min·用户 + 同订单号对上游 2 秒 1 次；通知 30/min·订单号。
+7. ⭐ **订单号唯一权威 `PAYMENT_ORDER_NO_PATTERN`**（`/^C\d{14,24}$/`，老单 C+18 位仍匹配）。
+8. ⭐⭐ **支付审计日志 `src/lib/payment-log.ts`**：⛔ 不写 `sign`/私钥/完整报文/买家账号。
+9. ⭐ **后台整份覆盖型配置接口必须显式校验请求体类型**（空 body 不许把 8 档价格重置回默认）。
+10. ⭐ 改了支付相关纯函数 → **先跑 `npx tsx scripts/verify-payment-rules.ts`（48 条，一半反向）再部署**。
+
+---
+
+## ⏪ 上一状态（2026-09-09 第一百一十七次会话末）：**测试服 = 本地 = GitHub = `v1.0.1.19`；正式服仍 `v1.0.1.11`（未推）**
+
 
 | | 版本 / 状态 |
 |---|---|

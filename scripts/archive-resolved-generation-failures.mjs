@@ -215,6 +215,39 @@ const RESOLVED_RULES = [
     match: /__NEVER_MATCH__/, // 占位：靠下面的"日志启用前 + 无任何日志 + 落在兜底桶"特征判定
     note: "发生在诊断日志启用（2026-07-10，正式服迁腾讯云）之前、且落在兜底文案桶里：上游原文既不在 failureReason 里（被兜底文案覆盖）、也没有日志可查 → **永久不可追溯**，留着也无法排查。用户 2026-07-28 拍板归档，让「待排查」数字只代表还有希望查的",
   },
+  // ↓ 以下三条来自 2026-09-10（v1.0.1.22 上正式服那次）对「兜底桶 63 条」的排查。
+  //   排查方法：把 63 条的 requestId 全部回诊断日志捞真实原文（41 条捞到、22 条日志已被轮转裁掉），
+  //   再用 `npx tsx` 把每条原文喂真实的 toUserErrorMessage，逐条确认"现在还会不会落兜底桶"。
+  {
+    key: "recraft-reference-image-dimension",
+    // 上游原文：`max image dimension should be no more than 4096` / `min image dimension should be no less than 256`
+    // （正式服 24 条：22 条太大 + 2 条太小，全是 recraft/recraft-v4.1-pro，2026-09-06/09-07，同一用户）。
+    // ⛔⛔ **必须配 before**：Recraft 的参考图边长限制（256~4096px）比 BytePlus（300~6000px）更严，
+    //   而我们上传只压体积、不缩像素 → 用户拿一张 5000px 的图当参考图，前置校验放行、发过去被 Recraft 拒。
+    //   这个"用户的图不合规"是改不了的（用户口径：不帮改图，提醒换图即可），
+    //   映射上线之后新发生的会以明确文案「参考图尺寸太大了（当前模型要求图片的长和宽都不超过 4096 像素）…」
+    //   单独亮着，按铁律 ④ 绝不能被这条规则吃掉。
+    match: /(?:max|min) image dimension should be (?:no more than|no less than)\s*\d+/i,
+    // ⭐ 日期下限 = v1.0.1.22 上正式服的时刻（2026-09-09 18:15 UTC build 完成，取 18:00 保守）。
+    //   在此之前正式服是 v1.0.1.11、还没有这条映射 → 全落兜底桶「服务器繁忙」，用户完全看不懂。
+    before: new Date("2026-09-09T18:00:00Z"),
+    note: "Recraft 参考图边长超限（要求 256~4096px，比 BytePlus 的 300~6000px 更严；我们上传只压体积不缩像素，所以边长超限的图会漏过前置校验）→ error-message.ts 已把上游 `max/min image dimension should be…` 拆出兜底桶，改成明确文案「参考图尺寸太大/太小了（当前模型要求图片的长和宽都不超过/不小于 N 像素）」并带上真实数字。根因属「用户的图不合规」、我们不帮改图，以后新发生的会以那条明确文案单独亮着、不再归档",
+  },
+  {
+    key: "provider-402-inflight-credits",
+    // 上游原文：`This request would exceed your available credits given your current in-flight requests.
+    //   Retry after in-flight requests settle, or add more credits.`（正式服 2 条，2026-09-01，gpt-5.4-image-2-agent）
+    // ⚠️ 与上面 provider-insufficient-credits 是同一族（都是 402 余额），但那条的 before 是 2026-07-27，
+    //   而这两条发生在 09-01 → 超出那条的日期窗口、匹配不上，所以单独写一条。
+    match: /would exceed your available credits given your current in-flight requests/i,
+    before: new Date("2026-09-09T18:00:00Z"),
+    note: "OpenRouter 402 的另一种措辞（并发在途请求把可用额度占满，不是账户真没钱）→ 现已被 error-message.ts 的 402 规则映射成「提供商余额不足！请联系管理员充值。」，不再落兜底桶。根因属运营（额度/并发），以后新发生的会以那条明确文案单独亮着、不再归档",
+  },
+  {
+    key: "rotated-log-unknowable",
+    match: /__NEVER_MATCH__/, // 占位：靠下面的"日志已被轮转裁掉 + 无任何日志 + 落在兜底桶"特征判定
+    note: "落在兜底文案桶里、且诊断日志已被轮转/清理策略裁掉（运维记录只保留 31 天）：上游原文既不在 failureReason 里（被兜底文案覆盖）、日志里也一行都没有 → **永久不可追溯**。与 pre-diagnostics-log-unknowable 同源（用户 2026-07-28 拍板归档），只是那条管「日志启用前」、这条管「日志被裁掉后」。2026-09-10 实测正式服 22 条（07-31~08-10）",
+  },
 ];
 
 /**
@@ -223,6 +256,17 @@ const RESOLVED_RULES = [
  * 就等于永久无解。
  */
 const DIAGNOSTICS_LOG_START = new Date("2026-07-10T00:00:00Z");
+
+/**
+ * ⭐ 「诊断日志当前还留着的最早时刻」—— 比它更早的事件，日志里已经一行都查不到了
+ * （`.runtime/*-diagnostics-log.jsonl` 超 20MB 轮转成 .1/.2，加上运维 31 天清理策略）。
+ *
+ * ⚠️⚠️ **这个日期是人工实测出来的，不是算出来的，随时间推移必须回来更新。**
+ * 2026-09-10 实测：兜底桶 63 条里，日志能捞到原文的最早是 08-12，捞不到的最晚是 08-10
+ *   → 边界落在 08-11，取它最安全（既把 22 条捞不到的全包住，又不碰 08-12 之后还能查的）。
+ * ⛔ 别把它改成"当前时间减 31 天"这种动态值：那会让每次跑归档都顺手抹掉一批"其实还能查"的事件。
+ */
+const ROTATED_LOG_WINDOW_START = new Date("2026-08-11T00:00:00Z");
 
 /**
  * 两个兜底桶（都是"没识别出根因"的意思，从文案本身查不出任何东西）：
@@ -329,6 +373,13 @@ async function main() {
     //   ⚠️ 三个条件必须同时满足，别放宽：只要日志里有原文、或 failureReason 里带原文，就还有希望，不能归到这里。
     if (!rule && text === "" && events.every((event) => event.createdAt < DIAGNOSTICS_LOG_START && GENERIC_FALLBACK_PATTERN.test(event.failureReason ?? ""))) {
       rule = RESOLVED_RULES.find((candidate) => candidate.key === "pre-diagnostics-log-unknowable");
+    }
+    // ⭐「日志已被轮转裁掉」：日志启用之后发生，但现存日志里一行都没有 + failureReason 是兜底文案。
+    //   和上面那条同源（都是"永久不可追溯"），区别只在于原因是"日志被裁"而不是"日志还没启用"。
+    //   ⚠️ 必须有 ROTATED_LOG_WINDOW_START 这个时间下限，否则会把**今天刚发生、日志还没落盘**
+    //   或者恰好没写失败行的新事件一起吃掉（那些其实还能查）。
+    if (!rule && text === "" && events.every((event) => event.createdAt >= DIAGNOSTICS_LOG_START && event.createdAt < ROTATED_LOG_WINDOW_START && GENERIC_FALLBACK_PATTERN.test(event.failureReason ?? ""))) {
+      rule = RESOLVED_RULES.find((candidate) => candidate.key === "rotated-log-unknowable");
     }
     // ⭐ 视频异步轮询失败（v47 前上游原文没落盘，匹配不上任何 match）：靠 taskId 认出来，再按模型定根因。
     //   依据不是猜的 —— 2026-07-28 拿这批 taskId 回查 OpenRouter（`GET /api/v1/videos/{id}` 事后仍可查），
