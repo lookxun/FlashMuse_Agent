@@ -1,6 +1,7 @@
 import { getCurrentUser, jsonError } from "@/lib/auth";
 import { isAlipayConfigured } from "@/lib/alipay";
-import { createAlipayCreditOrder, isCreditPackCny, PAYMENT_ORDER_EXPIRE_MS } from "@/lib/payment-orders";
+import { isCreditPackIndex } from "@/lib/membership";
+import { createAlipayCreditOrder, PAYMENT_ORDER_EXPIRE_MS } from "@/lib/payment-orders";
 import { getClientIp, rateLimitAllow } from "@/lib/rate-limit";
 
 export const runtime = "nodejs";
@@ -14,12 +15,12 @@ export async function POST(request: Request) {
     return jsonError("下单太频繁，请稍后再试");
   }
 
-  const body = await request.json().catch(() => null) as { packCny?: unknown } | null;
-  const packCny = typeof body?.packCny === "number" ? body.packCny : Number(body?.packCny);
-  if (!isCreditPackCny(packCny)) return jsonError("无效的充值档位");
+  const body = await request.json().catch(() => null) as { packIndex?: unknown } | null;
+  const packIndex = typeof body?.packIndex === "number" ? body.packIndex : Number(body?.packIndex);
+  if (!isCreditPackIndex(packIndex)) return jsonError("无效的充值档位");
 
   try {
-    const order = await createAlipayCreditOrder(user.id, packCny);
+    const order = await createAlipayCreditOrder(user.id, packIndex);
     if (!order.qrCode) return jsonError("下单失败，请稍后再试");
     return Response.json({
       orderNo: order.orderNo,

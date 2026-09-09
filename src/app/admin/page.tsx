@@ -26,7 +26,7 @@ import { AdminContentModerationPanel, type ContentModerationEventRow } from "./a
 import { AdminAnnouncementPanel } from "./admin-announcement-panel";
 import { AdminMembershipPanel, type AdminMembershipRow } from "./admin-membership-panel";
 import { getCreditSettings } from "@/lib/credits";
-import { getAdminSystemSettings, getMembershipSettings, getPromptLengthOverrides, getUploadRuleOverrides, isAssetImageModelEnabled, isConversationAudioModelEnabled, isConversationImageModelEnabled, isConversationVideoModelEnabled } from "@/lib/system-settings";
+import { getAdminSystemSettings, getCreditPackSettings, getMembershipSettings, getPromptLengthOverrides, getUploadRuleOverrides, isAssetImageModelEnabled, isConversationAudioModelEnabled, isConversationImageModelEnabled, isConversationVideoModelEnabled } from "@/lib/system-settings";
 import type { IconType } from "react-icons";
 import { RiAlarmWarningLine, RiDashboardLine, RiFileList3Line, RiLeafLine, RiListSettingsLine, RiMegaphoneLine, RiServerLine, RiSettingsLine, RiShieldCheckLine, RiShieldKeyholeLine, RiShining2Fill, RiToggleLine, RiUser3Line } from "react-icons/ri";
 
@@ -605,7 +605,7 @@ export default async function AdminPage({ searchParams }: { searchParams?: Promi
   }
 
   if (activeTab === "membership") {
-    const { getActiveMembershipTier, MEMBERSHIP_PERIOD_LABELS, isMembershipPeriod, sanitizeMembershipSettings } = await import("@/lib/membership");
+    const { getActiveMembershipTier, MEMBERSHIP_PERIOD_LABELS, isMembershipPeriod, sanitizeMembershipSettings, sanitizeCreditPacks } = await import("@/lib/membership");
     const users = await prisma.user.findMany({
       orderBy: { updatedAt: "desc" },
       take: 1000,
@@ -630,7 +630,7 @@ export default async function AdminPage({ searchParams }: { searchParams?: Promi
     const videoModels = [...bytePlusVideoGenerationModels, ...videoGenerationModels].map((model) => ({ id: model.id, label: model.label }));
     return (
       <AdminShell adminEmail={currentAdminEmail} activeTab={activeTab}>
-        <AdminMembershipPanel users={rows} settings={sanitizeMembershipSettings(getMembershipSettings())} imageModels={imageModels} videoModels={videoModels} />
+        <AdminMembershipPanel users={rows} settings={sanitizeMembershipSettings(getMembershipSettings())} creditPacks={sanitizeCreditPacks(getCreditPackSettings())} imageModels={imageModels} videoModels={videoModels} />
       </AdminShell>
     );
   }

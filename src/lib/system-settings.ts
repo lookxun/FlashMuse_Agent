@@ -5,6 +5,7 @@ import type { UploadKind, UploadRuleOverrides } from "@/lib/upload-rules";
 import { normalizePromptMaxLength, type PromptLengthOverrides } from "@/lib/prompt-length";
 import { PERMANENT_ADMIN_EMAILS } from "@/lib/permanent-admins";
 import { frontendConversationModels } from "@/lib/models";
+import { sanitizeCreditPacks, type CreditPack } from "@/lib/membership";
 
 export const BYTEPLUS_CONVERSATION_IMAGE_MODEL_KEYS: Record<string, string> = {
   "byteplus:conversation-image.seedream-4-5": "conversation-image.seedream-4-5",
@@ -506,6 +507,17 @@ export async function updateMembershipSettings(settings: import("@/lib/membershi
   const sanitized = sanitizeMembershipSettings(settings);
   await writeLocalEnvValues(new Map([["MEMBERSHIP_SETTINGS", formatEnvValue(JSON.stringify(sanitized))]]));
   process.env.MEMBERSHIP_SETTINGS = JSON.stringify(sanitized);
+  return sanitized;
+}
+
+export function getCreditPackSettings() {
+  return sanitizeCreditPacks(getJsonEnvValue("CREDIT_PACK_SETTINGS", []));
+}
+
+export async function updateCreditPackSettings(packs: CreditPack[]) {
+  const sanitized = sanitizeCreditPacks(packs);
+  await writeLocalEnvValues(new Map([["CREDIT_PACK_SETTINGS", formatEnvValue(JSON.stringify(sanitized))]]));
+  process.env.CREDIT_PACK_SETTINGS = JSON.stringify(sanitized);
   return sanitized;
 }
 

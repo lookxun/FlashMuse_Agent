@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { RiAlipayFill, RiCheckLine, RiCloseLine, RiErrorWarningFill, RiFileCopyLine, RiLeafLine, RiRefreshLine, RiShining2Fill } from "react-icons/ri";
-import { CREDIT_PACKS_CNY, getCreditPackCredits, getMembershipLabel } from "@/lib/membership";
+import { DEFAULT_CREDIT_PACKS, getMembershipLabel, type CreditPack } from "@/lib/membership";
 import { bytePlusVideoGenerationModels, frontendImageGenerationModels, getImageModelSelectHint, getVideoModelSelectHint, videoGenerationModels } from "@/lib/models";
 import { useBodyScrollLock } from "@/components/use-body-scroll-lock";
 import { FakePayQrCode } from "@/components/fake-pay-qr-code";
@@ -38,8 +38,8 @@ function uniquePricedModels(
  *
  * ⛔⛔ **接支付时：金额和到账积分必须由服务端复算**，绝不许把这里显示的
  *   `selectedPackCny` / `getCreditPackCredits(...)` 直接当成入账依据。
- *   服务端唯一权威 = `lib/membership.ts` 的 `CREDIT_PACKS_CNY` + `getCreditPackCredits()`；
- *   下单接口只接收"第几档"（或校验 cny 必须在 CREDIT_PACKS_CNY 里），自己算钱和积分。
+ *   服务端唯一权威 = 后台「积分设置」那 8 档（`CREDIT_PACK_SETTINGS`）；
+ *   下单接口只接收档位下标 `packIndex`，钱和积分服务端自己读设置。
  *   （同源铁律：钱只能在服务端算 —— 前端算好的金额一律不许直接写进账。）
  * ⚠️ 这里的积分一律按**基础档**算（`getCreditPackCredits("free", cny)`）：
  *   会员系统现在是关闭状态，人人基础档，8 格只显示基础价、不显示 7 折/6 折。
@@ -83,7 +83,8 @@ export function CreditRechargeModal({
   onClose: () => void;
   onCreditsPaid?: (balance: number) => void;
 }) {
-  const [selectedPackCny, setSelectedPackCny] = useState<(typeof CREDIT_PACKS_CNY)[number]>(50);
+  const [creditPacks, setCreditPacks] = useState<CreditPack[]>(DEFAULT_CREDIT_PACKS);
+  const [selectedPackIndex, setSelectedPackIndex] = useState(0);
   const [recordsOpen, setRecordsOpen] = useState(false);
   const [creditRecords, setCreditRecords] = useState<CreditChargeRecord[]>([]);
   const [copiedOrderNo, setCopiedOrderNo] = useState("");
@@ -121,6 +122,14 @@ export function CreditRechargeModal({
     setPayStatus("pending");
     paidNotifiedRef.current = false;
     loadRecords();
+    void fetch("/api/credit-packs", { cache: "no-store" })
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data: { packs?: CreditPack[] } | null) => {
+        if (!Array.isArray(data?.packs) || data.packs.length === 0) return;
+        setCreditPacks(data.packs);
+        setSelectedPackIndex(0);
+      })
+      .catch(() => undefined);
     void fetch("/api/model-availability", { cache: "no-store" })
       .then((response) => (response.ok ? response.json() : null))
       .then((data: { creditRate?: { usdToCnyRate?: number; creditsPerCny?: number } } | null) => {
@@ -163,19 +172,19 @@ export function CreditRechargeModal({
     window.setTimeout(() => setAgreeTip(""), 2200);
   };
   const createPayOrder = () => {
-    const packCny = selectedPackCny;
+    const pack = creditPacks[selectedPackIndex] ?? DEFAULT_CREDIT_PACKS[0];
     setPayLoading(true);
     setPayQrDataUrl("");
     setPayOrderNo("");
-    setPayCredits(0);
-    setPayAmount(packCny);
+    setPayCredits(pack.credits);
+    setPayAmount(pack.payCny);
     setPayStatus("pending");
     paidNotifiedRef.current = false;
     void fetch("/api/pay/credit-order", {
       method: "POST",
       headers: { "content-type": "application/json" },
       cache: "no-store",
-      body: JSON.stringify({ packCny }),
+      body: JSON.stringify({ packIndex: selectedPackIndex }),
     })
       .then(async (response) => {
         const data = await response.json().catch(() => null) as { qrCode?: string; orderNo?: string; credits?: number; payCny?: number; error?: string } | null;
@@ -186,8 +195,8 @@ export function CreditRechargeModal({
         const dataUrl = await QRCode.toDataURL(data.qrCode, { margin: 1, width: 360, errorCorrectionLevel: "M" });
         setPayQrDataUrl(dataUrl);
         setPayOrderNo(data.orderNo);
-        setPayCredits(data.credits ?? getCreditPackCredits("free", packCny));
-        setPayAmount(data.payCny ?? packCny);
+        setPayCredits(data.credits ?? pack.credits);
+        setPayAmount(data.payCny ?? pack.payCny);
       })
       .catch(() => undefined)
       .finally(() => {
@@ -253,21 +262,20 @@ export function CreditRechargeModal({
         <p className="mt-3 text-center text-[13px] text-[#8a8a8a]">¥10 = 50 积分，充值积分永久有效</p>
         <div className="mt-10">
           <div className="grid grid-cols-4 gap-3">
-            {CREDIT_PACKS_CNY.map((cny) => {
-              const packCredits = getCreditPackCredits("free", cny);
-              const selected = selectedPackCny === cny;
+            {creditPacks.map((pack, index) => {
+              const selected = selectedPackIndex === index;
               return (
                 <button
-                  key={cny}
+                  key={`${pack.payCny}-${pack.credits}-${index}`}
                   type="button"
-                  onClick={() => setSelectedPackCny(cny)}
+                  onClick={() => setSelectedPackIndex(index)}
                   className={`relative overflow-hidden rounded-[12px] bg-[#efefef] px-4 py-8 text-left transition ${selected ? "border-2 border-[#111111]" : "border-2 border-transparent"}`}
                 >
                   <div className="flex items-center gap-1.5 text-[24px] font-semibold">
                     <RiShining2Fill className="h-5 w-5 text-[#555555]" />
-                    {packCredits.toLocaleString("en-US")}
+                    {pack.credits.toLocaleString("en-US")}
                   </div>
-                  <div className="mt-4 text-[16px] text-[#111111]">¥{cny.toFixed(2)}</div>
+                  <div className="mt-4 text-[16px] text-[#111111]">¥{pack.payCny.toFixed(2)}</div>
                 </button>
               );
             })}
@@ -280,7 +288,7 @@ export function CreditRechargeModal({
           </div>
           <div className="flex h-[96px] items-center justify-end gap-5 rounded-[16px] bg-[#efefef] px-6">
             <div className="text-[14px] text-[#888888]">
-              实付款：<span className="text-[22px] font-semibold text-[#111111]">¥{selectedPackCny.toFixed(2)}</span>
+              实付款：<span className="text-[22px] font-semibold text-[#111111]">¥{(creditPacks[selectedPackIndex] ?? DEFAULT_CREDIT_PACKS[0]).payCny.toFixed(2)}</span>
             </div>
             <button type="button" onClick={openPay} className="flex h-14 w-[168px] items-center justify-center rounded-[10px] bg-[#2ec7c0] text-[16px] font-medium text-white hover:bg-[#28b8b1]">
               充值
@@ -314,7 +322,7 @@ export function CreditRechargeModal({
                   <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="#22a06b" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9.2" /><path d="M8 12.2l2.6 2.6L16.2 9.2" /></svg>
                   <div>
                     <div className="text-[22px] font-semibold">支付成功</div>
-                    <div className="mt-1.5 text-[14px] text-[#888888]">充值成功，获得{(payCredits || getCreditPackCredits("free", selectedPackCny)).toLocaleString("en-US")}积分。</div>
+                    <div className="mt-1.5 text-[14px] text-[#888888]">充值成功，获得{(payCredits || (creditPacks[selectedPackIndex] ?? DEFAULT_CREDIT_PACKS[0]).credits).toLocaleString("en-US")}积分。</div>
                   </div>
                 </div>
                 <button type="button" onClick={() => setPayOpen(false)} className="mt-[72px] h-[52px] min-w-[240px] rounded-[5px] border border-[#d0d0d0] bg-white px-14 text-[16px] font-medium text-[#111111]">返回</button>
@@ -325,7 +333,7 @@ export function CreditRechargeModal({
                   <div className="flex items-center gap-2 text-[26px] font-semibold">
                     充值积分
                     <RiShining2Fill className="h-6 w-6 text-[#555555]" />
-                    {(payCredits || getCreditPackCredits("free", selectedPackCny)).toLocaleString("en-US")}
+                    {(payCredits || (creditPacks[selectedPackIndex] ?? DEFAULT_CREDIT_PACKS[0]).credits).toLocaleString("en-US")}
                   </div>
                   <div className="mt-1 text-[14px] text-[#888888]">购买后立即生效</div>
                 </div>
@@ -356,7 +364,7 @@ export function CreditRechargeModal({
                     )}
                   </div>
                   <div className="min-w-0 flex-1">
-                    <div className="text-[36px] font-semibold">¥{(payAmount || selectedPackCny).toFixed(2)}</div>
+                    <div className="text-[36px] font-semibold">¥{(payAmount || (creditPacks[selectedPackIndex] ?? DEFAULT_CREDIT_PACKS[0]).payCny).toFixed(2)}</div>
                     <div className="mt-2 text-[14px] text-[#555555]">请使用支付宝扫码支付</div>
                     <div className="mt-3 text-[12px] leading-5 text-[#9a9a9a]">
                       支付即表示您同意闪念的 <a href="/paid-terms" target="_blank" rel="noreferrer" className="text-[#2ec7c0]">付费服务协议</a> 和 <a href="/privacy" target="_blank" rel="noreferrer" className="text-[#2ec7c0]">隐私政策</a>，虚拟产品不支持退款。
@@ -384,7 +392,10 @@ export function CreditRechargeModal({
                 <div className="space-y-4 pb-4">
                   {creditRecords.map((item) => (
                     <div key={item.orderNo} className="rounded-[14px] bg-[#f5f5f5] px-5 py-5">
-                      <div className="text-[16px] font-semibold text-[#111111]">{item.credits.toLocaleString("en-US")} 积分充值</div>
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="text-[20px] font-semibold text-[#111111]">{item.credits.toLocaleString("en-US")}积分充值</div>
+                        <div className="shrink-0 text-[14px] font-medium text-[#22a06b]">付款成功</div>
+                      </div>
                       <div className="mt-4 space-y-3 text-[13px]">
                         <div className="flex items-center justify-between"><span className="text-[#888888]">价格</span><span>¥{item.payCny.toFixed(2)}</span></div>
                         <div className="flex items-center justify-between"><span className="text-[#888888]">购买时间</span><span>{item.at}</span></div>

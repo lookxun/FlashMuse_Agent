@@ -44,6 +44,47 @@ export const MEMBERSHIP_PLANS: MembershipPlan[] = [
 ];
 
 export const CREDIT_PACKS_CNY = [50, 100, 200, 500, 1000, 2000, 3000, 5000] as const;
+export const CREDIT_PACK_COUNT = CREDIT_PACKS_CNY.length;
+
+export type CreditPack = {
+  payCny: number;
+  credits: number;
+  locked: boolean;
+};
+
+export const DEFAULT_CREDIT_PACKS: CreditPack[] = CREDIT_PACKS_CNY.map((cny) => ({ payCny: cny, credits: cny * 5, locked: true }));
+
+function sanitizeCreditPackPayCny(value: unknown) {
+  const n = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(n)) return null;
+  const rounded = Math.round(n * 100) / 100;
+  if (rounded < 0.01 || rounded > 99999) return null;
+  return rounded;
+}
+
+function sanitizeCreditPackCreditsValue(value: unknown) {
+  const n = Math.floor(Number(value));
+  if (!Number.isFinite(n) || n < 1 || n > 999999) return null;
+  return n;
+}
+
+export function sanitizeCreditPacks(value: unknown): CreditPack[] {
+  const list = Array.isArray(value) ? value : [];
+  return DEFAULT_CREDIT_PACKS.map((fallback, index) => {
+    const raw = list[index];
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return { ...fallback };
+    const record = raw as Record<string, unknown>;
+    return {
+      payCny: sanitizeCreditPackPayCny(record.payCny) ?? fallback.payCny,
+      credits: sanitizeCreditPackCreditsValue(record.credits) ?? fallback.credits,
+      locked: typeof record.locked === "boolean" ? record.locked : fallback.locked,
+    };
+  });
+}
+
+export function isCreditPackIndex(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 && value < CREDIT_PACK_COUNT;
+}
 
 export const CREDIT_PACK_CREDITS_PER_CNY: Record<MembershipTier, number> = {
   free: 5,

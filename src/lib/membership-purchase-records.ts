@@ -1,6 +1,6 @@
 import { MEMBERSHIP_PERIOD_LABELS, getMembershipTierConfig, type MembershipTier } from "@/lib/membership";
 
-export const DEMO_RECHARGE_EMAILS = ["12424740@qq.com", "lookxun@163.com", "176107103@qq.com"];
+export const DEMO_RECHARGE_EMAILS = ["lookxun@163.com", "176107103@qq.com"];
 
 export type MembershipChargeRecord = {
   orderNo: string;
@@ -15,12 +15,15 @@ export type MembershipChargeRecord = {
   adminGrant?: boolean;
 };
 
+export type CreditChargePayStatus = "paid" | "pending" | "unpaid";
+
 export type CreditChargeRecord = {
   orderNo: string;
   at: string;
   payCny: number;
   credits: number;
   rateLabel: string;
+  payStatus?: CreditChargePayStatus;
 };
 
 export function formatMembershipDateTime(value: Date | string) {
@@ -51,17 +54,7 @@ export function getDemoRechargeHistory(email: string): { membership: MembershipC
       ],
     };
   }
-  return {
-    membership: [
-      { orderNo: "M2026082510123907", at: "2026-08-25 10:12", tier: "standard", period: "连续包季", listPriceCny: 199, paidCny: 99.5, discountLabel: "首季5折", creditsGranted: 1650, expiresAt: "2026-11-25" },
-      { orderNo: "M2026060119406621", at: "2026-06-01 19:40", tier: "standard", period: "单月", listPriceCny: 79, paidCny: 79, discountLabel: "无折扣", creditsGranted: 550, expiresAt: "2026-07-01" },
-    ],
-    credits: [
-      { orderNo: "C2026082813178844", at: "2026-08-28 13:17", payCny: 100, credits: 700, rateLabel: "¥10=70积分" },
-      { orderNo: "C2026081021041192", at: "2026-08-10 21:04", payCny: 10, credits: 70, rateLabel: "¥10=70积分" },
-      { orderNo: "C2026071518223370", at: "2026-07-15 18:22", payCny: 50, credits: 250, rateLabel: "¥10=50积分" },
-    ],
-  };
+  return { membership: [], credits: [] };
 }
 
 export function ledgerToMembershipCharge(item: { id: string; createdAt: string | Date; credits: number; metadata?: Record<string, unknown> | null }): MembershipChargeRecord | null {

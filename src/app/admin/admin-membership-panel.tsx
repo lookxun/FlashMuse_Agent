@@ -1,7 +1,7 @@
 "use client";
 
 import { Fragment, useEffect, useMemo, useRef, useState, useTransition } from "react";
-import { RiArrowDownSLine, RiArrowRightSLine, RiCloseLine, RiLeafLine, RiSearchLine, RiSeedlingLine, RiShining2Fill, RiTreeLine } from "react-icons/ri";
+import { RiArrowDownSLine, RiArrowRightSLine, RiCheckLine, RiCloseLine, RiFileCopyLine, RiLeafLine, RiSearchLine, RiSeedlingLine, RiShining2Fill, RiTreeLine } from "react-icons/ri";
 import { DetailItem, SmallStat, UserAvatar } from "@/app/admin/admin-users-panel";
 import { useBodyScrollLock } from "@/components/use-body-scroll-lock";
 import { ModelIcon } from "@/components/model-icon";
@@ -15,6 +15,7 @@ import {
   MEMBERSHIP_TIERS,
   MEMBERSHIP_VIDEO_RESOLUTIONS,
   DEFAULT_MEMBERSHIP_SETTINGS,
+  type CreditPack,
   type MembershipFirstMonthDiscountPeriod,
   type MembershipImageResolution,
   type MembershipSettings,
@@ -111,6 +112,14 @@ function RechargeHistoryDialog({
 }) {
   useBodyScrollLock(true);
   const [adminGrants, setAdminGrants] = useState<MembershipChargeRecord[] | null>(null);
+  const [paidCredits, setPaidCredits] = useState<CreditChargeRecord[] | null>(null);
+  const [copiedOrderNo, setCopiedOrderNo] = useState("");
+  const copyOrderNo = (orderNo: string) => {
+    void navigator.clipboard?.writeText(orderNo).then(() => {
+      setCopiedOrderNo(orderNo);
+      window.setTimeout(() => setCopiedOrderNo((current) => (current === orderNo ? "" : current)), 1000);
+    }).catch(() => undefined);
+  };
   useEffect(() => {
     if (kind !== "membership") return;
     let cancelled = false;
@@ -128,7 +137,24 @@ function RechargeHistoryDialog({
       cancelled = true;
     };
   }, [kind, user.id]);
+  useEffect(() => {
+    if (kind !== "credits") return;
+    let cancelled = false;
+    void fetch(`/admin/api/membership/credit-orders?userId=${encodeURIComponent(user.id)}`, { cache: "no-store" })
+      .then((response) => response.json())
+      .then((data: { credits?: CreditChargeRecord[] }) => {
+        if (cancelled) return;
+        setPaidCredits(Array.isArray(data.credits) ? data.credits : []);
+      })
+      .catch(() => {
+        if (!cancelled) setPaidCredits([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [kind, user.id]);
   const membershipRows = [...history.membership, ...(adminGrants ?? [])].sort((left, right) => right.at.localeCompare(left.at));
+  const creditRows = paidCredits ?? [];
   const title = kind === "membership" ? "会员充值" : "积分充值";
   const displayName = user.nickname || user.email;
   return (
@@ -174,7 +200,7 @@ function RechargeHistoryDialog({
                 </tbody>
               </table>
             ) : <div className="py-16 text-center text-[13px] text-[#999999]">暂无会员充值</div>
-          ) : history.credits.length > 0 ? (
+          ) : creditRows.length > 0 ? (
             <table className="w-full border-separate border-spacing-0 text-left text-[13px]">
               <thead className="text-[#888888]">
                 <tr>
@@ -182,19 +208,33 @@ function RechargeHistoryDialog({
                   <th className="border-b border-[#eeeeee] py-2 pr-3 font-medium">时间</th>
                   <th className="border-b border-[#eeeeee] py-2 pr-3 font-medium">实付</th>
                   <th className="border-b border-[#eeeeee] py-2 pr-3 font-medium">到账积分</th>
-                  <th className="border-b border-[#eeeeee] py-2 font-medium">汇率</th>
+                  <th className="border-b border-[#eeeeee] py-2 pr-3 font-medium">汇率</th>
+                  <th className="border-b border-[#eeeeee] py-2 font-medium">付款情况</th>
                 </tr>
               </thead>
               <tbody>
-                {history.credits.map((item) => (
+                {creditRows.map((item) => {
+                  const payStatus = item.payStatus ?? "unpaid";
+                  const payLabel = payStatus === "paid" ? "付款成功" : payStatus === "pending" ? "待支付" : "未付款";
+                  const payClass = payStatus === "paid" ? "text-[#22a06b]" : payStatus === "pending" ? "text-[#d4a017]" : "text-[#e24c4c]";
+                  return (
                   <tr key={item.orderNo} className="text-[#333333]">
-                    <td className="border-b border-[#f2f2f2] py-3 pr-3 font-mono text-[12px] text-[#555555]">{item.orderNo}</td>
+                    <td className="border-b border-[#f2f2f2] py-3 pr-3 font-mono text-[12px] text-[#555555]">
+                      <span className="inline-flex items-center gap-1.5">
+                        <span>{item.orderNo}</span>
+                        <button type="button" onClick={() => copyOrderNo(item.orderNo)} className="flex h-5 w-5 shrink-0 items-center justify-center text-[#888888]" aria-label={copiedOrderNo === item.orderNo ? "已复制" : "复制订单编号"}>
+                          {copiedOrderNo === item.orderNo ? <RiCheckLine className="h-3.5 w-3.5 text-[#111111]" /> : <RiFileCopyLine className="h-3.5 w-3.5" />}
+                        </button>
+                      </span>
+                    </td>
                     <td className="border-b border-[#f2f2f2] py-3 pr-3 text-[#777777]">{item.at}</td>
                     <td className="border-b border-[#f2f2f2] py-3 pr-3">¥{item.payCny}</td>
                     <td className="border-b border-[#f2f2f2] py-3 pr-3">{formatNumber(item.credits)}</td>
-                    <td className="border-b border-[#f2f2f2] py-3 text-[#888888]">{item.rateLabel}</td>
+                    <td className="border-b border-[#f2f2f2] py-3 pr-3 text-[#888888]">{item.rateLabel}</td>
+                    <td className={`border-b border-[#f2f2f2] py-3 font-medium ${payClass}`}>{payLabel}</td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           ) : <div className="py-16 text-center text-[13px] text-[#999999]">暂无积分充值</div>}
@@ -277,9 +317,23 @@ function MembershipUserList({ users, query }: { users: AdminMembershipRow[]; que
   const [historyDialog, setHistoryDialog] = useState<{ user: AdminMembershipRow; kind: "membership" | "credits" } | null>(null);
   const [grantPopover, setGrantPopover] = useState<{ user: AdminMembershipRow; top: number; left: number } | null>(null);
   const [adminGrantCounts, setAdminGrantCounts] = useState<Record<string, number>>({});
+  const [paidCreditStats, setPaidCreditStats] = useState<Record<string, { count: number; credits: number }>>({});
   useEffect(() => {
     setPage(1);
   }, [query]);
+  useEffect(() => {
+    let cancelled = false;
+    void fetch("/admin/api/membership/credit-orders", { cache: "no-store" })
+      .then((response) => response.json())
+      .then((data: { counts?: Record<string, { count: number; credits: number }> }) => {
+        if (cancelled || !data.counts) return;
+        setPaidCreditStats(data.counts);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const toggleExpandedUser = (userId: string) => {
     setExpandedUserIds((current) => {
       const next = new Set(current);
@@ -339,8 +393,9 @@ function MembershipUserList({ users, query }: { users: AdminMembershipRow[]; que
               pagedUsers.map((user) => {
                 const isExpanded = expandedUserIds.has(user.id);
                 const history = getDemoRechargeHistory(user.email);
+                const paidCredit = paidCreditStats[user.id] ?? { count: 0, credits: 0 };
                 const permanentRemaining = Math.max(0, user.credits - user.membershipCredits);
-                const rechargeCredits = Math.min(history.credits.reduce((sum, item) => sum + item.credits, 0), permanentRemaining);
+                const rechargeCredits = Math.min(paidCredit.credits, permanentRemaining);
                 const giftedCredits = Math.max(0, permanentRemaining - rechargeCredits);
                 return (
                 <Fragment key={user.id}>
@@ -386,7 +441,7 @@ function MembershipUserList({ users, query }: { users: AdminMembershipRow[]; que
                           </div>
                           <div className="space-y-px">
                             <DetailItem label="会员充值" value={`${history.membership.length + (adminGrantCounts[user.id] ?? 0)} 笔`} onClick={MEMBERSHIP_SYSTEM_ENABLED ? () => setHistoryDialog({ user, kind: "membership" }) : undefined} />
-                            <DetailItem label="积分充值" value={`${history.credits.length} 笔`} onClick={() => setHistoryDialog({ user, kind: "credits" })} />
+                            <DetailItem label="积分充值" value={`${paidCredit.count} 笔`} onClick={() => setHistoryDialog({ user, kind: "credits" })} />
                           </div>
                         </div>
                       </td>
@@ -422,7 +477,7 @@ function MembershipUserList({ users, query }: { users: AdminMembershipRow[]; que
           </button>
         </div>
       </div>
-      {historyDialog ? <RechargeHistoryDialog user={historyDialog.user} kind={historyDialog.kind} history={getDemoRechargeHistory(historyDialog.user.email)} onClose={() => setHistoryDialog(null)} /> : null}
+      {historyDialog ? <RechargeHistoryDialog user={historyDialog.user} kind={historyDialog.kind} history={{ membership: getDemoRechargeHistory(historyDialog.user.email).membership, credits: [] }} onClose={() => setHistoryDialog(null)} /> : null}
       {grantPopover ? <GrantMembershipDialog user={grantPopover.user} top={grantPopover.top} left={grantPopover.left} onClose={() => setGrantPopover(null)} /> : null}
     </>
   );
@@ -683,18 +738,149 @@ function MembershipSettingsPanel({
   );
 }
 
+function CreditPackSettingsPanel({ initialPacks }: { initialPacks: CreditPack[] }) {
+  const [draft, setDraft] = useState(initialPacks);
+  const [payCnyDrafts, setPayCnyDrafts] = useState(() => initialPacks.map((item) => String(item.payCny)));
+  const [creditsDrafts, setCreditsDrafts] = useState(() => initialPacks.map((item) => String(item.credits)));
+  const [message, setMessage] = useState("");
+  const [isPending, startTransition] = useTransition();
+  const pendingSaveRef = useRef<CreditPack[] | null>(null);
+
+  useEffect(() => {
+    setDraft(initialPacks);
+    setPayCnyDrafts(initialPacks.map((item) => String(item.payCny)));
+    setCreditsDrafts(initialPacks.map((item) => String(item.credits)));
+  }, [initialPacks]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetch("/admin/api/credit-pack-settings", { cache: "no-store" })
+      .then((response) => response.json())
+      .then((data: { packs?: CreditPack[] }) => {
+        if (cancelled || !Array.isArray(data.packs) || data.packs.length === 0) return;
+        setDraft(data.packs);
+        setPayCnyDrafts(data.packs.map((item) => String(item.payCny)));
+        setCreditsDrafts(data.packs.map((item) => String(item.credits)));
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const save = (next: CreditPack[]) => {
+    setMessage("");
+    startTransition(async () => {
+      try {
+        const response = await fetch("/admin/api/credit-pack-settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ packs: next }),
+        });
+        const data = (await response.json().catch(() => ({}))) as { error?: string; packs?: CreditPack[] };
+        if (!response.ok || !data.packs) throw new Error(data.error || "保存失败");
+        setDraft(data.packs);
+        setPayCnyDrafts(data.packs.map((item) => String(item.payCny)));
+        setCreditsDrafts(data.packs.map((item) => String(item.credits)));
+      } catch (error) {
+        setMessage(error instanceof Error ? error.message : "保存失败");
+      }
+    });
+  };
+
+  useEffect(() => {
+    const pending = pendingSaveRef.current;
+    if (!pending) return;
+    pendingSaveRef.current = null;
+    save(pending);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft]);
+
+  const patchPack = (index: number, patch: Partial<CreditPack>, saveNow = false) => {
+    setDraft((current) => {
+      const next = current.map((item, itemIndex) => (itemIndex === index ? { ...item, ...patch } : item));
+      if (saveNow) pendingSaveRef.current = next;
+      return next;
+    });
+  };
+
+  return (
+    <>
+      <div className="mb-5 flex items-center justify-between gap-4">
+        <div className="text-[13px] text-[#888888]">8 档积分包的价格和到账积分。改完即时保存，前台充值页和下单一起吃。最低价 0.01 元。</div>
+        {message ? <div className="text-[13px] text-[#777777]">{message}</div> : null}
+      </div>
+      <div className="rounded-[12px] border border-[#eeeeee] bg-white p-5 shadow-[0_10px_28px_rgba(0,0,0,0.04)]">
+        <div className="flex items-center gap-3 border-b border-[#f0f0f0] pb-3 text-[13px] text-[#888888]">
+          <div className="w-10">档位</div>
+          <div className="w-[88px] text-center">价格（元）</div>
+          <div className="w-[88px] text-center">积分</div>
+        </div>
+        <div className="divide-y divide-[#f5f5f5]">
+          {draft.map((pack, index) => (
+            <div key={index} className="flex items-center gap-3 py-3">
+              <div className="w-10 text-[13px] text-[#555555]">{index + 1}</div>
+              <input
+                type="text"
+                inputMode="decimal"
+                value={payCnyDrafts[index] ?? String(pack.payCny)}
+                disabled={isPending || pack.locked}
+                onChange={(event) => {
+                  const raw = event.target.value.replace(/[^\d.]/g, "");
+                  setPayCnyDrafts((current) => current.map((item, itemIndex) => (itemIndex === index ? raw : item)));
+                }}
+                onBlur={() => {
+                  const next = Number(payCnyDrafts[index]);
+                  patchPack(index, { payCny: Number.isFinite(next) ? next : pack.payCny }, true);
+                }}
+                className="h-8 w-[88px] rounded-[8px] border border-[#e5e5e5] bg-white px-2 text-center text-[13px] text-[#222222] outline-none transition focus:border-[#367cee] disabled:bg-[#f3f3f3] disabled:text-[#999999]"
+              />
+              <input
+                type="text"
+                inputMode="numeric"
+                value={creditsDrafts[index] ?? String(pack.credits)}
+                disabled={isPending || pack.locked}
+                onChange={(event) => {
+                  const raw = event.target.value.replace(/\D/g, "");
+                  setCreditsDrafts((current) => current.map((item, itemIndex) => (itemIndex === index ? raw : item)));
+                }}
+                onBlur={() => {
+                  const next = Number(creditsDrafts[index]);
+                  patchPack(index, { credits: Number.isFinite(next) ? Math.floor(next) : pack.credits }, true);
+                }}
+                className="h-8 w-[88px] rounded-[8px] border border-[#e5e5e5] bg-white px-2 text-center text-[13px] text-[#222222] outline-none transition focus:border-[#367cee] disabled:bg-[#f3f3f3] disabled:text-[#999999]"
+              />
+              <SettingSwitch checked={pack.locked} disabled={isPending} onChange={(locked) => patchPack(index, { locked }, true)} ariaLabel={`档位${index + 1}锁定`} />
+              <span className="text-[13px] text-[#888888]">{(() => {
+                const pay = Number(payCnyDrafts[index]);
+                const credits = Number(creditsDrafts[index]);
+                if (!Number.isFinite(pay) || pay <= 0 || !Number.isFinite(credits) || credits <= 0) return "1元=—积分";
+                const rate = credits / pay;
+                const shown = Number.isInteger(rate) ? String(rate) : rate.toFixed(2).replace(/\.?0+$/, "");
+                return `1元=${shown}积分`;
+              })()}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </>
+  );
+}
+
 export function AdminMembershipPanel({
   users,
   settings,
+  creditPacks,
   imageModels,
   videoModels,
 }: {
   users: AdminMembershipRow[];
   settings: MembershipSettings;
+  creditPacks: CreditPack[];
   imageModels: MembershipModelOption[];
   videoModels: MembershipModelOption[];
 }) {
-  const [view, setView] = useState<"users" | "settings">("users");
+  const [view, setView] = useState<"users" | "settings" | "credits">("users");
   const [query, setQuery] = useState("");
   return (
     <div>
@@ -703,6 +889,7 @@ export function AdminMembershipPanel({
           {([
             { key: "users" as const, label: "充值列表" },
             { key: "settings" as const, label: "会员设置" },
+            { key: "credits" as const, label: "积分设置" },
           ]).map((item) => (
             <button
               key={item.key}
@@ -727,7 +914,7 @@ export function AdminMembershipPanel({
           </div>
         ) : null}
       </div>
-      {view === "users" ? <MembershipUserList users={users} query={query} /> : <MembershipSettingsPanel key="membership-settings" initialSettings={settings} imageModels={imageModels} videoModels={videoModels} />}
+      {view === "users" ? <MembershipUserList users={users} query={query} /> : view === "settings" ? <MembershipSettingsPanel key="membership-settings" initialSettings={settings} imageModels={imageModels} videoModels={videoModels} /> : <CreditPackSettingsPanel key="credit-pack-settings" initialPacks={creditPacks} />}
     </div>
   );
 }

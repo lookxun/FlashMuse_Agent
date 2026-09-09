@@ -1,13 +1,13 @@
 import { prisma } from "@/lib/prisma";
-import { CREDIT_PACKS_CNY, getCreditPackCredits } from "@/lib/membership";
+import { isCreditPackIndex, sanitizeCreditPacks } from "@/lib/membership";
+import { getCreditPackSettings } from "@/lib/system-settings";
 import { alipayPrecreate, alipayQuery, getAlipayNotifyUrl } from "@/lib/alipay";
-import { formatMembershipDateTime, type CreditChargeRecord } from "@/lib/membership-purchase-records";
+import { formatMembershipDateTime, type CreditChargePayStatus, type CreditChargeRecord } from "@/lib/membership-purchase-records";
 
 export const PAYMENT_ORDER_EXPIRE_MS = 15 * 60 * 1000;
-const CREDIT_PACK_CNY_SET = new Set<number>(CREDIT_PACKS_CNY);
 
-export function isCreditPackCny(value: unknown): value is (typeof CREDIT_PACKS_CNY)[number] {
-  return typeof value === "number" && Number.isFinite(value) && CREDIT_PACK_CNY_SET.has(value);
+function getLiveCreditPacks() {
+  return sanitizeCreditPacks(getCreditPackSettings());
 }
 
 export function createPaymentOrderNo() {
@@ -30,12 +30,16 @@ function paidAmountMatches(orderPayCny: number, paidAmount: string) {
   return Math.abs(paid - orderPayCny) < 0.009;
 }
 
-export async function createAlipayCreditOrder(userId: string, packCny: number) {
-  if (!isCreditPackCny(packCny)) throw new Error("无效的充值档位");
+export async function createAlipayCreditOrder(userId: string, packIndex: number) {
+  if (!isCreditPackIndex(packIndex)) throw new Error("无效的充值档位");
   const notifyUrl = getAlipayNotifyUrl();
   if (!notifyUrl) throw new Error("支付宝回调地址未配置");
-  const credits = getCreditPackCredits("free", packCny);
-  if (credits <= 0) throw new Error("积分档位无效");
+  const pack = getLiveCreditPacks()[packIndex];
+  if (!pack) throw new Error("无效的充值档位");
+  const payCny = pack.payCny;
+  const credits = pack.credits;
+  if (credits <= 0 || payCny <= 0) throw new Error("积分档位无效");
+  const packCny = Math.max(1, Math.round(payCny));
   const orderNo = createPaymentOrderNo();
   const subject = `闪念积分充值 ${credits}`;
   await prisma.paymentOrder.create({
@@ -46,13 +50,13 @@ export async function createAlipayCreditOrder(userId: string, packCny: number) {
       kind: "credit_pack",
       status: "pending",
       packCny,
-      payCny: packCny,
+      payCny,
       credits,
       subject,
     },
   });
   try {
-    const qrCode = await alipayPrecreate({ orderNo, payCny: packCny, subject, notifyUrl });
+    const qrCode = await alipayPrecreate({ orderNo, payCny, subject, notifyUrl });
     return prisma.paymentOrder.update({ where: { orderNo }, data: { qrCode } });
   } catch (error) {
     await prisma.paymentOrder.update({
@@ -91,8 +95,6 @@ export async function fulfillPaidCreditOrder(params: {
     if (params.totalAmount && !paidAmountMatches(order.payCny, params.totalAmount)) {
       return { ok: false as const, reason: "amount" };
     }
-    const expectedCredits = getCreditPackCredits("free", order.packCny);
-    if (expectedCredits !== order.credits) return { ok: false as const, reason: "credits" };
 
     const existingLedger = await tx.creditLedger.findUnique({
       where: { requestId_kind: { requestId: order.orderNo, kind: "recharge" } },
@@ -100,7 +102,7 @@ export async function fulfillPaidCreditOrder(params: {
     if (!existingLedger) {
       await tx.user.update({
         where: { id: order.userId },
-        data: { credits: { increment: expectedCredits } },
+        data: { credits: { increment: order.credits } },
       });
       await tx.creditLedger.create({
         data: {
@@ -109,7 +111,7 @@ export async function fulfillPaidCreditOrder(params: {
           direction: "increase",
           kind: "recharge",
           label: "充值积分",
-          credits: expectedCredits,
+          credits: order.credits,
           cny: order.payCny,
           metadata: {
             channel: "alipay",
@@ -175,17 +177,37 @@ export async function syncAlipayCreditOrder(orderNo: string, userId?: string) {
   return order;
 }
 
+export function getCreditOrderPayStatus(order: { status: string; createdAt: Date }, now = Date.now()): CreditChargePayStatus {
+  if (order.status === "paid") return "paid";
+  if (order.status === "pending" && now - order.createdAt.getTime() <= PAYMENT_ORDER_EXPIRE_MS) return "pending";
+  return "unpaid";
+}
+
+function toCreditChargeRecord(row: { orderNo: string; createdAt: Date; paidAt: Date | null; payCny: number; credits: number; status: string }): CreditChargeRecord {
+  return {
+    orderNo: row.orderNo,
+    at: formatMembershipDateTime(row.paidAt ?? row.createdAt),
+    payCny: row.payCny,
+    credits: row.credits,
+    rateLabel: `¥${row.payCny}=${row.credits}积分`,
+    payStatus: getCreditOrderPayStatus(row),
+  };
+}
+
 export async function listPaidCreditRecords(userId: string): Promise<CreditChargeRecord[]> {
   const rows = await prisma.paymentOrder.findMany({
     where: { userId, kind: "credit_pack", status: "paid" },
     orderBy: { paidAt: "desc" },
     take: 100,
   });
-  return rows.map((row) => ({
-    orderNo: row.orderNo,
-    at: formatMembershipDateTime(row.paidAt ?? row.createdAt),
-    payCny: row.payCny,
-    credits: row.credits,
-    rateLabel: `¥10=${getCreditPackCredits("free", 10)}积分`,
-  }));
+  return rows.map(toCreditChargeRecord);
+}
+
+export async function listAdminCreditRecords(userId: string): Promise<CreditChargeRecord[]> {
+  const rows = await prisma.paymentOrder.findMany({
+    where: { userId, kind: "credit_pack" },
+    orderBy: { createdAt: "desc" },
+    take: 200,
+  });
+  return rows.map(toCreditChargeRecord);
 }
