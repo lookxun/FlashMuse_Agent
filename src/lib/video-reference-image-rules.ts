@@ -31,7 +31,6 @@ const VIDEO_REFERENCE_IMAGE_RULE_MODELS = new Set([
   // 快手 Kling：官方要求图片分辨率不小于 300×300px、宽高比 1:2.5~2.5:1；不合规时原文 `Image pixel is invalid`
   "kwaivgi/kling-v3.0-std",
   "kwaivgi/kling-v3.0-pro",
-  "kwaivgi/kling-video-o1",
   // MiniMax H3（Hailuo 3）：依据 = MiniMax 官方 V2 接口文档的 content 输入限制表
   // 「宽高范围 [256, 5760] px；长宽比（宽/高）[0.4, 2.5]」。
   // ⚠️ 宽高比与本文件的常量**完全一致**；边长两端各差一点（我们 300~6000 vs 官方 256~5760）——

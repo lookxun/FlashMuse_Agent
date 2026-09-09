@@ -1,5 +1,7 @@
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { createWriteStream, existsSync, readFileSync, statSync } from "node:fs";
 import { mkdir, rename, unlink, writeFile } from "node:fs/promises";
+import { pipeline } from "node:stream/promises";
+import { Readable } from "node:stream";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { dirname, extname, join } from "node:path";
@@ -21,9 +23,11 @@ const GENERATED_ROOT = join(process.cwd(), "public", "generated");
 const ASSET_UPLOAD_TEMP_ROOT = join(process.cwd(), ".runtime", "asset-upload-temp");
 const execFileAsync = promisify(execFile);
 // 单次远程下载超时（含 fetch 建连+读 body）。跨境下载偶尔会"假死"——连接挂住但既不完成也不报错，
-// Node fetch 默认永不超时，会让存盘任务永久卡在"下载中"。这里强制超时：到点 abort→抛错→上层按失败重试，
-// 直到成功或远程地址过期。正常 15s 视频原始下载远快于此（整段存盘 p99 约 3 分钟且含转码/同步）。
+  // Node fetch 默认永不超时，会让存盘任务永久卡在"下载中"。这里强制超时：到点 abort→抛错→上层按失败重试，
+  // 直到成功或远程地址过期。
+  // ⭐ 2026-09-09：Seedance 2.0 4K 本地实测 3 分钟必被掐（This operation was aborted），视频改 15 分钟。
 const REMOTE_DOWNLOAD_TIMEOUT_MS = 3 * 60 * 1000;
+const REMOTE_VIDEO_DOWNLOAD_TIMEOUT_MS = 15 * 60 * 1000;
 
 function isJpegMime(mimeType?: string | null) {
   return /^image\/jpe?g(?:;|$)/i.test(mimeType ?? "");
@@ -254,6 +258,27 @@ function getCurlCommand() {
   return process.platform === "win32" ? "curl.exe" : "curl";
 }
 
+// ⭐ 本地开发专用：Node 内置 fetch(undici) 默认**不走系统代理**，本机在国内跨境直连
+//   新加坡 TOS 下 4K 视频会一直超时。配 env `LOCAL_MEDIA_PROXY`（如 http://127.0.0.1:7897，
+//   Clash 混合代理端口）后，本地下载媒体走它。⛔ 生产**不配这个 env** → 恒为 undefined → 行为不变
+//   （线上腾讯新加坡机房直连火山本来就快，不能绕代理）。
+function getLocalMediaProxyUrl() {
+  if (process.env.NODE_ENV === "production") return undefined;
+  const value = (process.env.LOCAL_MEDIA_PROXY ?? "").trim();
+  return value || undefined;
+}
+
+let cachedProxyDispatcher: { url: string; dispatcher: unknown } | undefined;
+async function getLocalMediaProxyDispatcher() {
+  const url = getLocalMediaProxyUrl();
+  if (!url) return undefined;
+  if (cachedProxyDispatcher?.url === url) return cachedProxyDispatcher.dispatcher;
+  const { ProxyAgent } = await import("undici");
+  const dispatcher = new ProxyAgent(url);
+  cachedProxyDispatcher = { url, dispatcher };
+  return dispatcher;
+}
+
 function toHeaderRecord(headers?: HeadersInit) {
   if (!headers) return {};
   if (headers instanceof Headers) return Object.fromEntries(headers.entries());
@@ -441,14 +466,18 @@ export async function saveUploadedFileBufferAsset(buffer: Buffer, originalName =
 export async function saveRemoteAsset(url: string, type: AssetType, init?: RequestInit, options: SaveAssetOptions = {}) {
   // 单次下载总超时：fetch 建连、读 body、以及非 ok 时的 curl 兜底全都在这个时限内；
   // 到点 abort/kill → 抛错 → 上层（media-save 队列）按失败重试，避免"假死"永久卡住。
+  const downloadTimeoutMs = type === "video" ? REMOTE_VIDEO_DOWNLOAD_TIMEOUT_MS : REMOTE_DOWNLOAD_TIMEOUT_MS;
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), REMOTE_DOWNLOAD_TIMEOUT_MS);
+  const timeout = setTimeout(() => controller.abort(), downloadTimeoutMs);
+  // 本地专用系统代理（生产恒 undefined，见 getLocalMediaProxyUrl）。
+  const proxyUrl = getLocalMediaProxyUrl();
+  const proxyDispatcher = await getLocalMediaProxyDispatcher();
   try {
     // ⛔⛔ 出网必须走 `safeFetch`（2026-08-02 加）：这个函数的 url 可以来自用户输入
     //   （`/api/media-save-status` 会把没见过的地址直接入队），不拦就等于"服务器帮外人去读内网"。
     //   `safeFetch` 会**逐跳**校验（不能用 `redirect: "follow"`，那只校验第一跳）。
     //   拦法与理由见 `lib/ssrf-guard.ts` 顶部。⛔ 禁止为了"让某个地址能过"而在这里开后门。
-    const response = await safeFetch(url, { ...init, cache: "no-store", signal: controller.signal });
+    const response = await safeFetch(url, { ...init, cache: "no-store", signal: controller.signal, ...(proxyDispatcher ? { dispatcher: proxyDispatcher } : {}) });
     const imageDir = join(GENERATED_ROOT, getGeneratedFolder(getAssetFolder("image"), options));
 
     if (!response.ok) {
@@ -456,7 +485,7 @@ export async function saveRemoteAsset(url: string, type: AssetType, init?: Reque
         // ⛔ 这里原来用的是 `curl -fL`，`-L` 会**跟随重定向**——那等于绕开 SSRF 校验
         //   （公网地址 302 到 `http://169.254.169.254/...` 就穿透了）。
         //   已改成 `-f` 不跟随；供应商的直链本来就不需要重定向。
-        const { stdout } = await execFileAsync(getCurlCommand(), ["-f", "-sS", "--max-time", String(Math.ceil(REMOTE_DOWNLOAD_TIMEOUT_MS / 1000)), ...toCurlHeaderArgs(init?.headers), url], { encoding: "buffer", maxBuffer: 500 * 1024 * 1024, signal: controller.signal });
+        const { stdout } = await execFileAsync(getCurlCommand(), ["-f", "-sS", "--max-time", String(Math.ceil(downloadTimeoutMs / 1000)), ...(proxyUrl ? ["--proxy", proxyUrl] : []), ...toCurlHeaderArgs(init?.headers), url], { encoding: "buffer", maxBuffer: 500 * 1024 * 1024, signal: controller.signal });
         const buffer = Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout);
         // ⛔ 空 body 必须当失败（2026-08-02 加）：curl 的 `-f` 只对 HTTP >= 400 报错，
         //   遇到 302（不带 -L 时不会去跟随）会**成功退出（exit 0）并输出空 body**。
@@ -481,9 +510,9 @@ export async function saveRemoteAsset(url: string, type: AssetType, init?: Reque
     }
 
     const contentType = response.headers.get("content-type");
-    const buffer = Buffer.from(await response.arrayBuffer());
 
     if (type === "image") {
+      const buffer = Buffer.from(await response.arrayBuffer());
       const encoded = await encodeGeneratedImageBuffer(buffer, join(imageDir, `${Date.now()}-${randomUUID()}`), contentType, url, options.keepTransparent);
       const asset = createPublicAssetPath("image", encoded.extension, options);
       await mkdir(asset.directory, { recursive: true });
@@ -493,7 +522,8 @@ export async function saveRemoteAsset(url: string, type: AssetType, init?: Reque
 
     const asset = createPublicAssetPath(type, getExtensionFromMime(contentType) ?? getExtensionFromUrl(url) ?? "mp4", options);
     await mkdir(asset.directory, { recursive: true });
-    await writeFile(asset.filePath, buffer);
+    if (!response.body) throw new Error("远程视频没有返回内容");
+    await pipeline(Readable.fromWeb(response.body as never), createWriteStream(asset.filePath));
     return asset.publicUrl;
   } finally {
     clearTimeout(timeout);

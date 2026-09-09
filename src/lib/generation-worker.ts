@@ -1,5 +1,6 @@
 import { claimImageJobs, claimVideoJobs, runImageJob, runVideoJob } from "@/lib/generation-jobs";
 import { processContentModerationQueue } from "@/lib/content-moderation";
+import { resumePendingMediaSaveJobs } from "@/lib/media-save-queue";
 
 /**
  * 常驻生成 worker：定时认领并执行图片任务（视频后续接入）。
@@ -67,6 +68,9 @@ export function startGenerationWorker() {
   if (started) return;
   started = true;
   console.log("[generation-worker] started");
+  // ⭐ 启动即恢复重启前遗留的存盘任务（不 await，坏了也不拖 worker）。队列定时器只活在内存里，
+  //   进程重启后 pending/downloading 会成孤儿、永远停在"资产保存中"，靠这一步重新排队。
+  void resumePendingMediaSaveJobs().catch((error) => console.warn("[media-save] 恢复未完成任务失败", error instanceof Error ? error.message : String(error)));
   const loop = () => {
     void tick().finally(() => {
       setTimeout(loop, TICK_INTERVAL_MS);

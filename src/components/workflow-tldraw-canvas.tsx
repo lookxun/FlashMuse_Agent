@@ -40,6 +40,8 @@ type WorkflowCanvasProps = {
   textModelProviders?: Record<string, "openrouter" | "byteplus">;
   enabledImageModelIds?: string[];
   enabledVideoModelIds?: string[];
+  membershipTier?: import("@/lib/membership").MembershipTier;
+  membershipSettings?: import("@/lib/membership").MembershipSettings;
   uploadRuleOverrides?: UploadRuleOverrides;
   promptLengthOverrides?: PromptLengthOverrides;
   creditRate?: { usdToCnyRate: number; creditsPerCny: number };
@@ -60,6 +62,15 @@ type WorkflowCanvasProps = {
   onOpenAssetImport?: () => void;
   assetsToImport?: Array<{ id: string; name: string; url: string; posterUrl?: string; kind: "image" | "video" | "audio"; sourcePrompt?: string; model?: ModelName; ratio?: string; resolution?: string; duration?: string; dimensions?: { width: number; height: number }; origin?: "generated" | "upload" }>;
   onAssetsImported?: () => void;
+  nodeDefaults?: {
+    imageModel?: string;
+    imageRatio?: string;
+    imageResolution?: string;
+    videoModel?: string;
+    videoRatio?: string;
+    videoResolution?: string;
+    videoDuration?: string;
+  };
 };
 
 export const WorkflowCanvas = dynamic<WorkflowCanvasProps>(

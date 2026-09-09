@@ -6,7 +6,7 @@ import { prisma } from "@/lib/prisma";
 import { getCreditSettings } from "@/lib/credits";
 import { migrateLegacyUserProfileFromWorkspace, stripUserProfileFromWorkspaceState } from "@/lib/user-profile";
 import { compactWorkspaceState, hasJsonChanged, replaceLegacyMediaUrls } from "@/lib/workspace-state-cleanup";
-import { DEFAULT_WORKSPACE_SESSION_LIMIT, getWorkspaceSessionMessages, stripSessionsFromWorkspaceState, upsertWorkspaceSessions, workspaceSessionRowToPayload } from "@/lib/workspace-sessions";
+import { DEFAULT_WORKSPACE_SESSION_LIMIT, getArchivedWorkspaceSessionRows, getWorkspaceSessionMessages, isWorkspaceSessionRowArchived, stripSessionsFromWorkspaceState, upsertWorkspaceSessions, workspaceSessionRowToPayload } from "@/lib/workspace-sessions";
 import { getWorkspaceWorkflowCanvas, getWorkspaceWorkflowPayloads, stripWorkflowsFromWorkspaceState, upsertWorkspaceWorkflows } from "@/lib/workspace-workflows";
 import { resolveAssetPreviewMeta } from "@/lib/media-asset-record";
 import { getRunningWorkflowIds } from "@/lib/generation-jobs";
@@ -160,22 +160,41 @@ type WorkspaceSessionListRow = {
   title: string;
   updatedAt: Date;
   deletedAt: Date | null;
+  archivedAt: Date | null;
   summaryJson: Prisma.JsonValue | null;
   usageSummary: Prisma.JsonValue | null;
   memorySummary: Prisma.JsonValue | null;
 };
 
+function isWorkspaceSessionListRowArchived(row: WorkspaceSessionListRow) {
+  return isWorkspaceSessionRowArchived(row);
+}
+
 async function getOrderedWorkspaceSessionRows(userId: string, offset: number, limit: number) {
-  // 2026-08-02 审计 1.7：分页下沉到数据库（旧写法是把全部 session 行捞回来再 slice）。
-  // ⚠️ 排序必须保持 [updatedAt desc, sessionId desc] 双键：单键 updatedAt 不唯一，skip/take 跨页会错位。
-  const rows = await prisma.workspaceSession.findMany({
-    where: { userId, deletedAt: null },
-    orderBy: [{ updatedAt: "desc" }, { sessionId: "desc" }],
-    skip: offset,
-    take: limit + 1,
-    select: { sessionId: true, title: true, updatedAt: true, deletedAt: true, summaryJson: true, usageSummary: true, memorySummary: true },
-  });
-  return rows as WorkspaceSessionListRow[];
+  // 只给侧栏可见对话（没删、没归档）。归档经常只写在 summaryJson，列上是空的，
+  // 所以不能只靠 archivedAt IS NULL 分页，否则前 8 条里一筛归档就剩 1 条。
+  const need = offset + limit + 1;
+  const visible: WorkspaceSessionListRow[] = [];
+  let dbOffset = 0;
+  const batch = Math.max(40, need);
+  while (visible.length < need) {
+    const rows = await prisma.workspaceSession.findMany({
+      where: { userId, deletedAt: null },
+      orderBy: [{ updatedAt: "desc" }, { sessionId: "desc" }],
+      skip: dbOffset,
+      take: batch,
+      select: { sessionId: true, title: true, updatedAt: true, deletedAt: true, archivedAt: true, summaryJson: true, usageSummary: true, memorySummary: true },
+    });
+    if (rows.length === 0) break;
+    dbOffset += rows.length;
+    for (const row of rows as WorkspaceSessionListRow[]) {
+      if (isWorkspaceSessionListRowArchived(row)) continue;
+      visible.push(row);
+      if (visible.length >= need) break;
+    }
+    if (rows.length < batch) break;
+  }
+  return visible.slice(offset);
 }
 
 function getAssetMergeKey(asset: unknown) {
@@ -556,10 +575,19 @@ export async function GET(request: Request) {
     return Response.json({ workflow });
   }
 
+  if (params.get("archivedOnly") === "1") {
+    const rows = await getArchivedWorkspaceSessionRows(user.id);
+    return Response.json({
+      state: {
+        sessions: rows.map((row) => workspaceSessionRowToPayload(row, false)),
+      },
+    });
+  }
+
   if (summaryOnly && historyOnly) {
     const [rows, sessionsTotalCount] = await Promise.all([
       getOrderedWorkspaceSessionRows(user.id, offset, limit),
-      prisma.workspaceSession.count({ where: { userId: user.id, deletedAt: null } }),
+      prisma.workspaceSession.count({ where: { userId: user.id, deletedAt: null, archivedAt: null } }),
     ]);
     const pageRows = rows.slice(0, limit);
     return Response.json({
@@ -630,16 +658,17 @@ export async function GET(request: Request) {
     const runningWorkflowIds = await getRunningWorkflowIds(user.id);
     const [rows, sessionsTotalCount, workflowItems] = await Promise.all([
       getOrderedWorkspaceSessionRows(user.id, offset, limit + 1),
-      prisma.workspaceSession.count({ where: { userId: user.id, deletedAt: null } }),
+      prisma.workspaceSession.count({ where: { userId: user.id, deletedAt: null, archivedAt: null } }),
       getWorkspaceWorkflowPayloads(user.id, baseState, { activeWorkflowId: getActiveWorkflowId(shellState), runningWorkflowIds }),
     ]);
     const pageRows = rows.slice(0, limit);
-    const activeRow = activeSessionId && !pageRows.some((row) => row.sessionId === activeSessionId)
+    const activeRowCandidate = activeSessionId && !pageRows.some((row) => row.sessionId === activeSessionId)
       ? await prisma.workspaceSession.findFirst({
           where: { userId: user.id, sessionId: activeSessionId, deletedAt: null },
-          select: { sessionId: true, title: true, updatedAt: true, deletedAt: true, summaryJson: true, usageSummary: true, memorySummary: true },
+          select: { sessionId: true, title: true, updatedAt: true, deletedAt: true, archivedAt: true, summaryJson: true, usageSummary: true, memorySummary: true },
         })
       : null;
+    const activeRow = activeRowCandidate && !isWorkspaceSessionListRowArchived(activeRowCandidate as WorkspaceSessionListRow) ? activeRowCandidate : null;
     const firstExtraRow = rows[limit];
     const activeRowWasFirstExtra = Boolean(activeRow && firstExtraRow?.sessionId === activeRow.sessionId);
     const nextActiveSessionId = (activeRow?.sessionId ?? (pageRows.some((row) => row.sessionId === activeSessionId) ? activeSessionId : "")) || (pageRows[0]?.sessionId ?? "");
@@ -674,16 +703,17 @@ export async function GET(request: Request) {
     const runningWorkflowIds = await getRunningWorkflowIds(user.id);
     const [rows, sessionsTotalCount, workflowItems] = await Promise.all([
       getOrderedWorkspaceSessionRows(user.id, offset, limit + 1),
-      prisma.workspaceSession.count({ where: { userId: user.id, deletedAt: null } }),
+      prisma.workspaceSession.count({ where: { userId: user.id, deletedAt: null, archivedAt: null } }),
       getWorkspaceWorkflowPayloads(user.id, workspace?.state, { activeWorkflowId: getActiveWorkflowId(baseState), runningWorkflowIds }),
     ]);
     const pageRows = rows.slice(0, limit);
-    const activeRow = activeSessionId && !pageRows.some((row) => row.sessionId === activeSessionId)
+    const activeRowCandidate = activeSessionId && !pageRows.some((row) => row.sessionId === activeSessionId)
       ? await prisma.workspaceSession.findFirst({
           where: { userId: user.id, sessionId: activeSessionId, deletedAt: null },
-          select: { sessionId: true, title: true, updatedAt: true, deletedAt: true, summaryJson: true, usageSummary: true, memorySummary: true },
+          select: { sessionId: true, title: true, updatedAt: true, deletedAt: true, archivedAt: true, summaryJson: true, usageSummary: true, memorySummary: true },
         })
       : null;
+    const activeRow = activeRowCandidate && !isWorkspaceSessionListRowArchived(activeRowCandidate as WorkspaceSessionListRow) ? activeRowCandidate : null;
     const firstExtraRow = rows[limit];
     const activeRowWasFirstExtra = Boolean(activeRow && firstExtraRow?.sessionId === activeRow.sessionId);
     const hasMore = rows.length > limit + (activeRowWasFirstExtra ? 1 : 0);

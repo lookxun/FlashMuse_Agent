@@ -40,6 +40,7 @@ const defaultSettings = {
   chargeText: true,
   chargeImage: true,
   chargeVideo: true,
+  chargeAudio: true,
   chargePromptTool: true,
 };
 
@@ -48,11 +49,13 @@ const MAX_USD_TO_CNY_RATE = 20;
 const VALID_CREDITS_PER_CNY = [10, 100, 1000, 10000] as const;
 
 export async function getCreditSettings() {
-  return prisma.creditSetting.upsert({
+  const settings = await prisma.creditSetting.upsert({
     where: { id: "default" },
     update: {},
-    create: { id: "default", ...defaultSettings },
+    create: { id: "default", usdToCnyRate: defaultSettings.usdToCnyRate, creditsPerCny: defaultSettings.creditsPerCny, signupCredits: defaultSettings.signupCredits, chargeText: defaultSettings.chargeText, chargeImage: defaultSettings.chargeImage, chargeVideo: defaultSettings.chargeVideo, chargePromptTool: defaultSettings.chargePromptTool },
   });
+  const chargeAudio = typeof (settings as unknown as { chargeAudio?: boolean }).chargeAudio === "boolean" ? (settings as unknown as { chargeAudio: boolean }).chargeAudio : true;
+  return { ...settings, chargeAudio };
 }
 
 export async function updateCreditSettings(input: Partial<typeof defaultSettings>) {
@@ -72,12 +75,23 @@ export async function updateCreditSettings(input: Partial<typeof defaultSettings
     chargeVideo: typeof input.chargeVideo === "boolean" ? input.chargeVideo : current?.chargeVideo ?? defaultSettings.chargeVideo,
     chargePromptTool: typeof input.chargePromptTool === "boolean" ? input.chargePromptTool : current?.chargePromptTool ?? defaultSettings.chargePromptTool,
   };
+  const chargeAudio = typeof input.chargeAudio === "boolean" ? input.chargeAudio : typeof (current as unknown as { chargeAudio?: boolean } | null)?.chargeAudio === "boolean" ? Boolean((current as unknown as { chargeAudio?: boolean }).chargeAudio) : defaultSettings.chargeAudio;
 
-  return prisma.creditSetting.upsert({
-    where: { id: "default" },
-    update: data,
-    create: { id: "default", ...data },
-  });
+  try {
+    const settings = await prisma.creditSetting.upsert({
+      where: { id: "default" },
+      update: { ...data, chargeAudio } as never,
+      create: { id: "default", ...data, chargeAudio } as never,
+    });
+    return { ...settings, chargeAudio };
+  } catch {
+    const settings = await prisma.creditSetting.upsert({
+      where: { id: "default" },
+      update: data,
+      create: { id: "default", ...data },
+    });
+    return { ...settings, chargeAudio };
+  }
 }
 
 function getMetadataRecord(metadata: Prisma.InputJsonValue | undefined) {
@@ -107,8 +121,7 @@ export function getChargeEnabled(settings: Awaited<ReturnType<typeof getCreditSe
   if (isPromptToolCreditSource(getMetadataRecord(metadata)?.creditSource)) return settings.chargePromptTool;
   if (kind === "image") return settings.chargeImage;
   if (kind === "video") return settings.chargeVideo;
-  // 语音生成（TTS）：v1 暂无独立开关（不加 DB 列），默认始终计费。以后要后台可调再加 chargeAudio 字段。
-  if (kind === "audio") return true;
+  if (kind === "audio") return settings.chargeAudio !== false;
   return settings.chargeText;
 }
 
@@ -201,6 +214,10 @@ export async function chargeCredits(userId: string, kind: CreditKind, usage?: Us
       const updatedRows = await tx.$queryRaw<Array<{ credits: number }>>`
         UPDATE "User"
         SET credits = credits - ${chargedCredits},
+            -- ⭐ 扣费顺序：**会员赠送的积分先扣完，再动自己买的永久积分**（用户拍板）。
+            -- membershipCredits 是"总余额里属于赠送的那部分"的子标记，所以这里跟着一起减到 0 为止。
+            -- 唯一口径说明见 lib/membership-credits.ts 顶部注释。
+            "membershipCredits" = GREATEST(0, "membershipCredits" - ${chargedCredits}),
             "textCreditRemainder" = ${kind === "text" && shouldCharge && rawCredits > 0 ? nextTextCreditRemainder : previousTextCreditRemainder}
         WHERE id = ${userId}
         RETURNING credits

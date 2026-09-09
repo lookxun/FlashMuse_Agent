@@ -1,6 +1,7 @@
 "use client";
 
-import { Fragment, useMemo, useRef, useState, useTransition, type ReactNode } from "react";
+import { Fragment, useLayoutEffect, useMemo, useRef, useState, useTransition, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { RiArrowDownSLine, RiArrowRightSLine, RiCloseLine, RiInformation2Line, RiQuillPenAiLine, RiSearchLine } from "react-icons/ri";
 import { useBodyScrollLock } from "@/components/use-body-scroll-lock";
 import { VideoPlayBadge } from "@/components/video-play-badge";
@@ -36,6 +37,7 @@ export type AdminCreditSettings = {
   chargeText: boolean;
   chargeImage: boolean;
   chargeVideo: boolean;
+  chargeAudio: boolean;
   chargePromptTool: boolean;
 };
 
@@ -196,48 +198,44 @@ function SettingSwitch({ checked, onChange, ariaLabel }: { checked: boolean; onC
 function AdminInfoTooltip({ children, widthClass = "w-[250px]" }: { children: ReactNode; widthClass?: string }) {
   const wrapperRef = useRef<HTMLSpanElement>(null);
   const tooltipRef = useRef<HTMLSpanElement>(null);
-  const [horizontalAlign, setHorizontalAlign] = useState<"left" | "center" | "right">("center");
-  const alignClass = horizontalAlign === "left" ? "left-0" : horizontalAlign === "right" ? "right-0" : "left-1/2 -translate-x-1/2";
+  const [open, setOpen] = useState(false);
+  const [box, setBox] = useState<{ left: number; top: number } | null>(null);
 
-  const updateTooltipAlign = () => {
+  useLayoutEffect(() => {
+    if (!open) return;
     const wrapper = wrapperRef.current;
     const tooltip = tooltipRef.current;
     if (!wrapper || !tooltip) return;
-
     const margin = 8;
     const wrapperRect = wrapper.getBoundingClientRect();
     const tooltipWidth = tooltip.offsetWidth;
-    const centeredLeft = wrapperRect.left + wrapperRect.width / 2 - tooltipWidth / 2;
-    const centeredRight = centeredLeft + tooltipWidth;
-
-    if (centeredLeft < margin) {
-      setHorizontalAlign("left");
-    } else if (centeredRight > window.innerWidth - margin) {
-      setHorizontalAlign("right");
-    } else {
-      setHorizontalAlign("center");
-    }
-  };
+    let left = wrapperRect.left + wrapperRect.width / 2 - tooltipWidth / 2;
+    left = Math.min(Math.max(margin, left), Math.max(margin, window.innerWidth - margin - tooltipWidth));
+    setBox({ left, top: wrapperRect.bottom + 8 });
+  }, [open, children, widthClass]);
 
   return (
-    <span ref={wrapperRef} onMouseEnter={updateTooltipAlign} onFocus={updateTooltipAlign} className="group relative inline-flex h-4 w-4 items-center justify-center text-[#999999]">
+    <span ref={wrapperRef} onMouseEnter={() => setOpen(true)} onMouseLeave={() => setOpen(false)} onFocus={() => setOpen(true)} onBlur={() => setOpen(false)} className="relative inline-flex h-4 w-4 items-center justify-center text-[#999999]">
       <RiInformation2Line className="h-4 w-4" aria-hidden="true" />
-      <span ref={tooltipRef} className={`pointer-events-none absolute ${alignClass} top-6 z-20 ${widthClass} rounded-[7px] bg-[#111111] px-3 py-2 text-left text-[12px] leading-5 text-white opacity-0 shadow-[0_10px_28px_rgba(0,0,0,0.22)] transition group-hover:opacity-100`}>
-        {children}
-      </span>
+      {open && typeof document !== "undefined" ? createPortal(
+        <span ref={tooltipRef} className={`pointer-events-none fixed ${widthClass} rounded-[7px] bg-[#111111] px-3 py-2 text-left text-[12px] leading-5 text-white shadow-[0_10px_28px_rgba(0,0,0,0.22)]`} style={{ left: box?.left ?? 0, top: box?.top ?? 0, zIndex: 13000, visibility: box ? "visible" : "hidden" }}>
+          {children}
+        </span>,
+        document.body,
+      ) : null}
     </span>
   );
 }
 
 function SettingInput({ label, value, disabled, tooltip, onChange, onToggle }: { label: string; value: string; disabled: boolean; tooltip: string; onChange: (value: string) => void; onToggle: (checked: boolean) => void }) {
   return (
-    <div className="flex w-[170px] flex-col gap-1 text-[12px] text-[#777777]">
+    <div className="flex w-[148px] flex-col gap-1 text-[12px] text-[#777777]">
       <div className="flex items-center gap-1.5">
         <span>{label}</span>
         <AdminInfoTooltip widthClass="w-[260px]">{tooltip}</AdminInfoTooltip>
       </div>
       <div className="flex items-center gap-2">
-        <input type="text" inputMode="numeric" value={value} disabled={disabled} onChange={(event) => { const nextValue = event.target.value; if (/^\d*$/.test(nextValue)) onChange(nextValue); }} className="h-9 w-[124px] rounded-[8px] border border-[#e5e5e5] bg-white px-3 text-[13px] text-[#222222] outline-none transition focus:border-[#367cee] disabled:bg-[#f3f3f3] disabled:text-[#999999]" />
+        <input type="text" inputMode="numeric" value={value} disabled={disabled} onChange={(event) => { const nextValue = event.target.value; if (/^\d*$/.test(nextValue)) onChange(nextValue); }} className="h-9 w-[100px] rounded-[8px] border border-[#e5e5e5] bg-white px-3 text-[13px] text-[#222222] outline-none transition focus:border-[#367cee] disabled:bg-[#f3f3f3] disabled:text-[#999999]" />
         <SettingSwitch checked={disabled} onChange={onToggle} ariaLabel={`${label}开关`} />
       </div>
     </div>
@@ -246,7 +244,7 @@ function SettingInput({ label, value, disabled, tooltip, onChange, onToggle }: {
 
 function RateInput({ value, disabled, lastValidValue, onChange, onToggle }: { value: string; disabled: boolean; lastValidValue: number; onChange: (value: string) => void; onToggle: (checked: boolean) => void }) {
   return (
-    <div className="flex w-[170px] flex-col gap-1 text-[12px] text-[#777777]">
+    <div className="flex w-[148px] flex-col gap-1 text-[12px] text-[#777777]">
       <div className="flex items-center gap-1.5">
         <span>美元汇率</span>
         <AdminInfoTooltip widthClass="w-[230px]">美元汇率只允许输入 1.00 到 20.00。超出范围不会生效，会自动恢复上一次有效汇率。</AdminInfoTooltip>
@@ -265,7 +263,7 @@ function RateInput({ value, disabled, lastValidValue, onChange, onToggle }: { va
             const numberValue = Number(value);
             onChange(Number.isFinite(numberValue) && numberValue >= MIN_USD_TO_CNY_RATE && numberValue <= MAX_USD_TO_CNY_RATE ? numberValue.toFixed(2) : lastValidValue.toFixed(2));
           }}
-          className="h-9 w-[124px] rounded-[8px] border border-[#e5e5e5] bg-white px-3 text-[13px] text-[#222222] outline-none transition focus:border-[#367cee] disabled:bg-[#f3f3f3] disabled:text-[#999999]"
+          className="h-9 w-[100px] rounded-[8px] border border-[#e5e5e5] bg-white px-3 text-[13px] text-[#222222] outline-none transition focus:border-[#367cee] disabled:bg-[#f3f3f3] disabled:text-[#999999]"
         />
         <SettingSwitch checked={disabled} onChange={onToggle} ariaLabel="美元汇率开关" />
       </div>
@@ -878,34 +876,35 @@ export function AdminCreditsPanel({ settings, stats, rows }: { settings: AdminCr
       </div>
 
       <div className="mb-7 mt-2 flex min-w-[1180px] flex-nowrap items-stretch gap-0 py-3 text-[13px]">
-        <div className="pr-5">
+        <div className="shrink-0 pr-2">
           <RateInput value={rateInput} disabled={isRateLocked} lastValidValue={lastEnabledRate} onToggle={toggleRateLocked} onChange={(value) => { setRateInput(value); }} />
         </div>
-        <div className="border-l border-[#dddddd] px-5">
+        <div className="shrink-0 border-l border-[#dddddd] px-2">
           <SettingInput label="1人民币兑换积分" value={creditsPerCnyInput} disabled={isCreditsPerCnyLocked} tooltip="只支持 10、100、1000、10000 四个整数值。其它数值不会生效，会恢复上一次启用过的有效值。" onToggle={toggleCreditsPerCnyLocked} onChange={setCreditsPerCnyInput} />
         </div>
-        <div className="border-l border-[#dddddd] px-5">
+        <div className="shrink-0 border-l border-[#dddddd] px-2">
           <SettingInput label="注册送积分" value={signupCreditsInput} disabled={isSignupCreditsLocked} tooltip="注册送积分按当前兑换比例折算后，价值不能超过 200 人民币。超过后不会生效，会恢复上一次启用过的有效值。" onToggle={toggleSignupCreditsLocked} onChange={setSignupCreditsInput} />
         </div>
-        <div className="flex min-h-[58px] flex-col justify-end border-l border-[#dddddd] pl-5">
+        <div className="flex min-h-[58px] min-w-0 flex-1 flex-col justify-end border-l border-[#dddddd] pl-3">
           <div className="mb-1.5 flex items-center gap-1.5 text-[12px] text-[#777777]">
             <span>选择积分消耗项</span>
             <AdminInfoTooltip>
-              对话/规划是 Agent 和对话模型产生的消耗<br />图片是平台里所有生成图片的消耗<br />视频是平台里所有生成视频的消耗<br />语音生成始终计费（暂无独立开关）<br />反推/优化提示词是平台里所有反推和优化提示词的消耗<br />打开表示要扣积分，关闭则不扣，但后台仍记录
+              对话/规划是 Agent 和对话模型产生的消耗<br />图片是平台里所有生成图片的消耗<br />视频是平台里所有生成视频的消耗<br />语音是平台里所有生成语音的消耗<br />反推/优化提示词是平台里所有反推和优化提示词的消耗<br />打开表示要扣积分，关闭则不扣，但后台仍记录
             </AdminInfoTooltip>
           </div>
-          <div className="flex items-end gap-3">
+          <div className="flex flex-nowrap items-end gap-2">
             {[
               ["chargeText", "对话/规划"],
               ["chargeImage", "图片"],
               ["chargeVideo", "视频"],
+              ["chargeAudio", "语音"],
               ["chargePromptTool", "反推/优化提示词"],
-            ].map(([key, label], index) => {
+            ].map(([key, label]) => {
               const settingKey = key as keyof AdminCreditSettings;
               const checked = Boolean(draft[settingKey]);
               return (
-                <div key={key} className={`flex h-9 items-center gap-2 rounded-[8px] bg-[#f7f7f7] pr-3 text-[#333333] ${index === 0 ? "pl-0" : "pl-3"}`}>
-                  <span>{label}</span>
+                <div key={key} className="flex h-9 shrink-0 items-center gap-2 rounded-[8px] bg-[#f7f7f7] px-2.5 text-[#333333]">
+                  <span className="whitespace-nowrap">{label}</span>
                   <SettingSwitch checked={checked} onChange={(value) => updateChargeSetting(settingKey, value)} ariaLabel={`${label}开关`} />
                 </div>
               );

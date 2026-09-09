@@ -132,11 +132,7 @@ export function getSeedanceReferenceLimits(modelId?: string) {
 }
 
 function isKlingVideoModel(modelId?: string) {
-  return modelId === "kwaivgi/kling-v3.0-std" || modelId === "kwaivgi/kling-v3.0-pro" || modelId === "kwaivgi/kling-video-o1";
-}
-
-function isVeoVideoModel(modelId?: string) {
-  return modelId === "google/veo-3.1";
+  return modelId === "kwaivgi/kling-v3.0-std" || modelId === "kwaivgi/kling-v3.0-pro";
 }
 
 export function isHailuo3VideoModel(modelId?: string) {
@@ -324,7 +320,7 @@ function getBaseUploadRule(context: UploadRuleContext): UploadRule {
     }
 
     return makeRule({
-      image: kindRule({ enabled: true, maxCount: isKlingVideoModel(context.modelId) || isVeoVideoModel(context.modelId) ? 2 : 3, maxSizeMb: 8, formats: commonImageFormats }),
+      image: kindRule({ enabled: true, maxCount: isKlingVideoModel(context.modelId) ? 2 : 3, maxSizeMb: 8, formats: commonImageFormats }),
     });
   }
 

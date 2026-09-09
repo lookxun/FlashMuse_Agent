@@ -20,6 +20,7 @@ import { saveDataUrlAsset } from "@/lib/local-assets";
 import { normalizeReferenceAssetUrl, normalizeReferenceAssetUrls } from "@/lib/reference-asset-url";
 import { resolveUnlockLimitsForUser } from "@/lib/account-features";
 import { applyWorkflowJobResultToCanvas } from "@/lib/workspace-workflows";
+import { releaseGenerationQuota } from "@/lib/generation-quota";
 
 // 编辑类功能（去背景/高清/快捷编辑/橡皮/编辑元素）失败时，尽量透出真实原因（中文优先）。
 // error-message 已把常见上游报错（如"当前模型不支持所请求的参数"）映射成中文；这里作为兜底文案，
@@ -637,6 +638,18 @@ async function markJobSucceeded(id: string, patch: { resultUrls: string[]; reser
       "error" = NULL, "errorCode" = NULL, "completedAt" = NOW(), "leaseAt" = NULL, "updatedAt" = NOW()
     WHERE "id" = ${id}
   `;
+  await releaseJobQuota(id);
+}
+
+/**
+ * 任务落地就把「生成额度占位」还回去（唯一实现 lib/generation-quota.ts）。
+ * ⛔ 别忘了这一步：占位不还，用户的并发名额和积分额度会一直被占着，
+ * 虽然有 expiresAt 兜底（30 分钟），但那期间用户会莫名其妙被拦。
+ */
+async function releaseJobQuota(jobId: string) {
+  const rows = await prisma.$queryRaw<Array<{ requestId: string }>>`SELECT "requestId" FROM "GenerationJob" WHERE "id" = ${jobId}`.catch(() => []);
+  const requestId = rows[0]?.requestId;
+  if (requestId) await releaseGenerationQuota(requestId);
 }
 
 async function scheduleJobRetry(id: string, delayMs: number) {
@@ -644,11 +657,6 @@ async function scheduleJobRetry(id: string, delayMs: number) {
     UPDATE "GenerationJob" SET "nextRunAt" = ${new Date(Date.now() + delayMs)}, "leaseAt" = NULL, "updatedAt" = NOW()
     WHERE "id" = ${id}
   `;
-}
-
-function getFiniteNumber(value: unknown) {
-  const numberValue = typeof value === "number" ? value : typeof value === "string" ? Number(value) : Number.NaN;
-  return Number.isFinite(numberValue) ? numberValue : undefined;
 }
 
 // ⭐ 用量/成本三件套已收敛到唯一权威 `@/lib/video-usage-cost`
@@ -738,6 +746,7 @@ async function markJobFailed(id: string, error: string, errorCode?: string) {
       "completedAt" = NOW(), "leaseAt" = NULL, "updatedAt" = NOW()
     WHERE "id" = ${id}
   `;
+  await releaseJobQuota(id);
 }
 
 const MAX_IMAGE_JOB_ATTEMPTS = 6;

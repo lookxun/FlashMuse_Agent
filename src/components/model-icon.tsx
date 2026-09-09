@@ -1,6 +1,6 @@
 import { createElement, type SVGProps } from "react";
-import { RiGoogleFill, RiOpenaiFill, RiTiktokFill } from "react-icons/ri";
-import { BytePlusIcon } from "@/components/byteplus-icon";
+import { RiGoogleFill, RiOpenaiFill } from "react-icons/ri";
+import { BytedanceIcon } from "@/components/bytedance-icon";
 import { KlingIcon } from "@/components/kling-icon";
 import { MiniMaxIcon } from "@/components/minimax-icon";
 import { GrokIcon } from "@/components/grok-icon";
@@ -58,11 +58,11 @@ export function DeepSeekIcon({ className = "h-4 w-4", ...props }: SVGProps<SVGSV
  */
 export function getGenerationModelIcon(modelId: string) {
   if (modelId.startsWith("deepseek/")) return DeepSeekIcon;
-  if (modelId.startsWith("byteplus:") || modelId.startsWith("byteplus/") || modelId.startsWith("ep-")) return BytePlusIcon;
+  if (modelId.startsWith("byteplus:") || modelId.startsWith("byteplus/") || modelId.startsWith("ep-")) return BytedanceIcon;
   if (modelId.startsWith("openai/")) return RiOpenaiFill;
   if (modelId.includes("gemini")) return GeminiIcon;
   if (modelId.startsWith("google/")) return RiGoogleFill;
-  if (modelId.startsWith("bytedance/") || modelId.startsWith("bytedance-seed/")) return RiTiktokFill;
+  if (modelId.startsWith("bytedance/") || modelId.startsWith("bytedance-seed/")) return BytedanceIcon;
   if (modelId.startsWith("minimax/")) return MiniMaxIcon;
   if (modelId.startsWith("moonshotai/")) return KimiIcon;
   if (modelId.startsWith("x-ai/")) return GrokIcon;

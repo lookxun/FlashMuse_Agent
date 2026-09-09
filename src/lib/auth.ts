@@ -61,7 +61,7 @@ function forgetSessionIdentityByHashes(hashes: string[]) {
   for (const hash of hashes) sessionIdentityCache.delete(hash);
 }
 
-function forgetSessionIdentityByUserId(userId: string) {
+export function forgetSessionIdentityByUserId(userId: string) {
   for (const [key, item] of sessionIdentityCache) {
     if (item.session.userId === userId) sessionIdentityCache.delete(key);
   }

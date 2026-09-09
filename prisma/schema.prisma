@@ -19,7 +19,7 @@ model User {
   autoSaveHistory            Boolean   @default(true)
   previewWheelZoom           Boolean   @default(true)
   previewWheelFlip           Boolean   @default(true)
-  // 用户中心「设置」里的默认偏好：登录后默认进入的面板 + 新建对话时套用的默认生成参数（图片/视频分两组）。
+  // 用户中心「设置」里的默认偏好：登录后默认进入的面板 + 新建对话 / 工作流新建节点时套用的默认生成参数（图片/视频分两组）。
   // 空字符串 = 未设置，前端会回落到该模型的自然默认值。
   defaultWorkspacePanel      String    @default("chat")
   defaultImageModel          String    @default("")
@@ -40,6 +40,24 @@ model User {
   // 关 = 发公开模型名。历史上这是 .env.local 里的全局开关 BYTEPLUS_UNLOCK_LIMITS，
   // 2026-07-30 改成按账号；全局那个只留作"没传按账号值时"的回落，后台入口已移到「帐号功能管理」。
   unlockLimitsEnabled        Boolean   @default(false)
+  membershipTier             String    @default("free")
+  membershipPeriod           String    @default("")
+  membershipExpiresAt        DateTime?
+  membershipCredits          Int       @default(0)
+  // 当时实付金额（元）。升级折算「旧套餐剩余价值」时必须用实付而不是标价，
+  // 否则用户首期打过折、升级时会把没花的钱多退给他。唯一算法见 lib/membership.ts。
+  membershipPaidCny          Int       @default(0)
+  // ⭐ 已经用过首期折的周期（"monthly" / "quarter" / "year"）。
+  // 全帐号只能用一次：数组里有任意一个，月/季/年都不再打折。
+  membershipDiscountUsed     String[]  @default([])
+  // 低档先搁着：买了高级就马上用高级，标准剩的天数放到这里；高级到期再切回来。
+  membershipParkedTier           String    @default("")
+  membershipParkedPeriod         String    @default("")
+  membershipParkedRemainingDays  Int       @default(0)
+  membershipParkedPaidCny        Int       @default(0)
+  // ⭐ 会员每月积分的下次发放时间。到点才发，发一次推 30 天；过期会员作废未用完的会员积分。
+  // 唯一实现 lib/membership-credits.ts。
+  membershipCreditsCycleAt   DateTime?
   generatedImageCount        Int       @default(0)
   generatedVideoCount        Int       @default(0)
   createdAt                  DateTime  @default(now())
@@ -54,6 +72,7 @@ model User {
   workspaceWorkflows         WorkspaceWorkflow[]
   workspace                  UserWorkspaceState?
   creditLedgers              CreditLedger[]
+  paymentOrders              PaymentOrder[]
   mediaAssets                MediaAsset[]
   userAssetStates            UserAssetState[]
   gptImagePromptOptimizationCases GptImagePromptOptimizationCase[]
@@ -67,6 +86,7 @@ model CreditSetting {
   chargeText            Boolean  @default(true)
   chargeImage           Boolean  @default(true)
   chargeVideo           Boolean  @default(true)
+  chargeAudio           Boolean  @default(true)
   chargePromptTool      Boolean  @default(true)
   updatedAt             DateTime @updatedAt
 }
@@ -449,6 +469,31 @@ model AnnouncementHistory {
   @@index([createdAt])
 }
 
+/// ⭐ 生成额度预占（2026-08-30 新增，唯一权威逻辑在 lib/generation-quota.ts）。
+///
+/// 为什么要这张表：并发上限和"积分够不够"原来都是「先查再放」，
+/// 20 个请求同时打进来会全部查到 0 → 全部放行 → 基础会员的并发限制形同虚设，
+/// 而且剩 1 积分的号能同时开一堆贵任务把余额刷成负数。
+/// 这张表就是"占位凭证"：**在同一个事务里加 per-user 咨询锁 → 数占位 → 插占位**，
+/// 于是并发请求只能一个个来，判据永远是最新的。
+///
+/// ⚠️ `expiresAt` 是防泄漏的兜底：进程崩了没释放，占位也会自己过期，
+/// 绝不允许出现"用户被永久卡住不能生成"。
+model GenerationReservation {
+  id         String   @id @default(cuid())
+  userId     String
+  /// 与 GenerationJob.requestId 同源，用来去重（同一次生成不许被算两次）
+  requestId  String   @unique
+  kind       String
+  /// 事前预估要花的积分（不是实际扣费金额）
+  estCredits Int      @default(0)
+  createdAt  DateTime @default(now())
+  expiresAt  DateTime
+
+  @@index([userId, expiresAt])
+  @@index([expiresAt])
+}
+
 model GenerationJob {
   id                String    @id @default(cuid())
   userId            String
@@ -496,6 +541,31 @@ model GenerationJob {
   @@index([userId, status, updatedAt])
   @@index([workflowId])
   @@index([conversationId])
+}
+
+model PaymentOrder {
+  id              String    @id @default(cuid())
+  orderNo         String    @unique
+  userId          String
+  channel         String    @default("alipay")
+  kind            String    @default("credit_pack")
+  status          String    @default("pending")
+  packCny         Int
+  payCny          Float
+  credits         Int
+  subject         String
+  qrCode          String?
+  alipayTradeNo   String?
+  paidAt          DateTime?
+  creditedAt      DateTime?
+  closedAt        DateTime?
+  notifyPayload   Json?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([status, createdAt])
 }
 
 model EmailVerificationCode {

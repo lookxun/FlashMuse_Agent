@@ -236,12 +236,25 @@ export function toUserErrorMessage(value: unknown, fallback = "请求失败，�
   // 为什么必须有：这个函数在"服务端映射 → 前端再映射一次"的链路上可能被调用两次，而下面兜底的
   // 透传分支会把文案截到 180 字 → 会把我们刚附上的模型拒绝原文砍掉。（2026-07-29 加）
   // ⚠️ 这里每加一句，都必须是「我们自己映射出来的成品文案」；⛔ 别把上游原文塞进来。
-  if (isModelRefusedMessage(text) || /^模型这次没有出图，只回了一段文字/.test(text) || isReferenceReviewRejectedMessage(text)) return withErrorCode(text);
+  if (isModelRefusedMessage(text) || /^模型这次没有出图，只回了一段文字/.test(text) || isReferenceReviewRejectedMessage(text) || /^当前会员/.test(text)) return withErrorCode(text);
   if (/system-reminder|operational mode|plan to build|read-only mode|file changes|shell commands/i.test(lower)) return withErrorCode(fallback);
   // ⭐ BytePlus「素材送审」阶段最常见的三类真实失败（以前全落到"服务器繁忙"，用户完全看不懂）：
   // 参考图尺寸不合规 / 平台抓不到我们的素材 / 我们记的审核凭证在平台侧已不存在。
   // 放在最前面判定，避免被后面的 timeout/network 等通用规则抢走。
   if (/(?:height|width) must be between \d+px and \d+px|expected the (?:height|width) to be (?:at least|at most|between)\s*\d+px/.test(lower)) return withErrorCode("参考图尺寸不符合平台要求（宽和高都需在 300–6000 像素之间），请换一张尺寸更合规的参考图后重试。");
+  // ⭐ Recraft（recraft/*）参考图**像素尺寸**限制比别的模型更严：单边必须在 256~4096px 之间（BytePlus 是 300~6000px）。
+  // 上游原文：`max image dimension should be no more than 4096` / `min image dimension should be no less than 256`。
+  // ⛔ 以前没规则 → 全落兜底桶「服务器繁忙」，用户完全看不懂（正式服 B_488 太大 / B_491 太小，2026-09-07，同一用户同一模型）。
+  // ⚠️ 这是**边长像素**问题，跟下面那条"体积过大(>2MB)"是两回事：我们上传只压体积、不缩像素，
+  // 所以边长超限但体积不超的图会漏过校验、发给 Recraft 被拒。用户口径：不帮改图，提醒用户换图即可。
+  if (/max image dimension should be no more than \d+/.test(lower)) {
+    const maxDim = raw.match(/no more than (\d+)/i)?.[1] ?? "4096";
+    return withErrorCode(`参考图尺寸太大了（当前模型要求图片的长和宽都不超过 ${maxDim} 像素），请换一张尺寸更小的参考图后重试。`);
+  }
+  if (/min image dimension should be no less than \d+/.test(lower)) {
+    const minDim = raw.match(/no less than (\d+)/i)?.[1] ?? "256";
+    return withErrorCode(`参考图尺寸太小了（当前模型要求图片的长和宽都不小于 ${minDim} 像素），请换一张尺寸更大的参考图后重试。`);
+  }
   if (/failed to download media from the provided url|fetch-object/.test(lower)) return withErrorCode("平台读取参考图失败（素材地址临时不可用），请稍后重试。");
   if (/specified asset .*is not found|asset .* is not found/.test(lower)) return withErrorCode("参考图在平台上的审核凭证已失效，系统已自动清理并重新送审，请再点一次生成。");
   // ⭐ Kling（kwaivgi）参考图尺寸不合规的上游原文就一句 `Image pixel is invalid`，什么数都不给。

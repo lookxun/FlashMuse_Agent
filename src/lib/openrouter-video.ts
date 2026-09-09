@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { appendGenerationDiagnosticsLog, summarizeGeneratedReference } from "@/lib/generation-diagnostics-log";
-import { DEFAULT_VIDEO_MODEL, HAILUO3_SUPPORTED_DURATION_SECONDS, HAILUO3_VIDEO_MODEL_ID, resolveVideoSettingsForModel } from "@/lib/models";
+import { DEFAULT_VIDEO_MODEL, getEffectiveVideoDurationSeconds, HAILUO3_VIDEO_MODEL_ID, resolveVideoSettingsForModel } from "@/lib/models";
 import { getBytePlusBaseUrl, getBytePlusModelForRequest, getConfiguredBytePlusApiKey, getConfiguredOpenRouterApiKey } from "@/lib/system-settings";
 import { normalizeReferenceAssetUrl } from "@/lib/reference-asset-url";
 import { toDataUrlIfLocalPublicAsset } from "@/lib/generated-asset-path";
@@ -154,23 +154,14 @@ function toPublicGeneratedAssetUrl(value: string) {
   return url;
 }
 
-function getClosestDuration(seconds: number, supported: number[]) {
-  return supported.reduce((best, item) => (Math.abs(item - seconds) < Math.abs(best - seconds) ? item : best), supported[0]);
-}
-
+/**
+ * ⭐ 唯一权威已搬到 `models.ts` 的 `getEffectiveVideoDurationSeconds`
+ * （2026-09-05 收敛：事前预估必须和"真正发给上游的秒数"是同一个数，
+ *  否则闸门必然估偏 —— 以前预估按最长档、这里按 5 秒兜底，Seedance 2.5 上差 6 倍）。
+ * ⛔ 别在这里再写一份 clamp 逻辑，也别把 Hailuo 的"就近取档"抄回来。
+ */
 function getDuration(model: string, value?: string) {
-  const seconds = Number(value?.match(/\d+/)?.[0]);
-  const safeSeconds = Number.isFinite(seconds) && seconds > 0 ? seconds : 5;
-
-  // Seedance 2.5 实测支持 4~30 秒；其余 BytePlus（2.0 系）仍 4~15 秒。
-  if (model === "byteplus:video.seedance-2-5") return Math.min(30, Math.max(4, safeSeconds));
-  if (model.startsWith("byteplus:video.")) return Math.min(15, Math.max(4, safeSeconds));
-  if (model === "google/veo-3.1") return getClosestDuration(safeSeconds, [4, 6, 8]);
-  if (model === "kwaivgi/kling-video-o1") return getClosestDuration(safeSeconds, [5, 10]);
-  // Hailuo 3：OpenRouter 声明 5~15 整秒（官方 4~15，OpenRouter 从 5 起）→ 4 秒必须就近取到 5，否则上游 400。
-  if (model === HAILUO3_VIDEO_MODEL_ID) return getClosestDuration(safeSeconds, HAILUO3_SUPPORTED_DURATION_SECONDS);
-
-  return safeSeconds;
+  return getEffectiveVideoDurationSeconds(model, value);
 }
 
 /**

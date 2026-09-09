@@ -34,9 +34,13 @@ yarn-error.log*
 .env*
 !.env.example
 
+# 支付宝开放平台密钥（私钥绝不许进 git）
+/支付宝开放平台相关/
+
 # local generated assets and logs
 /public/generated/
 /start-project.log
+/start-project.err.log
 /.runtime/
 /FlashMuse_Agent_Project Planning/
 /tmp/*.tgz

@@ -46,18 +46,33 @@ export function resolveOpenRouterImageModelName(modelId?: string) {
 // ⭐ 积分/张 = round(usd/张 × usdToCnyRate × creditsPerCny)。汇率/积分率**存数据库、后台可调**，
 //    由调用方从 /api/model-availability 的 creditRate 传进来（不传则用代码默认 7.2 × 10 估算）。
 // ⭐ 浮动计费的模型（gemini / gpt 按 token、seedream-5.0-pro 按像素给区间）标「约」；按张固定价的给精确整数。
-type ImageModelMenuInfo = { desc: string; usd: number; usdHigh?: number; approx?: boolean };
+type ImageModelMenuInfo = {
+  desc: string;
+  usd: number;
+  usdHigh?: number;
+  approx?: boolean;
+  /**
+   * ⭐ **事前预估专用**：按「归一化后的真实分辨率」给的每张美元（唯一权威，只被 `getEstimatedGenerationUsd` 读）。
+   *
+   * 数值来源 = **正式服 `CreditLedger` 里真实扣费数据的 p99**（2026-09-05 从 5791 条真实扣费统计），
+   * ⛔ 不是文档价、不是猜的。取 p99 而不是均值：闸门要判"够不够"，估低了等于没拦。
+   * ⚠️ 菜单副标题**不读这张表**（继续读 `usd`），所以调整这里不会改动界面上显示的「X积分/张」。
+   * ⭐ 某个档位没有条目时回落到本表的最大值（同一模型内），再没有才用 `usdHigh ?? usd`。
+   */
+  estUsdByResolution?: Record<string, number>;
+};
 const IMAGE_MODEL_MENU_INFO: Record<string, ImageModelMenuInfo> = {
-  "recraft/recraft-v4.1": { desc: "平面设计·高美学·短词出图", usd: 0.035 },
-  "recraft/recraft-v4.1-pro": { desc: "意料之外的美·2K高清", usd: 0.21 },
-  "google/gemini-3.1-flash-image-preview": { desc: "均衡·高性价比", usd: 0.11, approx: true },
-  "google/gemini-3-pro-image-preview": { desc: "均衡·质感更好", usd: 0.18, approx: true },
-  "openai/gpt-5.4-image-2-agent": { desc: "GPT优化提示·适合新手", usd: 0.24, approx: true },
-  "openai/gpt-5.4-image-2": { desc: "精准·可4K·多参考图", usd: 0.24, approx: true },
-  "byteplus:conversation-image.seedream-4-5": { desc: "中文强·通用", usd: 0.04 },
-  "bytedance-seed/seedream-4.5": { desc: "中文强·通用", usd: 0.04 },
-  "byteplus:conversation-image.seedream-5-0": { desc: "新版·高性价比", usd: 0.035 },
-  "byteplus:conversation-image.seedream-5-0-pro": { desc: "新版·精修可控", usd: 0.045, usdHigh: 0.09 },
+  "recraft/recraft-v4.1": { desc: "平面设计·高美学·短词出图", usd: 0.035, estUsdByResolution: { "1K": 0.035 } },
+  "recraft/recraft-v4.1-pro": { desc: "意料之外的美·2K高清", usd: 0.21, estUsdByResolution: { "2K": 0.21 } },
+  // 实测与分辨率无关（1K/2K/4K 都是同一个数）
+  "google/gemini-3.1-flash-image-preview": { desc: "均衡·高性价比", usd: 0.11, approx: true, estUsdByResolution: { "1K": 0.104, "2K": 0.104, "4K": 0.153 } },
+  "google/gemini-3-pro-image-preview": { desc: "均衡·质感更好", usd: 0.18, approx: true, estUsdByResolution: { "1K": 0.14, "2K": 0.144, "4K": 0.144 } },
+  "openai/gpt-5.4-image-2-agent": { desc: "GPT优化提示·适合新手", usd: 0.24, approx: true, estUsdByResolution: { "1K": 0.46, "2K": 0.52, "4K": 0.52 } },
+  "openai/gpt-5.4-image-2": { desc: "精准·可4K·多参考图", usd: 0.24, approx: true, estUsdByResolution: { "1K": 0.24, "2K": 0.50, "4K": 0.46 } },
+  "byteplus:conversation-image.seedream-4-5": { desc: "中文强·通用", usd: 0.04, estUsdByResolution: { "1K": 0.04, "2K": 0.04, "3K": 0.04, "4K": 0.04 } },
+  "bytedance-seed/seedream-4.5": { desc: "中文强·通用", usd: 0.04, estUsdByResolution: { "1K": 0.04, "2K": 0.04, "3K": 0.04, "4K": 0.04 } },
+  "byteplus:conversation-image.seedream-5-0": { desc: "新版·高性价比", usd: 0.035, estUsdByResolution: { "1K": 0.035, "2K": 0.035, "3K": 0.035, "4K": 0.035 } },
+  "byteplus:conversation-image.seedream-5-0-pro": { desc: "新版·精修可控", usd: 0.045, usdHigh: 0.09, estUsdByResolution: { "1K": 0.09, "2K": 0.105 } },
 };
 const IMAGE_MENU_HINT_USD_TO_CNY = 7.2;
 const IMAGE_MENU_HINT_CREDITS_PER_CNY = 10;
@@ -65,6 +80,84 @@ export function getImageModelFallbackUsd(modelId?: string): number | undefined {
   if (!modelId) return undefined;
   const usd = IMAGE_MODEL_MENU_INFO[modelId]?.usd;
   return typeof usd === "number" && usd > 0 ? usd : undefined;
+}
+
+/**
+ * ⭐ 「这次生成大概要花多少美元」—— 事前预估的唯一入口（唯一权威）。
+ *
+ * 用途只有一个：**开任务之前判断用户积分够不够**（见 lib/generation-quota.ts）。
+ * ⛔ 不是用来扣费的 —— 真实扣费永远按上游返回的 usage 走（credits.ts / video-usage-cost.ts）。
+ *
+ * ⭐⭐ **口径（2026-09-05 用户拍板"要预估的尽量准"后重做）**：
+ *   ① 单价一律读**真实扣费数据统计出来的 p99**（`estUsdByResolution` / `estUsdPerSecondByResolution`），
+ *      ⛔ 不再用菜单上那个"按 720p / 单张的基准价"当预估价 —— 那个数在 1080p 上估低 3 倍、在 480p 上估高 2 倍。
+ *   ② **必须传归一化后的分辨率**（`resolveImageSettingsForModel` / `resolveVideoSettingsForModel` 的结果），
+ *      ⛔ 别传用户请求的原值：模型规则表会把不支持的档位抬到自己的默认档（和会员画质校验同一个坑）。
+ *   ③ 视频时长走 `getEffectiveVideoDurationSeconds`（= 真正发给上游的秒数），
+ *      拿不到时长用**上游默认的 5 秒**，⛔ 不再按该模型最长档估（以前 Seedance 2.5 会按 30 秒估，高 6 倍）。
+ *   ④ 图片张数按 `/api/image` 同样的口径 clamp 到 1~4。
+ * ⚠️ 取 p99 而不是均值：闸门估低了就等于没拦（用户能把余额刷成负数）；但也别再瞎往高估，那是拦正常用户。
+ * ⚠️ 表里查不到的模型返回 0 = 不做限制（不认识的模型不许连带把正常用户拦死）。
+ */
+export function getEstimatedGenerationUsd(input: { kind: "image" | "video" | "audio"; modelId?: string; count?: number; seconds?: number; chars?: number; resolution?: string }): number {
+  const { kind, modelId } = input;
+  if (!modelId) return 0;
+  if (kind === "image") {
+    const info = IMAGE_MODEL_MENU_INFO[modelId];
+    if (!info) return 0;
+    const unit = pickEstimateUnitPrice(info.estUsdByResolution, input.resolution)
+      ?? (typeof info.usdHigh === "number" && info.usdHigh > 0 ? info.usdHigh : info.usd);
+    // 与 /api/image 的 getRequestedImageCount 同口径（1~4 张）。
+    const count = Math.min(4, Math.max(1, Math.floor(input.count ?? 1)));
+    return Math.max(0, unit) * count;
+  }
+  if (kind === "video") {
+    const info = VIDEO_MODEL_MENU_INFO[modelId];
+    if (!info) return 0;
+    const perSecond = pickEstimateUnitPrice(info.estUsdPerSecondByResolution, input.resolution) ?? info.usdPerSecond;
+    if (!perSecond) return 0;
+    const seconds = getEffectiveVideoDurationSeconds(modelId, input.seconds);
+    return Math.max(0, perSecond) * Math.max(1, seconds);
+  }
+  const perChar = AUDIO_MODEL_MENU_INFO[modelId]?.usdPerChar;
+  if (!perChar) return 0;
+  return Math.max(0, perChar) * Math.max(1, Math.floor(input.chars ?? 1));
+}
+
+/**
+ * 从「按分辨率的实测价表」里取单价：命中就用它；表里有但这一档没有 → 用表里的**最大值**兜底；
+ * 压根没有表 → 返回 undefined（调用方回落到基准价）。
+ */
+function pickEstimateUnitPrice(table: Record<string, number> | undefined, resolution?: string) {
+  if (!table) return undefined;
+  const hit = resolution ? table[resolution] : undefined;
+  if (typeof hit === "number" && hit > 0) return hit;
+  const values = Object.values(table).filter((value) => typeof value === "number" && value > 0);
+  return values.length > 0 ? Math.max(...values) : undefined;
+}
+
+/**
+ * ⭐ 「这个模型这次实际会生成几秒」—— 唯一权威。
+ *
+ * `openrouter-video.ts` 发给上游的时长和事前预估**必须是同一个数**，否则预估必然偏
+ * （以前预估按最长档、上游按 5 秒兜底，Seedance 2.5 上差 6 倍）。
+ * ⚠️ 改这里等于改真正发给上游的秒数，动之前先看 `openrouter-video.ts` 里那几条实测注释。
+ */
+export function getEffectiveVideoDurationSeconds(modelId: string | undefined, value?: string | number) {
+  const parsed = typeof value === "number" ? value : Number(String(value ?? "").match(/\d+/)?.[0]);
+  // ⭐ 拿不到时长时用 5 秒 —— 这是上游侧一直在用的兜底值，⛔ 别改成"最长档"。
+  const safeSeconds = Number.isFinite(parsed) && parsed > 0 ? parsed : 5;
+  if (!modelId) return safeSeconds;
+  // Seedance 2.5 实测支持 4~30 秒；其余 BytePlus（2.0 系）仍 4~15 秒。
+  if (modelId === SEEDANCE_25_VIDEO_MODEL_ID) return Math.min(30, Math.max(4, safeSeconds));
+  if (modelId.startsWith("byteplus:video.")) return Math.min(15, Math.max(4, safeSeconds));
+  // Hailuo 3：OpenRouter 声明 5~15 整秒（官方 4~15，OpenRouter 从 5 起）→ 4 秒必须就近取到 5，否则上游 400。
+  if (modelId === HAILUO3_VIDEO_MODEL_ID) return getClosestSupportedDuration(safeSeconds, HAILUO3_SUPPORTED_DURATION_SECONDS);
+  return safeSeconds;
+}
+
+export function getClosestSupportedDuration(seconds: number, supported: number[]) {
+  return supported.reduce((best, item) => (Math.abs(item - seconds) < Math.abs(best - seconds) ? item : best), supported[0]);
 }
 
 export function getImageModelSelectHint(
@@ -89,19 +182,29 @@ export function getImageModelSelectHint(
 //    - Kling / MiniMax H3 是「按秒固定价」→ 给精确整数；
 //    - Seedance(按 token) / Veo(带音频/4K 分档) 随分辨率浮动 → 取常见档(约 720p / 带音频)的代表值并标「约」。
 //    BytePlus Seedance 的每秒美元 = 每秒 token(720p≈21600) × 每百万 token 单价 / 1e6。
-type VideoModelMenuInfo = { desc: string; usdPerSecond: number; approx?: boolean };
+type VideoModelMenuInfo = {
+  desc: string;
+  usdPerSecond: number;
+  approx?: boolean;
+  /**
+   * ⭐ **事前预估专用**：按「归一化后的真实分辨率」给的每秒美元（唯一权威，只被 `getEstimatedGenerationUsd` 读）。
+   *
+   * 数值来源 = **正式服 `CreditLedger` 里真实扣费数据的 p99**（2026-09-05 统计，每档都有实测样本）。
+   * ⛔⛔ 视频每秒单价**随分辨率剧烈变化**（Seedance 是按 token 计费，token 数 ∝ 像素）：
+   *   实测 Seedance 2.0 → 480p 0.071 / 720p 0.155 / **1080p 0.386**（1080p 是 720p 的 2.5 倍）。
+   *   以前只有一个数（720p 基准）→ 1080p 估低 3 倍、480p 估高 2 倍，两头都不准。
+   * ⚠️ 菜单副标题**不读这张表**（继续读 `usdPerSecond`），所以调整这里不会改动界面上的「X积分/秒」。
+   */
+  estUsdPerSecondByResolution?: Record<string, number>;
+};
 const VIDEO_MODEL_MENU_INFO: Record<string, VideoModelMenuInfo> = {
-  "bytedance/seedance-2.0-fast": { desc: "出片快·480/720p", usdPerSecond: 0.091, approx: true },
-  "bytedance/seedance-2.0": { desc: "通用·最高4K", usdPerSecond: 0.151, approx: true },
-  "minimax/hailuo-3": { desc: "2K·自带音效", usdPerSecond: 0.13 },
-  "kwaivgi/kling-v3.0-std": { desc: "标准·高性价比", usdPerSecond: 0.084 },
-  "kwaivgi/kling-v3.0-pro": { desc: "高质量", usdPerSecond: 0.112 },
-  "kwaivgi/kling-video-o1": { desc: "新版·运镜强", usdPerSecond: 0.112 },
-  "google/veo-3.1": { desc: "顶级画质·原生音频", usdPerSecond: 0.40, approx: true },
-  "byteplus:video.seedance-2-0-mini": { desc: "出片快·低成本", usdPerSecond: 0.076, approx: true },
-  "byteplus:video.seedance-2-0-fast": { desc: "出片快·480/720p", usdPerSecond: 0.121, approx: true },
-  "byteplus:video.seedance-2-0": { desc: "通用·最高4K", usdPerSecond: 0.151, approx: true },
-  "byteplus:video.seedance-2-5": { desc: "新版·最长30秒", usdPerSecond: 0.231, approx: true },
+  "minimax/hailuo-3": { desc: "2K·自带音效", usdPerSecond: 0.13, estUsdPerSecondByResolution: { "2K": 0.13 } },
+  "kwaivgi/kling-v3.0-std": { desc: "标准·高性价比", usdPerSecond: 0.084, estUsdPerSecondByResolution: { "720p": 0.126 } },
+  "kwaivgi/kling-v3.0-pro": { desc: "高质量", usdPerSecond: 0.112, estUsdPerSecondByResolution: { "720p": 0.168 } },
+  "byteplus:video.seedance-2-0-mini": { desc: "出片快·低成本", usdPerSecond: 0.076, approx: true, estUsdPerSecondByResolution: { "480p": 0.036, "720p": 0.118 } },
+  "byteplus:video.seedance-2-0-fast": { desc: "出片快·480/720p", usdPerSecond: 0.121, approx: true, estUsdPerSecondByResolution: { "480p": 0.057, "720p": 0.143 } },
+  "byteplus:video.seedance-2-0": { desc: "通用·最高4K", usdPerSecond: 0.151, approx: true, estUsdPerSecondByResolution: { "480p": 0.071, "720p": 0.275, "1080p": 0.458, "4K": 0.951 } },
+  "byteplus:video.seedance-2-5": { desc: "新版·最长30秒", usdPerSecond: 0.231, approx: true, estUsdPerSecondByResolution: { "480p": 0.104, "720p": 0.277, "1080p": 0.623 } },
 };
 export function getVideoModelSelectHint(
   modelId?: string,
@@ -293,14 +396,14 @@ export function isNewGenerationModel(modelId: string) {
 export const HAILUO3_SUPPORTED_DURATION_SECONDS = [5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
 const hailuo3Durations = HAILUO3_SUPPORTED_DURATION_SECONDS.map((seconds) => `${seconds}秒`);
 
+// ⛔ 2026-08-30 用户拍板下线（别再加回来）：
+//   - OpenRouter 版 Seedance 2.0 / 2.0 Fast（只保留 BytePlus 版，早已默认关闭）
+//   - Kling Video O1（只有 1080p 一档，和会员画质分档冲突）
+//   - Veo 3.1（不再采购）
 export const videoGenerationModels: GenerationModel[] = [
-  { label: "Seedance 2.0 Fast", id: "bytedance/seedance-2.0-fast", durations: ["5秒", "10秒", "15秒"] },
-  { label: "Seedance 2.0", id: "bytedance/seedance-2.0", durations: ["5秒", "10秒", "15秒"] },
   { label: "MiniMax H3", id: HAILUO3_VIDEO_MODEL_ID, durations: hailuo3Durations },
   { label: "Kling v3.0 Standard", id: "kwaivgi/kling-v3.0-std", durations: ["5秒", "10秒", "15秒"] },
   { label: "Kling v3.0 Pro", id: "kwaivgi/kling-v3.0-pro", durations: ["5秒", "10秒", "15秒"] },
-  { label: "Kling Video O1", id: "kwaivgi/kling-video-o1", durations: ["5秒", "10秒"] },
-  { label: "Veo 3.1", id: "google/veo-3.1", durations: ["4秒", "6秒", "8秒"] },
 ] as const;
 
 const bytePlusSeedanceDurations = ["4秒", "5秒", "6秒", "7秒", "8秒", "9秒", "10秒", "11秒", "12秒", "13秒", "14秒", "15秒"];
@@ -311,17 +414,10 @@ const bytePlusSeedance25Durations = Array.from({ length: 27 }, (_, i) => `${i + 
 /**
  * ⭐ 「带参考图时」被上游收窄的可用时长 —— 唯一权威表。
  *
- * 背景（2026-07-28 查出）：`google/veo-3.1` 纯文生视频支持 4/6/8 秒，但一旦带参考图
- * （上游叫 `reference_to_video`）就**只允许 8 秒**，原文：
- * `Unsupported output video duration 4 seconds, supported durations are [8] for feature reference_to_video.`
- * 而且它是**异步**失败（任务先被收下、一两分钟后才 failed），用户只能看到"服务器繁忙"。
- *
- * 这里只收窄"带参考图"这一种情况，不影响纯文生视频的选项。
- * ⚠️ 往里加模型前必须有依据（官方文档或线上失败原文），不许凭猜。
+ * ⚠️ 2026-08-30：唯一一条记录（`google/veo-3.1` 带参考图只允许 8 秒）随 Veo 3.1 下线一起删了，
+ * 表先留着（校验函数还在共用），往里加模型必须有依据（官方文档或线上失败原文），不许凭猜。
  */
-const VIDEO_REFERENCE_DURATION_LIMITS: Record<string, number[]> = {
-  "google/veo-3.1": [8],
-};
+const VIDEO_REFERENCE_DURATION_LIMITS: Record<string, number[]> = {};
 
 /** 该模型带参考图时允许的时长（秒）；没有限制返回 undefined。 */
 export function getVideoReferenceDurationLimit(modelId?: string) {
@@ -348,14 +444,17 @@ export const bytePlusVideoGenerationModels: GenerationModel[] = [
   { label: "Seedance 2.0 Mini", id: "byteplus:video.seedance-2-0-mini", durations: bytePlusSeedanceDurations },
   { label: "Seedance 2.0 Fast", id: "byteplus:video.seedance-2-0-fast", durations: bytePlusSeedanceDurations },
   { label: "Seedance 2.0", id: "byteplus:video.seedance-2-0", durations: bytePlusSeedanceDurations },
-  // ⭐ Seedance 2.5（2026-08 火山新模型，端点 ep-20260807153703-h48pt → dreamina-seedance-2-5-260628）。放最下面 + 金色 + NEW。
-  // ✅ 参数已 2026-08-08 直打火山接口实测确认（不是猜的）：分辨率仅 480p/720p（1080p/2K/4K 均被拒，i2v 亦然）；
-  //    比例全 6 种；时长 4~30 秒整数（1/2/3 非法、30 封顶、31+ 非法）。⚠️ 美元单价接口不返回（usage 只给 token），未接真实价。
+  // ⭐ Seedance 2.5（端点 ep-20260807153703-h48pt → dreamina-seedance-2-5-260628）。放最下面 + 金色 + NEW。
+  // ✅ 分辨率：2026-09-09 用 duration=1 探上游（必被拒、不建任务）坐实 1080p 已开（报 duration 非法 = 分辨率过了）。
+  //    2026-08-08 当时 1080p 还被拒，文档后来才写上。比例 6 种；时长 4~30 秒。
   { label: "Seedance 2.5", id: "byteplus:video.seedance-2-5", durations: bytePlusSeedance25Durations },
 ] as const;
 
 export const DEFAULT_IMAGE_MODEL = imageGenerationModels[0].id;
-export const DEFAULT_VIDEO_MODEL = videoGenerationModels[0].id;
+// ⭐ 默认视频模型故意用 BytePlus Seedance 2.0 Fast，⛔ 不许写成 `videoGenerationModels[0]`：
+// 那个位置现在是 MiniMax H3（只有 2K 一档），当默认值会让基础会员一进来就撞「不支持该画质」，
+// 而且 2K 最贵。这个 id 同时也是 `fallbackVideoModelRule`（未知模型的回落规则），必须是最低档那个。
+export const DEFAULT_VIDEO_MODEL = "byteplus:video.seedance-2-0-fast";
 
 // ⭐ 语音生成（TTS）模型（2026-08 接入，对话流）——唯一权威列表。
 // 都走 OpenRouter `/api/v1/audio/speech`（见 openrouter-audio.ts）。参数/默认音色/单价见 AUDIO_MODEL_MENU_INFO。
@@ -652,24 +751,35 @@ const seedanceFastNonStandardVideoSizes: VideoModelRule["nonStandardSizes"] = {
   "720p": { "21:9": true, "4:3": true, "1:1": true, "3:4": true },
 };
 
+const seedance1080pVideoSizes = {
+  "21:9": { width: 2206, height: 946 },
+  "16:9": { width: 1920, height: 1080 },
+  "4:3": { width: 1664, height: 1248 },
+  "1:1": { width: 1440, height: 1440 },
+  "3:4": { width: 1248, height: 1664 },
+  "9:16": { width: 1080, height: 1920 },
+} as const;
+
 const seedanceVideoSizes: VideoModelRule["sizes"] = {
   ...seedanceFastVideoSizes,
-  "1080p": {
-    "21:9": { width: 2206, height: 946 },
-    "16:9": { width: 1920, height: 1080 },
-    "4:3": { width: 1664, height: 1248 },
-    "1:1": { width: 1440, height: 1440 },
-    "3:4": { width: 1248, height: 1664 },
-    "9:16": { width: 1080, height: 1920 },
+  "1080p": seedance1080pVideoSizes,
+  "4K": {
+    "21:9": { width: 4398, height: 1886 },
+    "16:9": { width: 3840, height: 2160 },
+    "4:3": { width: 3326, height: 2494 },
+    "1:1": { width: 2880, height: 2880 },
+    "3:4": { width: 2494, height: 3326 },
+    "9:16": { width: 2160, height: 3840 },
   },
 };
 
 const seedanceNonStandardVideoSizes: VideoModelRule["nonStandardSizes"] = {
   ...seedanceFastNonStandardVideoSizes,
   "1080p": { "21:9": true, "4:3": true, "1:1": true, "3:4": true },
+  "4K": { "21:9": true, "4:3": true, "1:1": true, "3:4": true },
 };
 
-// ⭐ Seedance 2.5 官方精确像素表（2026-08 火山文档，与直打接口实测一致：480p 9:16=480×854、720p 16:9=1280×720）。
+// ⭐ Seedance 2.5 官方精确像素表（480p/720p 与直打接口实测一致；1080p 与 2.0 官方表相同）。
 const seedance25VideoSizes: VideoModelRule["sizes"] = {
   "480p": {
     "21:9": { width: 992, height: 432 },
@@ -687,6 +797,7 @@ const seedance25VideoSizes: VideoModelRule["sizes"] = {
     "3:4": { width: 834, height: 1112 },
     "9:16": { width: 720, height: 1280 },
   },
+  "1080p": seedance1080pVideoSizes,
 };
 
 const klingVideoSizes: VideoModelRule["sizes"] = {
@@ -701,32 +812,6 @@ const klingNonStandardVideoSizes: VideoModelRule["nonStandardSizes"] = {
   "720p": { "1:1": true },
 };
 
-const klingO1VideoSizes: VideoModelRule["sizes"] = {
-  "1080p": {
-    "16:9": { width: 1920, height: 1080 },
-    "1:1": { width: 1440, height: 1440 },
-    "9:16": { width: 1080, height: 1920 },
-  },
-};
-
-const klingO1NonStandardVideoSizes: VideoModelRule["nonStandardSizes"] = {
-  "1080p": { "1:1": true },
-};
-
-const veoVideoSizes: VideoModelRule["sizes"] = {
-  "720p": {
-    "16:9": { width: 1280, height: 720 },
-    "9:16": { width: 720, height: 1280 },
-  },
-  "1080p": {
-    "16:9": { width: 1920, height: 1080 },
-    "9:16": { width: 1080, height: 1920 },
-  },
-  "4K": {
-    "16:9": { width: 3840, height: 2160 },
-    "9:16": { width: 2160, height: 3840 },
-  },
-};
 
 // ⭐ Hailuo 3 的 2K 各比例**实际输出尺寸**（2026-08-03 直打 OpenRouter 实测，见桌面 minimax-h3-test）：
 // 标准比例短边固定 1440；21:9 例外，实测 2944×1248（约分 92:39，比正 21:9=2.333 略宽 → 标 nonStandard）。
@@ -747,14 +832,6 @@ const hailuo3NonStandardVideoSizes: VideoModelRule["nonStandardSizes"] = {
 };
 
 export const videoModelRules: Record<string, VideoModelRule> = {
-  "bytedance/seedance-2.0-fast": {
-    resolutions: ["480p", "720p"],
-    ratios: ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
-    defaultResolution: "720p",
-    defaultRatio: "16:9",
-    sizes: seedanceFastVideoSizes,
-    nonStandardSizes: seedanceFastNonStandardVideoSizes,
-  },
   "byteplus:video.seedance-2-0-fast": {
     resolutions: ["480p", "720p"],
     ratios: ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
@@ -763,29 +840,19 @@ export const videoModelRules: Record<string, VideoModelRule> = {
     sizes: seedanceFastVideoSizes,
     nonStandardSizes: seedanceFastNonStandardVideoSizes,
   },
-  "bytedance/seedance-2.0": {
-    resolutions: ["480p", "720p", "1080p"],
-    ratios: ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
-    defaultResolution: "720p",
-    defaultRatio: "16:9",
-    sizes: seedanceVideoSizes,
-    nonStandardSizes: seedanceNonStandardVideoSizes,
-  },
   "byteplus:video.seedance-2-0": {
-    resolutions: ["480p", "720p", "1080p"],
+    resolutions: ["480p", "720p", "1080p", "4K"],
     ratios: ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
     defaultResolution: "720p",
     defaultRatio: "16:9",
     sizes: seedanceVideoSizes,
     nonStandardSizes: seedanceNonStandardVideoSizes,
   },
-  // ⭐ Seedance 2.5（端点 ep-20260807153703-h48pt）：官方文档 + 直打接口实测确认，仅 480p/720p、6 种比例、4~30 秒。
-  // 像素用 2.5 官方精确表 seedance25VideoSizes（不再借用 Fast 表）。
-  // ⛔ 故意**不配 nonStandardSizes**（2026-08-09 用户拍板）：2.5 官方对 480p/720p × 6 种比例都给了精确像素表，
-  //    全都是官方标准尺寸 → 一个都不该标「（非标）」。原来沿用 2.0 Fast 那张表会把最常用的 480p 16:9(854×480)
-  //    也标成非标，属于显示错误。
+  // ⭐ Seedance 2.5：480p/720p/1080p、6 种比例、4~30 秒。
+  // 1080p 像素与 2.0 官方表相同。⛔ 故意**不配 nonStandardSizes**（2026-08-09 用户拍板）：
+  //    官方精确像素表全都是官方标准尺寸 → 一个都不该标「（非标）」。
   "byteplus:video.seedance-2-5": {
-    resolutions: ["480p", "720p"],
+    resolutions: ["480p", "720p", "1080p"],
     ratios: ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
     defaultResolution: "720p",
     defaultRatio: "16:9",
@@ -815,14 +882,6 @@ export const videoModelRules: Record<string, VideoModelRule> = {
     sizes: klingVideoSizes,
     nonStandardSizes: klingNonStandardVideoSizes,
   },
-  "kwaivgi/kling-video-o1": {
-    resolutions: ["1080p"],
-    ratios: ["16:9", "1:1", "9:16"],
-    defaultResolution: "1080p",
-    defaultRatio: "16:9",
-    sizes: klingO1VideoSizes,
-    nonStandardSizes: klingO1NonStandardVideoSizes,
-  },
   [HAILUO3_VIDEO_MODEL_ID]: {
     resolutions: ["2K"],
     ratios: ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
@@ -830,13 +889,6 @@ export const videoModelRules: Record<string, VideoModelRule> = {
     defaultRatio: "16:9",
     sizes: hailuo3VideoSizes,
     nonStandardSizes: hailuo3NonStandardVideoSizes,
-  },
-  "google/veo-3.1": {
-    resolutions: ["720p", "1080p", "4K"],
-    ratios: ["16:9", "9:16"],
-    defaultResolution: "720p",
-    defaultRatio: "16:9",
-    sizes: veoVideoSizes,
   },
 };
 
@@ -847,8 +899,9 @@ export const fallbackVideoModelRule: VideoModelRule = videoModelRules[DEFAULT_VI
 export function getBytePlusVideoPricePerMillionUsd(modelId: string | null | undefined, resolution: string | undefined, hasVideoInput: boolean) {
   if (modelId === "byteplus:video.seedance-2-0-fast") return hasVideoInput ? 3.3 : 5.6;
   if (modelId === "byteplus:video.seedance-2-0-mini") return hasVideoInput ? 2.1 : 3.5;
-  // Seedance 2.5（仅 480p/720p）：火山官网 2026-08 定价页实测确认，无参考视频 $10.70/M、有参考视频 $6.40/M。
+  // Seedance 2.5：火山官网 2026-08 定价页实测确认，无参考视频 $10.70/M、有参考视频 $6.40/M。
   // 实测反验：720p/5秒=108900 token × 10.70/1e6 = $1.165，与官网定价示例「720p 5秒=1.156/视频」吻合。
+  // 1080p 同一套单价（token ∝ 像素，分辨率越高 token 越多）。
   if (modelId === "byteplus:video.seedance-2-5") return hasVideoInput ? 6.40 : 10.70;
   // Seedance 2.0（完整版）：480p/720p 与 1080p / 4K 分档。
   if (resolution === "4K") return hasVideoInput ? 2.4 : 4.0;

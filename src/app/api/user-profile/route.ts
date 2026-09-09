@@ -1,4 +1,4 @@
-import { getCurrentUser, jsonError } from "@/lib/auth";
+import { forgetSessionIdentityByUserId, getCurrentUser, jsonError } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 import { getUserProfileWithGeneratedCounts, normalizeUserProfileInput, type UserProfilePayload } from "@/lib/user-profile";
 
@@ -22,6 +22,7 @@ export async function PUT(request: Request) {
     where: { id: user.id },
     data: normalizeUserProfileInput(body),
   });
+  forgetSessionIdentityByUserId(user.id);
 
   // 保存后也带上现算的生成数量：前端 applyCurrentUserProfile 会整份覆盖本地状态，
   // 不带就会把「生成图片/生成视频」刷回 0。

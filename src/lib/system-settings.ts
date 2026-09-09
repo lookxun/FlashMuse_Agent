@@ -25,6 +25,18 @@ export const BYTEPLUS_CONVERSATION_VIDEO_MODEL_KEYS: Record<string, string> = {
   "byteplus:video.seedance-2-5": "video.seedance-2-5",
 };
 
+/**
+ * ⛔ 已下线的视频模型（2026-08-30 用户拍板，唯一权威）。
+ * 老的 `.env.local` 配置、老对话/老工作流节点里可能还存着这些 id，
+ * 所以不能只从菜单里删 —— 服务端也必须一律拒绝，免得有人直接打接口继续用。
+ */
+export const RETIRED_VIDEO_MODEL_IDS = new Set([
+  "bytedance/seedance-2.0",
+  "bytedance/seedance-2.0-fast",
+  "kwaivgi/kling-video-o1",
+  "google/veo-3.1",
+]);
+
 export const BYTEPLUS_AGENT_IMAGE_MODEL_KEYS: Record<string, string> = {
   "byteplus:conversation-image.seedream-4-5": "agent-image.seedream-4-5",
 };
@@ -361,9 +373,8 @@ export function isAssetImageModelEnabled(modelId: string) {
 export function isConversationVideoModelEnabled(modelId: string) {
   const bytePlusKey = BYTEPLUS_CONVERSATION_VIDEO_MODEL_KEYS[modelId];
   if (bytePlusKey) return isBytePlusPreferenceEnabled(bytePlusKey);
-  // 视频生成模块已去掉 OpenRouter 版 Seedance（只保留 BytePlus 版）。
-  if (modelId === "bytedance/seedance-2.0-fast") return false;
-  if (modelId === "bytedance/seedance-2.0") return false;
+  // ⛔ 2026-08-30 已下线的模型：即使老配置/老数据里还留着，也一律不许再被选中或跑起来。
+  if (RETIRED_VIDEO_MODEL_IDS.has(modelId)) return false;
   return !isOpenRouterOnlyDisabled("对话流视频生成", "", modelId);
 }
 
@@ -484,6 +495,18 @@ function sanitizePromptLengthOverrides(value: unknown): PromptLengthOverrides {
 
 export function getPromptLengthOverrides() {
   return sanitizePromptLengthOverrides(getJsonEnvValue<PromptLengthOverrides>("PROMPT_LENGTH_OVERRIDES", {}));
+}
+
+export function getMembershipSettings() {
+  return getJsonEnvValue("MEMBERSHIP_SETTINGS", {}) as import("@/lib/membership").MembershipSettings;
+}
+
+export async function updateMembershipSettings(settings: import("@/lib/membership").MembershipSettings) {
+  const { sanitizeMembershipSettings } = await import("@/lib/membership");
+  const sanitized = sanitizeMembershipSettings(settings);
+  await writeLocalEnvValues(new Map([["MEMBERSHIP_SETTINGS", formatEnvValue(JSON.stringify(sanitized))]]));
+  process.env.MEMBERSHIP_SETTINGS = JSON.stringify(sanitized);
+  return sanitized;
 }
 
 export async function updatePromptLengthOverrides(overrides: PromptLengthOverrides) {

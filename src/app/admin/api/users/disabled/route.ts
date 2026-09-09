@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { isAdminEmail } from "@/lib/admin";
 import { getCurrentAdminEmail } from "@/lib/admin-auth";
+import { forgetSessionIdentityByUserId } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
 export const runtime = "nodejs";
@@ -21,6 +22,7 @@ export async function POST(request: Request) {
   if (disabled) {
     await prisma.session.deleteMany({ where: { userId } }).catch(() => null);
   }
+  forgetSessionIdentityByUserId(userId);
 
   return NextResponse.json({ user });
 }

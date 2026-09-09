@@ -28,6 +28,27 @@
   ⚠️ **2026-07-29 起只有工作流会往里写**（对话流/资产库的 AI 改写已整体撤掉，原因见 `01-current-status.md` 第十四次会话）。
 - `GenerationEvent`：**每次生成的埋点事件**（kind/source/model/provider/status/`failureReason`/`failureCode`/moderation/durationMs/参考素材数量）= 后台运营概览的数据源。⭐ 2026-07-27 新增 `resolvedAt` + `resolvedNote`：**失败原因「已归档」标记**（根因查清并修掉后打上，后台把那条原因划掉且不再计入待排查数量）。归档流程见 `07-red-error-triage-and-archive.md`。⚠️ **`failureReason` 存的是给用户看的文案，不是根因**（"服务器繁忙"是兜底），真实原因只在 `.runtime/*-diagnostics-log.jsonl`。
 - `UploadEvent`：上传埋点（status/reason/bytes）。
+- ⭐⭐ **`GenerationReservation`（2026-08-30 新增，2026-09-05 首次部署到测试服）= 生成额度预占**。
+  一行 = 「某个 requestId 正在跑，事前预估要花 `estCredits` 积分」。
+  存在的理由：并发上限和"积分够不够"原来都是「先查再放」（TOCTOU）→ 20 个请求同时进来会全部查到 0
+  → 全部放行 → 基础会员的并发限制形同虚设，而且剩 1 积分的号能同时开一堆贵任务把余额刷成负数。
+  唯一逻辑在 **`src/lib/generation-quota.ts`**：**同一事务里 `pg_advisory_xact_lock(hashtext(userId))`
+  → 数在跑的（`GenerationReservation` ∪ `GenerationJob`，按 requestId 去重）→ 校验 → 插占位**。
+  - `expiresAt`（30 分钟）是**防泄漏兜底**：进程崩了没释放也会自己过期，⛔ 绝不允许"用户被永久卡住"。
+  - 释放三处：`markJobSucceeded` / `markJobFailed`（`generation-jobs.ts`）+ 同步接口（语音）的 `finally`。
+  - ⭐ **诊断姿势**：`SELECT count(*) FROM "GenerationReservation"` 平时应该接近 0；
+    一直有陈旧行 = 某条路径忘了释放。
+- ⭐⭐ **`User` 上新增的 11 个会员列**（2026-08-28 ~ 09-03 六个迁移，**测试库已 apply、正式库还没**）：
+  `membershipTier` / `membershipPeriod` / `membershipExpiresAt` / `membershipCredits` /
+  `membershipPaidCny`（当时**实付**金额，折算旧套餐剩余价值必须用实付而不是标价）/
+  `membershipDiscountUsed`（`String[]`，存**档位** `standard`/`pro` —— 首期折按档各一次）/
+  `membershipParkedTier|Period|RemainingDays|PaidCny`（低档"搁着"的剩余**天数**，⛔ 不是到期日）/
+  `membershipCreditsCycleAt`（下次发月积分的时间）。
+  ⭐⭐ **`credits` 仍是唯一总余额**，`membershipCredits` 只是"这总余额里属于赠送的那部分"的**子标记**
+  → 全站十几处读余额的代码一行都没改。扣费时 `credits -= n` 且
+  `membershipCredits = GREATEST(0, membershipCredits - n)`（赠送分天然先被花完）。
+  ⛔ **会员总开关关着时这些列一个都不许被写**（见 `AGENTS.md` 顶部那条铁律）。
+- `CreditSetting` 新增 `chargeAudio`（后台「积分管理」里的「语音」开关，默认 true）。
 
 **数据权威**：媒体固定事实→`MediaAsset`；用户可变状态→`UserAssetState`；对话→`WorkspaceSession+Message`；计费→`CreditLedger`。新生成/上传媒体统一走 `src/lib/media-asset-record.ts`（`buildMediaAssetRecord`/`classifyAsset`）入库；出生即冻结，之后只有改名/移动/删除（只写 `UserAssetState`）。
 
@@ -369,6 +390,14 @@
 - **唯一权威实现 `src/lib/video-reference-image-rules.ts`**：常量 + `validateVideoReferenceImageDimensions` / `validateVideoReferenceImages` / `validateVideoReferenceImagesBeforeSend`（会现场量图）+ `measureImageDimensions`。
 - 三处共用、禁止再写一套：**对话流** `sendMessage`（黑底 `showInputTip` + 中止发送）、**工作流** `runVideoNode`（抛同文案）、**服务端** `api/video/route`（从 `MediaAsset.width/height` 读，400 + 同文案，兜住 Agent/资产库/任何入口）。
 - 只对 **BytePlus 视频模型**生效（别拿它拦 kling/veo）；`asset://` 引用跳过；**量不到宽高时不拦**（宁可让平台判，不能把用户挡死）。
+
+## ⭐ 图片「参考图」边长限制（2026-09-07 新增，唯一权威，对称上面视频那套）
+
+- 起因：Recraft V4.1 / Pro 对参考图有硬性**边长像素**要求 **256~4096px**（无宽高比限制），不合规时**生成阶段被上游拒**（原文 `max image dimension should be no more than 4096` / `min image dimension should be no less than 256`），历史上降级成"服务器繁忙"（正式服 2026-09-07 实测 B_488/B_491）。⚠️ 这是**边长像素**问题，跟"体积过大(>2MB)"（字节体积）是两回事。
+- **唯一权威实现 `src/lib/image-reference-image-rules.ts`**：`getImageReferenceSizeRule(modelId)`（**边长区间按模型给**，Recraft = 256~4096，其它返回 undefined 不拦）+ `imageModelEnforcesReferenceImageSizeRules` / `validateImageReferenceImageDimensions` / `validateImageReferenceImages` / `validateImageReferenceImagesBeforeSend`（现场量图）+ `measureImageDimensions`。
+- 三处共用、禁止再写一套：**对话流** `sendMessage`（图片模式，`showInputTip` + 中止发送）、**工作流** `runImageNode`（`onShowTip` + 显示节点失败卡）、**服务端** `api/image/route`（从 `MediaAsset.width/height` 读，400 + 诊断日志 `image-route-reference-image-size-rejected`，兜住 Agent/资产库/任何入口）。
+- `asset://` / `data:` 引用跳过；**量不到宽高时不拦**；⚠️ 历史资产 width/height 常为 null → 服务端那道查不到就不拦，真正拦得住的是前端现场量图，两道都要在。
+- 另有**失败映射兜底** `error-message.ts`（`max/min image dimension should be no (more|less) than \d+` → 明确中文文案，数字动态提取）——给"量不到宽高"（第三方 https 图/历史图）时用。往图片规则加模型必须有线上失败原文或官方文档依据。
 
 ## ⭐ BytePlus 真人/敏感参考素材「送审通行证」机制（2026-07-27 修 + 补齐）
 

@@ -14,11 +14,1153 @@
 >   ④ 把旧卷标题改成「卷 N · 已归档只读」并在顶部加指向新卷的提示 ⑤ 更新 `00-README.md` 文档索引里的 CHANGELOG 行。
 > - 判据不变：**版本号一样 = 测试服和正式服代码一样**（本项目核心约定，见 `AGENTS.md`）。
 
-## 📌 当前状态摘要（2026-08-26 第九十六次会话末）：**四方同步 `v1.0.1.11`**
+## 📌 当前状态摘要（2026-09-09 第一百一十六次会话末）：**测试服已上 `v1.0.1.17`（累积多会话未提交改动全部部署）；本地 `v1.0.1.17`；正式服/GitHub 仍 `v1.0.1.11`**
 
 | | 版本 / 状态 |
 |---|---|
-| 本地 / 测试服 / 正式服 / GitHub | **`v1.0.1.11`** |
+| 本地 | **`v1.0.1.17`**（= 测试服，已 bump；含 114 支付四态 + 115 充值页价格表/2.0 4K/2.5 1080p/本地媒体代理/存盘自恢复 + 116 工作流新建节点默认参数继承 profile）；**未 commit、未推正式服/GitHub** |
+| 测试服 | **`v1.0.1.17`**（2026-09-09 已部署验证通过） |
+| 正式服 / GitHub | 仍 **`v1.0.1.11`**（`a8121cd`） |
+| 自查 | `tsc` 0 |
+| 迁移 | 测试库已应用全部 52 条（本批随包带 7 个新迁移目录，migrate deploy 显示 No pending） |
+
+---
+
+## 🗒️ 第一百一十六次会话（2026-09-09）：把累积多会话未提交改动打包部署到测试服 `v1.0.1.17` + 实测工作流新建节点默认参数
+
+> ⭐ **最终状态**：测试服 = 本地 = `v1.0.1.17`；**未 commit、未推正式服**（用户未要求）。
+
+### 一、部署（用户显式授权部署测试服）
+
+- `scripts/bump-version.mjs`：`v1.0.1.16` → `v1.0.1.17`（最右段 +1）。`npx tsc --noEmit` EXIT 0。
+- eslint 报错全为项目历史既有噪音（`next build` 不因其失败，`next.config.ts` 无 `ignoreDuringBuilds`）→ 非阻断。
+- 部署前审计全通过：tmp/proto 生产守卫在位；`MEMBERSHIP_SYSTEM_ENABLED=false` + 写函数守卫齐全；额度闸门 fail-open；demo 数据生产返回空；`getLocalMediaProxyUrl` 生产恒 undefined。
+- 打包：清单 = `git status --short -- src prisma`（70 条，含 7 个新迁移目录 + 全部 src 改动）→ `node .runtime/pack.js v1_0_1_17` → 复制 76 文件 == tgz 内 76 文件（校验一致）→ `.runtime/v1_0_1_17.tgz`。⛔ 遵守铁律：Windows 未用 `tar -T`。
+- scp → 解包到 `/opt/flashmuse-staging/app` → `docker compose up -d --build staging-app`（entrypoint 自动 migrate deploy，显示「52 migrations found / No pending」，测试库 schema 已是新版）→ `sync-ali.sh --stack=staging --with-generated`（_next/static 48、home 18、generated 两端一致）→ `.env` 设 `PUBLISHED_APP_VERSION=v1.0.1.17`（仅改 1 行）+ force-recreate。
+- 验证：x-app-version=v1.0.1.17、`/api/health`=v1.0.1.17、外网 8080 及 /api/health 均 200、`grep -c generation-quota-gate-failed`=0、无致命启动错误。
+
+### 二、实测「工作流新建节点默认参数」（测服部署完必须测当次新内容）
+
+- 登录 `12424740@qq.com`（页脚「版本号(t):v1.0.1.17」确认前端新版）。
+- 新建工作流_18：
+  - 图片节点默认 = **Seedream 5.0 Pro / 16:9 / 2K / 2816x1584**；视频节点默认 = **Seedance 2.0 Fast / 智能比例 / 480p / 5秒 / 1280x720**。
+  - 设置面板标题本批已改为 **「新建对话/节点 · 默认图片/视频参数」**（明确标注同时作用于工作流节点），面板默认值与节点默认值完全一致 → 坐实节点默认值读取 profile 默认参数。
+- ⭐ **对照实验（条件对等版）**：先误改了「对话主输入框临时比例」（= `selectedRatios.image`，不是节点读的 `defaultImageRatio`）→ 新建节点未跟随，符合预期（改错了地方）。改到**用户设置面板**的「默认比例」16:9→4:3 后，新建图片节点变 **Seedream 5.0 Pro / 4:3 / 2K / 2368x1776**（尺寸随比例变）；改设置前建的旧节点仍 16:9（不追溯已存在节点）。刷新级持久化也确认（重开设置仍显 4:3）。**功能验证通过。**
+- console error = 0（多次采样）。测试完把默认比例改回 16:9 恢复原状；工作流_18 保留（不删测试内容）。
+
+---
+
+## 🗒️ 第一百一十五次会话（2026-09-09）：充值页价格表 + Seedance 2.0 补 4K / 2.5 补 1080p + 本地媒体代理 + 存盘自恢复（全本地，未部署）
+
+> ⭐ **最终状态**：本地仍 `v1.0.1.16`、未 bump、未 commit、未部署。全是本地改动。
+> 本会话围绕两条主线：① 积分充值页加模型价格表 + 给 Seedance 补新分辨率档 ② 排查本地 4K 视频一直「资产保存中」不落地。
+
+### 一、积分充值页底部加「图片模型 / 视频模型」价格表
+
+- `src/components/credit-recharge-modal.tsx`：温馨提示下方两列表格。价格用 `getImageModelSelectHint` / `getVideoModelSelectHint` 算出来的那行取「 · 」后半段（即「X积分/张·秒」），汇率从 `/api/model-availability` 的 `creditRate` 拉（组件挂载时 fetch 一次）。
+- 辅助：`priceFromHint`（取 hint 最后一段）+ `uniquePricedModels`（按 `label` 去重——`frontendImageGenerationModels` 里 Seedream 4.5 有 BytePlus/OpenRouter 两条同名）。视频列表 = `[...bytePlusVideoGenerationModels, ...videoGenerationModels]`。
+- ⚠️ 这个表**只显示**，不涉及扣费；和菜单副标题走同一套 hint 算法。
+
+### 二、Seedance 2.0 补 4K、Seedance 2.5 补 1080p（`src/lib/models.ts`）
+
+- 🗣️ 用户问「2.0 到底支持几种清晰度」→ 查官方文档（BytePlus ModelArk `docs/ModelArk/2298881` 的「Set video output specifications」表，用 `r.jina.ai` 代理才拿到 JS 渲染后的正文）：
+  - **Seedance 2.0（完整版）= 480p / 720p / 1080p / 4K**（4K 只有它支持，16:9=3840×2160）；
+  - **Seedance 2.5 = 480p / 720p / 1080p**（1080p 与 2.0 同一套像素表）；
+  - Fast / Mini 仍只有 480p / 720p。
+- ⭐⭐ **探测坐实（没烧钱）**：用 `duration=1`（必被上游拒）去打 `/contents/generations/tasks`：报「duration 非法」= 分辨率过了；报「resolution 非法」= 没开。实测 2.0 的 `4k`/`4K` 和 2.5 的 `1080p` 都报 duration 非法 → **两档上游都认**。脚本 `.runtime/probe-seedance-resolution.mjs`（跑完已删）。⛔ 别用「刚好合法」的值探，那会真建任务真花钱。
+- 改动：`videoModelRules` 两个模型的 `resolutions` 补档；新增 `seedance1080pVideoSizes` 常量（2.0/2.5 共用）+ 2.0 的 4K 像素表 + `seedanceNonStandardVideoSizes` 的 1080p/4K 非标标记（2.5 故意不配 nonStandard）；`estUsdPerSecondByResolution` 补 2.0 的 `4K:0.951`、2.5 的 `1080p:0.623`（按 token∝像素粗估，⚠️ 不是真实扣费 p99，下次有真实数据要回校）；`getBytePlusVideoPricePerMillionUsd` 注释补 2.5 1080p 同单价。
+- 工作流「视频快捷编辑」候选链注释同步（4K 只有 2.0、1080p 只剩 2.0/2.5）。
+
+### 三、分辨率菜单从 4 格挤 → 加宽（对话流 + 工作流画布）
+
+- 🗣️ 用户：4 格太挤，要「保持一行、只在 4 格时加宽」。
+- `chat-workbench.tsx` 的 `renderImageSettingsMenu`：`settingsMenuWidthClassName` 改成 `currentResolutionOptions.length === 4 ? 560px : 420px`（1/2/3 格不变）。
+- `workflow-tldraw-canvas-inner.tsx` 的 `WorkflowSettingsMenuSingle`：同样按 `resolutions.length === 4` 三元。
+- ⚠️ **踩坑**：给工作流那处改宽度时把 `className="...${...}..."`（普通字符串里塞了 `${}`）→ 界面直接打不开。必须是**模板字符串**（反引号）。已修。（同 AGENTS.md「Tailwind 任意值 class 别用变量拼」那一族，但这次是字符串/模板字符串搞混。）
+
+### 四、本地 4K 视频一直「资产保存中」—— 两个根因，都已修
+
+- ⭐ **背景**：预览页浏览器直连火山边下边播，秒开；但「资产保存中」是**后台 Node 把整份文件下到本机硬盘**才算完，这是另一条路。诊断看 `.runtime/media-save-jobs.json` 那条 job 的 `status`，⛔ 别看预览能不能播。
+- **根因 1：下载超时太短 + 整文件进内存**。原 `REMOTE_DOWNLOAD_TIMEOUT_MS=3min` 对所有类型；4K 跨境下不完，反复 `This operation was aborted`。改：
+  - `local-assets.ts` 视频单独 `REMOTE_VIDEO_DOWNLOAD_TIMEOUT_MS=15min`；`STALE_DOWNLOADING_MS` 8→20min。
+  - 视频**改成流式写盘**（`Readable.fromWeb(response.body)` → `createWriteStream` + `pipeline`），不再 `await response.arrayBuffer()` 整份进内存。图片仍走 buffer（要 sharp 转码）。
+- **根因 2（真正的元凶）：本机 Node fetch 默认不走系统代理**。用户手动下载 1 秒（浏览器走 Clash），Node 直连新加坡 TOS 慢到超时。修：
+  - `local-assets.ts` 加 `getLocalMediaProxyUrl()` / `getLocalMediaProxyDispatcher()`：读 env `LOCAL_MEDIA_PROXY`，**`NODE_ENV==="production"` 时恒 undefined**（线上腾讯新加坡直连火山本来就快、绝不绕代理）。用 undici `ProxyAgent`。
+  - `saveRemoteAsset` 里把 dispatcher 传给 `safeFetch`（`ssrf-guard.ts` 的 `safeFetch` 签名加了可选 `dispatcher`），curl 兜底加 `--proxy`。
+  - `.env.local` **只追加一行** `LOCAL_MEDIA_PROXY=http://127.0.0.1:7897`（Clash 混合端口，实测 `curl --proxy` 下这条 4K 0.69 秒、21MB/s）。⛔ 生产不配这行。改前后断言 OPENROUTER(73)/BYTEPLUS(46) 长度没变。
+- **根因 3（本地重启才会踩）：队列定时器只活在内存，进程重启后 pending/downloading 任务成孤儿、永远停在「资产保存中」**。修：
+  - `media-save-queue.ts` 新增 `resumePendingMediaSaveJobs()`：启动时把 downloading 降回 pending、扫出所有 pending/failed 重新 `scheduleJob`。
+  - `generation-worker.ts` 的 `startGenerationWorker()` 里 `void resumePendingMediaSaveJobs()`（不 await、catch 兜底，遵守「往 worker 加活儿要隔离」铁律）。
+- ✅ **验证**：重启 dev 后那条波斯美女 4K 自动恢复、走代理秒下、`status:saved`、落地 `/generated/users/ID_779117/videos/...`。希腊美女 2.5（重启前）也已 saved。
+
+### 下次接着做
+
+1. 用户没说部署 → 别 bump、别上测试服。要上时 bump（→ v1.0.1.17），把 114（支付四态）+ 115（本批）一起带。
+2. ⭐ **推正式服前**：确认 `LOCAL_MEDIA_PROXY` **只在本地 `.env.local`**，别同步到正式服 env（代码里 production 已恒 undefined，双保险）。
+3. ⚠️ Seedance 2.0 4K / 2.5 1080p 的 `estUsdPerSecondByResolution` 是**粗估**（token∝像素），有真实扣费数据后按 `05-next-actions.md`「预估表怎么重新统计」回校。
+4. ⚠️ 工作区仍叠着更早的「语音失败卡原地重生」，也没 bump。
+
+### 改了哪些文件
+
+- `src/components/credit-recharge-modal.tsx`（价格表）
+- `src/lib/models.ts`（2.0 补 4K、2.5 补 1080p、像素表、预估）
+- `src/components/chat-workbench.tsx` + `src/components/workflow-tldraw-canvas-inner.tsx`（分辨率菜单加宽）
+- `src/lib/local-assets.ts`（视频 15min 超时 / 流式写盘 / 本地代理）
+- `src/lib/ssrf-guard.ts`（`safeFetch` 加 dispatcher）
+- `src/lib/media-save-queue.ts`（`resumePendingMediaSaveJobs` + STALE 20min）
+- `src/lib/generation-worker.ts`（启动调恢复）
+- `.env.local`（追加 `LOCAL_MEDIA_PROXY`，仅本地）
+
+---
+
+## 🗒️ 第一百一十四次会话（2026-09-08）：积分充值支付弹层四态 UI（全本地，未部署）
+
+> ⭐ **最终状态**：本地仍 **`v1.0.1.16`**、未 bump、未 commit、**未部署**。测试服/正式服都还没有本批 UI。
+> 🗣️ 用户口径：「先改支付成功，一个个改」→ 原型页定稿 →「把现在这个四个状态做到项目里去。先本地」。
+
+### 做了什么
+
+1. **问清线上原来怎么展示**：`credit-recharge-modal.tsx` 轮询 `payStatus` 三态 `pending / paid / closed`。
+   - 成功：码位绿字「支付成功」+「积分已到账」+「可以关闭此窗口继续使用」
+   - 关闭：码还在，右边「订单已关闭，请重新下单」
+   - 下单失败：码位灰字 + 顶部黑 toast
+2. **原型测试页对照**（`/proto-test` → 左侧「积分充值页(真实)」）：四种弹层并排画在 `view.html`，不套 iframe。
+   - 一开始做了 `/proto-credit-recharge` 套真实组件 + mock fetch，点开全白屏（iframe 里 Next 页没起来）。改成静态对照后能看。
+   - ⛔ **`src/app/proto-credit-recharge/` 那两份还在，没人用**，别当成预览入口。
+3. **用户逐条拍板的成功态**（原型定稿后再接到真组件）：
+   - 弹层外框和扫码弹层一样大（`max-w-[720px]` + `min-h-[404px]`）
+   - 细线对勾 SVG（Remix `checkbox-circle-line` 太粗，换成描边 SVG）在左，「支付成功」+「充值成功，获得xxxx积分。」在右
+   - 下面「返回」：白底灰描边、`h-52 / min-w-240 / rounded-[5px]`，和上面间距 `72px`
+4. **订单关闭 = 付款码超时 15 分钟**（用户能看到的几乎只有这一种）。其它不变，码位改成：
+   - 底下 `FakePayQrCode` 模糊假码
+   - 黄感叹号 `ri-error-warning-fill` + 灰字「二维码已过期请刷新」+ 蓝色无底「刷新二维码」
+5. **下单失败 = 付款码根本没生成出来**（支付宝未配置 / 预下单挂 / 限流）。做成和过期一样的遮罩，只换：红感叹号 +「拉取二维码失败请刷新」。
+6. **过渡态不变**：码框中间灰字「正在生成付款码…」（第一次下单和点刷新都走这）。
+7. **接到真组件** `src/components/credit-recharge-modal.tsx`：
+   - 下单抽成 `createPayOrder()`，刷新按钮复用它（重新下单出新码）
+   - 成功态整页替换；过期/失败盖在假码上；过期/失败时右边仍写「请使用支付宝扫码支付」（不再写「订单已关闭」）
+   - 失败不再弹顶部黑 toast
+8. **工作台展开侧栏左下角**「积分充值」前面加 `RiShoppingCartLine`（`chat-workbench.tsx`）。折叠态那个方块没加。
+
+### 四个状态（权威，别改回去）
+
+| 状态 | 何时 | 码位 |
+|---|---|---|
+| 待支付 | 下单成功、等扫 | 真码 |
+| 支付成功 | 轮询到 `paid` | 对勾+文案+返回，不再显示码/金额/协议 |
+| 二维码过期 | 轮询到 `closed`（15 分钟超时） | 模糊假码 + 黄叹号 +「二维码已过期请刷新」 |
+| 拉取失败 | `createPayOrder` catch | 模糊假码 + 红叹号 +「拉取二维码失败请刷新」 |
+
+点「刷新二维码」= 再 POST `/api/pay/credit-order`。拉码中显示「正在生成付款码…」。
+
+### 下次接着做
+
+1. 用户没说部署 → **别 bump、别上测试服**。要上时 bump → v1.0.1.17。
+2. 支付宝应用仍在审核。审核过了测出码时，顺带看这四态（成功要真付一笔才会到；过期要等 15 分钟或改本地超时测）。
+3. 工作区还叠着更早的「语音失败卡原地重生」（`retryFailedMedia` 放行 audio），也还没 bump。
+
+### 改了哪些文件
+
+- `src/components/credit-recharge-modal.tsx`（真四态）
+- `src/components/chat-workbench.tsx`（购物车图标）
+- `src/app/proto-test/view.html`（对照原型）
+- `src/app/proto-credit-recharge/page.tsx` + `client.tsx`（白屏废案，还在）
+
+---
+
+## 📌 上一状态摘要（2026-09-08 第一百一十三次会话末）：**本地=测试服 `v1.0.1.16`；正式服/GitHub 仍 `v1.0.1.11`**
+
+| | 版本 / 状态 |
+|---|---|
+| 本地 | **`v1.0.1.16` + 未提交** |
+| 测试服 | **`v1.0.1.16`**（支付代码已上；支付宝应用未上线，下单被拒） |
+| 正式服 / GitHub | 仍 **`v1.0.1.11`**（`a8121cd`） |
+| 迁移 | 会员 6 个 + PaymentOrder（测试库已 apply，正式库还没） |
+
+---
+
+## 🗒️ 第一百一十三次会话（2026-09-08）：接支付宝订单码支付 + 部署测试服 v1.0.1.16（卡在应用未上线）
+
+> ⭐ **最终状态**：本地 = 测试服 **`v1.0.1.16`**、未 commit、**未推正式服**。
+> 🗣️ 用户拍板「项目正在审核，下次再接」。
+
+### 做了什么
+1. 开通的是支付宝**订单码支付**（`alipay.trade.precreate` 出站内二维码），不是电脑网站跳转，也不是当面付扫用户码。
+2. 代码：`PaymentOrder` 表 + `src/lib/alipay.ts` + `src/lib/payment-orders.ts` + 三个接口（下单 / 查状态 / 异步通知）。金额积分服务端复算。微信按钮藏了。充值记录有真已付订单就显示真流水。
+3. 本地和测试服 `.env.local` **只追加** `ALIPAY_APP_ID/PRIVATE_KEY/PUBLIC_KEY/NOTIFY_URL`，OPENROUTER/BYTEPLUS 长度没变。密钥目录 gitignore。
+4. bump v1.0.1.15 → v1.0.1.16，部署测试服，迁移 `20260908010000_payment_order` 已 apply。
+5. 真机 `12424740@qq.com` 勾协议点 ¥50 充值：建了 `C202609080434362029`（closed，无码）。容器探测支付宝返回 **`应用未上线 (not-online-app)`**。
+
+### 下次接着做
+支付宝应用审核通过 → 测试服再点充值，必须出真码。先别付钱。
+
+---
+
+## 📌 上一状态摘要（2026-09-07 第一百一十二次会话末）：**本地=测试服 `v1.0.1.15` 已部署+冒烟全过；正式服/GitHub 仍 `v1.0.1.11`**
+
+| | 版本 / 状态 |
+|---|---|
+| 本地 | **`v1.0.1.15` + 未提交** |
+| 测试服 | **`v1.0.1.15`**（会话 112 部署 + 三项冒烟全过：昵称即时生效 / Recraft 尺寸拦截 / 会员关闭态+充值页） |
+| 正式服 / GitHub | 仍 **`v1.0.1.11`**（`a8121cd`） |
+| 自查 | `tsc` 0 |
+| 迁移 | 会员那 6 个（测试库已 apply，正式库还没；本批无新迁移，部署时 `No pending migrations`） |
+| 回滚点 | 正式服 app `/opt/flashmuse/app-backups/20260826-205720-presync-v1.0.1.11` |
+| 112 次会话内容 | 把 111 次的 Recraft 图片尺寸拦截 + 日志轮转 + 昵称修复一起 bump 到 v1.0.1.15、部署测试服、冒烟；跑了正式服归档 dry-run（结论：**下次上线再归档**） |
+
+> ⭐⭐ **下次推正式服时必做一件事（用户 2026-09-07 拍板）**：把正式库那 **63 条兜底桶** 里可归档的归掉——
+> 其中 **24 条是 Recraft 参考图尺寸超限**（本批 v1.0.1.15 已在发送前拦住，正式服上线后才真正生效，所以归档才名副其实）、
+> 37 条日志已被滚动覆盖、永久不可追溯。⚠️ **归档脚本 `RESOLVED_RULES` 里目前没有 Recraft 尺寸这条规则，要先补一条再跑**（详见第 112 次会话记录「归档 dry-run」一节 + `07` 文档）。
+
+---
+
+## 🧭 这个对话框（第一百零八 + 一百零九次会话）总览 —— 接手先读这一节
+
+> ⭐ 108 和 109 是**同一个对话框**里的两轮。整个对话框只干了三件事，按顺序：
+> **① 审计 → ② 修 6 处 → ③ 部署测试服 → ④（用户拍板后）把预估做准并重推。**
+
+**用户在这个对话框里说过的话（口径，别改回去）：**
+
+1. 「会员充值这一套代码包括后台的改动**不能删除，但也不能生效，先保留但隐藏**，这一批也可以审计一下不要出问题，也不要影响到其它功能。」
+2. 「新做的积分充值独立全屏页**要上线**，仔细审计不要出错，**要是扣真钱千万不能出错**。后面要真接支付。」
+3. 「全部审计完有问题就修复，没问题就部署到测试服。」
+4. （看完审计报告后）「**我认，可以这么做，这样不会亏积分，但是要预估的尽量准**」← 指额度闸门那个行为变更
+5. 「**不用去掉**」← 指后台「用户充值」菜单 + 用户中心「会员积分 0」那一列
+
+**做完之后的最终状态：**
+
+| | |
+|---|---|
+| 版本 | 本地 = 测试服 **`v1.0.1.13`**；正式服 / GitHub 仍 `v1.0.1.11` |
+| 提交 | **未 commit**（97～109 全叠在工作区，本项目常态） |
+| 迁移 | 6 个，**测试库已 apply、正式库还没** |
+| 会员 | 关闭且已验证对用户完全不可见；代码全保留 |
+| 积分充值页 | 已上线（测试服），**支付仍是假二维码** |
+| 额度闸门 | 已上线，预估最大偏差 **3%** |
+
+**下一个人最可能要做的三件事**（细节见 `05-next-actions.md`）：
+① 用户说推正式服时按流程推（**别忘 prisma 迁移**）；② 接真支付（**金额必须服务端复算**）；
+③ 支付宝连续包月批下来后把 `MEMBERSHIP_SYSTEM_ENABLED` 改 `true`（改之前先想清楚首次结算会做什么）。
+
+---
+
+## 🗒️ 第一百一十二次会话（2026-09-07）：bump v1.0.1.15 + 部署测试服 + 三项冒烟全过 + 正式服归档 dry-run（结论：下次上线再归档）
+
+> ⭐ **最终状态**：本地 = 测试服 **`v1.0.1.15`**、未 commit、**未推正式服**（正式服 / GitHub 仍 `v1.0.1.11`）。
+> 这个对话框把 111 次积压的本地改动（Recraft 图片尺寸拦截）连同本批新加的两块（日志轮转、昵称修复）一起打包上了测试服并冒烟；
+> 最后跑了正式服红字归档的 dry-run，**用户拍板「下次上线再归档」**。
+
+### 这个对话框按顺序干了什么
+1. **审计本批未提交改动**（`npx tsc --noEmit` 通过；复核六条钱铁律、会员写库/原型路由守卫齐全）。
+2. **bump v1.0.1.14 → v1.0.1.15** + 整批打包（`.runtime/pack.js`，285 文件按 `git status --short -- src prisma` 取清单，`tar -tzf` 数一致校验通过）。
+3. **部署测试服 v1.0.1.15**（走会话 110 那套标准流程：scp → 解包 → build → 迁移 `No pending migrations` → 同步阿里两端一致 → 发 `PUBLISHED_APP_VERSION` 信号 → `x-app-version` / `/api/health` / 外网 8080 三处确认版本）。
+4. **三项冒烟全过**（详见下面）。
+5. **正式服归档 dry-run**（详见下面「归档 dry-run」）。
+
+### 本批代码内容（三块）
+> 111 次会话已把 Recraft 图片尺寸拦截写完（本地未部署），112 次把它连同下面两块一起上测试服。
+- **A. Recraft 参考图尺寸拦截**（111 次写的）：唯一权威 `src/lib/image-reference-image-rules.ts`，单边 256~4096px，量不到宽高时 fail-open（不拦，交平台判）。三处咽喉：对话流 `chat-workbench.tsx`、工作流图片节点 `workflow-tldraw-canvas-inner.tsx`、服务端兜底 `api/image/route.ts`。失败映射兜底在 `error-message.ts`。
+- **B. 诊断日志轮转** `src/lib/diagnostics-log-rotate.ts`：20MB 轮转、留 7 代（`.1`~`.7`）。⚠️ **正式服还没这个功能**（正式服 v1.0.1.11），所以正式服日志还在无限长、8/12 前的诊断原文已被自然覆盖（见归档 dry-run）。
+- **C. 昵称修复** `api/user-profile/route.ts` + `lib/user-profile.ts` + `lib/auth.ts`：改昵称后清 `sessionIdentityCache`（`forgetSessionIdentityByUserId`），修「改名后不立即生效」。
+
+### 三项冒烟（测试服，`12424740@qq.com` / dragonstar，浏览器登录名「测试服龙星」，积分 94,277）
+1. **昵称即时生效——通过**：改名即时更新、刷新不回退，测完已改回原值「测试服龙星」。
+2. **Recraft 尺寸拦截——通过**：传 5000×1000 超大图点发送 → 红字 toast 拦住、`/api/image` **未发出**、积分未变。（测试图 `E:\project\FlashMuse_Agent\.playwright-mcp\oversize-5000.png`，测完已从输入框移除。）
+3. **会员关闭态界面正常 + 积分充值页可打开——通过**：8 档积分包 250~25000 金额线性、协议/实付款/温馨提示齐全；**未点充值按钮**（充值页收真钱），未写库。测完关页面。
+
+### 🔴 归档 dry-run（正式库，关键结论 —— 下次上线要接着做）
+> ⚠️ 归档脚本 `scripts/archive-resolved-generation-failures.mjs` 连的是当前 `DATABASE_URL` 库、读容器内 `.runtime` 诊断日志，**必须在正式服容器 `flashmuse-flashmuse-app-1:/app` 里跑**。
+
+- **正式库待排查（`GenerationEvent.status='failed' && resolvedAt=null`）= 471 条**，按 failureReason 去 `(B_xxx)` 前缀后的分布：
+  | 数量 | failureReason（明确文案，铁律④修不了 → 不归档） |
+  |---|---|
+  | 208 | 模型拒绝出图 |
+  | 101 | 成品视频/音频被拒交付 |
+  | 32 | 提供商余额不足 |
+  | 30 | 模型只回文字 |
+  | 15 | 当前模型不支持这组参数 |
+  | 11 | 参考视频版权检测 |
+  | 9 | 参考素材未过审 |
+  | 2 | 视频任务创建/查询失败 |
+- **只有两个兜底桶能归档，共 63 条**（「服务器繁忙，请稍候再试.....」52 + 「请求失败，请稍后再试。」11）。按 requestId 回诊断日志查原文：
+  - **24 条 = Recraft 参考图尺寸超限**（`max image dimension should be no more than 4096` / `min image dimension should be no less than 256`）← **本批 v1.0.1.15 拦截的根因**，属归档铁律②「已映射成明确文案/发送前拦截」。
+  - 2 条 = gpt-5.4-image-2「请求失败」透传（根因不明，留着）。
+  - **37 条 = 日志已被滚动覆盖、永久不可追溯**（正式服无日志轮转，8/12 前的原文丢了）。
+- ⛔ **初版分布脚本踩坑**：failureReason 内嵌唯一 `(B_xxx)` 前缀 → `groupBy` 每条 count=1 失效。改成去前缀 + 截断冒号后内容再归类才对（脚本 `dist-reasons.mjs` / `dist-fallback.mjs` 在临时目录）。
+
+### 🗣️ 用户拍板
+- **「那下次上线再归档吧」** → 归档留到下次推正式服时做。理由是本批 Recraft 拦截正式服还没上线，现在归档语义超前（线上还没真拦，用户还会触发同样失败）。
+- **下次上线要做的事**：① 给归档脚本 `RESOLVED_RULES` 加一条 Recraft 尺寸规则（`max/min image dimension`，带 `before` 日期下限）；② 推正式服 v1.0.1.15；③ 跑 `--apply` 归掉那 24 条 Recraft + 37 条不可追溯（63 条兜底桶里可归的）。
+
+### 环境/工具坑（本批踩到的，留档）
+- ⛔ **PowerShell 吃内层引号/`$()`**：`docker exec ... node -e '...'` 单行内联脚本会被吃引号报错。**改用写 `.mjs` → scp 到 `/tmp` → `docker cp` 进容器 `/app`（⛔ 不能放 `/tmp`，import 不到 `@prisma/client`）→ `node /app/xxx.mjs`**。
+- ssh（测试服+正式服同机 `119.28.116.16`）：`ssh -i "C:\Users\ASUS\AppData\Local\Temp\opencode\CinematicFlow.pem" -o StrictHostKeyChecking=no ubuntu@119.28.116.16`；docker 命令加 `sudo`。正式服容器 `flashmuse-flashmuse-app-1`；测试服容器 `flashmuse-staging-staging-app-1`。
+
+---
+
+## 🗒️ 第一百一十一次会话（2026-09-07）：接着排查红字 → B_488/B_491（Recraft 参考图边长超限）→ ①失败映射 ②图片模型发送前尺寸拦截（对称视频那套）→ 纯本地、**未部署未测线上**
+
+> ⭐ **最终状态**：本地改动**未 bump 版本、未打包、未部署、未 commit**（用户只让"改本地 + 汇报"，没让部署/测试）。
+> 版本仍是 本地=测试服 `v1.0.1.14`、正式服/GitHub `v1.0.1.11`。
+
+**这个对话框按顺序干了三件事：① 清理两台服务器磁盘 → ② 排查两条红字 B_488/B_491 并加失败映射 → ③（用户拍板后）给图片模型补"发送前参考图尺寸拦截"。**
+
+### 用户在这个对话框里说过的话（口径）
+1. 问「下次再出现用户用这两个模型上传图片会拦了是吗？」→ 我如实答**不会**（当时只做了失败后的红字映射，不是拦截）。
+2. 「那不对啊。。所以你看一下其它模型同样的情况是怎么做的？我记得是会拦的」→ 用户记性对，**视频模型确实有发送前拦截**。
+3. 「可以，做吧」→ 授权做图片版的发送前拦截。
+4. ⛔ 全程**没让部署、没让测试线上** → 遵守 AGENTS.md 顶部铁律，只改本地 + 汇报。
+
+### 一、服务器磁盘清理（早前，已完成）
+- 腾讯主服 Docker 清理（更早会话）。
+- 阿里服（101.37.129.164）：99G 盘，清理前 57G(61%)。Docker 无可回收（venusai 在跑）。清了系统旧 journal 3.3G（`journalctl --vacuum-size=300M`）。Chromium snap 临时目录 1.4G 进程在用未删。清理后约 54G/41G 空(57%)。`/var/www/flashmuse-static/generated` 33G 用户图**未动**。
+
+### 二、红字排查：B_488 / B_491（Recraft 参考图边长超限）
+- **B_488**：1 条，2026-09-07 03:05 UTC，用户 `ID_955937`，模型 Recraft V4.1 Pro，上游原文 `max image dimension should be no more than 4096`（参考图边长 >4096px），原落兜底桶「服务器繁忙」。
+- **B_491**：1 条，同用户同模型，2026-09-07 03:09 UTC，上游原文 `min image dimension should be no less than 256`（边长 <256px，多半是被嫌太大后换了张小图），同样原落兜底桶。
+- ⭐ 坐实：Recraft 参考图边长要求 **256~4096px**（比 BytePlus 视频的 300~6000 更严），无宽高比限制；这是**边长像素**问题，和"体积过大(>2MB)"（字节体积）是两回事。
+- **归档判据**：B_488/B_491 修好后会被映射成明确文案、不再落兜底桶，属于归档铁律第④类（映射后新形成的明确原因、修不了就一直亮），**不归档**；后台 `FAILURE_REASON_SQL` 只合并"模型拒绝/版权"类，新文案不含被合并词，**不用动**。
+
+### 三、修改内容（纯本地，5 个文件）
+
+**A. 失败映射（兜底文案）** — `src/lib/error-message.ts`（行 244 BytePlus 尺寸规则后新增两条）
+- `max image dimension should be no more than \d+` → 「参考图尺寸太大了（当前模型要求图片的长和宽都不超过 {N} 像素），请换一张尺寸更小的参考图后重试。」
+- `min image dimension should be no less than \d+` → 「参考图尺寸太小了（…不小于 {N} 像素），请换一张尺寸更大的参考图后重试。」
+- 数字**动态提取**（`no more than (\d+)` / `no less than (\d+)`），不写死；已验幂等连跑 3 遍相等、动态数字正确、负向用例（体积过大文案）不受影响。
+- ⭐ 这条**保留**：作为"量不到宽高"（第三方 https 图 / 历史图，不经过我们的量图）时的兜底。
+
+**B. 图片模型发送前拦截（治本）** — 对称视频那套 `video-reference-image-rules.ts`，三处咽喉全接入：
+
+1. **新增唯一权威 `src/lib/image-reference-image-rules.ts`**（对称视频版，但边长区间**按模型给**）：
+   - `getImageReferenceSizeRule(modelId)`：Recraft V4.1 / Pro 返回 `{minSide:256, maxSide:4096}`，其它模型返回 `undefined`（不受约束、不拦）；靠 `isRecraftModel`（`models.ts`）判定。
+   - `imageModelEnforcesReferenceImageSizeRules` / `validateImageReferenceImageDimensions` / `validateImageReferenceImages` / `measureImageDimensions`（浏览器现场量图）/ `validateImageReferenceImagesBeforeSend`。
+   - ⚠️ **量不到宽高时不拦**（返回 undefined，交平台判，绝不因读不到宽高把用户挡死）；无宽高比限制（Recraft 不像视频那样限 0.4~2.5）。
+2. **对话流 `src/components/chat-workbench.tsx`**（约行 7390，视频拦截块之后、构建 userMessage 之前）：图片模式发送前量参考图真实宽高，超限 `showInputTip` + `setSessionSending(false)` + return，不发请求。用 `namedImageReferences` + `getPreviewMetaDimensions(matchedAsset.previewMeta)` + `getStaticMediaUrl` 现场量。
+3. **工作流图片节点 `src/components/workflow-tldraw-canvas-inner.tsx`**（`runImageNode`，`referenceImages` 算出后）：从 `getIncomingNodes` 取 `mediaSystemNames`/`imageDimensions`，超限 `onShowTip` + 显示节点失败卡。已把 `getIncomingNodes` 加进 useCallback 依赖。
+4. **服务端兜底 `src/app/api/image/route.ts`**（membership 校验后、内容审核前）：查 `MediaAsset.width/height`（本地新增 `normalizeMediaUrlForMatch` + import `prisma`），不合规直接 400 并写诊断日志 `image-route-reference-image-size-rejected`。覆盖 Agent / 资产库 / 任何入口。⚠️ 历史资产宽高常为 null → 查不到就不拦，真正拦得住的是前端那道现场量图，两道都要在。
+
+### 自查 / 验证
+- `npx tsc --noEmit` **通过（0 报错）**。
+- `npx tsx` 单测规则：Recraft 返回 256~4096；Seedream 等不受约束返回 false；太大/太小/合规/量不到 四种输出都正确。
+- 失败映射：幂等 3 遍相等、动态数字（2048/4096/256）正确、负向用例不受影响。
+- ⛔ **未真机测试、未部署**（用户没让）。
+
+### ⭐ 沉淀的判据 / 给下一个人
+- **"发送前拦截"和"失败映射"是两层，最好都做**：拦截治本（能量到宽高的本地图，省一次请求、省钱），映射兜底（量不到宽高的第三方图/历史图仍会走失败路径）。
+- 视频参考图尺寸拦截的唯一权威 = `video-reference-image-rules.ts`；**图片版新增了对称的 `image-reference-image-rules.ts`**，两者都挂在「对话流 / 工作流 / 服务端」三处咽喉。往图片规则里加模型必须有依据（官方文档或线上失败原文），边长区间按模型给。
+- 下一步（等用户发话）：要么 bump + 打包 + 部署测试服（走会话 110 那套标准流程），要么接着查下一条 B 码。
+
+---
+
+## 🗒️ 第一百一十次会话（2026-09-05）：修「失败任务点『重新生成』没反应」+ 同类回落坑排查 → 已部署测试服 v1.0.1.14 并真机验过
+
+> ⭐ **最终状态**：本地 = 测试服 **`v1.0.1.14`**、未 commit、**未推正式服**（正式服 / GitHub 仍 `v1.0.1.11`）。
+> 顺序：① 只改本地 2 个文件 → ② 汇报 → ③ 用户说「你修完了就部署到测试服去」→ ④ bump v1.0.1.14 + 部署测试服 + 真机验证通过。
+
+**用户报的问题**：测试服失败的图片生成任务，点「重新生成」按钮没反应（另说余额不足那条是数据问题、不用查；要查的是"点了没反应"这个交互 bug，并顺带全面看看最近更新有没有引入别的问题）。
+
+**根因（已在测试服用真实数据二值坐实）**：
+- 服务端下行投影 `projectWorkspaceMessageForClient`（`workspace-sessions.ts:444`）会在 `generationMeta.originalPrompt === message.content` 时**删掉 originalPrompt**，约定前端读不到就从 `message.content` 回落。
+- 但 `retryFailedMedia`（`chat-workbench.tsx:7978`）**只读 `meta.originalPrompt`、没回落到 content** → 刚生成时内存里有值能重试，**一旦刷新/重进对话，originalPrompt 被投影删掉 → prompt="" → `if(!prompt) return` → 点了没反应、也不报错**。
+- 浏览器 fiber 取真实 meta 验证：旧逻辑算出 `""`（会 return）、加 `?? message.content` 后算出 `"生成古希腊美女"`（正常继续）。
+
+**修复（都只是给回落链补 `?? message.content`，遵守既有投影约定）**：
+1. `src/components/chat-workbench.tsx:7978` `retryFailedMedia`（图片+视频失败卡「重新生成」共用它，一处修覆盖两者）。
+2. `src/lib/chat/chat-workbench-core.tsx:2689/2692/2703` `getAgentMediaPromptItems`（**排查中发现的同类坑**：Agent 模式「使用提示词」面板，刷新后会取不到词甚至整个面板消失）。
+
+**全面排查结论（explore agent 过了全项目十几处读这三个字段的地方）**：
+- 除上面两处外，其余消费点（复制/预览/regenerate 主入口 7848/资产库来源等）**都已正确回落到 content**，安全。
+- PUT 侧恢复函数 `restoreProjectedMessageFields`（`workspace-sessions.ts:333`）对 originalPrompt/itemPrompts/videoPrompts **三类都恢复了**，配对完整，不是问题源。
+- 结论：这是「投影删字段、读取方漏回落」的同一个模式，现在两处漏的都补齐。
+
+**自查**：`npx tsc --noEmit` 通过（0 报错）。
+
+**⭐ 沉淀的判据**：凡是读 `generationMeta.originalPrompt` / `itemPrompts` / `message.videoPrompts` 的地方，回落链**必须最终落到 `message.content`**（`?? message.content`）——因为下行投影会在它们等于 baseline 时删掉。新增这类读取点时照抄这个回落链。（已写进 `AGENTS.md` 顶部同名铁律。）
+
+### 部署测试服 v1.0.1.14（标准流程，全程无坑，可当模板照抄）
+
+1. `node scripts/bump-version.mjs`（v1.0.1.13 → **v1.0.1.14**）+ `npx tsc --noEmit`（0 报错）。
+2. **整批打包**（保证"版本号=代码"）：`node .runtime/pack.js v1_0_1_14` —— 它按 `git status --short -- src prisma`
+   取清单（58 条）复制到 `.runtime/pkg` 再整目录打 tgz（61 文件，tgz 数一致校验通过）。⛔ Windows 别用 `tar -T`。
+3. `scp` tgz 到腾讯 `/tmp` → `sudo tar -xzf -C /opt/flashmuse-staging/app`。
+   解完 grep 确认：`APP_VERSION = "v1.0.1.14"` + 两处修复注释 `"2026-09-05 修"` 在两个文件里各命中 1 处。
+4. build（后台跑 + 轮询 `/tmp/sb1014.log`）：`chown -R node:node /app` 那步 117s，总约 2.5 分钟；
+   迁移 **`No pending migrations`**（本批无新迁移）；`✓ Ready` + `generation-worker started`。
+5. 同步阿里静态：先 `rm -f /tmp/flashmuse-sync-ali-staging.lock` → 后台跑
+   `sync-ali.sh --stack=staging --with-generated`（`_next/static`+`home-assets`+generated 两端已一致）。
+6. 发布版本信号：`sudo sed -i "/^PUBLISHED_APP_VERSION=/d" .env && echo PUBLISHED_APP_VERSION=v1.0.1.14 | sudo tee -a .env`
+   → `sudo docker compose up -d --force-recreate staging-app`。
+7. 判据全绿：`x-app-version: v1.0.1.14` + `/api/health` `{"ok":true,"version":"v1.0.1.14"}` + 外网 8080 `/` 与 `/api/health` 都 200 + 页脚 `版本号(t):v1.0.1.14`。
+
+### 真机验证（Playwright，`12424740@qq.com`）—— 这是本批 bug 的核心判据
+
+- 登录进 `/workspace`，当前打开的对话「生成一段小故事」里正好有那条失败任务：
+  节点「**生成古希腊美女**」（GPT-5.4 Image 2）、两个「图片生成失败」卡、`(B_5) 提供商余额不足`。
+  ⭐ **这是刷新后的状态 = bug 触发场景**（originalPrompt 已被投影删、内存里没值）。
+- 点失败卡「重新生成」→ 失败卡**立刻变成「13%生成中 1」+「已等待 0:10」**，侧栏对话显示「对话生成中」转圈。
+  → **确认点击有反应 = bug 已修**（修复前是纹丝不动、prompt="" 直接 return）。
+- 那条最终仍因 `(B_4) 提供商余额不足` 失败 —— **是数据问题、与本次修复无关**；判据是"按钮有反应、真发起了生成请求"。
+- 顺带确认第二处修复：Agent「使用提示词」面板刷新后提示词「生成古希腊美女」正常显示、没丢。
+- ⚠️ **测试痕迹**：在测试服 `12424740@qq.com` 的对话「生成一段小故事」里，那条「生成古希腊美女」失败任务被重试了一次
+  （B_4 余额不足、未真扣分）。按用户「测试内容不要删」保留，下一任别当成异常数据。
+
+### 环境/工具坑（本批踩到的，留档）
+
+- ⛔ PowerShell 5.1 传给 ssh 的命令里，**管道 + 内层引号会被吃掉**（`grep ... | tail` 那种被拆开、报一堆
+  `command not found`）→ 远端要跑带引号/管道的命令，写成 `.sh` scp 上去跑，或用单引号最外层 + 命令内不再嵌套引号。
+- ⚠️ `.runtime/` 下已有一批**旧命名 `v1014`（那是 v1.0.1.4，不是本次 v1.0.1.14）** 的脚本/tgz，别混淆；
+  本次统一用 `v1_0_1_14` 命名（`pack.js` 生成 `.runtime/v1_0_1_14.tgz` + `v1_0_1_14-files.txt`）。
+- ✅ 打包时 PowerShell 控制台显示 `app-version.ts` 的中文注释是乱码 —— 那是**控制台解码问题、文件没坏**（老铁律），
+  APP_VERSION 值本身正常。
+
+---
+
+## 🗒️ 第一百零九次会话（2026-09-05）：把「积分够不够」的事前预估做准（最大偏差 399% → 3%）
+
+**用户诉求**：上一批那个额度闸门「我认，可以这么做，这样不会亏积分，但是要预估的尽量准」；后台会员菜单和用户中心「会员积分」那一列**不用去掉**。
+
+### 一、先量：现在到底有多不准
+
+⭐ **判据来源 = 正式服 `CreditLedger` 的真实扣费数据**（图片 5791 条、视频 4206 条），
+按 `模型 × metadata->>'resolution'` 分组算 avg / p90 / p99，⛔ 不看文档价、不猜。
+
+结论（改前的偏差）：
+
+| 场景 | 改前预估 | 真实 | 偏差 |
+|---|---|---|---|
+| Seedance 2.5 720p **没传时长** | 499 积分 | 100 | **+399%** |
+| Seedance 2.5 480p 30秒 | 499 | 224 | +123% |
+| Seedance 2.0 480p 15秒 | 163 | 77 | +112% |
+| Seedance 2.0 **1080p** 15秒 | 163 | 494 | **−67%** |
+| Kling v3.0 Std 720p 15秒 | 91 | 136 | −33% |
+| GPT Image 2 **2K** 1张 | 17 | 35 | −51% |
+| Gemini 3 Pro Image 2K 1张 | 13 | 10 | +30% |
+
+两个根因：
+1. ⛔⛔ **视频每秒单价只有一个数（720p 基准），但它随分辨率差 6 倍** ——
+   实测 Seedance 2.0：480p `0.071` / 720p `0.155` / **1080p `0.386`**（Seedance 是按 token 计费，token ∝ 像素）。
+   → 480p 估高 2 倍（拦正常用户）、1080p 估低 3 倍（等于没拦）。
+2. ⛔ **拿不到时长时按「该模型最长档」估**，而上游侧的兜底是 **5 秒** → Seedance 2.5 上差 6 倍。
+
+### 二、改法（唯一权威都在 `src/lib/models.ts`）
+
+1. `ImageModelMenuInfo` 加 `estUsdByResolution`、`VideoModelMenuInfo` 加 `estUsdPerSecondByResolution`
+   —— 值全部是**真实扣费数据的 p99**，⭐ **只被 `getEstimatedGenerationUsd` 读**。
+   ⚠️ 菜单副标题继续读 `usd` / `usdPerSecond` → **界面上的「X积分/张」「X积分/秒」一个字都没变**（回归里逐条断言过）。
+2. 新增唯一权威 **`getEffectiveVideoDurationSeconds(modelId, value)`** = 「真正会生成几秒」，
+   `openrouter-video.ts` 的 `getDuration` 改成直接调它（**两边必须是同一个数**，否则预估必偏）。
+   拿不到时长 → **5 秒**，⛔ 不再用最长档。
+3. `getEstimatedGenerationUsd` 现在收 `resolution`，并且 **`generation-quota.ts` 传的是归一化后的档位**
+   （`resolveImageSettingsForModel` / `resolveVideoSettingsForModel`）——
+   和「会员画质校验必须看归一化后的真实分辨率」是同一个坑：模型规则表会把不支持的档位抬到默认档。
+4. 图片张数 clamp 到 **1~4**（与 `/api/image` 的 `getRequestedImageCount` 同口径）。
+5. 某个档位没有实测条目 → 回落到该模型表里的**最大值**（宁高不低），⛔ 不再回落到 720p 基准价。
+
+### 三、验证
+
+- **回归 45/45**（`.runtime/verify-estimate.ts`，跑完已删）：
+  ① 26 条「预估 vs 真实 p99」误差 **≤ 4.5%**；
+  ② 时长矩阵 **7 模型 × 14 种输入 = 98 组，与改之前的 `getDuration` 逐个相等**（发给上游的秒数一个都没变）；
+  ③ 7 条菜单副标题字符串完全一致；
+  ④ 9 条反向（不认识的模型→0、免费语音→0、张数 clamp、没给分辨率用最贵档、1080p 必须显著贵于 480p）。
+- ⭐⭐ **端到端真跑（测试服，主测试号）**：
+
+  | | 闸门预估 | 实际扣费 | 偏差 | 改前会估成 |
+  |---|---|---|---|---|
+  | 视频 Seedance 2.0 Mini 480p 5秒 | **13** | **12** | +8% | 27（+125%） |
+  | 图片 Seedream 5.0 2K 1张 | **2** | **2** | 0% | 2 |
+
+  两条都是：占位插入 → 任务跑完 → **占位已释放（表空）** → `generation-quota-gate-failed` **0 次**。
+- 改前 vs 改后总账：**最大偏差 399% → 3%**。
+
+### 四、部署
+
+`bump v1.0.1.12 → v1.0.1.13` → 清单法打包（58 条 / 61 文件）→ scp → 解包后 grep 断言
+（新字面量 `estUsdPerSecondByResolution` / `1080p": 0.458` 命中，旧实现 `getMaxVideoDurationSeconds`
+和 openrouter-video 里那份 clamp **都已消失**）→ build → sync-ali → `PUBLISHED_APP_VERSION=v1.0.1.13`。
+`/api/health` 与 `x-app-version` 都是 `v1.0.1.13`，外网 8080 = 200，无待应用迁移。
+
+⚠️ **测试服留痕**：本批为验证真跑了 1 条视频（12 积分）+ 1 张图（2 积分）；
+另外登录时我把邮箱误填进了工作台输入框并回车 → 测试服多出一条内容是 `@qq.com` 的对话（按「测试内容不要删」没删）。
+
+**未做**：真支付、正式服（用户没说推）、打开会员开关、commit/push。
+
+---
+
+## 📌 上一状态摘要（2026-09-05 第一百零八次会话末）
+
+| | 版本 / 状态 |
+|---|---|
+| 本地 | **`v1.0.1.12` + 未提交**（97～107 整批 + 本批审计修复） |
+| 测试服 | **`v1.0.1.12`**（已部署、6 个迁移已 apply、真走界面验过） |
+| 正式服 / GitHub | 仍 **`v1.0.1.11`**（`a8121cd`） |
+| 自查 | `tsc` 0、`next build` 通过 |
+| 迁移 | `20260828010000_user_membership`、`20260829010000_credit_charge_audio`、`20260830010000_membership_paid_cny`、`20260830020000_generation_reservation`、`20260830030000_membership_discount_and_credit_cycle`、`20260903010000_membership_parked`（**测试库已 apply**；正式库还没） |
+| 回滚点 | 正式服 app `/opt/flashmuse/app-backups/20260826-205720-presync-v1.0.1.11` |
+
+---
+
+## 🗒️ 第一百零八次会话（2026-09-05）：整批未部署代码严格审计 + 修 5 处 + 首次部署测试服（v1.0.1.12）
+
+**用户诉求**：把攒了 11 批（97～107）的未部署代码严格审计一遍。① 会员充值这一套（含后台）**不许删、也不许生效，保留但隐藏**，别影响其它功能；② 新做的**积分充值独立全屏页要上线**，会扣真钱、必须仔细审；③ 审完有问题就修，没问题就部署测试服。
+
+### 一、审出来并修掉的 5 处
+
+1. 🔴🔴 **会员关着，但「会员积分结算」还会真扣积分**（最严重）。
+   `settleMembershipCredits()` 没看总开关，而 `/api/membership/quote`（任何登录用户都能 GET）会无条件调它。
+   会员关闭时 `getActiveMembershipTier()` 恒返回 `free` → 这个函数把**所有人当成"会员已过期"** →
+   ① 有 `membershipParked*` 记录的会被**"恢复"成会员并发积分**；
+   ② `membershipCredits > 0` 的会被**从总余额里真扣掉**并记一条"作废"流水。
+   现在库里这两个字段都是 0/空所以没爆，但一旦开过会员再关就是真事故。
+   **修**：`settleMembershipCredits` / `applyMembershipPurchase` 顶部加 `if (!MEMBERSHIP_SYSTEM_ENABLED) return`；
+   `/api/membership/quote` 关闭时直接 **403**（实测已 403）。
+2. 🔴 **上线的积分充值页会给 3 个邮箱显示假充值记录**。
+   `getDemoRechargeHistory()` 给 `12424740@qq.com` / **`lookxun@163.com`（用户自己的号）** / `176107103@qq.com`
+   写了硬编码假订单（"¥200 → 1800积分"这种），而「充值记录」是真实用户会点开的东西 = 看到从没发生过的充值。
+   **修**：`/api/membership/purchases` 在 `NODE_ENV === "production"` 时不返回演示数据。
+   后台「用户充值」列表的演示数据**保留**（那份是服务端组件直接调 lib、不走这个接口，只有管理员看得到）。
+3. 🟠 **会员充值页整坨代码还被打进生产前端包**：`credit-recharge-modal.tsx` 从 `membership-modal.tsx` import `FakePayQrCode`。
+   **修**：`FakePayQrCode` 抽成 **`src/components/fake-pay-qr-code.tsx`**（新唯一实现），两边都从它 import。
+   ⭐ 二值验证：build 后 grep 产物，会员页独有文案（"解锁 Seedance 2.5"）现在**只出现在一个 chunk**，
+   而那个 chunk **只被 `/proto-membership` 引用**（`.next/server/app/proto-membership/page_client-reference-manifest.js`），
+   而 `/proto-membership` 在生产是 404 → 用户拿不到会员页的一行代码。
+4. 🟡 **`/api/video` 那句"该模型已下线"永远走不到**：它排在 `isConversationVideoModelEnabled` 检查**之后**，
+   而下线 id 在那个检查里就是 false → 用户先撞到「连接不到模型，请联系管理员！」（把人指向错误方向）。
+   **修**：把 `RETIRED_VIDEO_MODEL_IDS` 判定提到模型开关检查**之前**。
+5. 🟠 **新加的额度闸门是全站生成的唯一入口，但它自己出问题会把生成全打死**。
+   `reserveGenerationQuota` 依赖新表 `GenerationReservation` + `pg_advisory_xact_lock`，横在
+   `/api/image`、`/api/video`、`/api/audio` 最前面；迁移没跑 / 连接抖动 = 全站 500。
+   **修**：只有「并发上限 / 积分不足」这两个**业务判定**才拒绝请求，其它异常一律**放行**并写一条
+   `generation-quota-gate-failed` 诊断日志（宁可少拦一次，也绝不让闸门自己的故障停掉全站生成）。
+
+另外顺手清了 3 处小的：`credits/me` 里算了没用的 `giftedGranted`（死代码）、`system-settings.ts`
+`sanitizePromptLengthOverrides` 被 edit 工具打乱的缩进、`admin-membership-panel.tsx` 两个没用的 import。
+积分充值页补上 **`useBodyScrollLock`**（原来打开全屏页背后工作台还能滚）。
+
+### 二、审过但**没改**的（结论：现状是对的 / 属于用户已拍板的口径）
+
+- **会员入口确认已关死**：工作台左下角只有「积分充值」+「基础会员」（`getMembershipLabel("free")` 写死），
+  实测页面上 `5折 / 升级会员 / 标准会员 / 高级会员 / 续费 / 会员充值` 全部 **false**；
+  后台调会员按钮 3 个全 disabled、`/admin/api/membership/grant` 和 `/admin/api/membership-settings` POST
+  带管理员身份也返回 **403「会员系统未启用」**；`/proto-membership`、`/proto-test`、`/tmp-openrouter` 生产全 **404**。
+- **档位限制全部短路**：模型/画质/并发/月积分在 `MEMBERSHIP_SYSTEM_ENABLED = false` 时全部提前 return，
+  `/api/model-availability` 实测 `membershipTier: "free"` 且 9 个图片 + 7 个视频模型一个不少。
+- ⚠️ **`BlackHoverTooltip` 从 CSS `group-hover` 改成 JS `onMouseEnter` + portal**，我怀疑会让
+  **disabled 按钮上的提示失效**（Chrome 不给 disabled 元素派发鼠标事件）。
+  ⭐ 用 Playwright 造了个最小用例实测：**hover 一个 disabled 按钮，外层 span 的 `mouseenter` 照样触发**
+  （`wrap-pointerenter / wrap-mouseover / wrap-mouseenter` 全部命中）→ **没问题，不用改**。
+- 🟡 归档按需拉 `getArchivedWorkspaceSessionRows` 没有 `take` 上限（会把该用户所有未删会话行含 `summaryJson`
+  拉回来再过滤）。重度用户会偏慢，但加上限会让老的归档看不到 → 按「没复现不许动行为」留着，记这里备查。
+
+### 三、必须让用户知道的两件事（不是 bug，是口径变化 / 待拍板）
+
+1. ⭐ **新增了「积分够不够」硬闸门，所有人生效（跟会员开关无关）**：以前只判 `credits > 0`，
+   现在开工前把「已在跑的预估 + 本次预估」和余额比，不够直接拒（"积分不足，请充值后再使用模型。"）。
+   好处是不会再刷成负数（以前剩 1 积分能同时开一堆贵任务）；代价是**余额少的老用户会比以前更早被拦**
+   （预估取模型上限价、视频拿不到时长按最长档估）。这是第一百次会话的设计意图，但属于面向全体用户的行为变更。
+2. ❓ **后台还留着「用户充值」这个菜单项**（会员设置能看不能改、调会员灰掉）—— 这是第一百零六次会话用户自己拍的板。
+   要不要连菜单一起藏起来，等用户一句话。同理用户中心「我的积分」里还有一列「会员积分 0」+ 会员说明气泡。
+
+### 四、部署（测试服 v1.0.1.12）
+
+`bump-version`（v1.0.1.11 → v1.0.1.12）→ 清单法打 tgz（**58 条清单 = 61 个文件，含 `prisma/schema.prisma`
+和 6 个迁移目录**）→ scp → 解包 → 后台 `up -d --build staging-app` → `sync-ali.sh --stack=staging`
+→ `.env` 写 `PUBLISHED_APP_VERSION=v1.0.1.12` + `force-recreate`。
+
+- ⭐ **迁移实测全部 apply**：容器日志 `Applying migration` × 6 + `All migrations have been successfully applied.`
+- ⭐ 判据：`/api/health` = `v1.0.1.12`、`x-app-version` = `v1.0.1.12`、外网 `:8080` 200、
+  `/api/announcement` 有 `no-store`。
+- ⛔⛔ **本次踩到的新坑：Windows 自带的 bsdtar 用 `-T 清单文件` 会漏掉一半条目**
+  （58 条清单实际只打进 29 个文件，而且**不报错**）。
+  ⭐ 正解：先用 node 把清单里的文件**复制到 `.runtime/pkg/` 保持相对路径**，再 `tar -czf ../x.tgz .` 打整个目录；
+  打完 `tar -tzf | 数文件数` 必须等于预期（本次 61）。⛔ 别再用 `tar -T`。
+
+### 五、真走界面验过的（测试服，主测试号 `12424740@qq.com`）
+
+| 验的东西 | 判据 / 结果 |
+|---|---|
+| 左下角会员已隐藏 | 页面文本里 `5折/升级会员/标准会员/高级会员/续费/会员充值` 全 false，只有「积分充值」+「基础会员」 |
+| 积分充值页 8 格 | 250/500/1,000/2,500/5,000/10,000/15,000/25,000 ↔ ¥50~¥5000（全是 ×5，和顶部"¥10 = 50 积分"一致） |
+| 滚动锁 | 打开时 `body.overflow = hidden`，关掉后回 `visible` |
+| 充值记录 | 「暂无充值记录」+ 接口 `credits: []`（假数据已在生产环境关掉，而这个号正是 3 个 demo 邮箱之一） |
+| 没勾协议点充值 | 黑底提示「请勾选同意《闪念付费服务协议》」，挂在 `document.body` 下；支付弹窗**没开** |
+| 勾了再点 | 支付宝/微信弹窗 + 假二维码（抽文件后仍正常渲染）+ ¥50.00 |
+| 协议页 | `/paid-terms` 200（杭州亿阅科技）、`/privacy` 200 |
+| 会员页进不去 | `/proto-membership`、`/proto-test`、`/tmp-openrouter` 全 404；`/api/membership/quote` **403** |
+| 用户中心积分 | 基础卡 + 三列（会员积分/充值积分/赠送积分）+ 总积分；明细表**一页 15 行**、左右边框 `0px`、圆角 `0px`、格间无竖线 |
+| 设置默认模型图标 | 图片/视频/语音三行都是各自固定的类别图标（不是供应商图标） |
+| 使用量按钮 | 柱状图图标，hover 出黑底且挂在 body 下 |
+| 下线模型 | `/api/model-availability` 的 `videoModels` 里 4 个下线 id 一个都没有 |
+| 额度闸门没打死生成 | 语音生成 **200**、扣 1 积分、`GenerationReservation` 行数 **0**（占位已释放）、`generation-quota-gate-failed` **0 次** |
+| 会员列 / chargeAudio | `User` 表 11 个 `membership*` 列都在；`CreditSetting.chargeAudio = t` |
+| 后台 | 「用户充值」页正常打开不崩、3 个「调会员」全 disabled；概览/用户管理/积分管理/模型开关/上传规则 5 个页面都不崩，积分管理多了「语音」开关 |
+
+⚠️ 留痕：为验证链路在测试服用主测试号生成了 **1 条语音（扣 1 积分）**，并新建了一个空对话。
+⚠️ `fish-audio/s2.1-pro-free`（免费语音）在测试服上游报「当前模型不支持这类输出方式」——
+**与本批无关**（本批没动 `openrouter-audio.ts`），但它正是正式服的冒烟口径，下次上正式服前要留意。
+
+### 六、⭐ 这次审计到底看了哪些文件（下一个人别重复审）
+
+**逐行读过 diff 的**（`git diff HEAD` 40 个改动文件 + 24 个新增文件/目录）：
+
+- 会员全套：`membership.ts`、`membership-credits.ts`、`membership-guard.ts`、`membership-purchase-records.ts`、
+  `membership-modal.tsx`、`credit-recharge-modal.tsx`、`admin-membership-panel.tsx`、
+  `api/membership/{quote,purchases}`、`admin/api/membership{,-settings}`、`paid-terms`、`proto-membership`
+- 钱链路：`credits.ts`（含 `chargeCredits` 里新增的 `membershipCredits` 递减 SQL）、`api/credits/me`、
+  `api/admin/credits`、`generation-quota.ts`、`generation-jobs.ts`（占位释放）
+- 生成入口：`api/image`、`api/video`、`api/audio`、`api/model-availability`
+- 模型/规则：`models.ts`（4 模型下线 + 默认模型写死）、`system-settings.ts`、`upload-rules.ts`、
+  `prompt-length.ts`、`video-reference-image-rules.ts`、`openrouter-video.ts`
+- 前端：`chat-workbench.tsx`、`chat/chat-workbench-core.tsx`、`black-hover-tooltip.tsx`、
+  `workflow-tldraw-canvas{,-inner}.tsx`、`model-icon.tsx`、`page.tsx`
+- 其它：`workspace-state/route.ts` + `workspace-sessions.ts`（侧栏 8 条 / 归档按需拉）、`auth.ts`、
+  `error-message.ts`、`user-profile.ts`、`prisma/schema.prisma` + 6 个迁移
+
+**看过但结论"现状是对的、故意不改"的**（别当成漏审）：
+
+1. `getHdOptions(toggles, undefined)` —— 高清修复的候选模型**故意不再受"对话流图片模型开关"影响**，
+   只受后台快捷编辑自己的开关（符合"会员只拦四处、快捷菜单不受影响"）。
+2. `/api/model-availability` 新增了一次 `getCurrentUser()`（每次页面加载多一次会话查询）—— 可接受。
+3. `BlackHoverTooltip` 改成 JS hover + portal —— 我怀疑对 disabled 按钮失效，**Playwright 实测证明照样触发**，不用改。
+4. 归档按需拉 `getArchivedWorkspaceSessionRows` **没有 `take` 上限**（会把该用户所有未删会话行含 `summaryJson`
+   拉回来再过滤）。重度用户偏慢，但加上限会让老的归档看不到 → 按「没复现不许动行为」留着。
+5. `src/app/{api/,}tmp-openrouter/`（dev-only 调试路由，生产 404）、根目录 `modal.md`、`原型测试.url`
+   —— 都是未跟踪的临时物；tmp-openrouter 在 `src` 下所以会随部署包上去，但有 production 守卫，无害。
+6. eslint 有 **102 个 error**，逐个核对过：**全是 `react-hooks/*` 新规则打在未改动文件/行上的存量问题**
+   （`media-assets.ts` 这种压根没动的文件也报）→ 不是本批引入。`next build` 不跑 eslint，不影响部署。
+
+**未做**：真支付、正式服（用户没说推）、打开会员开关、commit/push。
+
+---
+
+## 🗒️ 第一百零七次会话（2026-09-05）：用户中心积分表 + 设置默认模型固定图标 + 使用量柱状图图标
+
+**用户诉求**：继续改本地。用户中心「我的积分」大表格加高表头、去竖线、表头直角、去左右竖线、每格加高、一页 15 行、后四列加宽。设置里默认图片/视频模型图标要像默认语音模型一样固定、不会变。右上角使用量改成 `bar-chart-2-line`。
+
+### 一、积分明细表（`chat-workbench.tsx` 用户中心 credits 页）
+
+- 容器去掉 `rounded-[5px]`，`border` 改 `border-y`（直角、无左右框）。
+- 表头/数据行 `h-12`；`th`/`td` 去掉 `border-r`。
+- `pageSize` 20 → **15**。
+- 后四列宽：积分变动 132、对话Token 136、图片/视频/语音 152、最后活跃 112。第一列自适应。
+
+用户还说外层滚到底表格滚动条还有一段。代码上用户中心内容区只有一处 `overflow-y-auto`，表格没有独立滚动。本批按「没复现不许改行为」没动。下次真走界面量高度。
+
+### 二、设置默认模型图标
+
+左边固定：图片 `RiImageAiLine`、视频 `RiFilmAiLine`、语音仍 `RiMicAiLine`。下拉选项仍用 `getGenerationModelIcon`。第一版写成跟当前模型变，用户否掉。
+
+### 三、使用量图标
+
+`UsageSummaryButton`：`RiCopperDiamondLine` → `RiBarChart2Line`。对话流和工作流共用。
+
+**未做**：滚动条、支付、部署、开会员开关。
+
+---
+
+## 📌 上一状态摘要（2026-09-05 第一百零六次会话末）：**本地 `v1.0.1.11` + 未提交；线上仍 `v1.0.1.11`**
+
+| | 版本 / 状态 |
+|---|---|
+| 本地 | **`v1.0.1.11` + 未提交**（97～105 + 本批会员先关 / 独立积分充值页 / 付费协议 / 支付假码弹窗）；⛔ 未 bump、未部署、未 commit |
+| 测试服 / 正式服 / GitHub | 仍 **`v1.0.1.11`**（`a8121cd`） |
+| 自查 | `tsc` 0 |
+| 迁移 | 同第一百次 + **`20260903010000_membership_parked`** |
+| 回滚点 | 正式服 app `/opt/flashmuse/app-backups/20260826-205720-presync-v1.0.1.11` |
+
+---
+
+## 🗒️ 第一百零六次会话（2026-09-05）：会员先关 + 独立积分充值全屏页 + 付费协议 + 支付假码弹窗
+
+**用户诉求**：连续包月支付宝要很久才批下来，会员充值和权益先停用，代码不删。左下角积分充值开独立全屏页。没有会员系统，人人基础会员，不拦模型。8 格只显示基础价。后面加广告、去二维码、加充值区、协议、支付弹窗。
+
+### 一、会员开关
+
+`MEMBERSHIP_SYSTEM_ENABLED = false`。`canMembershipUse*` / 分辨率过滤 / 并发上限 / `getActiveMembershipTier` / `shouldEnforceMembershipGenerationLimit` / 月积分发放全部跳过。后台调会员、保存会员设置接口拒。`MembershipModal` 保留。
+
+### 二、工作台 / 用户中心 / 后台
+
+左下角只显示基础会员。积分充值 → `CreditRechargeModal`。用户中心永远基础卡，会员积分 0。后台调会员禁用、会员充值点不开、会员设置只读。
+
+### 三、积分充值页
+
+广告蓝桔 150deg：「Seedance 2.5 已上线，更稳更便宜不抽卡」。8 格灰底、只显示基础价。头像行右侧「充值记录」。协议勾选（只有框能点）+ 实付款 + 圆角矩形充值按钮。没勾 = 顶部黑底提示（portal + 整行居中，比头像略高，圆形感叹号）。勾了 = 支付宝/微信假码弹窗，有弹出动画。文案「充值积分永久有效」。
+
+### 四、付费协议
+
+`/paid-terms`，杭州亿阅科技，当前只覆盖积分充值。点协议新窗口打开。
+
+### 五、原型页
+
+三个档位 iframe 打开原来的会员充值页，用来预览。中间走过假 HTML 弹窗，权益和对比表丢了，已改回原页。
+
+**未做**：真支付、部署、打开会员开关。
+
+---
+
+## 📌 上一状态摘要（2026-09-04 第一百零五次会话末）：**本地 `v1.0.1.11` + 未提交；线上仍 `v1.0.1.11`**
+
+| | 版本 / 状态 |
+|---|---|
+| 本地 | **`v1.0.1.11` + 未提交**（97～104 + 本批左下角续费 / 首期折按档 / 黑底 portal / 买积分 8 档）；⛔ 未 bump、未部署、未 commit |
+| 测试服 / 正式服 / GitHub | 仍 **`v1.0.1.11`**（`a8121cd`） |
+| 自查 | `tsc` 0 |
+| 迁移 | 同第一百次 + **`20260903010000_membership_parked`** |
+| 回滚点 | 正式服 app `/opt/flashmuse/app-backups/20260826-205720-presync-v1.0.1.11` |
+
+---
+
+## 🗒️ 第一百零五次会话（2026-09-04）：左下角续费 + 首期折按档 + 黑底提示最上层 + 买积分 8 档
+
+**用户诉求**：继续充值。悬停左下角会员显示到期，后面蓝字「续费会员」能点；弹窗贴按钮不然点不到。高级按钮加「续期」。买了标准还要能 5 折买高级（按档各一次）。黑底提示被输入框挡住。买积分弹窗要帐号/会员/到期；积分档太近，改 50～5000 共 8 档（基础价）；标准和高级显示折扣；假二维码盖按钮，支付没接按钮不能点。
+
+### 一、左下角
+
+`chat-workbench.tsx`：到期黑底 portal 到 body（z 13000），时间后蓝字「续费会员」开充值页。命中区用 padding。高级「续期」金色胶囊，跟「5折升级」一样。原型页对齐。
+
+### 二、首期折按档各一次
+
+唯一权威 `membership.ts`：`hasUsedMembershipDiscount(used, tier)`、`canUseFirstPeriodDiscount(..., tier)`。落库 `membership-credits.ts` 写档位 `standard`/`pro`，不再写周期、不再要求数组为空。报价接口 `discountUsed: { standard, pro }`。
+
+### 三、黑底提示最上层
+
+`BlackHoverTooltip` 改 portal + fixed。用量、到期续费、后台问号、工作流 tip、ReminderToast 一并抬到 13000。侧栏 z-index 改回去 10（portal 后不用抬侧栏）。
+
+### 四、买积分
+
+`CREDIT_PACKS_CNY = [50,100,200,500,1000,2000,3000,5000]`，积分按基础 `×5`。每格三个价（基础/标准/高级小圆角标签），当前档正常、另两个划掉。绿角标 7 折/6 折，圆角 3px。弹窗左上角用户条。右侧灰底跟左边等高，196 正方形假码（三定位点 + 乱排小块，blur 5px / opacity 0.22）上下居中，按钮盖住并禁用。温馨提示 13px，去掉「不支持退款」。底部「请扫码…」跟右侧列居中。
+
+**未做**：支付、部署、点同意后出真二维码。
+
+---
+
+## 📌 上一状态摘要（2026-09-03 第一百零四次会话末）：**本地 `v1.0.1.11` + 未提交；线上仍 `v1.0.1.11`**
+
+| | 版本 / 状态 |
+|---|---|
+| 本地 | **`v1.0.1.11` + 未提交**（97～103 + 本批买会员方案重做 / 订阅管理 / 购买记录）；⛔ 未 bump、未部署、未 commit |
+| 测试服 / 正式服 / GitHub | 仍 **`v1.0.1.11`**（`a8121cd`） |
+| 自查 | `tsc` 0 |
+| 迁移 | 同第一百次 + **`20260903010000_membership_parked`** |
+| 回滚点 | 正式服 app `/opt/flashmuse/app-backups/20260826-205720-presync-v1.0.1.11` |
+
+---
+
+## 🗒️ 第一百零四次会话（2026-09-03）：买会员方案重做 + 订阅管理弹窗 + 购买记录
+
+**用户诉求**：补差价折算用户看不懂、包年没到期不能续，影响销售。改成：续费随时买、时间往后加；低升高付全价马上用高级，标准先搁着，高级用完再切回。折扣全帐号一次。充值页按钮不要「当前计划/已包含」。后面加了充值页用户条、订阅管理弹窗（按即梦截图）、购买记录。
+
+### 一、买会员方案（唯一权威 `src/lib/membership.ts` 的 `getMembershipUpgradeQuote`）
+
+旧方案（立刻换档 + 标价减剩余价值）整段换掉：
+
+1. **标准和高级一直能买**，付页面上的价，不折天数、不补差。
+2. **续费**：同档再买 = 从当前到期日往后加（过期了从今天加）。
+3. **低升高**：买高级马上切高级；标准剩几天写进 `membershipParkedRemainingDays`；高级到期 `settleMembershipCredits` 切回标准，到期日 = 今天 + 搁着的天数。
+4. **高级用着再买标准** = 标准天数加到搁着那份，当前还是高级。
+5. **永远先用高级**。
+6. **首期折全帐号 1 次**：`canUseFirstPeriodDiscount` / `hasUsedMembershipDiscount` 看数组是不是空。用过月，季和年也不再打折，界面折标、划线价、按钮金色折都不显示。
+7. 积分已到账的不收回。换当前在用的档才作废上一档赠送分。
+
+落库：`User.membershipParkedTier / Period / RemainingDays / PaidCny`。迁移 `20260903010000_membership_parked`。`applyMembershipPurchase` 按报价写当前档 + 排队；后台调会员 `forceReplace: true` 直接覆盖、清空排队。
+
+### 二、充值页 UI
+
+广告上方用户条：头像、昵称 + 灰小字帐号（无括号）、档位图标 + 会员名 + 黑色到期日期、竖线、黑色积分图标+数字。右侧灰圆角矩形「购买积分」「订阅管理」，字 13px 居中（全局 button 会盖 Tailwind，字号写 span + inline style）。关闭按钮三处都改圆角矩形 40×40。「购买积分」蓝字加粗下划线。基础卡按钮永远「免费使用」，标准/高级永远显价，去掉抵扣小字和升级金字。
+
+### 三、订阅管理弹窗
+
+照即梦截图：标题、页签「订阅计划管理 / 购买记录」（13px）、无「去开票」。当前会员卡加高、圆角 8px，档名+灰「剩余 xx 天」、有效期至黑色日期。其它会员：有搁着的标准就同样一张卡，有效期 = 当前到期 + 剩余天数；没有就空态「其它会员会显示在这里…优先使用高级会员」+「查看更多套餐」圆角矩形。弹出动画和买积分一样。原型页「充值相关UI」最下面有双会员演示按钮。
+
+### 四、购买记录
+
+唯一权威 `src/lib/membership-purchase-records.ts`。`GET /api/membership/purchases`：测试号假数据（会员+积分）+ 后台赠送真流水。卡片：标题、订阅类型、价格（标价，赠送也显示价）、购买时间、订单编号（前面复制，成功变打勾 1 秒）、支付方式（赠送绿字「赠送」，其它「支付宝支付」）。退款状态不要。后台充值列表改读同一份假数据函数。
+
+**未做**：支付、部署、真购买流水替换假数据。
+
+---
+
+## 📌 上一状态摘要（2026-08-31 第一百零三次会话末）：**本地 `v1.0.1.11` + 未提交；线上仍 `v1.0.1.11`**
+
+| | 版本 / 状态 |
+|---|---|
+| 本地 | **`v1.0.1.11` + 未提交**（97～102 + 本批左下角 UI / 后台充值列表 / 调会员 / 清身份缓存 / 会员模型只拦四处）；⛔ 未 bump、未部署、未 commit |
+| 测试服 / 正式服 / GitHub | 仍 **`v1.0.1.11`**（`a8121cd`） |
+| 自查 | `tsc` 0 |
+| 迁移 | 同第一百次 |
+| 回滚点 | 正式服 app `/opt/flashmuse/app-backups/20260826-205720-presync-v1.0.1.11` |
+
+---
+
+## 🗒️ 第一百零三次会话（2026-08-31）：左下角 UI + 后台调会员 + 身份缓存 + 会员模型只拦四处
+
+**用户诉求**：继续本地 UI。左下角积分充值缩小、5折升级胶囊、到期提示右侧两行；原型页对齐；广告 Seedance 2.5 金色。后台充值列表改名、会员档胶囊、展开简介+弹窗明细、调会员。买/调会员后工作台要立刻变档；封号立刻有效。会员档只影响对话流图视频、资产库生图、工作流图片/视频节点。
+
+### 一、工作台左下角 / 原型 / 广告
+
+积分充值 12px。图标+档名+「5折升级」色底白字居中，高级无胶囊。到期提示在按钮右侧两行。原型页三档对齐。充值页广告 Seedance 2.5 胶囊改 `#c9a227`。
+
+### 二、后台充值列表
+
+标题「充值列表」。会员档对齐充值卡描边渐变。展开用 `DetailItem` 简介；点「会员充值 / 积分充值」开弹窗。假数据只挂 `12424740@qq.com` / `lookxun@163.com` / `176107103@qq.com`。
+
+### 三、调会员
+
+最右「调会员」，弹窗贴按钮左侧、无模糊底。月卡/季卡/年卡互斥，基础/标准/高级互斥。`POST /admin/api/membership/grant` 真落库。列表 `select` 必须带会员字段。后台赠送记 `admin_membership_grant`，弹窗实付红字「后台赠送」；「已发放积分」累加开通后每月 `membership_grant`；列名「开通时间」。
+
+### 四、身份缓存
+
+`getCurrentSession` 把整份用户缓存 10 分钟（第 85 次为少打新加坡库）。开通走 `applyMembershipPurchase`、调会员、封号都 `forgetSessionIdentityByUserId`。积分每次查库，本来就立刻变。
+
+### 五、会员模型范围（用户拍板）
+
+只拦：对话流生图/生视频、资产库生图、工作流图片节点/视频节点。⛔ 快捷菜单（`editFunction` / 视频 edit·extend）、Agent、语言模型、语音都不拦。唯一判断 `shouldEnforceMembershipGenerationLimit`。
+
+**未做**：支付、部署。
+
+---
+
+## 📌 上一状态摘要（2026-08-31 第一百零二次会话末）：**本地 `v1.0.1.11` + 未提交；线上仍 `v1.0.1.11`**
+
+| | 版本 / 状态 |
+|---|---|
+| 本地 | **`v1.0.1.11` + 未提交**（97～101 会员 + 本批侧栏 8 条可见 / 归档按需拉 / `.env.local` 密钥铁律）；⛔ 未 bump、未部署、未 commit |
+| 测试服 / 正式服 / GitHub | 仍 **`v1.0.1.11`**（`a8121cd`） |
+| 自查 | `tsc` 0 |
+| 迁移 | 同第一百次 |
+| 回滚点 | 正式服 app `/opt/flashmuse/app-backups/20260826-205720-presync-v1.0.1.11` |
+
+---
+
+## 🗒️ 第一百零二次会话（2026-08-31）：侧栏历史 8 条 + 归档按需拉 + `.env.local` 密钥事故
+
+**用户诉求**：对话侧栏刷新只剩 2 条还出「加载更多」，应至少 8 条可见才收起；改完一度只剩 1 条；用户中心归档空了；本地后台 BytePlus API 消失、OpenRouter 变成旧的（用户已手动和两服对齐）；要求写成铁律，别再冲密钥。
+
+### 一、侧栏历史
+
+首屏 8 条**可见**对话。归档经常只写在 `summaryJson`、`archivedAt` 列是空的，按列过滤会把坑占满。现跳过「列或 JSON 已归档」凑满 8 条；保存时把 `archivedAt` 写到列上。
+
+### 二、用户中心归档
+
+侧栏不再下发归档对话，归档页只读内存 → 刷新后空。打开「归档」再拉 `GET /api/workspace-state?archivedOnly=1`，合并进内存，侧栏仍只显示未归档。
+
+### 三、`.env.local` 密钥（⭐ 写进铁律，别再犯）
+
+第一百零一次整份重写 `MEMBERSHIP_SETTINGS`，把本地 `BYTEPLUS_API_KEY` 写成空、开关关掉，OpenRouter 写成旧的。后台「模型开关」点保存会把两个 key 一起写回去，输入框空 = 冲成空。
+
+**规矩**：只改那一个 key；写完断言两个 API key 长度没变、不是空。⛔ 整份重写。⛔ 模型开关在 BytePlus 为空时保存。用户已手动对齐两服。
+
+**未做**：支付、给人开会员、部署、界面验收。
+
+---
+
+## 📌 上一状态摘要（2026-08-31 第一百零一次会话末）：**本地 `v1.0.1.11` + 未提交（会员 UI 续作）；线上仍 `v1.0.1.11`**
+
+| | 版本 / 状态 |
+|---|---|
+| 本地 | **`v1.0.1.11` + 未提交**（97～100 + 本批后台默认 / 包季 / 积分卡 / 左下角充值 / shining-fill）；⛔ 未 bump、未部署、未 commit |
+| 测试服 / 正式服 / GitHub | 仍 **`v1.0.1.11`**（`a8121cd`） |
+| 自查 | `tsc` 0 |
+| 迁移 | 同第一百次 |
+| 回滚点 | 正式服 app `/opt/flashmuse/app-backups/20260826-205720-presync-v1.0.1.11` |
+
+---
+
+## 🗒️ 第一百零一次会话（2026-08-31）：会员充值续作（后台默认 + 积分卡 UI + 左下角充值）
+
+**用户诉求**：继续本地会员充值。① 基础档代码已拿掉 H3，后台默认没改；② 充值页打开默认连续包季；③ 用户中心积分卡改版；④ 左下角积分行改「积分充值」直开买积分；⑤ 积分图标改 shining-fill，后台用户充值用叶子图标。
+
+### 一、后台默认跟上代码
+
+- `.env.local` `MEMBERSHIP_SETTINGS`：基础档视频只留 3 个 BytePlus Seedance 2.0；H3 只在标准/高级；清掉 `kling-video-o1` / `veo-3.1` / OpenRouter Seedance；标准画质 `720p+2K`。
+- `sanitizeMembershipSettings`：读配置时剥基础档 H3 + 下线模型。重启 dev 才吃 env。
+
+### 二、充值页默认包季
+
+`membership-modal.tsx`：`useState("quarter")`，每次 `open` 重置 `setPeriod("quarter")`。
+
+### 三、用户中心「我的积分」
+
+- 基础卡右上角「升级」（13px `#8a6a4a`）；标准/高级「剩余XX天」。
+- 右侧：`RiShining2Fill` + 数字 + 灰「总积分」（仅数字与「总积分」下对齐）；整块 `pt-5`，三列 `mt-8`。
+- 三列左对齐、竖线 `w-px` 夹中间：会员 / 充值 / 赠送；数值 16px；问号 `BlackHoverTooltip`。
+- 说明文案：会员「每月发放，优先消耗，」换行「到期未用完将被重置」；充值「自己购买的积分，永久有效」；赠送「注册及活动赠送，永久有效」（⛔ 不写后台）。
+- `/api/credits/me` 返回 `membershipCredits` / `rechargeCredits` / `giftedCredits`（永久剩余里充值优先占、其余算赠送）。
+
+### 四、左下角
+
+数字 + 灰色「积分充值」（14px，跟「升级」一样用 inline fontSize）。点「积分充值」`initialCreditOpen` 直开买积分弹窗；点会员条仍开充值页。
+
+### 五、图标
+
+全站积分 `RiVipDiamondLine` → `RiShining2Fill`（工作台 / 用户中心 / 充值页 / 首页菜单 / core 流水 / 后台积分管理与概览 KPI）。后台「用户充值」`RiVipCrown2Line` → `RiLeafLine`。
+
+**未做**：支付、给人开会员、部署、界面验收。会话末按用户要求关机。
+
+---
+
+## 📌 上一状态摘要（2026-08-30 第一百次会话末）：**本地 `v1.0.1.11` + 未提交（会员 UI + 会员安全审计整批）；线上仍 `v1.0.1.11`**
+
+| | 版本 / 状态 |
+|---|---|
+| 本地 | **`v1.0.1.11` + 未提交**（97/98/99 会员 + 本批升级规则、模型下线、A~E 五个漏洞修复）；⛔ 未 bump、未部署、未 commit |
+| 测试服 / 正式服 / GitHub | 仍 **`v1.0.1.11`**（`a8121cd`） |
+| 自查 | `tsc` 0、eslint 0、`prisma validate` 通过、会员回归 55/55（含 20 条反向） |
+| 迁移 | `20260828010000_user_membership`、`20260829010000_credit_charge_audio`、**`20260830010000_membership_paid_cny`**、**`20260830020000_generation_reservation`**、**`20260830030000_membership_discount_and_credit_cycle`** |
+| 回滚点 | 正式服 app `/opt/flashmuse/app-backups/20260826-205720-presync-v1.0.1.11` |
+
+---
+
+## 🗒️ 第一百次会话（2026-08-30）：会员升级规则 + 四个模型下线 + 会员系统安全审计（A~E 全修）
+
+**用户诉求**：① 充值页广告去掉「与4K」；② 三档按钮状态定稿；③ 会员升级怎么算钱（要求先全网查同类做法）；④ 把整个会员+后台审计一遍，"不要有漏洞被人刷走"；⑤ H3 从基础会员拿掉、四个模型下线；⑥ 审出来的 A~E 全部修掉。
+
+### 一、按钮状态（已定稿，⛔ 别改回去）
+
+`membership-modal.tsx` 大卡按钮 + 「哪个计划更适合你」对比表**共用同一套判定**（`quoteFor()` → `blockedLabel`）：
+
+| 你当前的档 | 基础卡 | 标准卡 | 高级卡 |
+|---|---|---|---|
+| 基础 | 当前计划 | 价格（可点） | 价格（可点） |
+| 标准 | 免费使用 | 当前计划 | 价格（可点） |
+| 高级 | 免费使用 | **已包含** | 当前计划 |
+
+- 灰按钮四种文案：`当前计划` / `免费使用` / `已包含` / **`不可降级`**（档升了但周期降了，如标准包年→高级单月）。
+- 能升的黑按钮显示**要付的钱**，升级时下面加小字「已抵扣剩余15天¥17.25」。
+- 广告条改成「高级会员解锁 Seedance 2.5」（去掉「与 4K」）。
+
+### 二、升级规则（用户拍板，唯一权威 = `src/lib/membership.ts`）
+
+查了 Stripe proration 等同类做法后定的方案：
+
+1. **只能低往高升**。⭐ **档位和周期两个维度都不许降** —— 标准包年→高级单月属于「档升周期降」，一律拒（否则能用一次升级把包年偷换成单月）。单月与包月**同级**，互相不能换。
+2. **升级立刻生效**，到期日按新周期从今天重算。
+3. **要付的钱 = 新档标价 − 旧档剩余价值**；旧剩余价值 = **当时实付** × 剩余天数 ÷ 周期天数。
+4. **升级不享首期折**（首期折只给首次购买）。
+5. **积分只加不减**：档位升级按本月剩余天数补发差额，纯周期升级不补。
+
+新增 API：`MEMBERSHIP_PERIOD_DAYS` / `MEMBERSHIP_TIER_RANK` / `MEMBERSHIP_PERIOD_RANK` / `canUpgradeMembership` / `getMembershipRemainingDays` / `getMembershipRemainingValueCny` / `getMembershipUpgradeQuote` / `canUseFirstPeriodDiscount` / `formatMembershipPriceCny`。
+
+⭐ 实测数（标准包月首期5折实付34.5、剩15天）：升高级包月 → 抵扣17.25、付**211.75**、补**800**分；升标准包年 → 付**731.75**、补0。
+
+### 三、审计抓到并修掉的（含两个真实绕过）
+
+**⛔⛔ 1. 免费/标准用户白拿付费画质（真绕过，已实测坐实）**
+服务端只校验「用户请求的分辨率」，但**模型规则表会把自己不支持的档位抬到该模型的默认档**：
+- 基础 + MiniMax H3（只有 2K 一档）：传 720p 或不传 → 实际出 **2K**；
+- 标准 + Kling Video O1（只有 1080p 一档）：传 720p → 实际出 **1080p**。
+
+修法：`membership-guard.ts` 改成校验 `resolveImageSettingsForModel/resolveVideoSettingsForModel` 算出的**真实档位**，并把 `ratio` 也传进去（「智能比例」走另一条分辨率分支）。
+⭐ **判据：拿 `resolveXxx(...).resolution` 去比，不是拿 `settings.resolution`。**
+
+**2. 升级会多退钱**：`membershipPaidCny` 老数据是 0 时原来回落成**标价**，首期打过 5 折的人升级按全价抵扣 → 白送一半。改成回落成**最低可能价**（折后价），宁少抵不多抵。
+
+**3. 后台会员设置在 setState updater 里发 POST**（违反本项目铁律）→ 改成 updater 只写 `pendingSaveRef`，effect 里再提交。
+
+**鉴权部分复查干净**：17 个后台接口全有 `isAdminEmail`（`admin/api/credits` 是转发已鉴权那份，`auth/activity` 内部校验 admin cookie）。没有任何接口能让用户自己改档位或加积分。所有读档位的地方都走 `getActiveMembershipTier`（过期必降回基础）。
+
+### 四、模型下线（用户拍板）
+
+视频菜单 7 → **3 个**：MiniMax H3 / Kling v3.0 Standard / Kling v3.0 Pro。删掉 **Kling Video O1、Veo 3.1、OpenRouter 版 Seedance 2.0 与 2.0 Fast**（BytePlus 那 4 个 Seedance 不动）。
+
+- 新增 **`RETIRED_VIDEO_MODEL_IDS`（`system-settings.ts`，唯一权威）**：老对话/老节点/老 env 里还存着这些 id 也不许再跑，`isConversationVideoModelEnabled` 返回 false + `/api/video` 直接拒「该模型已下线」。
+- ⛔⛔ **`DEFAULT_VIDEO_MODEL` 从 `videoGenerationModels[0]` 改成写死 `byteplus:video.seedance-2-0-fast`**。不改的话默认会变成 H3（2K 一档）→ 基础会员一进来就撞画质墙，且 2K 最贵；它同时是 `fallbackVideoModelRule`（未知模型的回落），必须是最低档那个。
+- 顺手清了：`VIDEO_MODEL_MENU_INFO`、`videoModelRules`、`VIDEO_REFERENCE_DURATION_LIMITS`（Veo 那条唯一记录随之删除，表留着）、`openrouter-video.ts` 时长映射、`upload-rules.ts`（`isVeoVideoModel` 删除、`isKlingVideoModel` 去掉 O1）、`video-reference-image-rules.ts`、`prompt-length.ts`、后台系统设置/上传规则两个面板、以及 `klingO1VideoSizes`/`veoVideoSizes` 等死变量。
+
+### 五、H3 档位调整
+
+基础会员拿掉 H3，**标准会员起可用**。为此标准的 `videoResolutions` 从 `["720p"]` 改成 **`["720p", "2K"]`**。
+⭐ 目前只有 H3 支持 2K → 影响面就它一个；**1080p 仍是高级专属**，⛔ 别顺手补上（有反向用例守着）。
+
+### 六、A~E 五个漏洞全修
+
+**A 并发上限原来是 TOCTOU** → 新增 **`src/lib/generation-quota.ts`（唯一权威）** + **`GenerationReservation` 表**：
+一个事务里 `pg_advisory_xact_lock(hashtext(userId))` → 数在跑的（job ∪ 占位，按 requestId 去重）→ 插占位。
+跨进程有效；`expiresAt`(30 分钟) 兜底，**绝不允许把用户永久卡死**。旧的 `assertMembershipConcurrencyAllowed` **已删除**（原处留了 ⛔ 注释钉住，别捡回来）。
+
+**B 积分只判 `> 0`** → 改成 **`余额 >= 在跑任务预估 + 本次预估`**，和并发在同一事务里判。
+预估走新增的 **`getEstimatedGenerationUsd()`（`models.ts`，唯一权威）**：取上限价（有 `usdHigh` 用 `usdHigh`）、视频拿不到时长按最长档估、**不认识的模型返回 0 = 不做限制**（不许连带把正常用户拦死）。
+⭐⭐ **视频的闸门必须放在打上游之前** —— `/api/video` 是先建上游任务再 `createVideoJob`，晚一步判钱就已经花出去了。
+占位释放：异步 job 在 `markJobSucceeded`/`markJobFailed` 里 `releaseJobQuota`；同步路径（语音、工作流编辑）在路由 `finally` 里释放。
+
+**C 首期折「每帐号1次」没校验** → 新增 `User.membershipDiscountUsed String[]`。折按**周期各一次**（首月/首季/首年分开），用过按标价、**到期重买也不再打折**。
+
+**D 会员每月积分没实现** → 新增 **`src/lib/membership-credits.ts`（唯一权威）** + `User.membershipCreditsCycleAt`。
+⭐⭐ **口径：`credits` 仍是唯一总余额，`membershipCredits` 是「其中属于赠送的那部分」的子标记。**
+发放 → 两个都 +N；扣费 → `credits -= n` 且 `membershipCredits = GREATEST(0, membershipCredits - n)`（**赠送分天然先被花完** = 用户要的扣费顺序）；过期/换档 → 作废未用完的赠送分并记流水。
+⛔ **别改成两个独立余额**：那样十几处读余额的地方都要改，漏一处就是"有分花不出去"或"能花不存在的分"。
+发放是**懒触发**（`reserveGenerationQuota` 和充值页报价接口里顺手结算），久没来会补发、最多 24 期。⛔ **故意不挂 worker 的 tick**（本项目铁律：往 tick 里加活儿会把全站生成拖停）。
+另新增 `applyMembershipPurchase()`：**唯一**允许改 `membershipTier/membershipExpiresAt/membershipPaidCny/membershipDiscountUsed` 的地方，支付回调接进来就调它。⚠️ **目前还没有调用方**。
+
+**E 钱只在前端算** → 新增 **`GET /api/membership/quote`**：升级要付多少、抵扣多少、补多少积分、积分包能拿多少分**全在服务端算**；充值页打开时拉一次，前端只显示（本地那份只当拉不到时的占位）。
+⭐ 支付落库时必须再调 `getMembershipUpgradeQuote` 复算，⛔ 绝不允许把客户端传来的 `payCny` 直接写进账。
+
+### 七、下一个 AI
+
+1. ⭐ **本地第一次跑必须 `npx prisma migrate dev`**（3 个新迁移）。
+2. **本批完全没走界面**（按规矩没测）。要验建议：基础会员选 H3 应被拒；剩少量积分开视频应被拒；基础档连点多次只放行 1 条；充值页三档按钮文案对；后台「会员设置」改一下能存住。
+3. **会员还没做完**：支付没接、`applyMembershipPurchase` 没有调用方、后台也没有「给某个用户开会员」的按钮（要不要加待用户拍板）。
+4. ⛔ 原价不许改。语速别做。正式服公告别动。`modal.md` / `tmp-openrouter` / `原型测试.url` 别 `git add -A`。
+
+---
+
+## 🗒️ 第九十九次会话（2026-08-30）：充值页三档卡 + 左下角/积分卡 + 字节图标 + 5折权益（会员没做完）
+
+
+**用户诉求**：本地继续会员。非会员改基础会员；充值页做成铜银金卡；左下角按档换图标；用户中心积分卡跟充值卡同比例缩小；火山图标换字节；首期折显示；权益按模型重写。
+
+### 一、档位文案
+
+- `free` 对外叫「基础会员」（注册即这一档，不花钱）。`MEMBERSHIP_TIER_LABELS` / `getMembershipLabel` / 充值页卡和对比表都改了。
+- 基础会员默认视频模型加上 MiniMax H3（`DEFAULT_FREE_VIDEO_MODEL_IDS` + `.env.local` 已存清单）。后台开关读的是已存配置，只改代码默认不够。
+
+### 二、充值页三张卡
+
+- 实体卡铺满列宽、压住白底顶部。铜/银/金渐变跟用户中心积分卡同色。
+- 胶囊：档名 + leaf/seedling/tree，字 15px 不加粗。胶囊外写月卡/季卡/年卡（基础不加）。
+- 折扣开着：大字显示折后价，旁边划掉原价。底行「首月/首季/首年 x折¥xx，下月/下季/下年续费金额¥xx(每帐号1次)」。包季打首季、包年打首年。
+- 订阅按钮：`¥xxx` + 金色「首月x折」。没折扣只显示价。
+- 标题上间距 `mb-4`。滚动条 `yinzao-scrollbar-always` 一直显示。
+
+### 三、权益列表（卡下）+ 对比表
+
+- 积分按10=xx积分购买；标准胶囊「7折」、高级「6折」（相对 ¥10=50），黑字。
+- 第二行：Agent/图片/视频/语音。
+- 模型：三档都有 Seedream 5.0 Pro、Seedance 2.0；标准加大香蕉图片3.0 pro；高级再加 GPT 图片5.4、Seedance 2.5。后面胶囊是该档允许的最大画质（2K/3K 或 720p…）。
+- 通道：基础标准生成 / 标准快速 / 高级极速。同时生成 x 条或无上限（读后台 concurrency，0=不限）。
+- 「哪个计划更适合你」同步改成这套，旧火山/其它模型行删了。
+
+### 四、工作台左下角 + 用户中心积分卡
+
+- 左：图标+档名；右：「升级」（高级没有）。基础铜底、标准银、高级金。字 14px 不加粗。
+- 积分卡：充值大卡缩小版 238×137。中间是「xxxx积分 每月」（买了以后的内容），不是价格。点卡打开充值页。
+
+### 五、图标 / 折扣默认 / 原型页
+
+- 新增 `bytedance-icon.tsx`（lobehub 四竖条）。`byteplus:` / `ep-` / `bytedance/` 全走它。对话流、工作流、后台开关表一起换。
+- 首期折默认三个都 **5 折**（`percent: 50`）。标准默认画质 **2K+3K**。原价不许改。
+- `/proto-test` 加标签「充值相关UI」：三张大卡、左下角三态、积分卡三态。
+
+### 六、下一个 AI
+
+1. **继续会员**。扣费顺序、支付、广告条、真走界面验。
+2. 后台改 `MEMBERSHIP_SETTINGS` 写 `.env.local` → 本地 dev 重编译，前台会卡。手改 env 后进「会员设置」会 GET；仍旧就重启 dev。
+3. 语速别做。正式服公告别动。原价别改。
+
+---
+
+## 📌 上一状态摘要（2026-08-29 第九十八次会话末）：**本地 `v1.0.1.11` + 未提交会员后台；线上仍 `v1.0.1.11`**
+
+| | 版本 / 状态 |
+|---|---|
+| 本地 | **`v1.0.1.11` + 未提交**（97 会员 UI + 本批后台会员设置 / 积分语音开关）；⛔ 未 bump、未部署、未 commit |
+| 测试服 / 正式服 / GitHub | 仍 **`v1.0.1.11`**（`a8121cd`） |
+| 自查 | `tsc` 0 |
+| 迁移 | `20260828010000_user_membership` + `20260829010000_credit_charge_audio` |
+| 回滚点 | 正式服 app `/opt/flashmuse/app-backups/20260826-205720-presync-v1.0.1.11` |
+| 本会话改动文件 | `src/lib/membership.ts`、`src/lib/membership-guard.ts`、`src/components/membership-modal.tsx`、`src/app/admin/admin-membership-panel.tsx`、`src/app/admin/admin-credits-panel.tsx`、`src/lib/credits.ts`、`src/lib/system-settings.ts`、`src/app/admin/page.tsx`、`src/app/admin/api/membership-settings/route.ts`、`src/app/api/admin/credits/route.ts`、`src/app/api/image/route.ts`、`src/app/api/video/route.ts`、`src/app/api/audio/route.ts`、`src/app/api/model-availability/route.ts`、`src/components/chat-workbench.tsx`、`src/components/workflow-tldraw-canvas.tsx`、`src/components/workflow-tldraw-canvas-inner.tsx`、`prisma/schema.prisma`、`prisma/migrations/20260829010000_credit_charge_audio` + 交接 |
+
+---
+
+## 🗒️ 第九十八次会话（2026-08-29）：后台会员设置 + 积分语音开关（会员没做完，下次继续）
+
+**用户诉求**：本地继续充值。后台用户充值列表对齐用户管理；上面切「用户充值列表 / 会员设置」；会员设置三列配权益、模型、连续包月首月折扣。后来又改标题切页、模型列表不滚动、折扣放上面、积分消耗项加语音且保持一行。最后改会员设置：并发改名+开关、每月积分/兑换/四种价格带锁、非会员价格占位对齐。结束时要求写交接，**下次继续会员**。
+
+### 一、后台用户充值
+
+- 列表对齐用户管理：用户 ID 列、右上角搜索、每页 15 条、底部分页。
+- 切页：不要胶囊按钮。两个 24px 标题「用户充值列表 / 会员设置」当按钮，选中字下 4px 蓝线 `#367cee`，字号不变。搜索仍在右上角（只列表页）。
+- 会员设置：顶上「连续包月首月折扣」（包月/季/年，87=8.7 折）。下面三列非会员/标准/高级。模型列表不限高、不滚动。
+- 本批后半：每月积分、¥10 兑换积分、同时生成（并发）都带开关；**0 = 不限**；单月/包月/包季/包年四种价格+开关；非会员没有价格但空出同行位置。**开关开着 = 输入框禁用**。
+
+### 二、配置权威
+
+- 存 `.env.local` `MEMBERSHIP_SETTINGS`（JSON）。读写：`getMembershipSettings` / `updateMembershipSettings`（`system-settings.ts`）+ `POST /admin/api/membership-settings`。
+- `sanitizeMembershipSettings` 在 `membership.ts`。调用方必须 sanitize 后再用（可用性接口、图/视频/音频、后台面板、会员弹窗价格）。
+- ⛔ `system-settings.ts` **禁止顶层 import membership**（会把 `/admin` 循环依赖打挂）。`getMembershipSettings` 只返回原始 JSON。
+- 生成链路：`canMembershipUseImageModel/VideoModel/Resolution`、并发，都吃 settings。前台 `model-availability` 下发 `membershipSettings`，对话流/工作流画质过滤带上。
+
+### 三、积分语音开关
+
+- `CreditSetting.chargeAudio`（迁移 `20260829010000_credit_charge_audio`，默认 true）。
+- 后台积分管理「选择积分消耗项」加「语音」。必须一行：前面三列输入框 170→148、124→100。`getChargeEnabled` 的 audio 不再写死 true。
+- Prisma 客户端没 generate / 列没 apply 时读写兜底，不炸后台。
+
+### 四、下一个 AI
+
+1. **继续会员**。还没做：扣费顺序、支付、后台改完前台会员页是否全跟配置、真走界面验。
+2. 拍板卖法仍是第九十七次（价格表、分档三项）。本批只是让后台能改这些数。
+3. 语速别做。正式服公告别动。
+
+---
+
+## 📌 上一状态摘要（2026-08-28 第九十七次会话末）：**本地 `v1.0.1.11` + 未提交会员/充值；线上仍 `v1.0.1.11`**
+
+| | 版本 / 状态 |
+|---|---|
+| 本地 | **`v1.0.1.11` + 未提交**（会员 UI + 分档 + 后台用户充值）；⛔ 未 bump、未部署、未 commit |
+| 测试服 / 正式服 / GitHub | 仍 **`v1.0.1.11`**（`a8121cd`） |
+| 自查 | `tsc` 0 |
+| 迁移 | `prisma/migrations/20260828010000_user_membership`（4 列：tier/period/expiresAt/membershipCredits） |
+| 回滚点 | 正式服 app `/opt/flashmuse/app-backups/20260826-205720-presync-v1.0.1.11` |
+| 本会话改动文件 | `src/lib/membership.ts`、`src/lib/membership-guard.ts`、`src/components/membership-modal.tsx`、`src/app/admin/admin-membership-panel.tsx`、`src/components/chat-workbench.tsx`、`src/components/workflow-tldraw-canvas.tsx`、`src/components/workflow-tldraw-canvas-inner.tsx`、`src/app/api/image/route.ts`、`src/app/api/video/route.ts`、`src/app/api/audio/route.ts`、`src/app/api/model-availability/route.ts`、`src/app/admin/page.tsx`、`src/lib/user-profile.ts`、`src/lib/error-message.ts`、`src/lib/chat/chat-workbench-core.tsx`、`prisma/schema.prisma`、迁移、`src/app/proto-test/view.html` + 交接 |
+
+---
+
+## 🗒️ 第九十七次会话（2026-08-28）：会员+积分方案拍板，本地做 UI 和分档（支付未接）
+
+**用户诉求**：查 IndexTTS → 国内充值要啥资质 → 对标即梦/同类怎么卖 → 定三档会员和价格 → 本地先做功能和界面，支付接口以后再接。
+
+### 一、过掉的事
+
+- **IndexTTS**：B 站开源零样本 TTS，要 NVIDIA GPU（大约 8GB 起）。咱们腾讯机是多项目 CPU、阿里是 nginx，**自建先不做**。
+- **国内充值**：积分只在站内用、不提现，一般要营业执照 + ICP/公安备案（已有）+ 对公户 + 微信/支付宝企业商户。支付宝要 APPID、PID、应用私钥、支付宝公钥（RSA2）。积分不兑现、不转赠。
+
+### 二、拍板的卖法（权威在 `src/lib/membership.ts`）
+
+**加买积分（永久）**：非会员赚 50%、标准 30%、高级 10% → ¥10 = **50 / 70 / 90** 分。档位 10/30/50/100/200/500 元。
+
+**会员（送的分跟卡走、到期清）**：每月分数固定；四种只改价格。单月毛利卡在档位上（标准约 30%、高级约 10%），包月/季/年更薄但不亏。
+
+| | 单月 | 连续包月 | 连续包季 | 连续包年 | 每月分 |
+|---|---|---|---|---|---|
+| 标准 | ¥79 | ¥69 | ¥199 | ¥749 | 550 |
+| 高级 | ¥239 | ¥229 | ¥669 | ¥2599 | 2150 |
+
+首期打折以后后台当运营开，**每账号每种周期只用一次**。年卡按 10 个月价给 12 个月分，分按成本卡死所以不亏。美元按 **7.0** 算成本。扣费顺序：会员分 → 永久分（扣费顺序代码还没接，等支付）。
+
+**功能分档只这三项，别的一样：**
+
+| | 非会员 | 标准 | 高级 |
+|---|---|---|---|
+| 对话模型 | 全开 | 全开 | 全开 |
+| 图/视频 | 仅火山，无 2.5 | 无 GPT 图、无 2.5 | 全开 |
+| 画质 | 图≤2K、视频≤720p | 同左 | 4K、1080p 以上 |
+| 同时几条提示词 | 1 | 3 | 不限（一次提示词出 4 张算 1 条） |
+
+去水印不要（项目里没有）。「解除限制」、通用模式仍按账号后台开，不绑会员。后台模型开关仍是全站总闸。
+
+### 三、本地已做
+
+- 工作台积分卡「个人免费版」打开全屏会员页（即梦样式）：顶广告条（紫粉青斜向渐变、无倒计时）→「订阅闪念，解锁更多功能」→ 淡蓝「购买积分」→ 周期胶囊（单月/包月/包季/包年，后三个带限时折）→ 三张等高卡（非会员无订阅按钮）→ 底下对比表。
+- 购买积分：居中弹窗，灰底立刻变深、卡片 50%→105%→100% 弹出；六档白底 2px 黑描边选中；钻石图标 `RiVipDiamondLine`。
+- `/api/model-availability` 按会员滤模型；`/api/image` `/api/video` `/api/audio` 拦模型/画质/并发；红字走幂等保护（`/^当前会员/`）。
+- 后台多「用户充值」页。原型测试页也有一个简易充值面板。
+- Prisma：`membershipTier` / `membershipPeriod` / `membershipExpiresAt` / `membershipCredits`。
+
+### 四、下一个 AI
+
+1. 本地先 migrate。要上线先 bump。支付等商户号。
+2. 会员页广告条渐变当前：`150deg, #7c3aed → #6b5ce7 → #e89ad4 → #f0a8c8`。
+3. 语速别做。正式服公告别动。
+
+---
+
+## 📌 上一状态摘要（2026-08-26 第九十六次会话末）：**四方同步 `v1.0.1.11`**
+
+| | 版本 / 状态 |
+|---|---|
+| 本地 / 测试服 / 正式服 / GitHub | **`v1.0.1.11`**（`a8121cd`） |
 | 自查 | `tsc` 0 |
 | 迁移 / 基建 | 无新迁移、无 compose/nginx |
 | 回滚点 | 正式服 app `/opt/flashmuse/app-backups/20260826-205720-presync-v1.0.1.11` |
@@ -53,6 +1195,8 @@ bump 1.10→1.11 → 5 个源码文件 tgz → build → sync-ali `_next/static`
 备份 `20260826-205720-presync-v1.0.1.11` → staging→prod rsync（`src` md5 双方 `236c959642c793ed2ff1b769c1ba5e9c`）→ build → 阿里正式静态 42=42 → 发布信号。四域名 200，health / x-app-version = v1.0.1.11。⛔ 没动公告。
 
 冒烟：`12424740@qq.com` 新建对话，免费语音 `fish-audio/s2.1-pro-free` 文本转换「v10111巡检，你好。」`/api/audio` 200，有「下载语音」，console 0 error。
+
+commit `a8121cd` 已 push。工作区还剩 `modal.md` / `tmp-openrouter` / `原型测试.url`，没进仓库。
 
 ### 四、测试留痕（⛔ 别当用户数据）
 

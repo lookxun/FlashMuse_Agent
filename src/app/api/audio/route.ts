@@ -8,7 +8,7 @@ import { generateOpenRouterAudio } from "@/lib/openrouter-audio";
 import { createCodedApiError } from "@/lib/error-code";
 import { GENERIC_MEDIA_ERROR_MESSAGE } from "@/lib/error-message";
 import { isAudioModel } from "@/lib/models";
-import { isConversationAudioModelEnabled } from "@/lib/system-settings";
+import { getMembershipSettings, isConversationAudioModelEnabled } from "@/lib/system-settings";
 import { normalizeAudioVoiceForModel } from "@/lib/audio-voices";
 import { applyAudioEmotionToProviderInput, getMiniMaxAudioEmotion, normalizeAudioEmotionForModel } from "@/lib/audio-emotions";
 import { CONTENT_POLICY_ERROR_CODE, CONTENT_POLICY_ERROR_MESSAGE, enforceContentPolicy } from "@/lib/content-moderation";
@@ -18,6 +18,9 @@ import { prisma } from "@/lib/prisma";
 import { buildMediaAssetRecord, buildUserAssetStateRecord, classifyAsset } from "@/lib/media-asset-record";
 import { resolvePersistableMediaAssetUrl, normalizeMediaAssetUrl } from "@/lib/media-assets";
 import { validateMediaUploadMetadata } from "@/lib/media-upload-validation";
+import { sanitizeMembershipSettings } from "@/lib/membership";
+import { getUserMembershipTier, isMembershipDeniedError } from "@/lib/membership-guard";
+import { CREDITS_NOT_ENOUGH_MESSAGE, isGenerationQuotaError, releaseGenerationQuota, reserveGenerationQuota } from "@/lib/generation-quota";
 import { probeUploadedMedia } from "@/lib/media-upload-probe";
 import { resolveGeneratedFilePath } from "@/lib/generated-asset-path";
 import { getUploadRule, normalizeAudioReferenceModeForModel, type AudioReferenceMode } from "@/lib/upload-rules";
@@ -120,6 +123,7 @@ export async function POST(request: Request) {
   const routeStartedAt = Date.now();
     let body: { prompt?: string; text?: string; sourcePrompt?: string; model?: string; voice?: string; emotion?: string; audioReferenceMode?: AudioReferenceMode; referenceAudios?: string[]; conversationId?: string; conversationTitle?: string; conversationCode?: string; messageId?: string; requestId?: string } | undefined;
   let userId: string | undefined;
+  let quotaRequestId: string | undefined;
   try {
     body = (await request.json()) as typeof body;
     const text = (body?.prompt ?? body?.text ?? "").trim();
@@ -141,6 +145,15 @@ export async function POST(request: Request) {
       enforceContentPolicy({ prompt: moderationPrompt, userId: user?.id, requestId: body?.requestId, kind: "audio", source: "conversation" }),
     ]);
     if (policy.blocked) return NextResponse.json({ error: CONTENT_POLICY_ERROR_MESSAGE, errorCode: CONTENT_POLICY_ERROR_CODE }, { status: 400 });
+    // ⛔ 并发上限 + 「积分够不够」原子判定（唯一实现 lib/generation-quota.ts）。语音按字数预估。
+    quotaRequestId = body?.requestId?.trim() || undefined;
+    await reserveGenerationQuota({
+      userId: user?.id,
+      requestId: quotaRequestId,
+      tier: getUserMembershipTier(user),
+      membershipSettings: sanitizeMembershipSettings(getMembershipSettings()),
+      target: { kind: "audio", model, chars: text.length },
+    });
 
     if (!user) return NextResponse.json({ error: UNAUTHENTICATED_ERROR_MESSAGE }, { status: 401 });
     userId = user.id;
@@ -212,9 +225,14 @@ export async function POST(request: Request) {
     return NextResponse.json({ url: result.url, name: result.name, characters: result.characters, credit: result.credit, reused: result.reused });
   } catch (error) {
     if (isUnauthenticatedError(error)) return NextResponse.json({ error: UNAUTHENTICATED_ERROR_MESSAGE }, { status: 401 });
+    if (isMembershipDeniedError(error)) return NextResponse.json({ error: error instanceof Error ? error.message : "当前会员同时生成已达上限，请等当前任务完成或升级会员。" }, { status: 400 });
+    if (isGenerationQuotaError(error)) return NextResponse.json({ error: error instanceof Error ? error.message : CREDITS_NOT_ENOUGH_MESSAGE }, { status: 400 });
     const codedError = await createCodedApiError(error, GENERIC_MEDIA_ERROR_MESSAGE, "audio-generation request failed", { model: body?.model });
     void appendGenerationDiagnosticsLog({ event: "audio-route-failed", requestId: body?.requestId, conversationId: body?.conversationId, userId, mode: "audio", model: body?.model, prompt: body?.prompt ?? body?.text, durationMs: Date.now() - routeStartedAt, error, extra: { errorCode: codedError.errorCode, userError: codedError.error } });
     void recordGenerationEvent({ userId, requestId: body?.requestId, kind: "audio", model: body?.model, provider: "openrouter", status: "failed", failureReason: codedError.error, failureCode: codedError.errorCode, durationMs: Date.now() - routeStartedAt });
     return NextResponse.json(codedError, { status: 500 });
+  } finally {
+    // 语音是同步接口：请求结束就把额度占位还回去。
+    if (quotaRequestId) void releaseGenerationQuota(quotaRequestId);
   }
 }

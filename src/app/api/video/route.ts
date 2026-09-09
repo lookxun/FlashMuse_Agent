@@ -11,7 +11,7 @@ import { getEffectiveVideoReferenceItems, getUploadRule, supportsVideoReferenceM
 import { enqueueRemoteAssetSave } from "@/lib/media-save-queue";
 import { getMediaSaveStatuses } from "@/lib/media-save-queue";
 import { upsertVideoManifestEntry } from "@/lib/video-manifest";
-import { getUploadRuleOverrides, isAgentVideoModelEnabled, isConversationVideoModelEnabled } from "@/lib/system-settings";
+import { getMembershipSettings, getUploadRuleOverrides, isAgentVideoModelEnabled, isConversationVideoModelEnabled, RETIRED_VIDEO_MODEL_IDS } from "@/lib/system-settings";
 import { logPromptLengthOverLimit } from "@/lib/prompt-length-server";
 import { CONTENT_POLICY_ERROR_CODE, CONTENT_POLICY_ERROR_MESSAGE, enforceContentPolicy } from "@/lib/content-moderation";
 import { prisma } from "@/lib/prisma";
@@ -28,6 +28,9 @@ import { validateMediaUploadMetadata } from "@/lib/media-upload-validation";
 import { validateVideoReferenceImages, videoModelEnforcesReferenceImageSizeRules } from "@/lib/video-reference-image-rules";
 import { saveUploadedImageAsset } from "@/lib/local-assets";
 import { resolveUnlockLimitsForUser } from "@/lib/account-features";
+import { sanitizeMembershipSettings } from "@/lib/membership";
+import { assertMembershipVideoAllowed, getUserMembershipTier, isMembershipDeniedError, shouldEnforceMembershipGenerationLimit } from "@/lib/membership-guard";
+import { CREDITS_NOT_ENOUGH_MESSAGE, isGenerationQuotaError, releaseGenerationQuota, reserveGenerationQuota } from "@/lib/generation-quota";
 
 // ⭐ 用量/成本三件套已收敛到唯一权威 `@/lib/video-usage-cost`
 //   （原来本文件和 `generation-jobs.ts` 各存一份一字不差的实现 —— 扣费金额是钱，
@@ -580,6 +583,9 @@ export async function POST(request: Request) {
   // 在库里 `GenerationEvent.userId` 全是空，后台「失败最多的用户」整批统计不到
   // （2026-08-05 查 B_92 时发现：7 条真实失败一个都认不出是谁，只能靠诊断日志里的 userId 反查）。
   let currentUserId: string | undefined;
+  // 额度占位：建 job 成功后交给 job（任务落地时释放），其余情况在 finally 里释放。
+  let quotaRequestId: string | undefined;
+  let quotaHandedToJob = false;
 
   try {
     body = (await request.json()) as {
@@ -763,6 +769,11 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "缺少提示词" }, { status: 400 });
     }
     const creditSource = body.metadata?.creditSource;
+    // ⛔ 已下线的模型：老对话/老工作流节点里还存着这些 id，直接打接口也不许再跑。
+    // ⚠️ 必须放在下面那句「模型开关」检查**之前** —— `isConversationVideoModelEnabled` 对下线 id
+    // 也返回 false，先撞它的话用户看到的是「连接不到模型，请联系管理员！」（把人指向错误方向），
+    // 这条专门写的"已下线"文案就永远走不到。
+    if (body.model && RETIRED_VIDEO_MODEL_IDS.has(body.model)) return NextResponse.json({ error: "该模型已下线，请选择其它视频模型。" }, { status: 400 });
     if (body.model && !(creditSource === "agent_video_generation" ? (isAgentVideoModelEnabled(body.model) || isConversationVideoModelEnabled(body.model)) : isConversationVideoModelEnabled(body.model))) return NextResponse.json({ error: "连接不到模型，请联系管理员！" }, { status: 400 });
     // 参考素材统一归一化：剥自家主机绝对前缀 / 把 `/api/media-thumbnail?url=` 还原成原图静态直链
     // （否则平台来拉我们的动态缩略图接口会超时，整个任务失败）。唯一权威见 lib/reference-asset-url.ts。
@@ -785,6 +796,11 @@ export async function POST(request: Request) {
 
     const user = await getCurrentUser();
     currentUserId = user?.id;
+    const membershipTier = getUserMembershipTier(user);
+    const membershipSettings = sanitizeMembershipSettings(getMembershipSettings());
+    if (shouldEnforceMembershipGenerationLimit({ creditSource, referenceMode: body.referenceMode })) {
+      assertMembershipVideoAllowed(membershipTier, body.model, body.settings?.resolution, membershipSettings, body.settings?.ratio);
+    }
     const moderationPrompt = (typeof body.sourcePrompt === "string" && body.sourcePrompt.trim()) ? body.sourcePrompt.trim() : prompt;
     const [, policy, unlockLimits] = await Promise.all([
       assertUserCanUseCredits(user, "video"),
@@ -792,6 +808,16 @@ export async function POST(request: Request) {
       resolveUnlockLimitsForUser(user?.id),
     ]);
     if (policy.blocked) return NextResponse.json({ error: { message: CONTENT_POLICY_ERROR_MESSAGE }, errorCode: CONTENT_POLICY_ERROR_CODE, status: "failed" }, { status: 400 });
+    // ⛔ 并发上限 + 「积分够不够」必须在**打上游建任务之前**判（唯一实现 lib/generation-quota.ts）。
+    // 视频是先建上游任务、后 createVideoJob，所以晚一步判就等于钱已经花出去了。
+    quotaRequestId = requestId;
+    await reserveGenerationQuota({
+      userId: user?.id,
+      requestId: quotaRequestId,
+      tier: membershipTier,
+      membershipSettings,
+      target: { kind: "video", model: body.model, duration: body.settings?.duration, ratio: body.settings?.ratio, resolution: body.settings?.resolution },
+    });
     // ⭐ 提示词超字数：**只记日志、不拦**（用户拍板先观察）。唯一实现 lib/prompt-length-server.ts。
     logPromptLengthOverLimit({
       context: { mode: "video", modelId: body.model },
@@ -1092,6 +1118,8 @@ export async function POST(request: Request) {
           metadata: body.metadata as Prisma.InputJsonValue | undefined,
           extra: { cleanPrompt: body.sourcePrompt ?? prompt, autoReviewTriggered: Boolean(autoBytePlusAssetReview) },
         });
+        // 占位交给这条 job：worker 轮询到成功/失败时释放。
+        quotaHandedToJob = true;
         void appendGenerationDiagnosticsLog({ event: "video-route-create-success-after-review", requestId: body.requestId, conversationId: body.conversationId, conversationTitle: body.conversationTitle, userId: user?.id, mode: "video", provider: isBytePlusVideoModel(body.model) ? "byteplus" : "openrouter", model: body.model, taskId: retryId, prompt, settings: body.settings, durationMs: Date.now() - routeStartedAt, upstream: task, extra: { autoReviewTriggered: Boolean(autoBytePlusAssetReview), usage: getUsageMeta(task) } });
         return NextResponse.json({ ...task, id: retryId, job_id: getCreateTaskId(task), usage: getUsageMeta(task), reservedNames: job.reservedNames ?? undefined, autoBytePlusAssetReview: autoBytePlusAssetReview ? { triggered: true, assets: autoBytePlusAssetReview.updates } : undefined });
       }
@@ -1163,6 +1191,8 @@ export async function POST(request: Request) {
       metadata: body.metadata as Prisma.InputJsonValue | undefined,
       extra: { cleanPrompt: body.sourcePrompt ?? prompt, autoReviewTriggered: Boolean(autoBytePlusAssetReview) },
     });
+    // 占位交给这条 job：worker 轮询到成功/失败时释放。
+    quotaHandedToJob = true;
 
     if (isBytePlusVideoModel(body.model)) {
       logVideoTiming("BytePlus created", {
@@ -1204,6 +1234,9 @@ export async function POST(request: Request) {
   } catch (error) {
     // ⭐ 登录状态已失效：回 401，前端会直接跳首页；且**不记 GenerationEvent**（这不是生成失败）。详见 credits.ts 注释。
     if (isUnauthenticatedError(error)) return NextResponse.json({ error: UNAUTHENTICATED_ERROR_MESSAGE }, { status: 401 });
+    if (isMembershipDeniedError(error)) return NextResponse.json({ error: error instanceof Error ? error.message : "当前会员档不支持该操作，请升级会员后再试。" }, { status: 400 });
+    // 并发上限 / 积分不足：给用户看原话，且不记成"生成失败"（压根没开始生成）。
+    if (isGenerationQuotaError(error)) return NextResponse.json({ error: error instanceof Error ? error.message : CREDITS_NOT_ENOUGH_MESSAGE, status: "failed" }, { status: 400 });
     const referenceImageCount = Array.isArray(body?.referenceImages) ? body.referenceImages.length : 0;
     const referenceVideoCount = Array.isArray(body?.referenceVideos) ? body.referenceVideos.length : 0;
     const referenceAudioCount = Array.isArray(body?.referenceAudios) ? body.referenceAudios.length : 0;
@@ -1256,5 +1289,8 @@ export async function POST(request: Request) {
       void recordGenerationEvent({ userId: currentUserId, requestId: body.requestId, kind: "video", creditSource: body.metadata?.creditSource, model: body.model, provider: isBytePlusVideoModel(body.model) ? "byteplus" : "openrouter", status: "failed", failureReason: codedError.error, failureCode: codedError.errorCode, referenceImageCount, referenceVideoCount, referenceAudioCount });
     }
     return NextResponse.json(codedError, { status: 500 });
+  } finally {
+    // 没交给 job 的占位（被拦下、建任务失败、轮询请求）在这里还回去。
+    if (quotaRequestId && !quotaHandedToJob) void releaseGenerationQuota(quotaRequestId);
   }
 }

@@ -1,0 +1,1 @@
+ALTER TABLE "CreditSetting" ADD COLUMN "chargeAudio" BOOLEAN NOT NULL DEFAULT true;

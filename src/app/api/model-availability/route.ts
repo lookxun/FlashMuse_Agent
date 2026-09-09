@@ -1,26 +1,38 @@
 import { NextResponse } from "next/server";
+import { getCurrentUser } from "@/lib/auth";
 import { audioGenerationModels, bytePlusVideoGenerationModels, frontendConversationModels, frontendImageGenerationModels, videoGenerationModels } from "@/lib/models";
-import { getAdminSystemSettings, getPromptLengthOverrides, getUploadRuleOverrides, isAgentImageModelEnabled, isAgentVideoModelEnabled, isAssetImageModelEnabled, isConversationAudioModelEnabled, isConversationImageModelEnabled, isConversationVideoModelEnabled, isGeneralTextModelEnabled, isTextModelEnabled } from "@/lib/system-settings";
+import { canMembershipUseImageModel, canMembershipUseVideoModel, getActiveMembershipTier, sanitizeMembershipSettings } from "@/lib/membership";
+import { getAdminSystemSettings, getMembershipSettings, getPromptLengthOverrides, getUploadRuleOverrides, isAgentImageModelEnabled, isAgentVideoModelEnabled, isAssetImageModelEnabled, isConversationAudioModelEnabled, isConversationImageModelEnabled, isConversationVideoModelEnabled, isGeneralTextModelEnabled, isTextModelEnabled } from "@/lib/system-settings";
 import { getCreditSettings } from "@/lib/credits";
 
 export const runtime = "nodejs";
 
 export async function GET() {
+  const user = await getCurrentUser();
+  const membershipTier = getActiveMembershipTier(user);
+  const membershipSettings = sanitizeMembershipSettings(getMembershipSettings());
   const generalModels = frontendConversationModels.filter((model) => isGeneralTextModelEnabled(model.id)).map((model) => model.id);
   const chatModels = ["byteplus:chat.seed-2-0-pro", "openai/gpt-5.6-terra-pro"].filter((modelId) => isTextModelEnabled(modelId, "chat"));
   const creditSettings = await getCreditSettings();
+  const imageModels = frontendImageGenerationModels.filter((model) => isConversationImageModelEnabled(model.id) && canMembershipUseImageModel(membershipTier, model.id, membershipSettings)).map((model) => model.id);
+  const assetImageModels = frontendImageGenerationModels.filter((model) => isAssetImageModelEnabled(model.id) && canMembershipUseImageModel(membershipTier, model.id, membershipSettings)).map((model) => model.id);
+  const videoModels = [...videoGenerationModels, ...bytePlusVideoGenerationModels].filter((model) => isConversationVideoModelEnabled(model.id) && canMembershipUseVideoModel(membershipTier, model.id, membershipSettings)).map((model) => model.id);
+    const agentImageModels = frontendImageGenerationModels.filter((model) => isAgentImageModelEnabled(model.id)).map((model) => model.id);
+    const agentVideoModels = [...videoGenerationModels, ...bytePlusVideoGenerationModels].filter((model) => isAgentVideoModelEnabled(model.id)).map((model) => model.id);
 
   return NextResponse.json({
+    membershipTier,
+    membershipSettings,
     generalModels,
     generalModelProviders: Object.fromEntries(generalModels.map((modelId) => [modelId, modelId === "bytedance-seed/seed-2.0-lite" ? "byteplus" : modelId.startsWith("byteplus:") ? "byteplus" : "openrouter"])),
     chatModels,
     chatModelProviders: Object.fromEntries(chatModels.map((modelId) => [modelId, modelId.startsWith("byteplus:") ? "byteplus" : "openrouter"])),
-    imageModels: frontendImageGenerationModels.filter((model) => isConversationImageModelEnabled(model.id)).map((model) => model.id),
-    assetImageModels: frontendImageGenerationModels.filter((model) => isAssetImageModelEnabled(model.id)).map((model) => model.id),
-    videoModels: [...videoGenerationModels, ...bytePlusVideoGenerationModels].filter((model) => isConversationVideoModelEnabled(model.id)).map((model) => model.id),
+    imageModels,
+    assetImageModels,
+    videoModels,
     audioModels: audioGenerationModels.filter((model) => isConversationAudioModelEnabled(model.id)).map((model) => model.id),
-    agentImageModels: frontendImageGenerationModels.filter((model) => isAgentImageModelEnabled(model.id)).map((model) => model.id),
-    agentVideoModels: [...videoGenerationModels, ...bytePlusVideoGenerationModels].filter((model) => isAgentVideoModelEnabled(model.id)).map((model) => model.id),
+    agentImageModels,
+    agentVideoModels,
     uploadRuleOverrides: getUploadRuleOverrides(),
     // 提示词字数上限（按模型）。⭐ 和 uploadRuleOverrides 搭同一趟车下发，不新增请求。
     promptLengthOverrides: getPromptLengthOverrides(),

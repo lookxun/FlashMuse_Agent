@@ -1,3 +1,4 @@
+import { forgetSessionIdentityByUserId } from "@/lib/auth";
 import { prisma } from "@/lib/prisma";
 
 export const supportedUserLanguages = ["简体中文", "繁体中文"] as const;
@@ -64,6 +65,11 @@ export function getUserProfileFromUser(user: {
   defaultAudioEmotion?: string | null;
   credits?: number | null;
   generalModeEnabled?: boolean | null;
+  membershipTier?: string | null;
+  membershipPeriod?: string | null;
+  membershipExpiresAt?: Date | string | null;
+  membershipCredits?: number | null;
+  membershipPaidCny?: number | null;
   generatedImageCount?: number | null;
   generatedVideoCount?: number | null;
 }) {
@@ -92,6 +98,11 @@ export function getUserProfileFromUser(user: {
     defaultAudioEmotion: user.defaultAudioEmotion?.trim() || "",
     credits: user.credits ?? 0,
     generalModeEnabled: user.generalModeEnabled ?? false,
+    membershipTier: user.membershipTier ?? "free",
+    membershipPeriod: user.membershipPeriod ?? "",
+    membershipExpiresAt: user.membershipExpiresAt ? new Date(user.membershipExpiresAt).toISOString() : null,
+    membershipCredits: user.membershipCredits ?? 0,
+    membershipPaidCny: user.membershipPaidCny ?? 0,
     generatedImageCount: user.generatedImageCount ?? 0,
     generatedVideoCount: user.generatedVideoCount ?? 0,
   };
@@ -196,4 +207,5 @@ export async function migrateLegacyUserProfileFromWorkspace(userId: string, stat
 
   const data = normalizeUserProfileInput(legacyProfile);
   await prisma.user.update({ where: { id: userId }, data });
+  forgetSessionIdentityByUserId(userId);
 }

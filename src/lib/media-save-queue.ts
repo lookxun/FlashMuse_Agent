@@ -51,9 +51,9 @@ const URL_MAP_MD_PATH = join(RUNTIME_DIR, "media-url-map.md");
 const inFlight = new Map<string, number>();
 let fileQueue = Promise.resolve();
 // 保险A（第二层兜底）：下载卡在"downloading"超过此时长即视为假死，强制回收重下。
-// 主力是 saveRemoteAsset 的 3 分钟单次下载超时；这里主要兜"进程重启后遗留的孤儿下载中任务"。
-// 阈值需高于正常最慢整段存盘（历史 max 约 5.5 分钟）以免误杀慢但仍在进行的下载——取 8 分钟。
-const STALE_DOWNLOADING_MS = 8 * 60 * 1000;
+// 主力是 saveRemoteAsset 的单次下载超时（图片 3 分钟、视频 15 分钟）；这里主要兜"进程重启后遗留的孤儿下载中任务"。
+// 阈值需高于视频最长下载（15 分钟）以免误杀慢但仍在进行的下载——取 20 分钟。
+const STALE_DOWNLOADING_MS = 20 * 60 * 1000;
 
 function isRemoteUrl(url: string) {
   return /^https?:\/\//i.test(url);
@@ -440,4 +440,29 @@ export async function getMediaSaveStatuses(remoteUrls: string[], userId?: string
   }
 
   return statuses;
+}
+
+/**
+ * ⭐ 进程启动时恢复未完成的存盘任务（2026-09-09 加）。
+ *
+ * 队列的定时器只活在内存里：进程一重启，pending / downloading / failed 的旧任务就成了孤儿——
+ * 没有任何入口会再 `scheduleJob` 它们（只有新生成、或前端轮询带上那条 url 才会），
+ * 于是它们永远停在"资产保存中"。这里在启动时扫一遍全部未完成任务，重新排队。
+ * downloading 一律先降回 pending（内存里的下载早随进程死了）。
+ */
+export async function resumePendingMediaSaveJobs() {
+  // updateJobs 写盘写的是入参数组本身（已按下面改好状态）；返回值只用来挑出要重排的任务。
+  const pending = await updateJobs((items) => {
+    const now = Date.now();
+    for (const item of items) {
+      if (item.status === "downloading") {
+        item.status = "pending";
+        item.nextRetryAt = now;
+        item.updatedAt = now;
+      }
+    }
+    return items.filter((item) => item.status === "pending" || item.status === "failed").map((item) => ({ ...item }));
+  });
+  if (pending.length > 0) console.log("[media-save] 恢复未完成任务", { count: pending.length });
+  for (const job of pending) scheduleJob(job);
 }

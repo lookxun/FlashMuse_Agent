@@ -24,20 +24,22 @@ import { AdminAccountFeaturesPanel, type AdminAccountFeatureRow } from "./admin-
 import { AdminGptImageThumbnail } from "./admin-gpt-image-thumbnail";
 import { AdminContentModerationPanel, type ContentModerationEventRow } from "./admin-content-moderation-panel";
 import { AdminAnnouncementPanel } from "./admin-announcement-panel";
+import { AdminMembershipPanel, type AdminMembershipRow } from "./admin-membership-panel";
 import { getCreditSettings } from "@/lib/credits";
-import { getAdminSystemSettings, getPromptLengthOverrides, getUploadRuleOverrides, isAssetImageModelEnabled, isConversationAudioModelEnabled, isConversationImageModelEnabled, isConversationVideoModelEnabled } from "@/lib/system-settings";
+import { getAdminSystemSettings, getMembershipSettings, getPromptLengthOverrides, getUploadRuleOverrides, isAssetImageModelEnabled, isConversationAudioModelEnabled, isConversationImageModelEnabled, isConversationVideoModelEnabled } from "@/lib/system-settings";
 import type { IconType } from "react-icons";
-import { RiAlarmWarningLine, RiDashboardLine, RiFileList3Line, RiListSettingsLine, RiMegaphoneLine, RiServerLine, RiSettingsLine, RiShieldCheckLine, RiShieldKeyholeLine, RiToggleLine, RiUser3Line, RiVipDiamondLine } from "react-icons/ri";
+import { RiAlarmWarningLine, RiDashboardLine, RiFileList3Line, RiLeafLine, RiListSettingsLine, RiMegaphoneLine, RiServerLine, RiSettingsLine, RiShieldCheckLine, RiShieldKeyholeLine, RiShining2Fill, RiToggleLine, RiUser3Line } from "react-icons/ri";
 
 export const dynamic = "force-dynamic";
 
-type AdminTab = "overview" | "users" | "account-features" | "credits" | "records" | "failures" | "content-moderation" | "announcement" | "settings" | "generation" | "upload-rules" | "gpt-image-optimization" | "server";
+type AdminTab = "overview" | "users" | "account-features" | "credits" | "membership" | "records" | "failures" | "content-moderation" | "announcement" | "settings" | "generation" | "upload-rules" | "gpt-image-optimization" | "server";
 
 const adminNavItems: Array<{ key: AdminTab; label: string; icon: IconType }> = [
   { key: "overview", label: "概览", icon: RiDashboardLine },
   { key: "users", label: "用户管理", icon: RiUser3Line },
   { key: "account-features", label: "帐号功能管理", icon: RiShieldKeyholeLine },
-  { key: "credits", label: "积分管理", icon: RiVipDiamondLine },
+  { key: "credits", label: "积分管理", icon: RiShining2Fill },
+  { key: "membership", label: "用户充值", icon: RiLeafLine },
   { key: "records", label: "生成记录", icon: RiFileList3Line },
   { key: "failures", label: "失败排查", icon: RiAlarmWarningLine },
   { key: "settings", label: "模型开关", icon: RiToggleLine },
@@ -51,7 +53,7 @@ const adminNavItems: Array<{ key: AdminTab; label: string; icon: IconType }> = [
 
 function getAdminTab(value: string | string[] | undefined): AdminTab {
   const tab = Array.isArray(value) ? value[0] : value;
-  if (tab === "users" || tab === "account-features" || tab === "credits" || tab === "records" || tab === "failures" || tab === "content-moderation" || tab === "announcement" || tab === "settings" || tab === "generation" || tab === "upload-rules" || tab === "gpt-image-optimization" || tab === "server") return tab;
+  if (tab === "users" || tab === "account-features" || tab === "credits" || tab === "membership" || tab === "records" || tab === "failures" || tab === "content-moderation" || tab === "announcement" || tab === "settings" || tab === "generation" || tab === "upload-rules" || tab === "gpt-image-optimization" || tab === "server") return tab;
   return "overview";
 }
 
@@ -602,6 +604,37 @@ export default async function AdminPage({ searchParams }: { searchParams?: Promi
     );
   }
 
+  if (activeTab === "membership") {
+    const { getActiveMembershipTier, MEMBERSHIP_PERIOD_LABELS, isMembershipPeriod, sanitizeMembershipSettings } = await import("@/lib/membership");
+    const users = await prisma.user.findMany({
+      orderBy: { updatedAt: "desc" },
+      take: 1000,
+      select: { id: true, email: true, nickname: true, phone: true, avatarUrl: true, credits: true, membershipTier: true, membershipPeriod: true, membershipExpiresAt: true, membershipCredits: true },
+    });
+    const rows: AdminMembershipRow[] = users.map((user) => {
+      const tier = getActiveMembershipTier(user);
+      return {
+        id: user.id,
+        email: user.email,
+        nickname: user.nickname,
+        phone: user.phone,
+        avatarUrl: user.avatarUrl,
+        credits: user.credits,
+        membershipTier: tier,
+        membershipPeriod: isMembershipPeriod(user.membershipPeriod) ? MEMBERSHIP_PERIOD_LABELS[user.membershipPeriod] : "",
+        membershipExpiresAtLabel: formatDate(user.membershipExpiresAt),
+        membershipCredits: user.membershipCredits ?? 0,
+      };
+    });
+    const imageModels = frontendImageGenerationModels.map((model) => ({ id: model.id, label: model.label }));
+    const videoModels = [...bytePlusVideoGenerationModels, ...videoGenerationModels].map((model) => ({ id: model.id, label: model.label }));
+    return (
+      <AdminShell adminEmail={currentAdminEmail} activeTab={activeTab}>
+        <AdminMembershipPanel users={rows} settings={sanitizeMembershipSettings(getMembershipSettings())} imageModels={imageModels} videoModels={videoModels} />
+      </AdminShell>
+    );
+  }
+
   if (activeTab === "credits") {
     const [users, creditSettings, creditLedgers, userTotals] = await Promise.all([
       prisma.user.findMany({ orderBy: { updatedAt: "desc" }, take: 1000, select: { id: true, email: true, nickname: true, avatarUrl: true, credits: true } }),
@@ -655,7 +688,7 @@ export default async function AdminPage({ searchParams }: { searchParams?: Promi
 
     return (
       <AdminShell adminEmail={currentAdminEmail} activeTab={activeTab}>
-        <AdminCreditsPanel settings={{ usdToCnyRate: creditSettings.usdToCnyRate, creditsPerCny: creditSettings.creditsPerCny, signupCredits: creditSettings.signupCredits, chargeText: creditSettings.chargeText, chargeImage: creditSettings.chargeImage, chargeVideo: creditSettings.chargeVideo, chargePromptTool: creditSettings.chargePromptTool }} stats={{ totalUserCredits: userTotals._sum.credits || 0, increasedCredits }} rows={rows} />
+        <AdminCreditsPanel settings={{ usdToCnyRate: creditSettings.usdToCnyRate, creditsPerCny: creditSettings.creditsPerCny, signupCredits: creditSettings.signupCredits, chargeText: creditSettings.chargeText, chargeImage: creditSettings.chargeImage, chargeVideo: creditSettings.chargeVideo, chargeAudio: creditSettings.chargeAudio, chargePromptTool: creditSettings.chargePromptTool }} stats={{ totalUserCredits: userTotals._sum.credits || 0, increasedCredits }} rows={rows} />
       </AdminShell>
     );
   }

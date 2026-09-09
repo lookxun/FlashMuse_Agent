@@ -14,7 +14,7 @@ import {
   RiImageAiLine,
   RiFilmAiLine,
   RiMicAiLine,
-  RiVipDiamondLine,
+  RiShining2Fill,
   RiChat3Line,
   RiFlowChart,
   RiCheckboxCircleLine,
@@ -319,7 +319,7 @@ export function AdminOverview2({ data }: { data: AdminOverviewData }) {
         <KpiCard icon={RiImageAiLine} label="累计生成图片" value={n(data.images.total)} splits={[{ label: "对话流", value: n(data.images.conversation) }, { label: "工作流", value: n(data.images.workflow) }]} tone="#367cee" />
         <KpiCard icon={RiFilmAiLine} label="累计生成视频" value={n(data.videos.total)} splits={[{ label: "对话流", value: n(data.videos.conversation) }, { label: "工作流", value: n(data.videos.workflow) }]} tone="#f0a020" />
         <KpiCard icon={RiMicAiLine} label="累计生成语音" value={n(data.audios.total)} splits={[{ label: "对话流", value: n(data.audios.conversation) }, { label: "工作流", value: n(data.audios.workflow) }]} tone="#8b5cf6" />
-        <KpiCard icon={RiVipDiamondLine} label="累计消耗积分" value={n(data.credits.consumedTotal)} note={`今日消耗 ${n(data.credits.todayConsumed)}`} tone="#e0669a" />
+        <KpiCard icon={RiShining2Fill} label="累计消耗积分" value={n(data.credits.consumedTotal)} note={`今日消耗 ${n(data.credits.todayConsumed)}`} tone="#e0669a" />
         <KpiCard icon={RiCheckboxCircleLine} label="生成成功率" value={data.success.hasData ? `${data.success.imageRate}%` : "—"} splits={data.success.hasData ? [{ label: "图片", value: `${data.success.imageRate}%` }, { label: "视频", value: `${data.success.videoRate}%` }, { label: "语音", value: `${data.success.audioRate}%` }] : undefined} note={data.success.hasData ? undefined : "上线后开始统计"} tone="#18a058" />
       </section>
 

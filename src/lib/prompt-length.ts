@@ -51,13 +51,9 @@ const MODEL_DEFAULT_PROMPT_MAX_LENGTH: Record<string, number> = {
   // 视频模型
   [SEEDANCE_20_FAMILY_MODEL_ID]: 4000, // Seedance 2.0 / Fast / Mini（共用一条 key）
   [SEEDANCE_25_VIDEO_MODEL_ID]: 15000, // Seedance 2.5
-  "bytedance/seedance-2.0": 4000, // Seedance 2.0（OpenRouter 通道）
-  "bytedance/seedance-2.0-fast": 4000, // Seedance 2.0 Fast（OpenRouter 通道）
   "minimax/hailuo-3": 4000, // MiniMax H3（海螺）
   "kwaivgi/kling-v3.0-std": 2000, // Kling v3.0 Standard（上游硬上限 2500）
   "kwaivgi/kling-v3.0-pro": 2000, // Kling v3.0 Pro（上游硬上限 2500）
-  "kwaivgi/kling-video-o1": 2000, // Kling Video O1（上游硬上限 2500）
-  "google/veo-3.1": 4000, // Veo 3.1
   // 语音模型：默认 = 文档/官方硬上限的一半（2026-08-24）
   // MiniMax Speech 2.8 HD：T2A v2 官方「Must be less than 10,000 characters」
   "minimax/speech-2.8-hd": 5000,

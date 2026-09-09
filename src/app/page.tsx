@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { RiAccountCircleLine, RiArrowUpLine, RiCornerDownLeftLine, RiLogoutBoxRLine, RiSettingsLine, RiShieldUserLine, RiVipDiamondLine } from "react-icons/ri";
+import { RiAccountCircleLine, RiArrowUpLine, RiCornerDownLeftLine, RiLogoutBoxRLine, RiSettingsLine, RiShieldUserLine, RiShining2Fill } from "react-icons/ri";
 import { useBodyScrollLock } from "@/components/use-body-scroll-lock";
 import { AnnouncementBanner } from "@/components/announcement-banner";
 import { IS_TEST_SERVER, versionLabel } from "@/lib/app-version";
@@ -514,7 +514,7 @@ export default function Home() {
                     <span style={{ fontSize: 13 }}>用户信息</span>
                   </button>
                   <button type="button" onClick={() => openWorkspaceUserDialog("credits")} className="mx-2 flex h-11 w-[calc(100%-16px)] items-center gap-3 rounded-[6px] px-2 text-left font-medium text-[#333333] transition hover:bg-[#e9e9e9]">
-                    <RiVipDiamondLine className="h-[18px] w-[18px] text-[#777777]" aria-hidden="true" />
+                    <RiShining2Fill className="h-[18px] w-[18px] text-[#777777]" aria-hidden="true" />
                     <span style={{ fontSize: 13 }}>我的积分</span>
                   </button>
                   <button type="button" onClick={() => openWorkspaceUserDialog("security")} className="mx-2 flex h-11 w-[calc(100%-16px)] items-center gap-3 rounded-[6px] px-2 text-left font-medium text-[#333333] transition hover:bg-[#e9e9e9]">

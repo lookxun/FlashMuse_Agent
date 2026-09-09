@@ -7,13 +7,15 @@ import { validateImageUploadFile } from "@/lib/image-upload-validation";
 import { IS_TEST_SERVER, versionLabel } from "@/lib/app-version";
 import { MEDIA_DURATION_EPSILON_SECONDS, validateMediaUploadFile, validateMediaUploadMetadata, validateReferenceMediaDurationRange as validateMediaDuration } from "@/lib/media-upload-validation";
 import { getStaticMediaUrl } from "@/lib/static-media-url";
-import { RiAddLine, RiArrowLeftSLine, RiArrowRightSLine, RiArrowDownSLine, RiArrowDownFill, RiArrowUpDownLine, RiArrowUpLine, RiArrowUpSLine, RiArrowDownWideLine, RiAtLine, RiCameraLine, RiCheckLine, RiChat3Line, RiChatSmileAiLine, RiChatDeleteLine, RiCheckboxMultipleBlankLine, RiCloseLine, RiDeleteBinLine, RiEmotionHappyLine, RiEmotionUnhappyLine, RiEmotionSadLine, RiEqualizerLine, RiErrorWarningLine,   RiFolderLine, RiFolderOpenLine, RiInboxArchiveLine, RiBellLine, RiFormatClear, RiLandscapeLine, RiImageLine, RiSidebarFoldLine, RiSidebarUnfoldLine, RiLeafLine, RiLoader4Line, RiLockPasswordLine, RiMoreLine, RiMusic2Line, RiMultiImageLine, RiMailLine, RiPhoneLine, RiEditBoxLine, RiPushpinLine, RiResetLeftLine, RiRefreshLine, RiShining2Line, RiStarSmileLine, RiStopFill, RiThumbDownLine, RiThumbDownFill, RiThumbUpLine, RiThumbUpFill, RiTimeLine, RiVipCrown2Line, RiVipDiamondLine, RiVideoLine, RiVideoOnLine, RiVoiceprintLine, RiQuillPenAiLine, RiAccountBoxLine, RiAccountCircleLine, RiFilmLine, RiFullscreenLine, RiInformationLine, RiGlobalLine, RiGitMergeLine, RiGitPullRequestLine, RiFilmAiLine, RiImageAddLine, RiImageAiLine, RiMicAiLine, RiDownloadLine, RiRobot2Line, RiZoomInLine, RiTBoxLine, RiTerminalWindowFill, RiLogoutBoxRLine, RiSettingsLine, RiSunLine, RiMoonLine, RiComputerLine, RiNotification2Line, RiShieldUserLine } from "react-icons/ri";
+import { RiAddLine, RiArrowLeftSLine, RiArrowRightSLine, RiArrowDownSLine, RiArrowDownFill, RiArrowUpDownLine, RiArrowUpLine, RiArrowUpSLine, RiArrowDownWideLine, RiAtLine, RiCameraLine, RiCheckLine, RiChat3Line, RiChatSmileAiLine, RiChatDeleteLine, RiCheckboxMultipleBlankLine, RiCloseLine, RiDeleteBinLine, RiEmotionHappyLine, RiEmotionUnhappyLine, RiEmotionSadLine, RiEqualizerLine, RiErrorWarningLine,   RiFolderLine, RiFolderOpenLine, RiInboxArchiveLine, RiBellLine, RiFormatClear, RiLandscapeLine, RiImageLine, RiSidebarFoldLine, RiSidebarUnfoldLine, RiLeafLine, RiLoader4Line, RiLockPasswordLine, RiMoreLine, RiMusic2Line, RiMultiImageLine, RiMailLine, RiPhoneLine, RiEditBoxLine, RiPushpinLine, RiQuestionLine, RiResetLeftLine, RiRefreshLine, RiShining2Fill, RiShining2Line, RiStarSmileLine, RiStopFill, RiThumbDownLine, RiThumbDownFill, RiThumbUpLine, RiThumbUpFill, RiTimeLine, RiSeedlingLine, RiTreeLine, RiVideoLine, RiVideoOnLine, RiVoiceprintLine, RiQuillPenAiLine, RiAccountBoxLine, RiAccountCircleLine, RiFilmLine, RiFullscreenLine, RiInformationLine, RiGlobalLine, RiGitMergeLine, RiGitPullRequestLine, RiFilmAiLine, RiImageAddLine, RiImageAiLine, RiMicAiLine, RiDownloadLine, RiRobot2Line, RiZoomInLine, RiTBoxLine, RiTerminalWindowFill, RiLogoutBoxRLine, RiSettingsLine, RiSunLine, RiMoonLine, RiComputerLine, RiNotification2Line, RiShieldUserLine, RiShoppingCartLine } from "react-icons/ri";
 import { ADVANCED_CHAT_MODEL, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, DEFAULT_AUDIO_MODEL, audioGenerationModels, isAudioModel, DEFAULT_IMAGE_QUALITY, IMAGE_QUALITY_OPTIONS, IMAGE_QUALITY_LABELS, isGptImage2Model, getGenerationModelSelectHint, bytePlusVideoGenerationModels, frontendConversationModels, frontendImageGenerationModels, getImageQualityBadgeLabel, getImageResolutionLabel, getSupportedImageRatios, getSupportedImageResolutions, getSupportedVideoRatios, getSupportedVideoResolutions, imageGenerationModels, isNonStandardVideoSize, normalizeImageRatioForModel, normalizeImageResolutionForModel, normalizeVideoRatioForModel, normalizeVideoResolutionForModel, validateVideoDurationWithReferences, videoGenerationModels, ConversationModel, GenerationModel, ModelName, PROMPT_TOOL_MODEL_CHAIN } from "@/lib/models";
 import { toUserErrorMessage } from "@/lib/error-message";
 import { handleSessionExpiredResponse } from "@/lib/session-expired-redirect";
 import { removeMentionName } from "@/lib/mention-text";
 import { useBodyScrollLock } from "@/components/use-body-scroll-lock";
-import { BytePlusIcon } from "@/components/byteplus-icon";
+import { CreditRechargeModal } from "@/components/credit-recharge-modal";
+import { filterImageResolutionsForMembership, filterVideoResolutionsForMembership, getActiveMembershipTier, getMembershipLabel, getMembershipTierConfig, type MembershipSettings, type MembershipTier } from "@/lib/membership";
+import { BytedanceIcon } from "@/components/bytedance-icon";
 import { AudioWaveformPlayer } from "@/components/audio-waveform-player";
 import { AudioVoicePicker } from "@/components/audio-voice-picker";
 import { AssetMentionPicker } from "@/components/asset-mention-picker";
@@ -23,6 +25,7 @@ import { VideoUploadThumbnail } from "@/components/video-upload-thumbnail";
 import { VideoPlayBadge } from "@/components/video-play-badge";
 import { NewBadge } from "@/components/new-badge";
 import { validateVideoReferenceImagesBeforeSend, videoModelEnforcesReferenceImageSizeRules } from "@/lib/video-reference-image-rules";
+import { validateImageReferenceImagesBeforeSend, imageModelEnforcesReferenceImageSizeRules } from "@/lib/image-reference-image-rules";
 import { WorkflowCanvas, WorkflowCanvasState, WorkflowNode } from "@/components/workflow-tldraw-canvas";
 import { FISH_AUDIO_CLONE_MAX_SECONDS, FISH_AUDIO_CLONE_MIN_SECONDS, getEffectiveVideoReferenceItems, getSupportedUploadTypeLabel, getUploadAcceptValue, getUploadKindFromFileName, getUploadRule, getVideoAudioUploadDisabledMessage, getVideoReferenceLimitHint, normalizeAudioReferenceModeForModel, supportsAudioCloneMode, supportsVideoReferenceMode, validateReferenceTotalDuration, validateVideoReferenceCombination, UploadRuleOverrides } from "@/lib/upload-rules";
 import { countPromptLength, getPromptCeilingTipText, getPromptLimitTooltipText, getPromptMaxLength, getPromptOverLimitTipText, isPromptOverLimit, PROMPT_MAX_LENGTH_CEILING, type PromptLengthOverrides } from "@/lib/prompt-length";
@@ -617,7 +620,7 @@ export function ChatWorkbench() {
   const [autoSaveHistory, setAutoSaveHistory] = useState(true);
   const [previewWheelZoom, setPreviewWheelZoom] = useState(true);
   const [previewWheelFlip, setPreviewWheelFlip] = useState(true);
-  // 用户中心「设置」：登录后默认进入的面板 + 新建对话时套用的默认生成参数（图片/视频/语音）。
+  // 用户中心「设置」：登录后默认进入的面板 + 新建对话 / 工作流新建节点时套用的默认生成参数（图片/视频/语音）。
   const [defaultWorkspacePanel, setDefaultWorkspacePanel] = useState<ActivePanel>("chat");
   const defaultWorkspacePanelRef = useRef<ActivePanel>("chat");
   const [defaultImageModel, setDefaultImageModel] = useState<ModelName>(DEFAULT_IMAGE_MODEL);
@@ -633,7 +636,11 @@ export function ChatWorkbench() {
   const [generatedImageCount, setGeneratedImageCount] = useState(0);
   const [generatedVideoCount, setGeneratedVideoCount] = useState(0);
   const [currentUserCredits, setCurrentUserCredits] = useState(1500);
-  const [giftedUserCredits, setGiftedUserCredits] = useState(1500);
+  const [membershipTier, setMembershipTier] = useState<MembershipTier>("free");
+  const [rechargeUserCredits, setRechargeUserCredits] = useState(0);
+  const [membershipSettings, setMembershipSettings] = useState<MembershipSettings | undefined>();
+  const [creditRechargeOpen, setCreditRechargeOpen] = useState(false);
+  const [giftedUserCredits, setGiftedUserCredits] = useState(0);
   const [userCreditConversations, setUserCreditConversations] = useState<UserCreditConversation[]>([]);
   const [userCreditPage, setUserCreditPage] = useState(1);
   const [currentUserHasPassword, setCurrentUserHasPassword] = useState(false);
@@ -963,6 +970,7 @@ export function ChatWorkbench() {
     setGeneratedImageCount(profile.generatedImageCount ?? 0);
     setGeneratedVideoCount(profile.generatedVideoCount ?? 0);
     setCurrentUserCredits(profile.credits ?? 0);
+    setMembershipTier(getActiveMembershipTier(profile));
   }, []);
 
   useEffect(() => {
@@ -985,13 +993,27 @@ export function ChatWorkbench() {
   const openUserDialog = useCallback((tab: UserDialogTab) => {
     setIsUserMenuOpen(false);
     setUserDialogTab(tab);
+    if (tab === "archive") {
+      void fetchJsonWithRetry<{ state?: WorkspaceStatePayload | null }>("/api/workspace-state?archivedOnly=1", { cache: "no-store" })
+        .then(({ data }) => {
+          const incoming = Array.isArray(data.state?.sessions) ? data.state.sessions.map((session) => replaceSessionMediaUrls(session, legacyMediaUrlReplacements, {})) : [];
+          if (incoming.length === 0) return;
+          setSessions((current) => {
+            const existingIds = new Set(current.map((session) => session.id));
+            const next = incoming.filter((session) => !existingIds.has(session.id));
+            return next.length > 0 ? [...current, ...next] : current;
+          });
+        })
+        .catch(() => undefined);
+    }
     if (tab === "credits") {
       setUserCreditPage(1);
       void fetch("/api/credits/me", { cache: "no-store" })
-        .then((response) => readJson<{ credits: number; giftedCredits?: number; conversations: UserCreditConversation[] }>(response))
+        .then((response) => readJson<{ credits: number; giftedCredits?: number; membershipCredits?: number; rechargeCredits?: number; conversations: UserCreditConversation[] }>(response))
         .then((data) => {
           setCurrentUserCredits(Math.max(0, Math.floor(data.credits ?? 0)));
-          setGiftedUserCredits(Math.max(0, Math.floor(data.giftedCredits ?? data.credits ?? 0)));
+          setRechargeUserCredits(Math.max(0, Math.floor(data.rechargeCredits ?? 0)));
+          setGiftedUserCredits(Math.max(0, Math.floor(data.giftedCredits ?? 0)));
           setUserCreditConversations(data.conversations ?? []);
         })
         .catch(() => undefined);
@@ -3117,7 +3139,7 @@ export function ChatWorkbench() {
     const loadModelAvailability = async () => {
       try {
         const response = await fetch("/api/model-availability", { cache: "no-store" });
-        const data = (await response.json()) as { generalModels?: string[]; generalModelProviders?: Record<string, "openrouter" | "byteplus">; chatModels?: string[]; chatModelProviders?: Record<string, "openrouter" | "byteplus">; imageModels?: string[]; assetImageModels?: string[]; videoModels?: string[]; audioModels?: string[]; agentImageModels?: string[]; agentVideoModels?: string[]; uploadRuleOverrides?: UploadRuleOverrides; promptLengthOverrides?: PromptLengthOverrides; editModelToggles?: Record<string, boolean>; agentPriorityModelId?: string; agentPriorityEnabled?: boolean; creditRate?: { usdToCnyRate?: number; creditsPerCny?: number } };
+        const data = (await response.json()) as { membershipTier?: MembershipTier; membershipSettings?: MembershipSettings; generalModels?: string[]; generalModelProviders?: Record<string, "openrouter" | "byteplus">; chatModels?: string[]; chatModelProviders?: Record<string, "openrouter" | "byteplus">; imageModels?: string[]; assetImageModels?: string[]; videoModels?: string[]; audioModels?: string[]; agentImageModels?: string[]; agentVideoModels?: string[]; uploadRuleOverrides?: UploadRuleOverrides; promptLengthOverrides?: PromptLengthOverrides; editModelToggles?: Record<string, boolean>; agentPriorityModelId?: string; agentPriorityEnabled?: boolean; creditRate?: { usdToCnyRate?: number; creditsPerCny?: number } };
         if (cancelled) return;
         const next = {
           image: Array.isArray(data.imageModels) ? data.imageModels : [],
@@ -3151,6 +3173,8 @@ export function ChatWorkbench() {
         setPromptLengthOverrides(data.promptLengthOverrides && typeof data.promptLengthOverrides === "object" ? data.promptLengthOverrides : {});
         setEditModelToggles(data.editModelToggles && typeof data.editModelToggles === "object" ? data.editModelToggles : {});
         if (data.creditRate && typeof data.creditRate === "object" && typeof data.creditRate.usdToCnyRate === "number" && typeof data.creditRate.creditsPerCny === "number") setCreditRate({ usdToCnyRate: data.creditRate.usdToCnyRate, creditsPerCny: data.creditRate.creditsPerCny });
+        if (data.membershipTier === "standard" || data.membershipTier === "pro" || data.membershipTier === "free") setMembershipTier(data.membershipTier);
+        if (data.membershipSettings && typeof data.membershipSettings === "object") setMembershipSettings(data.membershipSettings);
         setCharacterGenerateModel((current) => nextAssetImageModels.includes(current) ? current : nextAssetImageModels[0] ?? current);
       } catch {
         if (!cancelled) {
@@ -4296,7 +4320,7 @@ export function ChatWorkbench() {
     const options: readonly (ConversationModel | GenerationModel)[] = kind === "chat"
       ? frontendConversationModels.filter((option) => enabledGeneralChatModelIds.includes(option.id))
       : generationModelOptions[kind].filter((option) => enabledGenerationModelIds[kind].includes(option.id));
-    const getGeneralChatIcon = (modelId: string) => generalModelProviders[modelId] === "byteplus" ? BytePlusIcon : getGenerationModelIcon(modelId) ?? RiChat3Line;
+    const getGeneralChatIcon = (modelId: string) => generalModelProviders[modelId] === "byteplus" ? BytedanceIcon : getGenerationModelIcon(modelId) ?? RiChat3Line;
     const selectedId = selectedGeneralModels[kind];
     const selectedLabel = kind === "chat" ? getConversationModelLabel(selectedId) : getGenerationModelLabel(kind, selectedId);
     const SelectedModelIcon = kind === "chat" ? getGeneralChatIcon(selectedId) : getGenerationModelIcon(selectedId);
@@ -4375,8 +4399,8 @@ export function ChatWorkbench() {
       : ["智能比例", ...getSupportedVideoRatios(selectedModelId, generalVideoResolution)];
     const currentRatio = kind === "image" ? generalImageRatio : generalVideoRatio;
     const displayRatio = ratioOptionsForKind.includes(currentRatio) ? currentRatio : ratioOptionsForKind[0];
-    const imageResolutions = getSupportedImageResolutions(selectedModelId);
-    const videoResolutions = getSupportedVideoResolutions(selectedModelId);
+    const imageResolutions = filterImageResolutionsForMembership(membershipTier, getSupportedImageResolutions(selectedModelId), membershipSettings);
+    const videoResolutions = filterVideoResolutionsForMembership(membershipTier, getSupportedVideoResolutions(selectedModelId), membershipSettings);
     const displayImageResolution = imageResolutions.includes(generalImageResolution as (typeof imageResolutions)[number]) ? generalImageResolution : imageResolutions[0];
     const displayVideoResolution = videoResolutions.includes(generalVideoResolution as (typeof videoResolutions)[number]) ? generalVideoResolution : videoResolutions[0];
     const displayResolution = kind === "image" ? displayImageResolution : displayVideoResolution;
@@ -4593,7 +4617,7 @@ export function ChatWorkbench() {
   };
 
   const renderCharacterImageResolutionMenu = () => {
-    const options = getSupportedImageResolutions(characterGenerateModel);
+    const options = filterImageResolutionsForMembership(membershipTier, getSupportedImageResolutions(characterGenerateModel), membershipSettings);
     const selectedImageResolution = normalizeImageResolutionForModel(characterGenerateModel, characterGenerateResolution);
     const selectedLabel = selectedImageResolution;
 
@@ -4811,7 +4835,7 @@ export function ChatWorkbench() {
   };
 
   const renderImageSettingsMenu = () => {
-    const currentResolutionOptions = mode === "video" ? getSupportedVideoResolutions(selectedGenerationModels.video) : getSupportedImageResolutions(selectedGenerationModels.image);
+    const currentResolutionOptions = mode === "video" ? filterVideoResolutionsForMembership(membershipTier, getSupportedVideoResolutions(selectedGenerationModels.video), membershipSettings) : filterImageResolutionsForMembership(membershipTier, getSupportedImageResolutions(selectedGenerationModels.image), membershipSettings);
     const isSmartImageRatio = mode === "image" && selectedRatio === "智能比例";
     const isSmartSettings = isSmartImageRatio || (mode === "video" && selectedRatio === "智能比例");
     const displayResolution = isSmartImageRatio ? normalizeImageResolutionForModel(selectedGenerationModels.image, "智能比例") : selectedResolution;
@@ -4828,7 +4852,7 @@ export function ChatWorkbench() {
     const isNonStandardVideoDimensions = mode === "video" && displayRatio !== "智能比例" && isNonStandardVideoSize(selectedGenerationModels.video, displayResolution, displayRatio);
     const imageResolutionLabel = mode === "image" ? getImageResolutionLabel(displayResolution) : getVideoResolutionLabel(displayResolution);
     const imageQualityBadgeLabel = mode === "image" ? getImageQualityBadgeLabel(displayResolution) : "";
-    const settingsMenuWidthClassName = "w-[min(420px,calc(100vw-40px))]";
+    const settingsMenuWidthClassName = currentResolutionOptions.length === 4 ? "w-[min(560px,calc(100vw-40px))]" : "w-[min(420px,calc(100vw-40px))]";
     const resolutionGridClassName = mode === "video" ? "gap-1.5 px-1.5" : "gap-2 px-2";
     const resolutionButtonPaddingClassName = mode === "video" ? "px-2" : "px-4";
     const resolutionLabelGapClassName = mode === "video" ? "gap-1.5" : "gap-2";
@@ -7364,6 +7388,25 @@ export function ChatWorkbench() {
       setSessionSending(sessionId, false);
       return;
     }
+    // 图片模型的参考图尺寸发送前拦截（与视频那套 video-reference-image-rules 完全对称，但边长区间按模型给）：
+    // 不合规的参考图会在生成阶段被上游拒（如 Recraft 要求单边 256–4096px），以前只显示成"服务器繁忙"。
+    // 受约束的模型集合 + 边长区间由 imageModelEnforcesReferenceImageSizeRules 唯一判定，规则与工作流、服务端共用。
+    if (generationMode === "image" && imageModelEnforcesReferenceImageSizeRules(generationModelsForSubmit.image) && namedImageReferences.length > 0) {
+      const referenceImageSizeError = await validateImageReferenceImagesBeforeSend(
+        generationModelsForSubmit.image,
+        namedImageReferences.map((reference) => {
+          const matchedAsset = assets.find((asset) => normalizeMediaUrlForMatch(asset.url) === normalizeMediaUrlForMatch(reference.url));
+          const dimensions = getPreviewMetaDimensions(matchedAsset?.previewMeta);
+          return { name: reference.name, url: reference.url, width: dimensions?.width, height: dimensions?.height };
+        }),
+        (url) => getStaticMediaUrl(url) ?? url,
+      );
+      if (referenceImageSizeError) {
+        showInputTip(referenceImageSizeError);
+        setSessionSending(sessionId, false);
+        return;
+      }
+    }
     const userMessage: Message = { id: createClientId(), role: "user", content: rawTextWithMediaMentions, createdAt: nowTimestamp(), images: referenceImages.length > 0 ? referenceImages : undefined, imageReferences: displayImageReferences.length > 0 ? displayImageReferences : undefined, uploadedFiles: availableUploadedFiles.length > 0 ? availableUploadedFiles : undefined };
     const payloadUserMessage: Message = { ...userMessage, content: text };
     // agent/general 文字回复：本轮开启"正文流式跟随、结束后回滚到本轮提问"
@@ -7949,10 +7992,13 @@ export function ChatWorkbench() {
   const retryFailedMedia = async (message: Message, failedIndex = 0) => {
     if (!activeSession || message.role !== "assistant") return;
     const meta = message.generationMeta;
-    if (!meta || (meta.mode !== "image" && meta.mode !== "video")) return;
-    const existingMediaCount = meta.mode === "video" ? getMessageVideos(message).length : message.images?.length ?? 0;
+    if (!meta || (meta.mode !== "image" && meta.mode !== "video" && meta.mode !== "audio")) return;
+    const existingMediaCount = meta.mode === "video" ? getMessageVideos(message).length : meta.mode === "audio" ? message.audios?.length ?? 0 : message.images?.length ?? 0;
     const targetItemIndex = existingMediaCount + Math.max(0, failedIndex);
-    const prompt = (((meta.mode === "video" || meta.agentGenerated ? meta.itemPrompts?.[targetItemIndex] ?? meta.originalPrompt : meta.originalPrompt) ?? "")).trim();
+    // ⭐ 必须回落到 message.content：下行投影（projectWorkspaceMessageForClient）在 originalPrompt === content 时会
+    // 把 originalPrompt 删掉，约定前端从 content 回落。刷新/重载后再点「重新生成」，meta.originalPrompt 是 undefined，
+    // 不回落就会 prompt="" → 提前 return → 按钮点了没反应（2026-09-05 修）。
+    const prompt = (((meta.mode === "video" || meta.agentGenerated ? meta.itemPrompts?.[targetItemIndex] ?? meta.originalPrompt : meta.originalPrompt) ?? message.content ?? "")).trim();
     if (!prompt) return;
 
     const sessionId = activeSession.id;
@@ -7974,7 +8020,10 @@ export function ChatWorkbench() {
       preserveOriginalInput: meta.preserveOriginalInput,
       referenceImages: message.imageReferences?.map((reference) => reference.url).filter(Boolean),
       referenceVideos: meta.mode === "video" && retryReferenceVideos.length > 0 ? retryReferenceVideos : undefined,
-      referenceAudios: meta.mode === "video" && retryReferenceAudios.length > 0 ? retryReferenceAudios : undefined,
+      referenceAudios: ((meta.mode === "video" || (meta.mode === "audio" && meta.audioReferenceMode === "clone")) && retryReferenceAudios.length > 0) ? retryReferenceAudios : undefined,
+      audioReferenceMode: meta.mode === "audio" ? meta.audioReferenceMode : undefined,
+      voice: meta.mode === "audio" && meta.audioReferenceMode !== "clone" ? meta.voice : undefined,
+      emotion: meta.mode === "audio" && meta.audioReferenceMode !== "clone" ? meta.emotion : undefined,
       imageReferences: message.imageReferences,
       referenceHint: message.imageReferences?.length ? getReferenceHint(message.imageReferences, prompt) : undefined,
       assetTargetType: meta.assetTargetType,
@@ -8001,7 +8050,8 @@ export function ChatWorkbench() {
                   ? {
                       ...item,
                       requestId,
-                      statusText: meta.mode === "video" ? videoStatusLabels.creating : imageStatusLabels.creating,
+                      statusText: meta.mode === "video" ? videoStatusLabels.creating : meta.mode === "audio" ? "正在生成语音…" : imageStatusLabels.creating,
+                      pendingAudioCount: meta.mode === "audio" ? 1 : item.pendingAudioCount,
                       imageResultSlots: meta.mode === "image" ? (() => {
                         let failedOrdinal = -1;
                         const requestedCount = getRequestedImageDisplayCount(item) ?? Math.max(1, (item.images?.length ?? 0) + (item.failedImageCount ?? 0) + (item.pendingImageCount ?? 0));
@@ -8034,8 +8084,10 @@ export function ChatWorkbench() {
                           return failedCount > 0 && retryingIndexes.length >= failedCount ? undefined : item.error;
                         }
 
+                        // 语音只有一条，重跑时直接清掉 error → 失败卡变回等待卡（原地）。
                         return undefined;
                       })(),
+                      mediaErrorReasons: meta.mode === "audio" ? undefined : item.mediaErrorReasons,
                     }
                   : item,
               ),
@@ -9736,26 +9788,29 @@ export function ChatWorkbench() {
           <div aria-hidden="true" className={isSidebarCollapsed ? "absolute bottom-0 left-0 right-0 top-[-6px] bg-[#f9f9f9]" : "absolute bottom-0 left-[-12px] right-[-12px] top-[-6px] bg-[#f9f9f9]"} />
           <div aria-hidden="true" style={{ position: "absolute", left: isSidebarCollapsed ? 0 : -12, right: isSidebarCollapsed ? 0 : -12, top: -6, height: 1, background: "#e5e5e5", zIndex: 1 }} />
           {isSidebarCollapsed ? (
-            <button type="button" onClick={() => openUserDialog("credits")} className="relative z-10 mt-0 flex h-12 w-12 flex-col items-center justify-center rounded-[10px] border border-[#eeeeee] bg-white text-[#222222] shadow-[0_1px_3px_rgba(0,0,0,0.04)] transition hover:bg-[#f7f7f7]" aria-label="打开我的积分" title="我的积分">
+            <button type="button" onClick={() => setCreditRechargeOpen(true)} className="relative z-10 mt-0 flex h-12 w-12 flex-col items-center justify-center rounded-[10px] border border-[#eeeeee] bg-white text-[#222222] shadow-[0_1px_3px_rgba(0,0,0,0.04)] transition hover:bg-[#f7f7f7]" aria-label="打开积分充值" title="积分充值">
               <div className="flex flex-col items-center justify-center gap-0.5">
                 <div className="flex flex-col items-center gap-0.5 whitespace-nowrap text-[11px] font-semibold leading-none text-[#222222]">
-                  <RiVipDiamondLine className="h-4 w-4 shrink-0 text-[#555555]" aria-hidden="true" />
+                  <RiShining2Fill className="h-4 w-4 shrink-0 text-[#555555]" aria-hidden="true" />
                   <span className="font-semibold">{currentUserCredits.toLocaleString("en-US")}</span>
                 </div>
               </div>
             </button>
           ) : (
             <div className="relative z-10 mx-[7px] mt-0 rounded-[10px] border border-[#eeeeee] bg-white p-1.5 shadow-[0_1px_3px_rgba(0,0,0,0.04)]">
-              <div className="flex h-7 items-center px-1">
+              <div className="flex h-7 items-center justify-between px-1">
                 <div className="flex items-center gap-1 whitespace-nowrap text-[12px] font-medium text-[#222222]">
-                  <RiVipDiamondLine className="h-4 w-4 shrink-0 text-[#555555]" aria-hidden="true" />
-                  <span>积分：<span className="font-semibold">{currentUserCredits.toLocaleString("en-US")}</span></span>
+                  <RiShining2Fill className="h-4 w-4 shrink-0 text-[#555555]" aria-hidden="true" />
+                   <span className="font-semibold leading-none text-[#222222]">{currentUserCredits.toLocaleString("en-US")}</span>
                 </div>
+                <button type="button" onClick={() => setCreditRechargeOpen(true)} className="inline-flex shrink-0 items-center gap-0.5 font-medium leading-none text-[#9a9a9a] transition hover:text-[#555555]" style={{ fontSize: 12 }}><RiShoppingCartLine className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />积分充值</button>
               </div>
-              <button type="button" onClick={() => openUserDialog("credits")} className="mt-1 flex h-8 w-full items-center justify-center gap-1.5 rounded-[6px] bg-[#faf8f2] px-2 text-[#9b8460] transition hover:bg-[#f5f1e8]">
-                <RiVipCrown2Line className="h-[18px] w-[18px] shrink-0 text-[#9b8460]" aria-hidden="true" />
-                <span className="font-medium leading-none" style={{ fontSize: 12 }}>个人免费版</span>
-              </button>
+              <div className="relative mt-1 w-full">
+              <div className="flex h-8 w-full items-center justify-center gap-1.5 rounded-[6px] bg-[#faf8f2] px-2 text-[14px] font-normal leading-none text-[#9b8460]" style={{ fontSize: 14 }}>
+                <RiLeafLine className="h-[18px] w-[18px] shrink-0" aria-hidden="true" />
+                <span className="truncate font-normal leading-none" style={{ fontSize: 14 }}>{getMembershipLabel("free")}</span>
+              </div>
+              </div>
             </div>
           )}
           <div
@@ -9777,7 +9832,7 @@ export function ChatWorkbench() {
                     <span style={{ fontSize: 13 }}>用户信息</span>
                   </button>
                   <button type="button" onClick={() => openUserDialog("credits")} className="mx-2 flex h-11 w-[calc(100%-16px)] items-center gap-3 rounded-[6px] px-2 text-left text-[12px] font-medium text-[#333333] transition hover:bg-[#e9e9e9]">
-                    <RiVipDiamondLine className="h-[18px] w-[18px] text-[#777777]" aria-hidden="true" />
+                    <RiShining2Fill className="h-[18px] w-[18px] text-[#777777]" aria-hidden="true" />
                     <span style={{ fontSize: 13 }}>我的积分</span>
                   </button>
                   <button type="button" onClick={() => openUserDialog("security")} className="mx-2 flex h-11 w-[calc(100%-16px)] items-center gap-3 rounded-[6px] px-2 text-left text-[12px] font-medium text-[#333333] transition hover:bg-[#e9e9e9]">
@@ -10096,6 +10151,8 @@ export function ChatWorkbench() {
                   textModelProviders={agentChatModelProviders}
                   enabledImageModelIds={enabledGenerationModelIds.image}
                   enabledVideoModelIds={enabledGenerationModelIds.video}
+                  membershipTier={membershipTier}
+                  membershipSettings={membershipSettings}
                   uploadRuleOverrides={uploadRuleOverrides}
                   promptLengthOverrides={promptLengthOverrides}
                   creditRate={creditRate}
@@ -10149,6 +10206,15 @@ export function ChatWorkbench() {
                   }}
                   onChange={(canvas, meta) => updateWorkflowCanvas(activeWorkflow.id, canvas, meta)}
                   onCredit={applyWorkflowCreditResult}
+                  nodeDefaults={{
+                    imageModel: defaultImageModel,
+                    imageRatio: defaultImageRatio,
+                    imageResolution: defaultImageResolution,
+                    videoModel: defaultVideoModel,
+                    videoRatio: defaultVideoRatio,
+                    videoResolution: defaultVideoResolution,
+                    videoDuration: defaultVideoDuration,
+                  }}
                 />
                 )}                {inputReminder ? (
                   <div className="pointer-events-none absolute bottom-[108px] left-1/2 z-[10000] -translate-x-1/2">
@@ -10540,7 +10606,7 @@ export function ChatWorkbench() {
                           ) : (message.pendingAudioCount ?? 0) > 0 && !message.error ? (
                             <MediaWaitingCard createdAt={message.createdAt} now={timerNow} isImage={false} kind="audio" />
                           ) : message.error ? (
-                            <VideoFailedCard kind="audio" onRetry={() => regenerateMessage(message)} />
+                            <VideoFailedCard kind="audio" onRetry={() => void retryFailedMedia(message)} />
                           ) : null}
                         </div>
                       ) : null}
@@ -11337,6 +11403,7 @@ export function ChatWorkbench() {
       {assetUploadTip ? (
         <ReminderToast reminder={assetUploadTip} fixed />
       ) : null}
+      <CreditRechargeModal open={creditRechargeOpen} nickname={currentUserNickname || currentUserEmail} account={currentUserEmail} avatarUrl={currentUserAvatarUrl} credits={currentUserCredits} onClose={() => setCreditRechargeOpen(false)} onCreditsPaid={(balance) => setCurrentUserCredits(Math.max(0, Math.floor(balance)))} />
       {generationCompleteReminder ? (
         <ReminderToast reminder={generationCompleteReminder} fixed />
       ) : null}
@@ -11358,7 +11425,7 @@ export function ChatWorkbench() {
                 <span className="text-[14px] font-medium">{userText("用户信息")}</span>
               </button>
               <button type="button" onClick={() => openUserDialog("credits")} className={`flex h-10 w-full items-center gap-2.5 rounded-[10px] px-3 text-left transition ${userDialogTab === "credits" ? "bg-[#e9e9e9] text-[#111111]" : "text-[#333333] hover:bg-[#ececec]"}`}>
-                <RiVipDiamondLine className="h-[18px] w-[18px] shrink-0 text-[#b4b4b4]" aria-hidden="true" />
+                <RiShining2Fill className="h-[18px] w-[18px] shrink-0 text-[#b4b4b4]" aria-hidden="true" />
                 <span className="text-[14px] font-medium">{userText("我的积分")}</span>
               </button>
               <button type="button" onClick={() => openUserDialog("security")} className={`flex h-10 w-full items-center gap-2.5 rounded-[10px] px-3 text-left transition ${userDialogTab === "security" ? "bg-[#e9e9e9] text-[#111111]" : "text-[#333333] hover:bg-[#ececec]"}`}>
@@ -11482,7 +11549,7 @@ export function ChatWorkbench() {
               ) : null}
 
               {userDialogTab === "credits" ? (() => {
-                const pageSize = 20;
+                const pageSize = 15;
                 const totalPages = Math.max(1, Math.ceil(userCreditConversations.length / pageSize));
                 const safePage = Math.min(totalPages, Math.max(1, userCreditPage));
                 const rows = userCreditConversations.slice((safePage - 1) * pageSize, safePage * pageSize);
@@ -11490,26 +11557,49 @@ export function ChatWorkbench() {
                 return (
                   <div>
                     <div className="flex items-center gap-6 rounded-[12px] bg-[#f3f2ed] p-2.5">
-                      <div className="min-h-[96px] w-[238px] rounded-[12px] border border-[#e1cbb6] bg-[linear-gradient(100deg,#ffffff_0%,#fbfaf7_54%,#f2eee6_100%)] px-4 py-3 shadow-[0_8px_20px_rgba(114,90,62,0.07)]">
-                        <div className="flex h-5 w-fit items-center rounded-full bg-[#c6b19d] px-2.5 text-[11px] font-semibold text-white">免费套餐</div>
-                        <div className="mt-3 flex items-center gap-1.5 text-[18px] font-semibold tracking-[-0.02em] text-[#111111]">个人免费版 <RiLeafLine className="h-4.5 w-4.5" aria-hidden="true" /></div>
-                        <div className="mt-1.5 max-w-[190px] text-[11px] leading-4 text-[#9a8b7b]">当前为免费版本，暂无升级套餐功能。如有疑问请联系管理员！</div>
+                      <div className="relative flex h-[137px] w-[238px] flex-col rounded-[15px] border border-[#e1cbb6] bg-[linear-gradient(100deg,#ffffff_0%,#fbfaf7_54%,#f2eee6_100%)] px-5 py-3.5 text-left shadow-[0_8px_20px_rgba(114,90,62,0.07)]">
+                        <div className="flex items-center gap-1.5">
+                          <div className="flex w-fit items-center gap-1.5 rounded-full bg-[#c6b19d] px-2 py-0.5 text-[11px] font-normal leading-4 text-white">
+                            {getMembershipLabel("free")}
+                            <RiLeafLine className="h-3 w-3" aria-hidden="true" />
+                          </div>
+                        </div>
+                        <div className="mt-2 flex items-end gap-1.5">
+                          <span className="text-[28px] font-semibold leading-none tracking-[-0.05em]">{getMembershipTierConfig("free", membershipSettings).monthlyCredits.toLocaleString("en-US")}</span>
+                          <span className="pb-0.5 text-[11px] text-[#888888]">积分 每月</span>
+                        </div>
+                        <div className="mt-auto pt-2 text-[11px] leading-4 text-[#c6b19d]">可购买积分使用</div>
                       </div>
-                      <div className="min-w-0 flex-1 self-start pt-3">
-                        <div className="text-[20px] font-normal tracking-[-0.02em] text-[#111111]">总积分 <span className="ml-2 font-semibold">{currentUserCredits.toLocaleString("en-US")}</span></div>
-                        <div className="mt-1.5 text-[12px] leading-5 text-[#9a9a9a]">已赠送积分：{giftedUserCredits.toLocaleString("en-US")}</div>
+                      <div className="min-w-0 flex-1 self-start pt-5">
+                        <div className="flex items-center tracking-[-0.02em]"><RiShining2Fill className="h-5 w-5 shrink-0 text-[#555555]" aria-hidden="true" /><span className="ml-1 flex items-end"><span className="text-[20px] font-semibold leading-none text-[#111111]">{currentUserCredits.toLocaleString("en-US")}</span><span className="ml-1.5 text-[12px] leading-none text-[#9a9a9a]">总积分</span></span></div>
+                        <div className="mt-8 flex items-stretch text-left text-[12px] leading-5 text-[#9a9a9a]">
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-1">会员积分<BlackHoverTooltip label={<span className="inline-block text-left leading-5"><span className="block whitespace-nowrap">会员每月发放，优先消耗，</span><span className="block whitespace-nowrap">到期未用完将被重置</span></span>}><RiQuestionLine className="h-3.5 w-3.5 text-[#bbbbbb]" /></BlackHoverTooltip></div>
+                            <div className="mt-1 text-[16px] font-medium text-[#333333]">0</div>
+                          </div>
+                          <div className="mx-3 w-px shrink-0 self-stretch bg-[#dddddd]" />
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-1">充值积分<BlackHoverTooltip label="自己购买的积分，永久有效"><RiQuestionLine className="h-3.5 w-3.5 text-[#bbbbbb]" /></BlackHoverTooltip></div>
+                            <div className="mt-1 text-[16px] font-medium text-[#333333]">{rechargeUserCredits.toLocaleString("en-US")}</div>
+                          </div>
+                          <div className="mx-3 w-px shrink-0 self-stretch bg-[#dddddd]" />
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-1">赠送积分<BlackHoverTooltip label="注册及活动赠送，永久有效"><RiQuestionLine className="h-3.5 w-3.5 text-[#bbbbbb]" /></BlackHoverTooltip></div>
+                            <div className="mt-1 text-[16px] font-medium text-[#333333]">{giftedUserCredits.toLocaleString("en-US")}</div>
+                          </div>
+                        </div>
                       </div>
                     </div>
 
-                    <div className="mt-4 overflow-hidden rounded-[5px] border border-[#eeeeee]">
+                    <div className="mt-4 border-y border-[#eeeeee]">
                       <table className="w-full table-fixed text-left text-[12px]">
                         <thead className="bg-[#f7f7f7] text-[#888888]">
-                          <tr>
-                            <th className="border-r border-[#dddddd] px-3 py-2 font-medium">积分来源</th>
-                            <th className="w-[110px] border-r border-[#dddddd] px-3 py-2 text-right font-medium">积分变动</th>
-                            <th className="w-[110px] border-r border-[#dddddd] px-3 py-2 text-right font-medium">对话Token</th>
-                            <th className="w-[128px] border-r border-[#dddddd] px-3 py-2 text-right font-medium">图片/视频/语音</th>
-                            <th className="w-[86px] whitespace-nowrap px-2 py-2 text-right font-medium">最后活跃</th>
+                          <tr className="h-12">
+                            <th className="px-3 font-medium">积分来源</th>
+                            <th className="w-[132px] px-3 text-right font-medium">积分变动</th>
+                            <th className="w-[136px] px-3 text-right font-medium">对话Token</th>
+                            <th className="w-[152px] px-3 text-right font-medium">图片/视频/语音</th>
+                            <th className="w-[112px] whitespace-nowrap px-2 text-right font-medium">最后活跃</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -11527,17 +11617,17 @@ export function ChatWorkbench() {
                             const creditDisplay = creditValue === 0 ? "0" : isIncreaseRow && creditValue > 0 ? `+${creditValue.toLocaleString("en-US")}` : creditValue < 0 ? `-${Math.abs(creditValue).toLocaleString("en-US")}` : `-${creditValue.toLocaleString("en-US")}`;
                             const creditClassName = isIncreaseRow && creditValue > 0 ? "text-[#18a058]" : "text-red-500";
                             return (
-                              <tr key={row.conversationId} className="border-t border-[#eeeeee]">
-                                <td className="border-r border-[#eeeeee] px-3 py-2 text-[#333333]">
+                              <tr key={row.conversationId} className="h-12 border-t border-[#eeeeee]">
+                                <td className="px-3 text-[#333333]">
                                   <div className="flex min-w-0 items-center gap-1.5">
                                     <SourceIcon className="h-4 w-4 shrink-0 text-[#555555]" aria-hidden="true" />
                                     <span className="min-w-0 truncate" data-no-translate={row.source === "conversation" || row.source === "workflow" ? "true" : undefined}>{sourceTitle}</span>
                                   </div>
                                 </td>
-                                <td className={`border-r border-[#eeeeee] px-3 py-2 text-right font-semibold ${creditClassName}`}>{creditDisplay}</td>
-                                <td className="border-r border-[#eeeeee] px-3 py-2 text-right text-[#555555]">{tokenCount > 0 ? tokenCount.toLocaleString("en-US") : "--"}</td>
-                                <td className="border-r border-[#eeeeee] px-3 py-2 text-right text-[#555555]">{imageText}/{videoText}/{audioText}</td>
-                                <td className="whitespace-nowrap px-2 py-2 text-right text-[#777777]">{formatCreditLastActiveTime(row.lastActiveAt)}</td>
+                                <td className={`px-3 text-right font-semibold ${creditClassName}`}>{creditDisplay}</td>
+                                <td className="px-3 text-right text-[#555555]">{tokenCount > 0 ? tokenCount.toLocaleString("en-US") : "--"}</td>
+                                <td className="px-3 text-right text-[#555555]">{imageText}/{videoText}/{audioText}</td>
+                                <td className="whitespace-nowrap px-2 text-right text-[#777777]">{formatCreditLastActiveTime(row.lastActiveAt)}</td>
                               </tr>
                             );
                           }) : <tr><td colSpan={5} className="px-3 py-10 text-center text-[#999999]">暂无积分记录</td></tr>}
@@ -11684,8 +11774,8 @@ export function ChatWorkbench() {
                 const enabledAudioModelOptions = generationModelOptions.audio.filter((option) => enabledGenerationModelIds.audio.includes(option.id)).map((option) => ({ value: option.id, label: option.label, icon: modelIconNode(option.id) }));
                 const audioVoiceSelectOptions = getAudioVoicesForModel(defaultAudioModel).map((voice) => ({ value: voice.id, label: voice.label }));
                 const audioEmotionSelectOptions = getAudioEmotionsForModel(defaultAudioModel).map((emotion) => ({ value: emotion.id, label: emotion.label }));
-                const imageResolutionSelectOptions = getSupportedImageResolutions(defaultImageModel).map((value) => ({ value, label: value, icon: <ResolutionOptionIcon option={value} mode="image" /> }));
-                const videoResolutionSelectOptions = getSupportedVideoResolutions(defaultVideoModel).map((value) => ({ value, label: value, icon: <ResolutionOptionIcon option={value} mode="video" /> }));
+                const imageResolutionSelectOptions = filterImageResolutionsForMembership(membershipTier, getSupportedImageResolutions(defaultImageModel), membershipSettings).map((value) => ({ value, label: value, icon: <ResolutionOptionIcon option={value} mode="image" /> }));
+                const videoResolutionSelectOptions = filterVideoResolutionsForMembership(membershipTier, getSupportedVideoResolutions(defaultVideoModel), membershipSettings).map((value) => ({ value, label: value, icon: <ResolutionOptionIcon option={value} mode="video" /> }));
                 const videoRatioSelectOptions = ["智能比例", ...getSupportedVideoRatios(defaultVideoModel, defaultVideoResolution as never)].map((value) => ({ value, label: value, icon: <RatioOptionIcon option={value} /> }));
                 const videoDurationSelectOptions = getVideoDurationOptions(defaultVideoModel).map((value) => ({ value, label: value, icon: <RiTimeLine className="h-4 w-4" aria-hidden="true" /> }));
                 const imageRatioSelectOptions = ["智能比例", ...getSupportedImageRatios(defaultImageModel)].map((value) => ({ value, label: value, icon: <RatioOptionIcon option={value} /> }));
@@ -11774,8 +11864,8 @@ export function ChatWorkbench() {
                       <SettingsSelect value={defaultWorkspacePanel} options={panelSelectOptions} onChange={(value) => { setDefaultWorkspacePanel(value as ActivePanel); defaultWorkspacePanelRef.current = value as ActivePanel; }} />
                     ))}
 
-                    {groupHeading(userText("新建对话 · 默认图片参数"))}
-                    {selectRow(<AiGenerate3dIcon />, userText("默认图片模型"), (
+                    {groupHeading(userText("新建对话/节点 · 默认图片参数"))}
+                    {selectRow(<RiImageAiLine className="h-[18px] w-[18px]" aria-hidden="true" />, userText("默认图片模型"), (
                       <SettingsSelect value={defaultImageModel} options={enabledImageModelOptions} onChange={changeDefaultImageModel} />
                     ))}
                     {selectRow(<RatioOptionIcon option={defaultImageRatio} />, userText("默认比例"), (
@@ -11785,8 +11875,8 @@ export function ChatWorkbench() {
                       <SettingsSelect value={defaultImageResolution} options={imageResolutionSelectOptions} onChange={setDefaultImageResolution} />
                     ))}
 
-                    {groupHeading(userText("新建对话 · 默认视频参数"))}
-                    {selectRow(<AiGenerate3dIcon />, userText("默认视频模型"), (
+                    {groupHeading(userText("新建对话/节点 · 默认视频参数"))}
+                    {selectRow(<RiFilmAiLine className="h-[18px] w-[18px]" aria-hidden="true" />, userText("默认视频模型"), (
                       <SettingsSelect value={defaultVideoModel} options={enabledVideoModelOptions} onChange={changeDefaultVideoModel} />
                     ))}
                     {selectRow(<RatioOptionIcon option={defaultVideoRatio} />, userText("默认比例"), (

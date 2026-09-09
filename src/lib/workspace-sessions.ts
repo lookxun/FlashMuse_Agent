@@ -23,7 +23,21 @@ type WorkspaceMessageRow = {
   createdAt: Date;
 };
 
-export const DEFAULT_WORKSPACE_SESSION_LIMIT = 10;
+export function isWorkspaceSessionRowArchived(row: { archivedAt?: Date | null; summaryJson?: Prisma.JsonValue | null }) {
+  if (row.archivedAt) return true;
+  return isRecord(row.summaryJson) && typeof row.summaryJson.archivedAt === "number" && row.summaryJson.archivedAt > 0;
+}
+
+export async function getArchivedWorkspaceSessionRows(userId: string) {
+  const rows = await prisma.workspaceSession.findMany({
+    where: { userId, deletedAt: null },
+    orderBy: [{ updatedAt: "desc" }, { sessionId: "desc" }],
+    select: { sessionId: true, title: true, updatedAt: true, deletedAt: true, archivedAt: true, summaryJson: true, usageSummary: true, memorySummary: true },
+  });
+  return rows.filter(isWorkspaceSessionRowArchived);
+}
+
+export const DEFAULT_WORKSPACE_SESSION_LIMIT = 8;
 export const WORKSPACE_SESSION_LOAD_MORE_LIMIT = 5;
 /**
  * 一次回给前端的消息条数。⭐ **2026-07-30 由 50 降到 30**（性能优化）。
@@ -252,6 +266,7 @@ export async function upsertWorkspaceSessions(userId: string, sessions: unknown)
         title: typeof session.title === "string" && session.title.trim() ? session.title.trim() : "新对话",
         updatedAt: toDate(session.updatedAt),
         deletedAt: toNullableDate(session.deletedAt),
+        archivedAt: toNullableDate(session.archivedAt),
         summaryJson: getSessionSummary(session),
         usageSummary: toJsonObject(session.usageSummary),
         memorySummary: toJsonObject(session.memorySummary),

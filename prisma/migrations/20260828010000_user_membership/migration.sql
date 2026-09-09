@@ -1,0 +1,4 @@
+ALTER TABLE "User" ADD COLUMN "membershipTier" TEXT NOT NULL DEFAULT 'free';
+ALTER TABLE "User" ADD COLUMN "membershipPeriod" TEXT NOT NULL DEFAULT '';
+ALTER TABLE "User" ADD COLUMN "membershipExpiresAt" TIMESTAMP(3);
+ALTER TABLE "User" ADD COLUMN "membershipCredits" INTEGER NOT NULL DEFAULT 0;

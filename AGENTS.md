@@ -4,6 +4,164 @@
 This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code. Heed deprecation notices.
 <!-- END:nextjs-agent-rules -->
 
+# 铁律⭐⭐：本地「资产保存中」不落地，先看 `.runtime/media-save-jobs.json` 那条 job 的 `status`，⛔ 别看预览能不能播（2026-09-09 加，为此折腾一整轮）
+
+「资产保存中」角标 = **后台 Node 把整份文件下到本机硬盘**才算完；预览页能播是**浏览器直连火山 CDN 边下边播**，两条完全不同的路。诊断唯一权威是那条 job 的 `status`（`downloading`/`failed`/`pending`/`saved`），别拿「预览能播」当「已保存」。
+
+- 🔴🔴 **本地下跨境大视频（尤其 Seedance 2.0 4K，14MB+）的三个坑，全踩过、全修了**：
+  ① **超时太短 + 整份进内存**：原 `REMOTE_DOWNLOAD_TIMEOUT_MS=3min` 一刀切、`arrayBuffer()` 整份进内存 → 4K 反复 `This operation was aborted`。
+     现在视频单独 `REMOTE_VIDEO_DOWNLOAD_TIMEOUT_MS=15min` + **流式写盘**（`Readable.fromWeb(response.body)` → `createWriteStream` + `pipeline`）；图片仍 buffer（要 sharp 转码）。`STALE_DOWNLOADING_MS` 20min。
+  ② **Node 内置 fetch(undici) 默认不走系统代理** → 本机在国内直连新加坡 TOS 慢到超时（用户手动下载 1 秒是浏览器走 Clash）。
+     修：`local-assets.ts` 的 `getLocalMediaProxyUrl()` 读 env `LOCAL_MEDIA_PROXY`，用 undici `ProxyAgent` 传给 `safeFetch`（`ssrf-guard.ts` 的 `safeFetch` 签名已加可选 `dispatcher`）+ curl 兜底 `--proxy`。
+     ⛔⛔ **`NODE_ENV==="production"` 时 `getLocalMediaProxyUrl` 恒返回 undefined**（线上腾讯新加坡直连火山本来就快，绝不能绕代理）。⛔ 别在生产 env 配 `LOCAL_MEDIA_PROXY`。
+  ③ **队列定时器只活在内存 → 进程重启后 pending/downloading 任务成孤儿、永远「保存中」**（没有任何入口再 `scheduleJob` 它们）。
+     修：`media-save-queue.ts` 的 `resumePendingMediaSaveJobs()`（启动把 downloading 降 pending、扫全部 pending/failed 重排），在 `generation-worker.ts` 的 `startGenerationWorker` 里 `void` 调（不 await + catch，遵守「往 worker 加活儿要隔离」铁律）。
+- ⭐ **本地要下大视频，`.env.local` 必须有 `LOCAL_MEDIA_PROXY=http://127.0.0.1:7897`**（Clash 混合端口）。判据：`curl 127.0.0.1:7897` 返回 **400** 而不是超时 = 端口对。没配就会一直卡「保存中」。
+- ⭐ **卡住的任务怎么手动救**：把那条 job 的 `status` 改回 `pending`、`nextRetryAt=Date.now()`，重启 dev（启动自恢复会捡它）。⛔ 别指望前端轮询触发——那条 url 可能已不在当前对话的轮询列表里。
+
+# 铁律⭐⭐：探「上游支持哪些分辨率/时长」用**必被拒的值**让错误文案自己报，⛔ 别用刚好合法的值（那会真建任务真花钱）（2026-09-09 加）
+
+2026-09-09 要确认 Seedance 2.0 是否支持 4K、2.5 是否支持 1080p。姿势：POST `/contents/generations/tasks` 时把
+**`duration` 设成 `1`（所有 Seedance 都非法）**、分辨率设成待测值：
+- 报「**duration** 非法」= 分辨率这一档**过了**（上游先校验分辨率通过了才轮到时长）；
+- 报「**resolution** 非法」= 这一档**没开**。
+实测坐实：**Seedance 2.0 = 480p/720p/1080p/4K（4K 独有）；2.5 = 480p/720p/1080p**（1080p 与 2.0 同像素表）；Fast/Mini 只有 480p/720p。
+
+- ⭐ 同源于本文件「探测上游硬上限只用必被拒的值」——2026-08-09 曾用「刚好等于上限」的 30.2 秒探，结果**真建了任务、真花了钱**。
+- ⭐ 官方文档是 JS 渲染的 SPA，`webfetch` 直接抓拿不到正文；套 `https://r.jina.ai/<url>` 才拿到「Set video output specifications」那张分辨率/像素表。
+- ⚠️ 补新分辨率档要同步四处：`videoModelRules` 的 `resolutions` + `sizes` 像素表 + `nonStandardSizes` + `estUsdPerSecondByResolution` 预估（⚠️ 没有真实扣费数据时按 token∝像素粗估，标注待回校）。
+
+# 铁律⭐⭐：读 `generationMeta.originalPrompt` / `itemPrompts` / `message.videoPrompts` 一律要回落到 `message.content` —— 下行投影会在它们等于 baseline 时删掉（2026-09-05 抓到，失败任务点「重新生成」没反应）
+
+服务端下行投影 `projectWorkspaceMessageForClient`（`src/lib/workspace-sessions.ts:444`）为瘦身，会在
+`generationMeta.originalPrompt === message.content`（或 `itemPrompts` 每项 = baseline、`videoPrompts` 全 = baseline）时
+**把这些字段删掉**，约定前端读不到就从 `message.content` 回落。
+
+- ⛔ **2026-09-05 真事故**：`retryFailedMedia`（`chat-workbench.tsx:7978`，图片+视频失败卡「重新生成」共用它）
+  只读 `meta.originalPrompt`、**没回落 content** → 刚生成时内存有值能重试，**一刷新/重进对话，originalPrompt 被投影删掉
+  → `prompt="" → if(!prompt) return` → 点了没反应、也不报错**（最难查，因为没有任何错误、且首次生成那次是好的）。
+  同一个坑还有 `getAgentMediaPromptItems`（`chat-workbench-core.tsx:2689/2692/2703`，Agent「使用提示词」面板刷新后取不到词）。
+- ⭐ **判据（一句话）**：grep `originalPrompt` / `itemPrompts` / `videoPrompts` 的每个读取点，
+  回落链**必须最终落到 `?? message.content`**。少这一环 = "首次好、刷新后坏"的隐形 bug。
+- ⭐ **配对完整性**：PUT 侧恢复函数 `restoreProjectedMessageFields`（`workspace-sessions.ts:333`）对三类字段都恢复了，
+  是**读取方漏回落**、不是投影/恢复配对的问题。新增读取点时照抄现有的正确回落（如 `replayMessage` 7848、复制/预览那几处）。
+- ⭐ **验法（二值、零成本）**：进一条失败任务 → **刷新页面**（关键：制造"内存里没值"的场景）→ 点「重新生成」，
+  必须有反应（失败卡变「X%生成中」）。⛔ 别只在刚生成后测（那时内存有值、测不出）。
+
+# 铁律⭐⭐⭐：停用一个子系统时，**"读判定"和"写库"是两回事** —— 必须把所有会写库的入口单独数一遍（2026-09-05 审计抓到，会员关了还在扣用户积分）
+
+2026-09-05 审「会员保留但隐藏」这一批：总开关 `MEMBERSHIP_SYSTEM_ENABLED = false` 把
+**读判定**全挡住了（能不能用某模型/画质/并发、发不发月积分），但
+**结算/发放/作废这几个会写库的函数一个都没挡**。而 `getActiveMembershipTier()` 在关闭时恒返回 `"free"`
+→ `settleMembershipCredits()` 把**所有人当成"会员已过期"**：
+① 有 `membershipParked*` 记录的会被**"恢复"成会员并发一笔积分**；
+② `membershipCredits > 0` 的会被**从 `User.credits` 里真扣掉**并记一条"作废"流水。
+而它的调用方 `/api/membership/quote` 是**任何登录用户都能 GET** 的接口。
+
+- ⭐ **判据（一句话）**：把这个子系统里**所有会 `UPDATE` / `INSERT` 的函数**列出来，逐个问
+  「总开关关着时它被调到会发生什么」。⛔ 别只看拦截函数（`canXxxUse` / `shouldEnforceXxx`）——
+  那些只决定"许不许用"，不决定"会不会动数据"。
+- ⭐ **最阴的形态是"关闭状态被当成某个业务状态"**：本次"会员关闭"被代码理解成"人人已过期"，
+  于是"过期清算"这条路径对全站用户生效了。**凡是用一个枚举值（free / 空 / 0）同时表示
+  "功能关闭"和"某种真实业务状态"的，都要单独确认这两种含义不会串。**
+- ⭐ **正解**：在**写函数自己的顶部**加 `if (!ENABLED) return`（第一道），
+  再把只服务该子系统的接口整体 403（第二道）。⛔ 别只在调用方加判断——将来多一个调用方就漏。
+- ⚠️ 本次没爆是因为生产库那两个字段还全是 0/空（列刚加）。**"现在恰好没数据"不是安全，是运气。**
+
+# 铁律⭐⭐⭐：为演示/预览造的假数据，**绝不许出现在真实用户点得到的界面上**（2026-09-05 抓到，差点上线）
+
+`getDemoRechargeHistory()` 给三个邮箱（`12424740@qq.com`、**`lookxun@163.com` ← 用户自己的号**、
+`176107103@qq.com`）写了硬编码的假充值订单（"C2026082011062290 · ¥200 → 1800积分"这种），
+本来只是给后台「用户充值」列表做演示。但**新做的积分充值页也读同一个接口** →
+上线后这三个号点「充值记录」就会看到**从没发生过的充值**。
+
+- ⭐ **判据（一句话）**：这份假数据的入口，**普通用户点得到吗？** 点得到 = 事故（尤其是钱相关的）。
+- ⭐ **正解**：在**接口层**按环境切（`process.env.NODE_ENV === "production" ? 空 : demo`），
+  而不是删掉演示数据 —— 后台那份是服务端组件直接调 lib、不走这个接口，只有管理员看得到，可以留。
+- ⭐ **验法是二值的**：上线环境用真实账号点开那个界面，必须是"暂无记录"，同时 `fetch` 那个接口返回 `[]`。
+  ⛔ 别只看代码，本次正是因为真走了一遍界面才发现测试号 `12424740@qq.com` 也在演示名单里。
+
+# 铁律⭐⭐：横在全站关键路径前面的「闸门」必须 fail-open —— 只有业务判定才许拒绝（2026-09-05 加）
+
+`reserveGenerationQuota` 是**图片/视频/语音生成的第一道**，依赖一张新表 `GenerationReservation`
++ `pg_advisory_xact_lock`。原来它直接 `await` 整个事务：**迁移没跑 / 连接抖动 / 锁报错 = 全站生成 500**。
+
+- ⭐ **正解**：`try { 事务 } catch { if (是业务错) throw; 写一条诊断日志; return false }` ——
+  只有「并发上限」「积分不足」这两个**业务判定**才允许把用户请求拒掉，
+  其它任何异常一律**放行**（后面还有 `assertUserCanUseCredits` 和真实扣费兜着）。
+- ⭐ **判据**：问一句「**这段代码自己坏了，会不会连带把主功能停掉？**」会 → 必须 fail-open。
+  同源于本文件那条「往常驻 worker 的 tick 里加活儿」——都是"寄生在关键路径上的新逻辑"。
+- ⭐ 配套：fail-open 之后要有**可观测性**（本次 `generation-quota-gate-failed` 事件），
+  否则闸门静默失效没人知道。判据：`grep -c 'generation-quota-gate-failed'` 必须是 0。
+
+# 铁律⭐⭐⭐：定价/预估这类数字，**必须从真实扣费数据统计**，⛔ 不许用文档价、菜单价或"宁高不低"的直觉（2026-09-05 把最大偏差从 399% 打到 3%）
+
+用户说「预估要尽量准」。我没调参数，而是去**正式服 `CreditLedger`** 把真实扣费拉出来
+（图片 5791 条 / 视频 4206 条），按 `模型 × metadata->>'resolution'` 算 avg/p90/p99。一量就发现**两个反向错误**：
+
+- ⛔⛔ **视频每秒单价只有一个数（720p 基准），而它随分辨率差 6 倍**：
+  实测 Seedance 2.0 → 480p `0.071` / 720p `0.155` / **1080p `0.386`**（按 token 计费，token ∝ 像素）。
+  → **480p 估高 2 倍（把选最便宜档的用户拦住）、1080p 估低 3 倍（等于没拦，照样亏）**。
+- ⛔ **拿不到时长时按"该模型最长档"估**，而上游侧兜底是 **5 秒** → Seedance 2.5 上差 **6 倍（+399%）**。
+
+- ⭐⭐ **这条最值钱的启发**：**如果只按"宁高不低"的直觉往上调，480p 会被拦得更死，而 1080p 那个洞还在。**
+  "偏高"和"偏低"可能**同时存在于同一个模型的不同档位**，只有量真实数据才看得见。
+- ⭐ **取 p99 填表**（不是均值、也不是 max）：估低了等于没拦；max 里混着异常样本（时长 metadata 与实际不符）。
+- ⭐ **重新统计的 SQL 已写进 `05-next-actions.md`**（供应商调价 / 接新模型后要回校）。
+- ⭐ **唯一权威**：`models.ts` 的 `estUsdByResolution`（图片）/ `estUsdPerSecondByResolution`（视频），
+  **只被 `getEstimatedGenerationUsd` 读**。
+- ⭐⭐ **一张表两个读者时，加字段而不是改字段**：菜单副标题（界面上的「X积分/张·秒」）继续读老字段
+  `usd` / `usdPerSecond` → **界面文案一个字没变**，回归里逐条断言了 hint 字符串。
+  ⛔ 别图省事把菜单也切到实测价 —— 那是改用户看得到的报价，要单独找用户拍板。
+- ⭐⭐ **"事前预估"和"真正发给上游的参数"必须是同一个函数算的**：
+  以前预估按最长档、`openrouter-video.ts` 的 `getDuration` 按 5 秒兜底 —— 两份逻辑必然对不上。
+  已收敛成 `models.ts` 的 **`getEffectiveVideoDurationSeconds`**，`getDuration` 变成它的薄封装。
+- ⭐ **预估用的分辨率必须归一化**（`resolveImageSettingsForModel` / `resolveVideoSettingsForModel`），
+  和本文件那条「按档位限制画质要校验归一化后的真实档位」是同一个坑。
+- ⭐⭐ **验收必须端到端**：45 条纯函数回归（含 98 组"时长与改前逐个相等"）**+ 真跑一条最便宜的**
+  （视频 480p/5秒：预估 13 / 实扣 12；图片 2K：预估 2 / 实扣 2）。
+  ⭐ 读 `GenerationReservation.estCredits`（在跑时）再对 `CreditLedger.credits`（跑完后）—— 这是最硬的判据。
+
+# 铁律⛔⛔：Windows 打部署包**别用 `tar -T 清单文件`** —— 自带 bsdtar 会静默漏掉一半条目（2026-09-05 踩到）
+
+`tar -czf x.tgz -T 清单.txt`（bsdtar 3.8.8）：**58 条清单只打进 29 个文件，而且不报错**
+（还伴随一堆 `Couldn't visit directory:` 的空名条目）。这种包推上去就是"上线当场 404 / 功能缺一半"。
+
+- ⭐ **正解（已固化成 `.runtime/pack.js`）**：用 node 按清单**把文件复制到 `.runtime/pkg/` 保持相对路径**，
+  再 `tar -czf ../x.tgz .` 打**整个目录**；打完 `tar -tzf | 数文件数`，**必须等于复制的文件数**，不等就 exit 1。
+- ⭐ **部署清单必须是 `git status --short -- src prisma`** —— 只取 `src` 会漏掉 Prisma 迁移，
+  而本批漏了迁移 = `GenerationReservation` 表不存在 = **图片/视频/语音全部 500**。
+- ⭐ 解包后立刻在服务器上 `grep` 断言：**本次新增的字符串字面量必须命中、被删掉的旧实现必须为 0**
+  （本次查了 `estUsdPerSecondByResolution`、`1080p": 0.458`，以及旧的 `getMaxVideoDurationSeconds` = 0）。
+
+# 铁律⭐：`BlackHoverTooltip` 那种「JS onMouseEnter + portal」对 **disabled 按钮照样有效**（2026-09-05 实测，别再怀疑）
+
+把 tooltip 从 CSS `group-hover` 改成 JS `onMouseEnter` 后，我怀疑
+「Chrome 不给 disabled 元素派发鼠标事件 → 包在外层 span 上的 handler 收不到」，
+差点为此改代码。**用 Playwright 造最小用例实测：hover 一个 `disabled` 按钮，
+外层 span 的 `pointerenter` / `mouseover` / `mouseenter` 全部照常触发。**
+
+- ⭐ **判据**：`page.setContent` 造 `<span onmouseenter><button disabled></span>` → `page.hover('#btn')`
+  → 读 `window.hits`。几秒钟、二值、没有解释空间。
+- ⭐ 通用启发：**"我记得某浏览器有个坑"不是证据** —— 这类浏览器行为疑问一律现场造最小用例实测，
+  比读文档/凭记忆改代码快得多也可靠得多（本次省掉一次无谓改动）。
+
+
+# 铁律⭐⭐⭐：改 `.env.local` 只许改那一个 key，整份重写 = 密钥被冲掉（2026-08-31 加）
+
+2026-08-31 第一百零一次为对齐会员默认，用 node 改 `.env.local` 的 `MEMBERSHIP_SETTINGS`，
+整份重写 → 本地 `BYTEPLUS_API_KEY` 被写成空、`BYTEPLUS_API_KEY_ENABLED=false`；
+`OPENROUTER_API_KEY` 被写成旧的。后台「模型开关」看起来像 BytePlus API 消失了。
+用户自己从测试服/正式服把密钥调回来。
+
+- ⭐ **`.env.local` 里同时躺着密钥和业务配置**（OPENROUTER / BYTEPLUS / MEMBERSHIP_SETTINGS / 上传规则…）。
+  改会员配置 ≠ 可以动 API key。
+- ⭐ **正解**：读整份 → **只替换目标那一行** → 写回。写完立刻断言
+  `OPENROUTER_API_KEY` / `BYTEPLUS_API_KEY` 的**长度没变、不是空**。长度变了 = 立刻停手、从备份/测试服拷回来。
+- ⛔ **禁止**整份 `writeFile` 覆盖、禁止 PowerShell `Set-Content`。
+- ⛔ **后台「模型开关」点保存会把两个 API key 一起写回去**。BytePlus 输入框是空的再保存 = 密钥被写成空。
+  只改会员用 `updateMembershipSettings`（只写 `MEMBERSHIP_SETTINGS` 那一行），别走模型开关那次全量保存。
+
 # 铁律⭐⭐：代码里出现 `slice(0, N)` / `.filter(...).slice()` 砍用户素材，就必须去 `upload-rules.ts` 把 N 配上（2026-08-19 加）
 
 2026-08-19 审 Recraft 接入时抓到：`generateRecraftImage` 里写了 `referenceImages.slice(0, 1)`（上游只吃 1 张），
@@ -62,7 +220,126 @@ This version has breaking changes — APIs, conventions, and file structure may 
   （判据：`curl 127.0.0.1:7897` 返回 **400** 而不是超时 = 端口对）。
 - ⚠️ kill 旧 dev 会换 PID、重启后需重新登录一次；纯本地临时操作、不动代码。
 
+# 铁律⭐⭐⭐：「按档位限制画质」必须校验**归一化之后真正会用的那一档**，不是用户请求的那个值（2026-08-30 审计抓到两个真绕过）
+
+会员画质校验原来写的是 `canMembershipUseVideoResolution(tier, body.settings?.resolution)` ——
+只看**客户端请求的分辨率**。但模型规则表 `resolveXxxSettingsForModel` 会把**该模型不支持的档位抬到它自己的默认档**，
+于是「请求 720p / 干脆不传」在只有高档位的模型上会变成高档位：
+
+- `minimax/hailuo-3` 只有 **2K** 一档 → 基础会员（上限 720p）传 720p 或不传，**实际出 2K**（最贵的那档）；
+- `kwaivgi/kling-video-o1` 只有 **1080p** 一档 → 标准会员（上限 720p）传 720p，**实际出 1080p**。
+
+⛔ **只校验请求值 = 等于没校验。**
+- ⭐ **判据（一行）**：拿 **`resolveVideoSettingsForModel(model, settings).resolution`**（图片同理 `resolveImageSettingsForModel`）
+  去比会员白名单，⛔ 不是拿 `settings.resolution`。唯一实现 `src/lib/membership-guard.ts`。
+- ⭐⭐ **`ratio` 必须一起传进来**：`resolveImageSettingsForModel` 里
+  **`isSmartRatio = !settings?.ratio || settings.ratio === "智能比例"`** —— **不传 ratio 就被当成智能比例**，
+  这条分支**直接用 `rule.defaultResolution`、完全忽略请求的分辨率**。
+  ⚠️ 我写回归用例时忘了传 ratio，于是「free 要 4K」被放行，一度以为拦截失效（实际是用例错）。
+  → **测这类校验，ratio 必须给具体值；另外单独补一条「智能比例」的用例。**
+- ⭐ **配套的一致性判据**：某个档位被允许用某模型，但**该模型的所有档位它一个都不许用** → 这是配置自相矛盾，
+  界面上会出现「分辨率下拉是空的」，服务端则会静默抬档。发现这种组合要么给档位加那一档、要么把模型从该档位移走。
+- ⭐ **同源提醒**：`nonStandardSizes` / `defaultResolution` 这类"模型自己的兜底"都会让"用户选的"和"实际用的"不一致，
+  凡是**按用户选择做限制/计费**的地方，都要先归一化再判。
+
+# 铁律⭐⭐⭐：「先查再放行」的限制一律是假的 —— 并发/额度必须在**同一个事务 + per-user 咨询锁**里判（2026-08-30 修）
+
+`assertMembershipConcurrencyAllowed` 原来是「`count` 在跑的任务 → 大于上限就抛错」。
+⛔ **20 个请求同时打进来，都 count 到 0 → 全部放行** → 基础会员「同时生成 1 条」形同虚设。
+配合另一个洞（积分只判 `> 0`），**剩 1 积分的号能同时开一堆贵任务，把余额刷成负几千** —— 真金白银的损失。
+
+- ⭐ **唯一正解 = `src/lib/generation-quota.ts` 的 `reserveGenerationQuota`**：
+  一个事务里 `SELECT pg_advisory_xact_lock(hashtext(userId))` → 数在跑的（`GenerationJob` ∪ `GenerationReservation`，
+  **按 requestId 去重**）→ 校验并发 → 校验 `余额 >= 在跑预估 + 本次预估` → 插占位。
+  咨询锁按用户串行化、事务结束自动释放、**跨进程有效**（多实例也挡得住）。
+  ⛔ **别把删掉的 `assertMembershipConcurrencyAllowed` 捡回来。**
+- ⭐⭐ **"占位"必须有 `expiresAt` 兜底（本项目 30 分钟）**：进程崩了没释放也会自己过期 ——
+  **绝不允许出现"用户被永久卡住不能生成"**。这比"少拦一次"严重得多。
+- ⭐⭐ **闸门要放在「真正花钱之前」那一步**：`/api/video` 是**先打上游建任务、再 `createVideoJob`**，
+  所以不能等建 job 的事务里才判（那时钱已经花了）。⭐ 判据：**从闸门到"上游被调用"之间不许有花钱动作**。
+- ⭐ **占位释放三个点**：异步 job → `markJobSucceeded` / `markJobFailed` 里；同步接口（语音、工作流编辑）→ 路由 `finally`。
+  漏一个就是"用户后面被莫名拦住直到过期"。
+- ⭐ **事前预估只用来"判够不够"，⛔ 不是扣费**（扣费永远按上游 usage）。
+  唯一实现 `getEstimatedGenerationUsd`（`models.ts`）：**取上限价**（有 `usdHigh` 用它）、视频拿不到时长按最长档估、
+  **表里没有的模型返回 0 = 不做限制**（不认识的模型不许连带把正常用户拦死）。
+
+# 铁律⭐⭐：加「第二种余额」之前先数一遍有多少地方在读余额 —— 能做成子标记就别开新池子（2026-08-30 会员积分）
+
+用户要求「扣费顺序：会员赠送的积分先扣，自己买的永久积分后扣」。
+⛔ 直觉做法是开两个余额字段，但全站有十几处读 `User.credits`（`assertUserCanUseCredits`、额度闸门、
+后台统计、用户中心、积分流水…），**漏一处就是"有分花不出去"或"能花出不存在的分"**。
+
+- ⭐ **正解（已实现，唯一权威 `src/lib/membership-credits.ts`）**：
+  `credits` 仍是**唯一总余额**（所有调用方一行都不用改），`membershipCredits` 只是
+  「这总余额里**属于赠送**的那部分」的**子标记**。
+  - 发放 → `credits += N` 且 `membershipCredits += N`
+  - 扣费 → `credits -= n` 且 **`membershipCredits = GREATEST(0, membershipCredits - n)`** ← 赠送分天然先被花完
+  - 过期/换档 → `credits -= 剩余 membershipCredits`（作废）+ 记一条流水
+- ⭐ **周期性发放用「懒触发」，⛔ 别挂常驻 worker 的 tick**（本文件另有铁律：往 tick 里加活儿会把全站生成拖停）。
+  本项目挂在 `reserveGenerationQuota` 和充值页报价接口里顺手结算；久没来会补发、**最多补 24 期**（别无上限循环）。
+- ⭐ **"改档位/到期/实付"要收敛成一个入口**（`applyMembershipPurchase`），支付回调也走它，
+  否则换档时"作废上一档赠送分 + 重置发放周期"这些步骤一定会被漏掉。
+
+# 铁律⭐⭐：界面上写了「每帐号1次」「限时」「仅新用户」，代码里就必须有记录去拦（2026-08-30）
+
+充值页底行一直写着「(每帐号1次)」，但 `getFirstMonthDiscount` **一次都没校验过** ——
+到期重买还是 5 折，可以无限循环；而且包月/包季/包年**各自**还能再享一次。
+
+- ⭐ **判据（一句话）**：文案里的每一个**限定词**（次数、时间、人群），去代码里找**对应的那个字段/记录**。找不到 = 这句话是假的。
+- ⭐ 本项目实现：`User.membershipDiscountUsed String[]` 存的是档位 `standard` / `pro`，
+  `canUseFirstPeriodDiscount(period, current, settings, tier)` **按档各一次**（标准和高级互不影响；某一档月/季/年任选用过一次，这一档不再打折）。
+  ⭐ 报价函数返回 `discountApplied`，**界面上那个「首月x折」金色标签必须读它**，⛔ 别再直接读 `getFirstMonthDiscount`（那样折用完了标签还在）。
+
+# 铁律⭐⭐：钱只能在服务端算 —— 前端算好的金额一律不许直接写进账（2026-08-30）
+
+升级要付多少、积分包能拿多少积分，原来**只在前端算**。接支付时若直接信客户端传来的金额，
+**用户改一个数就能 1 块钱买年卡**。
+
+- ⭐ **唯一权威 = `GET /api/membership/quote`**（服务端用 `getMembershipUpgradeQuote` / `getCreditPackCredits` 算），
+  充值页打开时拉一次、前端只显示；本地那份只当"还没拉到"时的占位。
+- ⭐⭐ **支付回调落库时必须再复算一遍**，⛔ 绝不允许把请求体里的 `payCny` / `credits` 直接入账。
+- ⚠️ 过 JSON 之后 `Date` 会变字符串 → 前端类型要用 `Omit<Quote,"newExpiresAt"> & { newExpiresAt: string }`，
+  别照 `Date` 用（tsc 不会替你发现，因为服务端类型是 Date）。
+
+# 铁律⭐⭐：折算「旧套餐剩余价值」必须用**当时实付**，缺记录时按**最低可能价**回落（2026-08-30）
+
+升级补差价 = 新档标价 − 旧档剩余价值，而旧剩余价值 = **实付** × 剩余天数 ÷ 周期天数。
+⛔ **不能用标价**：用户首期打过 5 折，按标价折算就把他没花过的钱退给他。
+
+- ⭐ 所以库里存了 `User.membershipPaidCny`（迁移 `20260830010000_membership_paid_cny`）。
+- ⭐⭐ **老数据是 0（没有实付记录）时，回落成「最低可能价」= 首期折后价，⛔ 不是标价**。
+  宁可少抵一点（用户可申诉、我们不亏），也绝不多抵。同理 `Math.min(paid, listPrice)` 夹一层，防脏数据。
+- ⭐ **"只升不降"要两个维度一起判**：`标准包年 → 高级单月` 是「档升了但周期降了」，必须拒 ——
+  否则用户能用一次"升级"把包年偷换成单月。单月与包月**同级**（都 1 个月），互相不算升级也不算降级。
+
+# 铁律⭐⭐：下线一个模型 = 菜单删掉 + 服务端硬拒 + 默认值改掉（2026-08-30 下线 4 个视频模型）
+
+只从 `videoGenerationModels` 里删掉是不够的：**老对话、老工作流节点、老 `.env.local` 配置里还存着那些 id**，
+直接打接口照样能跑（还会真花钱）。
+
+- ⭐ **三件套**：① 从模型清单删 ② **`RETIRED_VIDEO_MODEL_IDS`（`system-settings.ts`，唯一权威）**
+  让 `isConversationVideoModelEnabled` 返回 false，且 `/api/video` 入口直接拒「该模型已下线」
+  ③ 把它相关的规则/价格/时长/上传规则/后台面板全清掉。
+- ⛔⛔ **小心 `DEFAULT_XXX = 列表[0]` 这种写法**：删了前几个模型，默认值会**静默变成另一个模型**。
+  本次 `DEFAULT_VIDEO_MODEL` 原来是 `videoGenerationModels[0]`，删完第一个变成 **MiniMax H3（只有 2K、最贵）**，
+  而它同时是 `fallbackVideoModelRule`（未知模型的回落规则）→ 基础会员一进来就撞画质墙。
+  **已改成写死 `byteplus:video.seedance-2-0-fast`**，⛔ 别改回下标写法。
+- ⭐ **历史资产的显示名要保留**：`media-asset-record.ts` 里那张 id→名称表**不要删下线模型的条目**，
+  否则老视频在资产库里会显示成一串裸 id。
+- ⭐ 判据：`grep` 那 4 个 id，**逐个文件确认"该删的删了、该留的（历史显示名）留着"**。
+
+# 铁律⭐：`edit` 工具插新代码时 `oldString` 必须带足够上下文（2026-08-30 一次会话里插错两次）
+
+用 `};\n\n` 这种**极短的 oldString** 去"在某个常量后面插一段"，会匹配到**文件里另一处同样的片段**：
+本次一次插进了 `system-settings.ts` 的**函数体中间**（`const` 卡在 `}` 和 `return` 之间）、
+一次把 `admin-membership-panel.tsx` 的 **`useEffect` cleanup 切断**（`return () => { cancelled = true;` 后面的 `};\n }, []);` 被吃掉）。
+
+- ⭐ **判据**：oldString 里至少包含**一个该文件独有的标识符**（变量名/函数名/中文注释），别只用括号和空行。
+- ⭐ 插完**立刻 `read` 那一段确认位置对**，⛔ 别等 `tsc` —— 这两次里有一次 `tsc` 是过的（const 在使用点之后声明，
+  运行时才炸），从报错完全看不出插错了地方。
+
 # 铁律⭐⭐：Tailwind 的 `grid-cols-[...]` / 任意值 class **绝不能用模板字符串/变量拼**（2026-08-18 第六十六次会话，用户截图报"界面出问题"）
+
 
 Tailwind 只把**源码里静态出现的完整 class 字面量**编进 CSS。你写
 `` `grid-cols-[130px_...${cond ? "_80px" : ""}]` `` 这种**拼出来的 class**，扫描器看不到 →
@@ -1560,8 +1837,30 @@ nginx 配置在仓库里有副本（`nginx/flashmuse.conf`、`deploy/staging/*.c
   ⛔⛔ **只有"简→繁"一个方向**：繁→简一律靠**还原 WeakMap 里的原文**，
   **禁止再加回任何"繁→简"转换函数/词表**（机械反转是有损的，会把简体正文里的「新增」改成「新建」——真实事故）。
   详见本文件顶部那条同名铁律。
-- ⭐⭐ **2026-08-19 新增三个唯一权威（改模型菜单/比例/新模型接入必须复用）**：
-  - **菜单副标题 `src/lib/models.ts` 的 `getGenerationModelSelectHint(modelId, usdToCnyRate?, creditsPerCny?)`**
+- ⭐⭐⭐ **2026-08~09 会员 / 积分充值 / 额度闸门这一整套的唯一权威清单（改钱相关的东西必须先看这一节）**：
+  - **`src/lib/membership.ts`** —— 总开关 `MEMBERSHIP_SYSTEM_ENABLED`（现在是 `false` = 保留但隐藏）、
+    档位与价目表、`getMembershipUpgradeQuote`（买会员算钱的唯一函数）、
+    `CREDIT_PACKS_CNY` + `getCreditPackCredits`（**积分包换算的唯一权威，接支付时服务端必须用它复算**）。
+  - **`src/lib/membership-credits.ts`** —— `settleMembershipCredits`（月积分发放/过期作废）、
+    `applyMembershipPurchase`（**唯一允许改 membershipTier/到期日的地方**）。
+    ⛔⛔ 两个函数顶部都有 `if (!MEMBERSHIP_SYSTEM_ENABLED) return`，**别去掉**（见顶部那条铁律）。
+  - **`src/lib/membership-guard.ts`** —— `shouldEnforceMembershipGenerationLimit`（**只拦四处**：对话流图/视频、
+    资产库生图、工作流图片/视频节点）、`assertMembershipImageAllowed` / `assertMembershipVideoAllowed`
+    （必须校验**归一化后**的真实分辨率）。
+  - **`src/lib/generation-quota.ts`** —— `reserveGenerationQuota` / `releaseGenerationQuota`：
+    并发上限 + 「积分够不够」在**同一个事务 + per-user 咨询锁**里原子判定。**fail-open**（见顶部铁律）。
+    占位释放三处：`markJobSucceeded` / `markJobFailed`（`generation-jobs.ts`）+ 同步接口的 `finally`。
+  - **`src/lib/models.ts` 的 `getEstimatedGenerationUsd`** —— 事前预估唯一入口，
+    读 `estUsdByResolution` / `estUsdPerSecondByResolution`（**真实扣费数据的 p99**）；
+    **`getEffectiveVideoDurationSeconds`** —— 「这次实际生成几秒」唯一权威，`openrouter-video.ts`
+    的 `getDuration` 只是它的薄封装。
+  - **`src/components/credit-recharge-modal.tsx`** —— 积分充值独立全屏页（**已上线、会收真钱**）；
+    **`src/components/fake-pay-qr-code.tsx`** —— 假二维码唯一实现
+    （⛔ 充值页禁止 import `membership-modal.tsx`，那会把整个会员页打进生产前端包）。
+  - **`src/lib/membership-purchase-records.ts`** —— 购买/充值记录；演示假数据只许在非生产环境下发。
+  - `src/app/api/membership/quote`（会员报价，关闭时 403）、`src/app/api/membership/purchases`（记录）、
+    `src/app/admin/api/membership/grant` + `membership-settings`（后台写接口，关闭时 403）。
+- ⭐⭐ **2026-08-19 新增三个唯一权威（改模型菜单/比例/新模型接入必须复用）**：  - **菜单副标题 `src/lib/models.ts` 的 `getGenerationModelSelectHint(modelId, usdToCnyRate?, creditsPerCny?)`**
     （+ 内部 `IMAGE_MODEL_MENU_INFO` / `VIDEO_MODEL_MENU_INFO`）：模型名下方那行灰字 =「几个字简介 · X积分/张(或/秒)」。
     **汇率必须由调用方从 `/api/model-availability` 的 `creditRate` 传进来**（后台可调、⛔ 别写死 7.2×10）；
     浮动计费的模型标「约」。对话流/资产库菜单与工作流图片·视频节点菜单**共用它**。

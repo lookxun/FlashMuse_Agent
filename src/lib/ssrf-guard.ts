@@ -174,12 +174,12 @@ const MAX_REDIRECTS = 5;
  * 做法：`redirect: "manual"`，自己读 `Location`、把相对地址按当前 URL 解析成绝对地址、
  * **再过一次 `assertRemoteUrlAllowed`**，然后才继续下一跳；最多跟 5 跳。
  */
-export async function safeFetch(rawUrl: string, init?: RequestInit): Promise<Response> {
+export async function safeFetch(rawUrl: string, init?: RequestInit & { dispatcher?: unknown }): Promise<Response> {
   let currentUrl = rawUrl;
 
   for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
     await assertRemoteUrlAllowed(currentUrl);
-    const response = await fetch(currentUrl, { ...init, redirect: "manual" });
+    const response = await fetch(currentUrl, { ...init, redirect: "manual" } as RequestInit);
 
     const isRedirect = response.status >= 300 && response.status < 400;
     if (!isRedirect) return response;

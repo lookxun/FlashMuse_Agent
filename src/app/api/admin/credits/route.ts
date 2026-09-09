@@ -23,6 +23,7 @@ export async function POST(request: Request) {
     chargeText: Boolean(body.chargeText),
     chargeImage: Boolean(body.chargeImage),
     chargeVideo: Boolean(body.chargeVideo),
+    chargeAudio: Boolean(body.chargeAudio),
     chargePromptTool: Boolean(body.chargePromptTool),
   });
 

@@ -5,7 +5,7 @@ import { generateOpenRouterImage } from "@/lib/openrouter";
 import { createCodedApiError } from "@/lib/error-code";
 import { GENERIC_MEDIA_ERROR_MESSAGE } from "@/lib/error-message";
 import { getExpectedImageDimensions } from "@/lib/models";
-import { getUploadRuleOverrides, isAgentImageModelEnabled, isAssetImageModelEnabled, isConversationImageModelEnabled } from "@/lib/system-settings";
+import { getMembershipSettings, getUploadRuleOverrides, isAgentImageModelEnabled, isAssetImageModelEnabled, isConversationImageModelEnabled } from "@/lib/system-settings";
 import { CONTENT_POLICY_ERROR_CODE, CONTENT_POLICY_ERROR_MESSAGE, enforceContentPolicy } from "@/lib/content-moderation";
 import { validateReferenceImageCount } from "@/lib/upload-rules";
 import type { Prisma } from "@prisma/client";
@@ -17,6 +17,15 @@ import { createImageJob } from "@/lib/generation-jobs";
 import { getBytePlusProviderKey } from "@/lib/byteplus-provider-key";
 import { normalizeReferenceAssetUrls } from "@/lib/reference-asset-url";
 import { resolveUnlockLimitsForUser } from "@/lib/account-features";
+import { MEMBERSHIP_MODEL_DENIED_MESSAGE, sanitizeMembershipSettings } from "@/lib/membership";
+import { assertMembershipImageAllowed, getUserMembershipTier, isMembershipDeniedError, shouldEnforceMembershipGenerationLimit } from "@/lib/membership-guard";
+import { CREDITS_NOT_ENOUGH_MESSAGE, isGenerationQuotaError, releaseGenerationQuota, reserveGenerationQuota } from "@/lib/generation-quota";
+import { prisma } from "@/lib/prisma";
+import { imageModelEnforcesReferenceImageSizeRules, validateImageReferenceImages, getImageReferenceSizeRule } from "@/lib/image-reference-image-rules";
+
+function normalizeMediaUrlForMatch(value: string) {
+  return value.split("?")[0].split("#")[0].replace(/^https?:\/\/[^/]+/, "");
+}
 
 function getRequestedImageCount(value: unknown) {
   const count = typeof value === "number" ? value : typeof value === "string" ? Number(value) : 1;
@@ -84,6 +93,9 @@ function withChargedUsage<T extends { usage?: { promptTokens?: number; completio
 export async function POST(request: Request) {
   let body: { prompt?: string; sourcePrompt?: string; model?: string; referenceImages?: string[]; settings?: { ratio?: string; resolution?: string }; count?: number; candidateMode?: "all" | "best"; conversationId?: string; conversationTitle?: string; conversationCode?: string; requestId?: string; metadata?: Prisma.InputJsonValue; async?: boolean; workflowId?: string; workflowNodeId?: string; flow?: "conversation" | "workflow"; transparent?: boolean; bgRemove?: boolean; editFunction?: boolean; suppressContentModerationRecord?: boolean } | undefined;
   const routeStartedAt = Date.now();
+  // 额度占位的 requestId：走同步路径时要在 finally 里释放（异步 job 由任务落地时释放）。
+  let quotaRequestId: string | undefined;
+  let quotaHandedToJob = false;
   try {
     body = (await request.json()) as { prompt?: string; sourcePrompt?: string; model?: string; referenceImages?: string[]; settings?: { ratio?: string; resolution?: string }; count?: number; candidateMode?: "all" | "best"; conversationId?: string; conversationTitle?: string; conversationCode?: string; requestId?: string; metadata?: Prisma.InputJsonValue; async?: boolean; workflowId?: string; workflowNodeId?: string; flow?: "conversation" | "workflow"; transparent?: boolean; bgRemove?: boolean; editFunction?: boolean; suppressContentModerationRecord?: boolean };
     const prompt = body.prompt?.trim();
@@ -100,12 +112,50 @@ export async function POST(request: Request) {
     if (referenceLimitError) return NextResponse.json({ error: referenceLimitError }, { status: 400 });
 
     const user = await getCurrentUser();
+    const membershipTier = getUserMembershipTier(user);
+    const membershipSettings = sanitizeMembershipSettings(getMembershipSettings());
+    if (shouldEnforceMembershipGenerationLimit({ creditSource, editFunction: body.editFunction })) {
+      assertMembershipImageAllowed(membershipTier, body.model, body.settings?.resolution, membershipSettings, body.settings?.ratio);
+    }
+    // 服务端兜底：参考图边长不合规的直接 400 拦掉（对话流/工作流已在发送前拦，这里保证 Agent、资产库、
+    // 任何入口都拦得住）。规则唯一来源 image-reference-image-rules，受约束的模型集合也由它唯一判定。
+    // ⚠️ 这道兜底靠 MediaAsset.width/height 查库，历史资产这两列常常是 null（查不到就不拦），
+    // 真正拦得住的是前端那道"现场量图"——所以两道都要在，别以为有服务端就够了。
+    if (imageModelEnforcesReferenceImageSizeRules(body.model) && referenceImages.length > 0) {
+      const rule = getImageReferenceSizeRule(body.model);
+      const localReferenceImages = referenceImages.filter((url) => !url.startsWith("asset://") && !url.startsWith("data:"));
+      if (rule && localReferenceImages.length > 0) {
+        const dimensionRows = await prisma.mediaAsset.findMany({
+          where: { normalizedUrl: { in: localReferenceImages.map((url) => normalizeMediaUrlForMatch(url)) } },
+          select: { normalizedUrl: true, width: true, height: true, systemName: true },
+        }).catch(() => []);
+        const dimensionByUrl = new Map(dimensionRows.map((row) => [row.normalizedUrl, row]));
+        const sizeError = validateImageReferenceImages(localReferenceImages.map((url) => {
+          const row = dimensionByUrl.get(normalizeMediaUrlForMatch(url));
+          return { name: row?.systemName ?? undefined, url, width: row?.width ?? undefined, height: row?.height ?? undefined };
+        }), rule);
+        if (sizeError) {
+          void appendGenerationDiagnosticsLog({ event: "image-route-reference-image-size-rejected", requestId: body.requestId, conversationId: body.conversationId, userId: user?.id, mode: "image", model: body.model, error: sizeError, extra: { referenceImageCount: referenceImages.length } });
+          return NextResponse.json({ error: sizeError }, { status: 400 });
+        }
+      }
+    }
     const moderationPrompt = (typeof body.sourcePrompt === "string" && body.sourcePrompt.trim()) ? body.sourcePrompt.trim() : prompt;
     const [, policy] = await Promise.all([
       assertUserCanUseCredits(user, "image", body.metadata),
       enforceContentPolicy({ prompt: moderationPrompt, userId: user?.id, requestId: body.requestId, kind: "image", source: creditSource?.startsWith("workflow_") ? "workflow" : isAssetImageCreditSource(creditSource) ? "asset" : creditSource === "agent_image_generation" ? "agent" : "conversation", recordEvent: !body.suppressContentModerationRecord }),
     ]);
     if (policy.blocked) return NextResponse.json({ error: CONTENT_POLICY_ERROR_MESSAGE, errorCode: CONTENT_POLICY_ERROR_CODE }, { status: 400 });
+    // ⛔ 并发上限 + 「积分够不够」必须在**花钱之前**原子判定（唯一实现 lib/generation-quota.ts）。
+    // 放在内容审核之后：被审核拦下的请求压根不该占额度。
+    quotaRequestId = body.requestId?.trim() || undefined;
+    await reserveGenerationQuota({
+      userId: user?.id,
+      requestId: quotaRequestId,
+      tier: membershipTier,
+      membershipSettings,
+      target: { kind: "image", model: body.model, count: body.count, ratio: body.settings?.ratio, resolution: body.settings?.resolution },
+    });
     // ⭐ 提示词超字数：**只记日志、不拦**（用户拍板先观察）。唯一实现 lib/prompt-length-server.ts。
     logPromptLengthOverLimit({
       context: { mode: isAssetImageCreditSource(creditSource) ? "asset-image" : "image", modelId: body.model },
@@ -147,6 +197,8 @@ export async function POST(request: Request) {
         // finalizeImageJobAsset 会优先用它写 MediaAsset.sourcePrompt；"使用提示词"也读它。
         extra: { cleanPrompt: (typeof body.sourcePrompt === "string" && body.sourcePrompt.trim()) ? body.sourcePrompt : prompt },
       });
+      // 占位交给这条 job：worker 跑完（成功或失败）时释放，别在这里删。
+      quotaHandedToJob = true;
       return NextResponse.json({ jobId: job.id, requestId: job.requestId, status: job.status, reservedNames: job.reservedNames ?? undefined });
     }
 
@@ -242,6 +294,9 @@ export async function POST(request: Request) {
   } catch (error) {
     // ⭐ 登录状态已失效：回 401，前端会直接跳首页；且**不记 GenerationEvent**（这不是生成失败）。详见 credits.ts 注释。
     if (isUnauthenticatedError(error)) return NextResponse.json({ error: UNAUTHENTICATED_ERROR_MESSAGE }, { status: 401 });
+    if (isMembershipDeniedError(error)) return NextResponse.json({ error: error instanceof Error ? error.message : MEMBERSHIP_MODEL_DENIED_MESSAGE }, { status: 400 });
+    // 并发上限 / 积分不足：给用户看原话，且不记成"生成失败"（压根没开始生成）。
+    if (isGenerationQuotaError(error)) return NextResponse.json({ error: error instanceof Error ? error.message : CREDITS_NOT_ENOUGH_MESSAGE }, { status: 400 });
     const referenceImageCount = Array.isArray(body?.referenceImages) ? body.referenceImages.length : 0;
     if (referenceImageCount > 0) {
       void appendUploadRuleFeedbackLog({
@@ -274,5 +329,8 @@ export async function POST(request: Request) {
     });
     void recordGenerationEvent({ requestId: body?.requestId, kind: "image", creditSource: getCreditSource(body?.metadata), model: body?.model, provider: body?.model?.startsWith("byteplus:") ? "byteplus" : "openrouter", status: "failed", failureReason: codedError.error, failureCode: codedError.errorCode, durationMs: Date.now() - routeStartedAt, referenceImageCount });
     return NextResponse.json(codedError, { status: 500 });
+  } finally {
+    // 同步路径：请求结束就把占位还回去。异步 job 的占位由任务落地时释放。
+    if (quotaRequestId && !quotaHandedToJob) void releaseGenerationQuota(quotaRequestId);
   }
 }

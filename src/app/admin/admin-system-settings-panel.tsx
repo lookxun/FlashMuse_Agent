@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, useTransition, type ComponentType, type Re
 import { RiArrowDropDownFill, RiFilmAiLine, RiImageAiLine, RiMicAiLine, RiQuillPenAiLine, RiShieldCheckLine } from "react-icons/ri";
 import { ADVANCED_CHAT_MODEL, DEFAULT_CHAT_MODEL, audioGenerationModels, frontendConversationModels, imageGenerationModels, models, videoGenerationModels } from "@/lib/models";
 import type { AdminSystemSettings } from "@/lib/system-settings";
-import { BytePlusIcon } from "@/components/byteplus-icon";
+import { BytedanceIcon } from "@/components/bytedance-icon";
 import { AiAgentLineIcon, ModelIcon } from "@/components/model-icon";
 
 
@@ -109,7 +109,7 @@ const modelUsageGroups: ModelUsageGroup[] = [
     providerGroup: "对话流视频生成",
     additive: true,
     models: [
-      ...videoGenerationModels.filter((model) => model.id !== "bytedance/seedance-2.0-fast" && model.id !== "bytedance/seedance-2.0").map((model) => ({ provider: "openrouter" as const, badge: "", modelId: model.id })),
+      ...videoGenerationModels.map((model) => ({ provider: "openrouter" as const, badge: "", modelId: model.id })),
       { provider: "byteplus", badge: "", modelId: "byteplus:video.seedance-2-0-mini", providerKey: "video.seedance-2-0-mini", bytePlusStatic: bytePlusVideoModels[0] },
       { provider: "byteplus", badge: "", modelId: "byteplus:video.seedance-2-0-fast", providerKey: "video.seedance-2-0-fast", bytePlusStatic: bytePlusVideoModels[1] },
       { provider: "byteplus", badge: "", modelId: "byteplus:video.seedance-2-0", providerKey: "video.seedance-2-0", bytePlusStatic: bytePlusVideoModels[2] },
@@ -289,7 +289,7 @@ function BytePlusModelTag({ item, selectedEndpointId, selectedProvider, onToggle
   if (item.bytePlusStatic) {
     return (
       <span className="inline-flex h-8 w-full items-center gap-2 rounded-[7px] bg-[#f4f6fb] px-2.5 text-[12px] text-[#333333]">
-        <BytePlusIcon className="h-4 w-4 shrink-0 text-[#555555]" aria-hidden="true" />
+        <BytedanceIcon className="h-4 w-4 shrink-0 text-[#555555]" aria-hidden="true" />
         <span className="min-w-0 flex-1 truncate font-medium">{item.bytePlusStatic.label}</span>
         <ProviderSwitch checked={selectedProvider === "byteplus"} onChange={onToggle} ariaLabel="启用 BytePlus" />
       </span>
@@ -301,7 +301,7 @@ function BytePlusModelTag({ item, selectedEndpointId, selectedProvider, onToggle
 
   return (
     <span className="inline-flex h-8 w-full items-center gap-2 rounded-[7px] bg-[#f4f6fb] px-2.5 text-[12px] text-[#333333]">
-      <BytePlusIcon className="h-4 w-4 shrink-0 text-[#555555]" aria-hidden="true" />
+      <BytedanceIcon className="h-4 w-4 shrink-0 text-[#555555]" aria-hidden="true" />
       <span className="min-w-0 flex-1 truncate font-medium">{selectedOption.label}</span>
       <select value={selectedOption.endpointId} disabled={isBytePlusSelected} onChange={(event) => onChange(event.target.value)} className="h-6 w-[128px] rounded-[6px] border border-[#e3e5eb] bg-white px-2 text-[12px] text-[#555555] outline-none disabled:cursor-not-allowed disabled:bg-[#eeeeee] disabled:text-[#999999]">
         {bytePlusOptions.map((option) => <option key={option.endpointId} value={option.endpointId}>{option.label}</option>)}

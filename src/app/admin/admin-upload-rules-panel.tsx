@@ -203,7 +203,7 @@ const uploadRuleRows: UploadRuleRow[] = [
   },
   {
     scene: "对话流视频",
-    model: "Kling / Veo",
+    model: "Kling v3.0",
     rule: getUploadRule({ mode: "video", modelId: "kwaivgi/kling-v3.0-std", transportMode: "local-base64" }),
     note: "只支持图片参考，最多 2 张。不支持参考视频/音频。",
     details: { image: imageFormatText },
@@ -213,13 +213,6 @@ const uploadRuleRows: UploadRuleRow[] = [
     model: "MiniMax Hailuo 3",
     rule: getUploadRule({ mode: "video", modelId: "minimax/hailuo-3", transportMode: "local-base64", videoReferenceMode: "reference" }),
     note: "只支持图片。融合最多 9 张；首帧/尾帧 1 张；首尾帧 2 张。参考视频/音频不支持。",
-    details: { image: imageFormatText },
-  },
-  {
-    scene: "对话流视频",
-    model: "OpenRouter Seedance",
-    rule: getUploadRule({ mode: "video", modelId: "bytedance/seedance-2.0-fast", transportMode: "local-base64" }),
-    note: "只支持图片参考，最多 3 张。不支持参考视频/音频。",
     details: { image: imageFormatText },
   },
   {

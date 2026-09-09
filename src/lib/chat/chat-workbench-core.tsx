@@ -8,7 +8,7 @@ import { computeFileContentHashHex, precheckUploadedFileDedup } from "@/lib/uplo
 import { shouldChunkUpload, uploadFileInChunks } from "@/lib/chunked-upload";
 import { markRecentUploadOrigin } from "@/lib/recent-upload-origin";
 import { defaultProductionUploadApiBaseUrl, getStaticMediaUrl, shouldUseStaticAssetBaseUrl, toLocalGeneratedUrl, uploadApiBaseUrl } from "@/lib/static-media-url";
-import { RiAddLargeLine, RiArrowLeftSLine, RiArrowRightSLine, RiArrowDownSLine, RiArrowUpSLine, RiAtLine, RiCheckLine, RiChat3Line, RiChatDeleteFill, RiCheckboxCircleLine, RiCheckboxMultipleBlankLine, RiCloseLine, RiCopperDiamondLine, RiDeleteBinLine, RiEmotionUnhappyFill, RiEmotionSadLine, RiFolderLine, RiBellLine, RiLandscapeLine, RiImageLine, RiMoreLine, RiMusic2Line, RiMultiImageLine, RiEditBoxLine, RiResetLeftLine, RiRefreshLine, RiResetRightLine, RiShining2Line, RiUpload2Line, RiVipCrown2Line, RiVipDiamondLine, RiVideoLine, RiVideoOnLine, RiVoiceprintLine, RiQuillPenAiLine, RiAccountBoxLine, RiFilmLine, RiInformationLine, RiGitPullRequestLine, RiFilmAiLine, RiImageAddLine, RiImageAiLine, RiMicAiLine, RiMicLine, RiDownloadLine, RiTBoxLine, RiTerminalWindowFill, RiLightbulbLine } from "react-icons/ri";
+import { RiAddLargeLine, RiArrowLeftSLine, RiArrowRightSLine, RiArrowDownSLine, RiArrowUpSLine, RiAtLine, RiBarChart2Line, RiCheckLine, RiChat3Line, RiChatDeleteFill, RiCheckboxCircleLine, RiCheckboxMultipleBlankLine, RiCloseLine, RiDeleteBinLine, RiEmotionUnhappyFill, RiEmotionSadLine, RiFolderLine, RiBellLine, RiLandscapeLine, RiImageLine, RiMoreLine, RiMusic2Line, RiMultiImageLine, RiEditBoxLine, RiResetLeftLine, RiRefreshLine, RiResetRightLine, RiShining2Fill, RiShining2Line, RiUpload2Line, RiVipCrown2Line, RiVideoLine, RiVideoOnLine, RiVoiceprintLine, RiQuillPenAiLine, RiAccountBoxLine, RiFilmLine, RiInformationLine, RiGitPullRequestLine, RiFilmAiLine, RiImageAddLine, RiImageAiLine, RiMicAiLine, RiMicLine, RiDownloadLine, RiTBoxLine, RiTerminalWindowFill, RiLightbulbLine } from "react-icons/ri";
 import { ADVANCED_CHAT_MODEL, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, DEFAULT_AUDIO_MODEL, audioGenerationModels, classifyImageResolutionByModel, bytePlusVideoGenerationModels, frontendConversationModels, frontendImageGenerationModels, getExpectedImageDimensions, getExpectedVideoDimensions, getImageQualityBadgeLabel, getSupportedImageResolutions, getSupportedVideoRatios, getSupportedVideoResolutions, isNonStandardVideoSize, normalizeImageResolutionForModel, normalizeVideoRatioForModel, normalizeVideoResolutionForModel, videoGenerationModels, GenerationModel, ModelName } from "@/lib/models";
 import { toUserErrorMessage } from "@/lib/error-message";
 import { type AudioReferenceMode, type VideoReferenceMode } from "@/lib/upload-rules";
@@ -22,7 +22,7 @@ import { appendEditorText, getAtQueryAtCursor, getAtQueryAtCursorForReferences, 
 // 选区引擎唯一权威在 mention-text.ts（2026-08-02 收敛，原来这里和工作流各存一份且已漂移），此处仅转出口径不变。
 export { getAtQueryAtCursor, getSelectionTextOffset, getSelectionTextRange, setSelectionTextOffset };
 import { createUploadProgressTracker } from "@/lib/upload-progress";
-import { BytePlusIcon } from "@/components/byteplus-icon";
+import { BytedanceIcon } from "@/components/bytedance-icon";
 // ⭐ 模型图标的唯一权威在 @/components/model-icon（原来 core / 工作流 / 后台各存一份且已漂移）。
 //    这里再导出一次，是为了不改动既有 import 路径（chat-workbench.tsx 仍从 core 取）。
 import { AiAgentLineIcon, AiGenerate3dIcon, getGenerationModelIcon } from "@/components/model-icon";
@@ -37,9 +37,9 @@ import { MediaDurationBadge } from "@/components/media-duration-badge";
 import { parseChineseDurationSeconds } from "@/lib/media-duration-format";
 import { WorkflowCanvasState, WorkflowNode } from "@/components/workflow-tldraw-canvas";
 import { sanitizeModelOutputText } from "@/lib/text-cleanup";
-export const HISTORY_INITIAL_SESSION_COUNT = 10;
+export const HISTORY_INITIAL_SESSION_COUNT = 8;
 export const HISTORY_LOAD_MORE_COUNT = 5;
-export const WORKFLOW_INITIAL_ITEM_COUNT = HISTORY_INITIAL_SESSION_COUNT;
+export const WORKFLOW_INITIAL_ITEM_COUNT = 10;
 export const WORKFLOW_LOAD_MORE_COUNT = HISTORY_LOAD_MORE_COUNT;
 export const WORKFLOW_MODE_ENABLED = process.env.NEXT_PUBLIC_WORKFLOW_MODE_ENABLED
   ? process.env.NEXT_PUBLIC_WORKFLOW_MODE_ENABLED === "true"
@@ -475,6 +475,11 @@ export type CurrentUserProfile = {
   generatedVideoCount?: number;
   credits?: number;
   generalModeEnabled?: boolean;
+  membershipTier?: string;
+  membershipPeriod?: string;
+  membershipExpiresAt?: string | null;
+  membershipCredits?: number;
+  membershipPaidCny?: number;
   isAdmin?: boolean;
 };
 
@@ -514,8 +519,8 @@ export const userCreditSourceIcons: Record<UserCreditSource, typeof RiImageLine>
   image_prompt_reverse: RiQuillPenAiLine,
   prompt_optimization: RiQuillPenAiLine,
   signup: RiVipCrown2Line,
-  admin_adjust: RiVipDiamondLine,
-  recharge: RiVipDiamondLine,
+  admin_adjust: RiShining2Fill,
+  recharge: RiShining2Fill,
   activity: RiVipCrown2Line,
 };
 
@@ -1502,6 +1507,8 @@ const traditionalTextMap: Record<string, string> = {
   工作流归档: "工作流歸檔",
   恢复: "恢復",
   退出用户中心: "退出用戶中心",
+  "新建对话/节点 · 默认图片参数": "新增對話/節點 · 預設圖片參數",
+  "新建对话/节点 · 默认视频参数": "新增對話/節點 · 預設影片參數",
   "新建对话 · 默认语音参数": "新增對話 · 預設語音參數",
   默认语音模型: "預設語音模型",
   默认音色: "預設音色",
@@ -2255,27 +2262,41 @@ export function UsageSummaryButton({ summary, mediaCounts, className = "absolute
   const videoCount = mediaCounts?.videos ?? 0;
   const audioCount = mediaCounts?.audios ?? 0;
   const hasUsage = safeSummary.totalTokens > 0 || safeSummary.usd > 0 || safeSummary.credits > 0 || imageCount > 0 || videoCount > 0 || audioCount > 0;
+  const anchorRef = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+  const [box, setBox] = useState<{ left: number; top: number } | null>(null);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    const anchor = anchorRef.current;
+    if (!anchor) return;
+    const rect = anchor.getBoundingClientRect();
+    setBox({ left: rect.right - 118, top: rect.bottom + 8 });
+  }, [open]);
 
   return (
-    <div className={`group ${className}`}>
+    <div ref={anchorRef} className={className} onMouseEnter={() => setOpen(true)} onMouseLeave={() => setOpen(false)}>
       <button type="button" className="flex h-8 w-8 items-center justify-center rounded-md text-[#6f6f6f] transition hover:bg-[#f2f2f2] hover:text-[#111111]" aria-label="查看当前对话用量">
-        <RiCopperDiamondLine className="h-[22px] w-[22px]" aria-hidden="true" />
+        <RiBarChart2Line className="h-[22px] w-[22px]" aria-hidden="true" />
       </button>
-      <div className="pointer-events-none absolute right-0 top-full z-50 mt-2 hidden min-w-[118px] rounded-[8px] bg-[#111111] px-2.5 py-1.5 text-[13px] leading-[18px] text-white shadow-[0_12px_28px_rgba(0,0,0,0.24)] group-hover:block">
-        <div className="mb-0.5 whitespace-nowrap text-[11px] text-[#8f8f8f]">使用量</div>
-        {hasUsage ? (
-          <div className="space-y-0 whitespace-nowrap">
-            <div>• Tk {safeSummary.totalTokens.toLocaleString("en-US")}</div>
-            <div>• <RiVipDiamondLine className="inline h-3.5 w-3.5 align-[-2px]" aria-hidden="true" /> {safeSummary.credits.toLocaleString("en-US")}</div>
-            <div className="mx-2 my-1 h-px bg-[#8f8f8f]/40" aria-hidden="true" />
-            <div>• <RiImageLine className="inline h-3.5 w-3.5 align-[-2px]" aria-hidden="true" /> {imageCount.toLocaleString("en-US")}</div>
-            <div>• <RiFilmLine className="inline h-3.5 w-3.5 align-[-2px]" aria-hidden="true" /> {videoCount.toLocaleString("en-US")}</div>
-            <div>• <RiMicLine className="inline h-3.5 w-3.5 align-[-2px]" aria-hidden="true" /> {audioCount.toLocaleString("en-US")}</div>
-          </div>
-        ) : (
-          <div className="whitespace-nowrap">暂无用量</div>
-        )}
-      </div>
+      {open && typeof document !== "undefined" ? createPortal(
+        <div className="pointer-events-none fixed min-w-[118px] rounded-[8px] bg-[#111111] px-2.5 py-1.5 text-[13px] leading-[18px] text-white shadow-[0_12px_28px_rgba(0,0,0,0.24)]" style={{ left: box?.left ?? 0, top: box?.top ?? 0, zIndex: 13000, visibility: box ? "visible" : "hidden" }}>
+          <div className="mb-0.5 whitespace-nowrap text-[11px] text-[#8f8f8f]">使用量</div>
+          {hasUsage ? (
+            <div className="space-y-0 whitespace-nowrap">
+              <div>• Tk {safeSummary.totalTokens.toLocaleString("en-US")}</div>
+              <div>• <RiShining2Fill className="inline h-3.5 w-3.5 align-[-2px]" aria-hidden="true" /> {safeSummary.credits.toLocaleString("en-US")}</div>
+              <div className="mx-2 my-1 h-px bg-[#8f8f8f]/40" aria-hidden="true" />
+              <div>• <RiImageLine className="inline h-3.5 w-3.5 align-[-2px]" aria-hidden="true" /> {imageCount.toLocaleString("en-US")}</div>
+              <div>• <RiFilmLine className="inline h-3.5 w-3.5 align-[-2px]" aria-hidden="true" /> {videoCount.toLocaleString("en-US")}</div>
+              <div>• <RiMicLine className="inline h-3.5 w-3.5 align-[-2px]" aria-hidden="true" /> {audioCount.toLocaleString("en-US")}</div>
+            </div>
+          ) : (
+            <div className="whitespace-nowrap">暂无用量</div>
+          )}
+        </div>,
+        document.body,
+      ) : null}
     </div>
   );
 }
@@ -2664,13 +2685,15 @@ type AgentMediaPromptItem = {
 export function getAgentMediaPromptItems(message: Message): AgentMediaPromptItem[] {
   if (!message.generationMeta?.agentGenerated) return [];
 
+  // ⭐ 回落链必须最终落到 message.content：下行投影会在 originalPrompt/itemPrompts/videoPrompts 等于 baseline 时删掉它们，
+  // 约定前端回落到 content。刷新/重载后这些字段可能全是 undefined，不回落到 content 就会取到 "" → 面板整个消失（2026-09-05 修）。
   if (message.mode === "video") {
     const videos = getMessageVideos(message);
     const prompts = videos
-      .map((url, index) => ({ prompt: (message.videoPrompts?.[url] ?? message.generationMeta?.itemPrompts?.[index] ?? message.generationMeta?.originalPrompt ?? "").trim(), label: `视频提示词${index + 1}` }))
+      .map((url, index) => ({ prompt: (message.videoPrompts?.[url] ?? message.generationMeta?.itemPrompts?.[index] ?? message.generationMeta?.originalPrompt ?? message.content ?? "").trim(), label: `视频提示词${index + 1}` }))
       .filter((item) => Boolean(item.prompt));
     if (prompts.length > 0) return prompts;
-    const prompt = message.generationMeta?.originalPrompt?.trim();
+    const prompt = (message.generationMeta?.originalPrompt ?? message.content ?? "").trim();
     return prompt ? [{ prompt, label: "视频提示词" }] : [];
   }
 
@@ -2681,7 +2704,7 @@ export function getAgentMediaPromptItems(message: Message): AgentMediaPromptItem
     .filter((item) => Boolean(item.prompt));
 
   if (prompts.length === 0) {
-    const fallback = sanitizeAgentPromptFallback(message.generationMeta.originalPrompt ?? "").trim();
+    const fallback = sanitizeAgentPromptFallback(message.generationMeta.originalPrompt ?? message.content ?? "").trim();
     return fallback ? [{ prompt: fallback, label: "图片提示词" }] : [];
   }
 
@@ -5252,7 +5275,7 @@ function InlineAgentIcon({ activated = false, variant = "agent" }: { activated?:
 
 export function InlineAssistantIcon({ message, activated = false, provider }: { message: Message; activated?: boolean; provider?: "openrouter" | "byteplus" }) {
   if (message.mode === "general" && !activated) {
-    const ModelIcon = provider === "byteplus" ? BytePlusIcon : message.textModel ? getGenerationModelIcon(message.textModel) : null;
+    const ModelIcon = provider === "byteplus" ? BytedanceIcon : message.textModel ? getGenerationModelIcon(message.textModel) : null;
     return ModelIcon ? <ModelIcon className="mr-1.5 inline-block h-5 w-5 align-[-3px] text-[#367cee]" aria-hidden="true" /> : <AiAgentLineIcon className="mr-1.5 inline-block h-5 w-5 align-[-3px] text-[#367cee]" />;
   }
 
@@ -5816,7 +5839,7 @@ function InlineMediaReferenceChips({ references }: { references: MediaFileRefere
 
 export function ReminderToast({ reminder, fixed = false }: { reminder: ReminderMessage; fixed?: boolean }) {
   const baseClass = fixed
-    ? "pointer-events-none fixed left-1/2 top-20 z-[9999] inline-flex h-10 -translate-x-1/2 items-center gap-1.5 whitespace-nowrap rounded-lg px-3 text-[12px] font-medium leading-none text-white shadow-[0_8px_18px_rgba(0,0,0,0.18)]"
+    ? "pointer-events-none fixed left-1/2 top-20 z-[13000] inline-flex h-10 -translate-x-1/2 items-center gap-1.5 whitespace-nowrap rounded-lg px-3 text-[12px] font-medium leading-none text-white shadow-[0_8px_18px_rgba(0,0,0,0.18)]"
     : "pointer-events-none inline-flex h-10 items-center gap-1.5 whitespace-nowrap rounded-lg px-3 text-[12px] font-medium leading-none text-white shadow-[0_8px_18px_rgba(0,0,0,0.18)]";
   const toneClass = reminder.tone === "success" ? "bg-[#75d06a]" : "bg-[#111111]";
   const animationClass = reminder.exiting ? "yinzao-asset-upload-tip-exit" : "yinzao-asset-upload-tip-enter";

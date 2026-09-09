@@ -148,14 +148,15 @@ export async function GET() {
   const user = await getCurrentUser();
   if (!user) return jsonError("请先登录", 401);
 
-  const [settings, ledgers, increaseTotal, workspace, workspaceAssetGenerationCounts] = await Promise.all([
+  const [settings, ledgers, increaseByKind, workspace, workspaceAssetGenerationCounts] = await Promise.all([
     getCreditSettings(),
     prisma.creditLedger.findMany({
       where: { userId: user.id },
       orderBy: { createdAt: "desc" },
       take: 500,
     }),
-    prisma.creditLedger.aggregate({
+    prisma.creditLedger.groupBy({
+      by: ["kind"],
       where: { userId: user.id, direction: "increase" },
       _sum: { credits: true },
     }),
@@ -256,9 +257,19 @@ export async function GET() {
     item.audioCount = workspaceUsage.audioCount;
   }
 
+  const increaseMap = Object.fromEntries(increaseByKind.map((row) => [row.kind, row._sum.credits ?? 0]));
+  const rechargeGranted = Math.max(0, Math.floor(increaseMap.recharge ?? 0));
+  const membershipCredits = Math.max(0, Math.floor((user as { membershipCredits?: number }).membershipCredits ?? 0));
+  const totalCredits = Math.max(0, Math.floor(user.credits ?? 0));
+  const permanentRemaining = Math.max(0, totalCredits - membershipCredits);
+  const rechargeCredits = Math.min(rechargeGranted, permanentRemaining);
+  const giftedCredits = Math.max(0, permanentRemaining - rechargeCredits);
+
   return Response.json({
     credits: user.credits,
-    giftedCredits: increaseTotal._sum.credits ?? 0,
+    membershipCredits,
+    rechargeCredits,
+    giftedCredits,
     settings: {
       usdToCnyRate: settings.usdToCnyRate,
       creditsPerCny: settings.creditsPerCny,
