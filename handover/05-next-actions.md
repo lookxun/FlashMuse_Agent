@@ -16,19 +16,26 @@
 
 ### 🎯 待办 0（最优先）
 
-1. 🟠🟠 **只有你能做的一件事：去支付宝开放平台把「应用网关」改成 `https://ali.venusface.com/api/pay/alipay/notify`**
-   （现在还指向 staging）。不改也不致命 —— 出码/查单/加分都在腾讯 app，前端轮询查单 + 「打开充值页自动补单」能兜住；
-   但异步通知收不到就少了一道保险。⚠️ 测试服 env 的 `ALIPAY_NOTIFY_URL` 继续填 staging，别动。
+1. ✅⭐⭐⭐ **支付在正式服已端到端跑通（用户自己真付了 ¥0.02）** —— 这条不再是待办，是结论：
+   `C20260910023949191258` → **异步通知快路第一次真的走通**
+   （`notify-received` 带 `signed:true` / `appIdOk:true` / `TRADE_SUCCESS`，随后 `order-credited` 且 **`source:"notify"`**），
+   加了 250 积分、`CreditLedger` 恰好 1 行。
+   ⭐ **推论：支付宝优先用下单时传的 `notify_url`（= 我们的 `ALIPAY_NOTIFY_URL`），不依赖开放平台后台的「应用网关」**
+   → 「应用网关还指向 staging」**不阻塞收款**。🟡 建议还是抽空把它填成
+   `https://ali.venusface.com/api/pay/alipay/notify`（兜底 + 符合支付宝文档），但不急。
+   ⚠️ 用户已把第 1 档改回 `50=250` 并锁上（会话末复查过 env）。
+   ⛔ **下次再测小额，价格和积分必须一起改小**（0.01 元 = 1 积分）——
+   本次窗口期（02:39:37~02:41:45）里第 1 档是「¥0.02 = 250 积分」，那两分钟任何人都能花 2 分钱买 250 积分。
+   判据：`sudo grep credit-pack-settings-changed /opt/flashmuse/data/runtime/payment-diagnostics-log.jsonl | tail -1`。
 2. 🔴🔴 **语音功能全站挂了，要拍板**：OpenRouter 把 **fish-audio 全系下架**
    （`GET /api/v1/models` 里一个 `fish` 都没有，只剩 `openai/gpt-audio` / `openai/gpt-audio-mini`；
    直打 `fish-audio/s2.1-pro-free` 返回 `404 No endpoints found`，两服一致 → 供应商问题，不是我们的代码）。
    现在菜单里 `fish-audio/s2.1-pro`（付费）+ `-free`（免费）**都不可用**，用户点了就是 `(B_498)`。
    - 选项：① 换成 `openai/gpt-audio`（要重新对接参数 + 按铁律验三条扣费判据，单独排一批）
      ② 先把语音入口藏起来 ③ 先不管。
-   - ⛔ **连带影响**：`03-deploy-and-servers.md` 里「正式服用免费语音 `fish-audio/s2.1-pro-free` 冒烟」这条判据**已失效**。
-     本次改用「后台趋势图逐格对 SQL + 充值页出真码不付钱」当零成本冒烟，下次照抄。
-3. ⭐ **先把归档脚本改动 + 本批交接文档 commit + push**（代码那部分已经是 `7d47d7b`）。
-4. ⭐ **兜底桶还剩 15 条，根因已经查清了，等你决定要不要修**（详见 `CHANGELOG_3.md` 第一百二十次 · 第七节）：
+   - ⛔ **连带影响**：`03-deploy-and-servers.md` 里「正式服用免费语音 `fish-audio/s2.1-pro-free` 冒烟」这条判据**已失效**
+     （文档里已补了零成本替代冒烟四项，下次照抄）。
+3. ⭐ **兜底桶还剩 15 条，根因已经查清了，等你决定要不要修**（详见 `CHANGELOG_3.md` 第一百二十次 · 第七节）：
    - **13 条 `403 The request is prohibited due to a violation of provider Terms Of Service.`**
      —— 裸 JSON 其实能映射成「当前模型在你的地区不可用」，但真实链路走的是 **curl 兜底那条路**，
      那条路把上游原文丢了、只剩「请求失败，请稍后再试。」→ 要改 `openrouter.ts` 的 curl 兜底让它保留原文。
@@ -55,10 +62,14 @@
 ### 🧾 本批留痕（⛔ 别当成用户数据）
 
 **正式服**：
-- 新对话「v1.0.1.22 正式服冒烟，...」（`12424740@qq.com` / ID_636611），含 1 张语音失败卡 `B_498`，**未扣分**（8101 前后不变）。
-- pending 订单 **`C20260910022417325530`**（¥50 / 250 积分）—— **没付钱**，15 分钟后自动 `closed`。审计日志 1 条 `order-created`。
+- 新对话「v1.0.1.22 正式服冒烟，...」（`12424740@qq.com` / ID_636611），含 1 张语音失败卡 `B_498`，**未扣分**。
+- **我建的探针订单 `C20260910022417325530`**（¥50 / 250 积分）—— **没付钱**，已自动 `closed`。
+- **用户自己真付的订单 `C20260910023949191258`**（¥0.02 / 250 积分，`paid`）—— **真收了 2 分钱、真加了 250 积分**，
+  `CreditLedger` 1 行 recharge，`tradeNo:2026091023001471031435365430`。⚠️ 这是**真实收款**，别当脏数据删。
+- 会话末该账户积分 **8348**（8101 + 250 − 3 生成消耗）。
 - 48 条失败事件被打上 `resolvedAt` + `resolvedNote`（文字保留可追溯；要撤销跑 `--undo`）。
 - ⚠️ 归档样本里 `verify-cm-1786145944020` / `verify-ok-1786146170941`（B_193/B_194）是**我们自己内容审核验证的探针**，不是用户问题。
+- ✅ `CREDIT_PACK_SETTINGS` 已由用户改回并锁上（`payCny:50, credits:250, locked:true`）。
 
 **测试服**：无新增（只读核对）。
 

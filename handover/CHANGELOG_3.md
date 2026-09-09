@@ -142,11 +142,45 @@ SQL 真值：`09/04 conv 43 / wf 1`、`09/07 conv 68 / wf 2`、`09/08 conv 7`、
 - ✅ **充值页**：8 档价格全对（`¥50=250 … ¥5000=25000`、`¥10 = 50 积分` = 默认档位，正式服 env 没配 `CREDIT_PACK_SETTINGS`）；图片/视频价格表正常。
 - ✅ **充值记录 = 「暂无充值记录」**，接口 `/api/membership/purchases` 200 且 `credits:0 / membership:0`
   → demo 假数据已按环境屏蔽（符合「假数据不许出现在真实用户界面」那条铁律）；补单逻辑没报错。
-- ✅⭐⭐ **出真码（没付钱）**：`qrCode = https://qr.alipay.com/ba...` 是**真实支付宝码** → 正式服 `ALIPAY_APP_ID`/私钥/公钥装配正确、`precreate` 调通。
+- ✅⭐⭐ **出真码（我这边没付钱）**：`qrCode = https://qr.alipay.com/ba...` 是**真实支付宝码** → 正式服 `ALIPAY_APP_ID`/私钥/公钥装配正确、`precreate` 调通。
   订单号 `C20260910022417325530` 时间戳 = 北京 **02:24:17**（`formatBeijingStamp` 生效，旧代码会写 UTC 18:24）；
   `kind=credit_pack`、`payCny=50 / credits=250`（服务端按 packIndex 算，前端改不动）；
   `CreditLedger` recharge **0 行**、账户积分 **8101 未变**；支付审计日志落了 1 条 `order-created`。
+  ⭐ 这条单 15 分钟后已自动变 `closed`（会话末复查确认）。
 - 🔴 **`/api/audio` 500** —— 见第六节，与本批无关。
+
+### 五之二、⭐⭐⭐ 用户自己在正式服真付了 ¥0.02 并成功加分 —— 支付宝**异步通知快路第一次被真正跑通**
+
+我在做归档的同时（北京 02:39~02:41），用户自己在正式服端到端测了一遍真付款。支付审计日志把整条时间线记得很清楚：
+
+| 北京时间 | 事件 | 内容 |
+|---|---|---|
+| 02:39:28 | `credit-pack-settings-changed` | 管理员 `lookxun@163.com` **解锁**第 1 档 |
+| 02:39:37 | `credit-pack-settings-changed` | 第 1 档改成 **`0.02=250`** |
+| 02:39:39 | `credit-pack-settings-changed` | 重新**锁上** |
+| 02:39:49 | `order-created` | `C20260910023949191258`，`packIndex:0`、`payCny:0.02`、`credits:250`、`userId:ID_636611` |
+| 02:40:05 | **`notify-received`** | `ip:203.209.244.196`、**`signed:true`**、**`appIdOk:true`**、`tradeStatus:TRADE_SUCCESS`、`tradeNo:2026091023001471031435365430` |
+| 02:40:05 | **`order-credited`** | 加 **250** 积分、`balance:8351`、**`source:"notify"`** |
+| 02:41:29~46 | `credit-pack-settings-changed` ×3 | 解锁 → 改回 **`50=250`** → **重新锁上** ✅ |
+
+⭐⭐⭐ **最值钱的一条：`source:"notify"` + `signed:true` + `appIdOk:true`**
+—— 上一批交接文档写着「异步通知这条验签**到目前为止从没被真正跑过**」（线上加分全靠前端轮询查单完成），
+**现在它第一次真的跑通了**：支付宝服务器按下单时传的 `notify_url`（= `ALIPAY_NOTIFY_URL`，我们本批已配成正式地址）
+打回来、验签通过、走快路结算。
+→ ⭐ **推论：支付宝优先用下单时传的 `notify_url`，不依赖开放平台后台那个「应用网关」** ——
+所以「应用网关还指向 staging」这件事**不阻塞收款**（建议还是填上，作为兜底 + 符合支付宝文档要求）。
+
+⭐ 顺带坐实的几条：
+- **金额校验放行了「多付」**：订单 `payCny=0.02`，实付也是 0.02，`isPaidAmountEnough` 通过；
+- **加分幂等没被触发多次**：`CreditLedger` recharge 恰好 **1 行**；
+- **审计日志属主设对了**（uid 1000），整条链路每一步都留痕、可事后复盘 —— 这正是上一批加它的目的。
+
+⚠️⚠️ **这也正好演示了那条铁律的风险窗口**：第 1 档在 `02:39:37 → 02:41:45` 之间是 **¥0.02 = 250 积分**，
+这两分钟里任何用户都能花 2 分钱买 250 积分。**用户自己改回来了**（有审计日志为证），
+但下次测 1 分钱**务必把积分一起改小**（0.01 元 = 1 积分），别只改价格。
+判据一行：`sudo grep credit-pack-settings-changed /opt/flashmuse/data/runtime/payment-diagnostics-log.jsonl | tail -1`
+—— 会话末复查过，正式服 env 现在是 `payCny:50, credits:250, locked:true` ✅。
+
 
 ### 六、🔴 新发现（与本批无关）：OpenRouter 把 fish-audio 全系下架，语音功能已全站不可用
 
@@ -237,9 +271,13 @@ upstream: openrouter.ai /v1/audio/speech
 ### 九、本次留痕（⛔ 别当成用户数据）
 
 **正式服**：
-- 1 条新对话「v1.0.1.22 正式服冒烟，...」（用户 `12424740@qq.com` / ID_636611），里面 1 张语音失败卡 `B_498`，**未扣分**（积分 8101 前后未变）。
-- 1 条 pending 订单 **`C20260910022417325530`**（¥50 / 250 积分）—— **没付钱**，15 分钟后自动关成 `closed`。支付审计日志 1 条 `order-created`。
+- 1 条新对话「v1.0.1.22 正式服冒烟，...」（用户 `12424740@qq.com` / ID_636611），里面 1 张语音失败卡 `B_498`，**未扣分**。
+- **我建的探针订单 `C20260910022417325530`**（¥50 / 250 积分）—— **没付钱**，已自动 `closed`。审计日志 1 条 `order-created`。
+- **用户自己建并真付的订单 `C20260910023949191258`**（¥0.02 / 250 积分，`paid`）—— **真加了 250 积分**，
+  `CreditLedger` 1 行 recharge，`tradeNo:2026091023001471031435365430`。⚠️ 这条是**真实收款**（2 分钱），别当成脏数据删。
+- 会话末该账户积分 **8348**（8101 + 250 充值 − 3 生成消耗）。
 - 后台归档了 48 条失败事件（`resolvedAt` + `resolvedNote`，文字保留可追溯；要撤销跑 `--undo`）。
+- ✅ `CREDIT_PACK_SETTINGS` 已由用户改回并锁上（`payCny:50, credits:250, locked:true`），会话末复查过。
 
 **测试服**：无新增（只读核对 + md5 + SQL 查询）。
 
