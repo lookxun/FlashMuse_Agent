@@ -25,7 +25,7 @@
   **改前改后逐一相等**；总行数 59 → 65（正好 +6）；无重复 key；**`LOCAL_MEDIA_PROXY` 0 行**（生产绝不配）。
 - ⭐ **动过常驻 worker → force-recreate 过**，日志尾部有 `[generation-worker] started`。
 
-### ✅ 正式服验收（⛔ 零花费、零真跑生成，别重复做）
+### ✅ 正式服验收（⛔ 别重复做）
 
 1. 四域名 `main/api/ali/static` 全 **200**；`main` 与 `ali` 的 `/api/health` 都 `v1.0.1.25`；`x-app-version` 同。
 2. `/api/announcement` 有 `no-store`；`/api/media-thumbnail` **没有** cache-control（白名单生效）。
@@ -41,7 +41,30 @@
    运营概览第三排 = **今日图片/视频/语音** + 历史对话/工作流（正对着第二排累计三卡）；失败排查页能开。
 8. **worker / 队列干净**：queued+running 0、未过期占位 0、`generation-quota-gate-failed` **0**、
    7 个诊断日志属主全 uid 1000、所有容器 healthy。
-9. **console 全程 0 error**（除我那两次故意的 400 探针）。
+9. **console 全程 0 error**。
+10. ⭐⭐⭐ **按用户新规矩真跑了一条最便宜的生成（见下节）** —— Qwen 语音，**1 积分**，成功出 4 秒音频。
+
+### 🗣️⭐⭐⭐ 用户本批新立的规矩：**正式服冒烟 = 跑一条最便宜的生成**
+
+> 用户原话：「**以后推正式服后 就用最便宜语音或图片模型生一条，保证正式服不崩即可。**」
+
+- ✅ **首选 = 语音 `qwen/qwen-audio-3.0-tts-plus`（Qwen Audio 3.0 TTS Plus）→ 实测 1 积分**（`usd 0.00042`），全平台最便宜。
+- ✅ 备选 = 图片 `byteplus:conversation-image.seedream-5-0`（Seedream 5.0 Lite）2 积分/张、**只生 1 张**。
+- ⛔⛔ **禁用 `fish-audio/s2.1-pro-free`**（OpenRouter 已全系下架 fish-audio，点了必红字 `B_498/B_500`，
+  **证明不了"没崩"**）。⚠️ **它还是新对话的默认语音模型 → 必须先手动切到 Qwen 再发。**
+- ⭐ **判据三条**：① 真出音频卡（带时长）/图 ② console 0 error ③ 回库 `CreditLedger` 最新一行对得上。
+- **本批实测**（正式服，新建对话「v1.0.1.25 正式服冒烟：一切正常。」）：
+  出了 `Qwen Audio 3.0 TTS Plus | 龙安灵心 | 00:00 / 00:04`；console 0 error；
+  `CreditLedger` = `09-12 11:25:09 | audio | 语音生成 | qwen/qwen-audio-3.0-tts-plus | credits 1 | usd 0.00042`；
+  积分 8348 → 8347。
+- 规矩已写进 `AGENTS.md` 部署铁律 + `03-deploy-and-servers.md`「部署铁律」节（带候选表）。
+
+### ⭐⭐ 顺手纠正一个前两批写错的结论
+
+**「语音功能全站挂了」是不准确的** —— 挂的**只是 fish-audio 那两个**（供应商 OpenRouter 下架），
+**`qwen/qwen-audio-3.0-tts-plus` 和 `minimax/speech-2.8-hd` 都还活着**（本批在正式服真出了音频）。
+⚠️ 真正的影响是：**新对话默认语音模型仍是那个已下架的 fish 免费版 → 用户不换模型就必然看到红字**
+（要不要换默认值 / 藏掉那两个入口，仍等用户拍板）。
 
 ### ⚠️ 一个容易误判的点（写下来免得下次白查）
 
@@ -53,10 +76,12 @@ app 靠 `getLocalEnvValue()` **运行时读 `/app/.env.local`**。
 ### 🧾 本批留痕（⛔ 别当成用户数据）
 
 - **正式服**：两条 400 探针 `verifyonly_prod_probe_enh_*` / `verifyonly_prod_probe_dep_*`（**只有响应、没进库**）；
+  ⭐ **新建对话「v1.0.1.25 正式服冒烟：一切正常。」内有 1 条 Qwen 语音音频（4 秒，扣 1 积分）** —— 这是按新规矩做的冒烟，别删；
   `.env.local` +6 行（备份 `.env.local.bak-20260912-104132`）；app 备份 154M；
-  测试号 `12424740@qq.com` / ID_636611 积分 **8348 一分未动**；⛔ 公告一个字没动、后台没改任何配置。
+  测试号 `12424740@qq.com` / ID_636611 积分 **8348 → 8347**；⛔ 公告一个字没动、后台没改任何配置。
   ⚠️ 上一批的真实收款订单 `C20260910023949191258`（¥0.02 / 250 积分）仍在库里，**别删**。
 - **测试服**：本批一个字都没动。
+
 
 ### 🗳️ 仍等用户拍板的一件事
 

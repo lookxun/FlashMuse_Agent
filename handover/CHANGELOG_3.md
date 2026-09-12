@@ -103,24 +103,74 @@ app 走 `getLocalEnvValue()` **在运行时读 `/app/.env.local`**。
 ⛔ **没在正式服真跑任何生成**（本批的扣费/时长/尺寸逻辑已在测试服端到端验过，
 而两服 `src` md5 逐字节相等 → 代码完全同一份）。⛔ 公告一个字没动。
 
+### 四点五、🗣️⭐⭐⭐ 用户当场立的新规矩 + **补跑了那一条冒烟**
+
+> 🗣️ 用户原话：「**以后推正式服后 就用最便宜语音或图片模型生一条，保证正式服不崩即可。**」
+
+**先算清"最便宜"是哪个**（看 `models.ts` 的 `AUDIO_MODEL_MENU_INFO` / `IMAGE_MODEL_MENU_INFO`）：
+
+| 候选 | 单价 | 一条实际成本 | 能用吗 |
+|---|---|---|---|
+| `fish-audio/s2.1-pro-free` | 免费 | 0 | ⛔ **不能** —— OpenRouter 已全系下架 fish-audio |
+| **`qwen/qwen-audio-3.0-tts-plus`** | $0.00002/字 | **1 积分** | ✅ **最便宜且能用** |
+| `fish-audio/s2.1-pro` | $0.000015/字 | 1 积分 | ⛔ 同样被下架 |
+| `byteplus:conversation-image.seedream-5-0`（Seedream 5.0 Lite） | $0.035/张 | 2 积分 | ✅ 备选 |
+| `minimax/speech-2.8-hd` | $0.0001/字 | 约 7 积分/千字 | ⛔ 不是最便宜 |
+
+**然后真在正式服跑了一条**（`12424740@qq.com`，**新建对话**「v1.0.1.25 正式服冒烟：一切正常。」）：
+
+1. ⚠️⚠️ **新对话的默认语音模型就是那个已下架的 fish 免费版** → **必须先手动切到 Qwen**
+   （不切就会测到一个必然失败的模型，等于什么都没验）。
+2. 发送「v1.0.1.25 正式服冒烟：一切正常。」→ ✅ **真出了音频卡**：
+   `Qwen Audio 3.0 TTS Plus | 龙安灵心 | 00:00 / 00:04`（4 秒）。
+3. ✅ **console 0 error**、界面零红字（`(B_\d+)` 一条都没匹配到）。
+4. ✅ **回库逐笔对账**：
+   `CreditLedger` 最新一行 = `09-12 11:25:09 | audio | 语音生成 | qwen/qwen-audio-3.0-tts-plus | credits 1 | usd 0.00042`
+   → `round(0.00042 × 7 × 10) = 0` → 走 `Math.max(1, ...)` = **1 积分**，与界面「8,348 → 8,347」一致。
+5. ✅ 顺带：未过期 `GenerationReservation` **0**、`generation-quota-gate-failed` **0**、
+   三个容器全 healthy（app `Up 36 minutes (healthy)`）。
+
+⭐⭐ **这一条顺手核销掉一个挂了两批的疑问：「语音功能全站挂了」是不准确的** ——
+**挂的只是 fish-audio 那两个（供应商下架），`qwen/qwen-audio-3.0-tts-plus` 和 `minimax/speech-2.8-hd` 都还活着。**
+（上两批文档写的「语音功能全站不可用」需要按这个修正理解。）
+
+**规矩已写进三处**：`AGENTS.md` 部署铁律那条（覆盖原「用免费语音冒烟」）、
+`handover/03-deploy-and-servers.md`「部署铁律」节（带候选表 + 三条判据 + 历史背景）、
+以及 `05-next-actions.md` 的「本批立的规矩」。
+
 ### 五、本批留痕（⛔ 别当成用户数据）
 
 **正式服**：
 - 两条 400 探针 `verifyonly_prod_probe_enh_*` / `verifyonly_prod_probe_dep_*`
-  —— **只有 400 响应，没进库、没建 job、没扣分**（浏览器 console 里那 2 条 400 就是它们）。
+  —— **只有 400 响应，没进库、没建 job、没扣分**。
+- ⭐ **新建对话「v1.0.1.25 正式服冒烟：一切正常。」** —— 里面 **1 条 Qwen 语音音频（4 秒，扣 1 积分）**。
+  这是按用户新规矩做的冒烟，**⛔ 别当脏数据删**。
 - `.env.local` **追加了 6 行**（3 个 API key + 3 个 ENABLED），备份在 `.env.local.bak-20260912-104132`。
 - app 备份 `/opt/flashmuse/app-backups/20260912-104132-presync-v1.0.1.22`（154M）。
-- 测试号积分 **8348 未变**；后台只登录看页面。
+- 测试号 `12424740@qq.com` / ID_636611 积分 **8348 → 8347**（只花了冒烟那 1 分）。
+- 后台用 `lookxun@163.com` 只登录看页面，**没改任何配置**；⛔ 公告一个字没动。
 - ⚠️ 上一批的真实收款订单 `C20260910023949191258`（¥0.02 / 250 积分）仍在库里，**别当脏数据删**。
 
-**测试服**：本批**一个字都没动**（只读取了它的 env 那 6 行和 md5）。
+**测试服**：本批**一个字都没动**（只读取了它 env 的那 6 行和算了一次 md5）。
 
-### 六、踩到的两个老坑（都在 `AGENTS.md` 里写过，再次坐实）
+### 六、踩到的三个老坑（都在 `AGENTS.md` 里写过，再次坐实）
 
 1. ⛔ **PowerShell 吃引号**：`ssh host "... grep -c -E \"^(A|B)\" ..."` 里的管道/括号被 PS 拆坏，
    报「`MEDIAKIT_API_KEY` 不是 cmdlet」。→ **一律写 `.sh` → `scp` → `sed -i 's/\r$//'` → `bash`**（本批全程照做）。
 2. ⚠️ `docker compose up` 的进度输出走 **stderr**，PowerShell 会把它渲染成**红色 NativeCommandError**
    —— **那不是失败**，判据要看 `Container ... Started` 和后面的 `/api/health`。
+3. ⛔ `ssh "... nohup ... & sleep 3; echo started"` 仍会把会话挂住到工具 120s 超时
+   —— `started` 已经打出来了就说明后台任务起了，**另起一条 ssh 去 `tail` 日志轮询**即可。
+
+### 七、给下一个接手的人：本批最值钱的三条
+
+1. ⭐⭐⭐ **「版本号一样 = 代码一样」要用 `src/` 逐文件 md5 证明**，不是看 `grep APP_VERSION`。
+   本批三方全等（250 文件 / `1cf3b3cc4a7dc065fc1e58a0320bfd64`），
+   本地侧用 node 算（⛔ 不用 PowerShell），脚本模板在 `03-deploy-and-servers.md`。
+2. ⭐⭐ **判「新 key 有没有配上」要看容器内 `/app/.env.local` 那几行 + 后台显示「已启用」**，
+   ⛔ **别看 `docker exec ... echo $XXX_API_KEY`**（compose 没注进进程环境，那个变量本来就是空的）。
+3. ⭐⭐ **正式服冒烟 = Qwen 语音一条（1 积分）**，⛔ 别再用已下架的 fish 免费版（必红字、证明不了任何事）。
+
 
 ---
 
