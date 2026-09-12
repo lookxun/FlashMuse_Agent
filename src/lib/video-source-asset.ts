@@ -7,7 +7,7 @@
  * 而第一版把时长**完全交给客户端传**（`node.data.duration`，还 `Math.floor` 过一次）：
  *  - 客户端报 `1秒` 就只扣 1 秒的钱 → 真金白银的漏收（钱的依据绝不许来自客户端）；
  *  - 老节点 / 上传视频拿不到 `durationSeconds` 时压根不传 → 服务端 usd=0 → **静默白送**；
- *  - 深度捕捉上游只处理前 60 秒（`frame_load_cap`），按完整时长收钱就是**多收**。
+ *  - 深度捕捉上游只处理前 MAX_DEPTH_SECONDS 秒（`frame_load_cap`），按完整时长收钱就是**多收**。
  * 同时这两条路原来**一点归属校验都没有**（`/api/video` 早就有 `validateOwnedReferences`），
  * 任何登录用户把 `sourceUrl` 填成别人目录下的视频就能拿到一份增强/深度成品。
  *

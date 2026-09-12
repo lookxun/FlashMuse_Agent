@@ -1,3 +1,5 @@
+import { MAX_DEPTH_SECONDS } from "@/lib/video-depth-size";
+
 export type ConversationModel = {
   label: string;
   id: string;
@@ -194,7 +196,8 @@ export function getEffectiveVideoDurationSeconds(modelId: string | undefined, va
   // ⭐ 拿不到时长时用 5 秒 —— 这是上游侧一直在用的兜底值，⛔ 别改成"最长档"。
   const safeSeconds = Number.isFinite(parsed) && parsed > 0 ? parsed : 5;
   if (!modelId) return safeSeconds;
-  if (isVideoEnhanceModel(modelId) || isVideoDepthModel(modelId)) return safeSeconds;
+  if (isVideoDepthModel(modelId)) return Math.min(MAX_DEPTH_SECONDS, safeSeconds);
+  if (isVideoEnhanceModel(modelId)) return safeSeconds;
   // Seedance 2.5 实测支持 4~30 秒；其余 BytePlus（2.0 系）仍 4~15 秒。
   if (modelId === SEEDANCE_25_VIDEO_MODEL_ID) return Math.min(30, Math.max(4, safeSeconds));
   if (modelId.startsWith("byteplus:video.")) return Math.min(15, Math.max(4, safeSeconds));
@@ -258,7 +261,7 @@ const VIDEO_MODEL_MENU_INFO: Record<string, VideoModelMenuInfo> = {
   "mediakit:video.enhance-fast": { desc: "海外极速超分·最高4K", usdPerSecond: 0.0034, approx: true, estUsdPerSecondByResolution: { "720p": 0.0017, "1080p": 0.0034, "2K": 0.0069, "4K": 0.0138 } },
   "mediakit:video.enhance-standard": { desc: "海外标准超分·最高4K", usdPerSecond: 0.0069, approx: true, estUsdPerSecondByResolution: { "720p": 0.0034, "1080p": 0.0069, "2K": 0.0138, "4K": 0.0275 } },
   // RunningHub DepthCrafter：无真实扣费样本，按 GPU 工作流粗估，待回校。
-  "runninghub:video.depthcrafter": { desc: "视频抽深度·灰白深度图", usdPerSecond: 0.02, approx: true, estUsdPerSecondByResolution: { "720p": 0.02 } },
+  "runninghub:video.depthcrafter": { desc: "视频抽深度·灰白深度图", usdPerSecond: 0.02, approx: true, estUsdPerSecondByResolution: { "480p": 0.02 } },
 };
 export function getVideoModelSelectHint(
   modelId?: string,
@@ -1020,12 +1023,18 @@ export const videoModelRules: Record<string, VideoModelRule> = {
     },
   },
   [VIDEO_DEPTH_MODEL_ID]: {
-    resolutions: ["720p"],
-    ratios: ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
-    defaultResolution: "720p",
+    resolutions: ["480p"],
+    ratios: ["16:9", "4:3", "1:1", "3:4", "9:16"],
+    defaultResolution: "480p",
     defaultRatio: "16:9",
     sizes: {
-      "720p": seedanceFastVideoSizes["720p"],
+      "480p": {
+        "16:9": { width: 896, height: 512 },
+        "4:3": { width: 704, height: 512 },
+        "1:1": { width: 512, height: 512 },
+        "3:4": { width: 512, height: 704 },
+        "9:16": { width: 512, height: 896 },
+      },
     },
   },
 };

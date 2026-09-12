@@ -1017,7 +1017,12 @@ async function finalizeVideoJobAsset(job: GenerationJobRow, videoUrl: string, po
   const realResolution = getVideoResolutionFromDimensions(dimensions?.width, dimensions?.height);
   const realDuration = dimensions?.durationSeconds && dimensions.durationSeconds > 0 ? `${Math.round(dimensions.durationSeconds)}秒` : undefined;
   const storeRatio = realRatio ?? settings?.ratio;
-  const storeResolution = realResolution ?? settings?.resolution;
+  // ⭐ 深度动作捕捉例外：它的输出档是**写死的规格**（唯一权威 video-depth-size.ts：短边 512、统一记 480p），
+  //   所以只认 settings 里那个档，⛔ 别拿真实宽高反推 —— `getVideoResolutionFromDimensions(896,512)`
+  //   会落进 720p（短边 512>500 且长边 896>800），于是「我们按 480p 记账/发上游，资产库却显示 HD(720p)」。
+  const storeResolution = isVideoDepthModel(job.model ?? undefined)
+    ? (settings?.resolution ?? realResolution)
+    : (realResolution ?? settings?.resolution);
   const storeDuration = realDuration ?? settings?.duration;
   await prisma.$transaction(async (tx) => {
     const media = await tx.mediaAsset.upsert({

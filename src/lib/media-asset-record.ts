@@ -1,4 +1,5 @@
 import type { Prisma } from "@prisma/client";
+import { isVideoDepthModel } from "@/lib/models";
 
 /**
  * ============================================================================
@@ -315,11 +316,17 @@ export function toAssetPreviewMeta(media: MediaAssetDisplayColumns): AssetPrevie
   if (!hasAny) return undefined;
   const mode = media.mediaType === "video" ? "video" : "image";
   const duration = media.videoDuration || (media.durationSeconds ? `${Math.round(media.durationSeconds)}秒` : undefined);
+  // ⭐ 深度动作捕捉的输出档是**写死的规格**（唯一权威 video-depth-size.ts：短边 512、统一记 480p），
+  //   所以它只认库里存的那个档，⛔ 别拿宽高去反推 —— `getVideoResolutionFromDimensions(896,512)`
+  //   会因为「短边 512 > 500 且长边 896 > 800」落进 720p，界面上就变成"我们说 480p、显示 720p"。
+  const videoResolution = isVideoDepthModel(media.model ?? undefined)
+    ? (media.resolution || getVideoResolutionFromDimensions(media.width, media.height))
+    : (getVideoResolutionFromDimensions(media.width, media.height) ?? media.resolution);
   return {
     modelLabel: getMediaModelDisplayName(media.model),
     ratio: media.width && media.height ? getCommonRatioLabel(media.width, media.height) : media.ratio || "-",
     sizeText: media.width && media.height ? `${media.width} × ${media.height}` : media.imageSize || "-",
-    resolution: (mode === "video" ? (getVideoResolutionFromDimensions(media.width, media.height) ?? media.resolution) : (media.resolution || media.imageSize || getResolutionFromDimensions(media.width, media.height))) || "-",
+    resolution: (mode === "video" ? videoResolution : (media.resolution || media.imageSize || getResolutionFromDimensions(media.width, media.height))) || "-",
     duration: mode === "video" ? duration : undefined,
     mode,
   };

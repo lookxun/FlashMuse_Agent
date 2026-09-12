@@ -66,7 +66,7 @@ const videoShortcutRows: ShortcutRow[] = [
   { key: "video_quick", name: "快捷编辑", rule: "用「源视频当参考视频 + 你输入的提示词」以融合模式重新生成一段视频。参数一律按源视频的真实尺寸/真实时长反推。需要 1080p 时只有 Seedance 2.0 支持，直接用它；480p/720p 才走下方候选链依次兜底。", chain: VIDEO_EDIT_MODEL_CHAIN, chainEmptyHint: "" },
   { key: "video_enhance", name: "画质增强", rule: "把已生成/已上传的视频超分到 720p / 1080p / 2K。快捷菜单里是下拉，用户自己选档位。走国内火山 MediaKit 大模型版。关掉开关或没填 API Key，前端整个按钮隐藏。", chain: VIDEO_ENHANCE_MODEL_CHAIN, chainEmptyHint: "" },
   { key: "video_enhance_fast", name: "画质增强极速", rule: "把已生成/已上传的视频超分到 720p / 1080p / 2K / 4K。快捷菜单里是下拉，用户自己选档位。走海外 BytePlus MediaKit 极速版。关掉开关或没填 API Key，前端整个按钮隐藏。", chain: VIDEO_ENHANCE_FAST_MODEL_CHAIN, chainEmptyHint: "" },
-  { key: "video_depth", name: "深度动作捕捉", rule: "把已生成/已上传的视频抽出灰白深度视频，可再当 Seedance 参考视频用。走 RunningHub DepthCrafter。关掉开关或没填 API Key，前端整个按钮隐藏。", chain: VIDEO_DEPTH_MODEL_CHAIN, chainEmptyHint: "" },
+  { key: "video_depth", name: "深度动作捕捉", rule: "把已生成/已上传的视频抽出灰白深度视频，可再当 Seedance 参考视频用。输出统一 480p，只支持 16:9 / 4:3 / 1:1（竖版对应 9:16 / 3:4），其它比例贴最近的一档，最长处理前 25 秒。走 RunningHub DepthCrafter。关掉开关或没填 API Key，前端整个按钮隐藏。", chain: VIDEO_DEPTH_MODEL_CHAIN, chainEmptyHint: "" },
   { key: "video_frame", name: "视频截图", rule: "截取首帧 / 尾帧 / 当前帧，当成一张上传图片走统一上传链路（去重/命名/进资产库都复用）。纯前端截帧，不调模型。", chain: null, chainEmptyHint: "纯前端截帧，无模型" },
   { key: "video_prompt", name: "使用提示词", rule: "用这个节点的提示词和参考素材新建一个同类节点。上传来的素材没有可复用提示词时按钮置灰。与右键菜单共用同一份实现。", chain: null, chainEmptyHint: "纯前端，无模型" },
   { key: "video_download", name: "下载", rule: "下载该视频原文件（mp4），文件名用资产系统名。与右键菜单的下载共用同一份实现，纯前端、不调模型。", chain: null, chainEmptyHint: "纯前端下载，无模型" },

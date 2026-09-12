@@ -7,6 +7,7 @@ import { GENERIC_MEDIA_ERROR_MESSAGE } from "@/lib/error-message";
 import { createVideoJob } from "@/lib/generation-jobs";
 import { isGenerationQuotaError, releaseGenerationQuota, reserveGenerationQuota } from "@/lib/generation-quota";
 import { VIDEO_DEPTH_MODEL_ID } from "@/lib/models";
+import { DEPTH_OUTPUT_RESOLUTION } from "@/lib/video-depth-size";
 import { getUserMembershipTier } from "@/lib/membership-guard";
 import { sanitizeMembershipSettings } from "@/lib/membership";
 import { normalizeReferenceAssetUrl } from "@/lib/reference-asset-url";
@@ -55,7 +56,7 @@ export async function POST(request: Request) {
     if (ownershipError) return NextResponse.json({ error: ownershipError }, { status: 400 });
     // ⭐⭐ 钱的依据只认服务端实测，且**必须按上游真正会处理的秒数截断**：
     //    RunningHub 那条工作流的 frame_load_cap 只吃前 MAX_DEPTH_SECONDS 秒，
-    //    按完整时长收钱 = 对 60 秒以上的源视频多收（⛔ 客户端那个数只在实测失败时兜底）。
+    //    按完整时长收钱 = 对超过上限的源视频多收（⛔ 客户端那个数只在实测失败时兜底）。
     const resolvedDuration = await resolveSourceVideoDuration({ sourceUrl, clientDuration: body?.durationSeconds ?? body?.duration, maxSeconds: MAX_DEPTH_SECONDS });
     const duration = resolvedDuration.durationText ?? body?.duration;
     const membershipTier = getUserMembershipTier(user);
@@ -66,7 +67,7 @@ export async function POST(request: Request) {
       requestId,
       tier: membershipTier,
       membershipSettings,
-      target: { kind: "video", model, duration, ratio: body?.ratio, resolution: body?.resolution ?? "720p" },
+      target: { kind: "video", model, duration, ratio: body?.ratio, resolution: DEPTH_OUTPUT_RESOLUTION },
     });
 
     const created = await createRunningHubDepthTask({ sourceUrl, duration, durationSeconds: resolvedDuration.seconds ?? body?.durationSeconds, width: body?.width, height: body?.height, requestId });
@@ -76,7 +77,7 @@ export async function POST(request: Request) {
       providerTaskId: created.taskId,
       prompt: "深度动作捕捉",
       model,
-      settings: { resolution: body?.resolution ?? "720p", duration, ratio: body?.ratio },
+      settings: { resolution: DEPTH_OUTPUT_RESOLUTION, duration, ratio: body?.ratio },
       referenceVideos: [sourceUrl],
       conversationId: body?.conversationId ?? body?.workflowId,
       conversationTitle: body?.conversationTitle,

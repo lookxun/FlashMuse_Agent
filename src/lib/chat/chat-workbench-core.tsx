@@ -9,7 +9,7 @@ import { shouldChunkUpload, uploadFileInChunks } from "@/lib/chunked-upload";
 import { markRecentUploadOrigin } from "@/lib/recent-upload-origin";
 import { defaultProductionUploadApiBaseUrl, getStaticMediaUrl, shouldUseStaticAssetBaseUrl, toLocalGeneratedUrl, uploadApiBaseUrl } from "@/lib/static-media-url";
 import { RiAddLargeLine, RiArrowLeftSLine, RiArrowRightSLine, RiArrowDownSLine, RiArrowUpSLine, RiAtLine, RiBarChart2Line, RiCheckLine, RiChat3Line, RiChatDeleteFill, RiCheckboxCircleLine, RiCheckboxMultipleBlankLine, RiCloseLine, RiDeleteBinLine, RiEmotionUnhappyFill, RiEmotionSadLine, RiFolderLine, RiBellLine, RiLandscapeLine, RiImageLine, RiMoreLine, RiMusic2Line, RiMultiImageLine, RiEditBoxLine, RiResetLeftLine, RiRefreshLine, RiResetRightLine, RiShining2Fill, RiShining2Line, RiUpload2Line, RiVipCrown2Line, RiVideoLine, RiVideoOnLine, RiVoiceprintLine, RiQuillPenAiLine, RiAccountBoxLine, RiFilmLine, RiInformationLine, RiGitPullRequestLine, RiFilmAiLine, RiImageAddLine, RiImageAiLine, RiMicAiLine, RiMicLine, RiDownloadLine, RiTBoxLine, RiTerminalWindowFill, RiLightbulbLine } from "react-icons/ri";
-import { ADVANCED_CHAT_MODEL, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, DEFAULT_AUDIO_MODEL, audioGenerationModels, classifyImageResolutionByModel, bytePlusVideoGenerationModels, frontendConversationModels, frontendImageGenerationModels, getExpectedImageDimensions, getExpectedVideoDimensions, getImageQualityBadgeLabel, getSupportedImageResolutions, getSupportedVideoRatios, getSupportedVideoResolutions, isNonStandardVideoSize, normalizeImageResolutionForModel, normalizeVideoRatioForModel, normalizeVideoResolutionForModel, videoGenerationModels, GenerationModel, ModelName } from "@/lib/models";
+import { ADVANCED_CHAT_MODEL, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, DEFAULT_AUDIO_MODEL, audioGenerationModels, classifyImageResolutionByModel, bytePlusVideoGenerationModels, frontendConversationModels, frontendImageGenerationModels, getExpectedImageDimensions, getExpectedVideoDimensions, getImageQualityBadgeLabel, getSupportedImageResolutions, getSupportedVideoRatios, getSupportedVideoResolutions, isNonStandardVideoSize, isVideoDepthModel, normalizeImageResolutionForModel, normalizeVideoRatioForModel, normalizeVideoResolutionForModel, videoGenerationModels, GenerationModel, ModelName } from "@/lib/models";
 import { toUserErrorMessage } from "@/lib/error-message";
 import { type AudioReferenceMode, type VideoReferenceMode } from "@/lib/upload-rules";
 import { getAudioVoiceLabel } from "@/lib/audio-voices";
@@ -2616,9 +2616,13 @@ export function getWorkflowPreviewMeta(kind: "image" | "video", node: WorkflowNo
       : expectedDimensions?.width && expectedDimensions.height
         ? `${expectedDimensions.width} × ${expectedDimensions.height}`
         : "智能尺寸";
+  // ⭐ 深度动作捕捉的分辨率档是写死的规格（唯一权威 video-depth-size.ts），只认节点/资产上存的那个，
+  //   ⛔ 别由宽高反推（896×512 会被反推成 720p，和我们记账的 480p 对不上）。
   const actualResolution = kind === "image"
     ? getImageResolutionFromDimensions(dimensions ?? expectedDimensions, node.data.model) ?? resolution
-    : getVideoResolutionFromDimensions(dimensions ?? expectedDimensions) ?? resolution;
+    : isVideoDepthModel(node.data.model)
+      ? resolution
+      : getVideoResolutionFromDimensions(dimensions ?? expectedDimensions) ?? resolution;
 
   return {
     modelLabel: node.data.model ? getGenerationModelLabel(kind, node.data.model) : assetMeta?.modelLabel || "-",

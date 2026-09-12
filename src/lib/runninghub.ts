@@ -6,6 +6,7 @@ import { VIDEO_DEPTH_MODEL_ID } from "@/lib/models";
 import { normalizeReferenceAssetUrl } from "@/lib/reference-asset-url";
 import { safeFetch } from "@/lib/ssrf-guard";
 import { getConfiguredRunningHubApiKey } from "@/lib/system-settings";
+import { fitVideoDepthOutputSize, MAX_DEPTH_SECONDS, resolveVideoDepthFps } from "@/lib/video-depth-size";
 import { getLocalVideoDimensions } from "@/lib/video-poster";
 
 export { VIDEO_DEPTH_MODEL_ID };
@@ -17,12 +18,7 @@ const RUNNINGHUB_BASE_URL = "https://www.runninghub.ai";
 const DEPTHCRAFTER_NODE_ID = "1";
 const VIDEO_LOAD_NODE_ID = "3";
 const VIDEO_COMBINE_NODE_ID = "4";
-/**
- * ⭐ 上游那条工作流真正会处理的秒数上限（`frame_load_cap = min(这个数, 源时长) × fps`）。
- * ⛔ 扣费必须按截断后的秒数算 —— 按完整时长收钱就是对 60 秒以上的源视频多收。
- */
-export const MAX_DEPTH_SECONDS = 60;
-const DEFAULT_DEPTH_FPS = 30;
+export { MAX_DEPTH_SECONDS } from "@/lib/video-depth-size";
 const MAX_DEPTH_RES = 4096;
 
 export function getRequiredRunningHubApiKey() {
@@ -93,8 +89,14 @@ function getFilename(pathOrUrl: string, mime: string) {
   return `${base}.mp4`;
 }
 
+/**
+ * ⭐⭐ 送给上游的帧率必须**封顶 30**（唯一权威 `resolveVideoDepthFps`）。
+ * ⛔ 直接用源视频的 fps 会出真问题：手机拍的 60fps 视频跑满 25 秒就是 **1500 帧**，
+ *    而实测 896×512 在 900 帧上已经 VRAM OOM、750 帧才稳过 → 60fps 的源视频必挂。
+ * ⚠️ 降 fps 不改成品时长（VideoCombine 用同一个 fps 合片）→ 按秒收费不受影响。
+ */
 function resolveDepthFps(fps?: number) {
-  return typeof fps === "number" && Number.isFinite(fps) && fps > 0 && fps <= 120 ? fps : DEFAULT_DEPTH_FPS;
+  return resolveVideoDepthFps(fps);
 }
 
 function frameLoadCapFromDuration(duration?: string, durationSeconds?: number, fps?: number) {
@@ -110,34 +112,6 @@ function maxResFromDimensions(width?: number, height?: number) {
   const longEdge = Math.max(Number(width) || 0, Number(height) || 0);
   if (longEdge <= 0) return 0;
   return Math.min(MAX_DEPTH_RES, Math.max(64, Math.round(longEdge / 64) * 64));
-}
-
-function snapToMultiple(value: number, multiple = 64) {
-  return Math.max(multiple, Math.round(value / multiple) * multiple);
-}
-
-function snapDimensionsToDepthCrafter(width?: number, height?: number) {
-  const w = Number(width) || 0;
-  const h = Number(height) || 0;
-  if (!(w > 0 && h > 0)) return { width: 0, height: 0 };
-  const ratio = w / h;
-  const centerW = snapToMultiple(w);
-  const centerH = snapToMultiple(h);
-  let best = { width: centerW, height: centerH };
-  let bestSizeError = Number.POSITIVE_INFINITY;
-  let bestRatioError = Number.POSITIVE_INFINITY;
-  for (let nextWidth = Math.max(64, centerW - 128); nextWidth <= centerW + 128; nextWidth += 64) {
-    for (let nextHeight = Math.max(64, centerH - 128); nextHeight <= centerH + 128; nextHeight += 64) {
-      const sizeError = Math.hypot(nextWidth - w, nextHeight - h);
-      const ratioError = Math.abs(nextWidth / nextHeight - ratio);
-      if (sizeError < bestSizeError - 0.5 || (Math.abs(sizeError - bestSizeError) <= 0.5 && ratioError < bestRatioError)) {
-        best = { width: nextWidth, height: nextHeight };
-        bestSizeError = sizeError;
-        bestRatioError = ratioError;
-      }
-    }
-  }
-  return best;
 }
 
 async function readSourceVideo(sourceUrl: string) {
@@ -216,20 +190,15 @@ export async function createRunningHubDepthTask(input: { sourceUrl: string; dura
   const apiKey = getRequiredRunningHubApiKey();
   const startedAt = Date.now();
   const fileName = await uploadVideoToRunningHub({ sourceUrl: input.sourceUrl, apiKey, requestId: input.requestId });
-  // ⭐⭐ 尺寸以**服务端实测的源文件**为准，客户端传来的只当兜底。
-  //   ⛔ 反过来（信客户端）会出真问题：2026-09-12 实测一条 Seedance 480p 视频真实是 864×496，
-  //      而画布节点声明的是 1280×720 → 发给 DepthCrafter 的 custom_width/height 被写成 1280×704
-  //      → ① 成品尺寸和源视频不一样（违反「深度图必须跟源视频同尺寸」）
-  //        ② 上游 GPU 直接 `CUDA error: invalid configuration argument` 整条任务失败。
   const probed = await getLocalVideoDimensions(normalizeReferenceAssetUrl(input.sourceUrl)).catch(() => undefined);
-  let width = Number(probed?.width) > 0 ? Number(probed?.width) : Number(input.width) || 0;
-  let height = Number(probed?.height) > 0 ? Number(probed?.height) : Number(input.height) || 0;
+  const sourceWidth = Number(probed?.width) > 0 ? Number(probed?.width) : Number(input.width) || 0;
+  const sourceHeight = Number(probed?.height) > 0 ? Number(probed?.height) : Number(input.height) || 0;
   const fps = resolveDepthFps(probed?.fps);
   const durationSeconds = probed?.durationSeconds ?? (Number(input.durationSeconds) > 0 ? Number(input.durationSeconds) : undefined);
-  const snapped = snapDimensionsToDepthCrafter(width, height);
-  width = snapped.width;
-  height = snapped.height;
-  const maxRes = maxResFromDimensions(width, height) || 1920;
+  const snapped = fitVideoDepthOutputSize(sourceWidth, sourceHeight);
+  const width = snapped.width;
+  const height = snapped.height;
+  const maxRes = maxResFromDimensions(width, height) || 512;
   const frameLoadCap = frameLoadCapFromDuration(input.duration, durationSeconds, fps);
   const body = {
     apiKey,
@@ -251,7 +220,7 @@ export async function createRunningHubDepthTask(input: { sourceUrl: string; dura
       { nodeId: VIDEO_COMBINE_NODE_ID, fieldName: "filename_prefix", fieldValue: "depth" },
     ],
   };
-  void appendGenerationDiagnosticsLog({ event: "video-provider-create-start", requestId: input.requestId, mode: "video", provider: "runninghub", model: VIDEO_DEPTH_MODEL_ID, extra: { workflowId: RUNNINGHUB_DEPTHCRAFTER_WORKFLOW_ID, maxRes, width, height, fps, frameLoadCap } });
+  void appendGenerationDiagnosticsLog({ event: "video-provider-create-start", requestId: input.requestId, mode: "video", provider: "runninghub", model: VIDEO_DEPTH_MODEL_ID, extra: { workflowId: RUNNINGHUB_DEPTHCRAFTER_WORKFLOW_ID, maxRes, width, height, sourceWidth, sourceHeight, fps, frameLoadCap } });
   let response: Response;
   try {
     response = await runningHubFetch(`${RUNNINGHUB_BASE_URL}/task/openapi/create`, {

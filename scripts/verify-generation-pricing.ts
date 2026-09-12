@@ -2,6 +2,8 @@ import { getGenerationModelSelectHint, getEstimatedGenerationUsd, normalizeImage
 import { withVideoUsdFallback } from "@/lib/video-usage-cost";
 import { toUserErrorMessage } from "@/lib/error-message";
 import { getSourceVideoOwnershipError } from "@/lib/video-source-asset";
+import { DEPTH_OUTPUT_RESOLUTION, DEPTH_RATIO_PRESETS, MAX_DEPTH_FRAMES, MAX_DEPTH_SECONDS, closestVideoDepthRatioLabel, fitVideoDepthOutputSize, resolveVideoDepthFps } from "@/lib/video-depth-size";
+import { getVideoResolutionFromDimensions, toAssetPreviewMeta } from "@/lib/media-asset-record";
 
 let fail = 0;
 function check(name: string, actual: unknown, expected: unknown) {
@@ -52,8 +54,10 @@ check("normalize xhigh on 2.5", normalizeImageQuality("xhigh", FLARE), "xhigh");
 const usdOf = (model: string, settings: { resolution?: string; duration?: string } | undefined) =>
   withVideoUsdFallback(undefined, { model, settings })?.usd ?? 0;
 check("depth 10s", Number(usdOf("runninghub:video.depthcrafter", { duration: "10秒" }).toFixed(4)), 0.2);
+check("depth 60s capped to 25s", Number(usdOf("runninghub:video.depthcrafter", { duration: "60秒" }).toFixed(4)), 0.5);
 check("depth no duration -> 5s floor", Number(usdOf("runninghub:video.depthcrafter", { duration: undefined }).toFixed(4)), 0.1);
 check("depth empty settings -> 5s floor", Number(usdOf("runninghub:video.depthcrafter", undefined).toFixed(4)), 0.1);
+check("effective seconds depth 60 -> 25", getEffectiveVideoDurationSeconds("runninghub:video.depthcrafter", "60秒"), 25);
 check("enhance 720p 5s", Number(usdOf("mediakit:video.enhance-generative", { resolution: "720p", duration: "5秒" }).toFixed(5)), 0.02894);
 check("enhance 1080p 50s", Number(usdOf("mediakit:video.enhance-generative", { resolution: "1080p", duration: "50秒" }).toFixed(5)), 0.5787);
 check("enhance no duration -> 5s floor", usdOf("mediakit:video.enhance-generative", { resolution: "1080p" }) > 0, true);
@@ -70,7 +74,49 @@ check("other user rejected", getSourceVideoOwnershipError("/generated/users/ID_2
 check("legacy shared path ok", getSourceVideoOwnershipError("/generated/videos/a.mp4", "ID_1"), undefined);
 check("absolute url of other user rejected", getSourceVideoOwnershipError("https://main.venusface.com/generated/users/ID_2/videos/a.mp4", "ID_1"), "源视频必须来自当前账号");
 
-// ============ 5. 新红字文案必须幂等（toUserErrorMessage 在链路上会跑两遍） ============
+// ============ 5. 深度捕捉输出尺寸：统一 480p，短边对齐 64，比例贴源视频 ============
+function assertDepthSize(name: string, srcW: number, srcH: number, expW: number, expH: number) {
+  const out = fitVideoDepthOutputSize(srcW, srcH);
+  check(name, out, { width: expW, height: expH });
+  check(`${name} 64-aligned`, out.width % 64 === 0 && out.height % 64 === 0, true);
+  check(`${name} short=512`, Math.min(out.width, out.height), 512);
+}
+check("depth resolution label", DEPTH_OUTPUT_RESOLUTION, "480p");
+assertDepthSize("16:9 1280x720", 1280, 720, 896, 512);
+assertDepthSize("9:16 720x1280", 720, 1280, 512, 896);
+assertDepthSize("1:1", 1024, 1024, 512, 512);
+assertDepthSize("seedance 480p 864x496", 864, 496, 896, 512);
+assertDepthSize("failed-before 1280x704", 1280, 704, 896, 512);
+assertDepthSize("4:3", 1152, 864, 704, 512);
+assertDepthSize("21:9 snaps to 16:9", 2206, 946, 896, 512);
+assertDepthSize("missing dims -> 16:9", 0, 0, 896, 512);
+check("portrait short is width", fitVideoDepthOutputSize(496, 864).width, 512);
+check("3:4", fitVideoDepthOutputSize(864, 1152), { width: 512, height: 704 });
+// ⭐ 五个档位都必须是不动点（重试路径会把上次的输出尺寸再喂进来当"源尺寸"）。
+for (const preset of DEPTH_RATIO_PRESETS) {
+  check(`preset ${preset.label} is fixed point`, fitVideoDepthOutputSize(preset.width, preset.height), { width: preset.width, height: preset.height });
+  check(`preset ${preset.label} label round-trip`, closestVideoDepthRatioLabel(preset.width, preset.height), preset.label);
+}
+// ⭐⭐ 帧数才是 OOM 的真正原因（实测 896×512：750 帧过、900 帧 OOM）→ fps 必须封顶 30，
+//    否则 60fps 的源视频跑满 25 秒就是 1500 帧、必挂。
+check("fps 60 capped to 30", resolveVideoDepthFps(60), 30);
+check("fps 120 capped to 30", resolveVideoDepthFps(120), 30);
+check("fps 24 kept", resolveVideoDepthFps(24), 24);
+check("fps 29.97 kept", resolveVideoDepthFps(29.97), 29.97);
+check("fps missing -> 30", resolveVideoDepthFps(undefined), 30);
+check("fps 0 -> 30", resolveVideoDepthFps(0), 30);
+check("frame budget never exceeds tested ceiling", Math.ceil(MAX_DEPTH_SECONDS * resolveVideoDepthFps(60)) <= MAX_DEPTH_FRAMES, true);
+// ⭐ 深度成品 896×512 的**显示档位**必须还是 480p（和我们记账/发上游的一致）。
+//   ⛔ 别让它被 getVideoResolutionFromDimensions 反推成 720p（短边 512>500、长边 896>800 会落进 720p）。
+const depthAsset = { mediaType: "video", model: "runninghub:video.depthcrafter", ratio: "16:9", resolution: "480p", imageSize: null, videoDuration: null, width: 896, height: 512, durationSeconds: 5 } as Parameters<typeof toAssetPreviewMeta>[0];
+check("depth asset shows 480p", toAssetPreviewMeta(depthAsset)?.resolution, "480p");
+check("depth asset size text", toAssetPreviewMeta(depthAsset)?.sizeText, "896 × 512");
+// 反向：普通视频仍按宽高反推（一个字都不许变）。
+check("normal 896x512 video still 720p", getVideoResolutionFromDimensions(896, 512), "720p");
+check("normal video asset 1280x720 -> 720p", toAssetPreviewMeta({ ...depthAsset, model: "byteplus:video.seedance-2-0", resolution: "1080p", width: 1280, height: 720 } as Parameters<typeof toAssetPreviewMeta>[0])?.resolution, "720p");
+check("depth asset without stored resolution falls back to derived", toAssetPreviewMeta({ ...depthAsset, resolution: null } as Parameters<typeof toAssetPreviewMeta>[0])?.resolution, "720p");
+
+// ============ 6. 新红字文案必须幂等（toUserErrorMessage 在链路上会跑两遍） ============
 const messages = [
   "画质增强未配置或已关闭，请在后台模型开关里填写 MediaKit API Key 并打开开关。",
   "画质增强没有返回任务编号",
