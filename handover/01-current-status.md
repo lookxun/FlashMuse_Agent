@@ -2,7 +2,74 @@
 
 > 本批交接文档 2026-07-21 重建。更早的详细流水在 `historical-handover-docs-last-used-2026-07-21/`（尤其 `CHANGELOG.md` 580KB、`01-current-status.md`、`05-next-actions.md`）。遇到需要历史上下文的难题再翻归档。
 
-## ✅ 当前状态（2026-09-12 第一百二十七次会话末：**审计 121~126 那六批未上线代码 → 修 8 处（5 处是钱）→ 测试服已上 `v1.0.1.25` 并端到端验过**；正式服 / GitHub 仍 `v1.0.1.22`）
+## ✅ 当前状态（2026-09-12 第一百二十八次会话末：**四方同步 `v1.0.1.25`** —— 本地 = 测试服 = 正式服 = GitHub）
+
+  | | 版本 / 状态 |
+  |---|---|
+  | 本地 | **`v1.0.1.25`**（代码 commit `0daed1a` 已推；本批交接文档待 commit） |
+  | 测试服 | **`v1.0.1.25`** |
+  | 正式服 | **`v1.0.1.25`**（2026-09-12 部署 —— **画质增强 / 深度动作捕捉 / GPT Image 2.5 首次上正式服**） |
+  | GitHub | **`v1.0.1.25`**（`0daed1a`，`origin/main`） |
+  | 自查 | `tsc` 0、`npm test` 71/71、`scripts/verify-generation-pricing.ts` 57/57 |
+  | 迁移 | **无新迁移**（两库都 52，entrypoint `No pending migrations`） |
+  | 判据 | ⭐⭐ `src/` 逐文件 md5 **三方完全相等**：250 文件 / `1cf3b3cc4a7dc065fc1e58a0320bfd64` |
+  | 回滚点 | 正式服 app `/opt/flashmuse/app-backups/20260912-104132-presync-v1.0.1.22`（154M）+ `.env.local.bak-20260912-104132` |
+
+**这一批干了什么：把上一批（121~127 那六批功能 + 8 处审计修复）整批推上正式服，四方同步 v1.0.1.25。零代码改动。**
+
+- 🗣️ 用户原话：**「测试服这一批推正式服。」**
+- ⭐ 唯一的"改动"是给 `.env.example` 补了漏掉的 `RUNNINGHUB_API_KEY` / `RUNNINGHUB_API_KEY_ENABLED` 两行模板。
+- ⭐ **正式服 `.env.local` 只追加了 6 行**（MediaKit / BytePlus MediaKit / RunningHub 的 key + ENABLED），
+  值是**从测试服 env 原样抽出来的**（保证与已验过的一致）。
+  断言：`DATABASE_URL 122 / AUTH_SECRET 63 / OPENROUTER_API_KEY 95 / BYTEPLUS_API_KEY 66`
+  **改前改后逐一相等**；总行数 59 → 65（正好 +6）；无重复 key；**`LOCAL_MEDIA_PROXY` 0 行**（生产绝不配）。
+- ⭐ **动过常驻 worker → force-recreate 过**，日志尾部有 `[generation-worker] started`。
+
+### ✅ 正式服验收（⛔ 零花费、零真跑生成，别重复做）
+
+1. 四域名 `main/api/ali/static` 全 **200**；`main` 与 `ali` 的 `/api/health` 都 `v1.0.1.25`；`x-app-version` 同。
+2. `/api/announcement` 有 `no-store`；`/api/media-thumbnail` **没有** cache-control（白名单生效）。
+3. `.next/static` 腾讯 **48** = 阿里 **48**；抽 4 个 chunk 在 `main` 与 `static` 上**都 200**。
+4. ⭐⭐ **归属校验**：`/api/video-enhance`、`/api/video-depth` 各发一次别人目录的 `sourceUrl`
+   → **都 400 `源视频必须来自当前账号`**，没打上游、没建 job、没扣分。
+5. ⭐⭐ **菜单报价**：两个 GPT Image 2.5 都是「**约2-4积分/张**」+ NEW；
+   **其余模型一个字未变**（Seedream 4.5 = 3、5.0 Pro = 约3-6、Recraft Pro = 15、Gemini 3 Pro = 约13、GPT-5.4 = 约17）。
+6. `/api/model-availability`：两个 2.5 在 `imageModels` 里；`editModelToggles` 的
+   **13 个 `fn:` + 3 个新模型链开关全部 true**；`hd:` 链已含两个 2.5。
+7. **后台**（`lookxun@163.com`，只看页面）：新菜单「快捷菜单开关(工作流)」已出现，
+   **三个 API 都「已启用」**（= env key 真被读到）+ 30 个开关 `aria-pressed` 全 true；
+   运营概览第三排 = **今日图片/视频/语音** + 历史对话/工作流（正对着第二排累计三卡）；失败排查页能开。
+8. **worker / 队列干净**：queued+running 0、未过期占位 0、`generation-quota-gate-failed` **0**、
+   7 个诊断日志属主全 uid 1000、所有容器 healthy。
+9. **console 全程 0 error**（除我那两次故意的 400 探针）。
+
+### ⚠️ 一个容易误判的点（写下来免得下次白查）
+
+**容器 `process.env` 里那 3 个新 key 是 0 长度，这是正常的** —— compose 没把它们注进进程环境，
+app 靠 `getLocalEnvValue()` **运行时读 `/app/.env.local`**。
+⭐ 判据是「容器内那个文件里有这 3 行」+「后台那三行显示**已启用**」，
+⛔ 别拿 `echo $MEDIAKIT_API_KEY` 是空就判定 key 没配上。
+
+### 🧾 本批留痕（⛔ 别当成用户数据）
+
+- **正式服**：两条 400 探针 `verifyonly_prod_probe_enh_*` / `verifyonly_prod_probe_dep_*`（**只有响应、没进库**）；
+  `.env.local` +6 行（备份 `.env.local.bak-20260912-104132`）；app 备份 154M；
+  测试号 `12424740@qq.com` / ID_636611 积分 **8348 一分未动**；⛔ 公告一个字没动、后台没改任何配置。
+  ⚠️ 上一批的真实收款订单 `C20260910023949191258`（¥0.02 / 250 积分）仍在库里，**别删**。
+- **测试服**：本批一个字都没动。
+
+### 🗳️ 仍等用户拍板的一件事
+
+**深度动作捕捉要不要加「尺寸太大先拦住」** —— 实测 **1280×704 × 123 帧在 RunningHub 上必挂**
+（`CUDA error: invalid configuration argument`，连挂两次），**896×512 立刻成功** = 上游算力上限。
+现在只映射成 **B_7** 可读文案。加前置拦截或降 `window_size` 都会影响「成品尺寸必须跟源视频一样」这条口径。
+
+细节 → `CHANGELOG_3.md` 第一百二十八次。待办 → `05-next-actions.md`。
+
+---
+
+## ⏪ 上一状态（2026-09-12 第一百二十七次会话末：**审计 121~126 那六批未上线代码 → 修 8 处（5 处是钱）→ 测试服已上 `v1.0.1.25` 并端到端验过**；正式服 / GitHub 仍 `v1.0.1.22`）
+
 
   | | 版本 / 状态 |
   |---|---|

@@ -14,15 +14,113 @@
 >   ④ 把旧卷标题改成「卷 N · 已归档只读」并在顶部加指向新卷的提示 ⑤ 更新 `00-README.md` 文档索引里的 CHANGELOG 行。
 > - 判据不变：**版本号一样 = 测试服和正式服代码一样**（本项目核心约定，见 `AGENTS.md`）。
 
-## 📌 当前状态摘要（2026-09-12 第一百二十七次会话末）：**审计 121~126 六批未上线代码 → 修 8 处（5 处是钱）→ 测试服 `v1.0.1.25` 已端到端验过**；正式服 / GitHub 仍 `v1.0.1.22`
+## 📌 当前状态摘要（2026-09-12 第一百二十八次会话末）：**四方同步 `v1.0.1.25`** —— 本地 = 测试服 = 正式服 = GitHub
 
 | | 版本 / 状态 |
 |---|---|
-| 本地 | **`v1.0.1.25` + 未提交**（121~126 + 本批审计修复） |
+| 本地 | **`v1.0.1.25`**（代码 commit `0daed1a` 已推；本批交接文档待 commit） |
 | 测试服 | **`v1.0.1.25`** |
-| 正式服 / GitHub | 仍 **`v1.0.1.22`**（`7d47d7b`） |
-| 自查 | `tsc` 0、`npm test` 71/71、`scripts/verify-generation-pricing.ts` 57 条全过 |
-| 迁移 | 无 |
+| 正式服 | **`v1.0.1.25`**（2026-09-12 部署；画质增强 / 深度动作捕捉 / GPT Image 2.5 首次上正式服） |
+| GitHub | **`v1.0.1.25`**（`0daed1a`，`origin/main`） |
+| 自查 | `tsc` 0、`npm test` 71/71、`scripts/verify-generation-pricing.ts` 57/57 |
+| 迁移 | **无新迁移**（两库都 52，entrypoint `No pending migrations`） |
+| 判据 | `src/` 逐文件 md5 **三方完全相等**：250 文件 / `1cf3b3cc4a7dc065fc1e58a0320bfd64` |
+| 回滚点 | 正式服 app `/opt/flashmuse/app-backups/20260912-104132-presync-v1.0.1.22`（154M）+ `.env.local.bak-20260912-104132` |
+
+---
+
+## 🗒️ 第一百二十八次会话（2026-09-12）：把测试服这一批推正式服 → 四方同步 v1.0.1.25
+
+> 🗣️ 用户：**测试服这一批推正式服。**
+> ⭐ **最终状态**：本地 = 测试服 = 正式服 = GitHub 全部 `v1.0.1.25`。零代码改动（只补了 `.env.example` 两行模板）。
+
+### 一、推之前的自查（全过）
+
+- `npx tsc --noEmit` → **0**
+- `npm test` → **71/71**
+- `npx tsx scripts/verify-generation-pricing.ts` → **ALL PASS（57 条，含 16 条反向）**
+- `git status --short` → **39 条**（8 文档 + 31 代码/脚本），无游离产物
+- 迁移：本地 `prisma/migrations` **52** 个 = 正式库 `_prisma_migrations` **52** 行 → **本批无新迁移**
+- compose / Dockerfile / nginx：`git status` 对这几个路径**零输出** → 无改动
+- 密钥扫描：新增的 `mediakit.ts` / `runninghub.ts` / `video-source-asset.ts` / 后台面板里
+  **一个硬编码 key 都没有**（全从 `system-settings.ts` 读 env）；`.env.example` 里只有空占位
+- ⭐ 顺手补了 `.env.example` 漏掉的 `RUNNINGHUB_API_KEY` / `RUNNINGHUB_API_KEY_ENABLED` 两行（只是模板）
+
+### 二、commit + push GitHub
+
+- commit `0daed1a`（39 文件）→ `git push origin main` → `d7a86e1..0daed1a main -> main`，`git log origin/main..main` **空**。
+- ⭐ commit message 用 write 工具写进 `.runtime/commit-v10125.txt` 再 `git commit -F`
+  （⛔ PowerShell 5.1 没 heredoc、也不许用 `Set-Content` 写中文）。
+
+### 三、正式服部署（逐步判据）
+
+| # | 动作 | 判据 |
+|---|---|---|
+| 0 | 只读勘察 | prod `v1.0.1.22` / staging `v1.0.1.25`；迁移 52=52；`last-status.txt` = `OK 20260911-193001`（当天凌晨的自动备份）；prod env **0 个**新 key |
+| 1 | app 目录备份 | `/opt/flashmuse/app-backups/20260912-104132-presync-v1.0.1.22`，**154M**，里面 `APP_VERSION = "v1.0.1.22"` |
+| 2 | `.env.local` **只追加 6 行** | 从**测试服 env 里原样抽出**那 6 行（保证与已验过的值一致）→ `tee -a`。⭐ 断言：`DATABASE_URL 122 / AUTH_SECRET 63 / OPENROUTER_API_KEY 95 / BYTEPLUS_API_KEY 66` **改前改后逐一相等**；总行数 **59 → 65**（正好 +6）；`cut -d= -f1 | uniq -d` **空**；`LOCAL_MEDIA_PROXY` **0 行**；属主 `ubuntu netdev`（uid 1000） |
+| 3 | staging→prod rsync（**不再 bump**） | rc=0；prod `APP_VERSION = "v1.0.1.25"`；6 个新文件全部落地；⭐⭐ **`src/` 逐文件 md5 三方相等：本地/测试服/正式服都是 250 文件 / `1cf3b3cc4a7dc065fc1e58a0320bfd64`** |
+| 4 | `up -d --build`（后台 + 轮询） | 约 4 分钟（`chown -R node:node /app` 单独占 **125s**）；entrypoint `52 migrations found` + **`No pending migrations to apply.`**；`/api/health` = `v1.0.1.25` |
+| 5 | 构建产物 grep | `enhance-video-generative` 8 / `enhance-video-fast` 8 / `depthcrafter` 25 / `gpt-image-2.5-sunburst` 31 / `源视频必须来自当前账号` 4 / `深度动作捕捉` 19 → 都真编译进去了 |
+| 6 | `.next/static` → 阿里正式镜像 | 腾讯 **48** = 阿里 **48**；顺带同步 `home-assets` |
+| 7 | `PUBLISHED_APP_VERSION=v1.0.1.25` + **force-recreate** | `.env` 里该 key 只剩 **1 行**；容器里 `[v1.0.1.25]`；`x-app-version: v1.0.1.25`。⭐ 本批动过常驻 worker，**必须 force-recreate** |
+| 8 | 健康检查 | 四域名 `main/api/ali/static` 全 **200**；`main` 与 `ali` 的 `/api/health` 都 `v1.0.1.25`；`/api/announcement` 有 `no-store`；`/api/media-thumbnail` **没有** cache-control（白名单生效）；4 个静态 chunk 在 `main` 和 `static` 上**都 200**；测试服 8080 仍 200（没被影响） |
+
+⚠️ **容器 `process.env` 里那 3 个新 key 是 0 长度，这是正常的** —— compose 没把它们注入进程环境，
+app 走 `getLocalEnvValue()` **在运行时读 `/app/.env.local`**。
+⭐ 正确判据是**容器内那个文件里有这 3 行**（实测 3 行 + 3 个 `ENABLED=true`，属主 `node node`），
+以及后台那三行显示「**已启用**」。⛔ 别看 `echo $MEDIAKIT_API_KEY` 就以为 key 没配上。
+
+### 四、正式服上号验收（只测本批内容，⛔ 零花费）
+
+登录 `12424740@qq.com` / ID_636611，会话末积分 **8348（一分没动）**。
+
+1. **首页 + 工作台版本号** = `v1.0.1.25`；`/api/auth/me` 200 返回自己。
+2. ⭐⭐ **归属校验（本批最关键的安全修复）**：往 `/api/video-enhance` 和 `/api/video-depth`
+   各发一次「别人目录下的 `sourceUrl`」→ **两条都 400 `{"error":"源视频必须来自当前账号"}`**，
+   **没打上游、没建 job、没扣分**（库里 `GenerationJob` 近 30 分钟 **0** 条新增）。
+3. ⭐⭐ **菜单报价（本批最关键的定价修复）**：图片模型下拉里
+   **`GPT Image 2.5 Flare` / `Sunburst` 都是「约2-4积分/张」+ NEW 徽标**；
+   ⭐ **其余模型一个字都没变**（Seedream 4.5 = `3积分/张`、5.0 Pro = `约3-6`、Recraft Pro = `15`、
+   Gemini 3 Pro = `约13`、GPT-5.4 两个 = `约17`）。汇率取自 `/api/model-availability` 的 `creditRate`（7 × 10）。
+4. `/api/model-availability`：`imageModels` 里**两个 2.5 都在**；`editModelToggles` 里
+   **13 个 `fn:` 开关 + 3 个新模型链开关（`video_enhance:...` / `video_enhance_fast:...` / `video_depth:...`）全部 true**；
+   `hd:` 候选链已含两个 2.5。
+5. **工作流模式**能正常进入、**console 0 error**（除了我那两次故意的 400）。
+6. **后台**（`lookxun@163.com`，只看页面、没改任何配置）：
+   - 版本号 `v1.0.1.25`；新菜单 **「快捷菜单开关(工作流)」** 已出现；
+   - 那一页：**火山引擎 MediaKit API / BytePlus MediaKit API / RunningHub API 三行都「已启用」**
+     （= env key 真被读到，这是装配成功的硬判据）+ **30 个开关 `aria-pressed` 全 true**；
+     视频区三个新功能「画质增强 / 画质增强极速 / 深度动作捕捉」规则说明齐全；
+   - **运营概览卡片顺序对了**：第二排「累计图片 / 累计视频 / 累计语音 / 累计积分 / 成功率」，
+     第三排「**今日图片 / 今日视频 / 今日语音** / 历史对话 / 历史工作流」→ 今日三卡正在累计三卡正下方；
+   - **失败排查页**能打开（待排查 475 / 兜底桶 18 / 今日新增 0 / 已归档 26）；
+   - 全程 **console 0 error**。
+7. **worker 活着**：app 日志尾部 `[generation-worker] started`；队列里 queued/running **0 条**；
+   未过期占位 `GenerationReservation` **0 行**；`generation-quota-gate-failed` **0**；
+   7 个诊断日志属主全是 uid 1000。所有容器 healthy。
+
+⛔ **没在正式服真跑任何生成**（本批的扣费/时长/尺寸逻辑已在测试服端到端验过，
+而两服 `src` md5 逐字节相等 → 代码完全同一份）。⛔ 公告一个字没动。
+
+### 五、本批留痕（⛔ 别当成用户数据）
+
+**正式服**：
+- 两条 400 探针 `verifyonly_prod_probe_enh_*` / `verifyonly_prod_probe_dep_*`
+  —— **只有 400 响应，没进库、没建 job、没扣分**（浏览器 console 里那 2 条 400 就是它们）。
+- `.env.local` **追加了 6 行**（3 个 API key + 3 个 ENABLED），备份在 `.env.local.bak-20260912-104132`。
+- app 备份 `/opt/flashmuse/app-backups/20260912-104132-presync-v1.0.1.22`（154M）。
+- 测试号积分 **8348 未变**；后台只登录看页面。
+- ⚠️ 上一批的真实收款订单 `C20260910023949191258`（¥0.02 / 250 积分）仍在库里，**别当脏数据删**。
+
+**测试服**：本批**一个字都没动**（只读取了它的 env 那 6 行和 md5）。
+
+### 六、踩到的两个老坑（都在 `AGENTS.md` 里写过，再次坐实）
+
+1. ⛔ **PowerShell 吃引号**：`ssh host "... grep -c -E \"^(A|B)\" ..."` 里的管道/括号被 PS 拆坏，
+   报「`MEDIAKIT_API_KEY` 不是 cmdlet」。→ **一律写 `.sh` → `scp` → `sed -i 's/\r$//'` → `bash`**（本批全程照做）。
+2. ⚠️ `docker compose up` 的进度输出走 **stderr**，PowerShell 会把它渲染成**红色 NativeCommandError**
+   —— **那不是失败**，判据要看 `Container ... Started` 和后面的 `/api/health`。
 
 ---
 
