@@ -12,6 +12,7 @@ import { AdminCreditsPanel, type AdminCreditUser } from "./admin-credits-panel";
 import { AdminRecordsPanel, type AdminRecordSummary } from "./admin-records-panel";
 import { AdminServerInfoPanel } from "./admin-server-info-panel";
 import { AdminSystemSettingsPanel } from "./admin-system-settings-panel";
+import { AdminWorkflowShortcutPanel } from "./admin-workflow-shortcut-panel";
 import { AdminGenerationSettingsPanel } from "./admin-generation-settings-panel";
 import { AdminUploadRulesPanel } from "./admin-upload-rules-panel";
 import { AdminOverview2 } from "./admin-overview-2";
@@ -33,7 +34,7 @@ import { RiAlarmWarningLine, RiDashboardLine, RiFileList3Line, RiLeafLine, RiLis
 
 export const dynamic = "force-dynamic";
 
-type AdminTab = "overview" | "users" | "account-features" | "credits" | "membership" | "records" | "failures" | "content-moderation" | "announcement" | "settings" | "generation" | "upload-rules" | "gpt-image-optimization" | "server";
+type AdminTab = "overview" | "users" | "account-features" | "credits" | "membership" | "records" | "failures" | "content-moderation" | "announcement" | "settings" | "workflow-shortcuts" | "generation" | "upload-rules" | "gpt-image-optimization" | "server";
 
 const adminNavItems: Array<{ key: AdminTab; label: string; icon: IconType }> = [
   { key: "overview", label: "概览", icon: RiDashboardLine },
@@ -44,6 +45,7 @@ const adminNavItems: Array<{ key: AdminTab; label: string; icon: IconType }> = [
   { key: "records", label: "生成记录", icon: RiFileList3Line },
   { key: "failures", label: "失败排查", icon: RiAlarmWarningLine },
   { key: "settings", label: "模型开关", icon: RiToggleLine },
+  { key: "workflow-shortcuts", label: "快捷菜单开关(工作流)", icon: RiToggleLine },
   { key: "generation", label: "系统设置", icon: RiSettingsLine },
   { key: "upload-rules", label: "上传规则", icon: RiListSettingsLine },
   { key: "gpt-image-optimization", label: "GPT生图优化", icon: RiFileList3Line },
@@ -54,7 +56,7 @@ const adminNavItems: Array<{ key: AdminTab; label: string; icon: IconType }> = [
 
 function getAdminTab(value: string | string[] | undefined): AdminTab {
   const tab = Array.isArray(value) ? value[0] : value;
-  if (tab === "users" || tab === "account-features" || tab === "credits" || tab === "membership" || tab === "records" || tab === "failures" || tab === "content-moderation" || tab === "announcement" || tab === "settings" || tab === "generation" || tab === "upload-rules" || tab === "gpt-image-optimization" || tab === "server") return tab;
+  if (tab === "users" || tab === "account-features" || tab === "credits" || tab === "membership" || tab === "records" || tab === "failures" || tab === "content-moderation" || tab === "announcement" || tab === "settings" || tab === "workflow-shortcuts" || tab === "generation" || tab === "upload-rules" || tab === "gpt-image-optimization" || tab === "server") return tab;
   return "overview";
 }
 
@@ -393,6 +395,15 @@ export default async function AdminPage({ searchParams }: { searchParams?: Promi
     return (
       <AdminShell adminEmail={currentAdminEmail} activeTab={activeTab}>
         <AdminSystemSettingsPanel settings={systemSettings} adminEmailCount={adminEmails.length} />
+      </AdminShell>
+    );
+  }
+
+  if (activeTab === "workflow-shortcuts") {
+    const systemSettings = getAdminSystemSettings();
+    return (
+      <AdminShell adminEmail={currentAdminEmail} activeTab={activeTab}>
+        <AdminWorkflowShortcutPanel settings={systemSettings} />
       </AdminShell>
     );
   }

@@ -4,6 +4,66 @@
 This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code. Heed deprecation notices.
 <!-- END:nextjs-agent-rules -->
 
+# 铁律⭐⭐⭐：**上游不返回成本的链路，扣费输入绝不许来自客户端** —— 必须服务端现场实测（2026-09-12 抓到 4 个漏洞）
+
+2026-09-12 审「画质增强 / 深度动作捕捉」这两条新链路：MediaKit / RunningHub **从来不返回 `usage.cost`**，
+所以 `withVideoUsdFallback` 的兜底定价就是**唯一扣费依据**，而它读的 `settings.duration`
+**整条路都来自客户端**（画布节点里 `Math.floor(durationSeconds)` 拼的 `"5秒"`）。
+→ **客户端报「1秒」，60 秒的视频就只扣 1 秒的钱。**
+
+- ⭐⭐ **判据（一句话）**：把这次扣费的每一个输入变量列出来，逐个问「**这个数是谁算的？**」。
+  只要有一个来自请求体，而上游又不给成本 → **客户端可以自己定价**。
+- ⭐ **正解**：服务端手上本来就有那个文件（两个 provider 都要读本地文件传上去）→
+  一律现场 ffmpeg 实测（唯一权威 `src/lib/video-source-asset.ts` 的 `resolveSourceVideoDuration`），
+  客户端那个数**只在实测失败时兜底**，并把 `durationSource` / `probedSeconds` / `clientDuration` 全写进诊断日志
+  （判据：日志里必须是 `"probed"`）。
+- ⭐⭐ **同族第二漏：兜底定价里写 `if (seconds <= 0) return usage`** → `usd` 缺失 → `chargeCredits` 按 0 扣
+  = **静默白送**（不报错、不进红字、后台也看不见）。**凡是兜底定价分支，都不许有"算不出来就不定价"的出口**，
+  一律回落到 `getEffectiveVideoDurationSeconds`（拿不到按 5 秒兜底）。
+- ⭐⭐ **第三漏：上游只处理前 N 秒，我们按完整时长收钱 = 多收。**
+  深度捕捉的 `frame_load_cap` 只吃前 60 秒（`MAX_DEPTH_SECONDS`），而扣费用的是源视频完整时长。
+  → **凡是上游有"只处理前 N 个/前 N 秒"的截断，收费秒数必须按同一个 N 截断**（日志里记 `capped`）。
+- ⭐ **第四漏（同批，另一族）：尺寸也别信客户端。** 画布节点声明 1280×720、文件真实 864×496 →
+  发给上游的 `custom_width/height` 用了声明值 → ①成品尺寸和源视频不一样 ②上游 GPU 直接 `CUDA error` 挂掉。
+  改成**实测优先、客户端兜底**之后两个问题一起消失。
+
+# 铁律⭐⭐：**菜单报价必须按"真实扣费的分布"给，而"贵不贵"常常不由分辨率决定**（2026-09-12 把「3积分」纠成「约2-4积分」）
+
+GPT Image 2.5 的菜单副标题写 `usd: 0.041` → 显示「约3积分/张」。拉真实扣费一量：
+**同一个 1K + 同一个默认画质 high，16:9 = $0.0286（2 分）/ 4:3 = $0.0390（3 分）/ 1:1 = $0.0528（4 分）**
+—— **比例越"方"越贵**（1:1 是 16:9 的 1.85 倍，而像素只多 14% → 按 patch 计费、不是按像素线性；
+GPT-5.4 Image 2 上同样成立）。而**画质的影响更大**：max 是默认档的 **4 倍**（0.1137 vs 0.0285）。
+→ 那个单一数字**两头都不对**（16:9 高估 37%、1:1 低估 46%）。
+
+- ⭐ **判据**：把真实扣费按 `模型 × 画质 × size` 聚类（数据源：`CreditLedger` + 诊断日志的
+  `image-provider-success.extra.usd`）。**同一"档"里最大/最小差 1.5 倍以上 → 菜单必须给区间**
+  （`usd` + `usdHigh` → 「约2-4积分/张」，沿用 `seedream-5-0-pro` 的先例），⛔ 别硬凑一个数。
+- ⭐⭐ **预估闸门要按"真正决定价钱的那个维度"建表**：本项目原来只有 `estUsdByResolution`，
+  而 2.5 的价钱主要由**画质**决定 → 新增 `estQualityMultiplier`（只给这两个模型配，其余恒 1 倍、行为不变），
+  并把 `settings.quality` 从 `/api/image` 一路传到 `getEstimatedGenerationUsd`。
+  基准取「该分辨率里**最贵比例**的默认画质」——闸门宁高不低。
+- ⛔ **`usd` 字段同时被 `getImageModelFallbackUsd`（上游不给成本时的扣费兜底）读** → 改它要意识到这一点。
+- ⭐ **验收必须逐笔对账**：真跑几张 → `credits` 与 `round(extra.usd × usdToCnyRate × creditsPerCny)` 逐条相等。
+  ⛔ 别只看菜单文字改没改。
+
+# 铁律⭐⭐：**幂等早退的路径上，要问一句「那把锁/那个占位有没有人释放」**（2026-09-12 抓到占位泄漏）
+
+`reserveGenerationQuota` 在真正建 job 之前插一条 `GenerationReservation` 占位，正常由
+`markJobSucceeded` / `markJobFailed` 释放。但**刷新页面后前端会对一条已经 succeeded 的消息再 POST 一次** →
+闸门又插了一条新占位 → `createXxxJob` 走幂等早退（返回那条早就完成的 job）→
+**没人再走 markJobSucceeded → 占位永远不释放，只能等 `expiresAt`（30 分钟）**。
+实测抓到：占位 19:23:15 插入，而对应 job 19:12:59 就成功了 → 用户被白占 8 积分的额度。
+
+- ⭐ **判据**：凡是「同一个 requestId 重复进来会走幂等早退」的接口，
+  把**早退之前已经产生的副作用**（占位、advisory lock 之外的行锁、计数器、临时文件）逐个列出来问
+  「这条早退路径上谁来清理它？」没人 → 就是泄漏。
+- ⭐ **正解（本项目）**：闸门事务里先查
+  `SELECT 1 FROM "GenerationJob" WHERE "requestId"=... AND status IN ('succeeded','failed')`，
+  有就直接 return、不插占位（活儿已经干完了，不该再占任何额度）。
+- ⭐ **验法是二值的**：拿一个**已 succeeded** 的 requestId 再 POST 一次 →
+  `GenerationReservation` 必须仍是 0 行（旧代码会多出一行）。⛔ 别靠"刷新一下看看"。
+- ⭐ 顺带：**`expiresAt` 那个兜底是"别把用户永久卡住"，不是"泄漏没关系"** —— 泄漏期间用户的可用余额是真的少了。
+
 # 铁律⭐⭐⭐：Prisma 的 `DateTime` 列是 **`timestamp without time zone`（裸 UTC）** —— SQL 里转北京必须绕两步，⛔ 单次 `AT TIME ZONE 'Asia/Shanghai'` 是**反方向**（2026-09-10 抓到，上一批"改成北京时间"把 6 处按天统计改得比原来更错）
 
 Postgres 的 `AT TIME ZONE` 对两种列语义**完全相反**：
@@ -2029,6 +2089,35 @@ nginx 配置在仓库里有副本（`nginx/flashmuse.conf`、`deploy/staging/*.c
   - **`src/lib/membership-purchase-records.ts`** —— 购买/充值记录；演示假数据只许在非生产环境下发。
   - `src/app/api/membership/quote`（会员报价，关闭时 403）、`src/app/api/membership/purchases`（记录）、
     `src/app/admin/api/membership/grant` + `membership-settings`（后台写接口，关闭时 403）。
+- ⭐⭐⭐ **2026-09 新增的「视频后处理」这一族（画质增强 / 深度动作捕捉）唯一权威清单 —— 改它们必须先看这一节**：
+  - **`src/lib/video-source-asset.ts`** —— 「用户给的源视频」→ **归属校验 + 真实时长** 的唯一权威：
+    `getSourceVideoOwnershipError()`（路径里带别人 userId 就拒）/ `resolveSourceVideoDuration()`
+    （**ffmpeg 现场实测源文件**，客户端那个数只在实测失败时兜底，支持 `maxSeconds` 截断）。
+    ⛔⛔ **扣费秒数只认它** —— 上游 MediaKit / RunningHub **从不返回成本**，
+    所以 `settings.duration` 就是唯一扣费依据，绝不许来自请求体（见顶部那条铁律）。
+  - **`src/lib/mediakit.ts`** —— 画质增强唯一实现：国内大模型版 `enhance-video-generative`（北京）+
+    海外极速 `enhance-video-fast`（新加坡）。⛔ 海外标准按用户拍板不做。
+    ⛔ `BYTEPLUS_API_KEY`（`ark-`）**不是** MediaKit key，三把 key 各自独立
+    （`MEDIAKIT_API_KEY` / `BYTEPLUS_MEDIAKIT_API_KEY` / `RUNNINGHUB_API_KEY`，只进 `.env.local`、⛔ 不进 git）。
+  - **`src/lib/runninghub.ts`** —— 深度动作捕捉唯一实现（DepthCrafter，workflowId 写死
+    `1868729320020787201`，**国际站 `www.runninghub.ai`**，⛔ 别打国内 `runninghub.cn`）。
+    `MAX_DEPTH_SECONDS = 60` 既是上游 `frame_load_cap` 的上限、**也是收费秒数的截断值**。
+    尺寸**实测优先、客户端兜底**，再对齐 64 倍数。
+  - **`src/lib/video-usage-cost.ts` 的 `withVideoUsdFallback`** —— 这两族的兜底定价（**唯一扣费依据**）：
+    增强 = `分钟 × 分辨率系数(720p 1 / 1080p 2 / 2K 4 / 4K 8) × 基准价`（国内 `2.5/7.2`、海外极速 `0.1033`）；
+    深度 = `秒 × $0.02`。⛔ 两个分支都**不许**出现"算不出秒数就原样返回"（那是静默白送）。
+  - **两个接口**：`POST /api/video-enhance`、`POST /api/video-depth` —— 都必须
+    ① 归属校验 ② 服务端实测时长 ③ 闸门 `reserveGenerationQuota` 在**打上游之前** ④ `finally` 里释放占位。
+  - **开关**：`system-settings.ts` 的 `isVideoEnhanceEnabled` / `isBytePlusVideoEnhanceFastEnabled` /
+    `isVideoDepthEnabled`（key 没配或开关关掉 → 前端按钮整个隐藏）；后台独立页
+    **`src/app/admin/admin-workflow-shortcut-panel.tsx`（「快捷菜单开关(工作流)」）**，
+    功能显示开关 key = `fn:${func}`、模型链开关 key = `${func}:${modelId}`。
+    ⛔ 别把这些搬回「模型开关」页。
+  - **回归**：`npx tsx scripts/verify-generation-pricing.ts`（57 条，16 条反向）—— 改
+    菜单价格 / 预估表 / 兜底定价 / 归属校验 / 那 13 条红字之前**先跑它**。
+  - ⭐ **轮询按 taskId / provider 分流**：`amk-...enhance-video-generative` → 国内 MediaKit；
+    `...enhance-video-fast` → 海外 MediaKit；`provider=runninghub` → RunningHub。
+    ⛔ 改常驻 `generation-worker` 相关代码必须**重启 dev / force-recreate 容器**（热更新换不到 worker）。
 - ⭐⭐ **2026-08-19 新增三个唯一权威（改模型菜单/比例/新模型接入必须复用）**：  - **菜单副标题 `src/lib/models.ts` 的 `getGenerationModelSelectHint(modelId, usdToCnyRate?, creditsPerCny?)`**
     （+ 内部 `IMAGE_MODEL_MENU_INFO` / `VIDEO_MODEL_MENU_INFO`）：模型名下方那行灰字 =「几个字简介 · X积分/张(或/秒)」。
     **汇率必须由调用方从 `/api/model-availability` 的 `creditRate` 传进来**（后台可调、⛔ 别写死 7.2×10）；

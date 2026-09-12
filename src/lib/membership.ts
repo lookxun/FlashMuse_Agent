@@ -146,6 +146,8 @@ export const DEFAULT_MEMBERSHIP_IMAGE_MODEL_IDS = [
   "google/gemini-3-pro-image-preview",
   "openai/gpt-5.4-image-2-agent",
   "openai/gpt-5.4-image-2",
+  "openai/gpt-image-2.5-flare",
+  "openai/gpt-image-2.5-sunburst",
 ] as const;
 
 export const DEFAULT_MEMBERSHIP_VIDEO_MODEL_IDS = [
@@ -165,7 +167,7 @@ const DEFAULT_FREE_IMAGE_MODEL_IDS = [
   "bytedance-seed/seedream-4.5",
 ] as const;
 
-const DEFAULT_STANDARD_IMAGE_MODEL_IDS = DEFAULT_MEMBERSHIP_IMAGE_MODEL_IDS.filter((id) => !id.startsWith("openai/gpt-5.4-image-2"));
+const DEFAULT_STANDARD_IMAGE_MODEL_IDS = DEFAULT_MEMBERSHIP_IMAGE_MODEL_IDS.filter((id) => !id.startsWith("openai/gpt-5.4-image-2") && !id.startsWith("openai/gpt-image-2.5"));
 // ⛔ 2026-08-30 用户拍板：MiniMax H3 **从基础会员拿掉，标准会员起才能用**。
 // 原因：H3 只有 2K 一档，而基础会员画质上限是 720p —— 两条配置互相矛盾时，
 // 服务端按「归一化后的真实档位」校验会直接拒掉，等于给基础会员一个点了就报错的模型。
@@ -294,7 +296,7 @@ export function isBytePlusGenerationModel(modelId?: string) {
 }
 
 export function isGptImageMembershipModel(modelId?: string) {
-  return Boolean(modelId?.startsWith("openai/gpt-5.4-image-2"));
+  return Boolean(modelId?.startsWith("openai/gpt-5.4-image-2") || modelId?.startsWith("openai/gpt-image-2.5"));
 }
 
 export function isSeedance25MembershipModel(modelId?: string) {

@@ -14,6 +14,9 @@ import { appendGenerationDiagnosticsLog, summarizeGeneratedReference } from "@/l
 import { resolvePersistableMediaAssetUrl } from "@/lib/media-assets";
 import { buildMediaAssetRecord, buildUserAssetStateRecord, classifyAsset, getCommonRatioLabel, getVideoResolutionFromDimensions, type AssetGenerationKind } from "@/lib/media-asset-record";
 import { getOpenRouterVideoTask } from "@/lib/openrouter-video";
+import { getMediaKitEnhanceTask, isVideoEnhanceModel } from "@/lib/mediakit";
+import { isVideoDepthModel } from "@/lib/models";
+import { getRunningHubDepthTask } from "@/lib/runninghub";
 import { enqueueRemoteAssetSave, waitForMediaSaveJob } from "@/lib/media-save-queue";
 import { upsertVideoManifestEntry } from "@/lib/video-manifest";
 import { saveDataUrlAsset } from "@/lib/local-assets";
@@ -386,7 +389,7 @@ export async function createVideoJob(input: CreateVideoJobInput): Promise<Genera
   if (existing) return existing;
 
   const id = randomUUID();
-  const provider = input.model?.startsWith("byteplus:video.") ? "byteplus" : "openrouter";
+  const provider = input.model?.startsWith("byteplus:video.") ? "byteplus" : isVideoEnhanceModel(input.model) ? "mediakit" : isVideoDepthModel(input.model) ? "runninghub" : "openrouter";
   const extra = { ...(input.extra ?? {}), ...(input.conversationCode ? { conversationCode: input.conversationCode } : {}) };
   const referenceImages = await resolveReferenceUrls(input.userId, input.referenceImages ?? []);
   const referenceVideos = await resolveReferenceUrls(input.userId, input.referenceVideos ?? []);
@@ -1055,10 +1058,17 @@ export async function runVideoJob(job: GenerationJobRow) {
   if (!providerTaskId) return markJobFailed(job.id, "视频平台没有返回任务编号");
   try {
     job = { ...job, reservedNames: await ensureJobReservedNames(job) };
-    const task = await getOpenRouterVideoTask(providerTaskId);
+    const isEnhanceJob = isVideoEnhanceModel(job.model ?? undefined) || job.provider === "mediakit" || /^amk-/i.test(providerTaskId);
+    const isDepthJob = isVideoDepthModel(job.model ?? undefined) || job.provider === "runninghub";
+    const task = isEnhanceJob ? await getMediaKitEnhanceTask(providerTaskId) : isDepthJob ? await getRunningHubDepthTask(providerTaskId) : await getOpenRouterVideoTask(providerTaskId);
     // 查询通了 → 连续失败计数归零（只在非 0 时写库，避免每轮都刷一次 DB）。
     if (getPollErrorStreak(job) > 0) job = await setPollErrorStreak(job, 0);
-    const videoError = getVideoErrorMessage(task);
+    const enhanceStatus = isEnhanceJob || isDepthJob ? String((task as { status?: unknown }).status ?? "").toLowerCase() : "";
+    const videoError = enhanceStatus === "failed"
+      ? getVideoErrorMessage((task as { error?: unknown }).error) ?? getVideoErrorMessage(task) ?? (isDepthJob ? "深度动作捕捉失败" : "画质增强失败")
+      : enhanceStatus
+        ? undefined
+        : getVideoErrorMessage(task);
     if (videoError) {
       const codedError = await createCodedApiError(new Error(videoError), GENERIC_MEDIA_ERROR_MESSAGE, "video job polling failed");
       // ⭐ 必须把**上游原文**落盘：以前这里一条诊断日志都没有，红字又只是映射后的用户文案
@@ -1069,7 +1079,8 @@ export async function runVideoJob(job: GenerationJobRow) {
       return;
     }
     const status = getTaskStatus(task) ?? normalizeVideoStatus((task as { status?: unknown }).status) ?? "running";
-    const videoUrl = getVideoUrl(task);
+    const enhanceResult = (isVideoEnhanceModel(job.model ?? undefined) || isVideoDepthModel(job.model ?? undefined)) && (task as { result?: unknown }).result && typeof (task as { result?: unknown }).result === "object" ? (task as { result: Record<string, unknown> }).result : undefined;
+    const videoUrl = typeof enhanceResult?.video_url === "string" ? enhanceResult.video_url : getVideoUrl(task);
     if (["succeeded", "success", "completed", "complete"].includes(status) && videoUrl) {
       const needsOpenRouterAuth = videoUrl.startsWith("https://openrouter.ai/api/v1/videos/");
       // 乐观显示：平台一出结果（远程 url）就让前端先看，本地下载在后台进行、好了再换本地 url。
@@ -1106,7 +1117,7 @@ export async function runVideoJob(job: GenerationJobRow) {
         hasVideoInput: Array.isArray(job.referenceVideos) && job.referenceVideos.length > 0,
         referenceImageCount: Array.isArray(job.referenceImages) ? job.referenceImages.filter(Boolean).length : 0,
       });
-      const credit = await chargeCredits(job.userId, "video", usage, { conversationId: job.conversationId ?? undefined, conversationTitle: job.conversationTitle ?? undefined, requestId: job.requestId, label: "视频生成", model: job.model ?? undefined, videoCount: 1, metadata: { ...(job.metadataJson ?? {}), settings: job.settingsJson, ratio: job.settingsJson?.ratio, resolution: job.settingsJson?.resolution, duration: job.settingsJson?.duration, originalPrompt: job.prompt, mediaUrls: [deliveredUrl], remoteMediaUrls: [videoUrl], posterUrl: saveJob.posterUrl, delivered: true, savedLocal: true, localSaveStatus: "saved", mediaSaveJobId: saveJob.id } });
+      const credit = await chargeCredits(job.userId, "video", usage, { conversationId: job.conversationId ?? undefined, conversationTitle: job.conversationTitle ?? undefined, requestId: job.requestId, label: isVideoDepthModel(job.model ?? undefined) ? "深度动作捕捉" : isVideoEnhanceModel(job.model ?? undefined) ? "画质增强" : "视频生成", model: job.model ?? undefined, videoCount: 1, metadata: { ...(job.metadataJson ?? {}), settings: job.settingsJson, ratio: job.settingsJson?.ratio, resolution: job.settingsJson?.resolution, duration: job.settingsJson?.duration, originalPrompt: job.prompt, mediaUrls: [deliveredUrl], remoteMediaUrls: [videoUrl], posterUrl: saveJob.posterUrl, delivered: true, savedLocal: true, localSaveStatus: "saved", mediaSaveJobId: saveJob.id } });
       await finalizeVideoJobAsset(job, deliveredUrl, saveJob.posterUrl, saveJob.dimensions);
       // ⭐ 2026-08-03 加：后台队列这条路**扣费成功以前一条日志都没有**，
       //   只落库 creditLedger → 查"这个模型到底扣了多少 / 上游给没给成本"必须连数据库，

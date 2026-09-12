@@ -350,6 +350,10 @@ async function createBytePlusVideoTask(prompt: string, referenceImages: string[]
 
 export async function getOpenRouterVideoTask(taskId: string) {
   if (/^cgt-/i.test(taskId)) return getBytePlusVideoTask(taskId);
+  if (/^amk-/i.test(taskId)) {
+    const { getMediaKitEnhanceTask } = await import("@/lib/mediakit");
+    return getMediaKitEnhanceTask(taskId) as Promise<OpenRouterVideoTask>;
+  }
 
   const apiKey = getRequiredOpenRouterApiKey();
 

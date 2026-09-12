@@ -8,7 +8,7 @@ import { IS_TEST_SERVER, versionLabel } from "@/lib/app-version";
 import { MEDIA_DURATION_EPSILON_SECONDS, validateMediaUploadFile, validateMediaUploadMetadata, validateReferenceMediaDurationRange as validateMediaDuration } from "@/lib/media-upload-validation";
 import { getStaticMediaUrl } from "@/lib/static-media-url";
 import { RiAddLine, RiArrowLeftSLine, RiArrowRightSLine, RiArrowDownSLine, RiArrowDownFill, RiArrowUpDownLine, RiArrowUpLine, RiArrowUpSLine, RiArrowDownWideLine, RiAtLine, RiCameraLine, RiCheckLine, RiChat3Line, RiChatSmileAiLine, RiChatDeleteLine, RiCheckboxMultipleBlankLine, RiCloseLine, RiDeleteBinLine, RiEmotionHappyLine, RiEmotionUnhappyLine, RiEmotionSadLine, RiEqualizerLine, RiErrorWarningLine,   RiFolderLine, RiFolderOpenLine, RiInboxArchiveLine, RiBellLine, RiFormatClear, RiLandscapeLine, RiImageLine, RiSidebarFoldLine, RiSidebarUnfoldLine, RiLeafLine, RiLoader4Line, RiLockPasswordLine, RiMoreLine, RiMusic2Line, RiMultiImageLine, RiMailLine, RiPhoneLine, RiEditBoxLine, RiPushpinLine, RiQuestionLine, RiResetLeftLine, RiRefreshLine, RiShining2Fill, RiShining2Line, RiStarSmileLine, RiStopFill, RiThumbDownLine, RiThumbDownFill, RiThumbUpLine, RiThumbUpFill, RiTimeLine, RiSeedlingLine, RiTreeLine, RiVideoLine, RiVideoOnLine, RiVoiceprintLine, RiQuillPenAiLine, RiAccountBoxLine, RiAccountCircleLine, RiFilmLine, RiFullscreenLine, RiInformationLine, RiGlobalLine, RiGitMergeLine, RiGitPullRequestLine, RiFilmAiLine, RiImageAddLine, RiImageAiLine, RiMicAiLine, RiDownloadLine, RiRobot2Line, RiZoomInLine, RiTBoxLine, RiTerminalWindowFill, RiLogoutBoxRLine, RiSettingsLine, RiSunLine, RiMoonLine, RiComputerLine, RiNotification2Line, RiShieldUserLine, RiShoppingCartLine } from "react-icons/ri";
-import { ADVANCED_CHAT_MODEL, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, DEFAULT_AUDIO_MODEL, audioGenerationModels, isAudioModel, DEFAULT_IMAGE_QUALITY, IMAGE_QUALITY_OPTIONS, IMAGE_QUALITY_LABELS, isGptImage2Model, getGenerationModelSelectHint, bytePlusVideoGenerationModels, frontendConversationModels, frontendImageGenerationModels, getImageQualityBadgeLabel, getImageResolutionLabel, getSupportedImageRatios, getSupportedImageResolutions, getSupportedVideoRatios, getSupportedVideoResolutions, imageGenerationModels, isNonStandardVideoSize, normalizeImageRatioForModel, normalizeImageResolutionForModel, normalizeVideoRatioForModel, normalizeVideoResolutionForModel, validateVideoDurationWithReferences, videoGenerationModels, ConversationModel, GenerationModel, ModelName, PROMPT_TOOL_MODEL_CHAIN } from "@/lib/models";
+import { ADVANCED_CHAT_MODEL, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, DEFAULT_AUDIO_MODEL, audioGenerationModels, isAudioModel, DEFAULT_IMAGE_QUALITY, IMAGE_QUALITY_LABELS, isGptImage2Model, getGenerationModelSelectHint, getImageQualityOptions, bytePlusVideoGenerationModels, frontendConversationModels, frontendImageGenerationModels, getImageQualityBadgeLabel, getImageResolutionLabel, getSupportedImageRatios, getSupportedImageResolutions, getSupportedVideoRatios, getSupportedVideoResolutions, imageGenerationModels, isNonStandardVideoSize, normalizeImageRatioForModel, normalizeImageResolutionForModel, normalizeVideoRatioForModel, normalizeVideoResolutionForModel, validateVideoDurationWithReferences, videoGenerationModels, ConversationModel, GenerationModel, ModelName, PROMPT_TOOL_MODEL_CHAIN } from "@/lib/models";
 import { toUserErrorMessage } from "@/lib/error-message";
 import { handleSessionExpiredResponse } from "@/lib/session-expired-redirect";
 import { removeMentionName } from "@/lib/mention-text";
@@ -286,10 +286,8 @@ import {
   setStoredWorkspaceUiState,
   normalizeSuggestionItem,
   getCorrectionMode,
-  shouldPlanAgentTask,
   isExplicitImageGenerationRequest,
   isExplicitVideoGenerationRequest,
-  suggestionRequestsGeneration,
   getLastUserMessage,
   upsertIntentMemoryRule,
   getImageOnlyPrompt,
@@ -4667,7 +4665,8 @@ export function ChatWorkbench() {
   };
 
   const renderCharacterImageQualityMenu = () => {
-    const current = IMAGE_QUALITY_OPTIONS.includes(characterGenerateQuality as (typeof IMAGE_QUALITY_OPTIONS)[number]) ? (characterGenerateQuality as (typeof IMAGE_QUALITY_OPTIONS)[number]) : DEFAULT_IMAGE_QUALITY;
+    const qualityOptions = getImageQualityOptions(characterGenerateModel);
+    const current = qualityOptions.includes(characterGenerateQuality as (typeof qualityOptions)[number]) ? (characterGenerateQuality as (typeof qualityOptions)[number]) : DEFAULT_IMAGE_QUALITY;
 
     return (
       <div className="relative w-full" onClick={(event) => event.stopPropagation()}>
@@ -4688,7 +4687,7 @@ export function ChatWorkbench() {
         {openControlMenu === "characterQuality" && !isCharacterGenerateInputDisabled ? (
           <div className="absolute right-0 top-full z-[70] mt-1 w-[calc(200%+8px)] rounded-[12px] bg-white p-2 shadow-[0_18px_40px_rgba(0,0,0,0.12)]">
             <div className="px-2 pb-2 text-[12px] font-medium text-[#a0a0a0]">画质</div>
-            {IMAGE_QUALITY_OPTIONS.map((option) => (
+            {qualityOptions.map((option) => (
               <button
                 key={option}
                 type="button"
@@ -4873,7 +4872,7 @@ export function ChatWorkbench() {
             <span className="font-medium text-[#777777] max-[820px]:hidden">{displayRatio} /</span>
             <span className={`font-medium max-[820px]:hidden ${imageQualityBadgeLabel ? "text-[#b8860b]" : "text-[#777777]"}`}>{imageResolutionLabel}</span>
             {mode === "image" && isGptImage2Model(selectedGenerationModels.image) ? (
-              <span className="font-medium text-[#777777] max-[820px]:hidden">/ 画质{IMAGE_QUALITY_LABELS[(IMAGE_QUALITY_OPTIONS.includes(selectedImageQuality as (typeof IMAGE_QUALITY_OPTIONS)[number]) ? selectedImageQuality : DEFAULT_IMAGE_QUALITY) as (typeof IMAGE_QUALITY_OPTIONS)[number]]}</span>
+              <span className="font-medium text-[#777777] max-[820px]:hidden">/ 画质{IMAGE_QUALITY_LABELS[(getImageQualityOptions(selectedGenerationModels.image).includes(selectedImageQuality as never) ? selectedImageQuality : DEFAULT_IMAGE_QUALITY) as keyof typeof IMAGE_QUALITY_LABELS]}</span>
             ) : null}
             <RiArrowDownSLine className="h-3.5 w-3.5 shrink-0 text-[#8a8a8a] max-[820px]:hidden" aria-hidden="true" />
           </span>
@@ -4944,8 +4943,8 @@ export function ChatWorkbench() {
             {mode === "image" && isGptImage2Model(selectedGenerationModels.image) ? (
               <>
                 <div className="mt-4 text-[13px] font-medium text-[#a0a0a0]">画质</div>
-                <div className="mt-2 grid grid-cols-4 gap-1 rounded-[12px] bg-[#f6f6f6] px-1.5 py-1">
-                  {IMAGE_QUALITY_OPTIONS.map((option) => (
+                <div className={`mt-2 grid gap-1 rounded-[12px] bg-[#f6f6f6] px-1.5 py-1 ${getImageQualityOptions(selectedGenerationModels.image).length > 4 ? "grid-cols-6" : "grid-cols-4"}`}>
+                  {getImageQualityOptions(selectedGenerationModels.image).map((option) => (
                     <button
                       key={option}
                       type="button"
@@ -7466,7 +7465,7 @@ export function ChatWorkbench() {
         referenceImages: referenceImages.length > 0 ? referenceImages : undefined,
         imageReferences: displayImageReferences.length > 0 ? displayImageReferences : undefined,
         referenceHint: getReferenceHint(namedImageReferences, text),
-        needsIntentResolution: shouldPlanAgentTask(text) || suggestionRequestsGeneration(normalizedSuggestion),
+        needsIntentResolution: true,
         sourceText: text,
         agentChatModelChain,
         assetTargetType: normalizedSuggestion?.assetTargetType && normalizedSuggestion.assetTargetType !== "other" ? normalizedSuggestion.assetTargetType : undefined,
@@ -7535,7 +7534,7 @@ export function ChatWorkbench() {
           videoResolution: generalVideoResolution,
           videoDuration: selectedDurations.general,
         },
-        needsIntentResolution: shouldPlanAgentTask(text) || suggestionRequestsGeneration(normalizedSuggestion),
+        needsIntentResolution: true,
       };
       setSessions((current) =>
         current.map((session) =>

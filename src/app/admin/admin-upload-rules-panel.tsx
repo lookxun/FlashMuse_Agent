@@ -162,9 +162,9 @@ const uploadRuleRows: UploadRuleRow[] = [
   },
   {
     scene: "对话流 / 资产库图片",
-    model: "GPT-5.4 Image 2",
+    model: "GPT-5.4 Image 2 / GPT Image 2.5",
     rule: getUploadRule({ mode: "image", modelId: "openai/gpt-5.4-image-2", transportMode: "local-base64" }),
-    note: "走 /api/v1/images，参考图最多 16 张、单张≤10MB。",
+    note: "走 /api/v1/images，参考图最多 16 张、单张≤10MB。2.5 Flare/Sunburst 同规则。",
     details: { image: imageFormatText },
   },
   {

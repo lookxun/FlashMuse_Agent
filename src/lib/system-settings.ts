@@ -66,12 +66,18 @@ export type AdminSystemSettings = {
   openRouterApiKeyEnabled: boolean;
   bytePlusApiKey: string;
   bytePlusApiKeyEnabled: boolean;
+  mediaKitApiKey: string;
+  mediaKitApiKeyEnabled: boolean;
+  bytePlusMediaKitApiKey: string;
+  bytePlusMediaKitApiKeyEnabled: boolean;
+  runningHubApiKey: string;
+  runningHubApiKeyEnabled: boolean;
   bytePlusUnlockLimits: boolean;
   bytePlusRegion: "ap-southeast-1" | "eu-west-1";
   modelProviderPreferences: Record<string, "openrouter" | "byteplus">;
   bytePlusModelSelections: Record<string, string>;
-  // 图片编辑类（高清/橡皮）模型候选链开关：key=`${func}:${modelId}`，值=是否启用。
-  // 关掉首选自动用下一个启用的模型；全关时前端回落到完整候选链（不至于无法使用）。
+  // 图片/视频编辑：功能显示开关 key=`fn:${func}`（关了前端按钮隐藏，默认开）；
+  // 模型候选链开关 key=`${func}:${modelId}`。关掉首选自动用下一个；全关时前端回落完整链。
   editModelToggles: Record<string, boolean>;
   agentPriorityModelId: string;
   agentPriorityEnabled: boolean;
@@ -181,6 +187,8 @@ export const EDIT_FUNCTION_KEYS = ["eraser"] as const;
 // 新增高清模型只改这里 + 后台表格 + 前端 HD_MODEL_OPTIONS 三处配置表。
 export const HD_FUNCTION_MODEL_CHAIN: string[] = [
   "openai/gpt-5.4-image-2",
+  "openai/gpt-image-2.5-flare",
+  "openai/gpt-image-2.5-sunburst",
   "google/gemini-3.1-flash-image-preview",
 ];
 export const HD_FUNCTION_KEYS = ["hd"] as const;
@@ -197,10 +205,45 @@ export const VIDEO_EDIT_FUNCTION_MODEL_CHAIN: string[] = [
 ];
 export const VIDEO_EDIT_FUNCTION_KEYS = ["video_quick"] as const;
 
+export const VIDEO_ENHANCE_FUNCTION_MODEL_CHAIN: string[] = [
+  "mediakit:video.enhance-generative",
+];
+export const VIDEO_ENHANCE_FUNCTION_KEYS = ["video_enhance"] as const;
+export const VIDEO_ENHANCE_FAST_FUNCTION_MODEL_CHAIN: string[] = [
+  "mediakit:video.enhance-fast",
+];
+export const VIDEO_ENHANCE_FAST_FUNCTION_KEYS = ["video_enhance_fast"] as const;
+export const VIDEO_DEPTH_FUNCTION_MODEL_CHAIN: string[] = [
+  "runninghub:video.depthcrafter",
+];
+export const VIDEO_DEPTH_FUNCTION_KEYS = ["video_depth"] as const;
+
+// 工作流快捷菜单「功能显示」开关（唯一权威）：key=`fn:${func}`，默认开；关了前端对应按钮不显示。
+// 图片：快捷编辑/高清/去背景/橡皮/使用提示词/下载；视频：快捷编辑/画质增强/极速/截图/使用提示词/下载。
+export const WORKFLOW_SHORTCUT_FN_KEYS = [
+  "quick",
+  "hd",
+  "bg",
+  "eraser",
+  "prompt",
+  "download",
+  "video_quick",
+  "video_enhance",
+  "video_enhance_fast",
+  "video_depth",
+  "video_frame",
+  "video_prompt",
+  "video_download",
+] as const;
+
 const DEFAULT_EDIT_MODEL_TOGGLES: Record<string, boolean> = Object.fromEntries([
+  ...WORKFLOW_SHORTCUT_FN_KEYS.map((func) => [`fn:${func}`, true]),
   ...EDIT_FUNCTION_KEYS.flatMap((func) => EDIT_FUNCTION_MODEL_CHAIN.map((modelId) => [`${func}:${modelId}`, true])),
   ...HD_FUNCTION_KEYS.flatMap((func) => HD_FUNCTION_MODEL_CHAIN.map((modelId) => [`${func}:${modelId}`, true])),
   ...VIDEO_EDIT_FUNCTION_KEYS.flatMap((func) => VIDEO_EDIT_FUNCTION_MODEL_CHAIN.map((modelId) => [`${func}:${modelId}`, true])),
+  ...VIDEO_ENHANCE_FUNCTION_KEYS.flatMap((func) => VIDEO_ENHANCE_FUNCTION_MODEL_CHAIN.map((modelId) => [`${func}:${modelId}`, true])),
+  ...VIDEO_ENHANCE_FAST_FUNCTION_KEYS.flatMap((func) => VIDEO_ENHANCE_FAST_FUNCTION_MODEL_CHAIN.map((modelId) => [`${func}:${modelId}`, true])),
+  ...VIDEO_DEPTH_FUNCTION_KEYS.flatMap((func) => VIDEO_DEPTH_FUNCTION_MODEL_CHAIN.map((modelId) => [`${func}:${modelId}`, true])),
 ]);
 
 const BYTEPLUS_ENDPOINT_MODEL_NAMES: Record<string, string> = {
@@ -277,6 +320,12 @@ export function getAdminSystemSettings(): AdminSystemSettings {
     openRouterApiKeyEnabled: getBooleanEnvValue("OPENROUTER_API_KEY_ENABLED", true),
     bytePlusApiKey: getLocalEnvValue("BYTEPLUS_API_KEY") ?? process.env.BYTEPLUS_API_KEY ?? getLocalEnvValue("ARK_API_KEY") ?? process.env.ARK_API_KEY ?? "",
     bytePlusApiKeyEnabled: getBooleanEnvValue("BYTEPLUS_API_KEY_ENABLED", true),
+    mediaKitApiKey: getLocalEnvValue("MEDIAKIT_API_KEY") ?? process.env.MEDIAKIT_API_KEY ?? "",
+    mediaKitApiKeyEnabled: getBooleanEnvValue("MEDIAKIT_API_KEY_ENABLED", true),
+    bytePlusMediaKitApiKey: getLocalEnvValue("BYTEPLUS_MEDIAKIT_API_KEY") ?? process.env.BYTEPLUS_MEDIAKIT_API_KEY ?? "",
+    bytePlusMediaKitApiKeyEnabled: getBooleanEnvValue("BYTEPLUS_MEDIAKIT_API_KEY_ENABLED", true),
+    runningHubApiKey: getLocalEnvValue("RUNNINGHUB_API_KEY") ?? process.env.RUNNINGHUB_API_KEY ?? "",
+    runningHubApiKeyEnabled: getBooleanEnvValue("RUNNINGHUB_API_KEY_ENABLED", true),
     bytePlusUnlockLimits: getBooleanEnvValue("BYTEPLUS_UNLOCK_LIMITS", false),
     bytePlusRegion: getBytePlusRegion(),
     modelProviderPreferences: { ...DEFAULT_MODEL_PROVIDER_PREFERENCES, ...getJsonEnvValue<Record<string, "openrouter" | "byteplus">>("MODEL_PROVIDER_PREFERENCES", {}) },
@@ -307,6 +356,36 @@ export function getConfiguredOpenRouterApiKey() {
 export function getConfiguredBytePlusApiKey() {
   const settings = getAdminSystemSettings();
   return settings.bytePlusApiKeyEnabled ? settings.bytePlusApiKey.trim() : undefined;
+}
+
+export function getConfiguredMediaKitApiKey() {
+  const settings = getAdminSystemSettings();
+  return settings.mediaKitApiKeyEnabled ? settings.mediaKitApiKey.trim() : undefined;
+}
+
+export function getConfiguredBytePlusMediaKitApiKey() {
+  const settings = getAdminSystemSettings();
+  return settings.bytePlusMediaKitApiKeyEnabled ? settings.bytePlusMediaKitApiKey.trim() || undefined : undefined;
+}
+
+export function getConfiguredRunningHubApiKey() {
+  const settings = getAdminSystemSettings();
+  return settings.runningHubApiKeyEnabled ? settings.runningHubApiKey.trim() || undefined : undefined;
+}
+
+export function isVideoEnhanceEnabled() {
+  const settings = getAdminSystemSettings();
+  return settings.mediaKitApiKeyEnabled && Boolean(settings.mediaKitApiKey.trim()) && settings.editModelToggles["fn:video_enhance"] !== false && settings.editModelToggles["video_enhance:mediakit:video.enhance-generative"] !== false;
+}
+
+export function isBytePlusVideoEnhanceFastEnabled() {
+  const settings = getAdminSystemSettings();
+  return settings.bytePlusMediaKitApiKeyEnabled && Boolean(settings.bytePlusMediaKitApiKey.trim()) && settings.editModelToggles["fn:video_enhance_fast"] !== false && settings.editModelToggles["video_enhance_fast:mediakit:video.enhance-fast"] !== false;
+}
+
+export function isVideoDepthEnabled() {
+  const settings = getAdminSystemSettings();
+  return settings.runningHubApiKeyEnabled && Boolean(settings.runningHubApiKey.trim()) && settings.editModelToggles["fn:video_depth"] !== false && settings.editModelToggles["video_depth:runninghub:video.depthcrafter"] !== false;
 }
 
 export function getBytePlusBaseUrl(region = getAdminSystemSettings().bytePlusRegion) {
@@ -590,6 +669,12 @@ export async function updateAdminSystemSettings(settings: AdminSystemSettings) {
     ["OPENROUTER_API_KEY_ENABLED", settings.openRouterApiKeyEnabled ? "true" : "false"],
     ["BYTEPLUS_API_KEY", formatEnvValue(settings.bytePlusApiKey.trim())],
     ["BYTEPLUS_API_KEY_ENABLED", settings.bytePlusApiKeyEnabled ? "true" : "false"],
+    ["MEDIAKIT_API_KEY", formatEnvValue(settings.mediaKitApiKey.trim())],
+    ["MEDIAKIT_API_KEY_ENABLED", settings.mediaKitApiKeyEnabled ? "true" : "false"],
+    ["BYTEPLUS_MEDIAKIT_API_KEY", formatEnvValue(settings.bytePlusMediaKitApiKey.trim())],
+    ["BYTEPLUS_MEDIAKIT_API_KEY_ENABLED", settings.bytePlusMediaKitApiKeyEnabled ? "true" : "false"],
+    ["RUNNINGHUB_API_KEY", formatEnvValue(settings.runningHubApiKey.trim())],
+    ["RUNNINGHUB_API_KEY_ENABLED", settings.runningHubApiKeyEnabled ? "true" : "false"],
     ["BYTEPLUS_UNLOCK_LIMITS", settings.bytePlusUnlockLimits ? "true" : "false"],
     ["BYTEPLUS_REGION", settings.bytePlusRegion],
     ["MODEL_PROVIDER_PREFERENCES", formatEnvValue(JSON.stringify(settings.modelProviderPreferences))],
@@ -609,6 +694,12 @@ export async function updateAdminSystemSettings(settings: AdminSystemSettings) {
   process.env.BYTEPLUS_API_KEY = settings.bytePlusApiKey.trim();
   process.env.ARK_API_KEY = settings.bytePlusApiKey.trim();
   process.env.BYTEPLUS_API_KEY_ENABLED = settings.bytePlusApiKeyEnabled ? "true" : "false";
+  process.env.MEDIAKIT_API_KEY = settings.mediaKitApiKey.trim();
+  process.env.MEDIAKIT_API_KEY_ENABLED = settings.mediaKitApiKeyEnabled ? "true" : "false";
+  process.env.BYTEPLUS_MEDIAKIT_API_KEY = settings.bytePlusMediaKitApiKey.trim();
+  process.env.BYTEPLUS_MEDIAKIT_API_KEY_ENABLED = settings.bytePlusMediaKitApiKeyEnabled ? "true" : "false";
+  process.env.RUNNINGHUB_API_KEY = settings.runningHubApiKey.trim();
+  process.env.RUNNINGHUB_API_KEY_ENABLED = settings.runningHubApiKeyEnabled ? "true" : "false";
   process.env.BYTEPLUS_UNLOCK_LIMITS = settings.bytePlusUnlockLimits ? "true" : "false";
   process.env.BYTEPLUS_REGION = settings.bytePlusRegion;
   process.env.MODEL_PROVIDER_PREFERENCES = JSON.stringify(settings.modelProviderPreferences);

@@ -2,66 +2,135 @@
 
 > 历史 END-OF-SESSION 记录都在 `historical-handover-docs-last-used-2026-07-21/05-next-actions.md`（很长）。这里只留当前有效待办。
 
-## ✅ 当前状态（2026-09-10 第一百二十次会话末）：**四方同步 `v1.0.1.22`**（本地 = 测试服 = 正式服 = GitHub）
+## ✅ 当前状态（2026-09-12 第一百二十七次会话末）：**审计 121~126 六批未上线代码 → 修 8 处（5 处是钱）→ 测试服已上 `v1.0.1.25` 并端到端验过**；正式服 / GitHub 仍 `v1.0.1.22`
 
 | | 版本 / 状态 |
 |---|---|
-| 本地 | **`v1.0.1.22`**（代码已 commit `7d47d7b` + 已推；归档脚本 + 本批文档待 commit） |
-| 测试服 | **`v1.0.1.22`** |
-| 正式服 | **`v1.0.1.22`**（支付这一批首次上线） |
-| GitHub | **`v1.0.1.22`**（`7d47d7b`） |
-| 自查 | `tsc` 0、`verify-payment-rules.ts` 48/48 |
-| 迁移 | 正式库 45 → **52**（7 个已 Applying、0 失败） |
-| 回滚点 | 正式服 app `/opt/flashmuse/app-backups/20260910-020202-presync-v1.0.1.11` + 库备份 11M + `.env.local.bak-20260910-020202` |
+| 本地 | **`v1.0.1.25` + 未提交** |
+| 测试服 | **`v1.0.1.25`**（本批部署 + 真机验收） |
+| 正式服 | 仍 **`v1.0.1.22`** |
+| GitHub | 仍 **`v1.0.1.22`**（`7d47d7b`） |
+| 自查 | `tsc` 0、`npm test` 71/71、`scripts/verify-generation-pricing.ts` 57/57 |
+| 迁移 | 无新迁移、无 compose/nginx |
 
 ### 🎯 待办 0（最优先）
 
-1. ✅⭐⭐⭐ **支付在正式服已端到端跑通（用户自己真付了 ¥0.02）** —— 这条不再是待办，是结论：
-   `C20260910023949191258` → **异步通知快路第一次真的走通**
-   （`notify-received` 带 `signed:true` / `appIdOk:true` / `TRADE_SUCCESS`，随后 `order-credited` 且 **`source:"notify"`**），
-   加了 250 积分、`CreditLedger` 恰好 1 行。
-   ⭐ **推论：支付宝优先用下单时传的 `notify_url`（= 我们的 `ALIPAY_NOTIFY_URL`），不依赖开放平台后台的「应用网关」**
-   → 「应用网关还指向 staging」**不阻塞收款**。🟡 建议还是抽空把它填成
-   `https://ali.venusface.com/api/pay/alipay/notify`（兜底 + 符合支付宝文档），但不急。
-   ⚠️ 用户已把第 1 档改回 `50=250` 并锁上（会话末复查过 env）。
-   ⛔ **下次再测小额，价格和积分必须一起改小**（0.01 元 = 1 积分）——
-   本次窗口期（02:39:37~02:41:45）里第 1 档是「¥0.02 = 250 积分」，那两分钟任何人都能花 2 分钱买 250 积分。
-   判据：`sudo grep credit-pack-settings-changed /opt/flashmuse/data/runtime/payment-diagnostics-log.jsonl | tail -1`。
-2. 🔴🔴 **语音功能全站挂了，要拍板**：OpenRouter 把 **fish-audio 全系下架**
-   （`GET /api/v1/models` 里一个 `fish` 都没有，只剩 `openai/gpt-audio` / `openai/gpt-audio-mini`；
-   直打 `fish-audio/s2.1-pro-free` 返回 `404 No endpoints found`，两服一致 → 供应商问题，不是我们的代码）。
-   现在菜单里 `fish-audio/s2.1-pro`（付费）+ `-free`（免费）**都不可用**，用户点了就是 `(B_498)`。
-   - 选项：① 换成 `openai/gpt-audio`（要重新对接参数 + 按铁律验三条扣费判据，单独排一批）
-     ② 先把语音入口藏起来 ③ 先不管。
-   - ⛔ **连带影响**：`03-deploy-and-servers.md` 里「正式服用免费语音 `fish-audio/s2.1-pro-free` 冒烟」这条判据**已失效**
-     （文档里已补了零成本替代冒烟四项，下次照抄）。
-3. ⭐ **兜底桶还剩 15 条，根因已经查清了，等你决定要不要修**（详见 `CHANGELOG_3.md` 第一百二十次 · 第七节）：
+1. ⭐⭐ **等用户说才推正式服**。推的时候必须做的三件事：
+    - `.env.local` **只追加** `MEDIAKIT_API_KEY` / `MEDIAKIT_API_KEY_ENABLED` /
+      `BYTEPLUS_MEDIAKIT_API_KEY` / `BYTEPLUS_MEDIAKIT_API_KEY_ENABLED` /
+      `RUNNINGHUB_API_KEY` / `RUNNINGHUB_API_KEY_ENABLED`（⛔ 不进 git；生产也不配 `LOCAL_MEDIA_PROXY`）。
+      追加完立刻断言 `DATABASE_URL` / `AUTH_SECRET` / `OPENROUTER_API_KEY` / `BYTEPLUS_API_KEY` **整行长度没变**。
+    - 改过常驻 worker 相关代码 → 正式服也要 **force-recreate**，热更新换不到 worker。
+    - ⭐ **推之前先 commit + push GitHub**（现在 GitHub 落后：`v1.0.1.22` → 本地 `v1.0.1.25`）。
+2. 🗳️ **等用户拍板：深度动作捕捉要不要加"尺寸太大先拦住"**。
+    实测 **1280×704 × 123 帧在 RunningHub 上必挂**（`torch.AcceleratorError` / `CUDA error: invalid configuration argument`，
+    同一条素材连挂两次）；**896×512 × 123 帧立刻成功**。→ 上游算力上限，不是我们参数错。
+    本批只把它映射成 **B_7「深度动作捕捉的算力节点执行失败了，请换一条更短或分辨率更低的视频后重试。」**。
+    ⛔ 加前置拦截或降 `window_size` 都会影响「成品尺寸必须跟源视频一样」这条口径 → 先问用户。
+3. ⭐ **画质增强极速（海外 BytePlus）本批没真跑**（代码与国内那条同一份，key 已配、按钮已显示）。
+    要验就在测试服选一次「画质增强极速 → 高清720p」，对账 `usd = 秒/60 × 系数 × 0.1033`。
+4. ⭐ **`scripts/verify-generation-pricing.ts` 是新的常驻回归（57 条）**：
+    改菜单价格 / 预估表 / 兜底定价 / 归属校验 / 那 13 条红字之前**先跑它**（`npx tsx scripts/verify-generation-pricing.ts`）。
+5. ⭐ **预估表要定期回校**（SQL 见下文）。GPT Image 2.5 的 **2K / 4K 档还没有真实样本**
+    （现在 0.11 / 0.16 是按 GPT-5.4 的 2K/1K≈2.08 倍推的），正式服跑出真实扣费后回校。
+6. ⭐ **兜底桶还剩 15 条**（根因已查清，见 `CHANGELOG_3.md` 第一百二十次 · 第七节）：13 条 403 ToS 要改
+    `openrouter.ts` 的 curl 兜底保留原文 + 1 条空结果 + 1 条上游 500。「今日 0 · 近 7 天 0」，不急。
+7. ⭐ **Recraft 参考图边长前置校验**（256~4096px）仍没做，只有错误映射。
+8. **会员先关**：`MEMBERSHIP_SYSTEM_ENABLED` 改 `true` 才恢复。会员购买先别接支付。
+9. ⚠️ **用户中心积分表滚动**仍没复现、没改。
+10. ⭐ **语音**：免费那个（fish-audio 被 OpenRouter 下架）用户拍板先不管。
+
+### ✅ 本批核销掉的老待办
+
+- ~~GPT Image 2.5 菜单 3 积分对不对~~ → **不对**，真实 2/3/4（按比例），已改成「约2-4积分/张」。
+- ~~GPT Image 2.5 要用干净提示词真验一次~~ → 测试服真出图 6 张、逐笔对账通过。
+- ~~Agent/通用规划闸门没真走界面验~~ → 通用模式「生成一张中秋主题海报…」真出 2 张图。
+- ~~画质增强 / 深度动作捕捉没在测试服跑过~~ → 各真跑成功一次并对账（2 积分 / 8 积分）。
+
+### 🧾 本批留痕（⛔ 别当成用户数据）
+
+**测试服**（`12424740@qq.com` / ID_535317，会话末积分 **94,979**，本批共花约 48 分）：
+- 对话里 6 张 GPT Image 2.5 Flare 图（提示词带「v1.0.1.23审计验证 / 价格校准」）+ 通用模式 2 张中秋海报。
+- **`工作流_19`**（新建）：Seedance 2.0 Fast 480p 视频 1 条 + 画质增强 720p 成品 1 个 + 深度成品 1 个
+  + **2 个深度失败卡（B_6 / B_7，都是上游 CUDA，不是我们的 bug）**。
+- `.env.local` 追加了 3 个新 API key（6 行）。
+- 归属校验探针 `verifyonly_owner_probe*`：只有两条 400 响应，**没进库、没建 job、没扣分**。
+
+**正式服**：⛔ **本批一个字都没动**（没登、没生成、没改配置）。上一批的留痕（真付款订单等）见下面历史章节。
+
+### ⛔ 本批立的规矩（别改回去）
+
+1. ⭐⭐⭐ **「画质增强 / 深度动作捕捉」的扣费秒数只认服务端实测** ——
+    唯一权威 `src/lib/video-source-asset.ts`（`resolveSourceVideoDuration` / `getSourceVideoOwnershipError`）。
+    ⛔ 别退回信 `body.duration`（上游不返回成本，那个字符串就是唯一扣费依据 = 客户端能自己定价）。
+2. ⭐⭐ **兜底定价里绝不许出现「拿不到秒数就原样返回」** —— `usd=0` 就是静默白送。
+    一律走 `getEffectiveVideoDurationSeconds`（拿不到按 5 秒兜底）。
+3. ⭐⭐ **上游只处理前 N 秒的功能，收费秒数必须按 N 截断**（深度 = `MAX_DEPTH_SECONDS` 60）。
+4. ⭐⭐ **`reserveGenerationQuota` 里：该 requestId 已有 succeeded/failed 的 job → 直接 return 不占位**
+    （否则命中 `createXxxJob` 幂等早退，占位永远没人释放）。
+5. ⭐ **新接口凡是收「用户给的素材地址」，都要过归属校验**（对齐 `/api/video` 的 `validateOwnedReferences`）。
+6. ⭐ **工作流节点的「运行」按钮必须和失败卡 `onRetry` 用同一套模型分流**。
+7. ⭐ **打给 MediaKit / RunningHub 的所有请求都要带 `AbortSignal.timeout`**
+    （worker 视频槽只有 8 个，挂住就全站不再认领视频）。
+8. ⭐ **GPT Image 2.5 的价钱 = 画质为主、比例为辅**：
+    菜单给区间（`usd` + `usdHigh`）；预估闸门 `estUsdByResolution`（1K 用最贵比例的 high）× `estQualityMultiplier`。
+    ⛔ `estQualityMultiplier` 只配给 2.5 两个模型，别给别的模型加（其余恒 1 倍、行为不变）。
+
+---
+
+## ⏪ 上一状态（2026-09-12 第一百二十六次会话末）：**本地叠了 Agent/通用规划闸门 + 后台今日三卡前移，未 bump / 未部署 / 未 commit**；测试服 = 正式服 = GitHub 仍 `v1.0.1.22`
+
+| | 版本 / 状态 |
+|---|---|
+| 本地 | **`v1.0.1.22` + 未提交**（121 国内大模型 + 122 海外极速 + 123 快捷菜单独立页 + 124 深度动作捕捉 + 125 GPT Image 2.5 + 本批规划闸门/后台卡序） |
+| 测试服 | 仍 **`v1.0.1.22`** |
+| 正式服 | 仍 **`v1.0.1.22`** |
+| GitHub | 仍 **`v1.0.1.22`**（`7d47d7b`） |
+| 自查 | `tsc` 0 |
+| 迁移 | 无新迁移 |
+
+### 🎯 待办 0（最优先）
+
+1. ⭐ **等用户说才 bump / 测服 / 正式服**。本批只在本地。推的时候：
+    - `.env.local` 只追加 `MEDIAKIT_API_KEY` / `MEDIAKIT_API_KEY_ENABLED` / `BYTEPLUS_MEDIAKIT_API_KEY` / `BYTEPLUS_MEDIAKIT_API_KEY_ENABLED` / `RUNNINGHUB_API_KEY` / `RUNNINGHUB_API_KEY_ENABLED`（⛔ 不配进 git；生产也不配 `LOCAL_MEDIA_PROXY`）。
+    - 改完常驻 worker 相关代码，测服也要 **force-recreate**，热更新换不到 worker。
+2. ⭐ **Agent/通用规划闸门已改，还没真走界面验**。建议：通用/Agent 发「根据这张图生成类似的中秋海报」必须出图，普通「你好」仍只聊天。
+3. ⭐ **GPT Image 2.5 本地已接上**。再用一句不踩审核的提示词验 Flare / Sunburst 真出图（B_300+ 是「生成美女」被拒，不是代码）。
+    尺寸必须传 `size`；菜单 3 积分是 high/约 1K 的粗估，4K/max 会贵，正式服有真实扣费再回校。
+3. ✅ **深度动作捕捉已本地跑通**（国际站，124）。定价先别改 `$0.02/秒`。
+4. ✅ **海外 BytePlus MediaKit 极速版已接上**（122）。海外标准不做。国内极速/标准/专业用户没说先别动。
+5. ⭐ **语音**：用户本批拍板 **免费那个挂了已关掉、先不管**。付费 fish-audio 用户说还在。换 `gpt-audio` / 藏入口先搁着。
+6. ⭐ **兜底桶还剩 15 条，根因已经查清了，等你决定要不要修**（详见 `CHANGELOG_3.md` 第一百二十次 · 第七节）：
    - **13 条 `403 The request is prohibited due to a violation of provider Terms Of Service.`**
      —— 裸 JSON 其实能映射成「当前模型在你的地区不可用」，但真实链路走的是 **curl 兜底那条路**，
      那条路把上游原文丢了、只剩「请求失败，请稍后再试。」→ 要改 `openrouter.ts` 的 curl 兜底让它保留原文。
      ⚠️ 那是核心生图链路，改动要谨慎、要单独一批。
    - **1 条** `图片平台没有返回图片，且没有返回可用原因。`（仍落兜底桶）
    - **1 条** 上游 500 `An error occurred while processing your request…`（仍落兜底桶）
-   - ⭐ 这 15 条「今日 0 · 近 7 天 0」= 全是历史、不再流血，不急。
-5. ⭐ **Recraft 参考图边长可以做前置校验**（本批只做了错误映射，没做前置拦截）：
-   Recraft 要求 **256~4096px**，比 BytePlus 的 300~6000px 更严，而我们上传**只压体积、不缩像素**
-   → 用户拿 5000px 的图当参考图仍会被上游拒（现在至少有明确文案了）。
-   要彻底解决就往 `upload-rules.ts` / 发送前校验里加 Recraft 专属的边长区间
-   （现成先例：`video-reference-image-rules.ts` 的 `videoModelEnforcesReferenceImageSizeRules`）。
-6. **会员先关**：`MEMBERSHIP_SYSTEM_ENABLED` 改 `true` 才恢复。会员购买先别接支付。
-7. ⭐ **预估表要定期回校**（SQL 见下文）。
-8. ⚠️ **用户中心积分表滚动**仍没复现、没改。
+    - ⭐ 这 15 条「今日 0 · 近 7 天 0」= 全是历史、不再流血，不急。
+7. ⭐ **Recraft 参考图边长可以做前置校验**（本批只做了错误映射，没做前置拦截）：
+    Recraft 要求 **256~4096px**，比 BytePlus 的 300~6000px 更严，而我们上传**只压体积、不缩像素**
+    → 用户拿 5000px 的图当参考图仍会被上游拒（现在至少有明确文案了）。
+     要彻底解决就往 `upload-rules.ts` / 发送前校验里加 Recraft 专属的边长区间
+     （现成先例：`video-reference-image-rules.ts` 的 `videoModelEnforcesReferenceImageSizeRules`）。
+8. **会员先关**：`MEMBERSHIP_SYSTEM_ENABLED` 改 `true` 才恢复。会员购买先别接支付。
+9. ⭐ **预估表要定期回校**（SQL 见下文）。含 GPT Image 2.5 的 4K/max 档。
+10. ⚠️ **用户中心积分表滚动**仍没复现、没改。
 
 ### ✅ 本批核销掉的老待办
 
-- ~~等用户说才推正式服~~ → **已推，四方同步 v1.0.1.22**（7 个迁移 + ALIPAY env + 支付日志属主 + 不配 `LOCAL_MEDIA_PROXY` 全部做完）。
-- ~~测 1 分钱后记得改回~~ → 用户自己改回来了，正式服充值页第一档是 **¥50 = 250 积分**（默认档位，正式服 env 没配 `CREDIT_PACK_SETTINGS`）。
-- ~~归档那 63 条兜底桶~~ → **归档 48 条，剩 15 条**（见待办 4）。
-- ~~归档脚本先加 Recraft 尺寸规则~~ → 已加 `recraft-reference-image-dimension`（带 `before`）。
+- ~~Agent/通用明确要生图却只聊天~~ → 去掉 `shouldPlanAgentTask` 关键词闸门，每条都走规划。
+- ~~后台今日三卡要和累计三卡上下对齐~~ → 第三排前三个改成今日图片/视频/语音。
 
 ### 🧾 本批留痕（⛔ 别当成用户数据）
 
-**正式服**：
+**本地**：测试号 `12424740@qq.com` / ID_779117。对话里有 GPT Image 2.5 失败卡（B_289~308）。
+- B_289~292：走错 `/chat/completions`，已修路由并重启。
+- B_300~308：提示词「生成美女」被 OpenAI 安全审核拒（`sexu…`），接口已走对。
+桌面 `C:\Users\ASUS\Desktop\gpt-image-2.5-test\` 有真出的图和结论 md（OpenRouter 直打约 $0.71，没扣我们积分）。
+工作流_05 里上一批深度动作捕捉成功/失败卡仍在。
+
+**正式服**（上一批留下的，别当脏数据删）：
 - 新对话「v1.0.1.22 正式服冒烟，...」（`12424740@qq.com` / ID_636611），含 1 张语音失败卡 `B_498`，**未扣分**。
 - **我建的探针订单 `C20260910022417325530`**（¥50 / 250 积分）—— **没付钱**，已自动 `closed`。
 - **用户自己真付的订单 `C20260910023949191258`**（¥0.02 / 250 积分，`paid`）—— **真收了 2 分钱、真加了 250 积分**，
@@ -74,6 +143,40 @@
 **测试服**：无新增（只读核对）。
 
 ### ⛔ 本批立的规矩（别改回去）
+
+1. ⭐⭐ **Agent / 通用模式每条消息都走规划器**（`needsIntentResolution: true`）。
+    ⛔ 别再拿 `shouldPlanAgentTask` 关键词当闸门。用户口径：「应该是他理解我的话去做任务，不应该碰到哪些特定的词才触发。」
+    「生成海报 / 根据这张图做类似的」这种明确要出图的话，以前对不上「生成图」就会只聊天。
+2. ⭐ **思考展开按钮只在有 reasoning 正文时出现**（`ThinkingProcessBlock`：`!live && text`）。没正文只显示「已思考 X 秒」。规划路径本身不展示思考（规划器只回 JSON）。
+3. ⭐ **后台运营概览第三排**：今日图片/视频/语音在前，对着第二排累计三卡；对话/工作流总数在后。
+
+### ⛔ 上一批立的规矩（继续有效）
+
+1. ⭐⭐ **GPT Image 2.5 走 `/api/v1/images`**（`generateGptImage2`），id：`openai/gpt-image-2.5-flare` / `openai/gpt-image-2.5-sunburst`。
+    ⭐ **必须传 `size` 精确像素**，尺寸表与 GPT-5.4 Image 2 相同。⛔ `resolution` 档无效。最长边 ≤ 3840。
+    画质 6 档 `auto/low/medium/high/xhigh/max`（5.4 仍 4 档）。参考图 16、一次最多 10 张、无透明底。
+    ⭐ NEW：两个 2.5 都打。金字每类只一个（`isGoldGenerationModel`）：图片 Sunburst / 视频 2.5 / 语音 Speech 2.8 HD。
+    ⭐ 改 `isGptImage2Model` / worker 出图路由必须 **重启 dev**（本批 B_290 就是热更新没换到）。
+2. ⭐⭐ **深度动作捕捉走 RunningHub DepthCrafter**，唯一权威 `src/lib/runninghub.ts`，接口 `POST /api/video-depth`。
+    workflowId 写死 `1868729320020787201`。⛔ 别接有水印的「视频一键转深度图」。
+    ⛔ `RUNNINGHUB_API_KEY` 只进 `.env.local`，别进 git。
+    ⭐ 国际站 `www.runninghub.ai`（⛔ 别打国内 `runninghub.cn`，国际 key 会回「API Key不存在」）。
+    ⭐ 成品尺寸必须跟源视频一样，⛔ 不许用 ffmpeg 硬拉（会变形，已撤回）。
+    国际站工作流 JSON 里 LoadVideo 写死了 `custom_width/height=512`，必须覆盖成源视频宽高，再对齐 64 倍数；DepthCrafter `max_res` 用长边。
+    ⭐ 时长上限 60 秒；帧率读源视频（`getLocalVideoDimensions` 现带 `fps`），读不到才 30。
+    ⭐ `window_size=40` / `overlap=10`（官方建议每段 75–110，不是整条视频上限；24 秒竖屏 110 会 OOM）。
+    ⭐ 定价先保持我们现在的兜底 `秒数 × $0.02`。RunningHub 真实扣费是按生成耗时（实测同片 29/34 分，9.9 美元=18000 分），以后再讨论怎么定价。
+    ⭐ 产品名「深度动作捕捉」，图标 `RiBodyScanLine`。右上角秒数向下取整（5.x 显示 5，别 round 成 6）。
+2. ⭐ **快捷菜单功能开关 key=`fn:${func}`**，默认开；关了前端按钮隐藏。模型链开关仍是 `${func}:${modelId}`。
+   后台独立页 `workflow-shortcuts`，别把 MediaKit / RunningHub / 快捷菜单开关搬回「模型开关」。
+3. ⭐⭐ **画质增强现在两档**：国内大模型 `/enhance-video-generative`（北京）+ 海外极速 `/enhance-video-fast`（新加坡）。唯一权威 `src/lib/mediakit.ts`。
+   ⛔ 海外标准按用户拍板不做。⛔ `BYTEPLUS_API_KEY`（`ark-`）不是 MediaKit key。
+4. ⭐ **轮询按 taskId / provider 分流**：`enhance-video-generative` → 国内 MediaKit；`enhance-video-fast` → 海外 MediaKit；`provider=runninghub` / `runninghub:video.depthcrafter` → RunningHub。
+5. ⭐ **改常驻 generation-worker 必须重启 dev**。Turbopack 卡死就清 `.next` 再起。本批末已重启过。
+6. ⭐ 国内/海外是同一套 AI MediaKit，价格国内更便宜（1080p 极速 ¥0.4 vs 海外约 ¥1.49）。
+7. ⭐ **深度必须是分析抽出来的**，不能用 Seedance 生成一张「看起来像深度图」的视频代替。
+
+### ⛔ 上一批立的规矩（继续有效）
 
 1. ⭐⭐⭐ **Prisma 的 `DateTime` 列是 `timestamp without time zone`（裸 UTC）**：
    SQL 里要转北京**必须** `AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Shanghai'`。
@@ -97,6 +200,18 @@
 6. ⭐ 改支付纯函数 → **先跑 `npx tsx scripts/verify-payment-rules.ts`（48 条）再部署**。
 7. ⭐ **改 `.env.local` 只许动目标那几行**，写完立刻断言 `OPENROUTER_API_KEY` / `BYTEPLUS_API_KEY` / `AUTH_SECRET` / `DATABASE_URL` 整行长度没变
    （本批正式服实测 120/61/92/63，改前改后一致）。
+
+---
+
+## ⏪ 上一状态（2026-09-11 第一百二十四次会话末）：**本地叠了深度动作捕捉修通，未 bump / 未部署 / 未 commit**；测试服 = 正式服 = GitHub 仍 `v1.0.1.22`
+
+深度动作捕捉国际站已跑通。语音当时还写着「全站挂了要拍板」，本批用户说免费那个已关、先不管。
+
+---
+
+## ⏪ 上一状态（2026-09-11 第一百二十二次会话末）：**本地叠了国内大模型 + 海外极速画质增强，未 bump / 未部署 / 未 commit**；测试服 = 正式服 = GitHub 仍 `v1.0.1.22`
+
+当时后台还是「模型开关」页四个 API 两行；本批已把 MediaKit / 快捷菜单拆到独立页。海外极速已接、海外标准不做。
 
 ---
 

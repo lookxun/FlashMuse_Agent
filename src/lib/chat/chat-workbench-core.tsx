@@ -2210,15 +2210,10 @@ export function mergeValidModeSettings(current: Record<WorkMode, string>, stored
 }
 
 
-export function isGoldGenerationModel(modelId: string) {
-  // ⭐ 2026-08：金色改到 Seedance 2.5，原来的 Seedance 2.0（含 OpenRouter 版）不再金色。
-  return modelId === "openai/gpt-5.4-image-2" || modelId === "byteplus:video.seedance-2-5" || modelId === "minimax/speech-2.8-hd";
-}
-
-// ⭐ 「哪些模型标 NEW」是**模型元数据**，唯一权威已挪到 `@/lib/models`
+// ⭐ 「哪些模型标 NEW / 金色」是**模型元数据**，唯一权威已挪到 `@/lib/models`
 //   （工作流画布也要用它，不能让 workflow 去 import 这个巨大的 chat 模块）。
 //   这里保留 re-export，只为不动 chat-workbench.tsx 现有的 import 路径。
-export { isNewGenerationModel } from "@/lib/models";
+export { isNewGenerationModel, isGoldGenerationModel } from "@/lib/models";
 
 export function isGoldConversationModel(modelId: string) {
   return modelId === "openai/gpt-5.6-terra-pro";

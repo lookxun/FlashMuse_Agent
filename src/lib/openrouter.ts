@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import type { ConversationModel, ModelName } from "@/lib/models";
-import { ADVANCED_CHAT_MODEL, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, getExpectedImageDimensions, getImageModelFallbackUsd, getImageModelRule, getSupportedImageRatios, GPT_IMAGE2_MODEL_ID, isGptImage2Model, isRecraftModel, models, normalizeImageQuality, RECRAFT_V41_MODEL_ID, resolveImageSettingsForModel, resolveOpenRouterImageModelName } from "@/lib/models";
+import { ADVANCED_CHAT_MODEL, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, getExpectedImageDimensions, getImageModelFallbackUsd, getImageModelRule, getSupportedImageRatios, GPT_IMAGE2_MODEL_ID, GPT_IMAGE_25_FLARE_MODEL_ID, GPT_IMAGE_25_SUNBURST_MODEL_ID, isGptImage2Model, isRecraftModel, models, normalizeImageQuality, RECRAFT_V41_MODEL_ID, resolveImageSettingsForModel, resolveOpenRouterImageModelName } from "@/lib/models";
 import { createGeneratedImageThumbnail, getLocalImageDimensions, saveGeneratedAsset, type ImageDimensions } from "@/lib/local-assets";
 import { enqueueRemoteAssetSave } from "@/lib/media-save-queue";
 import { syncGeneratedFilesToAli } from "@/lib/ali-sync";
@@ -1701,7 +1701,7 @@ type OpenRouterImagesApiResponse = {
 // 只影响该模型，其它 OpenRouter/BytePlus 模型仍走各自老路径。
 async function generateGptImage2(prompt: string, referenceImages: string[], options: ImageGenerationOptions, apiKey: string) {
   const model = options.model || GPT_IMAGE2_MODEL_ID;
-  const quality = normalizeImageQuality(options.settings?.quality);
+  const quality = normalizeImageQuality(options.settings?.quality, model);
   const count = Math.min(10, Math.max(1, Math.floor(options.count ?? 1)));
 
   // 智能比例 → 不传 size，让模型自动出尺寸（有参考图时跟随参考图比例）；
@@ -2169,7 +2169,7 @@ export async function generateOpenRouterImage(prompt: string, referenceImages: s
     throw new Error("缺少 API Key");
   }
 
-  if (isGptImage2Model(model)) {
+  if (isGptImage2Model(model) || model === GPT_IMAGE_25_FLARE_MODEL_ID || model === GPT_IMAGE_25_SUNBURST_MODEL_ID) {
     return generateGptImage2(prompt, referenceImages, { ...options, model }, apiKey);
   }
 

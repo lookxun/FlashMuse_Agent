@@ -155,46 +155,6 @@ const modelUsageGroups: ModelUsageGroup[] = [
   },
 ];
 
-// 工作流图片「编辑功能」快捷菜单：后台规则展示 + 高清/橡皮模型开关。
-// 橡皮的候选链顺序（首选→次选→三选）与前端 EDIT_MODEL_CANDIDATES / system-settings 的 EDIT_FUNCTION_MODEL_CHAIN 一致。
-const EDIT_MODEL_CHAIN: Array<{ modelId: string; tier: string }> = [
-  { modelId: "google/gemini-3.1-flash-image-preview", tier: "首选" },
-  { modelId: "google/gemini-3-pro-image-preview", tier: "次选" },
-  { modelId: "byteplus:conversation-image.seedream-4-5", tier: "三选" },
-];
-
-// 「高清」不是候选链，而是用户在下拉里自己选模型 + K 数（每个模型 2K/4K 两个选项）。
-// 开关粒度 = 按模型：关掉一个模型，它的 2K/4K 两个选项在前端一起隐藏；两个都关则整个高清按钮隐藏。
-// 与前端 HD_MODEL_OPTIONS / system-settings 的 HD_FUNCTION_MODEL_CHAIN 一致，新增模型三处一起改。
-const HD_MODEL_CHAIN: Array<{ modelId: string; tier: string }> = [
-  { modelId: "openai/gpt-5.4-image-2", tier: "GPT" },
-  { modelId: "google/gemini-3.1-flash-image-preview", tier: "Gemini" },
-];
-
-const editFunctionRows: Array<{ key: string; name: string; rule: string; chain: Array<{ modelId: string; tier: string }> | null }> = [
-  { key: "quick", name: "快捷编辑", rule: "尽量用源图同款模型/比例/分辨率重绘；上传图等对不上尺寸时回落 Seedream 4.5，比例+分辨率取最接近源图的一档。走 img2img，模型跟随源图、无候选链开关。", chain: null },
-  { key: "hd", name: "高清", rule: "指令式提升清晰度，内容/构图/颜色不变；比例贴源图。快捷菜单里是下拉，用户自己选「GPT 2K / GPT 4K / Gemini 2K / Gemini 4K」四个选项之一（模型 + 分辨率档）。⚠️ 用户既然明确选了模型，失败就不再自动换成别的模型，直接显示失败卡。下方开关按模型生效：关掉某个模型，它的 2K/4K 两个选项一起隐藏；两个都关，高清按钮整个不显示。", chain: HD_MODEL_CHAIN },
-  { key: "bg", name: "去背景", rule: "本地抠图（@imgly/background-removal-node），产透明 PNG，尺寸=源图。纯本地推理、不调云模型、无候选链开关。", chain: null },
-  { key: "eraser", name: "橡皮工具", rule: "半透明涂抹要消除的区域，导出时把标记区填中性灰盖住主体，模型做局部消除+补背景、其余不变；比例/尺寸贴源图。走下方「首选→次选→三选」模型候选链：前一个失败或关闭自动用下一个，全部关闭时回落完整候选链以免不可用。", chain: EDIT_MODEL_CHAIN },
-];
-
-// 工作流视频「编辑功能」快捷菜单：后台规则展示 + 快捷编辑模型候选链开关。
-// 候选链顺序与前端 WORKFLOW_VIDEO_EDIT_MODEL_CHAIN / system-settings 的 VIDEO_EDIT_FUNCTION_MODEL_CHAIN 一致。
-const VIDEO_EDIT_MODEL_CHAIN: Array<{ modelId: string; tier: string }> = [
-  { modelId: "byteplus:video.seedance-2-0-mini", tier: "首选" },
-  { modelId: "byteplus:video.seedance-2-0-fast", tier: "次选" },
-  { modelId: "byteplus:video.seedance-2-0", tier: "三选" },
-  // ⭐ 2.5 放最后一位（2026-08-09 加）：前三个都关掉才会用它，默认行为不变。⛔ 别挪到首位（更贵）。
-  { modelId: "byteplus:video.seedance-2-5", tier: "四选" },
-];
-
-const videoEditFunctionRows: Array<{ key: string; name: string; rule: string; chain: boolean }> = [
-  { key: "video_quick", name: "快捷编辑", rule: "用「源视频当参考视频 + 你输入的提示词」以融合模式重新生成一段视频。参数一律按源视频的真实尺寸/真实时长反推（比例取最接近的一档、分辨率取总像素最接近的一档、时长取最接近的「N秒」档），因此上传视频也能贴合原视频而不是用节点默认值。⚠️ 分辨率优先决定模型：需要 1080p 时只有 Seedance 2.0 支持（2.5 只有 480p/720p），直接用它、不再依次尝试；480p/720p 才走下方候选链依次兜底。", chain: true },
-  { key: "video_download", name: "下载", rule: "下载该视频原文件（mp4），文件名用资产系统名。与右键菜单的下载共用同一份实现，纯前端、不调模型。", chain: false },
-];
-
-
-
 function AgentPriorityModelMenu({ value, disabled, onChange, trailing }: { value: string; disabled?: boolean; onChange: (modelId: string) => void; trailing?: ReactNode }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -320,7 +280,6 @@ export function AdminSystemSettingsPanel({ settings, adminEmailCount }: { settin
   const [bytePlusRegion, setBytePlusRegion] = useState<"ap-southeast-1" | "eu-west-1">(settings.bytePlusRegion);
   const [modelProviderPreferences, setModelProviderPreferences] = useState(settings.modelProviderPreferences);
   const [bytePlusModelSelections, setBytePlusModelSelections] = useState(settings.bytePlusModelSelections);
-  const [editModelToggles, setEditModelToggles] = useState(settings.editModelToggles);
   const [agentPriorityModelId, setAgentPriorityModelId] = useState(settings.agentPriorityModelId || "deepseek/deepseek-v4-pro");
   const [agentPriorityEnabled, setAgentPriorityEnabled] = useState(settings.agentPriorityEnabled);
   const [message, setMessage] = useState("");
@@ -335,7 +294,6 @@ export function AdminSystemSettingsPanel({ settings, adminEmailCount }: { settin
     const nextBytePlusRegion = nextSettings?.bytePlusRegion ?? bytePlusRegion;
     const nextModelProviderPreferences = nextSettings?.modelProviderPreferences ?? modelProviderPreferences;
     const nextBytePlusModelSelections = nextSettings?.bytePlusModelSelections ?? bytePlusModelSelections;
-    const nextEditModelToggles = nextSettings?.editModelToggles ?? editModelToggles;
     const nextAgentPriorityModelId = nextSettings?.agentPriorityModelId ?? agentPriorityModelId;
     const nextAgentPriorityEnabled = nextSettings?.agentPriorityEnabled ?? agentPriorityEnabled;
     if (nextOpenRouterEnabled && !nextOpenRouterKey) {
@@ -353,7 +311,6 @@ export function AdminSystemSettingsPanel({ settings, adminEmailCount }: { settin
     setBytePlusRegion(nextBytePlusRegion);
     setModelProviderPreferences(nextModelProviderPreferences);
     setBytePlusModelSelections(nextBytePlusModelSelections);
-    setEditModelToggles(nextEditModelToggles);
     setAgentPriorityModelId(nextAgentPriorityModelId);
     setAgentPriorityEnabled(nextAgentPriorityEnabled);
     setMessage("");
@@ -362,7 +319,7 @@ export function AdminSystemSettingsPanel({ settings, adminEmailCount }: { settin
         const response = await fetch("/admin/api/system-settings", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ openRouterApiKey: nextOpenRouterKey, openRouterApiKeyEnabled: nextOpenRouterEnabled, bytePlusApiKey: nextBytePlusKey, bytePlusApiKeyEnabled: nextBytePlusEnabled, bytePlusUnlockLimits: nextBytePlusUnlockLimits, bytePlusRegion: nextBytePlusRegion, modelProviderPreferences: nextModelProviderPreferences, bytePlusModelSelections: nextBytePlusModelSelections, editModelToggles: nextEditModelToggles, agentPriorityModelId: nextAgentPriorityModelId, agentPriorityEnabled: nextAgentPriorityEnabled }),
+          body: JSON.stringify({ openRouterApiKey: nextOpenRouterKey, openRouterApiKeyEnabled: nextOpenRouterEnabled, bytePlusApiKey: nextBytePlusKey, bytePlusApiKeyEnabled: nextBytePlusEnabled, bytePlusUnlockLimits: nextBytePlusUnlockLimits, bytePlusRegion: nextBytePlusRegion, modelProviderPreferences: nextModelProviderPreferences, bytePlusModelSelections: nextBytePlusModelSelections, agentPriorityModelId: nextAgentPriorityModelId, agentPriorityEnabled: nextAgentPriorityEnabled }),
         });
         const data = (await response.json().catch(() => ({}))) as { error?: string; settings?: AdminSystemSettings };
         if (!response.ok || !data.settings) throw new Error(data.error || "保存失败");
@@ -374,7 +331,6 @@ export function AdminSystemSettingsPanel({ settings, adminEmailCount }: { settin
         setBytePlusRegion(data.settings.bytePlusRegion);
         setModelProviderPreferences(data.settings.modelProviderPreferences);
         setBytePlusModelSelections(data.settings.bytePlusModelSelections);
-        setEditModelToggles(data.settings.editModelToggles);
         setAgentPriorityModelId(data.settings.agentPriorityModelId);
         setAgentPriorityEnabled(data.settings.agentPriorityEnabled);
         setMessage("");
@@ -399,11 +355,6 @@ export function AdminSystemSettingsPanel({ settings, adminEmailCount }: { settin
     saveSettings({ bytePlusModelSelections: next });
   };
 
-  const updateEditModelToggle = (key: string, enabled: boolean) => {
-    const next = { ...editModelToggles, [key]: enabled };
-    saveSettings({ editModelToggles: next });
-  };
-
   return (
     <>
       <div className="mb-6 flex items-center justify-between gap-4">
@@ -411,8 +362,8 @@ export function AdminSystemSettingsPanel({ settings, adminEmailCount }: { settin
         <div className="text-[13px] text-[#777777]">管理员白名单：{adminEmailCount} 个邮箱</div>
       </div>
 
-      <section className="min-w-[1090px]">
-        <div className="grid w-[1090px] grid-cols-[620px_450px] items-start gap-5">
+      <section className="min-w-[1180px]">
+        <div className="grid w-[1180px] grid-cols-2 items-start gap-5">
         <div className="flex w-full flex-col gap-1 text-[12px] text-[#777777]">
           <div className="flex items-center gap-2">
             <span>OpenRouter API</span>
@@ -436,9 +387,6 @@ export function AdminSystemSettingsPanel({ settings, adminEmailCount }: { settin
               <span>BytePlus API</span>
               <SettingSwitch checked={bytePlusEnabled} disabled={isPending} onChange={(value) => saveSettings({ bytePlusApiKeyEnabled: value })} ariaLabel="BytePlus API 开关" />
             </span>
-            {/* ⭐ 2026-07-30：原来这里有个「解除限制」总开关，已改成**按账号**控制，
-                入口移到左侧「帐号功能管理」（标题栏那个是"一键全开"的批量按钮）。
-                `.env.local` 的 BYTEPLUS_UNLOCK_LIMITS 仍保留，只作为"拿不到 userId 时"的回落。 */}
           </div>
           <div className="relative">
             <input
@@ -540,83 +488,6 @@ export function AdminSystemSettingsPanel({ settings, adminEmailCount }: { settin
           </div>
         ))}
       </section>
-
-      <section className="mt-8 min-w-[1180px] overflow-hidden rounded-[10px] border border-[#eeeeee] bg-white text-[13px] shadow-[0_10px_28px_rgba(0,0,0,0.04)]">
-        <div className="border-b border-[#eeeeee] bg-[#fafafa] px-5 py-3 text-[12px] text-[#777777]">
-          <span className="font-medium text-[#555555]">工作流 · 图片编辑功能</span>
-          <span className="ml-2">选中工作流图片节点后顶部快捷菜单里的编辑功能。高清 = 用户在下拉里自己选「GPT / Gemini × 2K / 4K」，关掉某个模型它的两个选项就隐藏；橡皮工具走「首选→次选→三选」模型候选链，前一个失败或关闭自动用下一个，全部关闭时回落到完整候选链以免不可用。</span>
-        </div>
-        <div className="grid grid-cols-[140px_1fr_470px] border-b border-[#eeeeee] bg-[#fafafa] text-[12px] text-[#777777]">
-          <div className="px-5 py-3 font-medium">功能</div>
-          <div className="px-5 py-3 font-medium">规则说明</div>
-          <div className="px-5 py-3 font-medium">使用模型（高清=按模型开关 / 橡皮=首选→次选→三选）</div>
-        </div>
-        {editFunctionRows.map((row) => (
-          <div key={row.key} className="grid grid-cols-[140px_1fr_470px] border-b border-[#f2f2f2] last:border-b-0">
-            <div className="px-5 py-4 font-medium text-[#222222]">{row.name}</div>
-            <div className="px-5 py-4 text-[12px] leading-5 text-[#666666]">{row.rule}</div>
-            <div className="px-5 py-4">
-              {row.chain ? (
-                <div className="flex flex-col gap-2">
-                  {row.chain.map((entry) => {
-                    const toggleKey = `${row.key}:${entry.modelId}`;
-                    const checked = editModelToggles[toggleKey] !== false;
-                    return (
-                      <span key={toggleKey} className="inline-flex h-8 w-full items-center gap-2 rounded-[7px] bg-[#f4f6fb] px-2.5 text-[12px] text-[#333333]">
-                        <span className="w-12 shrink-0 text-[#999999]">{entry.tier}</span>
-                        <ModelIcon modelId={entry.modelId} />
-                        <span className="min-w-0 flex-1 truncate font-medium">{getModelLabel(entry.modelId)}</span>
-                        <SettingSwitch checked={checked} disabled={isPending} onChange={(value) => updateEditModelToggle(toggleKey, value)} ariaLabel={`${row.name} ${entry.tier} 开关`} />
-                      </span>
-                    );
-                  })}
-                </div>
-              ) : (
-                <span className="text-[12px] text-[#999999]">{row.key === "bg" ? "本地抠图，无云模型" : "跟随源图模型，无候选链开关"}</span>
-              )}
-            </div>
-          </div>
-        ))}
-      </section>
-
-      <section className="mt-8 min-w-[1180px] overflow-hidden rounded-[10px] border border-[#eeeeee] bg-white text-[13px] shadow-[0_10px_28px_rgba(0,0,0,0.04)]">
-        <div className="border-b border-[#eeeeee] bg-[#fafafa] px-5 py-3 text-[12px] text-[#777777]">
-          <span className="font-medium text-[#555555]">工作流 · 视频编辑功能</span>
-          <span className="ml-2">选中工作流视频节点后顶部快捷菜单里的编辑功能。快捷编辑走「首选→次选→三选→四选」模型候选链，前一个失败或关闭自动用下一个；全部关闭时回落到完整候选链以免不可用。需要 1080p 时只有 Seedance 2.0 支持（2.5 只有 480p/720p），会直接用它而不走候选链。</span>
-        </div>
-        <div className="grid grid-cols-[140px_1fr_470px] border-b border-[#eeeeee] bg-[#fafafa] text-[12px] text-[#777777]">
-          <div className="px-5 py-3 font-medium">功能</div>
-          <div className="px-5 py-3 font-medium">规则说明</div>
-          <div className="px-5 py-3 font-medium">使用模型（首选 / 次选 / 三选 / 四选）</div>
-        </div>
-        {videoEditFunctionRows.map((row) => (
-          <div key={row.key} className="grid grid-cols-[140px_1fr_470px] border-b border-[#f2f2f2] last:border-b-0">
-            <div className="px-5 py-4 font-medium text-[#222222]">{row.name}</div>
-            <div className="px-5 py-4 text-[12px] leading-5 text-[#666666]">{row.rule}</div>
-            <div className="px-5 py-4">
-              {row.chain ? (
-                <div className="flex flex-col gap-2">
-                  {VIDEO_EDIT_MODEL_CHAIN.map((entry) => {
-                    const toggleKey = `${row.key}:${entry.modelId}`;
-                    const checked = editModelToggles[toggleKey] !== false;
-                    return (
-                      <span key={toggleKey} className="inline-flex h-8 w-full items-center gap-2 rounded-[7px] bg-[#f4f6fb] px-2.5 text-[12px] text-[#333333]">
-                        <span className="w-8 shrink-0 text-[#999999]">{entry.tier}</span>
-                        <ModelIcon modelId={entry.modelId} />
-                        <span className="min-w-0 flex-1 truncate font-medium">{getModelLabel(entry.modelId)}</span>
-                        <SettingSwitch checked={checked} disabled={isPending} onChange={(value) => updateEditModelToggle(toggleKey, value)} ariaLabel={`${row.name} ${entry.tier} 开关`} />
-                      </span>
-                    );
-                  })}
-                </div>
-              ) : (
-                <span className="text-[12px] text-[#999999]">纯前端下载，无模型</span>
-              )}
-            </div>
-          </div>
-        ))}
-      </section>
-
     </>
   );
 }

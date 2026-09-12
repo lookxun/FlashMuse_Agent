@@ -5,14 +5,14 @@ import { createPortal } from "react-dom";
 import { VideoDurationSlider } from "@/components/video-duration-slider";
 import { BaseBoxShapeUtil, BindingUtil, CubicBezier2d, HTMLContainer, Mat, Rectangle2d, SVGContainer, SelectionForegroundOverlayUtil, ShapeUtil, T, Tldraw, Vec, createShapeId, defaultBindingUtils, defaultOverlayUtils, defaultShapeUtils, resizeBox, useActions, useEditor, useValue, vecModelValidator, type Editor, type IndexKey, type RecordProps, type TLBinding, type TLComponents, type TLHandle, type TLHandleDragInfo, type TLResizeInfo, type TLShape, type TLShapeId, type TLUiOverrides, type TldrawOptions, type VecModel } from "tldraw";
 import { type IconType } from "react-icons";
-import { RiEraserLine, RiHdLine, RiSparkling2Line, RiAccountBoxLine, RiBellLine, RiAddLine, RiArrowDownSLine, RiArrowUpLine, RiBringForward, RiBringToFront, RiCameraLine, RiCheckLine, RiCheckboxBlankCircleLine, RiCheckboxCircleLine, RiCheckboxMultipleLine, RiClipboardLine, RiCloseLine, RiCursorLine, RiDeleteBinLine, RiDownloadLine, RiEmotionSadLine, RiExportFill, RiExportLine, RiEyeLine, RiEyeOffLine, RiFileCodeLine, RiFileCopy2Line, RiFileCopyLine, RiFileImageLine, RiFileTextLine, RiFilmAiLine, RiFolderOpenLine, RiGalleryView, RiAttachment2, RiFocus3Line, RiGoogleFill, RiHand, RiHistoryLine, RiImageAiLine, RiImageCircleLine, RiImageLine, RiInformation2Line, RiLandscapeLine, RiSidebarFoldLine, RiSidebarUnfoldLine, RiLoader4Line, RiLockLine, RiLockUnlockLine, RiMicAiLine, RiMoreLine, RiMultiImageLine, RiNodeTree, RiOpenaiFill, RiResetLeftLine, RiRoadMapLine, RiScissorsCutLine, RiSendBackward, RiSendToBack, RiShining2Line, RiStackLine, RiTBoxLine, RiTextBlock, RiTextSnippet, RiTimeLine, RiUpload2Line, RiVideoLine, RiVideoOnLine, RiVoiceprintLine, RiZoomInLine, RiZoomOutLine } from "react-icons/ri";
+import { RiEraserLine, RiHdLine, RiSparkling2Line, RiAccountBoxLine, RiBellLine, RiAddLine, RiArrowDownSLine, RiArrowUpLine, RiBringForward, RiBringToFront, RiCameraLine, RiCheckLine, RiCheckboxBlankCircleLine, RiCheckboxCircleLine, RiCheckboxMultipleLine, RiClipboardLine, RiCloseLine, RiCursorLine, RiDeleteBinLine, RiDownloadLine, RiEmotionSadLine, RiExportFill, RiExportLine, RiEyeLine, RiEyeOffLine, RiFileCodeLine, RiFileCopy2Line, RiFileCopyLine, RiFileImageLine, RiFileTextLine, RiFilmAiLine, RiFolderOpenLine, RiGalleryView, RiAttachment2, RiFocus3Line, RiGoogleFill, RiHand, RiHistoryLine, RiImageAiLine, RiImageCircleLine, RiImageLine, RiInformation2Line, RiLandscapeLine, RiBodyScanLine, RiSidebarFoldLine, RiSidebarUnfoldLine, RiLoader4Line, RiLockLine, RiLockUnlockLine, RiMicAiLine, RiMoreLine, RiMultiImageLine, RiNodeTree, RiOpenaiFill, RiResetLeftLine, RiRoadMapLine, RiScissorsCutLine, RiSendBackward, RiSendToBack, RiShining2Line, RiStackLine, RiTBoxLine, RiTextBlock, RiTextSnippet, RiTimeLine, RiUpload2Line, RiVideoLine, RiVideoOnLine, RiVoiceprintLine, RiZoomInLine, RiZoomOutLine } from "react-icons/ri";
 import { BytedanceIcon } from "@/components/bytedance-icon";
 import { AudioWaveformPlayer } from "@/components/audio-waveform-player";
 import { AssetMentionPicker, type MentionPickerCategory, type MentionPickerItem } from "@/components/asset-mention-picker";
 import { VideoUploadThumbnail } from "@/components/video-upload-thumbnail";
 import { VideoPlayBadge } from "@/components/video-play-badge";
 import { NewBadge } from "@/components/new-badge";
-import { DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, DEFAULT_IMAGE_QUALITY, GPT_IMAGE2_MODEL_ID, IMAGE_QUALITY_OPTIONS, IMAGE_QUALITY_LABELS, isGptImage2Model, isNewGenerationModel, getGenerationModelSelectHint, bytePlusVideoGenerationModels, frontendConversationModels, frontendImageGenerationModels, getExpectedImageDimensions, getExpectedVideoDimensions, getSupportedImageRatios, getSupportedImageResolutions, getSupportedVideoRatios, getSupportedVideoResolutions, normalizeImageResolutionForModel, normalizeVideoRatioForModel, normalizeVideoResolutionForModel, validateVideoDurationWithReferences, videoGenerationModels, type ConversationModel, type GenerationModel, type ImageResolution, type ModelName } from "@/lib/models";
+import { DEFAULT_IMAGE_MODEL, DEFAULT_VIDEO_MODEL, DEFAULT_IMAGE_QUALITY, GPT_IMAGE2_MODEL_ID, IMAGE_QUALITY_LABELS, VIDEO_DEPTH_MODEL_ID, VIDEO_ENHANCE_FAST_MODEL_ID, VIDEO_ENHANCE_MODEL_ID, isGoldGenerationModel, isGptImage2Model, isNewGenerationModel, isVideoDepthModel, isVideoEnhanceModel, getGenerationModelSelectHint, getImageQualityOptions, bytePlusVideoGenerationModels, frontendConversationModels, frontendImageGenerationModels, getExpectedImageDimensions, getExpectedVideoDimensions, getSupportedImageRatios, getSupportedImageResolutions, getSupportedVideoRatios, getSupportedVideoResolutions, normalizeImageResolutionForModel, normalizeVideoRatioForModel, normalizeVideoResolutionForModel, validateVideoDurationWithReferences, videoGenerationModels, type ConversationModel, type GenerationModel, type ImageResolution, type ModelName, type VideoResolution } from "@/lib/models";
 import { filterImageResolutionsForMembership, filterVideoResolutionsForMembership, type MembershipSettings, type MembershipTier } from "@/lib/membership";
 import { GENERIC_MEDIA_ERROR_MESSAGE, toUserErrorMessage } from "@/lib/error-message";
 import { isGptImageSafetyFailure, normalizeAttemptPrompt, runPromptSafetyRetry } from "@/lib/gpt-image-safety-retry";
@@ -87,6 +87,7 @@ export type WorkflowNodeData = {
   gptImageOptimizationAttemptsUsed?: number;
   gptImageOptimizationAttemptPrompts?: string[];
   gptImageOptimizationOptimizerModel?: string;
+  enhanceSourceUrl?: string;
 };
 
 // ⭐ 参考模式类型用唯一权威（`upload-rules`）。原来这里手写的联合类型**漏了 `last_frame`**，
@@ -376,6 +377,10 @@ const HD_PROMPT = "保持画面内容、主体、构图、颜色和所有细节�
 const HD_MODEL_OPTIONS: Array<{ label: string; model: ModelName; resolution: ImageResolution }> = [
   { label: "GPT 2K", model: "openai/gpt-5.4-image-2" as ModelName, resolution: "2K" },
   { label: "GPT 4K", model: "openai/gpt-5.4-image-2" as ModelName, resolution: "4K" },
+  { label: "Flare 2K", model: "openai/gpt-image-2.5-flare" as ModelName, resolution: "2K" },
+  { label: "Flare 4K", model: "openai/gpt-image-2.5-flare" as ModelName, resolution: "4K" },
+  { label: "Sunburst 2K", model: "openai/gpt-image-2.5-sunburst" as ModelName, resolution: "2K" },
+  { label: "Sunburst 4K", model: "openai/gpt-image-2.5-sunburst" as ModelName, resolution: "4K" },
   { label: "Gemini 2K", model: "google/gemini-3.1-flash-image-preview" as ModelName, resolution: "2K" },
   { label: "Gemini 4K", model: "google/gemini-3.1-flash-image-preview" as ModelName, resolution: "4K" },
 ];
@@ -390,6 +395,35 @@ function getHdOptions(toggles: Record<string, boolean> | undefined, enabledImage
 function getVideoEditCandidates(func: "video_quick", toggles?: Record<string, boolean>): ModelName[] {
   const enabled = WORKFLOW_VIDEO_EDIT_MODEL_CHAIN.filter((id) => (toggles?.[`${func}:${id}`] ?? true) !== false);
   return enabled.length > 0 ? enabled : WORKFLOW_VIDEO_EDIT_MODEL_CHAIN;
+}
+const VIDEO_ENHANCE_OPTIONS: Array<{ label: string; resolution: VideoResolution }> = [
+  { label: "高清720p", resolution: "720p" },
+  { label: "高清1080p", resolution: "1080p" },
+  { label: "高清2K", resolution: "2K" },
+];
+const BYTEPLUS_VIDEO_ENHANCE_OPTIONS: Array<{ label: string; resolution: VideoResolution }> = [
+  { label: "高清720p", resolution: "720p" },
+  { label: "高清1080p", resolution: "1080p" },
+  { label: "高清2K", resolution: "2K" },
+  { label: "高清4K", resolution: "4K" },
+];
+function isShortcutFnEnabled(toggles: Record<string, boolean> | undefined, func: string) {
+  return (toggles?.[`fn:${func}`] ?? true) !== false;
+}
+function isVideoEnhanceEnabled(toggles?: Record<string, boolean>) {
+  return isShortcutFnEnabled(toggles, "video_enhance") && (toggles?.[`video_enhance:${VIDEO_ENHANCE_MODEL_ID}`] ?? true) !== false;
+}
+function isBytePlusVideoEnhanceFastEnabled(toggles?: Record<string, boolean>) {
+  return isShortcutFnEnabled(toggles, "video_enhance_fast") && (toggles?.[`video_enhance_fast:${VIDEO_ENHANCE_FAST_MODEL_ID}`] ?? true) !== false;
+}
+function isVideoDepthEnabled(toggles?: Record<string, boolean>) {
+  return isShortcutFnEnabled(toggles, "video_depth") && (toggles?.[`video_depth:${VIDEO_DEPTH_MODEL_ID}`] ?? true) !== false;
+}
+function getVideoEnhanceNodeLabel(modelId?: string) {
+  if (modelId === VIDEO_ENHANCE_FAST_MODEL_ID) return "画质增强极速";
+  if (modelId === VIDEO_ENHANCE_MODEL_ID) return "火山画质增强";
+  if (modelId === VIDEO_DEPTH_MODEL_ID) return "深度动作捕捉";
+  return "";
 }
 const NODE_HEIGHT = 180;
 const CARD_HEIGHT = 180;
@@ -1309,12 +1343,12 @@ function getWorkflowNodeParamParts(node: WorkflowNode): { modelLabel: string; ra
   if (node.title === "上传图片" || node.title === "上传视频" || node.title === "上传文本" || node.title === WORKFLOW_VIDEO_FRAME_NODE_TITLE) return { modelLabel: "", ratio: "", resolution: "", duration: "", sizeText };
   if (node.kind === "audio") return { modelLabel: "", ratio: "", resolution: "", duration: "", sizeText: "" };
   const modelOptions = node.kind === "text" ? frontendConversationModels : node.kind === "image" ? frontendImageGenerationModels : workflowVideoModels;
-  const modelLabel = node.data.model ? getModelLabel(modelOptions, node.data.model) : "";
+  const modelLabel = getVideoEnhanceNodeLabel(node.data.model) || (node.data.model ? getModelLabel(modelOptions, node.data.model) : "");
   if (node.kind === "text") return { modelLabel: "", ratio: "", resolution: "", duration: "", sizeText };
   // Prefer the REAL video length (backfilled from the loaded file via onLoadedMetadata) over the
   // requested duration setting, so the label is always accurate and self-heals mismatched/migrated data.
   const durationText = node.kind === "video"
-    ? (typeof node.data.durationSeconds === "number" && node.data.durationSeconds > 0 ? `${Math.round(node.data.durationSeconds)}秒` : node.data.duration ?? "")
+    ? (typeof node.data.durationSeconds === "number" && node.data.durationSeconds > 0 ? `${Math.max(1, Math.floor(node.data.durationSeconds))}秒` : node.data.duration ?? "")
     : "";
   // ⭐ 比例/分辨率同理：视频节点一律优先用「生成出来的真实视频尺寸」反推，读不到才回落请求档 node.data.ratio/resolution。
   //   （真实尺寸由服务端落地时下发 videoDimensions，或播放时 onLoadedMetadata 自愈。）
@@ -2188,6 +2222,10 @@ type WorkflowRuntime = {
   runImageNode: (node: WorkflowNode) => void;
   createImageEditNode: (sourceNode: WorkflowNode, options: { prompt: string; model?: ModelName; modelCandidates?: ModelName[]; highDef?: boolean; ratio?: string; resolution?: string; transparent?: boolean; bgRemove?: boolean; matchSourceImage?: boolean; ratioFromSourceImage?: boolean; position?: { x: number; y: number }; referenceImageOverride?: string; select?: boolean }) => WorkflowNode | undefined;
   createVideoEditNode: (sourceNode: WorkflowNode, options: { prompt: string; position?: { x: number; y: number }; select?: boolean }) => WorkflowNode | undefined;
+  createVideoEnhanceNode: (sourceNode: WorkflowNode, options: { resolution: VideoResolution; model?: ModelName; position?: { x: number; y: number }; select?: boolean }) => WorkflowNode | undefined;
+  runVideoEnhanceNode: (node: WorkflowNode) => void;
+  createVideoDepthNode: (sourceNode: WorkflowNode, options?: { position?: { x: number; y: number }; select?: boolean }) => WorkflowNode | undefined;
+  runVideoDepthNode: (node: WorkflowNode) => void;
   createVideoFrameImageNode: (sourceNode: WorkflowNode, frame: WorkflowVideoFrameKind) => void;
   // 「使用提示词」：右键菜单与图片/视频快捷菜单共用同一份实现（禁止再写第二套）。
   addNodeFromPrompt: (sourceNode: WorkflowNode) => void;
@@ -2562,6 +2600,8 @@ function WorkflowSelectedNodeOverlay() {
   const [quickEditText, setQuickEditText] = useState("");
   const [frameMenuOpen, setFrameMenuOpen] = useState(false);
   const [hdMenuOpen, setHdMenuOpen] = useState(false);
+  const [enhanceMenuOpen, setEnhanceMenuOpen] = useState(false);
+  const [enhanceFastMenuOpen, setEnhanceFastMenuOpen] = useState(false);
   const quickEditRef = useRef<HTMLTextAreaElement | null>(null);
   const [eraserOpen, setEraserOpen] = useState(false);
   const [eraserBrush, setEraserBrush] = useState(40);
@@ -2574,8 +2614,8 @@ function WorkflowSelectedNodeOverlay() {
   const eraserSubmittingRef = useRef(false);
   const selectedEditNode = selected?.shape.props.node;
   const selectedEditKind = selectedEditNode?.kind;
-  const canQuickEdit = Boolean(selectedEditNode && (selectedEditKind === "image" || selectedEditKind === "video") && hasWorkflowNodeResult(selectedEditNode) && !selectedEditNode.data.isRunning);
-  useEffect(() => { setQuickEditOpen(false); setQuickEditText(""); setFrameMenuOpen(false); setHdMenuOpen(false); setEraserOpen(false); setEraserHasStrokes(false); }, [selected?.shape.id]);
+  const canQuickEdit = Boolean(selectedEditNode && (selectedEditKind === "image" || selectedEditKind === "video") && hasWorkflowNodeResult(selectedEditNode) && !selectedEditNode.data.isRunning && isShortcutFnEnabled(runtime.editModelToggles, selectedEditKind === "video" ? "video_quick" : "quick"));
+  useEffect(() => { setQuickEditOpen(false); setQuickEditText(""); setFrameMenuOpen(false); setHdMenuOpen(false); setEnhanceMenuOpen(false); setEraserOpen(false); setEraserHasStrokes(false); }, [selected?.shape.id]);
   useEffect(() => {
     if (!canQuickEdit) return;
     const onKey = (event: KeyboardEvent) => {
@@ -2630,7 +2670,26 @@ function WorkflowSelectedNodeOverlay() {
   //    在此处加 Hook 会触发 React #310「Rendered more hooks than during the previous render」，
   //    整个 tldraw 画布直接崩成「Something went wrong」（2026-07-29 实际踩过）。只有 4 个元素，直接算最省事。
   const hdOptions = getHdOptions(runtime.editModelToggles, undefined);
-  const showMediaQuickMenu = (node.kind === "image" || isVideoQuickMenuNode) && hasWorkflowNodeResult(node) && !node.data.isRunning;
+  const showImageQuick = isShortcutFnEnabled(runtime.editModelToggles, "quick");
+  const showImageHd = isShortcutFnEnabled(runtime.editModelToggles, "hd") && hdOptions.length > 0;
+  const showImageBg = isShortcutFnEnabled(runtime.editModelToggles, "bg");
+  const showImageEraser = isShortcutFnEnabled(runtime.editModelToggles, "eraser");
+  const showImagePrompt = isShortcutFnEnabled(runtime.editModelToggles, "prompt");
+  const showImageDownload = isShortcutFnEnabled(runtime.editModelToggles, "download");
+  const showVideoQuick = isShortcutFnEnabled(runtime.editModelToggles, "video_quick");
+  const showVideoEnhance = isVideoEnhanceEnabled(runtime.editModelToggles);
+  const showVideoEnhanceFast = isBytePlusVideoEnhanceFastEnabled(runtime.editModelToggles);
+  const showVideoDepth = isVideoDepthEnabled(runtime.editModelToggles);
+  const showVideoFrame = isShortcutFnEnabled(runtime.editModelToggles, "video_frame");
+  const showVideoPrompt = isShortcutFnEnabled(runtime.editModelToggles, "video_prompt");
+  const showVideoDownload = isShortcutFnEnabled(runtime.editModelToggles, "video_download");
+  const showImageMidTools = showImageHd || showImageBg || showImageEraser;
+  const showVideoMidTools = showVideoEnhance || showVideoEnhanceFast || showVideoDepth || showVideoFrame;
+  const showPrompt = isVideoQuickMenuNode ? showVideoPrompt : showImagePrompt;
+  const showDownload = isVideoQuickMenuNode ? showVideoDownload : showImageDownload;
+  const showQuick = isVideoQuickMenuNode ? showVideoQuick : showImageQuick;
+  const hasAnyQuickMenuItem = showQuick || (isVideoQuickMenuNode ? showVideoMidTools : showImageMidTools) || showPrompt || showDownload;
+  const showMediaQuickMenu = (node.kind === "image" || isVideoQuickMenuNode) && hasWorkflowNodeResult(node) && !node.data.isRunning && hasAnyQuickMenuItem;
   // 上传进来的素材节点没有"生成用的提示词"→ 快捷菜单里的「使用提示词」置灰（判定与右键菜单一致）。
   const isUploadedMediaNode = isWorkflowUploadLikeTitle(node.title);
   // 快捷编辑的字数上限与节点一致（同一个模型）。⭐ 超限不删字：原生 maxLength 已去掉
@@ -2666,19 +2725,17 @@ function WorkflowSelectedNodeOverlay() {
           onWheel={stopCanvasPointer}
         >
           <div className="flex h-[44px] items-center gap-0.5 rounded-[10px] bg-white px-1.5 shadow-[0_6px_24px_rgba(15,23,42,0.16)] ring-1 ring-black/5" style={{ fontSize: 14 }}>
+            {showQuick ? (
             <button type="button" onClick={() => setQuickEditOpen((value) => !value)} className="flex h-[34px] items-center gap-1.5 whitespace-nowrap rounded-[8px] px-2 font-medium text-[#1f2937] hover:bg-gray-100">
               <span className="flex h-5 w-5 items-center justify-center rounded-full bg-[#1f2937] text-white"><RiSparkling2Line className="h-3 w-3" /></span>
               <span>快捷编辑</span>
               <span className="ml-0.5 rounded-[5px] border border-gray-200 bg-gray-50 px-1.5 leading-[16px] text-gray-400" style={{ fontSize: 11 }}>Tab</span>
             </button>
-            <span className="mx-0.5 h-5 w-px bg-gray-200" />
+            ) : null}
+            {showQuick && ((isVideoQuickMenuNode ? showVideoMidTools : showImageMidTools) || showPrompt || showDownload) ? <span className="mx-0.5 h-5 w-px bg-gray-200" /> : null}
             {!isVideoQuickMenuNode ? (
               <>
-                {/* 高清：鼠标悬停下三角展开「GPT 2K / GPT 4K / Gemini 2K / Gemini 4K」。
-                    功能与提示词与以前完全一致（指令式提升清晰度、比例贴源图），只是模型与 K 数改由用户选，
-                    不再是"失败自动换下一个模型"的候选链（用户明确选了模型就不该被悄悄换掉）。
-                    选项被后台两道开关过滤（高清模型开关 + 启用的图片模型清单），全被关掉时整个按钮隐藏。 */}
-                {hdOptions.length > 0 ? (
+                {showImageHd ? (
                   <div className="relative" onMouseEnter={() => setHdMenuOpen(true)} onMouseLeave={() => setHdMenuOpen(false)}>
                     <button type="button" className="flex h-[34px] items-center gap-1 whitespace-nowrap rounded-[8px] px-2 font-medium text-[#1f2937] hover:bg-gray-100">
                       <RiHdLine className="h-[18px] w-[18px]" />
@@ -2704,13 +2761,66 @@ function WorkflowSelectedNodeOverlay() {
                     ) : null}
                   </div>
                 ) : null}
-                <button type="button" onClick={() => runtime.createImageEditNode(node, { prompt: "去背景（本地抠图）", bgRemove: true })} className="flex h-[34px] items-center gap-1 whitespace-nowrap rounded-[8px] px-2 font-medium text-[#1f2937] hover:bg-gray-100"><RiScissorsCutLine className="h-[18px] w-[18px]" /><span>去背景</span></button>
-                <button type="button" onClick={() => setEraserOpen(true)} className="flex h-[34px] items-center gap-1 whitespace-nowrap rounded-[8px] px-2 font-medium text-[#1f2937] hover:bg-gray-100"><RiEraserLine className="h-[18px] w-[18px]" /><span>橡皮工具</span></button>
-                <span className="mx-0.5 h-5 w-px bg-gray-200" />
+                {showImageBg ? <button type="button" onClick={() => runtime.createImageEditNode(node, { prompt: "去背景（本地抠图）", bgRemove: true })} className="flex h-[34px] items-center gap-1 whitespace-nowrap rounded-[8px] px-2 font-medium text-[#1f2937] hover:bg-gray-100"><RiScissorsCutLine className="h-[18px] w-[18px]" /><span>去背景</span></button> : null}
+                {showImageEraser ? <button type="button" onClick={() => setEraserOpen(true)} className="flex h-[34px] items-center gap-1 whitespace-nowrap rounded-[8px] px-2 font-medium text-[#1f2937] hover:bg-gray-100"><RiEraserLine className="h-[18px] w-[18px]" /><span>橡皮工具</span></button> : null}
+                {showImageMidTools && (showPrompt || showDownload) ? <span className="mx-0.5 h-5 w-px bg-gray-200" /> : null}
               </>
             ) : (
-              /* 视频截图：鼠标悬停下三角展开首帧/尾帧/当前帧，截出的图直接作为图片节点出现在源视频右侧（和右键导出用同一份截帧实现）。 */
               <>
+                {showVideoEnhance ? (
+                  <div className="relative" onMouseEnter={() => setEnhanceMenuOpen(true)} onMouseLeave={() => setEnhanceMenuOpen(false)}>
+                    <button type="button" className="flex h-[34px] items-center gap-1 whitespace-nowrap rounded-[8px] px-2 font-medium text-[#1f2937] hover:bg-gray-100">
+                      <RiHdLine className="h-[18px] w-[18px]" />
+                      <span>画质增强</span>
+                      <RiArrowDownSLine className="h-4 w-4 text-[#9ca3af]" />
+                    </button>
+                    {enhanceMenuOpen ? (
+                      <div className="absolute left-1/2 top-full z-[10000] w-[150px] -translate-x-1/2 pt-1.5">
+                        <div className="rounded-[10px] bg-white p-1 shadow-[0_10px_30px_rgba(15,23,42,0.18)] ring-1 ring-black/5">
+                          {VIDEO_ENHANCE_OPTIONS.map((option) => (
+                            <button
+                              key={option.resolution}
+                              type="button"
+                              onClick={() => { setEnhanceMenuOpen(false); runtime.createVideoEnhanceNode(node, { resolution: option.resolution }); }}
+                              className="flex h-9 w-full items-center gap-2 whitespace-nowrap rounded-[8px] px-2 text-left text-[14px] text-[#1f2937] hover:bg-gray-100"
+                            >
+                              <RiHdLine className="h-[17px] w-[17px] text-[#6b7280]" />
+                              <span>{option.label}</span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+                {showVideoEnhanceFast ? (
+                <div className="relative" onMouseEnter={() => setEnhanceFastMenuOpen(true)} onMouseLeave={() => setEnhanceFastMenuOpen(false)}>
+                  <button type="button" className="flex h-[34px] items-center gap-1 whitespace-nowrap rounded-[8px] px-2 font-medium text-[#1f2937] hover:bg-gray-100">
+                    <RiHdLine className="h-[18px] w-[18px]" />
+                    <span>画质增强极速</span>
+                    <RiArrowDownSLine className="h-4 w-4 text-[#9ca3af]" />
+                  </button>
+                  {enhanceFastMenuOpen ? (
+                    <div className="absolute left-1/2 top-full z-[10000] w-[150px] -translate-x-1/2 pt-1.5">
+                      <div className="rounded-[10px] bg-white p-1 shadow-[0_10px_30px_rgba(15,23,42,0.18)] ring-1 ring-black/5">
+                        {BYTEPLUS_VIDEO_ENHANCE_OPTIONS.map((option) => (
+                          <button
+                            key={option.resolution}
+                            type="button"
+                            onClick={() => { setEnhanceFastMenuOpen(false); runtime.createVideoEnhanceNode(node, { resolution: option.resolution, model: VIDEO_ENHANCE_FAST_MODEL_ID }); }}
+                            className="flex h-9 w-full items-center gap-2 whitespace-nowrap rounded-[8px] px-2 text-left text-[14px] text-[#1f2937] hover:bg-gray-100"
+                          >
+                            <RiHdLine className="h-[17px] w-[17px] text-[#6b7280]" />
+                            <span>{option.label}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+                ) : null}
+                {showVideoDepth ? <button type="button" onClick={() => runtime.createVideoDepthNode(node)} className="flex h-[34px] items-center gap-1 whitespace-nowrap rounded-[8px] px-2 font-medium text-[#1f2937] hover:bg-gray-100"><RiBodyScanLine className="h-[18px] w-[18px]" /><span>深度动作捕捉</span></button> : null}
+                {showVideoFrame ? (
                 <div
                   className="relative"
                   onMouseEnter={() => setFrameMenuOpen(true)}
@@ -2739,11 +2849,11 @@ function WorkflowSelectedNodeOverlay() {
                     </div>
                   ) : null}
                 </div>
-                <span className="mx-0.5 h-5 w-px bg-gray-200" />
+                ) : null}
+                {showVideoMidTools && (showPrompt || showDownload) ? <span className="mx-0.5 h-5 w-px bg-gray-200" /> : null}
               </>
             )}
-            {/* 使用提示词：与右键菜单完全同一份实现（runtime.addNodeFromPrompt），图片/视频共用这一处。
-                上传来的媒体节点没有"生成用的提示词"可复用 → 和右键一样置灰禁用。 */}
+            {showPrompt ? (
             <button
               type="button"
               disabled={isUploadedMediaNode}
@@ -2754,12 +2864,14 @@ function WorkflowSelectedNodeOverlay() {
               <RiTBoxLine className="h-[18px] w-[18px]" />
               <span>使用提示词</span>
             </button>
-            {/* 下载统一走共享的 downloadWorkflowNode（右键菜单用的同一份），图片/视频同源，禁止再各写一份。 */}
+            ) : null}
+            {showDownload ? (
             <button type="button" title="下载到本地" onClick={() => { void downloadWorkflowNode(node).catch((error) => console.warn("[workflow] download failed", error)); }} className="flex h-[34px] w-8 items-center justify-center rounded-[8px] text-[#1f2937] hover:bg-gray-100"><RiDownloadLine className="h-[18px] w-[18px]" /></button>
+            ) : null}
           </div>
         </div>
       ) : null}
-      {showMediaQuickMenu && quickEditOpen ? (
+      {showMediaQuickMenu && showQuick && quickEditOpen ? (
         <div
           className="pointer-events-auto absolute z-[9999] -translate-x-1/2"
           style={{ left: Math.max(inputWidth / 2 + 8, Math.min(point.x + screenNodeWidth / 2, viewportWidth - inputWidth / 2 - 8)), top: Math.min(point.y + screenNodeHeight + 12, safeViewportBottom - 60), width: inputWidth }}
@@ -2805,7 +2917,7 @@ function WorkflowSelectedNodeOverlay() {
           </div>
         </div>
       ) : null}
-      {showMediaQuickMenu && !isVideoQuickMenuNode && eraserOpen ? (
+      {showMediaQuickMenu && !isVideoQuickMenuNode && showImageEraser && eraserOpen ? (
         <>
           <div
             className="pointer-events-auto absolute z-[9997] overflow-hidden"
@@ -2918,7 +3030,9 @@ function WorkflowSelectedNodeOverlay() {
           onWheel={stopCanvasPointer}
         >
           {node.kind === "image" ? <ImageNodeEditor node={node} modelOptions={runtime.modelOptions} promptMaxHeight={promptMaxHeight} onChange={runtime.updateNode} onRun={() => runtime.runImageNode(node)} /> : null}
-          {node.kind === "video" ? <VideoNodeEditor node={node} modelOptions={runtime.modelOptions} promptMaxHeight={promptMaxHeight} onChange={runtime.updateNode} onRun={() => runtime.runVideoNode(node)} /> : null}
+          {/* ⭐ 运行按钮必须按模型分流（和失败卡 onRetry 用同一套判定）：画质增强 / 深度捕捉节点
+              走各自的接口；⛔ 掉进 runVideoNode 会拿「火山画质增强 1080p」当提示词真跑一条普通视频、真扣钱。 */}
+          {node.kind === "video" ? <VideoNodeEditor node={node} modelOptions={runtime.modelOptions} promptMaxHeight={promptMaxHeight} onChange={runtime.updateNode} onRun={() => isVideoDepthModel(node.data.model) ? runtime.runVideoDepthNode(node) : isVideoEnhanceModel(node.data.model) ? runtime.runVideoEnhanceNode(node) : runtime.runVideoNode(node)} /> : null}
         </div>
       ) : null}
     </>
@@ -4722,7 +4836,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
       if (isVideoDoneStatus(pollData.status) && videoUrl) {
         const posterUrl = getPosterUrlFromResponse(pollData);
         const chargedUsage = pollData.usage ?? usage;
-        updateNode(node.id, { prompt, videoUrl, posterUrl, videoCurrentTime: 0, visualSize: undefined, isRunning: false, error: undefined, taskId: undefined, videoRequestId: undefined, videoPreviewUrl: undefined, videoSavedFlashAt: Date.now(), mediaSystemNames: job?.reservedNames?.[0] ? { ...(node.data.mediaSystemNames ?? {}), [videoUrl]: job.reservedNames[0] } : node.data.mediaSystemNames });
+        updateNode(node.id, { prompt, videoUrl, posterUrl, videoCurrentTime: 0, visualSize: isVideoDepthModel(model) ? node.data.visualSize : undefined, isRunning: false, error: undefined, taskId: undefined, videoRequestId: undefined, videoPreviewUrl: undefined, videoSavedFlashAt: Date.now(), mediaSystemNames: job?.reservedNames?.[0] ? { ...(node.data.mediaSystemNames ?? {}), [videoUrl]: job.reservedNames[0] } : node.data.mediaSystemNames });
         updateState((state) => ({ ...state, edges: state.edges.filter((edge) => edge.target !== node.id) }));
         onGeneratedMedia?.({ nodeId: node.id, kind: "video", urls: [videoUrl], reservedNames: job?.reservedNames, posterUrl, sourcePrompt: prompt, model, ratio: settings.ratio, resolution: settings.resolution, duration: settings.duration });
         onCredit?.({ ...pollData.credit, usage: chargedUsage });
@@ -4905,6 +5019,219 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     return node;
   }, [defaultNodeData, editModelToggles, onShowTip, runVideoNode, updateState, videoModels]);
 
+  const createVideoEnhanceNode = useCallback((sourceNode: WorkflowNode, options: { resolution: VideoResolution; model?: ModelName; position?: { x: number; y: number }; select?: boolean }) => {
+    const sourceUrl = sourceNode.data.videoUrl;
+    if (!sourceUrl) return;
+    const model = options.model && isVideoEnhanceModel(options.model) ? options.model : VIDEO_ENHANCE_MODEL_ID;
+    if (model === VIDEO_ENHANCE_MODEL_ID && !isVideoEnhanceEnabled(editModelToggles)) {
+      onShowTip?.("画质增强已关闭");
+      return;
+    }
+    if (model === VIDEO_ENHANCE_FAST_MODEL_ID && !isBytePlusVideoEnhanceFastEnabled(editModelToggles)) {
+      onShowTip?.("画质增强极速已关闭");
+      return;
+    }
+    const current = stateRef.current;
+    const sourceDims = sourceNode.data.videoDimensions ?? getWorkflowNodeNaturalSize(sourceNode);
+    const sourceDurationSeconds = typeof sourceNode.data.durationSeconds === "number" ? sourceNode.data.durationSeconds : undefined;
+    const ratio = sourceDims?.width && sourceDims.height ? closestWorkflowRatioLabel(sourceDims) : sourceNode.data.ratio;
+    const duration = sourceDurationSeconds && sourceDurationSeconds > 0 ? `${Math.max(1, Math.floor(sourceDurationSeconds))}秒` : sourceNode.data.duration;
+    const label = getVideoEnhanceNodeLabel(model) || "画质增强";
+    const data: WorkflowNodeData = { ...defaultNodeData("video"), prompt: `${label} ${options.resolution}`, model: model as ModelName, ratio, resolution: options.resolution, duration, enhanceSourceUrl: sourceUrl, isRunning: true, startedAt: Date.now() };
+    const draftNode: WorkflowNode = { id: createId("workflow_node"), kind: "video", title: getNodeLabel("video"), x: 0, y: 0, data };
+    const size = getWorkflowNodeVisualSize(draftNode);
+    const position = options.position ?? findNonOverlappingNodePosition(current.nodes, size, sourceNode);
+    const node: WorkflowNode = { ...draftNode, x: position.x, y: position.y };
+    recentActionNodeIdsRef.current = [node.id, ...recentActionNodeIdsRef.current].slice(0, 20);
+    updateState((state) => ({ ...state, nodes: [...state.nodes, node] }));
+    if (options.select !== false) {
+      window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+        const editor = editorRef.current;
+        if (!editor) return;
+        const shapeId = getShapeId(node.id);
+        if (!editor.getShape(shapeId)) return;
+        editor.select(shapeId);
+        focusWorkflowNodeInViewport(editor, node);
+      }));
+    }
+    void (async () => {
+      const requestId = createId("workflow_video");
+      updateNode(node.id, { videoRequestId: requestId });
+      try {
+        const createData = await fetch("/api/video-enhance", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sourceUrl,
+            resolution: options.resolution,
+            model,
+            duration,
+            ratio,
+            requestId,
+            workflowId,
+            workflowNodeId: node.id,
+            conversationId: workflowId,
+            conversationTitle: workflowTitle,
+            metadata: { creditSource: "workflow_video_enhance" },
+          }),
+        }).then((response) => readJson<VideoApiResponse>(response));
+        const taskId = getVideoTaskId(createData);
+        if (!taskId) throw new Error(getWorkflowApiErrorMessage({ error: createData.error ?? "画质增强没有返回任务编号", errorCode: createData.errorCode }, GENERIC_MEDIA_ERROR_MESSAGE));
+        updateNode(node.id, { taskId });
+        await pollVideoNode(node, taskId, data.prompt ?? "", model as ModelName, { ratio, resolution: options.resolution, duration }, requestId, createData.usage);
+      } catch (error) {
+        updateNode(node.id, { isRunning: false, error: toUserErrorMessage(error, GENERIC_MEDIA_ERROR_MESSAGE), taskId: undefined, videoRequestId: undefined });
+      }
+    })();
+    return node;
+  }, [defaultNodeData, editModelToggles, onShowTip, pollVideoNode, updateNode, updateState, workflowId, workflowTitle]);
+
+  const runVideoEnhanceNode = useCallback((node: WorkflowNode) => {
+    const sourceUrl = node.data.enhanceSourceUrl;
+    const resolution = node.data.resolution;
+    const model = isVideoEnhanceModel(node.data.model) ? node.data.model : VIDEO_ENHANCE_MODEL_ID;
+    const allowed = model === VIDEO_ENHANCE_MODEL_ID
+      ? resolution === "720p" || resolution === "1080p" || resolution === "2K"
+      : resolution === "720p" || resolution === "1080p" || resolution === "2K" || resolution === "4K";
+    if (!sourceUrl || !allowed) return;
+    const requestId = createId("workflow_video");
+    const duration = node.data.duration;
+    const ratio = node.data.ratio;
+    updateNode(node.id, { isRunning: true, error: undefined, videoUrl: undefined, posterUrl: undefined, videoCurrentTime: undefined, visualSize: undefined, startedAt: Date.now(), videoRequestId: requestId, videoPreviewUrl: undefined, videoSavedFlashAt: undefined, taskId: undefined });
+    void (async () => {
+      try {
+        const createData = await fetch("/api/video-enhance", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sourceUrl,
+            resolution,
+            model,
+            duration,
+            ratio,
+            requestId,
+            workflowId,
+            workflowNodeId: node.id,
+            conversationId: workflowId,
+            conversationTitle: workflowTitle,
+            metadata: { creditSource: "workflow_video_enhance" },
+          }),
+        }).then((response) => readJson<VideoApiResponse>(response));
+        const taskId = getVideoTaskId(createData);
+        if (!taskId) throw new Error(getWorkflowApiErrorMessage({ error: createData.error ?? "画质增强没有返回任务编号", errorCode: createData.errorCode }, GENERIC_MEDIA_ERROR_MESSAGE));
+        updateNode(node.id, { taskId });
+        await pollVideoNode(node, taskId, node.data.prompt ?? "", model as ModelName, { ratio, resolution, duration }, requestId, createData.usage);
+      } catch (error) {
+        updateNode(node.id, { isRunning: false, error: toUserErrorMessage(error, GENERIC_MEDIA_ERROR_MESSAGE), taskId: undefined, videoRequestId: undefined });
+      }
+    })();
+  }, [pollVideoNode, updateNode, workflowId, workflowTitle]);
+
+  const createVideoDepthNode = useCallback((sourceNode: WorkflowNode, options?: { position?: { x: number; y: number }; select?: boolean }) => {
+    const sourceUrl = sourceNode.data.videoUrl;
+    if (!sourceUrl) return;
+    if (!isVideoDepthEnabled(editModelToggles)) {
+      onShowTip?.("深度动作捕捉已关闭");
+      return;
+    }
+    const current = stateRef.current;
+    const sourceDims = sourceNode.data.videoDimensions ?? getWorkflowNodeNaturalSize(sourceNode);
+    const sourceDisplaySize = getWorkflowNodeVisualSize(sourceNode);
+    const sourceDurationSeconds = typeof sourceNode.data.durationSeconds === "number" ? sourceNode.data.durationSeconds : undefined;
+    const ratio = sourceDims?.width && sourceDims.height ? closestWorkflowRatioLabel(sourceDims) : sourceNode.data.ratio;
+    const duration = sourceDurationSeconds && sourceDurationSeconds > 0 ? `${Math.max(1, Math.floor(sourceDurationSeconds))}秒` : sourceNode.data.duration;
+    const resolution = sourceDims?.width && sourceDims.height ? (getVideoResolutionFromDimensions(sourceDims.width, sourceDims.height) ?? sourceNode.data.resolution) : sourceNode.data.resolution;
+    const data: WorkflowNodeData = { ...defaultNodeData("video"), prompt: "深度动作捕捉", model: VIDEO_DEPTH_MODEL_ID as ModelName, ratio, resolution, duration, enhanceSourceUrl: sourceUrl, isRunning: true, startedAt: Date.now(), videoDimensions: sourceDims?.width && sourceDims.height ? { width: sourceDims.width, height: sourceDims.height } : undefined, durationSeconds: sourceDurationSeconds, ...(sourceDisplaySize.w && sourceDisplaySize.h ? { visualSize: { width: sourceDisplaySize.w, height: sourceDisplaySize.h } } : {}) };
+    const draftNode: WorkflowNode = { id: createId("workflow_node"), kind: "video", title: getNodeLabel("video"), x: 0, y: 0, data };
+    const size = getWorkflowNodeVisualSize(draftNode);
+    const position = options?.position ?? findNonOverlappingNodePosition(current.nodes, size, sourceNode);
+    const node: WorkflowNode = { ...draftNode, x: position.x, y: position.y };
+    recentActionNodeIdsRef.current = [node.id, ...recentActionNodeIdsRef.current].slice(0, 20);
+    updateState((state) => ({ ...state, nodes: [...state.nodes, node] }));
+    if (options?.select !== false) {
+      window.requestAnimationFrame(() => window.requestAnimationFrame(() => {
+        const editor = editorRef.current;
+        if (!editor) return;
+        const shapeId = getShapeId(node.id);
+        if (!editor.getShape(shapeId)) return;
+        editor.select(shapeId);
+        focusWorkflowNodeInViewport(editor, node);
+      }));
+    }
+    void (async () => {
+      const requestId = createId("workflow_video");
+      updateNode(node.id, { videoRequestId: requestId });
+      try {
+        const createData = await fetch("/api/video-depth", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sourceUrl,
+            duration,
+            durationSeconds: sourceDurationSeconds,
+            ratio,
+            resolution,
+            width: sourceDims?.width,
+            height: sourceDims?.height,
+            requestId,
+            workflowId,
+            workflowNodeId: node.id,
+            conversationId: workflowId,
+            conversationTitle: workflowTitle,
+            metadata: { creditSource: "workflow_video_depth" },
+          }),
+        }).then((response) => readJson<VideoApiResponse>(response));
+        const taskId = getVideoTaskId(createData);
+        if (!taskId) throw new Error(getWorkflowApiErrorMessage({ error: createData.error ?? "深度动作捕捉没有返回任务编号", errorCode: createData.errorCode }, GENERIC_MEDIA_ERROR_MESSAGE));
+        updateNode(node.id, { taskId });
+        await pollVideoNode(node, taskId, data.prompt ?? "", VIDEO_DEPTH_MODEL_ID as ModelName, { ratio, resolution, duration }, requestId, createData.usage);
+      } catch (error) {
+        updateNode(node.id, { isRunning: false, error: toUserErrorMessage(error, GENERIC_MEDIA_ERROR_MESSAGE), taskId: undefined, videoRequestId: undefined });
+      }
+    })();
+    return node;
+  }, [defaultNodeData, editModelToggles, onShowTip, pollVideoNode, updateNode, updateState, workflowId, workflowTitle]);
+
+  const runVideoDepthNode = useCallback((node: WorkflowNode) => {
+    const sourceUrl = node.data.enhanceSourceUrl;
+    if (!sourceUrl) return;
+    const requestId = createId("workflow_video");
+    const duration = node.data.duration;
+    const ratio = node.data.ratio;
+    const resolution = node.data.resolution;
+    const sourceDims = node.data.videoDimensions;
+    updateNode(node.id, { isRunning: true, error: undefined, videoUrl: undefined, posterUrl: undefined, videoCurrentTime: undefined, startedAt: Date.now(), videoRequestId: requestId, videoPreviewUrl: undefined, videoSavedFlashAt: undefined, taskId: undefined });
+    void (async () => {
+      try {
+        const createData = await fetch("/api/video-depth", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sourceUrl,
+            duration,
+            durationSeconds: node.data.durationSeconds,
+            ratio,
+            resolution,
+            width: sourceDims?.width,
+            height: sourceDims?.height,
+            requestId,
+            workflowId,
+            workflowNodeId: node.id,
+            conversationId: workflowId,
+            conversationTitle: workflowTitle,
+            metadata: { creditSource: "workflow_video_depth" },
+          }),
+        }).then((response) => readJson<VideoApiResponse>(response));
+        const taskId = getVideoTaskId(createData);
+        if (!taskId) throw new Error(getWorkflowApiErrorMessage({ error: createData.error ?? "深度动作捕捉没有返回任务编号", errorCode: createData.errorCode }, GENERIC_MEDIA_ERROR_MESSAGE));
+        updateNode(node.id, { taskId });
+        await pollVideoNode(node, taskId, node.data.prompt ?? "", VIDEO_DEPTH_MODEL_ID as ModelName, { ratio, resolution, duration }, requestId, createData.usage);
+      } catch (error) {
+        updateNode(node.id, { isRunning: false, error: toUserErrorMessage(error, GENERIC_MEDIA_ERROR_MESSAGE), taskId: undefined, videoRequestId: undefined });
+      }
+    })();
+  }, [pollVideoNode, updateNode, workflowId, workflowTitle]);
+
   // Signature of the currently-loaded nodes that still look "in progress" (running, no result yet, no error).
   // The recovery effects below depend on this INSTEAD of a fixed timer, so they re-run the moment the async
   // workspace state actually finishes loading into the canvas (nodes present) rather than guessing a delay.
@@ -5043,7 +5370,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     if (!videoUrl) return false;
     const prompt = node.data.prompt?.trim() ?? job.prompt ?? "";
     const jobDim = job.resultDimensions?.[videoUrl];
-    updateNode(node.id, { prompt, videoUrl, posterUrl: job.posterUrl, videoCurrentTime: 0, visualSize: undefined, isRunning: false, error: undefined, taskId: undefined, videoRequestId: undefined, videoPreviewUrl: undefined, videoSavedFlashAt: Date.now(), videoDimensions: jobDim?.width && jobDim.height ? { width: jobDim.width, height: jobDim.height } : node.data.videoDimensions, durationSeconds: typeof jobDim?.durationSeconds === "number" && jobDim.durationSeconds > 0 ? jobDim.durationSeconds : node.data.durationSeconds, mediaSystemNames: job.reservedNames?.[0] ? { ...(node.data.mediaSystemNames ?? {}), [videoUrl]: job.reservedNames[0] } : node.data.mediaSystemNames });
+    updateNode(node.id, { prompt, videoUrl, posterUrl: job.posterUrl, videoCurrentTime: 0, visualSize: isVideoDepthModel(model) ? node.data.visualSize : undefined, isRunning: false, error: undefined, taskId: undefined, videoRequestId: undefined, videoPreviewUrl: undefined, videoSavedFlashAt: Date.now(), videoDimensions: isVideoDepthModel(model) && node.data.videoDimensions?.width ? node.data.videoDimensions : jobDim?.width && jobDim.height ? { width: jobDim.width, height: jobDim.height } : node.data.videoDimensions, durationSeconds: typeof jobDim?.durationSeconds === "number" && jobDim.durationSeconds > 0 ? jobDim.durationSeconds : node.data.durationSeconds, mediaSystemNames: job.reservedNames?.[0] ? { ...(node.data.mediaSystemNames ?? {}), [videoUrl]: job.reservedNames[0] } : node.data.mediaSystemNames });
     updateState((state) => ({ ...state, edges: state.edges.filter((edge) => edge.target !== node.id) }));
     onGeneratedMedia?.({ nodeId: node.id, kind: "video", urls: [videoUrl], reservedNames: job.reservedNames, posterUrl: job.posterUrl, sourcePrompt: prompt, model, ratio: settings.ratio, resolution: settings.resolution, duration: settings.duration });
     onCredit?.({ ...job.credit, usage: job.usage });
@@ -5239,7 +5566,7 @@ export function WorkflowCanvas({ workflowId, value, onChange, workflowTitle, onC
     importingAssetsRef.current = false;
   }, [assetsToImport, restoreWorkflowAssetToCanvas, updateState, onAssetsImported]);
 
-  const runtime = useMemo<WorkflowRuntime>(() => ({ selectedNodeId, connectingFrom, connectingTo, multiConnectSources, connectionPointer, modelOptions, workflowTitle, updateNode, deleteNode, disconnectNodes, connectTo, setConnectingFrom, beginConnectionDrag, beginInputConnectionDrag, beginMultiConnectionDrag, runImageNode: (node) => void runImageNode(node), createImageEditNode, createVideoEditNode, createVideoFrameImageNode: (node, frame) => void createVideoFrameImageNode(node, frame), addNodeFromPrompt, createImageElementSplitNodes, runGptImageOptimizationRetry: (node, maxAttempts) => void runGptImageOptimizationRetry(node, maxAttempts), runVideoNode: (node) => void runVideoNode(node), onGeneratedMedia, onShowTip, markNodeAction, onPreviewMedia, getImageDisplayUrl, getVideoPosterDisplayUrl, referenceAssets, referenceAssetsLoadStatus, referenceAssetCounts, onLoadReferenceAssets, onLoadReferenceFilter, referenceFilterLoading, referenceFilterNextOffset, onLoadMoreReferenceAssets, uploadRuleOverrides, promptLengthOverrides, editModelToggles, getConnectedInputUploads, getCanvasMediaAssets, connectNodeAsInput, getInputTextLength, uploadFilesAsConnectedNodes }), [beginConnectionDrag, beginInputConnectionDrag, beginMultiConnectionDrag, connectTo, connectingFrom, connectingTo, multiConnectSources, connectionPointer, deleteNode, disconnectNodes, getCanvasMediaAssets, connectNodeAsInput, getConnectedInputUploads, getImageDisplayUrl, getInputTextLength, getVideoPosterDisplayUrl, markNodeAction, modelOptions, onGeneratedMedia, onLoadReferenceAssets, onLoadReferenceFilter, referenceFilterLoading, referenceFilterNextOffset, onLoadMoreReferenceAssets, onPreviewMedia, onShowTip, referenceAssets, referenceAssetsLoadStatus, referenceAssetCounts, runGptImageOptimizationRetry, runImageNode, createImageEditNode, createVideoEditNode, createVideoFrameImageNode, createImageElementSplitNodes, addNodeFromPrompt, runVideoNode, selectedNodeId, updateNode, uploadFilesAsConnectedNodes, uploadRuleOverrides, promptLengthOverrides, editModelToggles, workflowTitle]);
+  const runtime = useMemo<WorkflowRuntime>(() => ({ selectedNodeId, connectingFrom, connectingTo, multiConnectSources, connectionPointer, modelOptions, workflowTitle, updateNode, deleteNode, disconnectNodes, connectTo, setConnectingFrom, beginConnectionDrag, beginInputConnectionDrag, beginMultiConnectionDrag, runImageNode: (node) => void runImageNode(node), createImageEditNode, createVideoEditNode, createVideoEnhanceNode, runVideoEnhanceNode, createVideoDepthNode, runVideoDepthNode, createVideoFrameImageNode: (node, frame) => void createVideoFrameImageNode(node, frame), addNodeFromPrompt, createImageElementSplitNodes, runGptImageOptimizationRetry: (node, maxAttempts) => void runGptImageOptimizationRetry(node, maxAttempts), runVideoNode: (node) => void runVideoNode(node), onGeneratedMedia, onShowTip, markNodeAction, onPreviewMedia, getImageDisplayUrl, getVideoPosterDisplayUrl, referenceAssets, referenceAssetsLoadStatus, referenceAssetCounts, onLoadReferenceAssets, onLoadReferenceFilter, referenceFilterLoading, referenceFilterNextOffset, onLoadMoreReferenceAssets, uploadRuleOverrides, promptLengthOverrides, editModelToggles, getConnectedInputUploads, getCanvasMediaAssets, connectNodeAsInput, getInputTextLength, uploadFilesAsConnectedNodes }), [beginConnectionDrag, beginInputConnectionDrag, beginMultiConnectionDrag, connectTo, connectingFrom, connectingTo, multiConnectSources, connectionPointer, deleteNode, disconnectNodes, getCanvasMediaAssets, connectNodeAsInput, getConnectedInputUploads, getImageDisplayUrl, getInputTextLength, getVideoPosterDisplayUrl, markNodeAction, modelOptions, onGeneratedMedia, onLoadReferenceAssets, onLoadReferenceFilter, referenceFilterLoading, referenceFilterNextOffset, onLoadMoreReferenceAssets, onPreviewMedia, onShowTip, referenceAssets, referenceAssetsLoadStatus, referenceAssetCounts, runGptImageOptimizationRetry, runImageNode, createImageEditNode, createVideoEditNode, createVideoEnhanceNode, runVideoEnhanceNode, createVideoDepthNode, runVideoDepthNode, createVideoFrameImageNode, createImageElementSplitNodes, addNodeFromPrompt, runVideoNode, selectedNodeId, updateNode, uploadFilesAsConnectedNodes, uploadRuleOverrides, promptLengthOverrides, editModelToggles, workflowTitle]);
 
   return (
     <WorkflowRuntimeContext.Provider value={runtime}>
@@ -6081,7 +6408,7 @@ function WorkflowInlineVideo({ node, url, onSelect, saving = false, savedFlashAt
   return <div className="relative h-full w-full cursor-default bg-[#e6e6e6]" style={{ pointerEvents: "all" }}><video ref={videoRef} src={displayUrl} className="h-full w-full select-none object-cover" style={{ pointerEvents: "all", cursor: "default" }} draggable={false} controls playsInline preload="auto" onLoadedMetadata={(event) => saveVideoMetadata(event.currentTarget)} onDragStart={(event) => event.preventDefault()} onTimeUpdate={(event) => saveCurrentTime(event.currentTarget.currentTime)} onPause={(event) => saveCurrentTime(event.currentTarget.currentTime, true)} onSeeked={(event) => saveCurrentTime(event.currentTarget.currentTime, true)} onEnded={(event) => saveCurrentTime(event.currentTarget.currentTime, true)} onPointerDownCapture={markVideoEvent} onPointerUpCapture={markVideoEvent} onMouseDownCapture={markVideoEvent} onMouseUpCapture={markVideoEvent} onClickCapture={markVideoEvent} onDoubleClickCapture={markVideoEvent} /><WorkflowVideoSaveBadge saving={saving} savedFlashAt={savedFlashAt} /><div className="absolute left-0 right-0 top-0 z-10 cursor-default" style={{ bottom: 112, pointerEvents: "all" }} onDragStart={(event) => event.preventDefault()} onPointerDown={(event) => { if (event.button !== 2) onSelect(); }} /></div>;
 }
 
-function VideoDisplayCard({ node, selected, height, onSelect }: { node: WorkflowNode; selected?: boolean; height: number; onSelect: () => void }) { const runtime = useWorkflowRuntime(); if (node.data.isRunning && node.data.videoPreviewUrl) return <div className={`relative w-full overflow-hidden border bg-[#e6e6e6] ${cardBorderClassName(selected)}`} style={{ height }}><WorkflowInlineVideo node={node} url={node.data.videoPreviewUrl} saving selected={selected} onSelect={onSelect} /></div>; if (node.data.isRunning) return <WaitingCard isImage={false} startedAt={node.data.startedAt} selected={selected} height={height} />; if (node.data.error) return <FailedCard isImage={false} selected={selected} height={height} error={node.data.error} onRetry={() => runtime.runVideoNode(node)} />; if (node.data.videoUrl) return <div className={`relative w-full overflow-hidden border bg-[#e6e6e6] ${cardBorderClassName(selected)}`} style={{ height }}><WorkflowInlineVideo node={node} url={node.data.videoUrl} savedFlashAt={node.data.videoSavedFlashAt} selected={selected} onSelect={onSelect} /></div>; return <EmptyMediaCard kind="video" selected={selected} height={height} />; }
+function VideoDisplayCard({ node, selected, height, onSelect }: { node: WorkflowNode; selected?: boolean; height: number; onSelect: () => void }) { const runtime = useWorkflowRuntime(); if (node.data.isRunning && node.data.videoPreviewUrl) return <div className={`relative w-full overflow-hidden border bg-[#e6e6e6] ${cardBorderClassName(selected)}`} style={{ height }}><WorkflowInlineVideo node={node} url={node.data.videoPreviewUrl} saving selected={selected} onSelect={onSelect} /></div>; if (node.data.isRunning) return <WaitingCard isImage={false} startedAt={node.data.startedAt} selected={selected} height={height} />; if (node.data.error) return <FailedCard isImage={false} selected={selected} height={height} error={node.data.error} onRetry={() => isVideoDepthModel(node.data.model) ? runtime.runVideoDepthNode(node) : isVideoEnhanceModel(node.data.model) ? runtime.runVideoEnhanceNode(node) : runtime.runVideoNode(node)} />; if (node.data.videoUrl) return <div className={`relative w-full overflow-hidden border bg-[#e6e6e6] ${cardBorderClassName(selected)}`} style={{ height }}><WorkflowInlineVideo node={node} url={node.data.videoUrl} savedFlashAt={node.data.videoSavedFlashAt} selected={selected} onSelect={onSelect} /></div>; return <EmptyMediaCard kind="video" selected={selected} height={height} />; }
 
 // 选区引擎（getWorkflowEditableText / appendWorkflowEditorText / getWorkflowSelectionTextOffset /
 // getWorkflowSelectionTextRange / setWorkflowSelectionTextOffset / getWorkflowAtQueryAtCursor 等）
@@ -6961,15 +7288,15 @@ function WorkflowVideoReferenceModeMenu({ modelId, value, onChange }: { modelId?
   const SelectedIcon = referenceModeOptions.find((option) => option.value === value)?.icon ?? RiImageCircleLine;
   return <div data-workflow-menu className="relative" onPointerDown={(event) => event.stopPropagation()}><button type="button" onClick={toggle} className={`${workflowToolButtonClassName} ${open ? "yinzao-tool-button-active" : ""}`}><SelectedIcon className="h-[18px] w-[18px] shrink-0 text-[#777777]" /><span className="font-medium text-[#777777]">{getWorkflowVideoReferenceModeLabel(modelId, value)}</span><RiArrowDownSLine className="h-3.5 w-3.5 shrink-0 text-[#8a8a8a]" /></button>{open ? <div className="absolute bottom-full right-0 z-[10000] mb-2 min-w-[180px] rounded-[12px] bg-white p-2 shadow-[0_18px_40px_rgba(0,0,0,0.12)]"><div className="px-2 pb-2 text-[12px] font-medium text-[#a0a0a0]">参考模式</div>{referenceModeOptions.map((option) => { const OptionIcon = option.icon; return <button key={option.value} type="button" onClick={() => { onChange(option.value); setOpen(false); }} className={option.value === value ? "flex h-10 w-full items-center justify-between whitespace-nowrap rounded-[8px] bg-[#f5f5f5] px-3 text-left text-[14px] font-medium text-[#111111]" : "flex h-10 w-full items-center justify-between whitespace-nowrap rounded-[8px] px-3 text-left text-[14px] text-[#555555] hover:bg-[#f7f7f7]"}><span className="flex items-center gap-2"><OptionIcon className="h-[18px] w-[18px] shrink-0 text-[#777777]" /><span>{option.label}</span></span>{option.value === value ? <RiCheckLine className="h-[18px] w-[18px] text-[#111111]" /> : null}</button>; })}</div> : null}</div>;
 }
-function isGoldGenerationModel(modelId: string) { return modelId === "openai/gpt-5.4-image-2" || modelId === "byteplus:video.seedance-2-5" || modelId === "minimax/speech-2.8-hd"; }
 function getModelLabel(options: readonly (ConversationModel | GenerationModel)[], value: string) { return options.find((item) => item.id === value)?.label ?? value; }
 function RatioOptionIcon({ option }: { option: string }) { const meta = ratioCardMeta[option] ?? ratioCardMeta["1:1"]; if (meta.icon === "spark") return <RiShining2Line className="h-[18px] w-[18px] shrink-0 text-[#777777]" />; return <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true" className="shrink-0 text-[#777777]"><rect x={(18 - Number(meta.width)) / 2} y={(18 - Number(meta.height)) / 2} width={meta.width} height={meta.height} rx="2.2" stroke="currentColor" strokeWidth="1.4" /></svg>; }
 function CompactResolutionIcon({ option, mode }: { option?: string; mode: "image" | "video" }) { if (mode === "video") return <span className="inline-flex h-4 min-w-6 items-center justify-center rounded-[3px] bg-[#111111] px-1 text-[9px] font-bold leading-none text-white">{option === "480p" ? "SD" : option === "1080p" ? "FHD" : option === "4K" ? "4K" : "HD"}</span>; return <span className="inline-flex h-4 min-w-5 items-center justify-center rounded-[3px] border border-[#d5d5d5] px-1 text-[9px] font-bold leading-none text-[#777777]">{option ?? "1K"}</span>; }
-function WorkflowImageQualityMenuSingle({ value, onChange, className = "" }: { value: string; onChange: (quality: string) => void; className?: string }) {
+function WorkflowImageQualityMenuSingle({ value, onChange, className = "", modelId }: { value: string; onChange: (quality: string) => void; className?: string; modelId?: string }) {
   const { open, setOpen, toggle } = useWorkflowMenuOpen();
-  const current = IMAGE_QUALITY_OPTIONS.includes(value as (typeof IMAGE_QUALITY_OPTIONS)[number]) ? value : DEFAULT_IMAGE_QUALITY;
-  return <div data-workflow-menu className={`relative ${className}`} onPointerDown={(event) => event.stopPropagation()}><button type="button" onClick={toggle} className={`relative ${workflowToolButtonClassName} ${open ? "yinzao-tool-button-active" : ""}`}><span className="font-medium text-[#777777]">画质 / {IMAGE_QUALITY_LABELS[current as (typeof IMAGE_QUALITY_OPTIONS)[number]]}</span><RiArrowDownSLine className="h-3.5 w-3.5 shrink-0 text-[#8a8a8a]" /></button>{open ? <div className="absolute bottom-full left-0 z-[10000] mb-2 w-[220px] rounded-[12px] bg-white p-2 shadow-[0_18px_40px_rgba(0,0,0,0.12)]"><div className="px-2 pb-2 text-[12px] font-medium text-[#a0a0a0]">画质</div><div className="grid grid-cols-4 gap-1 rounded-[10px] bg-[#f6f6f6] p-1">{IMAGE_QUALITY_OPTIONS.map((option) => <button key={option} type="button" onClick={() => { onChange(option); setOpen(false); }} className={option === current ? "flex h-8 items-center justify-center rounded-[6px] bg-white text-[13px] font-medium text-[#111111] shadow-[0_2px_10px_rgba(0,0,0,0.06)]" : "flex h-8 items-center justify-center rounded-[6px] text-[13px] font-medium text-[#666666] transition hover:bg-white/80"}>{IMAGE_QUALITY_LABELS[option]}</button>)}</div></div> : null}</div>;
+  const qualityOptions = getImageQualityOptions(modelId);
+  const current = qualityOptions.includes(value as (typeof qualityOptions)[number]) ? value : DEFAULT_IMAGE_QUALITY;
+  return <div data-workflow-menu className={`relative ${className}`} onPointerDown={(event) => event.stopPropagation()}><button type="button" onClick={toggle} className={`relative ${workflowToolButtonClassName} ${open ? "yinzao-tool-button-active" : ""}`}><span className="font-medium text-[#777777]">画质 / {IMAGE_QUALITY_LABELS[current as keyof typeof IMAGE_QUALITY_LABELS]}</span><RiArrowDownSLine className="h-3.5 w-3.5 shrink-0 text-[#8a8a8a]" /></button>{open ? <div className="absolute bottom-full left-0 z-[10000] mb-2 w-[220px] rounded-[12px] bg-white p-2 shadow-[0_18px_40px_rgba(0,0,0,0.12)]"><div className="px-2 pb-2 text-[12px] font-medium text-[#a0a0a0]">画质</div><div className={`grid gap-1 rounded-[10px] bg-[#f6f6f6] p-1 ${qualityOptions.length > 4 ? "grid-cols-6" : "grid-cols-4"}`}>{qualityOptions.map((option) => <button key={option} type="button" onClick={() => { onChange(option); setOpen(false); }} className={option === current ? "flex h-8 items-center justify-center rounded-[6px] bg-white text-[13px] font-medium text-[#111111] shadow-[0_2px_10px_rgba(0,0,0,0.06)]" : "flex h-8 items-center justify-center rounded-[6px] text-[13px] font-medium text-[#666666] transition hover:bg-white/80"}>{IMAGE_QUALITY_LABELS[option]}</button>)}</div></div> : null}</div>;
 }
 
-function ImageNodeEditor({ node, modelOptions, promptMaxHeight, onChange, onRun }: { node: WorkflowNode; modelOptions: WorkflowModelOptions; promptMaxHeight?: number; onChange: (nodeId: string, patch: Partial<WorkflowNodeData>) => void; onRun: () => void }) { const model = modelOptions.imageModels.some((item) => item.id === node.data.model) ? node.data.model ?? DEFAULT_IMAGE_MODEL : (modelOptions.imageModels[0]?.id as ModelName | undefined) ?? DEFAULT_IMAGE_MODEL; const supportedResolutions = filterImageResolutionsForMembership(modelOptions.membershipTier ?? "free", getSupportedImageResolutions(model), modelOptions.membershipSettings); const supportedRatios = getSupportedImageRatios(model) as string[]; const ratio = supportedRatios.includes(node.data.ratio ?? "") ? node.data.ratio as string : "16:9"; return <div className="space-y-2"><WorkflowPromptBox node={node} value={node.data.prompt ?? ""} placeholder="输入提示词，也可以连接文本节点" maxPromptHeight={promptMaxHeight} onChange={(value) => onChange(node.id, { prompt: value })} running={node.data.isRunning} onRun={onRun}><WorkflowModelMenuSingle value={model} options={modelOptions.imageModels} title="选择模型" onChange={(value) => onChange(node.id, { model: value, ratio: (getSupportedImageRatios(value) as string[]).includes(ratio) ? ratio : "16:9", resolution: normalizeImageResolutionForModel(value, node.data.resolution), ...pruneWorkflowUploadsForModel(node, value) })} className="w-[190px] shrink-0" creditRate={modelOptions.creditRate} /><WorkflowSettingsMenuSingle mode="image" model={model} ratio={ratio} resolution={node.data.resolution ?? supportedResolutions[0]} ratios={supportedRatios} resolutions={supportedResolutions} onChange={(patch) => onChange(node.id, patch)} className="shrink-0" />{isGptImage2Model(model) ? <WorkflowImageQualityMenuSingle value={node.data.quality ?? DEFAULT_IMAGE_QUALITY} onChange={(quality) => onChange(node.id, { quality })} className="shrink-0" /> : null}</WorkflowPromptBox></div>; }
+function ImageNodeEditor({ node, modelOptions, promptMaxHeight, onChange, onRun }: { node: WorkflowNode; modelOptions: WorkflowModelOptions; promptMaxHeight?: number; onChange: (nodeId: string, patch: Partial<WorkflowNodeData>) => void; onRun: () => void }) { const model = modelOptions.imageModels.some((item) => item.id === node.data.model) ? node.data.model ?? DEFAULT_IMAGE_MODEL : (modelOptions.imageModels[0]?.id as ModelName | undefined) ?? DEFAULT_IMAGE_MODEL; const supportedResolutions = filterImageResolutionsForMembership(modelOptions.membershipTier ?? "free", getSupportedImageResolutions(model), modelOptions.membershipSettings); const supportedRatios = getSupportedImageRatios(model) as string[]; const ratio = supportedRatios.includes(node.data.ratio ?? "") ? node.data.ratio as string : "16:9"; return <div className="space-y-2"><WorkflowPromptBox node={node} value={node.data.prompt ?? ""} placeholder="输入提示词，也可以连接文本节点" maxPromptHeight={promptMaxHeight} onChange={(value) => onChange(node.id, { prompt: value })} running={node.data.isRunning} onRun={onRun}><WorkflowModelMenuSingle value={model} options={modelOptions.imageModels} title="选择模型" onChange={(value) => onChange(node.id, { model: value, ratio: (getSupportedImageRatios(value) as string[]).includes(ratio) ? ratio : "16:9", resolution: normalizeImageResolutionForModel(value, node.data.resolution), ...pruneWorkflowUploadsForModel(node, value) })} className="w-[190px] shrink-0" creditRate={modelOptions.creditRate} /><WorkflowSettingsMenuSingle mode="image" model={model} ratio={ratio} resolution={node.data.resolution ?? supportedResolutions[0]} ratios={supportedRatios} resolutions={supportedResolutions} onChange={(patch) => onChange(node.id, patch)} className="shrink-0" />{isGptImage2Model(model) ? <WorkflowImageQualityMenuSingle modelId={model} value={node.data.quality ?? DEFAULT_IMAGE_QUALITY} onChange={(quality) => onChange(node.id, { quality })} className="shrink-0" /> : null}</WorkflowPromptBox></div>; }
 function VideoNodeEditor({ node, modelOptions, promptMaxHeight, onChange, onRun }: { node: WorkflowNode; modelOptions: WorkflowModelOptions; promptMaxHeight?: number; onChange: (nodeId: string, patch: Partial<WorkflowNodeData>) => void; onRun: () => void }) { const model = modelOptions.videoModels.some((item) => item.id === node.data.model) ? node.data.model ?? DEFAULT_VIDEO_MODEL : (modelOptions.videoModels[0]?.id as ModelName | undefined) ?? DEFAULT_VIDEO_MODEL; const supportedResolutions = filterVideoResolutionsForMembership(modelOptions.membershipTier ?? "free", getSupportedVideoResolutions(model), modelOptions.membershipSettings); const resolution = normalizeVideoResolutionForModel(model, node.data.resolution); const supportedRatios = getSupportedVideoRatios(model, resolution); const ratio = (supportedRatios as readonly string[]).includes(node.data.ratio ?? "") ? node.data.ratio as string : supportedRatios[0]; const durationOptions = modelOptions.videoModels.find((item) => item.id === model)?.durations ?? fallbackVideoDurationOptions; const isVideoEditOrExtend = supportsVideoReferenceMode(model) && (node.data.videoReferenceMode === "edit" || node.data.videoReferenceMode === "extend"); return <div className="space-y-2"><WorkflowPromptBox node={node} value={node.data.prompt ?? ""} placeholder="输入提示词，也可以连接文本节点" maxPromptHeight={promptMaxHeight} onChange={(value) => onChange(node.id, { prompt: value })} running={node.data.isRunning} onRun={onRun}><WorkflowModelMenuSingle value={model} options={modelOptions.videoModels} title="选择模型" onChange={(value) => { const nextResolution = normalizeVideoResolutionForModel(value, node.data.resolution); onChange(node.id, { model: value, resolution: nextResolution, ratio: normalizeVideoRatioForModel(value, ratio, nextResolution), duration: value === DEFAULT_WORKFLOW_VIDEO_MODEL ? "8秒" : modelOptions.videoModels.find((item) => item.id === value)?.durations?.[0] ?? "5秒" }); }} className="w-[190px] shrink-0" creditRate={modelOptions.creditRate} />{isVideoEditOrExtend ? null : <WorkflowSettingsMenuSingle mode="video" model={model} ratio={ratio} resolution={resolution} ratios={supportedRatios} resolutions={supportedResolutions} onChange={(patch) => onChange(node.id, patch)} className="shrink-0" />}{isVideoEditOrExtend ? null : <WorkflowDurationMenuSingle value={node.data.duration ?? durationOptions[0]} options={durationOptions} onChange={(value) => onChange(node.id, { duration: value })} />}</WorkflowPromptBox></div>; }

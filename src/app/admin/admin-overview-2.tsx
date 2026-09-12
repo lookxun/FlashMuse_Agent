@@ -324,11 +324,11 @@ export function AdminOverview2({ data }: { data: AdminOverviewData }) {
       </section>
 
       <section className="mt-4 grid grid-cols-5 gap-4">
-        <KpiCard icon={RiChat3Line} label="历史对话总数" value={n(data.conversations.total)} note={`今日新增 ${data.conversations.today}`} tone="#367cee" />
-        <KpiCard icon={RiFlowChart} label="历史工作流总数" value={n(data.workflows.total)} note={`今日新增 ${data.workflows.today}`} tone="#8b5cf6" />
         <KpiCard icon={RiImageAiLine} label="今日生成图片" value={n(data.images.today)} splits={[{ label: "对话流", value: n(data.images.todayConversation) }, { label: "工作流", value: n(data.images.todayWorkflow) }]} tone="#367cee" />
         <KpiCard icon={RiFilmAiLine} label="今日生成视频" value={n(data.videos.today)} splits={[{ label: "对话流", value: n(data.videos.todayConversation) }, { label: "工作流", value: n(data.videos.todayWorkflow) }]} tone="#f0a020" />
         <KpiCard icon={RiMicAiLine} label="今日生成语音" value={n(data.audios.today)} splits={[{ label: "对话流", value: n(data.audios.todayConversation) }, { label: "工作流", value: n(data.audios.todayWorkflow) }]} tone="#8b5cf6" />
+        <KpiCard icon={RiChat3Line} label="历史对话总数" value={n(data.conversations.total)} note={`今日新增 ${data.conversations.today}`} tone="#367cee" />
+        <KpiCard icon={RiFlowChart} label="历史工作流总数" value={n(data.workflows.total)} note={`今日新增 ${data.workflows.today}`} tone="#8b5cf6" />
       </section>
 
       {/* 趋势（受下方时间范围控制） */}

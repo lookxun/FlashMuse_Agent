@@ -22,7 +22,7 @@ export async function GET() {
   const email = await getCurrentAdminEmail();
   if (!email || !isAdminEmail(email)) return NextResponse.json({ error: "无权限" }, { status: 403 });
   const settings = getAdminSystemSettings();
-  return NextResponse.json({ settings: { ...settings, openRouterApiKey: maskApiKey(settings.openRouterApiKey), bytePlusApiKey: maskApiKey(settings.bytePlusApiKey) } });
+  return NextResponse.json({ settings: { ...settings, openRouterApiKey: maskApiKey(settings.openRouterApiKey), bytePlusApiKey: maskApiKey(settings.bytePlusApiKey), mediaKitApiKey: maskApiKey(settings.mediaKitApiKey), bytePlusMediaKitApiKey: maskApiKey(settings.bytePlusMediaKitApiKey), runningHubApiKey: maskApiKey(settings.runningHubApiKey) } });
 }
 
 export async function POST(request: Request) {
@@ -36,6 +36,12 @@ export async function POST(request: Request) {
   const openRouterApiKeyEnabled = typeof body.openRouterApiKeyEnabled === "boolean" ? body.openRouterApiKeyEnabled : current.openRouterApiKeyEnabled;
   const bytePlusApiKey = unmaskApiKeyUpdate(body.bytePlusApiKey, current.bytePlusApiKey);
   const bytePlusApiKeyEnabled = typeof body.bytePlusApiKeyEnabled === "boolean" ? body.bytePlusApiKeyEnabled : current.bytePlusApiKeyEnabled;
+  const mediaKitApiKey = unmaskApiKeyUpdate(body.mediaKitApiKey, current.mediaKitApiKey);
+  const mediaKitApiKeyEnabled = typeof body.mediaKitApiKeyEnabled === "boolean" ? body.mediaKitApiKeyEnabled : current.mediaKitApiKeyEnabled;
+  const bytePlusMediaKitApiKey = unmaskApiKeyUpdate(body.bytePlusMediaKitApiKey, current.bytePlusMediaKitApiKey);
+  const bytePlusMediaKitApiKeyEnabled = typeof body.bytePlusMediaKitApiKeyEnabled === "boolean" ? body.bytePlusMediaKitApiKeyEnabled : current.bytePlusMediaKitApiKeyEnabled;
+  const runningHubApiKey = unmaskApiKeyUpdate(body.runningHubApiKey, current.runningHubApiKey);
+  const runningHubApiKeyEnabled = typeof body.runningHubApiKeyEnabled === "boolean" ? body.runningHubApiKeyEnabled : current.runningHubApiKeyEnabled;
   const bytePlusUnlockLimits = typeof body.bytePlusUnlockLimits === "boolean" ? body.bytePlusUnlockLimits : current.bytePlusUnlockLimits;
   const bytePlusRegion = body.bytePlusRegion === "eu-west-1" ? "eu-west-1" : body.bytePlusRegion === "ap-southeast-1" ? "ap-southeast-1" : current.bytePlusRegion;
   const modelProviderPreferences = body.modelProviderPreferences && typeof body.modelProviderPreferences === "object" && !Array.isArray(body.modelProviderPreferences) ? body.modelProviderPreferences as Record<string, "openrouter" | "byteplus"> : current.modelProviderPreferences;
@@ -49,7 +55,10 @@ export async function POST(request: Request) {
   const videoCompressionQuality = isCompressionQuality(body.videoCompressionQuality) ? body.videoCompressionQuality : current.videoCompressionQuality;
   if (openRouterApiKeyEnabled && !openRouterApiKey) return NextResponse.json({ error: "请输入 OpenRouter API Key" }, { status: 400 });
   if (bytePlusApiKeyEnabled && !bytePlusApiKey) return NextResponse.json({ error: "请输入 BytePlus API Key" }, { status: 400 });
+  if (mediaKitApiKeyEnabled && !mediaKitApiKey) return NextResponse.json({ error: "请输入火山引擎 MediaKit API Key" }, { status: 400 });
+  if (bytePlusMediaKitApiKeyEnabled && !bytePlusMediaKitApiKey) return NextResponse.json({ error: "请输入 BytePlus MediaKit API Key" }, { status: 400 });
+  if (runningHubApiKeyEnabled && !runningHubApiKey) return NextResponse.json({ error: "请输入 RunningHub API Key" }, { status: 400 });
 
-  const settings = await updateAdminSystemSettings({ openRouterApiKey, openRouterApiKeyEnabled, bytePlusApiKey, bytePlusApiKeyEnabled, bytePlusUnlockLimits, bytePlusRegion, modelProviderPreferences, bytePlusModelSelections, editModelToggles, agentPriorityModelId, agentPriorityEnabled, imageCompressionEnabled, imageCompressionQuality, videoCompressionEnabled, videoCompressionQuality });
+  const settings = await updateAdminSystemSettings({ openRouterApiKey, openRouterApiKeyEnabled, bytePlusApiKey, bytePlusApiKeyEnabled, mediaKitApiKey, mediaKitApiKeyEnabled, bytePlusMediaKitApiKey, bytePlusMediaKitApiKeyEnabled, runningHubApiKey, runningHubApiKeyEnabled, bytePlusUnlockLimits, bytePlusRegion, modelProviderPreferences, bytePlusModelSelections, editModelToggles, agentPriorityModelId, agentPriorityEnabled, imageCompressionEnabled, imageCompressionQuality, videoCompressionEnabled, videoCompressionQuality });
   return NextResponse.json({ settings });
 }

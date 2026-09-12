@@ -91,13 +91,13 @@ function withChargedUsage<T extends { usage?: { promptTokens?: number; completio
 }
 
 export async function POST(request: Request) {
-  let body: { prompt?: string; sourcePrompt?: string; model?: string; referenceImages?: string[]; settings?: { ratio?: string; resolution?: string }; count?: number; candidateMode?: "all" | "best"; conversationId?: string; conversationTitle?: string; conversationCode?: string; requestId?: string; metadata?: Prisma.InputJsonValue; async?: boolean; workflowId?: string; workflowNodeId?: string; flow?: "conversation" | "workflow"; transparent?: boolean; bgRemove?: boolean; editFunction?: boolean; suppressContentModerationRecord?: boolean } | undefined;
+  let body: { prompt?: string; sourcePrompt?: string; model?: string; referenceImages?: string[]; settings?: { ratio?: string; resolution?: string; quality?: string }; count?: number; candidateMode?: "all" | "best"; conversationId?: string; conversationTitle?: string; conversationCode?: string; requestId?: string; metadata?: Prisma.InputJsonValue; async?: boolean; workflowId?: string; workflowNodeId?: string; flow?: "conversation" | "workflow"; transparent?: boolean; bgRemove?: boolean; editFunction?: boolean; suppressContentModerationRecord?: boolean } | undefined;
   const routeStartedAt = Date.now();
   // 额度占位的 requestId：走同步路径时要在 finally 里释放（异步 job 由任务落地时释放）。
   let quotaRequestId: string | undefined;
   let quotaHandedToJob = false;
   try {
-    body = (await request.json()) as { prompt?: string; sourcePrompt?: string; model?: string; referenceImages?: string[]; settings?: { ratio?: string; resolution?: string }; count?: number; candidateMode?: "all" | "best"; conversationId?: string; conversationTitle?: string; conversationCode?: string; requestId?: string; metadata?: Prisma.InputJsonValue; async?: boolean; workflowId?: string; workflowNodeId?: string; flow?: "conversation" | "workflow"; transparent?: boolean; bgRemove?: boolean; editFunction?: boolean; suppressContentModerationRecord?: boolean };
+    body = (await request.json()) as { prompt?: string; sourcePrompt?: string; model?: string; referenceImages?: string[]; settings?: { ratio?: string; resolution?: string; quality?: string }; count?: number; candidateMode?: "all" | "best"; conversationId?: string; conversationTitle?: string; conversationCode?: string; requestId?: string; metadata?: Prisma.InputJsonValue; async?: boolean; workflowId?: string; workflowNodeId?: string; flow?: "conversation" | "workflow"; transparent?: boolean; bgRemove?: boolean; editFunction?: boolean; suppressContentModerationRecord?: boolean };
     const prompt = body.prompt?.trim();
 
     if (!prompt) {
@@ -154,7 +154,7 @@ export async function POST(request: Request) {
       requestId: quotaRequestId,
       tier: membershipTier,
       membershipSettings,
-      target: { kind: "image", model: body.model, count: body.count, ratio: body.settings?.ratio, resolution: body.settings?.resolution },
+      target: { kind: "image", model: body.model, count: body.count, ratio: body.settings?.ratio, resolution: body.settings?.resolution, quality: body.settings?.quality },
     });
     // ⭐ 提示词超字数：**只记日志、不拦**（用户拍板先观察）。唯一实现 lib/prompt-length-server.ts。
     logPromptLengthOverLimit({

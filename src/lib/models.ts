@@ -8,14 +8,33 @@ export type GenerationModel = ConversationModel & {
 };
 
 export type ImageResolution = "1K" | "2K" | "3K" | "4K";
-export type ImageQuality = "auto" | "low" | "medium" | "high";
+export type ImageQuality = "auto" | "low" | "medium" | "high" | "xhigh" | "max";
 export const IMAGE_QUALITY_OPTIONS: ImageQuality[] = ["auto", "low", "medium", "high"];
-export const IMAGE_QUALITY_LABELS: Record<ImageQuality, string> = { auto: "自动", low: "低", medium: "中", high: "高" };
+export const GPT_IMAGE_25_QUALITY_OPTIONS: ImageQuality[] = ["auto", "low", "medium", "high", "xhigh", "max"];
+export const IMAGE_QUALITY_LABELS: Record<ImageQuality, string> = { auto: "自动", low: "低", medium: "中", high: "高", xhigh: "超高", max: "最高" };
 export const DEFAULT_IMAGE_QUALITY: ImageQuality = "high";
-// 仅 gpt-5.4-image-2 走 OpenRouter 新图片接口(/api/v1/images)，支持 quality 画质档。
+// gpt-5.4-image-2 / gpt-image-2.5 走 OpenRouter 新图片接口(/api/v1/images)，支持 quality 画质档。
 export const GPT_IMAGE2_MODEL_ID = "openai/gpt-5.4-image-2";
+export const GPT_IMAGE_25_FLARE_MODEL_ID = "openai/gpt-image-2.5-flare";
+export const GPT_IMAGE_25_SUNBURST_MODEL_ID = "openai/gpt-image-2.5-sunburst";
+export const VIDEO_ENHANCE_MODEL_ID = "mediakit:video.enhance-generative";
+export const VIDEO_ENHANCE_FAST_MODEL_ID = "mediakit:video.enhance-fast";
+export const VIDEO_ENHANCE_STANDARD_MODEL_ID = "mediakit:video.enhance-standard";
+export const VIDEO_DEPTH_MODEL_ID = "runninghub:video.depthcrafter";
+export function isVideoEnhanceModel(modelId?: string) {
+  return modelId === VIDEO_ENHANCE_MODEL_ID || modelId === VIDEO_ENHANCE_FAST_MODEL_ID || modelId === VIDEO_ENHANCE_STANDARD_MODEL_ID;
+}
+export function isVideoDepthModel(modelId?: string) {
+  return modelId === VIDEO_DEPTH_MODEL_ID;
+}
+export function isBytePlusVideoEnhanceModel(modelId?: string) {
+  return modelId === VIDEO_ENHANCE_FAST_MODEL_ID || modelId === VIDEO_ENHANCE_STANDARD_MODEL_ID;
+}
+export function isGptImage25Model(modelId?: string) {
+  return modelId === GPT_IMAGE_25_FLARE_MODEL_ID || modelId === GPT_IMAGE_25_SUNBURST_MODEL_ID;
+}
 export function isGptImage2Model(modelId?: string) {
-  return modelId === GPT_IMAGE2_MODEL_ID;
+  return modelId === GPT_IMAGE2_MODEL_ID || isGptImage25Model(modelId);
 }
 // Recraft V4.1 / V4.1 Pro 走 OpenRouter 专用图片接口 /api/v1/images（同 gpt-5.4-image-2 那条路，但只传 aspect_ratio）。
 export const RECRAFT_V41_MODEL_ID = "recraft/recraft-v4.1";
@@ -35,7 +54,7 @@ export function isGptImage2AgentModel(modelId?: string) {
 // ②红字文案里要不要写"可由AI安全改写后重试"（error-message.ts）——
 // 以前文案不看模型，导致视频碰到模型拒绝时也写"可点AI改写重试"，而视频根本没这个按钮。
 export function modelSupportsPromptSafetyRewrite(modelId?: string) {
-  return isGptImage2Model(modelId) || isGptImage2AgentModel(modelId);
+  return modelId === GPT_IMAGE2_MODEL_ID || isGptImage2AgentModel(modelId);
 }
 // 把 GPT版 内部 id 解析成发往 OpenRouter 的真实模型名。
 export function resolveOpenRouterImageModelName(modelId?: string) {
@@ -60,7 +79,20 @@ type ImageModelMenuInfo = {
    * ⭐ 某个档位没有条目时回落到本表的最大值（同一模型内），再没有才用 `usdHigh ?? usd`。
    */
   estUsdByResolution?: Record<string, number>;
+  /**
+   * ⭐ **事前预估专用**：画质档位相对「默认档（high）」的倍数（唯一权威，只被 `getEstimatedGenerationUsd` 读）。
+   *
+   * 只有走 `/api/v1/images` 的 GPT Image 2.5 有它 —— 那两个模型的价钱**几乎只由画质决定**
+   * （2026-09-12 从本地 57 条真实扣费统计：1K 16:9 medium $0.0075 / high $0.0285 / xhigh $0.0506 / max $0.1137，
+   *   最贵档是默认档的 4 倍）。只按分辨率估会「低画质估太高把人拦住、最高画质估太低等于没拦」。
+   * ⛔ 表里没有这一项的模型一律按 1 倍处理（= 保持原行为，别给别的模型加）。
+   */
+  estQualityMultiplier?: Record<string, number>;
 };
+// GPT Image 2.5 的画质倍数（相对默认档 high = 1）。来源：2026-09-12 本地真实扣费统计，
+// 1K 16:9 的 medium/high/xhigh/max = 0.00745 / 0.02848 / 0.05055 / 0.1137 美元。
+// `auto` 由模型自己决定档位 → 按默认档 1 倍估（宁可估高一点，别把闸门放空）。
+const gptImage25QualityMultiplier: Record<string, number> = { auto: 1, low: 0.05, medium: 0.3, high: 1, xhigh: 1.9, max: 4.1 };
 const IMAGE_MODEL_MENU_INFO: Record<string, ImageModelMenuInfo> = {
   "recraft/recraft-v4.1": { desc: "平面设计·高美学·短词出图", usd: 0.035, estUsdByResolution: { "1K": 0.035 } },
   "recraft/recraft-v4.1-pro": { desc: "意料之外的美·2K高清", usd: 0.21, estUsdByResolution: { "2K": 0.21 } },
@@ -69,6 +101,15 @@ const IMAGE_MODEL_MENU_INFO: Record<string, ImageModelMenuInfo> = {
   "google/gemini-3-pro-image-preview": { desc: "均衡·质感更好", usd: 0.18, approx: true, estUsdByResolution: { "1K": 0.14, "2K": 0.144, "4K": 0.144 } },
   "openai/gpt-5.4-image-2-agent": { desc: "GPT优化提示·适合新手", usd: 0.24, approx: true, estUsdByResolution: { "1K": 0.46, "2K": 0.52, "4K": 0.52 } },
   "openai/gpt-5.4-image-2": { desc: "精准·可4K·多参考图", usd: 0.24, approx: true, estUsdByResolution: { "1K": 0.24, "2K": 0.50, "4K": 0.46 } },
+  // GPT Image 2.5（Flare / Sunburst 两个**价钱完全一样**，只差风格）：
+  // ⭐ 2026-09-12 真实扣费实测（本地 57 条 + 测试服 6 条，⛔ 不是文档价）。1K + 默认画质 high：
+  //    16:9/9:16 1280×720 → $0.0286（2 积分）｜ 4:3/3:4 1152×864 → $0.0390（3 积分）｜ 1:1 1024×1024 → $0.0528（4 积分）
+  //    → **比例越方越贵**（按 patch 计费、不是按像素线性），所以菜单给区间「约2-4积分/张」，
+  //      ⛔ 别写成单个数（菜单以前写 $0.041 → 显示「约3积分/张」，两头都不对）。
+  // ⭐ 画质对价钱的影响比比例更大（1K 16:9：medium 0.0075 / high 0.0285 / xhigh 0.0506 / max 0.1137）
+  //    → 预估表用「1K 最贵比例的 high」当基准 + `estQualityMultiplier` 分档，见下。
+  "openai/gpt-image-2.5-flare": { desc: "出图快·日常", usd: 0.0286, usdHigh: 0.0528, approx: true, estUsdByResolution: { "1K": 0.053, "2K": 0.11, "4K": 0.16 }, estQualityMultiplier: gptImage25QualityMultiplier },
+  "openai/gpt-image-2.5-sunburst": { desc: "精细·改图准", usd: 0.0286, usdHigh: 0.0528, approx: true, estUsdByResolution: { "1K": 0.053, "2K": 0.11, "4K": 0.16 }, estQualityMultiplier: gptImage25QualityMultiplier },
   "byteplus:conversation-image.seedream-4-5": { desc: "中文强·通用", usd: 0.04, estUsdByResolution: { "1K": 0.04, "2K": 0.04, "3K": 0.04, "4K": 0.04 } },
   "bytedance-seed/seedream-4.5": { desc: "中文强·通用", usd: 0.04, estUsdByResolution: { "1K": 0.04, "2K": 0.04, "3K": 0.04, "4K": 0.04 } },
   "byteplus:conversation-image.seedream-5-0": { desc: "新版·高性价比", usd: 0.035, estUsdByResolution: { "1K": 0.035, "2K": 0.035, "3K": 0.035, "4K": 0.035 } },
@@ -99,7 +140,7 @@ export function getImageModelFallbackUsd(modelId?: string): number | undefined {
  * ⚠️ 取 p99 而不是均值：闸门估低了就等于没拦（用户能把余额刷成负数）；但也别再瞎往高估，那是拦正常用户。
  * ⚠️ 表里查不到的模型返回 0 = 不做限制（不认识的模型不许连带把正常用户拦死）。
  */
-export function getEstimatedGenerationUsd(input: { kind: "image" | "video" | "audio"; modelId?: string; count?: number; seconds?: number; chars?: number; resolution?: string }): number {
+export function getEstimatedGenerationUsd(input: { kind: "image" | "video" | "audio"; modelId?: string; count?: number; seconds?: number; chars?: number; resolution?: string; quality?: string }): number {
   const { kind, modelId } = input;
   if (!modelId) return 0;
   if (kind === "image") {
@@ -107,9 +148,14 @@ export function getEstimatedGenerationUsd(input: { kind: "image" | "video" | "au
     if (!info) return 0;
     const unit = pickEstimateUnitPrice(info.estUsdByResolution, input.resolution)
       ?? (typeof info.usdHigh === "number" && info.usdHigh > 0 ? info.usdHigh : info.usd);
+    // ⭐ 画质倍数：只有配了 estQualityMultiplier 的模型（GPT Image 2.5）才生效，其余恒 1 倍。
+    //   quality 必须过 normalizeImageQuality（按模型给合法档位），⛔ 别直接信请求里的字符串。
+    const qualityMultiplier = info.estQualityMultiplier
+      ? info.estQualityMultiplier[normalizeImageQuality(input.quality, modelId)] ?? 1
+      : 1;
     // 与 /api/image 的 getRequestedImageCount 同口径（1~4 张）。
     const count = Math.min(4, Math.max(1, Math.floor(input.count ?? 1)));
-    return Math.max(0, unit) * count;
+    return Math.max(0, unit) * Math.max(0, qualityMultiplier) * count;
   }
   if (kind === "video") {
     const info = VIDEO_MODEL_MENU_INFO[modelId];
@@ -148,6 +194,7 @@ export function getEffectiveVideoDurationSeconds(modelId: string | undefined, va
   // ⭐ 拿不到时长时用 5 秒 —— 这是上游侧一直在用的兜底值，⛔ 别改成"最长档"。
   const safeSeconds = Number.isFinite(parsed) && parsed > 0 ? parsed : 5;
   if (!modelId) return safeSeconds;
+  if (isVideoEnhanceModel(modelId) || isVideoDepthModel(modelId)) return safeSeconds;
   // Seedance 2.5 实测支持 4~30 秒；其余 BytePlus（2.0 系）仍 4~15 秒。
   if (modelId === SEEDANCE_25_VIDEO_MODEL_ID) return Math.min(30, Math.max(4, safeSeconds));
   if (modelId.startsWith("byteplus:video.")) return Math.min(15, Math.max(4, safeSeconds));
@@ -205,6 +252,13 @@ const VIDEO_MODEL_MENU_INFO: Record<string, VideoModelMenuInfo> = {
   "byteplus:video.seedance-2-0-fast": { desc: "出片快·480/720p", usdPerSecond: 0.121, approx: true, estUsdPerSecondByResolution: { "480p": 0.057, "720p": 0.143 } },
   "byteplus:video.seedance-2-0": { desc: "通用·最高4K", usdPerSecond: 0.151, approx: true, estUsdPerSecondByResolution: { "480p": 0.071, "720p": 0.275, "1080p": 0.458, "4K": 0.951 } },
   "byteplus:video.seedance-2-5": { desc: "新版·最长30秒", usdPerSecond: 0.231, approx: true, estUsdPerSecondByResolution: { "480p": 0.104, "720p": 0.277, "1080p": 0.623 } },
+  // 火山 MediaKit 画质增强（大模型版）：文档价 2.5 元/分钟 × 分辨率系数（720p×1 / 1080p×2 / 2K×4），≤30fps。
+  // 换美元：÷ 7.2。菜单副标题用 1080p 代表档。
+  "mediakit:video.enhance-generative": { desc: "成片超分·720p/1080p/2K", usdPerSecond: 0.0116, approx: true, estUsdPerSecondByResolution: { "720p": 0.0058, "1080p": 0.0116, "2K": 0.0231 } },
+  "mediakit:video.enhance-fast": { desc: "海外极速超分·最高4K", usdPerSecond: 0.0034, approx: true, estUsdPerSecondByResolution: { "720p": 0.0017, "1080p": 0.0034, "2K": 0.0069, "4K": 0.0138 } },
+  "mediakit:video.enhance-standard": { desc: "海外标准超分·最高4K", usdPerSecond: 0.0069, approx: true, estUsdPerSecondByResolution: { "720p": 0.0034, "1080p": 0.0069, "2K": 0.0138, "4K": 0.0275 } },
+  // RunningHub DepthCrafter：无真实扣费样本，按 GPU 工作流粗估，待回校。
+  "runninghub:video.depthcrafter": { desc: "视频抽深度·灰白深度图", usdPerSecond: 0.02, approx: true, estUsdPerSecondByResolution: { "720p": 0.02 } },
 };
 export function getVideoModelSelectHint(
   modelId?: string,
@@ -272,8 +326,13 @@ export function isAudioModel(modelId?: string): boolean {
 export function isFishAudioModel(modelId?: string) {
   return Boolean(modelId?.startsWith("fish-audio/"));
 }
-export function normalizeImageQuality(value?: string): ImageQuality {
-  return IMAGE_QUALITY_OPTIONS.includes(value as ImageQuality) ? (value as ImageQuality) : DEFAULT_IMAGE_QUALITY;
+export function getImageQualityOptions(modelId?: string): ImageQuality[] {
+  return isGptImage25Model(modelId) ? GPT_IMAGE_25_QUALITY_OPTIONS : IMAGE_QUALITY_OPTIONS;
+}
+
+export function normalizeImageQuality(value?: string, modelId?: string): ImageQuality {
+  const options = getImageQualityOptions(modelId);
+  return options.includes(value as ImageQuality) ? (value as ImageQuality) : DEFAULT_IMAGE_QUALITY;
 }
 export type ImageRatio = "智能比例" | "16:9" | "9:16" | "1:1" | "4:3" | "3:4" | "21:9";
 type ConcreteImageRatio = Exclude<ImageRatio, "智能比例">;
@@ -336,13 +395,15 @@ export const imageGenerationModels: GenerationModel[] = [
   //    - 只支持 5 个比例：1:1 / 4:3 / 3:4 / 16:9 / 9:16（⛔ 无 21:9）；智能比例 → 上游 aspect_ratio:"auto"。
   //    - 分辨率不可调（上游无 resolution 参数）：V4.1 恒 ~1K、Pro 恒 ~2K（Pro 正好是 V4.1 每边 ×2）。
   //    - 输出 webp；参考图最多 1 张；n 最多 6；价格 V4.1 $0.035/张、Pro $0.21/张。
-  //    ⭐ 排在 Gemini 之上 + 标 NEW（isNewGenerationModel）。
+  //    ⭐ 排在 Gemini 之上。
   { label: "Recraft V4.1", id: "recraft/recraft-v4.1" },
   { label: "Recraft V4.1 Pro", id: "recraft/recraft-v4.1-pro" },
   { label: "Gemini 3.1 Flash Image Preview", id: "google/gemini-3.1-flash-image-preview" },
   { label: "Gemini 3 Pro Image Preview", id: "google/gemini-3-pro-image-preview" },
   { label: "GPT-5.4 Image 2（GPT版）", id: "openai/gpt-5.4-image-2-agent" },
   { label: "GPT-5.4 Image 2", id: "openai/gpt-5.4-image-2" },
+  { label: "GPT Image 2.5 Flare", id: "openai/gpt-image-2.5-flare" },
+  { label: "GPT Image 2.5 Sunburst", id: "openai/gpt-image-2.5-sunburst" },
 ] as const;
 
 export const bytePlusImageGenerationModels: GenerationModel[] = [
@@ -389,7 +450,17 @@ export const SEEDANCE_25_VIDEO_MODEL_ID = "byteplus:video.seedance-2-5";
  * 徽标长相见 `src/components/new-badge.tsx`（⛔ 别再各处手写那串 className）。
  */
 export function isNewGenerationModel(modelId: string) {
-  return modelId === HAILUO3_VIDEO_MODEL_ID || modelId === SEEDANCE_25_VIDEO_MODEL_ID || isRecraftModel(modelId);
+  return isGptImage25Model(modelId);
+}
+
+/**
+ * 模型下拉里要标金色的模型 —— 唯一权威（对话流 + 工作流画布共用）。
+ * 每类菜单只留最好的一个：图片 Sunburst、视频 Seedance 2.5、语音 MiniMax Speech 2.8 HD。
+ */
+export function isGoldGenerationModel(modelId: string) {
+  return modelId === GPT_IMAGE_25_SUNBURST_MODEL_ID
+    || modelId === SEEDANCE_25_VIDEO_MODEL_ID
+    || modelId === "minimax/speech-2.8-hd";
 }
 
 // H3 在 OpenRouter 上支持 5~15 秒（整秒）。
@@ -684,6 +755,29 @@ export const imageModelRules: Record<string, ImageModelRule> = {
       "4K": gpt544KDimensions,
     },
   },
+  // GPT Image 2.5：2026-09-11 真出图坐实，size 精确像素与 5.4 Image 2 同一张表；resolution 档无效。
+  "openai/gpt-image-2.5-flare": {
+    resolutions: ["1K", "2K", "4K"],
+    defaultResolution: "1K",
+    ratios: standardImageRatios,
+    modalities: ["image"],
+    dimensions: {
+      "1K": gpt541KDimensions,
+      "2K": gpt542KDimensions,
+      "4K": gpt544KDimensions,
+    },
+  },
+  "openai/gpt-image-2.5-sunburst": {
+    resolutions: ["1K", "2K", "4K"],
+    defaultResolution: "1K",
+    ratios: standardImageRatios,
+    modalities: ["image"],
+    dimensions: {
+      "1K": gpt541KDimensions,
+      "2K": gpt542KDimensions,
+      "4K": gpt544KDimensions,
+    },
+  },
   "openai/gpt-5.4-image-2-agent": {
     resolutions: ["1K", "2K"],
     defaultResolution: "1K",
@@ -889,6 +983,50 @@ export const videoModelRules: Record<string, VideoModelRule> = {
     defaultRatio: "16:9",
     sizes: hailuo3VideoSizes,
     nonStandardSizes: hailuo3NonStandardVideoSizes,
+  },
+  [VIDEO_ENHANCE_MODEL_ID]: {
+    resolutions: ["720p", "1080p", "2K"],
+    ratios: ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
+    defaultResolution: "1080p",
+    defaultRatio: "16:9",
+    sizes: {
+      "720p": seedanceFastVideoSizes["720p"],
+      "1080p": seedance1080pVideoSizes,
+      "2K": hailuo3VideoSizes["2K"],
+    },
+  },
+  [VIDEO_ENHANCE_FAST_MODEL_ID]: {
+    resolutions: ["720p", "1080p", "2K", "4K"],
+    ratios: ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
+    defaultResolution: "1080p",
+    defaultRatio: "16:9",
+    sizes: {
+      "720p": seedanceFastVideoSizes["720p"],
+      "1080p": seedance1080pVideoSizes,
+      "2K": hailuo3VideoSizes["2K"],
+      "4K": seedanceVideoSizes["4K"],
+    },
+  },
+  [VIDEO_ENHANCE_STANDARD_MODEL_ID]: {
+    resolutions: ["720p", "1080p", "2K", "4K"],
+    ratios: ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
+    defaultResolution: "1080p",
+    defaultRatio: "16:9",
+    sizes: {
+      "720p": seedanceFastVideoSizes["720p"],
+      "1080p": seedance1080pVideoSizes,
+      "2K": hailuo3VideoSizes["2K"],
+      "4K": seedanceVideoSizes["4K"],
+    },
+  },
+  [VIDEO_DEPTH_MODEL_ID]: {
+    resolutions: ["720p"],
+    ratios: ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
+    defaultResolution: "720p",
+    defaultRatio: "16:9",
+    sizes: {
+      "720p": seedanceFastVideoSizes["720p"],
+    },
   },
 };
 

@@ -209,10 +209,38 @@ sudo /opt/flashmuse/scripts/flashmuse-db-backup.sh --stack prod --label pre-depl
 
 ### 测试服部署流程（"部署掉"走这个）
 
+> ⭐⭐⭐ **2026-09-12（第一百二十七次会话）刚整整跑通三轮，下次照抄这 6 条就不会卡**：
+>
+> 1. **ssh**：`ssh -i "C:\Users\ASUS\AppData\Local\Temp\opencode\CinematicFlow.pem" ubuntu@119.28.116.16`
+>    （⭐ 这把 key 实测可用；⛔ 裸 `ssh ubuntu@...` 会 `Permission denied`）。
+> 2. **打包只用 `node .runtime/pack.js vX_Y_Z_W`**（清单 = `git status --short -- src prisma`，
+>    复制到 `.runtime/pkg/` 再整目录打 tgz，并断言「清单数 = 复制数 = tgz 里的文件数」）。
+>    ⛔⛔ **别用 `tar -T 清单`**（Windows 自带 bsdtar 会静默漏掉一半条目）。
+> 3. ⭐⭐ **远端多条命令一律写 `.sh` → `scp` → `sed -i 's/\r$//'` → `bash`**。
+>    ⛔ 内联 `ssh host "a; b; c"` 在 PowerShell 下会吃掉引号（本次踩了 4 次：`awk '{print $1}'`、
+>    带 `\"createdAt\"` 的 psql、`grep -E "a|b"` 全都被 PowerShell 拆坏）。
+> 4. **build 要后台跑 + 轮询**：`nohup sudo docker compose up -d --build staging-app > /tmp/sb-vX.log 2>&1 &`
+>    —— 实测**整轮约 4~5 分钟**（Next build ~22s，`chown -R node:node /app` 那一步要 ~140s，再导出镜像+重建容器）。
+>    ⛔ 别同步等（工具 120s 就超时）。判据：`curl -s 127.0.0.1:5001/api/health` 里的 `version` 变成新版。
+> 5. **`.env.local` 要加新 key 时只许追加**：本地用 node 把那几行原样抽到一个临时文件 → `scp` →
+>    `sudo tee -a .env.local < /tmp/xxx` → `sudo chown 1000:1000 .env.local` →
+>    **断言 `DATABASE_URL` / `AUTH_SECRET` / `OPENROUTER_API_KEY` / `BYTEPLUS_API_KEY` 整行长度改前改后相等**
+>    （本次实测 106 / 63 / 95 / 66，含 `grep -n` 的行号前缀）+ `cut -d= -f1 | sort | uniq -d` 必须为空。
+>    ⛔ 绝不整份重写（会把密钥冲掉）。⚠️ 那个文件属主必须是 uid 1000。
+> 6. **同步阿里 + 发版本信号**：`sync-ali.sh --stack=staging`（本次 48 个 chunk + 18 个 home-assets，约 40 秒）→
+>    `sudo sed -i '/^PUBLISHED_APP_VERSION=/d' .env && echo 'PUBLISHED_APP_VERSION=vX' | sudo tee -a .env`
+>    （⭐ 先删光同名行再追加，确认只剩 1 行）→ `up -d --force-recreate staging-app`。
+>    最后四项判据：`/api/health` = `x-app-version` = 新版、外网 `http://101.37.129.164:8080/` 200、
+>    `https://staging-static.venusface.com/api/health` 版本正确。
+>
+> ⭐ **本次还坐实一条**：**改了代码就必须重新 bump 再推**（本次为了改菜单报价和补两个修复，
+> 一路 bump 了 `v1.0.1.23 → 24 → 25` 三次、每次整批重推），⛔ 绝不在同一个版本号上叠改动 ——
+> 那会破坏「版本号一样 = 代码一样」这条核心判据。
+
 > ✅ **2026-08-09（第五十九次会话）已修复上一轮那个坑**：v94 是**整批推**（`git status` 里全部 src 改动/新增文件一起打包），
 > 所以现在**本地 = 测试服 = v1.0.0.94**，「版本号一样 = 代码一样」这条核心约定恢复了。
 > ⭐ **打包姿势（下次照抄）**：`git status --short -- src` 取文件清单 → `tar -czf -T 清单文件` → scp → `sudo tar -xzf -C .../app`
-> —— 这样天然不会漏文件，也不会像"只推几个文件"那样破坏版本号判据。
+> —— ⛔⛔ **`tar -T` 这一步已被 2026-09-05 的实测推翻，现在一律用 `.runtime/pack.js`**（见上面第 2 条）。
 > ⚠️ 用户说「不要测试」时，部署完只验"活着"四项：`/api/health` 版本号、`x-app-version`、
 > `curl -sI /api/announcement` 有 no-store、外网 8080 的 `/` 与 `/api/health`。**并在交接文档里写明"界面一次没走过"。**
 

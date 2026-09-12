@@ -1,6 +1,6 @@
 import { IMAGE_UPLOAD_ACCEPT, IMAGE_UPLOAD_FORMATS } from "@/lib/image-upload-validation";
 import { DOCUMENT_UPLOAD_FORMATS, MEDIA_DURATION_EPSILON_SECONDS } from "@/lib/media-upload-validation";
-import { HAILUO3_VIDEO_MODEL_ID, isFishAudioModel, isRecraftModel as isRecraftImageModel, SEEDANCE_25_VIDEO_MODEL_ID } from "@/lib/models";
+import { HAILUO3_VIDEO_MODEL_ID, isFishAudioModel, isGptImage2Model, isRecraftModel as isRecraftImageModel, SEEDANCE_25_VIDEO_MODEL_ID } from "@/lib/models";
 
 export type UploadRuleMode = "agent" | "general" | "image" | "video" | "asset-image" | "audio";
 export type UploadTransportMode = "local-base64" | "server-url";
@@ -276,8 +276,8 @@ function getBaseUploadRule(context: UploadRuleContext): UploadRule {
       });
     }
 
-    // gpt-5.4-image-2 走新图片接口(/api/v1/images)，参考图最多 16 张、单张 10MB（后台仍可 override）。
-    if (context.modelId === "openai/gpt-5.4-image-2") {
+    // gpt-5.4-image-2 / gpt-image-2.5 走新图片接口(/api/v1/images)，参考图最多 16 张、单张 10MB（后台仍可 override）。
+    if (isGptImage2Model(context.modelId)) {
       return makeRule({
         image: kindRule({ enabled: true, maxCount: 16, maxSizeMb: 10, formats: commonImageFormats }),
       });

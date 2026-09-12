@@ -58,7 +58,8 @@ export function DeepSeekIcon({ className = "h-4 w-4", ...props }: SVGProps<SVGSV
  */
 export function getGenerationModelIcon(modelId: string) {
   if (modelId.startsWith("deepseek/")) return DeepSeekIcon;
-  if (modelId.startsWith("byteplus:") || modelId.startsWith("byteplus/") || modelId.startsWith("ep-")) return BytedanceIcon;
+  if (modelId.startsWith("byteplus:") || modelId.startsWith("byteplus/") || modelId.startsWith("ep-") || modelId.startsWith("mediakit:")) return BytedanceIcon;
+  if (modelId.startsWith("runninghub:")) return AiGenerate3dIcon;
   if (modelId.startsWith("openai/")) return RiOpenaiFill;
   if (modelId.includes("gemini")) return GeminiIcon;
   if (modelId.startsWith("google/")) return RiGoogleFill;

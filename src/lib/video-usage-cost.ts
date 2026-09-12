@@ -1,5 +1,5 @@
 import type { UsageLike } from "@/lib/credits";
-import { getBytePlusVideoPricePerMillionUsd, HAILUO3_VIDEO_MODEL_ID } from "@/lib/models";
+import { getBytePlusVideoPricePerMillionUsd, getEffectiveVideoDurationSeconds, HAILUO3_VIDEO_MODEL_ID, VIDEO_ENHANCE_FAST_MODEL_ID, VIDEO_ENHANCE_STANDARD_MODEL_ID, isVideoDepthModel, isVideoEnhanceModel } from "@/lib/models";
 
 /**
  * 视频生成「用量 → 美元成本」的唯一权威（2026-08-03 收敛）。
@@ -79,6 +79,26 @@ export function withVideoUsdFallback(usage: VideoUsageMeta | undefined, input: V
     const outputTokens = Math.max(0, usage.completionTokens ?? usage.totalTokens ?? 0);
     const pricePerMillion = getBytePlusVideoPricePerMillionUsd(model, input.settings?.resolution, input.hasVideoInput ?? false);
     return { ...usage, usd: (outputTokens / 1_000_000) * pricePerMillion };
+  }
+
+  // ⭐⭐ 画质增强 / 深度动作捕捉：上游**从来不返回成本**，这条兜底就是唯一的扣费依据。
+  //   ⛔ 所以这里绝不许出现「拿不到秒数就原样返回」—— 那等于 usd=0 = 静默白送（不报错、不进红字）。
+  //   秒数一律走唯一权威 `getEffectiveVideoDurationSeconds`（拿不到时按上游默认 5 秒兜底）。
+  //   ⚠️ `settings.duration` 由服务端在 /api/video-enhance、/api/video-depth 里**按源视频文件实测**写入，
+  //      ⛔ 不是客户端传来的那个数（客户端可以随便报 1 秒来少扣钱）。
+  if (isVideoDepthModel(model) && (usage?.usd ?? 0) <= 0) {
+    const seconds = getEffectiveVideoDurationSeconds(model, input.settings?.duration);
+    return { ...(usage ?? {}), usd: seconds * 0.02, usdFromFallbackPricing: true } as VideoUsageMeta;
+  }
+
+  if (isVideoEnhanceModel(model) && (usage?.usd ?? 0) <= 0) {
+    const seconds = getEffectiveVideoDurationSeconds(model, input.settings?.duration);
+    const minutes = seconds / 60;
+    const resolution = input.settings?.resolution;
+    const coefficient = resolution === "4K" ? 8 : resolution === "2K" ? 4 : resolution === "1080p" ? 2 : 1;
+    const basePrice = model === VIDEO_ENHANCE_FAST_MODEL_ID ? 0.1033 : model === VIDEO_ENHANCE_STANDARD_MODEL_ID ? 0.2066 : 2.5 / 7.2;
+    const usd = minutes * coefficient * basePrice;
+    return { ...(usage ?? {}), usd, usdFromFallbackPricing: true } as VideoUsageMeta;
   }
 
   if (model === HAILUO3_VIDEO_MODEL_ID && (usage?.usd ?? 0) <= 0) {

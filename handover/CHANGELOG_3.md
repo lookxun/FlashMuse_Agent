@@ -14,7 +14,480 @@
 >   ④ 把旧卷标题改成「卷 N · 已归档只读」并在顶部加指向新卷的提示 ⑤ 更新 `00-README.md` 文档索引里的 CHANGELOG 行。
 > - 判据不变：**版本号一样 = 测试服和正式服代码一样**（本项目核心约定，见 `AGENTS.md`）。
 
-## 📌 当前状态摘要（2026-09-10 第一百二十次会话末）：**四方同步 `v1.0.1.22`（本地 = 测试服 = 正式服 = GitHub）**
+## 📌 当前状态摘要（2026-09-12 第一百二十七次会话末）：**审计 121~126 六批未上线代码 → 修 8 处（5 处是钱）→ 测试服 `v1.0.1.25` 已端到端验过**；正式服 / GitHub 仍 `v1.0.1.22`
+
+| | 版本 / 状态 |
+|---|---|
+| 本地 | **`v1.0.1.25` + 未提交**（121~126 + 本批审计修复） |
+| 测试服 | **`v1.0.1.25`** |
+| 正式服 / GitHub | 仍 **`v1.0.1.22`**（`7d47d7b`） |
+| 自查 | `tsc` 0、`npm test` 71/71、`scripts/verify-generation-pricing.ts` 57 条全过 |
+| 迁移 | 无 |
+
+---
+
+## 🗒️ 第一百二十七次会话（2026-09-12）：审计未上线的六批 → 修 8 处（钱 5 处）→ 测试服 v1.0.1.25 端到端验收
+
+> 🗣️ 用户：仔细审计本地这一批没上线的新代码，尤其主链路、扣费积分不能出错 → 我在本地测了很多次新模型，你看真实扣费是多少、前端显示 3 积分一张对不对 → 审完修完没问题就部署测试服。
+> ⭐ **最终状态**：8 处修完；测试服 `v1.0.1.25`；正式服没动。
+
+### 一、先量真实扣费（⛔ 不看文档价、不看代码里写的数）
+
+从**本地 `CreditLedger` + `generation-diagnostics-log.jsonl`** 把 GPT Image 2.5 的 57 条真实扣费按
+`模型 × 画质 × size` 聚类（上游每次都给 `usage.cost`，`usdFromFallbackPricing:false`）：
+
+| 档位（1K） | size | usd | 积分（×70） |
+|---|---|---|---|
+| medium | 1280×720 | 0.00745 | 1 |
+| **high（默认）** | 1280×720 | **0.0286** | **2** |
+| **high（默认）** | 1152×864（4:3） | **0.0390** | **3** |
+| **high（默认）** | 1024×1024（1:1） | **0.0528** | **4** |
+| xhigh | 1280×720 | 0.0506 | 4 |
+| max | 1280×720 | 0.1137 | 8 |
+
+⭐⭐ **两个反直觉的点**：
+① **画质是主因**（max 是默认档的 4 倍）；② **比例越"方"越贵**（1:1 是 16:9 的 1.85 倍，
+而像素只多 14% → 按 patch 计费、不是按像素线性。GPT-5.4 Image 2 上同样成立：1:1 0.2164 vs 16:9 0.1186）。
+
+→ 菜单里那个 `usd: 0.041`（显示「约3积分/张」）**两头都不对**：16:9 高估 37%、1:1 低估 46%。
+**已改成 `usd 0.0286 / usdHigh 0.0528` → 界面显示「约2-4积分/张」**（沿用 seedream-5.0-pro 那个"给区间"的先例）。
+
+⭐ 顺手把**预估闸门**也做准：新增 `estQualityMultiplier`（只给 2.5 两个模型配，其余模型恒 1 倍、行为不变），
+基准用「1K 最贵比例的 high = $0.053」，倍数 `low .05 / medium .3 / auto 1 / high 1 / xhigh 1.9 / max 4.1`。
+`/api/image` 现在把 `settings.quality` 传给闸门（`GenerationQuotaTarget.quality`）。
+判据：1K medium 估 1（真 1）、high 估 4（真最贵 4）、max 估 15（真最贵约 15）。
+
+### 二、钱上的 4 个真漏洞（都在这批新代码里）
+
+1. 🔴🔴 **画质增强 / 深度捕捉的扣费依据 100% 来自客户端。**
+   两条路的 `settings.duration` 直接取 `body.duration`（= 画布节点里 `Math.floor(durationSeconds)`），
+   而上游 MediaKit / RunningHub **从不返回成本** → 那个字符串就是唯一扣费依据。
+   客户端报「1秒」→ 60 秒的视频只扣 1 秒的钱。
+   ✅ 修：新增**唯一权威 `src/lib/video-source-asset.ts`** →
+   `resolveSourceVideoDuration()` 现场 ffmpeg 实测源文件（`getLocalVideoDimensions`），
+   客户端那个数只在实测失败时兜底；向上取整写进 `settings.duration`，同时喂给预估闸门。
+   实测坐实：`durationSource:"probed" / probedSeconds:5.1 / clientDuration:"5秒"`。
+2. 🔴 **同族第二漏：`withVideoUsdFallback` 里 `if (seconds <= 0) return usage`** → `usd` 缺失 →
+   `chargeCredits` 按 0 扣 = **静默白送**（不报错、不进红字、后台也看不见）。
+   老节点 / 上传视频拿不到 `durationSeconds` 时必中。
+   ✅ 修：两个分支都改走 `getEffectiveVideoDurationSeconds`（拿不到按上游默认 5 秒兜底）。
+3. 🔴 **深度捕捉多收**：上游 `frame_load_cap` 只吃前 `MAX_DEPTH_SECONDS=60` 秒，
+   而我们按**完整时长**收钱 → 60 秒以上的源视频多收。
+   ✅ 修：收费秒数按 60 截断（`MAX_DEPTH_SECONDS` 已 export，日志有 `capped` 字段）。
+4. 🔴 **占位泄漏（额度白占 30 分钟）**：刷新页面后前端对一条**已 succeeded** 的消息又 POST 一次 →
+   `reserveGenerationQuota` 插新占位 → `createXxxJob` 幂等早退 → 没人走 `markJobSucceeded/Failed`
+   → 占位只能等 `expiresAt` 过期。实测抓到两条 19:23 插入、对应 job 19:12 就成功了的占位（白占 8 积分）。
+   ✅ 修：事务里先查「这个 requestId 是否已有 succeeded/failed 的 job」，有就直接 return 不插占位。
+
+### 三、另外 4 处（安全 / 会花钱的误操作 / 稳定性）
+
+5. ⛔ **两条新接口一点归属校验都没有**（`/api/video` 早就有 `validateOwnedReferences`）→
+   任何登录用户把 `sourceUrl` 填成 `/generated/users/<别人>/videos/x.mp4` 就能拿到别人视频的增强/深度成品。
+   ✅ `getSourceVideoOwnershipError()`：路径里带别人 userId 就 400「源视频必须来自当前账号」
+   （不带用户段的老资产照常放行，⛔ 别一刀切拦死历史数据）。
+6. ⛔ **工作流增强/深度节点的「运行」按钮掉进 `runVideoNode`**（失败卡的 onRetry 是对的，只有节点编辑器漏了）
+   → 拿「火山画质增强 1080p」当提示词**真跑一条普通视频、真扣钱**。✅ 按模型分流，与 onRetry 同一套判定。
+7. ⛔ **MediaKit / RunningHub 的 5 个 fetch 一个超时都没有** → 挂住一个就永久占掉
+   `MAX_CONCURRENT_VIDEO=8` 里的一个槽，8 个挂住 = 视频全站不再被认领。
+   ✅ `mediakitFetch` / `runningHubFetch` 统一带 `AbortSignal.timeout`（轮询/建任务 60s、上传 10min）。
+8. ⛔ **`video-poster.ts` 那份手写的 `join(process.cwd(),"public",url)`**（只判 `startsWith("/generated/")`）
+   —— 正是 `AGENTS.md` 点名的路径穿越写法，而 `runninghub.ts` 现在拿**用户传的 sourceUrl** 调它。
+   ✅ 收敛到 `resolveGeneratedFilePath()`，并给封面输出目录加 `isInsideGeneratedRoot` 断言
+   （`/^\/generated\/users\/([^/]+)\//` 里的 `([^/]+)` 能匹配 `..`）。
+
+### 四、深度捕捉的尺寸：客户端声明值 → 服务端实测值
+
+`createRunningHubDepthTask` 原来「客户端给了 width/height 就用它，没给才实测」。
+实测抓到：画布节点声明 1280×720，而文件真实是 864×496 → 发过去 `custom_width/height=1280×704`
+→ ① 成品尺寸和源视频不一样（违反「深度图必须跟源视频同尺寸」）② 上游 GPU 直接挂。
+✅ 改成**实测优先、客户端兜底**。改完实测：源 864×496 → 上游 896×512 ✓。
+
+### 五、⚠️ 查清但没改行为的一条（等用户拍板）
+
+**1280×704 × 123 帧在 RunningHub 上必挂**（`torch.AcceleratorError` / `CUDA error: invalid configuration argument`，
+同一条素材连挂两次）；**896×512 × 123 帧立刻成功**。→ 上游算力上限，不是我们参数写错。
+本批只把它从兜底桶里捞出来映射成 **B_7「深度动作捕捉的算力节点执行失败了，请换一条更短或分辨率更低的视频后重试。」**
+（新增 `/cuda error|torch\.acceleratorerror/` 规则，连跑三遍幂等）。
+要彻底不让用户撞见，得加前置拦截或降 `window_size`，但会影响「成品尺寸跟源视频一样」的口径 → ⛔ 先不动。
+
+### 六、回归 + 端到端验收
+
+- **新增常驻回归 `scripts/verify-generation-pricing.ts`（57 条，16 条反向）**：
+  菜单文案（含"别的模型一个字没变"）、画质倍数×分辨率预估、兜底定价「绝不为 0」、
+  归属校验、13 条新红字**连跑三遍幂等**。⭐ 改这些纯函数前先跑它。
+- `tsc` 0、`npm test` 71/71。
+- **测试服真机**（`v1.0.1.25`）：6 张 2.5 图片逐笔对账（3/3/4/4/2/2，与 `usd×70` 完全一致）；
+  画质增强 720p 真跑成功（`usd 0.0347222` = 6/60×1×2.5/7.2 → 2 积分）；
+  深度捕捉真跑成功（`usd 0.12` = 6s×$0.02 → 8 积分）；
+  归属校验两条路各 400（没打上游）；占位幂等后 `GenerationReservation` 0 行；
+  通用模式「生成一张中秋主题海报…」真出 2 张图；后台卡序 + 快捷菜单开关页（3 个 API「已启用」、30 个开关全开）。
+
+### 七、部署动作留档
+
+- 三次 bump：`v1.0.1.23`（第一版修复）→ `v1.0.1.24`（菜单改成区间 + 预估基准改 1:1 high）
+  → `v1.0.1.25`（占位泄漏 + 深度尺寸实测优先 + CUDA 文案）。
+  ⭐ 每次都完整 bump + 整批推，⛔ 没在同一个版本号上叠改动（保住「版本号一样 = 代码一样」）。
+- 打包一律 `node .runtime/pack.js vX`（30 个文件，清单/复制/tgz 三个数相等才继续）。
+- 测试服 `.env.local` **只追加 6 行**（三个新 key + ENABLED）；改前改后
+  `DATABASE_URL 106 / AUTH_SECRET 63 / OPENROUTER_API_KEY 95 / BYTEPLUS_API_KEY 66` 整行长度逐一相等、无重复 key。
+- `sync-ali.sh --stack=staging` + `PUBLISHED_APP_VERSION` 各只剩 1 行；
+  `/api/health` = `x-app-version` = `v1.0.1.25`，外网 8080 与 HTTPS 入口都 200。
+- ⭐ 完整的"下次照抄"操作序列（ssh key 路径 / build 要等 4~5 分钟 / PowerShell 吃引号的四个坑 /
+  env 追加的断言写法）已写进 **`03-deploy-and-servers.md` 的「测试服部署流程」顶部**。
+
+### 八、下一个 AI 接手：工作区现状 + 该从哪继续
+
+- **工作区是"脏"的（正常）**：`git status --short` 共 37 项 ——
+  24 个 `M`（src）+ 7 个 `??`（新增）+ 交接文档。**这些就是 121~127 七批的全部成果**，还没 commit。
+  - 新增文件：`src/lib/mediakit.ts`、`src/lib/runninghub.ts`、**`src/lib/video-source-asset.ts`（本批新增）**、
+    `src/app/api/video-enhance/route.ts`、`src/app/api/video-depth/route.ts`、
+    `src/app/admin/admin-workflow-shortcut-panel.tsx`、**`scripts/verify-generation-pricing.ts`（本批新增）**。
+  - ⭐ **commit 时清单用 `git status --short -- src prisma scripts`**（⛔ 别漏 `scripts/`，那是新回归脚本）。
+- **要推正式服的完整前置条件**在 `05-next-actions.md` 待办 1（含三个新 key 怎么加、worker 要 force-recreate、先 push GitHub）。
+- **改这批代码前必读**：`AGENTS.md` 顶部本批新增的三条铁律
+  （①上游不给成本时扣费输入不许来自客户端 ②菜单报价按真实扣费分布给、贵不贵常常不由分辨率决定
+  ③幂等早退路径要问"占位谁释放"）+ 「能统一一律统一」那一节新加的
+  **「视频后处理唯一权威清单」**（`video-source-asset` / `mediakit` / `runninghub` / 兜底定价 / 两个接口 / 开关 / 回归）。
+- **一条挂着等拍板的事** = 备忘 **M044**（深度捕捉尺寸太大必挂，要不要加前置拦截）。
+- ⛔ **本批没做、也别顺手做的**：正式服一个字没动；会员继续关；
+  「画质增强极速（海外）」没真跑过（代码同一份、key 已配）；2.5 的 2K/4K 预估还没真实样本。
+
+---
+
+## 📌 上一状态摘要（2026-09-12 第一百二十六次会话末）：**本地叠了 Agent/通用规划闸门 + 后台今日三卡前移，未 bump / 未部署 / 未 commit**；测试服 = 正式服 = GitHub 仍 `v1.0.1.22`
+
+| | 版本 / 状态 |
+|---|---|
+| 本地 | **`v1.0.1.22` + 未提交**（121 国内大模型 + 122 海外极速 + 123 快捷菜单独立页 + 124 深度动作捕捉 + 125 GPT Image 2.5 + 本批规划闸门/后台卡序） |
+| 测试服 / 正式服 / GitHub | 仍 **`v1.0.1.22`**（`7d47d7b`） |
+| 自查 | `tsc` 0 |
+| 迁移 | 无新迁移 |
+
+---
+
+## 🗒️ 第一百二十六次会话（2026-09-12）：Agent/通用去掉关键词闸门 + 后台今日三卡前移
+
+> 🗣️ 用户：Agent/通用明确要生图却没生 → 不该靠特定词触发，该让规划器理解 → 思考内容没展开按钮 → 后台今日图/视频/语音三卡往前移，对着上面累计三卡 → 写交接。
+> ⭐ **最终状态**：本地已改。未 bump、未部署、未 commit。规划闸门还没真走界面验。
+
+### 一、Agent/通用不生图
+
+用户发 `@image 根据这张图生成类似的中秋海报`。日志：16:44/16:46 通用、16:49 Agent 都只打了聊天接口（`mode: general/agent`），没有 `agent-plan` / `general-plan`，没有出图。
+
+根因：`needsIntentResolution` 以前 = `shouldPlanAgentTask(text)`。那条正则认「生成图」不认「生成海报」→ 规划跳过 → 当普通聊天。带参考图时 DeepSeek 还报不支持看图。
+
+用户口径：不该靠关键词，该让模型理解再决定聊还是生图。
+
+改：`chat-workbench.tsx` Agent/通用提交一律 `needsIntentResolution: true`。`shouldPlanAgentTask` 函数还在 core 里，提交路径不再用。
+
+### 二、思考没展开按钮
+
+规划被跳过时走 `/api/chat`。`ThinkingProcessBlock` 只有 reasoning 正文才显示箭头。模型没给正文 → 只剩「已思考 X 秒」。规划路径本身也不展示思考（规划器只回 JSON）。本批没改这块展示。
+
+### 三、后台概览卡序
+
+`admin-overview-2.tsx` 第三排改成：今日图片 / 今日视频 / 今日语音 / 历史对话 / 历史工作流。对着第二排累计三卡。
+
+### 四、改了哪些文件
+
+`chat-workbench.tsx`、`admin-overview-2.tsx`。tsc 0。
+
+---
+
+## 📌 上一状态摘要（2026-09-11 第一百二十五次会话末）：**本地叠了 GPT Image 2.5 Flare/Sunburst，未 bump / 未部署 / 未 commit**；测试服 = 正式服 = GitHub 仍 `v1.0.1.22`
+
+| | 版本 / 状态 |
+|---|---|
+| 本地 | **`v1.0.1.22` + 未提交**（121 国内大模型 + 122 海外极速 + 123 快捷菜单独立页 + 124 深度动作捕捉 + 本批 GPT Image 2.5） |
+| 测试服 / 正式服 / GitHub | 仍 **`v1.0.1.22`**（`7d47d7b`） |
+| 自查 | `tsc` 0 |
+| 迁移 | 无新迁移 |
+| 本地 dev | 本批末已重启（改常驻 worker 路由） |
+
+---
+
+## 🗒️ 第一百二十五次会话（2026-09-11）：接 GPT Image 2.5 Flare / Sunburst
+
+> 🗣️ 用户：语音免费那个挂了已关掉、先不管 → OpenRouter 出了 GPT Image 2.5 两个 → 精的更好 → 先测尺寸写桌面 md 再接入 → Sunburst 金字+最下面+NEW、其它 NEW 去掉 → 每类菜单只一个金字 → 两个 2.5 都打 NEW → B_290 走错接口 → B_300 起是安全审核（「生成美女」）→ 写交接。
+> ⭐ **最终状态**：本地已接上、路由已修、dev 已重启。未 bump、未部署、未 commit。用户测安全审核那几条还没换干净提示词再验通。
+
+### 一、两个模型
+
+| | Flare | Sunburst |
+|---|---|---|
+| id | `openai/gpt-image-2.5-flare` | `openai/gpt-image-2.5-sunburst` |
+| 定位 | 快、日常 | 精、改图准（用户选这个当金字） |
+| 接口 | 都走 `POST /api/v1/images`（同 GPT-5.4 Image 2） | 同左 |
+| 尺寸 / 参考图 / n | **完全一样** | **完全一样** |
+
+### 二、尺寸（桌面 `C:\Users\ASUS\Desktop\gpt-image-2.5-test\测试结论.md`）
+
+真出图 40 张，花约 **$0.71**（OpenRouter 直打，没扣我们积分）。
+
+- ⭐ **必须传 `size` 精确像素**。只传 `aspect_ratio` 会掉到约 1K，**21:9 会出成 1536×1024（3:2）**。
+- ⛔ **`resolution: 1K/2K/4K` 无效**（三档都出 1254×1254）。
+- 硬上限：最长边 ≤ **3840**（`4096x4096` 被拒）。
+- 尺寸表与 GPT-5.4 Image 2 **逐像素相等**（1K/2K/4K × 6 比例都真跑过）。
+- 画质 `auto/low/medium/high/xhigh/max`（比 5.4 多 xhigh/max）。画质**不改像素**，只改时间和价钱。1:1 不传 size：low $0.006 / high $0.053 / xhigh $0.094 / max $0.211。
+- 参考图最多 16、一次最多 10 张、无透明底（只 `auto/opaque`）。
+
+### 三、接入口径（用户拍板）
+
+- 菜单：Flare 在 GPT-5.4 Image 2 下面，**Sunburst 放最下面**。
+- ⭐ **NEW**：两个 2.5 都打。其它模型（Recraft / H3 / Seedance 2.5）NEW 全拿掉。
+- ⭐ **金字每类只留最好的一个**（唯一权威 `models.ts` 的 `isGoldGenerationModel`）：
+  图片 = Sunburst；视频 = Seedance 2.5；语音 = MiniMax Speech 2.8 HD。
+  GPT-5.4 Image 2 **不再金色**。
+- 2.5 画质菜单 6 档（自动/低/中/高/超高/最高）；5.4 仍 4 档。
+- 菜单副标题 3 积分 = high 档约 1K 的 `$0.041 × 7.2 × 10`。max/4K 会贵很多，预估表待正式服真实扣费回校。
+
+### 四、B_290 / B_300
+
+- **B_289~292**：2.5 走了旧 `/chat/completions`（`modalities: image+text`）→ 上游 404「不支持这类输出」。
+  根因：常驻 `generation-worker` 热更新换不到新 `isGptImage2Model`。已在 `generateOpenRouterImage` 加模型 id 硬分流 + **重启 dev**。
+  ⭐ 改 worker 相关代码必须重启，见本文件规矩。
+- **B_300~308**：接口已走对（`generateGptImage2`）。提示词「生成美女」被 OpenAI 安全审核拒（`safety_violations=[sexu…]`）。不是代码 bug。换干净词再测。
+
+### 五、语音
+
+用户本批拍板：**免费那个挂了已关掉，先不管，不影响项目。** 付费 fish-audio 用户说还在。整条「换 gpt-audio / 藏入口」先搁着。
+
+### 六、改了哪些文件
+
+`models.ts`（模型表 / 尺寸 / 画质 / NEW / 金色）、`openrouter.ts`（走 `generateGptImage2`）、`upload-rules.ts`、`prompt-length.ts`、`media-asset-record.ts`、`membership.ts`、`system-settings.ts`（高清链加 Flare/Sunburst）、`chat-workbench.tsx` / `chat-workbench-core.tsx`、`workflow-tldraw-canvas-inner.tsx`（高清下拉 + 画质 6 档）、`admin-upload-rules-panel.tsx`、`admin-workflow-shortcut-panel.tsx`。
+
+---
+
+## 📌 上一状态摘要（2026-09-11 第一百二十四次会话末）：**本地叠了深度动作捕捉修通，未 bump / 未部署 / 未 commit**；测试服 = 正式服 = GitHub 仍 `v1.0.1.22`
+
+| | 版本 / 状态 |
+|---|---|
+| 本地 | **`v1.0.1.22` + 未提交**（121 国内大模型 + 122 海外极速 + 123 快捷菜单独立页 + 本批深度动作捕捉修通） |
+| 测试服 / 正式服 / GitHub | 仍 **`v1.0.1.22`**（`7d47d7b`） |
+| 自查 | `tsc` 0 |
+| 迁移 | 无新迁移 |
+| 本地 dev | 本批多次重启 / 清 `.next`，`http://localhost:3000` Ready |
+
+---
+
+## 🗒️ 第一百二十四次会话（2026-09-11）：深度动作捕捉打通国际站 + 尺寸/时长/帧率 + OOM
+
+> 🗣️ 用户：右下角 Compiling 卡住 → 处理 → 继续深度捕捉，B_283 API key 不可用（国际版 key）→ 国际站找同一条工作流 → 接上跑通 → 尺寸不对 → 定价先记下别改 → ffmpeg 硬拉被否 → 改节点参数 → 首页 500 → B_284/285/286 → 24 秒只出 15 秒 → 问上限 → 按原视频帧率、60 秒上限 → B_287/288 OOM → 问 window_size → 图标改 body-scan-line → 成功 → 写交接。
+> ⭐ **最终状态**：本地已跑通。未 bump、未部署、未 commit。
+
+### 一、国际站
+
+Key 是国际版，必须打 `https://www.runninghub.ai`。国内 `runninghub.cn` 回「API Key不存在」（B_280~283）。
+同一条 DepthCrafter：https://www.runninghub.ai/post/1868729320020787201 ，workflowId 仍是 `1868729320020787201`。
+上传/建任务/查状态/取结果改成 `/task/openapi/upload|create|status|outputs`。
+
+### 二、尺寸
+
+国际站工作流 JSON 把 LoadVideo 写死 `custom_width/height=512` → 成品 512×512。
+覆盖成源视频宽高，再对齐 64 倍数（DepthCrafter 硬要求）。等卡跟源视频显示尺寸走 `visualSize`。
+⛔ ffmpeg 硬拉尺寸会变形，已撤回。Turbopack 一度还引用已删的 `resizeDepthVideoToSource` → 首页 500，清 `.next` 才好。
+
+### 三、时长 / 帧率
+
+我们自己的 `frame_load_cap` 原来上限 450 帧（按 30fps = 15 秒）→ 24 秒视频被砍成 15 秒。
+现上限 60 秒；`getLocalVideoDimensions` 顺手读 fps，LoadVideo `force_rate` + VideoCombine `frame_rate` 跟源视频，读不到才 30。
+RunningHub 公开硬限制是上传 30MB，没有公开「最多 N 秒」。
+
+### 四、OOM（B_287 / B_288）
+
+24 秒竖屏 512×960、抽 743 帧，RunningHub 回 `torch.OutOfMemoryError`。
+`window_size` 从 110 缩到 40、`overlap` 10。这是每一段塞进 GPU 的帧数，不是整条视频上限；官方建议每段 75–110。
+失败文案映射 OOM → 「这段视频太长或太大，深度动作捕捉显存不够」。
+
+### 五、定价（记下，别改）
+
+我们仍兜底 `秒数 × $0.02`（6 秒实扣 8 积分）。
+RunningHub：`9.9 美元 = 18000 分`，按生成耗时扣，同片后台 29 / 34 分。用户拍板以后再讨论怎么定价。
+
+### 六、产品口径
+
+改名「深度动作捕捉」。图标 `run-line` → `body-scan-line`（`RiBodyScanLine`）。
+右上角秒数向下取整（5.x 显示 5）。
+
+### 七、本批失败码
+
+B_280~283 API Key不存在（打错站）；B_284 create 500；B_285/286 FAILED 文案误用 success；B_287/288 OOM。
+
+---
+
+## 📌 上一状态摘要（2026-09-11 第一百二十三次会话末）：**本地叠了快捷菜单独立页 + 深度捕捉，未 bump / 未部署 / 未 commit**；测试服 = 正式服 = GitHub 仍 `v1.0.1.22`
+
+| | 版本 / 状态 |
+|---|---|
+| 本地 | **`v1.0.1.22` + 未提交**（121 国内大模型 + 122 海外极速 + 本批快捷菜单独立页 + RunningHub 深度捕捉） |
+| 测试服 / 正式服 / GitHub | 仍 **`v1.0.1.22`**（`7d47d7b`） |
+| 自查 | `tsc` 0 |
+| 迁移 | 无新迁移 |
+| 本地 dev | 本批末已重启，`http://localhost:3000` Ready |
+
+---
+
+## 🗒️ 第一百二十三次会话（2026-09-11）：后台快捷菜单独立页 + 工作流「深度捕捉」（RunningHub DepthCrafter）
+
+> 🗣️ 用户：快捷菜单开关拆成独立后台页 → 调研 LibTV 深度捕捉怎么接 → 拍板方案 2（抽深度，不是即梦动作模仿）→ RunningHub 上找工作流 → 给了 key/JSON/workflowId → 「那你接吧」→ 重启本地 dev → 写交接。
+> ⭐ **最终状态**：本地代码接好，dev 已重启。未 bump、未部署、未 commit。深度捕捉用户还没真跑通一条。
+
+### 一、后台：快捷菜单从「模型开关」拆出去
+
+新 tab `workflow-shortcuts`，侧栏在「模型开关」下面，图标与模型开关同为 `RiToggleLine`。
+「模型开关」页只剩 OpenRouter / BytePlus + 模型表。
+快捷菜单页：MediaKit 两把 key + RunningHub key + 图/视频快捷菜单全功能开关（含下载），默认开。
+功能开关 key=`fn:${func}`，关了前端按钮隐藏；模型链开关仍是 `${func}:${modelId}`。
+图片/视频表格标题用 `RiImageAiLine` / `RiFilmAiLine`，标题在表格上方无底。
+
+### 二、调研：深度捕捉怎么接
+
+用户要 LibTV 风格：选中视频 → 抽出灰白深度视频 → 再当 Seedance 参考视频。
+- 必须「分析抽深度」，不能用 Seedance 生成代替（ControlNet 同理：MiDaS/ZoeDepth/Depth Anything 抽深度，再生图）。
+- 现有腾讯新加坡服务器是 CPU Docker，无 GPU；Video-Depth-Anything-Small 约需 7GB 显存，本机/现服跑不了。
+- MediaKit（火山/BytePlus）文档无抽深度接口；画质增强那套 key 接不了这个。
+- RunningHub 有工作流 API（云端 ComfyUI + GPU）。官方 API 目录没有现成「视频抽深度」接口，要找/搭一条工作流再用工作流 API。
+
+两条候选：
+- ❌ 「视频一键转深度图」https://www.runninghub.cn/ai-detail/1947105314179309570 —— 页面能跑，**有水印**，当 Seedance 参考会把水印学进去，不能用。
+- ✅ DepthCrafter https://www.runninghub.cn/post/1868729320020787201 —— JSON 无水印节点：上传视频 → DepthCrafter → 合成灰白 mp4。
+
+用户文件夹 `E:\project\【1】Api key\runninghub\` 三样齐了：
+- Key：`089d3e13041d48d89d0d69faff7dbb4d`（只进 `.env.local`）
+- workflowId：`1868729320020787201`
+- JSON：`DepthCrafter 视频转一致性深度图_api.json`（节点 3 上传视频、节点 1 DepthCrafter、节点 4 合成 mp4）
+
+注意：原 JSON `frame_load_cap: 30` 只吃前 30 帧（约 1 秒）；接入时按源视频时长 × 30fps 改，上限 450 帧。`max_res: 512` 偏低，先不动。
+
+### 三、接入（照画质增强同款）
+
+- `src/lib/runninghub.ts`：上传本地视频 → 高级 create（改节点 3 的 video + frame_load_cap，节点 4 save_output=true）→ 轮询 `/openapi/v2/query`
+- `POST /api/video-depth`：闸门 + 建 RunningHub 任务 + `createVideoJob`（provider=`runninghub`）
+- worker `runVideoJob`：`isVideoDepthModel` / provider=runninghub 走 `getRunningHubDepthTask`
+- 前端：选中视频节点快捷菜单「深度捕捉」（`RiLandscapeLine`），新建节点轮询 `/api/generation-status`；失败卡重试走 `runVideoDepthNode`
+- 后台：RunningHub API 输入框 + 「深度捕捉」行（唯一模型 RunningHub DepthCrafter）
+- 定价：无真实扣费样本，粗估 `$0.02/秒`，标 `approx` 待回校。`withVideoUsdFallback` 已接。
+
+### 四、改了哪些文件
+
+新增：`src/lib/runninghub.ts`、`src/app/api/video-depth/route.ts`、`src/app/admin/admin-workflow-shortcut-panel.tsx`
+改：`system-settings.ts`、`models.ts`、`generation-jobs.ts`、`video-usage-cost.ts`、`media-asset-record.ts`、`model-icon.tsx`、`workflow-tldraw-canvas-inner.tsx`、`admin/page.tsx`、`admin-system-settings-panel.tsx`、`admin/api/system-settings/route.ts`
+`.env.local` 追加 `RUNNINGHUB_API_KEY` / `RUNNINGHUB_API_KEY_ENABLED`（写完其它 key 长度没变）。
+
+### 五、踩坑 / 口径
+
+- RunningHub 工作流列表是 SPA，站内搜被热门流污染；用 DuckDuckGo `site:runninghub.cn` 才找到真实 post/ai-detail URL。
+- 有水印的「AI 应用」页面能点运行，但成品不能当参考视频。接产品用无水印的工作流 JSON。
+- 调 RunningHub 要三样：Key + workflowId + 要改的节点（本批是节点 3 的 video 文件名）。
+- 本批末用户让重启 dev，已起，`generation-worker started`。
+- ⛔ RunningHub / MediaKit key 都别进 git。
+
+---
+
+## 📌 上一状态摘要（2026-09-11 第一百二十二次会话末）：**本地叠了国内大模型 + 海外极速画质增强，未 bump / 未部署 / 未 commit**；测试服 = 正式服 = GitHub 仍 `v1.0.1.22`
+
+| | 版本 / 状态 |
+|---|---|
+| 本地 | **`v1.0.1.22` + 未提交**（国内大模型 + 海外极速 + 后台四 API） |
+| 测试服 / 正式服 / GitHub | 仍 **`v1.0.1.22`**（`7d47d7b`） |
+| 自查 | `tsc` 0 |
+| 迁移 | 无新迁移 |
+
+---
+
+## 🗒️ 第一百二十二次会话（2026-09-11）：海外 BytePlus MediaKit 极速版接到工作流；去掉海外标准；后台四个 API 两行
+
+> 🗣️ 用户：读海外 key 文档看通不通 → 问分辨率/价格 → 对照国内大模型 → 确认国内也有极速/标准/专业 → 「去掉海外标准，只留国内大模型 + 海外极速」→ 「后台四个 API 两行」→ API 区加宽 → 写交接。
+> ⭐ **最终状态**：本地代码接好。未 bump、未部署、未 commit。海外极速用户还没真跑通一条（中间 dev 卡过一次，清 `.next` 后首页 200）。
+
+### 一、探通了什么
+
+海外 key `OGZjYmU3...`（`E:\project\【1】Api key\Byteplus\AI MediaKit.md`）打新加坡 `mediakit.ap-southeast-1.bytepluses.com`：
+- `/enhance-video-fast` 200，给 `task_id`
+- `/enhance-video` 也 200
+- 极速版分辨率枚举实测：`240p 360p 480p 540p 720p 1080p 2k 4k`（8k 被拒）
+- 标准版文档写到 8k，传 8k 过了
+
+Ark key / 国内 AKLT 打海外仍 403，必须用这把独立 MediaKit key。
+
+### 二、产品口径（用户拍板）
+
+快捷菜单只留：
+- **画质增强** = 国内大模型（720p/1080p/2K）
+- **画质增强极速** = 海外极速（720p/1080p/2K/4K）
+
+海外标准不做。国内极速/标准/专业用户没说接，先别动。
+
+国内/海外是**同一套 AI MediaKit**。1080p≤30fps 每分钟：国内极速 ¥0.4 / 标准 ¥1.5 / 专业 ¥15 / 大模型 ¥5；海外极速约 ¥1.49 / 标准约 ¥2.98 / 专业约 ¥29.8。
+
+### 三、后台
+
+顶部四个 API、两行（宽 1180，跟下面表格齐）：
+- OpenRouter API / BytePlus API
+- 火山引擎 MediaKit API / BytePlus MediaKit API
+
+「工作流 · 视频编辑功能」两行：火山引擎画质增强大模型版、BytePlus画质增强极速版。开关 key：
+- `video_enhance:mediakit:video.enhance-generative`
+- `video_enhance_fast:mediakit:video.enhance-fast`
+
+### 四、改了哪些文件
+
+`mediakit.ts`、`video-enhance/route.ts`、`models.ts`、`system-settings.ts`、`video-usage-cost.ts`、`media-asset-record.ts`、`workflow-tldraw-canvas-inner.tsx`、`admin-system-settings-panel.tsx`、`admin/api/system-settings/route.ts`、`.env.example`。`.env.local` 追加 `BYTEPLUS_MEDIAKIT_API_KEY` / `BYTEPLUS_MEDIAKIT_API_KEY_ENABLED`（写完断言其它 key 长度没变）。
+
+### 五、踩坑
+
+Turbopack 一度认不出 `system-settings` 新导出 → 首页 500。清 `.next` 重启才好。改 worker 相关仍要重启 dev。
+
+---
+
+## 📌 上一状态摘要（2026-09-10 第一百二十一次会话末）：**本地叠了工作流画质增强，未 bump / 未部署 / 未 commit**；测试服 = 正式服 = GitHub 仍 `v1.0.1.22`
+
+| | 版本 / 状态 |
+|---|---|
+| 本地 | **`v1.0.1.22` + 未提交**（工作流视频画质增强 · 国内火山 MediaKit） |
+| 测试服 / 正式服 / GitHub | 仍 **`v1.0.1.22`**（`7d47d7b`） |
+| 自查 | `tsc` 0 |
+| 迁移 | 无新迁移 |
+
+---
+
+## 🗒️ 第一百二十一次会话（2026-09-10）：工作流视频「画质增强」接国内火山 MediaKit，本地测通
+
+> 🗣️ 用户：看火山文档 → 问输出/费用/流程 → 「接到工作流，快捷菜单视频截图前面加画质增强」→ 本地测失败看 B_277/278/279 → 重启 dev 后测通 → 问 BytePlus 有没有超分 → 问官网怎么抓 → 对照海外 MediaKit → 探 Ark key 打海外全 403 → 写交接。
+> ⭐ **最终状态**：本地代码接好、用户测通。未 bump、未部署、未 commit。
+
+### 一、接了什么
+
+工作流选中**已出片的视频节点**，快捷菜单「视频截图」前面加 **画质增强**，悬停三档：高清720p / 高清1080p / 高清2K。点完旁边新建等待卡，远程先播、后台下载封面缩略图（跟图片高清一样）。原片还在。
+
+- 唯一权威 `src/lib/mediakit.ts`：提交 `/enhance-video-generative`、轮询 `/api/v1/tasks/{id}`、本地文件先上传成 `mediakit://`。
+- 接口 `POST /api/video-enhance`（登录、额度闸门、扣费走 video kind、失败释放占位）。
+- 模型 id `mediakit:video.enhance-generative`；预估按文档价 2.5 元/分钟 × 分辨率系数 ÷ 7.2。
+- 后台：顶部第三格 MediaKit API Key + 开关；「工作流 · 视频编辑功能」加画质增强行（开关 `video_enhance:mediakit:video.enhance-generative`）。
+- 本地 `.env.local` 追加 `MEDIAKIT_API_KEY` / `MEDIAKIT_API_KEY_ENABLED=true`（写完断言 OPENROUTER/BYTEPLUS 长度没变）。key 来自 `E:\project\【1】Api key\火山引擎\画质增强（超分）api key.md`。⛔ 不进 git。
+
+### 二、本地第一次失败（B_277 / B_278 / B_279）
+
+任务**提交成功**（`mediakit-upload-success` + `video-provider-create-success`，taskId `amk-tool-enhance-...`），worker 却拿这个号去 **OpenRouter** 查 → 404「Job not found」→ 红字「服务器繁忙」。B_279 是第三次提交网络断了。
+
+修：`generation-jobs.ts` 按 `amk-` / `provider=mediakit` 走 MediaKit；`openrouter-video.ts` 的 `getOpenRouterVideoTask` 对 `amk-` 也转走；刚提交 404 当排队。
+⭐ **常驻 worker 热更新换不到** → 必须重启 `npm run dev`。重启后用户测通。
+
+### 三、BytePlus / 海外 MediaKit（查过，先别接）
+
+- **方舟模型清单没有超分**（Playwright 打开 https://docs.byteplus.com/en/docs/modelark/1330310 ，视频只有 Seedance 生视频）。
+- 海外有两套像的：**VOD vCube**（https://docs.byteplus.com/en/docs/byteplus-vod/docs-video-enhancement ，AIGC 场景能到 4K）和 **AI MediaKit**（https://docs.byteplus.com/en/docs/byteplus-vod/ai-mediakit-quickstart ，`/enhance-video`，新加坡域名）。
+- 国内刚接的是 `/enhance-video-generative`（大模型，最高 2K）；用户给的海外接入代码是 `/enhance-video-fast`（极速版）。功能像、接口/模型/key 都不通用。
+- 探过（非法 url、不建任务）：`BYTEPLUS_API_KEY`（`ark-...`）和国内 `MEDIAKIT_API_KEY`（`AKLT...`）打海外 fast/enhance/generative **全 403 apiKey can not be found**。Ark key 打国内 MediaKit 也 403。
+- ⭐ BytePlus 官网是 JS SPA：查规格用 Playwright；`webfetch` 只拿到空壳。
+
+### 四、改了哪些文件
+
+`src/lib/mediakit.ts`（新）、`src/app/api/video-enhance/route.ts`（新）、`system-settings.ts`、`models.ts`、`generation-jobs.ts`、`openrouter-video.ts`、`video-usage-cost.ts`、`error-message.ts`、`media-asset-record.ts`、`model-icon.tsx`、`workflow-tldraw-canvas-inner.tsx`、`admin-system-settings-panel.tsx`、`admin/api/system-settings/route.ts`、`.env.example`。
+
+---
+
+## 📌 上一状态摘要（2026-09-10 第一百二十次会话末）：**四方同步 `v1.0.1.22`（本地 = 测试服 = 正式服 = GitHub）**
 
 | | 版本 / 状态 |
 |---|---|

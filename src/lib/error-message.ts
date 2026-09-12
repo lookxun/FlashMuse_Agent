@@ -236,11 +236,20 @@ export function toUserErrorMessage(value: unknown, fallback = "请求失败，�
   // 为什么必须有：这个函数在"服务端映射 → 前端再映射一次"的链路上可能被调用两次，而下面兜底的
   // 透传分支会把文案截到 180 字 → 会把我们刚附上的模型拒绝原文砍掉。（2026-07-29 加）
   // ⚠️ 这里每加一句，都必须是「我们自己映射出来的成品文案」；⛔ 别把上游原文塞进来。
-  if (isModelRefusedMessage(text) || /^模型这次没有出图，只回了一段文字/.test(text) || isReferenceReviewRejectedMessage(text) || /^当前会员/.test(text)) return withErrorCode(text);
+  if (isModelRefusedMessage(text) || /^模型这次没有出图，只回了一段文字/.test(text) || isReferenceReviewRejectedMessage(text) || /^当前会员/.test(text) || /^画质增强/.test(text) || /^深度(?:动作)?捕捉/.test(text) || /^源视频/.test(text)) return withErrorCode(text);
   if (/system-reminder|operational mode|plan to build|read-only mode|file changes|shell commands/i.test(lower)) return withErrorCode(fallback);
   // ⭐ BytePlus「素材送审」阶段最常见的三类真实失败（以前全落到"服务器繁忙"，用户完全看不懂）：
   // 参考图尺寸不合规 / 平台抓不到我们的素材 / 我们记的审核凭证在平台侧已不存在。
   // 放在最前面判定，避免被后面的 timeout/network 等通用规则抢走。
+  if (/画质增强未配置|画质增强没有返回|画质增强任务提交失败|画质增强上传|画质增强失败/.test(text)) return withErrorCode(text);
+  if (/深度(?:动作)?捕捉未配置|深度(?:动作)?捕捉没有返回|深度(?:动作)?捕捉上传|深度(?:动作)?捕捉失败|查询深度(?:动作)?捕捉/.test(text)) return withErrorCode(text);
+  if (/outofmemory|out of memory|cuda out of memory/i.test(lower)) return withErrorCode("这段视频太长或太大，深度动作捕捉显存不够。请换一条更短或分辨率更低的视频后重试。");
+  // ⭐ 2026-09-12 实测：RunningHub 那台 GPU 报 `CUDA error: invalid configuration argument`
+  //   / `torch.AcceleratorError`（当时的根因是发过去的尺寸和源视频不一致，已修）。
+  //   这类原文以前落进「服务器繁忙」兜底桶，用户完全看不懂 → 单独映一句。
+  if (/cuda error|cudaerror|torch\.acceleratorerror|acceleratorerror/i.test(lower)) return withErrorCode("深度动作捕捉的算力节点执行失败了，请换一条更短或分辨率更低的视频后重试。");
+  if (/job .* not found|amk-tool-enhance/.test(lower)) return withErrorCode("画质增强任务查询失败，请稍后重试。");
+  if (/短边范围|长边范围|short side|long side|only support sdr|highest support 1080p/.test(lower)) return withErrorCode("源视频尺寸不符合画质增强要求（短边 360–1080、长边 360–1920），请换一条分辨率更低的视频后重试。");
   if (/(?:height|width) must be between \d+px and \d+px|expected the (?:height|width) to be (?:at least|at most|between)\s*\d+px/.test(lower)) return withErrorCode("参考图尺寸不符合平台要求（宽和高都需在 300–6000 像素之间），请换一张尺寸更合规的参考图后重试。");
   // ⭐ Recraft（recraft/*）参考图**像素尺寸**限制比别的模型更严：单边必须在 256~4096px 之间（BytePlus 是 300~6000px）。
   // 上游原文：`max image dimension should be no more than 4096` / `min image dimension should be no less than 256`。
@@ -289,7 +298,7 @@ export function toUserErrorMessage(value: unknown, fallback = "请求失败，�
   //     也命中它，于是文案说"请更新密钥后重试"，而真相是"压根没配"，把人往错方向带。
   // 现在：先单独认出"我们自己没配"，再用精确特征判"平台说密钥无效"。
   if (/缺少\s*(byteplus\s*)?api key|missing api key|api key is not configured/.test(lower)) return withErrorCode("服务端没有配置该模型的接口密钥，请联系管理员处理。");
-  if (/\b401\b|unauthorized|user not found|invalid api key|invalid_api_key|incorrect api key|api key expired|无效的?\s*api\s*key/.test(lower)) return withErrorCode("API Key 无效或已过期，请更新密钥后重试。");
+  if (/\b401\b|unauthorized|user not found|invalid api key|invalid_api_key|incorrect api key|api key expired|无效的?\s*api\s*key|api\s*key不存在|apikey verification failed/.test(lower)) return withErrorCode("API Key 无效或已过期，请更新密钥后重试。");
   if (/\b403\b|not available in your region|region/.test(lower)) return withErrorCode("当前模型在你的地区不可用，请换一个模型后重试。");
   // ⭐ 2026-07-29 拆掉原来的「请求太频繁或额度不足，请稍后再试。」——那句把两个根本不同的东西糊在一起：
   //   · 裸 `429` / too many requests = **纯限流**，等一会儿就好 → 走上面同一句限流文案（RATE_LIMITED_MESSAGE）

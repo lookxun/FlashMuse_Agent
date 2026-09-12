@@ -68,6 +68,12 @@ export type GenerationQuotaTarget = {
    */
   ratio?: string;
   resolution?: string;
+  /**
+   * ⭐ 图片画质档（`auto|low|medium|high|xhigh|max`，原样传进来即可，本文件不做归一化 —
+   *    `getEstimatedGenerationUsd` 会按模型自己归一化）。
+   *    GPT Image 2.5 的价钱几乎只由画质决定（最高档是默认档的 4 倍），不传就按默认档估。
+   */
+  quality?: string;
 };
 
 /** 事前预估这次生成要花多少积分（≥0 的整数；0 = 该模型没有价目表，不做限制）。 */
@@ -80,6 +86,7 @@ export async function estimateGenerationCredits(target: GenerationQuotaTarget) {
     seconds: parseSeconds(target.duration),
     chars: target.chars,
     resolution: resolveEffectiveResolution(target),
+    quality: target.quality,
   });
   if (usd <= 0) return 0;
   return Math.max(1, Math.round(usd * settings.usdToCnyRate * settings.creditsPerCny));
@@ -166,6 +173,17 @@ async function runReservationTransaction(input: {
       SELECT "requestId" FROM "GenerationJob"
       WHERE "userId" = ${userId} AND "status" IN ('queued', 'running')
     `;
+
+    // ⭐⭐ 这个 requestId 的任务**已经跑完了**（成功或失败）→ 这次请求会命中 `createXxxJob` 的幂等早退，
+    //   压根不会再走 markJobSucceeded/markJobFailed → **占位永远没人释放，只能等 30 分钟过期**。
+    //   （2026-09-12 实测：刷新页面后前端对一条已成功的消息又 POST 了一次，就白占了 8 积分的额度。）
+    //   所以这里直接返回、不插占位：活儿已经干完了，不该再占任何额度。
+    const finishedRows = await tx.$queryRaw<Array<{ requestId: string }>>`
+      SELECT "requestId" FROM "GenerationJob"
+      WHERE "requestId" = ${requestId} AND "status" IN ('succeeded', 'failed')
+      LIMIT 1
+    `;
+    if (finishedRows.length > 0) return;
 
     // 同一次生成既可能有占位、也可能已经建了 job → 按 requestId 去重，别算两次。
     const inflightIds = new Set<string>();

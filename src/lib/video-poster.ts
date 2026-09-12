@@ -4,12 +4,16 @@ import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { basename, join, parse } from "node:path";
 import { promisify } from "node:util";
+import { isInsideGeneratedRoot, resolveGeneratedFilePath } from "@/lib/generated-asset-path";
 
 const execFileAsync = promisify(execFile);
 
+// ⛔⛔ 这里以前是本地手写的 `join(process.cwd(),"public",url)` + 只判 `startsWith("/generated/")`
+//    —— 正是 `AGENTS.md` 点名的路径穿越写法（`/generated/../../.env.local` 会被 join 折叠出去）。
+//    2026-09-12 起统一走唯一权威 `resolveGeneratedFilePath()`：本文件的入参从「只有我们自己生成的 url」
+//    变成了「用户可以指定的源视频」（runninghub.ts 的 getLocalVideoDimensions 就是拿用户传的 sourceUrl 调的）。
 function getLocalGeneratedFilePath(publicUrl: string) {
-  if (!publicUrl.startsWith("/generated/")) return undefined;
-  return join(process.cwd(), "public", publicUrl.replace(/^\//, ""));
+  return resolveGeneratedFilePath(publicUrl);
 }
 
 function createVideoPosterPath(videoUrl: string) {
@@ -18,6 +22,8 @@ function createVideoPosterPath(videoUrl: string) {
   const userMatch = videoUrl.match(/^\/generated\/users\/([^/]+)\/videos\//);
   const posterPublicDirectory = userMatch ? `/generated/users/${userMatch[1]}/video-posters` : "/generated/video-posters";
   const posterDirectory = join(process.cwd(), "public", posterPublicDirectory.replace(/^\//, ""));
+  // ⛔ `([^/]+)` 能匹配到 `..`，所以写出去之前也必须确认目标目录仍在 public/generated 笼子里。
+  if (!isInsideGeneratedRoot(posterDirectory)) return undefined;
 
   return {
     directory: posterDirectory,
@@ -34,6 +40,7 @@ export async function createVideoPosterFromLocalVideo(publicVideoUrl: string) {
   if (!videoPath || !existsSync(videoPath)) return undefined;
 
   const poster = createVideoPosterPath(publicVideoUrl);
+  if (!poster) return undefined;
   await mkdir(poster.directory, { recursive: true });
 
   if (!existsSync(poster.filePath)) {
@@ -72,7 +79,7 @@ export async function createUploadedVideoPoster(publicVideoUrl: string) {
  * 读取本地视频的真实宽高（用 ffmpeg 解析流信息，无需 ffprobe）。封面被降采样到 640，不能拿来当尺寸，
  * 所以视频尺寸一律走这里。解析不到返回 undefined。
  */
-export async function getLocalVideoDimensions(publicVideoUrl: string): Promise<{ width: number; height: number; durationSeconds?: number } | undefined> {
+export async function getLocalVideoDimensions(publicVideoUrl: string): Promise<{ width: number; height: number; durationSeconds?: number; fps?: number } | undefined> {
   const { default: ffmpegPath } = await import("ffmpeg-static");
   if (!ffmpegPath) return undefined;
   const videoPath = getLocalGeneratedFilePath(publicVideoUrl);
@@ -94,5 +101,18 @@ export async function getLocalVideoDimensions(publicVideoUrl: string): Promise<{
   const durationMatch = stderr.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
   const durationRaw = durationMatch ? Number(durationMatch[1]) * 3600 + Number(durationMatch[2]) * 60 + Number(durationMatch[3]) : undefined;
   const durationSeconds = typeof durationRaw === "number" && Number.isFinite(durationRaw) && durationRaw > 0 ? Math.round(durationRaw * 10) / 10 : undefined;
-  return { width, height, durationSeconds };
+  const fpsMatch = videoLine?.match(/(\d+(?:\.\d+)?)\s*fps/i) ?? videoLine?.match(/(\d+)\/(\d+)\s*fps/i);
+  const tbrMatch = videoLine?.match(/(\d+(?:\.\d+)?)\s*tbr/i);
+  let fps: number | undefined;
+  if (fpsMatch?.[2]) {
+    const num = Number(fpsMatch[1]);
+    const den = Number(fpsMatch[2]);
+    if (num > 0 && den > 0) fps = num / den;
+  } else if (fpsMatch?.[1]) {
+    fps = Number(fpsMatch[1]);
+  } else if (tbrMatch?.[1]) {
+    fps = Number(tbrMatch[1]);
+  }
+  if (!(typeof fps === "number" && Number.isFinite(fps) && fps > 0 && fps <= 120)) fps = undefined;
+  return { width, height, durationSeconds, fps };
 }
