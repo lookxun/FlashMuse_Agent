@@ -14,7 +14,185 @@
 >   ④ 把旧卷标题改成「卷 N · 已归档只读」并在顶部加指向新卷的提示 ⑤ 更新 `00-README.md` 文档索引里的 CHANGELOG 行。
 > - 判据不变：**版本号一样 = 测试服和正式服代码一样**（本项目核心约定，见 `AGENTS.md`）。
 
-## 📌 当前状态摘要（2026-09-12 第一百二十八次会话末）：**四方同步 `v1.0.1.25`** —— 本地 = 测试服 = 正式服 = GitHub
+## 📌 当前状态摘要（2026-09-12 第一百三十次会话末）：**四方同步 `v1.0.1.29`** —— 本地 = 测试服 = 正式服 = GitHub
+
+| | 版本 / 状态 |
+|---|---|
+| 本地 | **`v1.0.1.29`**（代码 commit `7be4ee2` 已推；本批交接文档待 commit） |
+| 测试服 | **`v1.0.1.29`** |
+| 正式服 | **`v1.0.1.29`**（2026-09-12 部署） |
+| GitHub | **`v1.0.1.29`**（`7be4ee2`，`origin/main`） |
+| 自查 | `tsc` 0、`npm test` 71/71、`verify-generation-pricing.ts` ALL PASS（新增 26 条）、eslint 问题数与 HEAD 逐文件相等 |
+| 迁移 | **无新迁移**（两库都 52，`No pending migrations to apply.`） |
+| 判据 | ⭐⭐ `src/` 逐文件 md5 **三方完全相等**：251 文件、250 个共享文件内容 0 差异 |
+| 回滚点 | 正式服 `/opt/flashmuse/app-backups/20260912-235421-presync-v1.0.1.25`（154M） |
+
+---
+
+## 🗒️ 第一百三十次会话（2026-09-12）：审计上一批（深度捕捉 480p/25秒）→ 修 6 处 → 测试服 v27/v28/v29 三轮 → 推正式服四方同步
+
+> 🗣️ 用户：「先审计这一批刚推到测试服的代码，有问题就修复。。没问题就测试。全部没问题后推到正式服」
+
+### 一、审计出的 6 处（按严重程度）
+
+1. ⭐⭐⭐ **60fps 源视频必挂（上线就是必现故障）**
+   `frame_load_cap = min(MAX_DEPTH_SECONDS, 源时长) × 源 fps`，而 `resolveDepthFps` 原来**放到 120fps**。
+   上一批的真机矩阵是在 **30fps** 下测的：896×512 × 750 帧稳过、900 帧 VRAM OOM。
+   → **60fps 的手机视频跑满 25 秒就是 1500 帧，是实测天花板的 2 倍，必挂。**
+   ⭐ **只截时长是不够的：真正吃显存的是帧数（秒 × fps）。**
+   修法：新增唯一权威 `resolveVideoDepthFps` / `DEPTH_MAX_FPS = 30` / `MAX_DEPTH_FRAMES = 750`，
+   送上游的 `force_rate` 封顶 30。⭐ **降 fps 不改成品时长**（VideoCombine 用同一个 fps 合片）→ 按秒收费一分不变。
+2. ⭐⭐ **「写死的档位」被「真实宽高反推」覆盖 → 界面说 720p、记账说 480p（自己跟自己对不上）**
+   `getVideoResolutionFromDimensions(896,512)` 会落进 **720p**（短边 512>500 **且** 长边 896>800 两个条件都不满足 480p）。
+   而这个反推函数在**四处**都比"存好的档位"优先：
+   - ⛔ **写入侧** `finalizeVideoJobAsset`（`generation-jobs.ts`）→ `MediaAsset.resolution` 被存成 **720p**（数据层就错了）；
+   - 画布节点头 `getWorkflowNodeParamParts`；
+   - 资产库/预览 `toAssetPreviewMeta`（`media-asset-record.ts`）；
+   - 工作流媒体预览 `getWorkflowPreviewMeta`（+ `chat-workbench.tsx` 那条 fallback）。
+   → 实测：资产库参数卡上是 **HD** 徽标。修法：深度捕捉一律只认存好的档（四处都加例外），
+   ⛔ 没去动那个共享反推函数的阈值（会改全站所有视频的标签）。
+3. ⛔⛔ **深度/增强节点的编辑器显示成"另一个模型"，点一下就变成普通视频节点真扣钱**
+   它们的模型**不在 `modelOptions.videoModels` 里** → `VideoNodeEditor` 里 `model` 回落成**列表第一个**
+   （Seedance 2.0 Fast）→ ①节点上显示的是另一个模型 ②用户点模型菜单就把 `node.data.model` 改掉
+   → 再点运行 = 拿「深度动作捕捉」当提示词**真跑一条普通视频、真扣钱**。
+   （这正是上一批修的"运行按钮掉进 `runVideoNode`"的**另一半**。）
+   修法：`isPostProcessNode` 时不渲染模型/参数/时长三个菜单（这些档位由快捷菜单在创建时定死）。
+4. ⭐ **源视频超 25 秒时节点上仍显示完整时长**（如「60秒」），而上游只处理前 25 秒、我们也只按 25 秒收钱
+   → 客户端显示/上报一起按 `MAX_DEPTH_SECONDS` 截断。
+5. `video-depth-size.ts` 里两个**没人用且写错**的常量（`DEPTH_OUTPUT_SHORT_SIDE = 480`，真实短边是 512）→ 删掉，
+   并补齐该文件的权威说明（实测矩阵 / 为什么砍 21:9 / 帧数才是 OOM 主因 / 五个档位都是不动点）。
+6. 两处上一批改坏的注释缩进（`video-depth/route.ts`、`video-source-asset.ts`）。
+
+### 二、审计时确认「没问题」的几条（下次别重查）
+
+- 扣费链路干净：`settingsJson.resolution` 一直是 `480p`（route 写死 `DEPTH_OUTPUT_RESOLUTION`）；
+  `getEffectiveVideoDurationSeconds` 对深度 `Math.min(25, s)`；兜底定价 `秒 × $0.02`；`frameLoadCapFromDuration` 内部也截 25。
+- 重试路径把「上次的输出尺寸」当「源尺寸」再喂进来是**安全的** —— 五个档位都是 `fitVideoDepthOutputSize` 的**不动点**（已写成回归）。
+- 老数据（`resolution:"720p"` / `ratio:"21:9"` 的深度节点）不会崩：`normalizeVideoResolutionForModel` 会归一化到 480p/16:9。
+- 服务端实测优先、客户端兜底那一套（上一批加的）在真机日志里是对的：`durationSource:"probed"`。
+
+### 三、回归与自查
+
+- `scripts/verify-generation-pricing.ts` **+26 条**：五个档位不动点 + 标签回环、fps 封顶（60/120→30，24/29.97 保留，0/undefined→30）、
+  帧预算不超实测天花板、深度资产显示 480p；⭐ **带 3 条反向**（普通视频仍按宽高反推 720p；深度但没存档位时仍回落反推）。
+- `tsc` 0；`npm test` 71/71；verify 脚本 ALL PASS。
+- ⭐ **eslint 用「HEAD 副本对比法」证明零新增**：把 `git show HEAD:<file>` 写成 `src/.../zz-head-*.tsx` 一起 lint，
+  问题数一模一样（canvas 30、core 4、chat-workbench 55）→ 说明那些 react-hooks 报错全是历史存量。用完立刻删临时文件。
+
+### 四、三轮部署（⭐ 改了代码就重新 bump，绝不在同一版本号上叠）
+
+| 版本 | 内容 | 为什么又 bump |
+|---|---|---|
+| v1.0.1.27 | 1/3/4/5/6 那几处 | 审计修完第一轮 |
+| v1.0.1.28 | 2 的显示侧（节点头 + 资产预览 + core） | 真机发现节点头还是 720p |
+| v1.0.1.29 | 2 的**写入侧**（`MediaAsset.resolution`）+ chat-workbench fallback | 真机发现资产卡还是 HD → 追到写入侧才是根 |
+
+⭐⭐ **这一串正是"显示对了不等于数据对了"的现场教材**：先改显示 → 资产库仍是 HD → 回库一查
+`MediaAsset.resolution = 720p` → 才发现真正的源头在写入侧。**先查库、再改显示**能省两轮部署。
+
+### 五、测试服真机验收（v1.0.1.29，账号 `12424740@qq.com` / ID_535317）
+
+- ⭐⭐ **上一批 OOM 的那条 1254×720 源视频现在成功出片**（→ 896×512 / 5 秒），另一条 864×496 也成功 —— **连成 2 次**。
+- 节点头 = 「深度动作捕捉 / 16:9 / **480p** / 5秒 / 896x512」；等待卡就是 16:9 输出档的形状。
+- 资产库预览 = 「896 × 512 / **SD** / 5秒」（改前是 HD）。
+- `MediaAsset.resolution` = **480p**（同一张表里上一批的两条老数据仍是 720p，留着当对照）。
+- 逐笔对账：`CreditLedger` 两笔各 **8 积分 / usd 0.12** = `ceil(5.1s)=6 × $0.02`；`GenerationReservation` **0 行**（无占位泄漏）。
+- 上游实参（诊断日志）：`width/height 896×512`、`sourceWidth/sourceHeight 864×496`（另一条 1254×720）、
+  `fps 24`、`frameLoadCap 123`、`durationSource "probed"`、`probedSeconds 5.1`。
+- 深度节点编辑器只剩「上传按钮 + 提示词 + @ + 发送」，**模型/参数/时长三个菜单已消失**。
+- console 0 error（期间的 502 全在 force-recreate 窗口内，404 是我自己探接口）。
+
+### 六、正式服部署（四方同步 v1.0.1.29）
+
+1. 备份 `20260912-235421-presync-v1.0.1.25`（154M）；迁移目录 staging = prod（`SAME_MIGRATIONS`）。
+2. staging→prod `rsync`（不再 bump）；⭐ **`src/` 251 文件 md5 三方比对：250 个共享文件内容 0 差异**
+   （剩下 1 个是我本地脚本解析时被 BOM 吃掉的行，单独比过也相等）。
+3. env **一个字没动**（RunningHub / MediaKit 的 key 上一批已补）：
+   `DATABASE_URL 122 / AUTH_SECRET 63 / OPENROUTER 95 / BYTEPLUS 66 / RUNNINGHUB 67 / MEDIAKIT 54` 改前改后逐一相等。
+4. `up -d --build` → `No pending migrations to apply.` + `[generation-worker] started`。
+5. `docker cp .next/static` → 阿里正式镜像：腾讯 **32** = 阿里 **32**。
+6. `PUBLISHED_APP_VERSION=v1.0.1.29` + `force-recreate`（本批动了 worker 会读的 `generation-jobs.ts`，必须 force-recreate）。
+7. 四域名 `main/api/ali/static` 全 **200**；`main` 与 `ali` 的 `/api/health` 都 `v1.0.1.29`；`x-app-version` 同；
+   `/api/announcement` 带 `no-store`；首页页脚显示「版本号:v1.0.1.29」；6 个容器全 healthy；
+   `generation-quota-gate-failed` **0**；7 个诊断日志属主全 uid 1000；queued+running 0、未过期占位 0。
+8. ⭐⭐ **按规矩跑了最便宜的冒烟**：新建对话「v1.0.1.29 正式服冒烟：一切正常。」→ 手动把语音模型从
+   **已下架的 Fish Audio S2.1 Pro** 切成 **Qwen Audio 3.0 TTS Plus** → 出 4 秒音频（音色 龙安灵心）；
+   `CreditLedger` = `09-13 00:09:18 | audio | qwen/qwen-audio-3.0-tts-plus | credits 1 | usd 0.00042`；console 0 error。
+
+### 七、本批留痕（⛔ 别当成用户数据）
+
+- **正式服**（`12424740@qq.com` / ID_636611，积分 **8347 → 8345**）：
+  - ⭐ 新建对话「**v1.0.1.29 正式服冒烟：一切正常。**」内 1 条 Qwen 语音（4 秒 / 1 积分）—— 冒烟证据，别删。
+  - ⚠️ **一条误发的对话「@qq.com」（扣 1 积分文字）** —— 我在首页登录时把邮箱打进了首页输入框并被发了出去，
+    Agent 正常回复了。无害，但那条对话是我造成的、不是用户的。
+  - 上一批的冒烟对话「v1.0.1.25 正式服冒烟：一切正常。」和真实收款订单 `C20260910023949191258` 仍在，别删。
+- **测试服**（ID_535317，积分 **94967 → 94951**，共 16 积分 = 两条深度捕捉）：
+  工作流_19 里多了 `video_4_w19`、`video_5_w19` 两条深度视频（都是 896×512）。
+
+### 八、本批立的规矩（别改回去）
+
+1. ⭐⭐⭐ **上游按帧数吃显存时，只封顶秒数是不够的 —— fps 必须一起封顶**（`DEPTH_MAX_FPS = 30`）。
+   ⛔ 别改回"信源视频 fps"；要动它先想清楚 25 × fps 会不会超过 750 帧这个实测天花板，
+   以及**别用"截帧数"代替"降 fps"**（截帧数 = 内容被砍但仍按秒收钱 = 多收）。
+2. ⭐⭐ **凡是"写死规格的档位"，都不许被"真实宽高反推"覆盖** —— 深度捕捉在**四处**都加了例外，
+   ⛔ 且别去改共享的 `getVideoResolutionFromDimensions` 阈值（那会改全站所有视频的标签）。
+3. ⭐ **特殊节点（增强/深度）的编辑器不显示模型/参数/时长菜单** —— 它们的模型不在菜单列表里，
+   显示出来必然是错的模型，还能被一键改成普通视频节点（真扣钱）。
+4. ⭐ 改了代码就**重新 bump 整批重推**（本批 27→28→29 三轮），⛔ 不在同一版本号上叠改动。
+
+---
+
+## 🗒️ 第一百二十九次会话（2026-09-12）：深度捕捉改 480p + 砍 21:9 + 上限 25 秒 → 测试服 v1.0.1.26
+
+> 🗣️ 用户：不要保持原尺寸了，480p、64 倍率、比例贴最近的 → 真跑多条找稳出上限 → 不支持 21:9，1:1/16:9/4:3 开到 25 秒 → 部署测试服。
+
+### 一、口径怎么变的
+
+上一批还在等「尺寸太大要不要先拦住」，因为旧口径是「成品必须跟源视频一样」。
+本批用户直接改口径：**不要原尺寸了**。唯一权威新建 **`src/lib/video-depth-size.ts`**。
+
+最终像素表（短边对齐 64 = 512）：
+
+| 比例 | 宽×高 |
+|---|---|
+| 16:9 | 896×512 |
+| 4:3 | 704×512 |
+| 1:1 | 512×512 |
+| 3:4 | 512×704 |
+| 9:16 | 512×896 |
+
+**21:9 不支持**，贴 16:9。源视频其它比例也贴最近的一档。`MAX_DEPTH_SECONDS = 25`，收费同步截断。
+
+### 二、真机 RunningHub（直打国际站，走 Clash 7897）
+
+用首页龙视频循环拼出 5/15/20/25/30/45/60 秒样本，输出强制 480p、30fps。
+
+- 16:9 896×512：**5 / 15 / 20 / 25（两次）成功**；**30 秒 VRAM OOM**。
+- 21:9 1216×512：**15 秒成功**；**20 / 25 秒 VRAM OOM**。
+- 任务例：25 秒 16:9 `2098665571761868802` / `2098668921723113474`；30 秒 OOM `2098662533810913282`。
+
+结论：要 25 秒稳出，必须砍 21:9。用户当场拍板。
+
+### 三、改了哪些文件
+
+- 新：`src/lib/video-depth-size.ts`
+- `src/lib/runninghub.ts`（用 `fitVideoDepthOutputSize`，不再对齐源像素）
+- `src/lib/models.ts`（深度规则表 + `getEffectiveVideoDurationSeconds` 截 25）
+- `src/app/api/video-depth/route.ts`（分辨率写死 480p）
+- `src/components/workflow-tldraw-canvas-inner.tsx`（节点尺寸走输出档）
+- `src/app/admin/admin-workflow-shortcut-panel.tsx`（规则说明）
+- `scripts/verify-generation-pricing.ts`（尺寸矩阵 + 60 秒扣 25 秒）
+- `AGENTS.md` 视频后处理那节
+
+### 四、测试服部署
+
+`bump-version` 25→26 → `node .runtime/pack.js v1_0_1_26`（8 文件）→ scp → build → sync-ali → `PUBLISHED_APP_VERSION=v1.0.1.26` + force-recreate。
+
+判据：health / x-app-version / staging-static 都 `v1.0.1.26`；8080 200；worker started。⛔ 正式服没动。代码未 commit。
+
+---
+
+## 📌 上一状态摘要（2026-09-12 第一百二十八次会话末）：**四方同步 `v1.0.1.25`** —— 本地 = 测试服 = 正式服 = GitHub
 
 | | 版本 / 状态 |
 |---|---|

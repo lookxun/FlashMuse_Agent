@@ -4,6 +4,52 @@
 This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code. Heed deprecation notices.
 <!-- END:nextjs-agent-rules -->
 
+# 铁律⭐⭐⭐：上游「按帧数吃显存/算力」时，**只封顶秒数是没用的 —— fps 必须一起封顶**（2026-09-12 抓到，60fps 视频必挂）
+
+深度动作捕捉（RunningHub DepthCrafter）真机矩阵是在 **30fps** 下测的：896×512 × **750 帧稳过、900 帧 VRAM OOM**。
+于是上一批把秒数封到 `MAX_DEPTH_SECONDS = 25` 就以为安全了。⛔ 但 `frame_load_cap = min(25, 源时长) × **源 fps**`，
+而 fps 是直接信源视频的（原来放到 120）→ **手机拍的 60fps 视频跑满 25 秒 = 1500 帧 = 实测天花板的 2 倍，必挂。**
+
+- ⭐⭐ **判据（一句话）**：把上游那个"额度"的公式抄出来，看它**由几个变量相乘**。
+  只封顶其中一个，另一个就能把你顶穿（这里是 `秒 × fps`；换成图片就是 `张数 × 像素`、文本就是 `条数 × 长度`）。
+- ⭐ **正解是降 fps，⛔ 不是截帧数**：降 fps **不改成品时长**（VideoCombine 用同一个 fps 合片）→ 按秒收费一分不变；
+  而"截帧数"是**内容被砍了却仍按完整秒数收钱 = 多收**（违反本文件那条"上游截断多少就只收多少"的铁律）。
+- ⭐ 唯一权威 `src/lib/video-depth-size.ts` 的 `resolveVideoDepthFps` / `DEPTH_MAX_FPS = 30` / `MAX_DEPTH_FRAMES = 750`。
+  ⛔ 要放大 `DEPTH_MAX_FPS` 之前先算 `MAX_DEPTH_SECONDS × fps` 会不会超过 750。
+- ⭐ **真机矩阵要连同测试时的 fps 一起记进注释**（只记"25 秒能过"是残缺的情报，下一个人就会栽）。
+
+# 铁律⭐⭐：**"写死规格的档位"绝不许被"真实宽高反推"覆盖；而且反推点往往有好几处，写入侧那个才是根**（2026-09-12）
+
+深度捕捉输出恒定 896×512，我们按 **480p** 记账、发上游、写 `settings.resolution`。
+但 `getVideoResolutionFromDimensions(896,512)` 会落进 **720p**（`minSide 512 > 500` 且 `maxSide 896 > 800`，两个 480p 条件都不满足）
+—— 而这个反推函数在**四处**都比"存好的档位"优先，于是界面上全是 720p/HD，**和我们自己的账本对不上**。
+
+- ⭐⭐ **最值钱的一条：先查库、再改显示。** 我先改了节点头 → 资产库还是 HD；再改资产预览 → 还是 HD；
+  回库一查才发现 **`MediaAsset.resolution` 本身就被存成了 720p**（写入侧 `finalizeVideoJobAsset` 也在反推）。
+  → **"显示对了 ≠ 数据对了"**；顺序搞反白花了两轮部署。
+  ⭐ 判据：`SELECT resolution, width, height FROM "MediaAsset" WHERE model='...'` ——**一行 SQL 就能定位是哪一层错**。
+- ⭐ **grep 那个反推函数，逐个调用点问「这里该不该让位给存好的值」**。本项目四处：
+  ① `generation-jobs.ts` 的 `finalizeVideoJobAsset`（**写入侧，根**）② 画布节点头 `getWorkflowNodeParamParts`
+  ③ `media-asset-record.ts` 的 `toAssetPreviewMeta` ④ `chat-workbench-core.tsx` 的 `getWorkflowPreviewMeta`
+  （+ `chat-workbench.tsx` 里那条 fallback）。
+- ⛔ **别去改共享反推函数的阈值**（把 `minSide <= 500` 放宽到 540 能顺手治好这一例，
+  但会把全站所有 960×540 之类的视频标签一起改掉）——只给"有写死规格"的那个模型加例外。
+- ⭐ 回归要带**反向用例**：普通视频仍按宽高反推（896×512 仍是 720p）、深度但没存档位时仍回落反推。
+
+# 铁律⭐⭐：模型不在菜单列表里的"特殊节点"，编辑器会**显示成另一个模型**，而且用户点一下就把它改成普通节点（真扣钱）（2026-09-12）
+
+`VideoNodeEditor` 第一行是 `modelOptions.videoModels.some(id === node.data.model) ? node.data.model : videoModels[0]`。
+画质增强 / 深度动作捕捉这两个模型**故意不在 `videoModels` 里**（它们只从快捷菜单进入）→ 回落成**列表第一个**
+（Seedance 2.0 Fast）→ ① 节点上显示的是**另一个模型** ② 用户点一下模型菜单，`onChange` 就把 `node.data.model` 改成普通视频模型
+→ 再点运行 = 拿「深度动作捕捉」当提示词**真跑一条普通视频、真扣钱**。
+
+- ⭐ **判据**：凡是"从快捷菜单创建、模型不在下拉列表里"的节点，去看它的编辑器渲染了哪些菜单。
+  **能改模型 = 能把它变成另一种会花钱的节点。**
+- ⭐ **正解**：这类节点不渲染模型/参数/时长菜单（`isPostProcessNode` 时返回 null）——它们的档位由快捷菜单在创建时定死，本来就不该在这里改。
+- ⭐ 这与上一批修的"运行按钮掉进 `runVideoNode`"是**同一族的两半**：
+  修了"按下去跑错函数"，还要修"把节点本身改成别的模型"。**修这类 bug 时把"入口"和"数据"两头都数一遍。**
+
+
 # 铁律⭐⭐⭐：**上游不返回成本的链路，扣费输入绝不许来自客户端** —— 必须服务端现场实测（2026-09-12 抓到 4 个漏洞）
 
 2026-09-12 审「画质增强 / 深度动作捕捉」这两条新链路：MediaKit / RunningHub **从来不返回 `usage.cost`**，
@@ -21,7 +67,7 @@ This version has breaking changes — APIs, conventions, and file structure may 
   = **静默白送**（不报错、不进红字、后台也看不见）。**凡是兜底定价分支，都不许有"算不出来就不定价"的出口**，
   一律回落到 `getEffectiveVideoDurationSeconds`（拿不到按 5 秒兜底）。
 - ⭐⭐ **第三漏：上游只处理前 N 秒，我们按完整时长收钱 = 多收。**
-  深度捕捉的 `frame_load_cap` 只吃前 60 秒（`MAX_DEPTH_SECONDS`），而扣费用的是源视频完整时长。
+  深度捕捉的 `frame_load_cap` 只吃前 N 秒（`MAX_DEPTH_SECONDS`），而扣费用的是源视频完整时长。
   → **凡是上游有"只处理前 N 个/前 N 秒"的截断，收费秒数必须按同一个 N 截断**（日志里记 `capped`）。
 - ⭐ **第四漏（同批，另一族）：尺寸也别信客户端。** 画布节点声明 1280×720、文件真实 864×496 →
   发给上游的 `custom_width/height` 用了声明值 → ①成品尺寸和源视频不一样 ②上游 GPU 直接 `CUDA error` 挂掉。
@@ -2113,8 +2159,8 @@ nginx 配置在仓库里有副本（`nginx/flashmuse.conf`、`deploy/staging/*.c
     （`MEDIAKIT_API_KEY` / `BYTEPLUS_MEDIAKIT_API_KEY` / `RUNNINGHUB_API_KEY`，只进 `.env.local`、⛔ 不进 git）。
   - **`src/lib/runninghub.ts`** —— 深度动作捕捉唯一实现（DepthCrafter，workflowId 写死
     `1868729320020787201`，**国际站 `www.runninghub.ai`**，⛔ 别打国内 `runninghub.cn`）。
-    `MAX_DEPTH_SECONDS = 60` 既是上游 `frame_load_cap` 的上限、**也是收费秒数的截断值**。
-    尺寸**实测优先、客户端兜底**，再对齐 64 倍数。
+    `MAX_DEPTH_SECONDS = 25` 既是上游 `frame_load_cap` 的上限、**也是收费秒数的截断值**（2026-09-12 真机：16:9 25s 成 / 30s OOM；21:9 已不支持）。
+    尺寸**统一 480p**：只支持 16:9 / 4:3 / 1:1（竖版 9:16 / 3:4），其它比例贴最近的一档。唯一权威 `src/lib/video-depth-size.ts` 的 `fitVideoDepthOutputSize`。
   - **`src/lib/video-usage-cost.ts` 的 `withVideoUsdFallback`** —— 这两族的兜底定价（**唯一扣费依据**）：
     增强 = `分钟 × 分辨率系数(720p 1 / 1080p 2 / 2K 4 / 4K 8) × 基准价`（国内 `2.5/7.2`、海外极速 `0.1033`）；
     深度 = `秒 × $0.02`。⛔ 两个分支都**不许**出现"算不出秒数就原样返回"（那是静默白送）。
